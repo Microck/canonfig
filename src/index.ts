@@ -3,7 +3,7 @@ import { Command, Option } from "commander";
 import chokidar from "chokidar";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, request } from "node:http";
-import { mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -241,7 +241,10 @@ async function collectFiles(root: string): Promise<FileEntry[]> {
 async function walkIncluded(root: string, absolute: string, files: FileEntry[]): Promise<void> {
   const relative = normalizeRelative(path.relative(root, absolute));
   if (!relative || shouldExclude(relative)) return;
-  const entryStat = await stat(absolute);
+  const entryStat = await lstat(absolute);
+  if (entryStat.isSymbolicLink()) {
+    return;
+  }
   if (entryStat.isDirectory()) {
     const children = await readdir(absolute);
     for (const child of children) {
