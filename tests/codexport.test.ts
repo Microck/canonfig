@@ -87,6 +87,22 @@ describe("overlay application", () => {
     expect(merged).toContain('Authorization = "Bearer token"');
   });
 
+  it("rewrites loopback MCP URLs to the enrolled master host", () => {
+    const canonical = [
+      "[mcp_servers.paper]",
+      'url = "http://127.0.0.1:29979/mcp"',
+      "",
+      "[mcp_servers.browser.env]",
+      'CAMOFOX_BASE_URL = "http://localhost:8080"',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(canonical, undefined, { masterUrl: "http://master.tailnet.ts.net:17342" });
+
+    expect(merged).toContain('url = "http://master.tailnet.ts.net:29979/mcp"');
+    expect(merged).toContain('CAMOFOX_BASE_URL = "http://master.tailnet.ts.net:8080/"');
+  });
+
   it("uses the quiet local runner for managed MCP commands", () => {
     const canonical = [
       "[mcp_servers.kagi-mcp]",
@@ -412,8 +428,29 @@ describe("hooks", () => {
     const hooks = JSON.parse(await readFile(path.join(codex, "hooks.json"), "utf8"));
     expect(hooks.SessionStart).toHaveLength(1);
     expect(hooks.SessionStart[0]).toMatchObject({
-      name: "codexport-sync",
-      command: "codexport hook sync --timeout-ms 3000 --no-input"
+      name: "codexport-sync"
     });
+    expect(hooks.SessionStart[0].command).toContain("codexport-mcp-run.mjs");
+    expect(hooks.SessionStart[0].command).toContain("hook sync --timeout-ms 3000 --no-input");
+  });
+
+  it("replaces stale codexport hook commands regardless of name", async () => {
+    const root = await tempDir("hook-stale");
+    const home = path.join(root, "home");
+    const codex = path.join(home, ".codex");
+    const ctx = defaultContext({ home, codexDir: codex });
+    await mkdir(codex, { recursive: true });
+    await writeFile(path.join(codex, "hooks.json"), JSON.stringify({
+      SessionStart: [
+        { name: "old", command: "codexport sync --apply --timeout-ms 3000 --no-input" },
+        { name: "keep", command: "echo keep" }
+      ]
+    }));
+
+    await installHook(ctx, 3000);
+
+    const hooks = JSON.parse(await readFile(path.join(codex, "hooks.json"), "utf8"));
+    expect(hooks.SessionStart).toHaveLength(2);
+    expect(hooks.SessionStart.map((hook: { name: string }) => hook.name).sort()).toEqual(["codexport-sync", "keep"]);
   });
 });

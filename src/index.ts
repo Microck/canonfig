@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.6";
+const VERSION = "0.3.7";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -464,7 +464,7 @@ function extractTomlTableNames(text: string, prefix: string): Set<string> {
 }
 
 function mergeTomlText(canonical: string, localMcpText: string | undefined, localConfig: LocalConfig, sourceRoot?: string, sourceEnv: Record<string, string> = {}): string {
-  const expandedCanonical = expandPathVariables(rewritePortableConfig(canonical, sourceRoot, sourceEnv), localConfig);
+  const expandedCanonical = expandPathVariables(rewritePortableConfig(canonical, localConfig, sourceRoot, sourceEnv), localConfig);
   if (!localMcpText?.trim()) return expandedCanonical;
   const canonicalMcps = extractTomlTableNames(canonical, "mcp_servers");
   const localMcps = extractTomlTableNames(localMcpText, "mcp_servers");
@@ -476,7 +476,7 @@ function mergeTomlText(canonical: string, localMcpText: string | undefined, loca
   return `${expandedCanonical.trimEnd()}\n\n# Follower-local MCP overlay from ~/.codexport/mcps.local.toml\n${localMcpText.trim()}\n`;
 }
 
-function rewritePortableConfig(canonical: string, sourceRoot?: string, sourceEnv: Record<string, string> = {}): string {
+function rewritePortableConfig(canonical: string, localConfig: LocalConfig, sourceRoot?: string, sourceEnv: Record<string, string> = {}): string {
   let parsed: Record<string, unknown>;
   try {
     parsed = parseTomlObject(canonical, "canonical config.toml");
@@ -487,10 +487,12 @@ function rewritePortableConfig(canonical: string, sourceRoot?: string, sourceEnv
   const mcpServers = parsed.mcp_servers;
   if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
     rewritePortableTableKeys(parsed, sourceRoot, sourceHome);
+    rewriteLoopbackUrls(parsed, localConfig.masterUrl);
     return stringifyToml(parsed as Record<string, Json>);
   }
 
   rewritePortableTableKeys(parsed, sourceRoot, sourceHome);
+  rewriteLoopbackUrls(parsed, localConfig.masterUrl);
   for (const [name, rawServer] of Object.entries(mcpServers as Record<string, unknown>)) {
     if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) continue;
     const server = rawServer as Record<string, unknown>;
@@ -543,6 +545,46 @@ function rewritePortableTableKeys(table: Record<string, unknown>, sourceRoot?: s
   for (const [key, value] of Object.entries(rewritten)) {
     table[key] = value;
   }
+}
+
+function rewriteLoopbackUrls(value: unknown, masterUrl: string | undefined): unknown {
+  if (!masterUrl) return value;
+  if (typeof value === "string") return rewriteLoopbackUrl(value, masterUrl);
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      value[index] = rewriteLoopbackUrls(value[index], masterUrl);
+    }
+    return value;
+  }
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    (value as Record<string, unknown>)[key] = rewriteLoopbackUrls(item, masterUrl);
+  }
+  return value;
+}
+
+function rewriteLoopbackUrl(value: string, masterUrl: string): string {
+  let parsed: URL;
+  let master: URL;
+  try {
+    parsed = new URL(value);
+    master = new URL(masterUrl);
+  } catch {
+    return value;
+  }
+  if (!["http:", "https:", "ws:", "wss:"].includes(parsed.protocol)) return value;
+  if (!isLoopbackHost(parsed.hostname)) return value;
+  parsed.hostname = master.hostname;
+  return parsed.toString();
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost"
+    || normalized === "[::1]"
+    || normalized === "::1"
+    || normalized === "0.0.0.0"
+    || normalized.startsWith("127.");
 }
 
 function rewriteManagedMcpServer(name: string, server: Record<string, unknown>, sourceRoot?: string, sourceHome?: string): void {
@@ -868,6 +910,10 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
     const target = path.join(ctx.codexDir, file.path);
     await ensureDir(path.dirname(target));
     if (file.path === "config.toml") continue;
+    if (file.path === "hooks.json") {
+      await writeFileReplacingExisting(target, sanitizeHooksJson(decodeFile(file).toString("utf8")), { mode: file.mode });
+      continue;
+    }
     await writeFileReplacingExisting(target, decodeFile(file), { mode: file.mode });
   }
 
@@ -910,7 +956,20 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
   }
 
   await writeLocalConfig(ctx, { ...localConfig, lastRevision: bundle.revision, codexDir: ctx.codexDir });
+  await installHook(ctx, 3_000);
   await writeJsonAtomic(path.join(ctx.stateDir, APPLIED_FILES_FILE), bundle.files.map((file) => file.path) as unknown as Json);
+}
+
+function sanitizeHooksJson(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (Array.isArray(parsed.SessionStart)) {
+      parsed.SessionStart = parsed.SessionStart.filter((hook) => !isCodexportHook(hook));
+    }
+    return `${JSON.stringify(parsed, null, 2)}\n`;
+  } catch {
+    return text;
+  }
 }
 
 async function writeManagedMcpRunner(ctx: CliContext): Promise<string> {
@@ -932,6 +991,7 @@ async function commandMcpRun(ctx: CliContext, name: string): Promise<void> {
   const server = structuredClone(manifest.servers[name]) as Record<string, unknown>;
   mergeSourceEnvForMcp(name, server, manifest.sourceEnv ?? {});
   rewritePortableTableKeys(server, manifest.sourceRoot, sourceHome);
+  rewriteLoopbackUrls(server, localConfig.masterUrl);
   if (typeof server.url === "string") {
     throw new CliError(`MCP ${name} is URL-based and should not be launched through codexport mcp run.`, 2);
   }
@@ -1118,14 +1178,27 @@ async function copyDirectory(source: string, target: string): Promise<void> {
 
 async function installHook(ctx: CliContext, timeoutMs: number): Promise<void> {
   await ensureDir(ctx.codexDir);
+  const managedRunner = await writeManagedMcpRunner(ctx);
   const hooksPath = path.join(ctx.codexDir, "hooks.json");
   const existingText = await readTextIfExists(hooksPath);
   const existing = existingText ? JSON.parse(existingText) as Record<string, unknown> : {};
   const hooks = existing.SessionStart && Array.isArray(existing.SessionStart) ? existing.SessionStart as unknown[] : [];
-  const command = `codexport hook sync --timeout-ms ${timeoutMs} --no-input`;
-  const filtered = hooks.filter((hook) => !(hook && typeof hook === "object" && (hook as { name?: unknown }).name === "codexport-sync"));
+  const command = `${shellQuote(process.execPath)} ${shellQuote(managedRunner)} hook sync --timeout-ms ${timeoutMs} --no-input`;
+  const filtered = hooks.filter((hook) => !isCodexportHook(hook));
   filtered.push({ name: "codexport-sync", command, timeoutMs });
   await writeJsonAtomic(hooksPath, { ...existing, SessionStart: filtered } as unknown as Json);
+}
+
+function shellQuote(value: string): string {
+  if (platform() === "win32") return `"${value.replace(/"/g, '\\"')}"`;
+  return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+function isCodexportHook(hook: unknown): boolean {
+  if (!hook || typeof hook !== "object") return false;
+  const record = hook as { name?: unknown; command?: unknown };
+  if (record.name === "codexport-sync") return true;
+  return typeof record.command === "string" && /\bcodexport\b/.test(record.command);
 }
 
 function runCommand(command: string, args: string[]): Promise<void> {
