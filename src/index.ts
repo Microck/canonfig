@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.1";
+const VERSION = "0.3.2";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -586,6 +586,11 @@ function portableMcpLauncher(name: string, command: string, args: unknown[], sou
     return { command: "npx", args: ["-y", nodePackage.packageName, ...nodePackage.remainingArgs] };
   }
 
+  if (name === "qmd" || commandName === "qmd") {
+    const remainingArgs = allStrings(args) ? args as string[] : [];
+    return { command: "npx", args: ["-y", "-p", "@tobilu/qmd", "qmd", ...remainingArgs] };
+  }
+
   const npmPackage = npmPackageForPortableMcp(name, commandName);
   if (npmPackage) {
     const remainingArgs = packageLauncherArgs(commandName, args);
@@ -600,8 +605,8 @@ function portableMcpLauncher(name: string, command: string, args: unknown[], sou
       args: ["--from", uvTool.packageName, uvTool.binaryName, ...remainingArgs],
       repair: {
         whenMissing: "uvx",
-        command: platform() === "win32" ? "py" : "python3",
-        args: ["-m", "pip", "install", "--user", "uv"]
+        command: "__codexport_install_uv",
+        args: []
       }
     };
   }
@@ -666,7 +671,6 @@ function npmPackageForPortableMcp(name: string, commandName: string): string | u
     "opensrc-mcp-stdio": "opensrc-mcp",
     "perplexity-webui": "perplexity-webui-mcp",
     "perplexity-webui-mcp": "perplexity-webui-mcp",
-    "qmd": "qmd-cli",
     "reddit-mcp-buddy": "reddit-mcp-buddy",
     "xcodebuildmcp": "xcodebuildmcp"
   };
@@ -900,6 +904,7 @@ async function commandMcpRun(ctx: CliContext, name: string): Promise<void> {
     ? server.args.map((arg) => typeof arg === "string" ? expandPathVariables(rewritePortablePath(arg, manifest.sourceRoot, sourceHome), { ...localConfig, codexDir: ctx.codexDir }) : String(arg))
     : [];
   if (!command) throw new CliError(`MCP ${name} has no command.`, 1);
+  ensurePortablePathEnv(server);
 
   const launcher = mcpHasRequiredPortableEnv(name, command, server)
     ? portableMcpLauncher(name, command, args, sourceHome, server)
@@ -928,11 +933,35 @@ async function repairMcpLauncherIfNeeded(launcher: McpLaunchSpec | undefined, en
   if (await executableExists(launcher.repair.whenMissing, env)) return;
   if (launcher.repair.command === "__codexport_install_fff_mcp") {
     await installFffMcp(env);
+  } else if (launcher.repair.command === "__codexport_install_uv") {
+    await installUv(env);
   } else {
     await runCommandWithEnv(launcher.repair.command, launcher.repair.args, env);
   }
   if (!(await executableExists(launcher.repair.whenMissing, env))) {
     throw new CliError(`MCP repair completed but ${launcher.repair.whenMissing} is still not on PATH.`, 1);
+  }
+}
+
+async function installUv(env: NodeJS.ProcessEnv): Promise<void> {
+  if (platform() === "win32") {
+    await runCommandWithEnv("powershell.exe", [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      "irm https://astral.sh/uv/install.ps1 | iex"
+    ], env);
+  } else {
+    await runCommandWithEnv("sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], env);
+  }
+  const installHome = env.HOME ?? env.USERPROFILE ?? homedir();
+  const uvBinDir = platform() === "win32"
+    ? path.join(installHome, ".local", "bin")
+    : path.join(installHome, ".local", "bin");
+  const pathValue = env.PATH ?? "";
+  if (!pathValue.split(path.delimiter).includes(uvBinDir)) {
+    env.PATH = [uvBinDir, pathValue].filter(Boolean).join(path.delimiter);
   }
 }
 

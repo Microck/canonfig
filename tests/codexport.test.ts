@@ -368,7 +368,7 @@ describe("managed MCP launcher repair", () => {
     });
     expect(portableMcpLauncher("qmd", "/home/alice/.nvm/bin/qmd", ["mcp"], undefined, {})).toEqual({
       command: "npx",
-      args: ["-y", "qmd-cli", "mcp"]
+      args: ["-y", "-p", "@tobilu/qmd", "qmd", "mcp"]
     });
   });
 
@@ -376,12 +376,12 @@ describe("managed MCP launcher repair", () => {
     expect(portableMcpLauncher("markitdown-mcp", "/home/alice/.local/bin/markitdown-mcp", [], undefined, {})).toMatchObject({
       command: "uvx",
       args: ["--from", "markitdown-mcp", "markitdown-mcp"],
-      repair: { whenMissing: "uvx" }
+      repair: { whenMissing: "uvx", command: "__codexport_install_uv" }
     });
     expect(portableMcpLauncher("discord-py-self", "/home/alice/.local/bin/discord-py-self-mcp", [], undefined, {})).toMatchObject({
       command: "uvx",
       args: ["--from", "discord-py-self-mcp", "discord-py-self-mcp"],
-      repair: { whenMissing: "uvx" }
+      repair: { whenMissing: "uvx", command: "__codexport_install_uv" }
     });
   });
 
