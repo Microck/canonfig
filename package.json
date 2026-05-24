@@ -1,0 +1,55 @@
+{
+  "name": "codexport",
+  "version": "0.1.0",
+  "description": "sync a canonical Codex setup from one master machine to follower machines",
+  "author": "Microck <contact@micr.dev>",
+  "license": "MIT",
+  "type": "module",
+  "homepage": "https://github.com/Microck/codexport#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Microck/codexport.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Microck/codexport/issues"
+  },
+  "keywords": [
+    "codex",
+    "cli",
+    "sync",
+    "tailscale",
+    "mcp",
+    "skills",
+    "configuration",
+    "automation"
+  ],
+  "bin": {
+    "codexport": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "docs/prd.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "chokidar": "4.0.3",
+    "commander": "14.0.2",
+    "smol-toml": "^1.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vitest": "4.0.13"
+  }
+}
