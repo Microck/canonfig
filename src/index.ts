@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.2";
+const VERSION = "0.3.3";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -1018,14 +1018,23 @@ async function repairGitquarryEnvIfNeeded(name: string, env: NodeJS.ProcessEnv):
   if (name !== "gitquarry-mcp") return;
   const current = env.GITQUARRY_CLI_PATH;
   if (current && await executableExists(current, env)) return;
-  if (!(await executableExists("gitquarry", env))) {
-    await runCommandWithEnv("npm", ["install", "-g", "gitquarry"], env);
+  const existing = await resolveExecutable("gitquarry", env);
+  if (existing) {
+    env.GITQUARRY_CLI_PATH = existing;
+    return;
   }
-  const resolved = await resolveExecutable("gitquarry", env);
-  if (!resolved) {
-    throw new CliError("MCP repair could not find gitquarry after installing the gitquarry npm package.", 1);
+
+  const installHome = env.HOME ?? env.USERPROFILE ?? homedir();
+  const installDir = path.join(installHome, ".codexport", "tools", "gitquarry");
+  await ensureDir(installDir);
+  await runCommandWithEnv("npm", ["install", "--prefix", installDir, "gitquarry"], env);
+  const binaryPath = platform() === "win32"
+    ? path.join(installDir, "node_modules", ".bin", "gitquarry.cmd")
+    : path.join(installDir, "node_modules", ".bin", "gitquarry");
+  if (!(await pathExists(binaryPath))) {
+    throw new CliError("MCP repair installed gitquarry but could not find its npm shim.", 1);
   }
-  env.GITQUARRY_CLI_PATH = resolved;
+  env.GITQUARRY_CLI_PATH = binaryPath;
 }
 
 async function executableExists(command: string, env: NodeJS.ProcessEnv): Promise<boolean> {
