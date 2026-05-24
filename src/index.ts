@@ -5,12 +5,14 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer, request } from "node:http";
 import { mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { homedir, platform, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -814,7 +816,12 @@ async function main(argv: string[]): Promise<void> {
   await program.parseAsync(argv);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isCliEntrypoint(): boolean {
+  if (!process.argv[1]) return false;
+  return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+}
+
+if (isCliEntrypoint()) {
   main(process.argv).catch((error) => {
     const err = asError(error);
     const exitCode = error instanceof CliError ? error.exitCode : 1;
