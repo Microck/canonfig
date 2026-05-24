@@ -7,14 +7,14 @@ Status: implemented as an initial Node.js CLI in this repository.
 Build a low-friction way to replicate the useful parts of a master machine's
 Codex setup to follower machines.
 
-The main target is `~/.codex`. Machine1 is the source of truth. Follower
+The main target is `~/.codex`. The master is the source of truth. Follower
 machines should stay up to date automatically while still being allowed to keep
 machine-local additions such as local MCPs, local skills, local trust entries,
 and local path overrides.
 
 ## Product Principles
 
-- Machine1 owns the canonical Codex configuration.
+- The master owns the canonical Codex configuration.
 - Followers are read-only consumers of canonical state.
 - Followers can keep local-only overlays unless those overlays explicitly
   conflict with canonical names.
@@ -37,32 +37,32 @@ The project will live at:
 
 ### Authority Model
 
-Machine1 is canonical. Follower machines do not push changes back by default.
+The master is canonical. Follower machines do not push changes back by default.
 
 Follower-specific additions are allowed, but they remain local unless promoted
-from Machine1 intentionally.
+from the master intentionally.
 
 ### Sync Transport
 
 Use a Tailscale-compatible pull model:
 
 ```text
-Machine1:
+Master:
   codexport serve
 
 Follower:
   codexport join
-  > Master Tailscale IP/name: machine1.tailnet.ts.net
+  > Master Tailscale IP/name: master.tailnet.ts.net
 ```
 
-Followers pull from Machine1. Machine1 does not need to track and push to every
+Followers pull from the master. The master does not need to track and push to every
 follower.
 
 Tailscale reachability is sufficient for follower enrollment. The first version
 does not require a separate one-time pairing code.
 
-Machine1 should run the master server persistently as a user-level service.
-Followers should be able to reconnect and sync whenever Machine1 is online.
+The master should run the master server persistently as a user-level service.
+Followers should be able to reconnect and sync whenever the master is online.
 
 On first join, the follower trusts the provided Tailscale address and stores the
 master instance fingerprint. Later syncs must verify that fingerprint. If the
@@ -71,7 +71,7 @@ re-enroll or trust-reset command.
 
 ### One-Click Join
 
-Machine1 should be able to generate a durable join artifact for followers.
+The master should be able to generate a durable join artifact for followers.
 
 Preferred UX:
 
@@ -83,14 +83,14 @@ Outputs a permanent join link or command that a follower can run without
 manually typing the master address:
 
 ```text
-npx codexport follower join "codexport://join?host=machine1.tailnet.ts.net&port=17342&fingerprint=..."
+npx codexport follower join "codexport://join?host=master.tailnet.ts.net&port=17342&fingerprint=..."
 ```
 
 If custom URL handling is too complex for the first implementation, the
 fallback is a one-time copy-paste command:
 
 ```text
-npx codexport follower join --master http://machine1.tailnet.ts.net:17342 --fingerprint ...
+npx codexport follower join --master http://master.tailnet.ts.net:17342 --fingerprint ...
 ```
 
 The join link should not include plaintext Codex secrets. It should include only
@@ -128,9 +128,9 @@ Followers should sync automatically through a follower-only Codex `SessionStart`
 hook:
 
 - The hook runs a short best-effort sync before a new Codex session starts.
-- If Machine1 is reachable and the content hash changed, the follower applies
+- If the master is reachable and the content hash changed, the follower applies
   the update before the session continues.
-- If Machine1 is unavailable, the hook exits cleanly and Codex starts with the
+- If the master is unavailable, the hook exits cleanly and Codex starts with the
   most recently applied config.
 
 This means followers are guaranteed to refresh at the Codex session boundary,
@@ -142,7 +142,7 @@ available when an immediate refresh is needed outside session startup.
 The tool should generate the final `~/.codex/config.toml` from layers:
 
 ```text
-canonical config from Machine1
+canonical config from the master
 local follower overlay
 generated final ~/.codex/config.toml
 ```
@@ -213,7 +213,7 @@ The user wants auth and important state to sync for a one-click experience.
 
 The current design should not store plaintext secrets in GitHub. Instead:
 
-- Machine1 can include secret-bearing files in a private export bundle served
+- The master can include secret-bearing files in a private export bundle served
   over Tailscale.
 - Followers fetch and apply that bundle during `join` or automatic sync.
 - GitHub stores code and non-secret portable config, not plaintext token blobs.
@@ -265,7 +265,7 @@ Recommended package shape:
 - Optional later installer that writes the master service and follower hook.
 
 The tool may still install or configure Bun as part of the synced development
-toolchain if Machine1's `mise.toml` requests it.
+toolchain if the master's `mise.toml` requests it.
 
 The published package should require Node.js 20 or newer.
 
@@ -307,10 +307,10 @@ Rejected for v1:
 
 Expected roles:
 
-- `master init`: create Machine1 canonical state.
+- `master init`: create the master canonical state.
 - `master serve`: serve canonical bundle over Tailscale-reachable HTTP.
 - `master link`: print a durable follower join link or copy-paste command.
-- `follower join`: enroll a follower by asking for Machine1 Tailscale IP/name.
+- `follower join`: enroll a follower by asking for the master Tailscale IP/name.
 - `sync`: fetch and stage/apply updates.
 - `apply`: apply already available canonical state plus local overlays.
 - `hook install`: install follower-only Codex SessionStart sync hook.
@@ -352,7 +352,7 @@ Follower hook:
 - Downloads and validates new revisions when changed.
 - Verifies the stored master fingerprint before accepting an update.
 - Applies before the new Codex session proceeds.
-- Uses a short timeout so Codex startup is not blocked for long when Machine1 is
+- Uses a short timeout so Codex startup is not blocked for long when the master is
   offline.
 - Does not require a follower background service in v1.
 
@@ -405,7 +405,7 @@ Canonical names win by default. A same-name local MCP or skill fails unless
 12. Should master export rebuilds require a manual command or happen
     automatically? Decision: master watches selected paths and rebuilds
     automatically; manual rebuild exists only for repair/debugging.
-13. Should Machine1 generate a permanent follower join link or require manual
+13. Should the master generate a permanent follower join link or require manual
     master address entry? Decision: generate a durable join link, with a
     copy-paste command fallback if custom URL handling is not implemented in the
     first version.
@@ -428,7 +428,7 @@ Canonical names win by default. A same-name local MCP or skill fails unless
 
 - macOS support.
 - GitHub-based plaintext secret sync.
-- Push-based orchestration from Machine1 to followers.
+- Push-based orchestration from the master to followers.
 - Mid-session mutation of active Codex behavior.
 - Automatic promotion of follower-local changes.
 - Syncing Codex sessions, history, logs, or SQLite runtime state.

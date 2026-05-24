@@ -8,9 +8,9 @@
 
 ---
 
-`codexport` replicates a canonical Machine1 Codex setup to follower machines. it is built for operators who want one trusted `~/.codex` source of truth, follower-local overlays, and a low-friction `npx` join path without committing plaintext secrets to GitHub.
+`codexport` replicates a canonical master Codex setup to follower machines. it is built for operators who want one trusted `~/.codex` source of truth, follower-local overlays, and a low-friction `npx` join path without committing plaintext secrets to GitHub.
 
-Machine1 serves a content-hashed bundle from its `~/.codex` directory. followers pin the master's fingerprint on join, fetch updates over a Tailscale-reachable HTTP address, and apply updates at Codex `SessionStart` through a short best-effort hook.
+the master serves a content-hashed bundle from its `~/.codex` directory. followers pin the master's fingerprint on join, fetch updates over a Tailscale-reachable HTTP address, and apply updates at Codex `SessionStart` through a short best-effort hook.
 
 [npm](https://www.npmjs.com/package/codexport) | [github](https://github.com/Microck/codexport)
 
@@ -18,7 +18,7 @@ Machine1 serves a content-hashed bundle from its `~/.codex` directory. followers
 
 if you keep a carefully tuned Codex setup on one machine and want the same defaults elsewhere, `codexport` gives you a practical pull-based sync path.
 
-- keep Machine1 as the canonical Codex configuration source
+- keep the master as the canonical Codex configuration source
 - let followers preserve local MCPs, local skills, trust entries, and path overrides
 - sync auth-bearing files through the private Tailscale path instead of a plaintext GitHub commit
 - refresh followers at Codex session startup without interrupting active sessions
@@ -28,18 +28,18 @@ if you keep a carefully tuned Codex setup on one machine and want the same defau
 
 `codexport` requires Node.js 20+.
 
-on Machine1:
+on the master:
 
 ```bash
 npx codexport master init
 npx codexport master service install
-npx codexport master link --host machine1.tailnet.ts.net
+npx codexport master link --host master.tailnet.ts.net
 ```
 
 on a follower:
 
 ```bash
-npx codexport follower join "codexport://join?host=machine1.tailnet.ts.net&port=17342&fingerprint=..."
+npx codexport follower join "codexport://join?host=master.tailnet.ts.net&port=17342&fingerprint=..."
 npx codexport hook install
 ```
 
@@ -52,15 +52,57 @@ npx codexport status
 
 ## sync model
 
-```text
-Machine1 ~/.codex
-  -> codexport master serve
-  -> Tailscale-reachable HTTP bundle
-  -> follower sync/apply
-  -> generated follower ~/.codex
+```mermaid
+flowchart LR
+  subgraph master["master machine"]
+    masterCodex["~/.codex canonical state"]
+    masterCli["codexport master serve"]
+    masterBundle["content-hashed bundle"]
+  end
+
+  subgraph privateNet["tailscale network"]
+    http["http://master.tailnet.ts.net:17342"]
+  end
+
+  subgraph follower["follower machine"]
+    localOverlay["~/.codexport local overlay"]
+    sessionHook["Codex SessionStart hook"]
+    generatedCodex["generated ~/.codex"]
+  end
+
+  masterCodex -->|select files and hash content| masterBundle
+  masterBundle --> masterCli
+  masterCli -->|serve bundle and fingerprint| http
+  sessionHook -->|check revision before session| http
+  http -->|download changed bundle| sessionHook
+  localOverlay -->|merge MCPs, skills, path variables| sessionHook
+  sessionHook -->|backup and apply| generatedCodex
 ```
 
 followers trust the provided Tailscale address and store the master fingerprint. later syncs refuse changed fingerprints by default, so a changed master identity requires intentional re-enrollment.
+
+## trust flow
+
+```mermaid
+sequenceDiagram
+  participant Operator as operator
+  participant Master as master
+  participant Follower as follower
+  participant Codex as codex session
+
+  Operator->>Master: codexport master link
+  Master-->>Operator: join link with host, port, fingerprint
+  Operator->>Follower: codexport follower join "codexport://join?..."
+  Follower->>Master: GET /meta
+  Master-->>Follower: fingerprint and revision
+  Follower->>Follower: pin trusted fingerprint
+  Follower->>Master: GET /bundle
+  Master-->>Follower: content-hashed bundle
+  Follower->>Follower: apply bundle plus local overlay
+  Codex->>Follower: SessionStart hook
+  Follower->>Master: check revision and fingerprint
+  Follower-->>Codex: continue with latest applied config
+```
 
 ## included state
 
@@ -100,7 +142,7 @@ the follower's `local.toml` before writing the generated `~/.codex/config.toml`.
 
 | command | purpose |
 | --- | --- |
-| `codexport master init` | create or refresh Machine1 master identity and bundle state |
+| `codexport master init` | create or refresh the master identity and bundle state |
 | `codexport master serve` | serve the current canonical bundle over HTTP |
 | `codexport master link` | print a durable follower join link and fallback command |
 | `codexport master rebuild` | force rebuild the master bundle for repair/debugging |
@@ -125,14 +167,14 @@ followers do not need a background service in v1. the hook runs a short best-eff
 generate a copy-paste join command:
 
 ```bash
-codexport master link --host machine1.tailnet.ts.net
+codexport master link --host master.tailnet.ts.net
 ```
 
 join with explicit trust metadata:
 
 ```bash
 codexport follower join \
-  --master http://machine1.tailnet.ts.net:17342 \
+  --master http://master.tailnet.ts.net:17342 \
   --fingerprint <fingerprint> \
   --apply
 ```

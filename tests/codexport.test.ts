@@ -22,9 +22,9 @@ async function tempDir(name: string): Promise<string> {
 
 describe("join links", () => {
   it("round-trips durable join metadata", () => {
-    const link = buildJoinLink("http://machine1.tailnet.ts.net:17342", "abc123");
+    const link = buildJoinLink("http://master.tailnet.ts.net:17342", "abc123");
     expect(parseJoinLink(link)).toEqual({
-      masterUrl: "http://machine1.tailnet.ts.net:17342",
+      masterUrl: "http://master.tailnet.ts.net:17342",
       fingerprint: "abc123"
     });
   });

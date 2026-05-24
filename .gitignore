@@ -1,4 +1,5 @@
 node_modules/
 dist/
+.residue/
 *.tgz
 .DS_Store

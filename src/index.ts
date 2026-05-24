@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -605,7 +605,7 @@ async function commandMasterLink(ctx: CliContext, options: { host?: string; port
   const identity = await loadMasterIdentity(ctx);
   const local = await readLocalConfig(ctx);
   const port = options.port ?? local.port ?? DEFAULT_PORT;
-  const host = options.host ?? "machine1.tailnet.ts.net";
+  const host = options.host ?? "master.tailnet.ts.net";
   const url = masterUrl(host, port);
   print(ctx, {
     joinLink: buildJoinLink(url, identity.fingerprint),
@@ -752,7 +752,7 @@ async function main(argv: string[]): Promise<void> {
     .description("Replicate a canonical Codex setup from a master machine to follower machines.")
     .version(VERSION);
 
-  const master = program.command("master").description("Manage the canonical Machine1 export.");
+  const master = program.command("master").description("Manage the canonical master export.");
   master.command("init")
     .description("Create or refresh master identity and canonical bundle state.")
     .option("--port <port>", "default serve port", parsePositiveInt, DEFAULT_PORT)
@@ -762,7 +762,7 @@ async function main(argv: string[]): Promise<void> {
     .action(async (_options, command) => commandMasterRebuild(contextFromCommand(command)));
   master.command("link")
     .description("Print a durable follower join link and copy-paste command.")
-    .option("--host <host>", "Tailscale host, IP, or full URL", "machine1.tailnet.ts.net")
+    .option("--host <host>", "Tailscale host, IP, or full URL", "master.tailnet.ts.net")
     .option("--port <port>", "master port", parsePositiveInt, DEFAULT_PORT)
     .action(async (options, command) => commandMasterLink(contextFromCommand(command), options));
   master.command("serve")
@@ -785,7 +785,7 @@ async function main(argv: string[]): Promise<void> {
   const follower = program.command("follower").description("Enroll and manage a follower machine.");
   follower.command("join [link]")
     .description("Enroll this follower from a codexport://join link or explicit master URL.")
-    .option("--master <url>", "master URL, for example http://machine1.tailnet.ts.net:17342")
+    .option("--master <url>", "master URL, for example http://master.tailnet.ts.net:17342")
     .option("--fingerprint <hex>", "expected master fingerprint")
     .option("--apply", "download and apply immediately after enrollment")
     .option("--timeout-ms <ms>", "network timeout", parsePositiveInt, DEFAULT_TIMEOUT_MS)
