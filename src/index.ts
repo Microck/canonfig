@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.1.8";
+const VERSION = "0.1.9";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -538,8 +538,11 @@ function mcpHasRequiredPortableEnv(name: string, command: string, server: Record
 function ensurePortablePathEnv(server: Record<string, unknown>): void {
   const env = server.env && typeof server.env === "object" && !Array.isArray(server.env) ? server.env as Record<string, unknown> : {};
   const existingPath = typeof env.PATH === "string" ? env.PATH : undefined;
-  const portableBins = ["${home}/.bun/bin", "${home}/.local/bin", "${home}/.cargo/bin", "${home}/go/bin"];
-  env.PATH = [...portableBins, existingPath ?? process.env.PATH ?? ""].filter(Boolean).join(path.delimiter);
+  const fallbackPath = platform() === "win32"
+    ? ["${home}/AppData/Roaming/npm", "C:/Program Files/nodejs", "C:/Windows/System32", "C:/Windows"]
+    : ["/usr/local/bin", "/usr/bin", "/bin"];
+  const portableBins = ["${home}/.bun/bin", "${home}/.local/bin", "${home}/.cargo/bin", "${home}/go/bin", ...fallbackPath];
+  env.PATH = [...portableBins, existingPath].filter(Boolean).join(path.delimiter);
   server.env = env;
 }
 
