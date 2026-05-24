@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.8";
+const VERSION = "0.3.9";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -987,12 +987,25 @@ async function copyManagedRunnerDependencies(binDir: string): Promise<void> {
   if (!packageRoot) return;
   const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as { dependencies?: Record<string, string> };
   for (const packageName of Object.keys(packageJson.dependencies ?? {})) {
-    const source = path.join(packageRoot, "node_modules", ...packageName.split("/"));
+    const source = await resolveInstalledDependency(packageRoot, packageName);
+    if (!source) continue;
     if (!(await pathExists(source))) continue;
     const target = path.join(binDir, "node_modules", ...packageName.split("/"));
     await rm(target, { recursive: true, force: true });
     await copyDirectory(source, target);
   }
+}
+
+async function resolveInstalledDependency(packageRoot: string, packageName: string): Promise<string | undefined> {
+  const parts = packageName.split("/");
+  const candidates = [
+    path.join(packageRoot, "node_modules", ...parts),
+    path.join(path.dirname(packageRoot), ...parts)
+  ];
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 async function findPackageRoot(startDir: string): Promise<string | undefined> {
