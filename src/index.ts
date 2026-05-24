@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.3";
+const VERSION = "0.3.4";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -586,6 +586,11 @@ function portableMcpLauncher(name: string, command: string, args: unknown[], sou
     return { command: "npx", args: ["-y", nodePackage.packageName, ...nodePackage.remainingArgs] };
   }
 
+  if (name === "discord-py-self" || commandName === "discord-py-self-mcp") {
+    const remainingArgs = allStrings(args) ? args as string[] : [];
+    return { command: "npx", args: ["-y", "discord-selfbot-mcp", ...remainingArgs] };
+  }
+
   if (name === "qmd" || commandName === "qmd") {
     const remainingArgs = allStrings(args) ? args as string[] : [];
     return { command: "npx", args: ["-y", "-p", "@tobilu/qmd", "qmd", ...remainingArgs] };
@@ -936,7 +941,7 @@ async function repairMcpLauncherIfNeeded(launcher: McpLaunchSpec | undefined, en
   } else if (launcher.repair.command === "__codexport_install_uv") {
     await installUv(env);
   } else {
-    await runCommandWithEnv(launcher.repair.command, launcher.repair.args, env);
+    await runRepairCommandWithEnv(launcher.repair.command, launcher.repair.args, env);
   }
   if (!(await executableExists(launcher.repair.whenMissing, env))) {
     throw new CliError(`MCP repair completed but ${launcher.repair.whenMissing} is still not on PATH.`, 1);
@@ -945,7 +950,7 @@ async function repairMcpLauncherIfNeeded(launcher: McpLaunchSpec | undefined, en
 
 async function installUv(env: NodeJS.ProcessEnv): Promise<void> {
   if (platform() === "win32") {
-    await runCommandWithEnv("powershell.exe", [
+    await runRepairCommandWithEnv("powershell.exe", [
       "-NoProfile",
       "-ExecutionPolicy",
       "Bypass",
@@ -953,7 +958,7 @@ async function installUv(env: NodeJS.ProcessEnv): Promise<void> {
       "irm https://astral.sh/uv/install.ps1 | iex"
     ], env);
   } else {
-    await runCommandWithEnv("sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], env);
+    await runRepairCommandWithEnv("sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], env);
   }
   const installHome = env.HOME ?? env.USERPROFILE ?? homedir();
   const uvBinDir = platform() === "win32"
@@ -1026,11 +1031,15 @@ async function repairGitquarryEnvIfNeeded(name: string, env: NodeJS.ProcessEnv):
 
   const installHome = env.HOME ?? env.USERPROFILE ?? homedir();
   const installDir = path.join(installHome, ".codexport", "tools", "gitquarry");
-  await ensureDir(installDir);
-  await runCommandWithEnv("npm", ["install", "--prefix", installDir, "gitquarry"], env);
   const binaryPath = platform() === "win32"
     ? path.join(installDir, "node_modules", ".bin", "gitquarry.cmd")
     : path.join(installDir, "node_modules", ".bin", "gitquarry");
+  if (await pathExists(binaryPath)) {
+    env.GITQUARRY_CLI_PATH = binaryPath;
+    return;
+  }
+  await ensureDir(installDir);
+  await runRepairCommandWithEnv("npm", ["install", "--prefix", installDir, "gitquarry"], env);
   if (!(await pathExists(binaryPath))) {
     throw new CliError("MCP repair installed gitquarry but could not find its npm shim.", 1);
   }
@@ -1105,6 +1114,24 @@ function runCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessE
     child.on("error", (error) => {
       const message = (error as NodeJS.ErrnoException).code === "ENOENT"
         ? `MCP launcher program not found: ${command}. Install it on this follower or add it to PATH.`
+        : asError(error).message;
+      reject(new CliError(message, 1));
+    });
+    child.on("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new CliError(`${command} ${args.join(" ")} exited with ${code}`, code ?? 1));
+    });
+  });
+}
+
+function runRepairCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env });
+    child.stdout.on("data", (chunk: Buffer) => process.stderr.write(chunk));
+    child.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
+    child.on("error", (error) => {
+      const message = (error as NodeJS.ErrnoException).code === "ENOENT"
+        ? `MCP repair program not found: ${command}. Install it on this follower or add it to PATH.`
         : asError(error).message;
       reject(new CliError(message, 1));
     });
