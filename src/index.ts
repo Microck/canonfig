@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.4.2";
+const VERSION = "0.4.3";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -1991,6 +1991,19 @@ async function commandHookSync(ctx: CliContext, options: { timeoutMs: number }):
   const logPath = path.join(ctx.stateDir, "logs", "hooks.log");
   try {
     await appendLog(logPath, `\n[${new Date().toISOString()}] hook sync start\n`);
+    const local = await readLocalConfig(ctx);
+    if (!local.masterUrl || !local.masterFingerprint) {
+      await appendLog(logPath, "hook sync skipped: follower is not enrolled\n");
+      return;
+    }
+    const meta = await fetchMeta(local.masterUrl, options.timeoutMs);
+    if (meta.fingerprint !== local.masterFingerprint) {
+      throw new CliError("Stored master fingerprint does not match the reachable master. Refusing hook sync.", 1);
+    }
+    if (local.lastRevision === meta.revision) {
+      await appendLog(logPath, `hook sync current: ${meta.revision}\n`);
+      return;
+    }
     await commandSync({ ...ctx, quiet: true }, { apply: true, timeoutMs: options.timeoutMs });
     await appendLog(logPath, "hook sync ok\n");
   } catch (error) {
