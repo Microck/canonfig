@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.1.6";
+const VERSION = "0.1.7";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -480,21 +480,20 @@ function rewritePortableTableKeys(table: Record<string, unknown>, sourceRoot?: s
 function rewritePortableMcpServer(_name: string, server: Record<string, unknown>, sourceRoot?: string, sourceHome?: string): void {
   if (typeof server.url === "string") return;
 
-  if (typeof server.command === "string" && Array.isArray(server.args)) {
-    const nodePackage = nodePackageFromServer(server.command, server.args);
-    if (nodePackage) {
-      server.command = "npx";
-      server.args = ["-y", nodePackage.packageName, ...nodePackage.remainingArgs.map((arg) => rewritePortablePath(arg, sourceRoot, sourceHome))];
-      return;
-    }
+  const command = typeof server.command === "string" ? server.command : undefined;
+  const args = Array.isArray(server.args) ? server.args : [];
+  const launcher = command ? portableMcpLauncher(_name, command, args, sourceHome) : undefined;
+  if (launcher) {
+    server.command = launcher.command;
+    server.args = launcher.args.map((arg) => rewritePortablePath(arg, sourceRoot, sourceHome));
+  } else if (command && isAbsoluteAnyPlatform(command)) {
+    server.enabled = false;
+  } else if (command) {
+    server.command = rewritePortableCommand(command, sourceRoot);
   }
 
-  if (typeof server.command === "string") {
-    server.command = rewritePortableCommand(server.command, sourceRoot);
-  }
-
-  if (Array.isArray(server.args)) {
-    server.args = server.args.map((arg) => typeof arg === "string" ? rewritePortablePath(arg, sourceRoot, sourceHome) : arg);
+  if (!launcher && args.length) {
+    server.args = args.map((arg) => typeof arg === "string" ? rewritePortablePath(arg, sourceRoot, sourceHome) : arg);
   }
 
   if (server.env && typeof server.env === "object" && !Array.isArray(server.env)) {
@@ -504,6 +503,39 @@ function rewritePortableMcpServer(_name: string, server: Record<string, unknown>
       }
     }
   }
+}
+
+function portableMcpLauncher(name: string, command: string, args: unknown[], sourceHome?: string): { command: string; args: string[] } | undefined {
+  const commandName = basenameAnyPlatform(command);
+  if (commandName === "npx" || commandName === "bunx" || commandName === "uvx") {
+    return allStrings(args) ? { command: commandName, args: args as string[] } : undefined;
+  }
+
+  const nodePackage = nodePackageFromServer(command, args) ?? workspacePackageFromServer(command, args, sourceHome);
+  if (nodePackage) {
+    return { command: "npx", args: ["-y", nodePackage.packageName, ...nodePackage.remainingArgs] };
+  }
+
+  const npmPackage = npmPackageForPortableMcp(name, commandName);
+  if (npmPackage) {
+    const remainingArgs = allStrings(args) ? args as string[] : [];
+    return { command: "npx", args: ["-y", npmPackage, ...remainingArgs] };
+  }
+
+  return undefined;
+}
+
+function npmPackageForPortableMcp(name: string, commandName: string): string | undefined {
+  const knownPackages: Record<string, string> = {
+    "dora": "dora",
+    "kagi-mcp": "kagi-mcp",
+    "opensrc-mcp": "opensrc-mcp",
+    "opensrc-mcp-stdio": "opensrc-mcp",
+    "perplexity-webui": "perplexity-webui-mcp",
+    "perplexity-webui-mcp": "perplexity-webui-mcp",
+    "reddit-mcp-buddy": "reddit-mcp-buddy"
+  };
+  return knownPackages[name] ?? knownPackages[commandName];
 }
 
 function rewritePortableCommand(command: string, sourceRoot?: string): string {
@@ -523,10 +555,26 @@ function nodePackageFromServer(command: string, args: unknown[]): { packageName:
   if (basenameAnyPlatform(command) !== "node") return undefined;
   const [entrypoint, ...remainingArgs] = args;
   if (typeof entrypoint !== "string" || !isAbsoluteAnyPlatform(entrypoint)) return undefined;
-  if (!remainingArgs.every((arg) => typeof arg === "string")) return undefined;
+  if (!allStrings(remainingArgs)) return undefined;
   const packageName = packageNameFromNodeModulesPath(entrypoint);
   if (!packageName) return undefined;
   return { packageName, remainingArgs: remainingArgs as string[] };
+}
+
+function workspacePackageFromServer(command: string, args: unknown[], sourceHome?: string): { packageName: string; remainingArgs: string[] } | undefined {
+  if (basenameAnyPlatform(command) !== "node") return undefined;
+  const [entrypoint, ...remainingArgs] = args;
+  if (!sourceHome || typeof entrypoint !== "string" || !isAbsoluteAnyPlatform(entrypoint) || !allStrings(remainingArgs)) return undefined;
+  const normalizedEntry = normalizePathForCompare(entrypoint);
+  const workspacePrefix = `${normalizePathForCompare(sourceHome)}/workspace/`;
+  if (!normalizedEntry.startsWith(workspacePrefix)) return undefined;
+  const packageName = normalizedEntry.slice(workspacePrefix.length).split("/")[0];
+  if (!packageName) return undefined;
+  return { packageName, remainingArgs: remainingArgs as string[] };
+}
+
+function allStrings(values: unknown[]): boolean {
+  return values.every((value) => typeof value === "string");
 }
 
 function packageNameFromNodeModulesPath(value: string): string | undefined {

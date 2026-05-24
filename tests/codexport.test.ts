@@ -86,13 +86,13 @@ describe("overlay application", () => {
     expect(merged).toContain('Authorization = "Bearer token"');
   });
 
-  it("rewrites master-local MCP commands to follower-portable launchers", () => {
+  it("uses npx for known portable MCP package commands", () => {
     const canonical = [
-      "[mcp_servers.search]",
-      'command = "/home/alice/.local/bin/search-mcp"',
+      "[mcp_servers.kagi-mcp]",
+      'command = "/home/alice/.local/bin/kagi-mcp"',
       'args = ["--index", "/home/alice/.codex/indexes/search.db"]',
       "",
-      "[mcp_servers.search.env]",
+      "[mcp_servers.kagi-mcp.env]",
       'SEARCH_CONFIG = "/home/alice/.codex/search/config.json"',
       'SEARCH_CACHE = "/home/alice/.cache/search"',
       ""
@@ -105,10 +105,30 @@ describe("overlay application", () => {
       "/home/alice/.codex"
     );
 
-    expect(merged).toContain('command = "search-mcp"');
-    expect(merged).toContain('args = [ "--index", "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/indexes/search.db" ]');
+    expect(merged).toContain('command = "npx"');
+    expect(merged).toContain('args = [ "-y", "kagi-mcp", "--index", "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/indexes/search.db" ]');
     expect(merged).toContain('SEARCH_CONFIG = "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/search/config.json"');
     expect(merged).toContain('SEARCH_CACHE = "C:\\\\\\\\Users\\\\\\\\bob\\\\/.cache/search"');
+  });
+
+  it("disables master-local MCP commands that have no portable launcher", () => {
+    const canonical = [
+      "[mcp_servers.search]",
+      'command = "/home/alice/.local/bin/search-mcp"',
+      'args = ["--index", "/home/alice/.codex/indexes/search.db"]',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(
+      canonical,
+      undefined,
+      { codexDir: "C:\\\\Users\\\\bob\\\\.codex" },
+      "/home/alice/.codex"
+    );
+
+    expect(merged).toContain('command = "/home/alice/.local/bin/search-mcp"');
+    expect(merged).toContain('enabled = false');
+    expect(merged).toContain('args = [ "--index", "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/indexes/search.db" ]');
   });
 
   it("preserves already portable MCP commands", () => {
@@ -162,6 +182,20 @@ describe("overlay application", () => {
 
     expect(merged).toContain('command = "npx"');
     expect(merged).toContain('args = [ "-y", "@scope/web-mcp", "--port", "3000" ]');
+  });
+
+  it("rewrites workspace-local node MCP entrypoints to npx packages", () => {
+    const canonical = [
+      "[mcp_servers.reddit-mcp-buddy]",
+      'command = "node"',
+      'args = ["/home/alice/workspace/reddit-mcp-buddy/dist/cli.js"]',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
+
+    expect(merged).toContain('command = "npx"');
+    expect(merged).toContain('args = [ "-y", "reddit-mcp-buddy" ]');
   });
 
   it("backs up and generates config.toml with follower-local MCPs", async () => {
