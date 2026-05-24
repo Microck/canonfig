@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.1.7";
+const VERSION = "0.1.8";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -482,7 +482,7 @@ function rewritePortableMcpServer(_name: string, server: Record<string, unknown>
 
   const command = typeof server.command === "string" ? server.command : undefined;
   const args = Array.isArray(server.args) ? server.args : [];
-  const launcher = command ? portableMcpLauncher(_name, command, args, sourceHome) : undefined;
+  const launcher = command && mcpHasRequiredPortableEnv(_name, command, server) ? portableMcpLauncher(_name, command, args, sourceHome) : undefined;
   if (launcher) {
     server.command = launcher.command;
     server.args = launcher.args.map((arg) => rewritePortablePath(arg, sourceRoot, sourceHome));
@@ -502,6 +502,10 @@ function rewritePortableMcpServer(_name: string, server: Record<string, unknown>
         (server.env as Record<string, unknown>)[key] = rewritePortablePath(value, sourceRoot, sourceHome);
       }
     }
+  }
+
+  if (typeof server.command === "string" && !server.url) {
+    ensurePortablePathEnv(server);
   }
 }
 
@@ -525,9 +529,23 @@ function portableMcpLauncher(name: string, command: string, args: unknown[], sou
   return undefined;
 }
 
+function mcpHasRequiredPortableEnv(name: string, command: string, server: Record<string, unknown>): boolean {
+  if (name !== "kagi-mcp" && basenameAnyPlatform(command) !== "kagi-mcp") return true;
+  const env = server.env && typeof server.env === "object" && !Array.isArray(server.env) ? server.env as Record<string, unknown> : undefined;
+  return typeof env?.KAGI_API_KEY === "string" && env.KAGI_API_KEY.length > 0;
+}
+
+function ensurePortablePathEnv(server: Record<string, unknown>): void {
+  const env = server.env && typeof server.env === "object" && !Array.isArray(server.env) ? server.env as Record<string, unknown> : {};
+  const existingPath = typeof env.PATH === "string" ? env.PATH : undefined;
+  const portableBins = ["${home}/.bun/bin", "${home}/.local/bin", "${home}/.cargo/bin", "${home}/go/bin"];
+  env.PATH = [...portableBins, existingPath ?? process.env.PATH ?? ""].filter(Boolean).join(path.delimiter);
+  server.env = env;
+}
+
 function npmPackageForPortableMcp(name: string, commandName: string): string | undefined {
   const knownPackages: Record<string, string> = {
-    "dora": "dora",
+    "dora": "@butttons/dora",
     "kagi-mcp": "kagi-mcp",
     "opensrc-mcp": "opensrc-mcp",
     "opensrc-mcp-stdio": "opensrc-mcp",

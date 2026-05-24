@@ -93,6 +93,7 @@ describe("overlay application", () => {
       'args = ["--index", "/home/alice/.codex/indexes/search.db"]',
       "",
       "[mcp_servers.kagi-mcp.env]",
+      'KAGI_API_KEY = "api-key"',
       'SEARCH_CONFIG = "/home/alice/.codex/search/config.json"',
       'SEARCH_CACHE = "/home/alice/.cache/search"',
       ""
@@ -143,6 +144,40 @@ describe("overlay application", () => {
 
     expect(merged).toContain('command = "npx"');
     expect(merged).toContain('args = [ "-y", "some-mcp" ]');
+  });
+
+  it("adds common follower user-bin directories to command MCP PATH", () => {
+    const canonical = [
+      "[mcp_servers.dora]",
+      'command = "/home/alice/.bun/bin/dora"',
+      'args = ["mcp"]',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
+
+    expect(merged).toContain('command = "npx"');
+    expect(merged).toContain('args = [ "-y", "@butttons/dora", "mcp" ]');
+    expect(merged).toContain('PATH = "');
+    expect(merged).toContain(".bun/bin");
+    expect(merged).toContain(".local/bin");
+  });
+
+  it("disables npm-backed MCPs when synced env cannot satisfy the package contract", () => {
+    const canonical = [
+      "[mcp_servers.kagi-mcp]",
+      'command = "/home/alice/.local/bin/kagi-mcp"',
+      "",
+      "[mcp_servers.kagi-mcp.env]",
+      'KAGI_SESSION_TOKEN = "session-only"',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
+
+    expect(merged).toContain('command = "/home/alice/.local/bin/kagi-mcp"');
+    expect(merged).toContain("enabled = false");
+    expect(merged).toContain('KAGI_SESSION_TOKEN = "session-only"');
   });
 
   it("rewrites master-local project trust paths to follower paths", () => {
