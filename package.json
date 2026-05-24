@@ -24,7 +24,7 @@
     "automation"
   ],
   "bin": {
-    "codexport": "./dist/index.js"
+    "codexport": "dist/index.js"
   },
   "files": [
     "dist",
