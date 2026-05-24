@@ -1,6 +1,6 @@
 {
   "name": "codexport",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "sync a canonical Codex setup from one master machine to follower machines",
   "author": "Microck <contact@micr.dev>",
   "license": "MIT",

@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.11";
+const VERSION = "0.3.12";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -1273,7 +1273,17 @@ function runCommand(command: string, args: string[]): Promise<void> {
 
 function runCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "inherit", env });
+    const child = spawn(command, args, { stdio: ["inherit", "pipe", "pipe"], env });
+    let stdoutBuffer = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutBuffer += chunk.toString("utf8");
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        writeMcpStdoutLine(line);
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
     child.on("error", (error) => {
       const message = (error as NodeJS.ErrnoException).code === "ENOENT"
         ? `MCP launcher program not found: ${command}. Install it on this follower or add it to PATH.`
@@ -1281,10 +1291,17 @@ function runCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessE
       reject(new CliError(message, 1));
     });
     child.on("exit", (code) => {
+      if (stdoutBuffer) writeMcpStdoutLine(stdoutBuffer);
       if (code === 0) resolve();
       else reject(new CliError(`${command} ${args.join(" ")} exited with ${code}`, code ?? 1));
     });
   });
+}
+
+function writeMcpStdoutLine(line: string): void {
+  const trimmed = line.trimStart();
+  const target = trimmed.startsWith("{") || trimmed.startsWith("[") ? process.stdout : process.stderr;
+  target.write(`${line}\n`);
 }
 
 function runRepairCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
