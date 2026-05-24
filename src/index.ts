@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -123,7 +123,7 @@ interface McpLaunchSpec {
   repair?: McpRepairSpec;
 }
 
-type McpArtifact = NpmMcpArtifact | UvMcpArtifact | NodeSourceMcpArtifact;
+type McpArtifact = NpmMcpArtifact | UvMcpArtifact | NodeSourceMcpArtifact | PythonSourceMcpArtifact;
 
 interface NpmMcpArtifact {
   kind: "npm";
@@ -144,6 +144,14 @@ interface NodeSourceMcpArtifact {
   kind: "node-source";
   command: "node" | "bun";
   entrypoint: string;
+  args: string[];
+  files: FileEntry[];
+  hash: string;
+}
+
+interface PythonSourceMcpArtifact {
+  kind: "python-source";
+  binary: string;
   args: string[];
   files: FileEntry[];
   hash: string;
@@ -358,7 +366,7 @@ function computeRevision(files: FileEntry[], sourceEnv: Record<string, string> =
   }));
   const normalizedArtifacts = Object.fromEntries(Object.entries(mcpArtifacts).map(([name, artifact]) => [
     name,
-    artifact.kind === "node-source"
+    artifact.kind === "node-source" || artifact.kind === "python-source"
       ? { ...artifact, files: artifact.files.map((file) => ({ path: file.path, mode: file.mode, kind: file.kind, contentHash: sha256(Buffer.from(file.content, "base64")) })) }
       : artifact
   ]));
@@ -479,7 +487,7 @@ function verifyBundle(bundle: Bundle): void {
     }
   }
   for (const [name, artifact] of Object.entries(bundle.mcpArtifacts ?? {})) {
-    if (artifact.kind !== "node-source") continue;
+    if (artifact.kind !== "node-source" && artifact.kind !== "python-source") continue;
     for (const file of artifact.files) {
       if (path.isAbsolute(file.path) || file.path.includes("..") || file.path.includes("\\")) {
         throw new CliError(`MCP artifact ${name} contains unsafe path: ${file.path}`, 1);
@@ -668,7 +676,7 @@ async function inferNpmArtifactFromEntrypoint(name: string, entrypoint: string, 
   };
 }
 
-async function inferUvArtifactFromCommandPath(commandPath: string, binary: string, args: string[]): Promise<UvMcpArtifact | undefined> {
+async function inferUvArtifactFromCommandPath(commandPath: string, binary: string, args: string[]): Promise<UvMcpArtifact | PythonSourceMcpArtifact | undefined> {
   const normalized = normalizePathForCompare(commandPath);
   const marker = "/.local/share/uv/tools/";
   const markerIndex = normalized.indexOf(marker);
@@ -677,8 +685,29 @@ async function inferUvArtifactFromCommandPath(commandPath: string, binary: strin
   const toolName = afterMarker.split("/")[0];
   if (!toolName) return undefined;
   const toolRoot = normalized.slice(0, markerIndex + marker.length + toolName.length);
+  const localSource = await inferUvLocalSource(toolRoot);
+  if (localSource) {
+    const files = await collectArtifactFiles(localSource);
+    if (files?.length) {
+      return { kind: "python-source", binary, args, files, hash: computeArtifactFilesHash(files) };
+    }
+  }
   const from = await inferUvFromSpec(toolRoot, commandPath, toolName);
   return { kind: "uv", from, binary, args };
+}
+
+async function inferUvLocalSource(toolRoot: string): Promise<string | undefined> {
+  const directUrl = await firstFileUnder(toolRoot, "direct_url.json");
+  if (!directUrl) return undefined;
+  try {
+    const parsed = JSON.parse(await readFile(directUrl, "utf8")) as { url?: string };
+    if (!parsed.url?.startsWith("file:")) return undefined;
+    const localPath = fileURLToPath(parsed.url);
+    if (await pathExists(path.join(localPath, "pyproject.toml"))) return localPath;
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 async function inferUvFromSpec(toolRoot: string, commandPath: string, fallback: string): Promise<string> {
@@ -791,6 +820,7 @@ async function walkArtifact(root: string, absolute: string, files: FileEntry[], 
   if (relative) {
     const parts = relative.split("/");
     if (parts.some((part) => part === "node_modules" || part === ".git" || part === ".jj" || part === ".venv" || part === "venv" || part === "__pycache__" || part.endsWith(".egg-info") || shouldExclude(relative))) return;
+    if (isSkippableArtifactFile(relative)) return;
   }
   const entryStat = await lstat(absolute);
   if (entryStat.isDirectory()) {
@@ -811,6 +841,11 @@ async function walkArtifact(root: string, absolute: string, files: FileEntry[], 
     kind: "file",
     content: (await readFile(absolute)).toString("base64")
   });
+}
+
+function isSkippableArtifactFile(relativePath: string): boolean {
+  const lower = relativePath.toLowerCase();
+  return [".mp4", ".mov", ".webm", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".tgz", ".gz", ".7z", ".rar"].some((extension) => lower.endsWith(extension));
 }
 
 function computeArtifactFilesHash(files: FileEntry[]): string {
@@ -1415,7 +1450,13 @@ async function runMcpArtifact(ctx: CliContext, artifact: McpArtifact, env: NodeJ
     await runCommandWithEnv("uvx", ["--from", artifact.from, artifact.binary, ...rewriteArtifactArgs(artifact.args, localConfig, sourceRoot, sourceHome)], env);
     return;
   }
-  const sourceDir = await hydrateNodeSourceArtifact(ctx, artifact);
+  if (artifact.kind === "python-source") {
+    await repairMcpLauncherIfNeeded({ command: "uvx", args: [], repair: { whenMissing: "uvx", command: "__codexport_install_uv", args: [] } }, env);
+    const sourceDir = await hydrateSourceArtifact(ctx, "python", artifact.hash, artifact.files);
+    await runCommandWithEnv("uvx", ["--from", sourceDir, artifact.binary, ...rewriteArtifactArgs(artifact.args, localConfig, sourceRoot, sourceHome)], env);
+    return;
+  }
+  const sourceDir = await hydrateSourceArtifact(ctx, "node", artifact.hash, artifact.files);
   const entrypoint = path.join(sourceDir, artifact.entrypoint);
   await ensureNodeSourceDependencies(sourceDir, env);
   await runCommandWithEnv(artifact.command, [entrypoint, ...rewriteArtifactArgs(artifact.args, localConfig, sourceRoot, sourceHome)], env);
@@ -1431,7 +1472,11 @@ async function prepareNpmArtifact(ctx: CliContext, artifact: NpmMcpArtifact, env
   const binaryPath = path.join(binDir, platform() === "win32" ? `${artifact.binary}.cmd` : artifact.binary);
   if (!(await pathExists(binaryPath))) {
     await ensureDir(installDir);
-    await runRepairCommandWithEnv("npm", ["install", "--prefix", installDir, "--no-audit", "--no-fund", "--save-exact", ...artifact.packages], env);
+    try {
+      await runRepairCommandWithEnv("npm", ["install", "--prefix", installDir, "--no-audit", "--no-fund", "--save-exact", ...artifact.packages], env);
+    } catch {
+      await runRepairCommandWithEnv("npm", ["install", "--prefix", installDir, "--no-audit", "--no-fund", "--save-exact", "node-gyp", "node-addon-api", ...artifact.packages], env);
+    }
   }
   if (!(await pathExists(binaryPath))) {
     throw new CliError(`MCP npm artifact install completed but ${artifact.binary} was not created in ${binDir}.`, 1);
@@ -1439,17 +1484,17 @@ async function prepareNpmArtifact(ctx: CliContext, artifact: NpmMcpArtifact, env
   return { command: binaryPath, args: artifact.args };
 }
 
-async function hydrateNodeSourceArtifact(ctx: CliContext, artifact: NodeSourceMcpArtifact): Promise<string> {
-  const targetDir = path.join(ctx.stateDir, "mcp-artifacts", "source", artifact.hash);
+async function hydrateSourceArtifact(ctx: CliContext, kind: "node" | "python", hash: string, files: FileEntry[]): Promise<string> {
+  const targetDir = path.join(ctx.stateDir, "mcp-artifacts", "source", kind, hash);
   const markerPath = path.join(targetDir, ".codexport-artifact-hash");
-  if ((await readTextIfExists(markerPath))?.trim() === artifact.hash) return targetDir;
+  if ((await readTextIfExists(markerPath))?.trim() === hash) return targetDir;
   await rm(targetDir, { recursive: true, force: true });
-  for (const file of artifact.files) {
+  for (const file of files) {
     const target = path.join(targetDir, file.path);
     await ensureDir(path.dirname(target));
     await writeFileReplacingExisting(target, Buffer.from(file.content, "base64"), { mode: file.mode });
   }
-  await writeFile(markerPath, `${artifact.hash}\n`, "utf8");
+  await writeFile(markerPath, `${hash}\n`, "utf8");
   return targetDir;
 }
 

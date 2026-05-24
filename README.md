@@ -133,6 +133,7 @@ when Codex starts an MCP, `codexport mcp run` reads the original manifest entry,
 | --- | --- |
 | npm package shims or `node .../node_modules/...` | install and run the inferred npm package/bin |
 | Python uv tool shims | run with `uvx --from <package-or-url> <binary>` and install `uv` when missing |
+| editable/local Python uv tools | copy the source artifact to `~/.codexport/mcp-artifacts` and run it with `uvx --from <artifact>` |
 | local Node package source | copy the source artifact to `~/.codexport/mcp-artifacts`, install production deps, and run the original entrypoint |
 | FFF MCP | download the matching upstream release binary when missing |
 | GitQuarry MCP | build `gitquarry-mcp` from its public source when missing and repair `GITQUARRY_CLI_PATH` |
