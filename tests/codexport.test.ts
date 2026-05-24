@@ -306,6 +306,31 @@ describe("overlay application", () => {
     expect(await readFile(path.join(codex, "AGENTS.md"), "utf8")).toBe("rules\n");
   });
 
+  it("copies transitive dependencies for the managed runner", async () => {
+    const root = await tempDir("runner-deps");
+    const home = path.join(root, "home");
+    const codex = path.join(home, ".codex");
+    const state = path.join(home, ".codexport");
+    await mkdir(codex, { recursive: true });
+    await mkdir(state, { recursive: true });
+    const bundle = {
+      version: 1 as const,
+      builtAt: new Date().toISOString(),
+      sourceRoot: codex,
+      revision: "",
+      files: [
+        { path: "config.toml", mode: 0o644, kind: "file" as const, content: Buffer.from("[mcp_servers.github]\ncommand = \"github\"\n").toString("base64") }
+      ]
+    };
+    bundle.revision = computeRevision(bundle.files);
+    const ctx = defaultContext({ home, codexDir: codex });
+
+    await applyBundle(ctx, bundle);
+
+    await expect(readFile(path.join(state, "bin", "node_modules", "chokidar", "package.json"), "utf8")).resolves.toContain('"name": "chokidar"');
+    await expect(readFile(path.join(state, "bin", "node_modules", "readdirp", "package.json"), "utf8")).resolves.toContain('"name": "readdirp"');
+  });
+
   it("removes stale files only when a prior apply owned them", async () => {
     const root = await tempDir("stale");
     const home = path.join(root, "home");

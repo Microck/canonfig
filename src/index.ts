@@ -986,26 +986,48 @@ async function copyManagedRunnerDependencies(binDir: string): Promise<void> {
   const packageRoot = await findPackageRoot(path.dirname(fileURLToPath(import.meta.url)));
   if (!packageRoot) return;
   const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as { dependencies?: Record<string, string> };
+  const copied = new Set<string>();
   for (const packageName of Object.keys(packageJson.dependencies ?? {})) {
-    const source = await resolveInstalledDependency(packageRoot, packageName);
-    if (!source) continue;
-    if (!(await pathExists(source))) continue;
-    const target = path.join(binDir, "node_modules", ...packageName.split("/"));
-    await rm(target, { recursive: true, force: true });
-    await copyDirectory(source, target);
+    await copyManagedRunnerDependency(packageRoot, binDir, packageName, copied);
   }
 }
 
-async function resolveInstalledDependency(packageRoot: string, packageName: string): Promise<string | undefined> {
-  const parts = packageName.split("/");
-  const candidates = [
-    path.join(packageRoot, "node_modules", ...parts),
-    path.join(path.dirname(packageRoot), ...parts)
-  ];
-  for (const candidate of candidates) {
-    if (await pathExists(candidate)) return candidate;
+async function copyManagedRunnerDependency(fromRoot: string, binDir: string, packageName: string, copied: Set<string>): Promise<void> {
+  if (copied.has(packageName)) return;
+  copied.add(packageName);
+  const source = await resolveInstalledDependency(fromRoot, packageName);
+  if (!source || !(await pathExists(source))) return;
+
+  const target = path.join(binDir, "node_modules", ...packageName.split("/"));
+  await rm(target, { recursive: true, force: true });
+  await copyDirectory(source, target);
+
+  const packageJsonPath = path.join(source, "package.json");
+  if (!(await pathExists(packageJsonPath))) return;
+  const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
+    dependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+  };
+  for (const childName of Object.keys({ ...(packageJson.dependencies ?? {}), ...(packageJson.optionalDependencies ?? {}) })) {
+    await copyManagedRunnerDependency(source, binDir, childName, copied);
   }
-  return undefined;
+}
+
+async function resolveInstalledDependency(fromRoot: string, packageName: string): Promise<string | undefined> {
+  const parts = packageName.split("/");
+  let current = fromRoot;
+  while (true) {
+    const candidates = [
+      path.join(current, "node_modules", ...parts),
+      basenameAnyPlatform(current) === "node_modules" ? path.join(current, ...parts) : undefined
+    ].filter(Boolean) as string[];
+    for (const candidate of candidates) {
+      if (await pathExists(candidate)) return candidate;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
 }
 
 async function findPackageRoot(startDir: string): Promise<string | undefined> {
