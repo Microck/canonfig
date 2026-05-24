@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.5";
+const VERSION = "0.3.6";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -23,7 +23,7 @@ const LAST_BUNDLE_FILE = "last-bundle.json";
 const CACHE_BUNDLE_FILE = "bundle.json";
 const APPLIED_FILES_FILE = "applied-files.json";
 const MCP_MANIFEST_FILE = "mcp-manifest.json";
-const MANAGED_MCP_PACKAGE = "codexport@latest";
+const MANAGED_MCP_RUNNER_FILE = "codexport-mcp-run.mjs";
 
 const INCLUDE_ROOTS = [
   "AGENTS.md",
@@ -548,9 +548,8 @@ function rewritePortableTableKeys(table: Record<string, unknown>, sourceRoot?: s
 function rewriteManagedMcpServer(name: string, server: Record<string, unknown>, sourceRoot?: string, sourceHome?: string): void {
   if (typeof server.url === "string") return;
 
-  const args = Array.isArray(server.args) ? server.args : [];
-  server.command = "npx";
-  server.args = ["-y", MANAGED_MCP_PACKAGE, "mcp", "run", name];
+  server.command = "${node}";
+  server.args = ["${codexportMcpRunner}", "mcp", "run", name];
 
   if (server.env && typeof server.env === "object" && !Array.isArray(server.env)) {
     for (const [key, value] of Object.entries(server.env as Record<string, unknown>)) {
@@ -854,6 +853,7 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
   const localConfig = await readLocalConfig(ctx);
   await assertSkillConflicts(ctx, bundle, localConfig);
   await ensureDir(ctx.codexDir);
+  const managedMcpRunner = await writeManagedMcpRunner(ctx);
 
   const nextFiles = new Set(bundle.files.map((file) => file.path));
   const previousFiles = await readJsonIfExists<string[]>(path.join(ctx.stateDir, APPLIED_FILES_FILE)) ?? [];
@@ -879,7 +879,21 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
     if (manifest) {
       await writeJsonAtomic(path.join(ctx.stateDir, MCP_MANIFEST_FILE), manifest as unknown as Json);
     }
-    const generated = mergeTomlText(canonicalConfig, localMcpText, { ...localConfig, codexDir: ctx.codexDir }, bundle.sourceRoot, bundle.sourceEnv);
+    const generated = mergeTomlText(
+      canonicalConfig,
+      localMcpText,
+      {
+        ...localConfig,
+        codexDir: ctx.codexDir,
+        pathVariables: {
+          ...(localConfig.pathVariables ?? {}),
+          node: process.execPath,
+          codexportMcpRunner: managedMcpRunner
+        }
+      },
+      bundle.sourceRoot,
+      bundle.sourceEnv
+    );
     const configPath = path.join(ctx.codexDir, "config.toml");
     if (await pathExists(configPath)) {
       const backupPath = `${configPath}.codexport-backup-${new Date().toISOString().replace(/[:.]/g, "-")}`;
@@ -897,6 +911,15 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
 
   await writeLocalConfig(ctx, { ...localConfig, lastRevision: bundle.revision, codexDir: ctx.codexDir });
   await writeJsonAtomic(path.join(ctx.stateDir, APPLIED_FILES_FILE), bundle.files.map((file) => file.path) as unknown as Json);
+}
+
+async function writeManagedMcpRunner(ctx: CliContext): Promise<string> {
+  const binDir = path.join(ctx.stateDir, "bin");
+  const runnerPath = path.join(binDir, MANAGED_MCP_RUNNER_FILE);
+  await ensureDir(binDir);
+  await writeFileReplacingExisting(runnerPath, await readFile(fileURLToPath(import.meta.url)), { mode: 0o755 });
+  if (platform() !== "win32") await chmod(runnerPath, 0o755);
+  return runnerPath;
 }
 
 async function commandMcpRun(ctx: CliContext, name: string): Promise<void> {
@@ -1099,7 +1122,7 @@ async function installHook(ctx: CliContext, timeoutMs: number): Promise<void> {
   const existingText = await readTextIfExists(hooksPath);
   const existing = existingText ? JSON.parse(existingText) as Record<string, unknown> : {};
   const hooks = existing.SessionStart && Array.isArray(existing.SessionStart) ? existing.SessionStart as unknown[] : [];
-  const command = `codexport sync --apply --timeout-ms ${timeoutMs} --no-input`;
+  const command = `codexport hook sync --timeout-ms ${timeoutMs} --no-input`;
   const filtered = hooks.filter((hook) => !(hook && typeof hook === "object" && (hook as { name?: unknown }).name === "codexport-sync"));
   filtered.push({ name: "codexport-sync", command, timeoutMs });
   await writeJsonAtomic(hooksPath, { ...existing, SessionStart: filtered } as unknown as Json);
@@ -1334,6 +1357,16 @@ async function commandSync(ctx: CliContext, options: { apply: boolean; timeoutMs
   }
 }
 
+async function commandHookSync(ctx: CliContext, options: { timeoutMs: number }): Promise<void> {
+  try {
+    await commandSync(ctx, { apply: true, timeoutMs: options.timeoutMs });
+  } catch (error) {
+    if (!ctx.quiet) {
+      process.stderr.write(`codexport hook sync skipped: ${asError(error).message}\n`);
+    }
+  }
+}
+
 async function commandApply(ctx: CliContext): Promise<void> {
   const bundle = await readCachedBundle(ctx);
   await applyBundle(ctx, bundle);
@@ -1440,8 +1473,12 @@ async function main(argv: string[]): Promise<void> {
     .action(async (options, command) => {
       const ctx = contextFromCommand(command);
       await installHook(ctx, options.timeoutMs);
-      print(ctx, { installed: true, hook: "SessionStart", command: `codexport sync --apply --timeout-ms ${options.timeoutMs} --no-input` });
+      print(ctx, { installed: true, hook: "SessionStart", command: `codexport hook sync --timeout-ms ${options.timeoutMs} --no-input` });
     });
+  hook.command("sync")
+    .description("Best-effort follower sync for Codex SessionStart hooks.")
+    .option("--timeout-ms <ms>", "hook sync timeout", parsePositiveInt, 3_000)
+    .action(async (options, command) => commandHookSync(contextFromCommand(command), options));
   program.command("status")
     .description("Show local enrollment state and remote revision reachability.")
     .option("--timeout-ms <ms>", "network timeout", parsePositiveInt, 1_500)

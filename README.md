@@ -12,7 +12,7 @@
 
 the master serves a content-hashed bundle from its `~/.codex` directory. followers pin the master's fingerprint on join, fetch updates over a Tailscale-reachable HTTP address, and apply updates at Codex `SessionStart` through a short best-effort hook.
 
-MCPs are exported as full definitions, including env needed by supported tools. command-based MCPs are written through a managed launcher, so followers run `npx -y codexport@latest mcp run <name>` and let `codexport` translate master-local paths into repairable package, Python tool, or source-built launchers.
+MCPs are exported as full definitions, including env needed by supported tools. command-based MCPs are written through a quiet local managed launcher, so followers run `node ~/.codexport/bin/codexport-mcp-run.mjs mcp run <name>` and let `codexport` translate master-local paths into repairable package, Python tool, or source-built launchers.
 
 [npm](https://www.npmjs.com/package/codexport) | [github](https://github.com/Microck/codexport)
 
@@ -123,8 +123,8 @@ all master MCP definitions are exported into `~/.codexport/mcp-manifest.json` on
 
 ```toml
 [mcp_servers.example]
-command = "npx"
-args = [ "-y", "codexport@latest", "mcp", "run", "example" ]
+command = "node"
+args = [ "~/.codexport/bin/codexport-mcp-run.mjs", "mcp", "run", "example" ]
 ```
 
 when Codex starts an MCP, `codexport mcp run` reads the original manifest entry, restores transferred environment values, rewrites master paths to follower paths, and chooses a runnable target:
