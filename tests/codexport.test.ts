@@ -70,6 +70,100 @@ describe("overlay application", () => {
     expect(merged).toContain('unknown = "${keepMe}"');
   });
 
+  it("keeps remote MCP servers unchanged", () => {
+    const canonical = [
+      "[mcp_servers.github]",
+      'url = "https://api.githubcopilot.com/mcp/"',
+      "",
+      "[mcp_servers.github.headers]",
+      'Authorization = "Bearer token"',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(canonical, undefined, {});
+
+    expect(merged).toContain('url = "https://api.githubcopilot.com/mcp/"');
+    expect(merged).toContain('Authorization = "Bearer token"');
+  });
+
+  it("rewrites master-local MCP commands to follower-portable launchers", () => {
+    const canonical = [
+      "[mcp_servers.search]",
+      'command = "/home/alice/.local/bin/search-mcp"',
+      'args = ["--index", "/home/alice/.codex/indexes/search.db"]',
+      "",
+      "[mcp_servers.search.env]",
+      'SEARCH_CONFIG = "/home/alice/.codex/search/config.json"',
+      'SEARCH_CACHE = "/home/alice/.cache/search"',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(
+      canonical,
+      undefined,
+      { codexDir: "C:\\\\Users\\\\bob\\\\.codex" },
+      "/home/alice/.codex"
+    );
+
+    expect(merged).toContain('command = "search-mcp"');
+    expect(merged).toContain('args = [ "--index", "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/indexes/search.db" ]');
+    expect(merged).toContain('SEARCH_CONFIG = "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/search/config.json"');
+    expect(merged).toContain('SEARCH_CACHE = "C:\\\\\\\\Users\\\\\\\\bob\\\\/.cache/search"');
+  });
+
+  it("preserves already portable MCP commands", () => {
+    const canonical = [
+      "[mcp_servers.package]",
+      'command = "npx"',
+      'args = ["-y", "some-mcp"]',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(canonical, undefined, {});
+
+    expect(merged).toContain('command = "npx"');
+    expect(merged).toContain('args = [ "-y", "some-mcp" ]');
+  });
+
+  it("rewrites master-local project trust paths to follower paths", () => {
+    const canonical = [
+      "[projects.\"/home/alice/workspace/app\"]",
+      'trust_level = "trusted"',
+      "",
+      "[projects.\"/home/alice/.codex\"]",
+      'trust_level = "trusted"',
+      "",
+      "[hooks.state.\"/home/alice/.codex/hooks.json:stop:0:0\"]",
+      'last_exit = 0',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(
+      canonical,
+      undefined,
+      { codexDir: "C:\\\\Users\\\\bob\\\\.codex" },
+      "/home/alice/.codex"
+    );
+
+    expect(merged).toContain('[projects."C:\\\\\\\\Users\\\\\\\\bob\\\\/workspace/app"]');
+    expect(merged).toContain('[projects."C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex"]');
+    expect(merged).toContain('[hooks.state."C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/hooks.json:stop:0:0"]');
+  });
+
+  it("rewrites node_modules MCP entrypoints to npx packages", () => {
+    const canonical = [
+      "[mcp_servers.web]",
+      'command = "/home/alice/.nvm/versions/node/v24.0.0/bin/node"',
+      'args = ["/home/alice/.nvm/versions/node/v24.0.0/lib/node_modules/@scope/web-mcp/dist/index.js", "--port", "3000"]',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(canonical, undefined, {});
+
+    expect(merged).toContain('command = "npx"');
+    expect(merged).toContain('args = [ "-y", "@scope/web-mcp", "--port", "3000" ]');
+  });
+
   it("backs up and generates config.toml with follower-local MCPs", async () => {
     const root = await tempDir("apply");
     const home = path.join(root, "home");

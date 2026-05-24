@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.1.4";
+const VERSION = "0.1.5";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -400,8 +400,8 @@ function extractTomlTableNames(text: string, prefix: string): Set<string> {
   return names;
 }
 
-function mergeTomlText(canonical: string, localMcpText: string | undefined, localConfig: LocalConfig): string {
-  const expandedCanonical = expandPathVariables(canonical, localConfig);
+function mergeTomlText(canonical: string, localMcpText: string | undefined, localConfig: LocalConfig, sourceRoot?: string): string {
+  const expandedCanonical = expandPathVariables(rewritePortableConfig(canonical, sourceRoot), localConfig);
   if (!localMcpText?.trim()) return expandedCanonical;
   const canonicalMcps = extractTomlTableNames(canonical, "mcp_servers");
   const localMcps = extractTomlTableNames(localMcpText, "mcp_servers");
@@ -413,10 +413,171 @@ function mergeTomlText(canonical: string, localMcpText: string | undefined, loca
   return `${expandedCanonical.trimEnd()}\n\n# Follower-local MCP overlay from ~/.codexport/mcps.local.toml\n${localMcpText.trim()}\n`;
 }
 
+function rewritePortableConfig(canonical: string, sourceRoot?: string): string {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseTomlObject(canonical, "canonical config.toml");
+  } catch {
+    return canonical;
+  }
+  const sourceHome = inferHomeFromCodexDir(sourceRoot);
+  const mcpServers = parsed.mcp_servers;
+  if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) {
+    rewritePortableTableKeys(parsed, sourceRoot, sourceHome);
+    return stringifyToml(parsed as Record<string, Json>);
+  }
+
+  rewritePortableTableKeys(parsed, sourceRoot, sourceHome);
+  for (const [name, rawServer] of Object.entries(mcpServers as Record<string, unknown>)) {
+    if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) continue;
+    const server = rawServer as Record<string, unknown>;
+    rewritePortableMcpServer(name, server, sourceRoot, sourceHome);
+  }
+
+  return stringifyToml(parsed as Record<string, Json>);
+}
+
+function rewritePortableTableKeys(table: Record<string, unknown>, sourceRoot?: string, sourceHome?: string): void {
+  const rewritten: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(table)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      rewritePortableTableKeys(value as Record<string, unknown>, sourceRoot, sourceHome);
+    }
+    rewritten[rewritePortablePath(key, sourceRoot, sourceHome)] = value;
+  }
+  for (const key of Object.keys(table)) {
+    delete table[key];
+  }
+  for (const [key, value] of Object.entries(rewritten)) {
+    table[key] = value;
+  }
+}
+
+function rewritePortableMcpServer(_name: string, server: Record<string, unknown>, sourceRoot?: string, sourceHome?: string): void {
+  if (typeof server.url === "string") return;
+
+  if (typeof server.command === "string" && Array.isArray(server.args)) {
+    const nodePackage = nodePackageFromServer(server.command, server.args);
+    if (nodePackage) {
+      server.command = "npx";
+      server.args = ["-y", nodePackage.packageName, ...nodePackage.remainingArgs.map((arg) => rewritePortablePath(arg, sourceRoot, sourceHome))];
+      return;
+    }
+  }
+
+  if (typeof server.command === "string") {
+    server.command = rewritePortableCommand(server.command, sourceRoot);
+  }
+
+  if (Array.isArray(server.args)) {
+    server.args = server.args.map((arg) => typeof arg === "string" ? rewritePortablePath(arg, sourceRoot, sourceHome) : arg);
+  }
+
+  if (server.env && typeof server.env === "object" && !Array.isArray(server.env)) {
+    for (const [key, value] of Object.entries(server.env as Record<string, unknown>)) {
+      if (typeof value === "string") {
+        (server.env as Record<string, unknown>)[key] = rewritePortablePath(value, sourceRoot, sourceHome);
+      }
+    }
+  }
+}
+
+function rewritePortableCommand(command: string, sourceRoot?: string): string {
+  const sourceRelative = rewriteSourceRootPath(command, sourceRoot);
+  if (sourceRelative !== command) return sourceRelative;
+  if (!isAbsoluteAnyPlatform(command)) return command;
+  return basenameAnyPlatform(command);
+}
+
+function rewritePortablePath(value: string, sourceRoot?: string, sourceHome?: string): string {
+  const sourceRootPath = rewriteSourceRootPath(value, sourceRoot);
+  if (sourceRootPath !== value) return sourceRootPath;
+  return rewriteSourceHomePath(value, sourceHome);
+}
+
+function nodePackageFromServer(command: string, args: unknown[]): { packageName: string; remainingArgs: string[] } | undefined {
+  if (basenameAnyPlatform(command) !== "node") return undefined;
+  const [entrypoint, ...remainingArgs] = args;
+  if (typeof entrypoint !== "string" || !isAbsoluteAnyPlatform(entrypoint)) return undefined;
+  if (!remainingArgs.every((arg) => typeof arg === "string")) return undefined;
+  const packageName = packageNameFromNodeModulesPath(entrypoint);
+  if (!packageName) return undefined;
+  return { packageName, remainingArgs: remainingArgs as string[] };
+}
+
+function packageNameFromNodeModulesPath(value: string): string | undefined {
+  const parts = normalizePathForCompare(value).split("/");
+  const nodeModulesIndex = parts.lastIndexOf("node_modules");
+  if (nodeModulesIndex === -1) return undefined;
+  const first = parts[nodeModulesIndex + 1];
+  if (!first) return undefined;
+  if (first.startsWith("@")) {
+    const second = parts[nodeModulesIndex + 2];
+    return second ? `${first}/${second}` : undefined;
+  }
+  return first;
+}
+
+function inferHomeFromCodexDir(sourceRoot?: string): string | undefined {
+  if (!sourceRoot || basenameAnyPlatform(sourceRoot) !== ".codex") return undefined;
+  const normalized = normalizePathForCompare(sourceRoot);
+  return normalized.slice(0, -"/.codex".length);
+}
+
+function rewriteSourceRootPath(value: string, sourceRoot?: string): string {
+  if (!sourceRoot || !isAbsoluteAnyPlatform(value)) return value;
+  const normalizedSourceRoot = normalizePathForCompare(sourceRoot);
+  const normalizedValue = normalizePathForCompare(value);
+  if (normalizedValue === normalizedSourceRoot) return "${codexDir}";
+  if (!normalizedValue.startsWith(`${normalizedSourceRoot}/`)) return value;
+  const relative = normalizedValue.slice(normalizedSourceRoot.length + 1);
+  return `\${codexDir}/${relative}`;
+}
+
+function rewriteSourceHomePath(value: string, sourceHome?: string): string {
+  if (!sourceHome || !isAbsoluteAnyPlatform(value)) return value;
+  const normalizedSourceHome = normalizePathForCompare(sourceHome);
+  const normalizedValue = normalizePathForCompare(value);
+  if (normalizedValue === normalizedSourceHome) return "${home}";
+  if (!normalizedValue.startsWith(`${normalizedSourceHome}/`)) return value;
+  const relative = normalizedValue.slice(normalizedSourceHome.length + 1);
+  return `\${home}/${relative}`;
+}
+
+function isAbsoluteAnyPlatform(value: string): boolean {
+  return path.posix.isAbsolute(value) || path.win32.isAbsolute(value);
+}
+
+function basenameAnyPlatform(value: string): string {
+  return value.includes("\\") ? path.win32.basename(value) : path.posix.basename(value);
+}
+
+function dirnameAnyPlatform(value: string): string {
+  return value.includes("\\") || /^[A-Za-z]:\//.test(value) ? path.win32.dirname(value) : path.posix.dirname(value);
+}
+
+function normalizePathForCompare(value: string): string {
+  return value.replace(/\\/g, "/").replace(/\/+$/g, "");
+}
+
+async function bundleForCurrentRevision(ctx: CliContext, local: LocalConfig, meta: { revision: string }, timeoutMs: number): Promise<Bundle> {
+  const cached = await readJsonIfExists<Bundle>(path.join(ctx.stateDir, CACHE_BUNDLE_FILE));
+  if (cached?.revision === meta.revision) {
+    verifyBundle(cached);
+    return cached;
+  }
+  if (!local.masterUrl) throw new CliError("This machine is not enrolled. Run codexport follower join first.", 1);
+  const bundle = await fetchBundle(local.masterUrl, timeoutMs);
+  if (bundle.revision !== meta.revision) throw new CliError("Master changed revision during sync. Retry.", 1);
+  await writeCachedBundle(ctx, bundle);
+  return bundle;
+}
+
 function expandPathVariables(text: string, localConfig: LocalConfig): string {
+  const configuredCodexDir = localConfig.codexDir ?? path.join(homedir(), ".codex");
   const variables: Record<string, string> = {
-    home: homedir(),
-    codexDir: localConfig.codexDir ?? path.join(homedir(), ".codex"),
+    home: basenameAnyPlatform(configuredCodexDir) === ".codex" ? dirnameAnyPlatform(configuredCodexDir) : homedir(),
+    codexDir: configuredCodexDir,
     ...(localConfig.pathVariables ?? {})
   };
   return text.replace(/\$\{([A-Za-z0-9_]+)\}/g, (match, name: string) => {
@@ -468,7 +629,7 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
   if (configEntry) {
     const canonicalConfig = decodeFile(configEntry).toString("utf8");
     const localMcpText = await readTextIfExists(path.join(ctx.stateDir, MCPS_LOCAL_FILE));
-    const generated = mergeTomlText(canonicalConfig, localMcpText, localConfig);
+    const generated = mergeTomlText(canonicalConfig, localMcpText, { ...localConfig, codexDir: ctx.codexDir }, bundle.sourceRoot);
     const configPath = path.join(ctx.codexDir, "config.toml");
     if (await pathExists(configPath)) {
       const backupPath = `${configPath}.codexport-backup-${new Date().toISOString().replace(/[:.]/g, "-")}`;
@@ -693,11 +854,16 @@ async function commandSync(ctx: CliContext, options: { apply: boolean; timeoutMs
     throw new CliError("Stored master fingerprint does not match the reachable master. Refusing to sync; re-enroll or reset trust explicitly.", 1);
   }
   if (local.lastRevision === meta.revision) {
+    if (options.apply) {
+      const bundle = await bundleForCurrentRevision(ctx, local, meta, options.timeoutMs);
+      await applyBundle(ctx, bundle);
+      print(ctx, { status: "applied", revision: bundle.revision, files: bundle.files.length });
+      return;
+    }
     print(ctx, { status: "current", revision: meta.revision });
     return;
   }
-  const bundle = await fetchBundle(local.masterUrl, options.timeoutMs);
-  if (bundle.revision !== meta.revision) throw new CliError("Master changed revision during sync. Retry.", 1);
+  const bundle = await bundleForCurrentRevision(ctx, local, meta, options.timeoutMs);
   await writeCachedBundle(ctx, bundle);
   if (options.apply) {
     await applyBundle(ctx, bundle);
