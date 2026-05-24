@@ -11,6 +11,7 @@ import {
   installHook,
   mergeTomlText,
   parseJoinLink,
+  portableMcpLauncher,
   verifyBundle
 } from "../src/index.js";
 
@@ -143,7 +144,7 @@ describe("overlay application", () => {
     expect(merged).toContain('KAGI_API_KEY = "api-key"');
   });
 
-  it("disables master-local MCP commands that have no portable launcher", () => {
+  it("routes master-local MCP commands through the managed launcher", () => {
     const canonical = [
       "[mcp_servers.search]",
       'command = "/home/alice/.local/bin/search-mcp"',
@@ -193,7 +194,7 @@ describe("overlay application", () => {
     expect(merged).toContain(".local/bin");
   });
 
-  it("disables Kagi MCP when no portable Kagi auth is available", () => {
+  it("routes Kagi MCP through the managed launcher when no portable Kagi auth is available", () => {
     const canonical = [
       "[mcp_servers.kagi-mcp]",
       'command = "/home/alice/.local/bin/kagi-mcp"',
@@ -352,6 +353,49 @@ describe("overlay application", () => {
     await applyBundle(ctx, second);
 
     expect(await readFile(target, "utf8")).toBe("new\n");
+  });
+});
+
+describe("managed MCP launcher repair", () => {
+  it("maps npm-backed MCP binaries to package launchers", () => {
+    expect(portableMcpLauncher("grep-app", "/home/alice/.bun/bin/mcp-grep", [], undefined, {})).toEqual({
+      command: "npx",
+      args: ["-y", "@247arjun/mcp-grep"]
+    });
+    expect(portableMcpLauncher("mcp-vnc", "/home/alice/.nvm/bin/mcp-vnc", [], undefined, {})).toEqual({
+      command: "npx",
+      args: ["-y", "@hrrrsn/mcp-vnc"]
+    });
+    expect(portableMcpLauncher("qmd", "/home/alice/.nvm/bin/qmd", ["mcp"], undefined, {})).toEqual({
+      command: "npx",
+      args: ["-y", "qmd-cli", "mcp"]
+    });
+  });
+
+  it("maps Python MCP binaries to uvx launchers with uv repair", () => {
+    expect(portableMcpLauncher("markitdown-mcp", "/home/alice/.local/bin/markitdown-mcp", [], undefined, {})).toMatchObject({
+      command: "uvx",
+      args: ["--from", "markitdown-mcp", "markitdown-mcp"],
+      repair: { whenMissing: "uvx" }
+    });
+    expect(portableMcpLauncher("discord-py-self", "/home/alice/.local/bin/discord-py-self-mcp", [], undefined, {})).toMatchObject({
+      command: "uvx",
+      args: ["--from", "discord-py-self-mcp", "discord-py-self-mcp"],
+      repair: { whenMissing: "uvx" }
+    });
+  });
+
+  it("maps local Rust MCP binaries to repairable launchers", () => {
+    expect(portableMcpLauncher("fff", "/home/alice/.local/bin/fff-mcp", [], undefined, {})).toMatchObject({
+      command: "fff-mcp",
+      args: [],
+      repair: { whenMissing: "fff-mcp" }
+    });
+    expect(portableMcpLauncher("gitquarry-mcp", "/home/alice/workspace/gitquarry-mcp/target/release/gitquarry-mcp", [], undefined, {})).toMatchObject({
+      command: "gitquarry-mcp",
+      args: [],
+      repair: { whenMissing: "gitquarry-mcp" }
+    });
   });
 });
 

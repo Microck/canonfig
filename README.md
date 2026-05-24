@@ -12,6 +12,8 @@
 
 the master serves a content-hashed bundle from its `~/.codex` directory. followers pin the master's fingerprint on join, fetch updates over a Tailscale-reachable HTTP address, and apply updates at Codex `SessionStart` through a short best-effort hook.
 
+MCPs are exported as full definitions, including env needed by supported tools. command-based MCPs are written through a managed launcher, so followers run `npx -y codexport@latest mcp run <name>` and let `codexport` translate master-local paths into repairable package, Python tool, or source-built launchers.
+
 [npm](https://www.npmjs.com/package/codexport) | [github](https://github.com/Microck/codexport)
 
 ## why
@@ -21,6 +23,8 @@ if you keep a carefully tuned Codex setup on one machine and want the same defau
 - keep the master as the canonical Codex configuration source
 - let followers preserve local MCPs, local skills, trust entries, and path overrides
 - sync auth-bearing files through the private Tailscale path instead of a plaintext GitHub commit
+- export every master MCP definition instead of dropping machine-local entries
+- repair known MCP launchers on followers through npm, uvx, released binaries, or source builds
 - refresh followers at Codex session startup without interrupting active sessions
 - use content-hash revisions and pinned master fingerprints instead of blind file copies
 
@@ -113,6 +117,28 @@ present.
 runtime state such as logs, caches, sessions, history, compact handoffs, and
 SQLite databases is excluded.
 
+## MCP export and repair
+
+all master MCP definitions are exported into `~/.codexport/mcp-manifest.json` on followers. generated command MCP entries in `~/.codex/config.toml` point at the managed launcher:
+
+```toml
+[mcp_servers.example]
+command = "npx"
+args = [ "-y", "codexport@latest", "mcp", "run", "example" ]
+```
+
+when Codex starts an MCP, `codexport mcp run` reads the original manifest entry, restores transferred environment values, rewrites master paths to follower paths, and chooses a runnable target:
+
+| source shape | follower action |
+| --- | --- |
+| npm-backed MCPs | run with `npx -y <package>` |
+| Python MCP tools | run with `uvx --from <package> <binary>` and install `uv` when missing |
+| FFF MCP | download the matching upstream release binary when missing |
+| GitQuarry MCP | build `gitquarry-mcp` from its public source when missing and repair `GITQUARRY_CLI_PATH` |
+| URL MCPs | keep the URL config unchanged |
+
+unsupported local binaries are still kept in the manifest and generated config. if a follower cannot repair one, startup fails with the missing tool and repair step instead of silently removing the MCP.
+
 ## local follower state
 
 follower-local state lives under `~/.codexport`:
@@ -150,6 +176,7 @@ the follower's `local.toml` before writing the generated `~/.codex/config.toml`.
 | `codexport follower join` | enroll a follower from a join link or explicit master URL |
 | `codexport sync` | fetch the latest master bundle |
 | `codexport apply` | apply the last staged bundle |
+| `codexport mcp run <name>` | run or repair a synced command MCP from the follower manifest |
 | `codexport hook install` | install the follower-only Codex `SessionStart` hook |
 | `codexport status` | report role, master URL, fingerprint, revision, and reachability |
 

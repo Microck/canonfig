@@ -161,9 +161,19 @@ should make them portable through:
 - path variables such as home and workspace root
 - secret transfer over the Tailscale bundle
 - local overlays for follower-specific additions
+- a managed follower launcher that can repair known package, Python, binary,
+  and source-built MCPs
 
 Canonical MCP names are reserved. Local MCPs may add new names. A same-name
 local MCP should fail by default unless an explicit override is configured.
+
+The product goal is full export, not best-effort pruning. Command MCPs should
+remain present on followers even when their master command path is local to the
+master. Followers should route command MCPs through `codexport mcp run <name>`,
+store the original definitions in `~/.codexport/mcp-manifest.json`, and let the
+managed launcher translate or repair the runtime. If an MCP cannot be repaired,
+the failure should be explicit and actionable rather than silently disabling the
+MCP.
 
 ### Skills
 

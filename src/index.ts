@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -111,6 +111,18 @@ interface CliContext {
   quiet: boolean;
   json: boolean;
   noInput: boolean;
+}
+
+interface McpLaunchSpec {
+  command: string;
+  args: string[];
+  repair?: McpRepairSpec;
+}
+
+interface McpRepairSpec {
+  whenMissing: string;
+  command: string;
+  args: string[];
 }
 
 class CliError extends Error {
@@ -553,7 +565,7 @@ function rewriteManagedMcpServer(name: string, server: Record<string, unknown>, 
   }
 }
 
-function portableMcpLauncher(name: string, command: string, args: unknown[], sourceHome: string | undefined, server: Record<string, unknown>): { command: string; args: string[] } | undefined {
+function portableMcpLauncher(name: string, command: string, args: unknown[], sourceHome: string | undefined, server: Record<string, unknown>): McpLaunchSpec | undefined {
   const commandName = basenameAnyPlatform(command);
   if (commandName === "npx" || commandName === "bunx" || commandName === "uvx") {
     return allStrings(args) ? { command: commandName, args: args as string[] } : undefined;
@@ -576,8 +588,48 @@ function portableMcpLauncher(name: string, command: string, args: unknown[], sou
 
   const npmPackage = npmPackageForPortableMcp(name, commandName);
   if (npmPackage) {
-    const remainingArgs = allStrings(args) ? args as string[] : [];
+    const remainingArgs = packageLauncherArgs(commandName, args);
     return { command: "npx", args: ["-y", npmPackage, ...remainingArgs] };
+  }
+
+  const uvTool = uvToolForPortableMcp(name, commandName);
+  if (uvTool) {
+    const remainingArgs = allStrings(args) ? args as string[] : [];
+    return {
+      command: "uvx",
+      args: ["--from", uvTool.packageName, uvTool.binaryName, ...remainingArgs],
+      repair: {
+        whenMissing: "uvx",
+        command: platform() === "win32" ? "py" : "python3",
+        args: ["-m", "pip", "install", "--user", "uv"]
+      }
+    };
+  }
+
+  if (name === "fff" || commandName === "fff-mcp") {
+    const remainingArgs = allStrings(args) ? args as string[] : [];
+    return {
+      command: "fff-mcp",
+      args: remainingArgs,
+      repair: {
+        whenMissing: "fff-mcp",
+        command: "__codexport_install_fff_mcp",
+        args: []
+      }
+    };
+  }
+
+  if (name === "gitquarry-mcp" || commandName === "gitquarry-mcp") {
+    const remainingArgs = allStrings(args) ? args as string[] : [];
+    return {
+      command: "gitquarry-mcp",
+      args: remainingArgs,
+      repair: {
+        whenMissing: "gitquarry-mcp",
+        command: "cargo",
+        args: ["install", "--git", "https://github.com/Microck/gitquarry-mcp.git", "--locked"]
+      }
+    };
   }
 
   return undefined;
@@ -603,15 +655,44 @@ function ensurePortablePathEnv(server: Record<string, unknown>): void {
 
 function npmPackageForPortableMcp(name: string, commandName: string): string | undefined {
   const knownPackages: Record<string, string> = {
+    "camofox-browser-mcp": "camofox-browser-mcp",
     "dora": "@butttons/dora",
+    "grep-app": "@247arjun/mcp-grep",
     "kagi-mcp": "kagi-mcp",
+    "keywords-everywhere": "mcp-keywords-everywhere",
+    "mcp-grep": "@247arjun/mcp-grep",
+    "mcp-vnc": "@hrrrsn/mcp-vnc",
     "opensrc-mcp": "opensrc-mcp",
     "opensrc-mcp-stdio": "opensrc-mcp",
     "perplexity-webui": "perplexity-webui-mcp",
     "perplexity-webui-mcp": "perplexity-webui-mcp",
-    "reddit-mcp-buddy": "reddit-mcp-buddy"
+    "qmd": "qmd-cli",
+    "reddit-mcp-buddy": "reddit-mcp-buddy",
+    "xcodebuildmcp": "xcodebuildmcp"
   };
   return knownPackages[name] ?? knownPackages[commandName];
+}
+
+function packageLauncherArgs(commandName: string, args: unknown[]): string[] {
+  if (!allStrings(args)) return [];
+  const remainingArgs = args as string[];
+  const [entrypoint, ...afterEntrypoint] = remainingArgs;
+  if ((commandName === "node" || commandName === "bun") && typeof entrypoint === "string") {
+    const normalized = normalizePathForCompare(entrypoint);
+    if (isAbsoluteAnyPlatform(entrypoint) || normalized.endsWith(".js") || normalized.endsWith(".mjs") || normalized.endsWith(".ts")) {
+      return afterEntrypoint;
+    }
+  }
+  return remainingArgs;
+}
+
+function uvToolForPortableMcp(name: string, commandName: string): { packageName: string; binaryName: string } | undefined {
+  const knownTools: Record<string, { packageName: string; binaryName: string }> = {
+    "discord-py-self": { packageName: "discord-py-self-mcp", binaryName: "discord-py-self-mcp" },
+    "discord-py-self-mcp": { packageName: "discord-py-self-mcp", binaryName: "discord-py-self-mcp" },
+    "markitdown-mcp": { packageName: "markitdown-mcp", binaryName: "markitdown-mcp" }
+  };
+  return knownTools[name] ?? knownTools[commandName];
 }
 
 function rewritePortableCommand(command: string, sourceRoot?: string): string {
@@ -826,6 +907,8 @@ async function commandMcpRun(ctx: CliContext, name: string): Promise<void> {
   const runCommandName = launcher?.command ?? rewritePortableCommand(command, manifest.sourceRoot);
   const runArgs = launcher?.args ?? args;
   const childEnv = { ...process.env, ...portableServerEnv(server, manifest.sourceRoot, sourceHome, { ...localConfig, codexDir: ctx.codexDir }) };
+  await repairMcpLauncherIfNeeded(launcher, childEnv);
+  await repairGitquarryEnvIfNeeded(name, childEnv);
   await runCommandWithEnv(runCommandName, runArgs, childEnv);
 }
 
@@ -838,6 +921,104 @@ function portableServerEnv(server: Record<string, unknown>, sourceRoot: string |
     }
   }
   return out;
+}
+
+async function repairMcpLauncherIfNeeded(launcher: McpLaunchSpec | undefined, env: NodeJS.ProcessEnv): Promise<void> {
+  if (!launcher?.repair) return;
+  if (await executableExists(launcher.repair.whenMissing, env)) return;
+  if (launcher.repair.command === "__codexport_install_fff_mcp") {
+    await installFffMcp(env);
+  } else {
+    await runCommandWithEnv(launcher.repair.command, launcher.repair.args, env);
+  }
+  if (!(await executableExists(launcher.repair.whenMissing, env))) {
+    throw new CliError(`MCP repair completed but ${launcher.repair.whenMissing} is still not on PATH.`, 1);
+  }
+}
+
+async function installFffMcp(env: NodeJS.ProcessEnv): Promise<void> {
+  const target = fffReleaseTarget();
+  const releasesResponse = await fetch("https://api.github.com/repos/dmtrKovalenko/fff.nvim/releases");
+  if (!releasesResponse.ok) {
+    throw new CliError(`Failed to fetch FFF MCP releases: HTTP ${releasesResponse.status}.`, 1);
+  }
+  const releases = await releasesResponse.json() as Array<{ tag_name?: string; assets?: Array<{ name?: string; browser_download_url?: string }> }>;
+  const assetName = `fff-mcp-${target}${platform() === "win32" ? ".exe" : ""}`;
+  const release = releases.find((item) => item.assets?.some((asset) => asset.name === assetName));
+  const asset = release?.assets?.find((item) => item.name === assetName);
+  if (!asset?.browser_download_url) {
+    throw new CliError(`No FFF MCP release asset found for ${target}.`, 1);
+  }
+
+  const binaryResponse = await fetch(asset.browser_download_url);
+  if (!binaryResponse.ok) {
+    throw new CliError(`Failed to download ${assetName}: HTTP ${binaryResponse.status}.`, 1);
+  }
+  const installHome = env.HOME ?? env.USERPROFILE ?? homedir();
+  const installDir = path.join(installHome, ".local", "bin");
+  const binaryPath = path.join(installDir, platform() === "win32" ? "fff-mcp.exe" : "fff-mcp");
+  await ensureDir(installDir);
+  await writeFileReplacingExisting(binaryPath, Buffer.from(await binaryResponse.arrayBuffer()), { mode: 0o755 });
+  if (platform() !== "win32") await chmod(binaryPath, 0o755);
+
+  const pathValue = env.PATH ?? "";
+  if (!pathValue.split(path.delimiter).includes(installDir)) {
+    env.PATH = [installDir, pathValue].filter(Boolean).join(path.delimiter);
+  }
+}
+
+function fffReleaseTarget(): string {
+  const os = platform();
+  const arch = process.arch;
+  if (os === "linux") {
+    if (arch === "x64") return "x86_64-unknown-linux-musl";
+    if (arch === "arm64") return "aarch64-unknown-linux-musl";
+  }
+  if (os === "darwin") {
+    if (arch === "x64") return "x86_64-apple-darwin";
+    if (arch === "arm64") return "aarch64-apple-darwin";
+  }
+  if (os === "win32") {
+    if (arch === "x64") return "x86_64-pc-windows-msvc";
+    if (arch === "arm64") return "aarch64-pc-windows-msvc";
+  }
+  throw new CliError(`Unsupported FFF MCP platform: ${os}/${arch}.`, 1);
+}
+
+async function repairGitquarryEnvIfNeeded(name: string, env: NodeJS.ProcessEnv): Promise<void> {
+  if (name !== "gitquarry-mcp") return;
+  const current = env.GITQUARRY_CLI_PATH;
+  if (current && await executableExists(current, env)) return;
+  if (!(await executableExists("gitquarry", env))) {
+    await runCommandWithEnv("npm", ["install", "-g", "gitquarry"], env);
+  }
+  const resolved = await resolveExecutable("gitquarry", env);
+  if (!resolved) {
+    throw new CliError("MCP repair could not find gitquarry after installing the gitquarry npm package.", 1);
+  }
+  env.GITQUARRY_CLI_PATH = resolved;
+}
+
+async function executableExists(command: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  return Boolean(await resolveExecutable(command, env));
+}
+
+async function resolveExecutable(command: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  if (isAbsoluteAnyPlatform(command) || command.includes(path.sep) || command.includes("/") || command.includes("\\")) {
+    return await pathExists(command) ? command : undefined;
+  }
+
+  const pathValue = env.PATH ?? process.env.PATH ?? "";
+  const extensions = platform() === "win32"
+    ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")
+    : [""];
+  for (const dir of pathValue.split(path.delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      const candidate = path.join(dir, `${command}${extension}`);
+      if (await pathExists(candidate)) return candidate;
+    }
+  }
+  return undefined;
 }
 
 async function copyDirectory(source: string, target: string): Promise<void> {
@@ -1222,5 +1403,6 @@ export {
   installHook,
   mergeTomlText,
   parseJoinLink,
+  portableMcpLauncher,
   verifyBundle
 };
