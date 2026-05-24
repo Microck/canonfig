@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -225,6 +225,38 @@ describe("overlay application", () => {
 
     await expect(readFile(path.join(codex, "skills/old/SKILL.md"), "utf8")).rejects.toThrow();
     expect(await readFile(path.join(codex, "local-only.md"), "utf8")).toBe("keep\n");
+  });
+
+  it("replaces existing owned files that are not directly writable", async () => {
+    const root = await tempDir("readonly");
+    const home = path.join(root, "home");
+    const codex = path.join(home, ".codex");
+    const ctx = defaultContext({ home, codexDir: codex });
+    const first = {
+      version: 1 as const,
+      builtAt: new Date().toISOString(),
+      sourceRoot: codex,
+      revision: "",
+      files: [
+        { path: "skill-libraries/code-review/repo.git/objects/pack/pack-example.idx", mode: 0o444, kind: "file" as const, content: Buffer.from("old\n").toString("base64") }
+      ]
+    };
+    first.revision = computeRevision(first.files);
+    const second = {
+      ...first,
+      revision: "",
+      files: [
+        { path: "skill-libraries/code-review/repo.git/objects/pack/pack-example.idx", mode: 0o444, kind: "file" as const, content: Buffer.from("new\n").toString("base64") }
+      ]
+    };
+    second.revision = computeRevision(second.files);
+
+    await applyBundle(ctx, first);
+    const target = path.join(codex, "skill-libraries/code-review/repo.git/objects/pack/pack-example.idx");
+    await chmod(target, 0o444);
+    await applyBundle(ctx, second);
+
+    expect(await readFile(target, "utf8")).toBe("new\n");
   });
 });
 

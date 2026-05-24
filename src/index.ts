@@ -3,7 +3,7 @@ import { Command, Option } from "commander";
 import chokidar from "chokidar";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, request } from "node:http";
-import { lstat, mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.1.5";
+const VERSION = "0.1.6";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -166,6 +166,30 @@ async function writeJsonAtomic(filePath: string, value: Json): Promise<void> {
   const tmpPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.tmp`);
   await writeFile(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await rename(tmpPath, filePath);
+}
+
+async function writeFileReplacingExisting(filePath: string, content: Buffer | string, options?: Parameters<typeof writeFile>[2]): Promise<void> {
+  try {
+    await writeFile(filePath, content, options);
+    return;
+  } catch (error) {
+    if (!isPermissionError(error)) throw error;
+  }
+
+  if (await pathExists(filePath)) {
+    try {
+      await chmod(filePath, 0o666);
+    } catch (error) {
+      if (!isPermissionError(error)) throw error;
+    }
+    await rm(filePath, { force: true });
+  }
+  await writeFile(filePath, content, options);
+}
+
+function isPermissionError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EACCES" || code === "EPERM";
 }
 
 function parseTomlObject(text: string, filePath: string): Record<string, unknown> {
@@ -622,7 +646,7 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
     const target = path.join(ctx.codexDir, file.path);
     await ensureDir(path.dirname(target));
     if (file.path === "config.toml") continue;
-    await writeFile(target, decodeFile(file), { mode: file.mode });
+    await writeFileReplacingExisting(target, decodeFile(file), { mode: file.mode });
   }
 
   const configEntry = bundle.files.find((file) => file.path === "config.toml");
@@ -635,7 +659,7 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
       const backupPath = `${configPath}.codexport-backup-${new Date().toISOString().replace(/[:.]/g, "-")}`;
       await writeFile(backupPath, await readFile(configPath));
     }
-    await writeFile(configPath, generated, "utf8");
+    await writeFileReplacingExisting(configPath, generated, "utf8");
   }
 
   const localSkillsDir = path.join(ctx.stateDir, "skills");
@@ -658,7 +682,7 @@ async function copyDirectory(source: string, target: string): Promise<void> {
       await copyDirectory(sourcePath, targetPath);
     } else if (entry.isFile()) {
       await ensureDir(path.dirname(targetPath));
-      await writeFile(targetPath, await readFile(sourcePath));
+      await writeFileReplacingExisting(targetPath, await readFile(sourcePath));
     } else if (entry.isSymbolicLink()) {
       const linkTarget = await readlink(sourcePath);
       await symlink(linkTarget, targetPath);
