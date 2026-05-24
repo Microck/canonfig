@@ -502,7 +502,7 @@ describe("hooks", () => {
       name: "codexport-sync"
     });
     expect(hooks.SessionStart[0].command).toContain("codexport-mcp-run.mjs");
-    expect(hooks.SessionStart[0].command).toContain("hook sync --timeout-ms 3000 --no-input");
+    expect(hooks.SessionStart[0].command).toContain("--quiet hook sync --timeout-ms 3000 --no-input");
   });
 
   it("replaces stale codexport hook commands regardless of name", async () => {
@@ -515,6 +515,9 @@ describe("hooks", () => {
       SessionStart: [
         { name: "old", command: "codexport sync --apply --timeout-ms 3000 --no-input" },
         { name: "keep", command: "echo keep" }
+      ],
+      Stop: [
+        { name: "old-stop", command: "node ~/.codexport/bin/codexport-mcp-run.mjs hook sync" }
       ]
     }));
 
@@ -523,5 +526,6 @@ describe("hooks", () => {
     const hooks = JSON.parse(await readFile(path.join(codex, "hooks.json"), "utf8"));
     expect(hooks.SessionStart).toHaveLength(2);
     expect(hooks.SessionStart.map((hook: { name: string }) => hook.name).sort()).toEqual(["codexport-sync", "keep"]);
+    expect(hooks.Stop).toEqual([]);
   });
 });

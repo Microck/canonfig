@@ -3,7 +3,7 @@ import { Command, Option } from "commander";
 import chokidar from "chokidar";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, request } from "node:http";
-import { chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -1325,8 +1325,10 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
 function sanitizeHooksJson(text: string): string {
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
-    if (Array.isArray(parsed.SessionStart)) {
-      parsed.SessionStart = parsed.SessionStart.filter((hook) => !isCodexportHook(hook));
+    for (const [key, value] of Object.entries(parsed)) {
+      if (Array.isArray(value)) {
+        parsed[key] = value.filter((hook) => !isCodexportHook(hook));
+      }
     }
     return `${JSON.stringify(parsed, null, 2)}\n`;
   } catch {
@@ -1403,40 +1405,49 @@ async function findPackageRoot(startDir: string): Promise<string | undefined> {
 }
 
 async function commandMcpRun(ctx: CliContext, name: string): Promise<void> {
+  const logPath = path.join(ctx.stateDir, "logs", "mcp", `${safeLogName(name)}.log`);
+  await appendLog(logPath, `\n[${new Date().toISOString()}] codexport mcp run ${name} start\n`);
   const manifest = await readJsonIfExists<McpManifest>(path.join(ctx.stateDir, MCP_MANIFEST_FILE));
-  if (!manifest?.servers?.[name]) {
-    throw new CliError(`No managed MCP named ${name}. Run codexport sync --apply first.`, 1);
-  }
-  const localConfig = await readLocalConfig(ctx);
-  const sourceHome = inferHomeFromCodexDir(manifest.sourceRoot);
-  const server = structuredClone(manifest.servers[name]) as Record<string, unknown>;
-  mergeSourceEnvForMcp(name, server, manifest.sourceEnv ?? {});
-  rewritePortableTableKeys(server, manifest.sourceRoot, sourceHome);
-  rewriteLoopbackUrls(server, localConfig.masterUrl);
-  if (typeof server.url === "string") {
-    throw new CliError(`MCP ${name} is URL-based and should not be launched through codexport mcp run.`, 2);
-  }
-  const command = typeof server.command === "string" ? expandPathVariables(server.command, { ...localConfig, codexDir: ctx.codexDir }) : undefined;
-  const args = Array.isArray(server.args)
-    ? server.args.map((arg) => typeof arg === "string" ? expandPathVariables(rewritePortablePath(arg, manifest.sourceRoot, sourceHome), { ...localConfig, codexDir: ctx.codexDir }) : String(arg))
-    : [];
-  if (!command) throw new CliError(`MCP ${name} has no command.`, 1);
-  ensurePortablePathEnv(server);
-  const childEnv = { ...process.env, ...portableServerEnv(server, manifest.sourceRoot, sourceHome, { ...localConfig, codexDir: ctx.codexDir }) };
-  const artifact = manifest.artifacts?.[name];
-  if (artifact) {
-    await runMcpArtifact(ctx, artifact, childEnv, { ...localConfig, codexDir: ctx.codexDir }, manifest.sourceRoot, sourceHome);
-    return;
-  }
+  try {
+    if (!manifest?.servers?.[name]) {
+      throw new CliError(`No managed MCP named ${name}. Run codexport sync --apply first.`, 1);
+    }
+    const localConfig = await readLocalConfig(ctx);
+    const sourceHome = inferHomeFromCodexDir(manifest.sourceRoot);
+    const server = structuredClone(manifest.servers[name]) as Record<string, unknown>;
+    mergeSourceEnvForMcp(name, server, manifest.sourceEnv ?? {});
+    rewritePortableTableKeys(server, manifest.sourceRoot, sourceHome);
+    rewriteLoopbackUrls(server, localConfig.masterUrl);
+    if (typeof server.url === "string") {
+      throw new CliError(`MCP ${name} is URL-based and should not be launched through codexport mcp run.`, 2);
+    }
+    const command = typeof server.command === "string" ? expandPathVariables(server.command, { ...localConfig, codexDir: ctx.codexDir }) : undefined;
+    const args = Array.isArray(server.args)
+      ? server.args.map((arg) => typeof arg === "string" ? expandPathVariables(rewritePortablePath(arg, manifest.sourceRoot, sourceHome), { ...localConfig, codexDir: ctx.codexDir }) : String(arg))
+      : [];
+    if (!command) throw new CliError(`MCP ${name} has no command.`, 1);
+    ensurePortablePathEnv(server);
+    const childEnv = { ...process.env, ...portableServerEnv(server, manifest.sourceRoot, sourceHome, { ...localConfig, codexDir: ctx.codexDir }), CODEXPORT_LOG_PATH: logPath };
+    const artifact = manifest.artifacts?.[name];
+    if (artifact) {
+      await appendLog(logPath, `artifact=${artifact.kind}\n`);
+      await runMcpArtifact(ctx, artifact, childEnv, { ...localConfig, codexDir: ctx.codexDir }, manifest.sourceRoot, sourceHome);
+      return;
+    }
 
-  const launcher = mcpHasRequiredPortableEnv(name, command, server)
-    ? portableMcpLauncher(name, command, args, sourceHome, server)
-    : undefined;
-  const runCommandName = launcher?.command ?? rewritePortableCommand(command, manifest.sourceRoot);
-  const runArgs = launcher?.args ?? args;
-  await repairMcpLauncherIfNeeded(launcher, childEnv);
-  await repairGitquarryEnvIfNeeded(name, childEnv);
-  await runCommandWithEnv(runCommandName, runArgs, childEnv);
+    const launcher = mcpHasRequiredPortableEnv(name, command, server)
+      ? portableMcpLauncher(name, command, args, sourceHome, server)
+      : undefined;
+    const runCommandName = launcher?.command ?? rewritePortableCommand(command, manifest.sourceRoot);
+    const runArgs = launcher?.args ?? args;
+    await appendLog(logPath, `command=${runCommandName}\nargs=${JSON.stringify(runArgs)}\n`);
+    await repairMcpLauncherIfNeeded(launcher, childEnv);
+    await repairGitquarryEnvIfNeeded(name, childEnv);
+    await runCommandWithEnv(runCommandName, runArgs, childEnv);
+  } catch (error) {
+    await appendLog(logPath, `error=${asError(error).message}\n`);
+    throw error;
+  }
 }
 
 async function runMcpArtifact(ctx: CliContext, artifact: McpArtifact, env: NodeJS.ProcessEnv, localConfig: LocalConfig, sourceRoot: string | undefined, sourceHome: string | undefined): Promise<void> {
@@ -1673,11 +1684,12 @@ async function installHook(ctx: CliContext, timeoutMs: number): Promise<void> {
   const hooksPath = path.join(ctx.codexDir, "hooks.json");
   const existingText = await readTextIfExists(hooksPath);
   const existing = existingText ? JSON.parse(existingText) as Record<string, unknown> : {};
-  const hooks = existing.SessionStart && Array.isArray(existing.SessionStart) ? existing.SessionStart as unknown[] : [];
-  const command = `${shellQuote(process.execPath)} ${shellQuote(managedRunner)} hook sync --timeout-ms ${timeoutMs} --no-input`;
+  const sanitized = JSON.parse(sanitizeHooksJson(JSON.stringify(existing))) as Record<string, unknown>;
+  const hooks = sanitized.SessionStart && Array.isArray(sanitized.SessionStart) ? sanitized.SessionStart as unknown[] : [];
+  const command = `${shellQuote(process.execPath)} ${shellQuote(managedRunner)} --quiet hook sync --timeout-ms ${timeoutMs} --no-input`;
   const filtered = hooks.filter((hook) => !isCodexportHook(hook));
   filtered.push({ name: "codexport-sync", command, timeoutMs });
-  await writeJsonAtomic(hooksPath, { ...existing, SessionStart: filtered } as unknown as Json);
+  await writeJsonAtomic(hooksPath, { ...sanitized, SessionStart: filtered } as unknown as Json);
 }
 
 function shellQuote(value: string): string {
@@ -1705,6 +1717,7 @@ function runCommand(command: string, args: string[]): Promise<void> {
 
 function runCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve, reject) => {
+    void appendEnvLog(env, `spawn ${command} ${args.join(" ")}\n`);
     const child = spawn(command, args, { stdio: ["inherit", "pipe", "pipe"], env, shell: needsWindowsShell(command) });
     let stdoutBuffer = "";
     child.stdout.on("data", (chunk: Buffer) => {
@@ -1715,7 +1728,10 @@ function runCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessE
         writeMcpStdoutLine(line);
       }
     });
-    child.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
+    child.stderr.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+      void appendEnvLog(env, chunk.toString("utf8"));
+    });
     child.on("error", (error) => {
       const message = (error as NodeJS.ErrnoException).code === "ENOENT"
         ? `MCP launcher program not found: ${command}. Install it on this follower or add it to PATH.`
@@ -1734,13 +1750,21 @@ function writeMcpStdoutLine(line: string): void {
   const trimmed = line.trimStart();
   const target = trimmed.startsWith("{") || trimmed.startsWith("[") ? process.stdout : process.stderr;
   target.write(`${line}\n`);
+  if (target === process.stderr) void appendEnvLog(process.env, `${line}\n`);
 }
 
 function runRepairCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve, reject) => {
+    void appendEnvLog(env, `repair ${command} ${args.join(" ")}\n`);
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env, shell: needsWindowsShell(command) });
-    child.stdout.on("data", (chunk: Buffer) => process.stderr.write(chunk));
-    child.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
+    child.stdout.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+      void appendEnvLog(env, chunk.toString("utf8"));
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+      void appendEnvLog(env, chunk.toString("utf8"));
+    });
     child.on("error", (error) => {
       const message = (error as NodeJS.ErrnoException).code === "ENOENT"
         ? `MCP repair program not found: ${command}. Install it on this follower or add it to PATH.`
@@ -1752,6 +1776,25 @@ function runRepairCommandWithEnv(command: string, args: string[], env: NodeJS.Pr
       else reject(new CliError(`${command} ${args.join(" ")} exited with ${code}`, code ?? 1));
     });
   });
+}
+
+async function appendEnvLog(env: NodeJS.ProcessEnv, text: string): Promise<void> {
+  const logPath = env.CODEXPORT_LOG_PATH;
+  if (!logPath) return;
+  await appendLog(logPath, text);
+}
+
+async function appendLog(logPath: string, text: string): Promise<void> {
+  try {
+    await ensureDir(path.dirname(logPath));
+    await appendFile(logPath, text, "utf8");
+  } catch {
+    // Logging must never break MCP stdio or hook execution.
+  }
+}
+
+function safeLogName(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "mcp";
 }
 
 function needsWindowsShell(command: string): boolean {
@@ -1945,9 +1988,13 @@ async function commandSync(ctx: CliContext, options: { apply: boolean; timeoutMs
 }
 
 async function commandHookSync(ctx: CliContext, options: { timeoutMs: number }): Promise<void> {
+  const logPath = path.join(ctx.stateDir, "logs", "hooks.log");
   try {
-    await commandSync(ctx, { apply: true, timeoutMs: options.timeoutMs });
+    await appendLog(logPath, `\n[${new Date().toISOString()}] hook sync start\n`);
+    await commandSync({ ...ctx, quiet: true }, { apply: true, timeoutMs: options.timeoutMs });
+    await appendLog(logPath, "hook sync ok\n");
   } catch (error) {
+    await appendLog(logPath, `hook sync skipped: ${asError(error).message}\n`);
     if (!ctx.quiet) {
       process.stderr.write(`codexport hook sync skipped: ${asError(error).message}\n`);
     }
