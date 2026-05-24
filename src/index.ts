@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.4";
+const VERSION = "0.3.5";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -588,7 +588,15 @@ function portableMcpLauncher(name: string, command: string, args: unknown[], sou
 
   if (name === "discord-py-self" || commandName === "discord-py-self-mcp") {
     const remainingArgs = allStrings(args) ? args as string[] : [];
-    return { command: "npx", args: ["-y", "discord-selfbot-mcp", ...remainingArgs] };
+    return {
+      command: "uvx",
+      args: ["--from", "git+https://github.com/Microck/discord.py-self-mcp.git", "discord-py-self-mcp", ...remainingArgs],
+      repair: {
+        whenMissing: "uvx",
+        command: "__codexport_install_uv",
+        args: []
+      }
+    };
   }
 
   if (name === "qmd" || commandName === "qmd") {

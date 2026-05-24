@@ -358,10 +358,6 @@ describe("overlay application", () => {
 
 describe("managed MCP launcher repair", () => {
   it("maps npm-backed MCP binaries to package launchers", () => {
-    expect(portableMcpLauncher("discord-py-self", "/home/alice/.local/bin/discord-py-self-mcp", [], undefined, {})).toEqual({
-      command: "npx",
-      args: ["-y", "discord-selfbot-mcp"]
-    });
     expect(portableMcpLauncher("grep-app", "/home/alice/.bun/bin/mcp-grep", [], undefined, {})).toEqual({
       command: "npx",
       args: ["-y", "@247arjun/mcp-grep"]
@@ -377,6 +373,11 @@ describe("managed MCP launcher repair", () => {
   });
 
   it("maps Python MCP binaries to uvx launchers with uv repair", () => {
+    expect(portableMcpLauncher("discord-py-self", "/home/alice/.local/bin/discord-py-self-mcp", [], undefined, {})).toMatchObject({
+      command: "uvx",
+      args: ["--from", "git+https://github.com/Microck/discord.py-self-mcp.git", "discord-py-self-mcp"],
+      repair: { whenMissing: "uvx", command: "__codexport_install_uv" }
+    });
     expect(portableMcpLauncher("markitdown-mcp", "/home/alice/.local/bin/markitdown-mcp", [], undefined, {})).toMatchObject({
       command: "uvx",
       args: ["--from", "markitdown-mcp", "markitdown-mcp"],
