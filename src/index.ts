@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.1.9";
+const VERSION = "0.2.0";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -54,6 +54,12 @@ const EXCLUDE_PARTS = new Set([
   ".sqlite3"
 ]);
 
+const MCP_ENV_EXPORT_NAMES = [
+  "KAGI_API_KEY",
+  "KAGI_SESSION_TOKEN",
+  "KAGI_CLI_PROFILE"
+];
+
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 
 interface FileEntry {
@@ -69,6 +75,7 @@ interface Bundle {
   sourceRoot: string;
   revision: string;
   files: FileEntry[];
+  sourceEnv?: Record<string, string>;
 }
 
 interface MasterIdentity {
@@ -286,26 +293,37 @@ async function walkIncluded(root: string, absolute: string, files: FileEntry[]):
   }
 }
 
-function computeRevision(files: FileEntry[]): string {
+function computeRevision(files: FileEntry[], sourceEnv: Record<string, string> = {}): string {
   const normalized = files.map((file) => ({
     path: file.path,
     mode: file.mode,
     kind: file.kind,
     contentHash: sha256(Buffer.from(file.content, "base64"))
   }));
-  return sha256(JSON.stringify(normalized));
+  return sha256(JSON.stringify({ files: normalized, sourceEnv }));
 }
 
 async function buildBundle(codexDir: string): Promise<Bundle> {
   const files = await collectFiles(codexDir);
-  const revision = computeRevision(files);
+  const sourceEnv = collectSourceEnv();
+  const revision = computeRevision(files, sourceEnv);
   return {
     version: 1,
     builtAt: new Date().toISOString(),
     sourceRoot: codexDir,
     revision,
-    files
+    files,
+    sourceEnv
   };
+}
+
+function collectSourceEnv(): Record<string, string> {
+  const sourceEnv: Record<string, string> = {};
+  for (const name of MCP_ENV_EXPORT_NAMES) {
+    const value = process.env[name];
+    if (value) sourceEnv[name] = value;
+  }
+  return sourceEnv;
 }
 
 async function saveMasterBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
@@ -387,7 +405,7 @@ function verifyBundle(bundle: Bundle): void {
   if (bundle.version !== 1 || !Array.isArray(bundle.files)) {
     throw new CliError("Bundle has an unsupported format.", 1);
   }
-  const actualRevision = computeRevision(bundle.files);
+  const actualRevision = computeRevision(bundle.files, bundle.sourceEnv ?? {});
   if (bundle.revision !== actualRevision) {
     throw new CliError(`Bundle revision mismatch. Expected ${bundle.revision}, computed ${actualRevision}.`, 1);
   }
@@ -424,8 +442,8 @@ function extractTomlTableNames(text: string, prefix: string): Set<string> {
   return names;
 }
 
-function mergeTomlText(canonical: string, localMcpText: string | undefined, localConfig: LocalConfig, sourceRoot?: string): string {
-  const expandedCanonical = expandPathVariables(rewritePortableConfig(canonical, sourceRoot), localConfig);
+function mergeTomlText(canonical: string, localMcpText: string | undefined, localConfig: LocalConfig, sourceRoot?: string, sourceEnv: Record<string, string> = {}): string {
+  const expandedCanonical = expandPathVariables(rewritePortableConfig(canonical, sourceRoot, sourceEnv), localConfig);
   if (!localMcpText?.trim()) return expandedCanonical;
   const canonicalMcps = extractTomlTableNames(canonical, "mcp_servers");
   const localMcps = extractTomlTableNames(localMcpText, "mcp_servers");
@@ -437,7 +455,7 @@ function mergeTomlText(canonical: string, localMcpText: string | undefined, loca
   return `${expandedCanonical.trimEnd()}\n\n# Follower-local MCP overlay from ~/.codexport/mcps.local.toml\n${localMcpText.trim()}\n`;
 }
 
-function rewritePortableConfig(canonical: string, sourceRoot?: string): string {
+function rewritePortableConfig(canonical: string, sourceRoot?: string, sourceEnv: Record<string, string> = {}): string {
   let parsed: Record<string, unknown>;
   try {
     parsed = parseTomlObject(canonical, "canonical config.toml");
@@ -455,10 +473,20 @@ function rewritePortableConfig(canonical: string, sourceRoot?: string): string {
   for (const [name, rawServer] of Object.entries(mcpServers as Record<string, unknown>)) {
     if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) continue;
     const server = rawServer as Record<string, unknown>;
+    mergeSourceEnvForMcp(name, server, sourceEnv);
     rewritePortableMcpServer(name, server, sourceRoot, sourceHome);
   }
 
   return stringifyToml(parsed as Record<string, Json>);
+}
+
+function mergeSourceEnvForMcp(name: string, server: Record<string, unknown>, sourceEnv: Record<string, string>): void {
+  if (name !== "kagi-mcp") return;
+  const env = server.env && typeof server.env === "object" && !Array.isArray(server.env) ? server.env as Record<string, unknown> : {};
+  for (const key of ["KAGI_API_KEY", "KAGI_SESSION_TOKEN", "KAGI_CLI_PROFILE"]) {
+    if (typeof env[key] !== "string" && sourceEnv[key]) env[key] = sourceEnv[key];
+  }
+  server.env = env;
 }
 
 function rewritePortableTableKeys(table: Record<string, unknown>, sourceRoot?: string, sourceHome?: string): void {
@@ -482,7 +510,7 @@ function rewritePortableMcpServer(_name: string, server: Record<string, unknown>
 
   const command = typeof server.command === "string" ? server.command : undefined;
   const args = Array.isArray(server.args) ? server.args : [];
-  const launcher = command && mcpHasRequiredPortableEnv(_name, command, server) ? portableMcpLauncher(_name, command, args, sourceHome) : undefined;
+  const launcher = command && mcpHasRequiredPortableEnv(_name, command, server) ? portableMcpLauncher(_name, command, args, sourceHome, server) : undefined;
   if (launcher) {
     server.command = launcher.command;
     server.args = launcher.args.map((arg) => rewritePortablePath(arg, sourceRoot, sourceHome));
@@ -509,10 +537,20 @@ function rewritePortableMcpServer(_name: string, server: Record<string, unknown>
   }
 }
 
-function portableMcpLauncher(name: string, command: string, args: unknown[], sourceHome?: string): { command: string; args: string[] } | undefined {
+function portableMcpLauncher(name: string, command: string, args: unknown[], sourceHome: string | undefined, server: Record<string, unknown>): { command: string; args: string[] } | undefined {
   const commandName = basenameAnyPlatform(command);
   if (commandName === "npx" || commandName === "bunx" || commandName === "uvx") {
     return allStrings(args) ? { command: commandName, args: args as string[] } : undefined;
+  }
+
+  if (name === "kagi-mcp" || commandName === "kagi-mcp") {
+    const env = server.env && typeof server.env === "object" && !Array.isArray(server.env) ? server.env as Record<string, unknown> : {};
+    if (typeof env.KAGI_API_KEY === "string" && env.KAGI_API_KEY.length > 0) {
+      return { command: "npx", args: ["-y", "kagi-mcp"] };
+    }
+    if (typeof env.KAGI_SESSION_TOKEN === "string" && env.KAGI_SESSION_TOKEN.length > 0) {
+      return { command: "npx", args: ["-y", "kagi-cli", "mcp"] };
+    }
   }
 
   const nodePackage = nodePackageFromServer(command, args) ?? workspacePackageFromServer(command, args, sourceHome);
@@ -532,7 +570,8 @@ function portableMcpLauncher(name: string, command: string, args: unknown[], sou
 function mcpHasRequiredPortableEnv(name: string, command: string, server: Record<string, unknown>): boolean {
   if (name !== "kagi-mcp" && basenameAnyPlatform(command) !== "kagi-mcp") return true;
   const env = server.env && typeof server.env === "object" && !Array.isArray(server.env) ? server.env as Record<string, unknown> : undefined;
-  return typeof env?.KAGI_API_KEY === "string" && env.KAGI_API_KEY.length > 0;
+  return (typeof env?.KAGI_API_KEY === "string" && env.KAGI_API_KEY.length > 0)
+    || (typeof env?.KAGI_SESSION_TOKEN === "string" && env.KAGI_SESSION_TOKEN.length > 0);
 }
 
 function ensurePortablePathEnv(server: Record<string, unknown>): void {
@@ -722,7 +761,7 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
   if (configEntry) {
     const canonicalConfig = decodeFile(configEntry).toString("utf8");
     const localMcpText = await readTextIfExists(path.join(ctx.stateDir, MCPS_LOCAL_FILE));
-    const generated = mergeTomlText(canonicalConfig, localMcpText, { ...localConfig, codexDir: ctx.codexDir }, bundle.sourceRoot);
+    const generated = mergeTomlText(canonicalConfig, localMcpText, { ...localConfig, codexDir: ctx.codexDir }, bundle.sourceRoot, bundle.sourceEnv);
     const configPath = path.join(ctx.codexDir, "config.toml");
     if (await pathExists(configPath)) {
       const backupPath = `${configPath}.codexport-backup-${new Date().toISOString().replace(/[:.]/g, "-")}`;

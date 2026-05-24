@@ -50,7 +50,7 @@ describe("bundle building", () => {
       "config.toml",
       "skills/portable/SKILL.md"
     ]);
-    expect(bundle.revision).toBe(computeRevision(bundle.files));
+    expect(bundle.revision).toBe(computeRevision(bundle.files, bundle.sourceEnv));
     expect(() => verifyBundle(bundle)).not.toThrow();
   });
 });
@@ -107,9 +107,40 @@ describe("overlay application", () => {
     );
 
     expect(merged).toContain('command = "npx"');
-    expect(merged).toContain('args = [ "-y", "kagi-mcp", "--index", "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/indexes/search.db" ]');
+    expect(merged).toContain('args = [ "-y", "kagi-mcp" ]');
     expect(merged).toContain('SEARCH_CONFIG = "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/search/config.json"');
     expect(merged).toContain('SEARCH_CACHE = "C:\\\\\\\\Users\\\\\\\\bob\\\\/.cache/search"');
+  });
+
+  it("uses kagi-cli mcp when only session-token auth is available", () => {
+    const canonical = [
+      "[mcp_servers.kagi-mcp]",
+      'command = "/home/alice/.local/bin/kagi-mcp"',
+      "",
+      "[mcp_servers.kagi-mcp.env]",
+      'KAGI_SESSION_TOKEN = "session-token"',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
+
+    expect(merged).toContain('command = "npx"');
+    expect(merged).toContain('args = [ "-y", "kagi-cli", "mcp" ]');
+    expect(merged).toContain('KAGI_SESSION_TOKEN = "session-token"');
+  });
+
+  it("exports master Kagi env into generated follower MCP config", () => {
+    const canonical = [
+      "[mcp_servers.kagi-mcp]",
+      'command = "/home/alice/.local/bin/kagi-mcp"',
+      ""
+    ].join("\n");
+
+    const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex", { KAGI_API_KEY: "api-key" });
+
+    expect(merged).toContain('command = "npx"');
+    expect(merged).toContain('args = [ "-y", "kagi-mcp" ]');
+    expect(merged).toContain('KAGI_API_KEY = "api-key"');
   });
 
   it("disables master-local MCP commands that have no portable launcher", () => {
@@ -163,13 +194,10 @@ describe("overlay application", () => {
     expect(merged).toContain(".local/bin");
   });
 
-  it("disables npm-backed MCPs when synced env cannot satisfy the package contract", () => {
+  it("disables Kagi MCP when no portable Kagi auth is available", () => {
     const canonical = [
       "[mcp_servers.kagi-mcp]",
       'command = "/home/alice/.local/bin/kagi-mcp"',
-      "",
-      "[mcp_servers.kagi-mcp.env]",
-      'KAGI_SESSION_TOKEN = "session-only"',
       ""
     ].join("\n");
 
@@ -177,7 +205,6 @@ describe("overlay application", () => {
 
     expect(merged).toContain('command = "/home/alice/.local/bin/kagi-mcp"');
     expect(merged).toContain("enabled = false");
-    expect(merged).toContain('KAGI_SESSION_TOKEN = "session-only"');
   });
 
   it("rewrites master-local project trust paths to follower paths", () => {
