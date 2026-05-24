@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -53,6 +53,52 @@ describe("bundle building", () => {
     ]);
     expect(bundle.revision).toBe(computeRevision(bundle.files, bundle.sourceEnv));
     expect(() => verifyBundle(bundle)).not.toThrow();
+  });
+
+  it("exports generic npm and source MCP artifacts from command shapes", async () => {
+    const root = await tempDir("mcp-artifacts");
+    const home = path.join(root, "home");
+    const codex = path.join(home, ".codex");
+    const npmPackage = path.join(home, ".bun", "install", "global", "node_modules", "@scope", "tool");
+    const npmBin = path.join(home, ".bun", "bin");
+    const sourcePackage = path.join(home, "workspace", "local-mcp");
+    await mkdir(path.join(npmPackage, "dist"), { recursive: true });
+    await mkdir(npmBin, { recursive: true });
+    await mkdir(path.join(sourcePackage, "dist"), { recursive: true });
+    await mkdir(codex, { recursive: true });
+    await writeFile(path.join(npmPackage, "package.json"), JSON.stringify({ name: "@scope/tool", bin: { "tool": "dist/index.js" } }));
+    await writeFile(path.join(npmPackage, "dist", "index.js"), "#!/usr/bin/env node\n");
+    await writeFile(path.join(npmBin, "tool"), "#!/usr/bin/env node\n");
+    await chmod(path.join(npmBin, "tool"), 0o755);
+    await writeFile(path.join(sourcePackage, "package.json"), JSON.stringify({ name: "local-mcp", dependencies: {} }));
+    await writeFile(path.join(sourcePackage, "dist", "cli.js"), "console.log('ok')\n");
+    await writeFile(path.join(codex, "config.toml"), [
+      "[mcp_servers.npm_tool]",
+      `command = "${path.join(npmBin, "tool")}"`,
+      "",
+      "[mcp_servers.source_tool]",
+      'command = "node"',
+      `args = ["${path.join(sourcePackage, "dist", "cli.js")}", "--stdio"]`,
+      ""
+    ].join("\n"));
+
+    await rm(path.join(npmBin, "tool"), { force: true });
+    await symlink(path.relative(npmBin, path.join(npmPackage, "dist", "index.js")), path.join(npmBin, "tool"));
+
+    const bundle = await buildBundle(codex);
+
+    expect(bundle.mcpArtifacts?.npm_tool).toMatchObject({
+      kind: "npm",
+      packages: ["@scope/tool"],
+      binary: "tool",
+      args: []
+    });
+    expect(bundle.mcpArtifacts?.source_tool).toMatchObject({
+      kind: "node-source",
+      command: "node",
+      entrypoint: "dist/cli.js",
+      args: ["--stdio"]
+    });
   });
 });
 

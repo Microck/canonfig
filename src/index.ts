@@ -3,7 +3,7 @@ import { Command, Option } from "commander";
 import chokidar from "chokidar";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, request } from "node:http";
-import { chmod, lstat, mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.13";
+const VERSION = "0.4.0";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -24,6 +24,8 @@ const CACHE_BUNDLE_FILE = "bundle.json";
 const APPLIED_FILES_FILE = "applied-files.json";
 const MCP_MANIFEST_FILE = "mcp-manifest.json";
 const MANAGED_MCP_RUNNER_FILE = "codexport-mcp-run.mjs";
+const MAX_MCP_ARTIFACT_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_MCP_ARTIFACT_TOTAL_BYTES = 75 * 1024 * 1024;
 
 const INCLUDE_ROOTS = [
   "AGENTS.md",
@@ -78,6 +80,7 @@ interface Bundle {
   revision: string;
   files: FileEntry[];
   sourceEnv?: Record<string, string>;
+  mcpArtifacts?: Record<string, McpArtifact>;
 }
 
 interface MasterIdentity {
@@ -102,6 +105,7 @@ interface McpManifest {
   sourceRoot?: string;
   sourceEnv?: Record<string, string>;
   servers: Record<string, Json>;
+  artifacts?: Record<string, McpArtifact>;
 }
 
 interface CliContext {
@@ -117,6 +121,37 @@ interface McpLaunchSpec {
   command: string;
   args: string[];
   repair?: McpRepairSpec;
+}
+
+type McpArtifact = NpmMcpArtifact | UvMcpArtifact | NodeSourceMcpArtifact;
+
+interface NpmMcpArtifact {
+  kind: "npm";
+  packages: string[];
+  binary: string;
+  args: string[];
+  cacheKey: string;
+}
+
+interface UvMcpArtifact {
+  kind: "uv";
+  from: string;
+  binary: string;
+  args: string[];
+}
+
+interface NodeSourceMcpArtifact {
+  kind: "node-source";
+  command: "node" | "bun";
+  entrypoint: string;
+  args: string[];
+  files: FileEntry[];
+  hash: string;
+}
+
+interface ArtifactBudget {
+  totalBytes: number;
+  tooLarge: boolean;
 }
 
 interface McpRepairSpec {
@@ -314,27 +349,35 @@ async function walkIncluded(root: string, absolute: string, files: FileEntry[]):
   }
 }
 
-function computeRevision(files: FileEntry[], sourceEnv: Record<string, string> = {}): string {
+function computeRevision(files: FileEntry[], sourceEnv: Record<string, string> = {}, mcpArtifacts: Record<string, McpArtifact> = {}): string {
   const normalized = files.map((file) => ({
     path: file.path,
     mode: file.mode,
     kind: file.kind,
     contentHash: sha256(Buffer.from(file.content, "base64"))
   }));
-  return sha256(JSON.stringify({ files: normalized, sourceEnv }));
+  const normalizedArtifacts = Object.fromEntries(Object.entries(mcpArtifacts).map(([name, artifact]) => [
+    name,
+    artifact.kind === "node-source"
+      ? { ...artifact, files: artifact.files.map((file) => ({ path: file.path, mode: file.mode, kind: file.kind, contentHash: sha256(Buffer.from(file.content, "base64")) })) }
+      : artifact
+  ]));
+  return sha256(JSON.stringify({ files: normalized, sourceEnv, mcpArtifacts: normalizedArtifacts }));
 }
 
 async function buildBundle(codexDir: string): Promise<Bundle> {
   const files = await collectFiles(codexDir);
   const sourceEnv = collectSourceEnv();
-  const revision = computeRevision(files, sourceEnv);
+  const mcpArtifacts = await buildMcpArtifacts(codexDir);
+  const revision = computeRevision(files, sourceEnv, mcpArtifacts);
   return {
     version: 1,
     builtAt: new Date().toISOString(),
     sourceRoot: codexDir,
     revision,
     files,
-    sourceEnv
+    sourceEnv,
+    mcpArtifacts
   };
 }
 
@@ -426,13 +469,21 @@ function verifyBundle(bundle: Bundle): void {
   if (bundle.version !== 1 || !Array.isArray(bundle.files)) {
     throw new CliError("Bundle has an unsupported format.", 1);
   }
-  const actualRevision = computeRevision(bundle.files, bundle.sourceEnv ?? {});
+  const actualRevision = computeRevision(bundle.files, bundle.sourceEnv ?? {}, bundle.mcpArtifacts ?? {});
   if (bundle.revision !== actualRevision) {
     throw new CliError(`Bundle revision mismatch. Expected ${bundle.revision}, computed ${actualRevision}.`, 1);
   }
   for (const file of bundle.files) {
     if (path.isAbsolute(file.path) || file.path.includes("..") || file.path.includes("\\")) {
       throw new CliError(`Bundle contains unsafe path: ${file.path}`, 1);
+    }
+  }
+  for (const [name, artifact] of Object.entries(bundle.mcpArtifacts ?? {})) {
+    if (artifact.kind !== "node-source") continue;
+    for (const file of artifact.files) {
+      if (path.isAbsolute(file.path) || file.path.includes("..") || file.path.includes("\\")) {
+        throw new CliError(`MCP artifact ${name} contains unsafe path: ${file.path}`, 1);
+      }
     }
   }
 }
@@ -503,7 +554,7 @@ function rewritePortableConfig(canonical: string, localConfig: LocalConfig, sour
   return stringifyToml(parsed as Record<string, Json>);
 }
 
-function buildMcpManifest(canonical: string, sourceRoot?: string, sourceEnv: Record<string, string> = {}): McpManifest | undefined {
+function buildMcpManifest(canonical: string, sourceRoot?: string, sourceEnv: Record<string, string> = {}, artifacts: Record<string, McpArtifact> = {}): McpManifest | undefined {
   let parsed: Record<string, unknown>;
   try {
     parsed = parseTomlObject(canonical, "canonical config.toml");
@@ -519,7 +570,274 @@ function buildMcpManifest(canonical: string, sourceRoot?: string, sourceEnv: Rec
     mergeSourceEnvForMcp(name, server, sourceEnv);
     servers[name] = server as Json;
   }
-  return { version: 1, sourceRoot, sourceEnv, servers };
+  return { version: 1, sourceRoot, sourceEnv, servers, artifacts };
+}
+
+async function buildMcpArtifacts(codexDir: string): Promise<Record<string, McpArtifact>> {
+  const configText = await readTextIfExists(path.join(codexDir, "config.toml"));
+  if (!configText) return {};
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseTomlObject(configText, "canonical config.toml");
+  } catch {
+    return {};
+  }
+  const mcpServers = parsed.mcp_servers;
+  if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) return {};
+  const artifacts: Record<string, McpArtifact> = {};
+  const sourceHome = inferHomeFromCodexDir(codexDir);
+  for (const [name, rawServer] of Object.entries(mcpServers as Record<string, unknown>)) {
+    if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) continue;
+    const artifact = await inferMcpArtifact(name, rawServer as Record<string, unknown>, sourceHome);
+    if (artifact) artifacts[name] = artifact;
+  }
+  return artifacts;
+}
+
+async function inferMcpArtifact(name: string, server: Record<string, unknown>, sourceHome: string | undefined): Promise<McpArtifact | undefined> {
+  if (typeof server.url === "string") return undefined;
+  const command = typeof server.command === "string" ? server.command : undefined;
+  if (!command) return undefined;
+  const args = Array.isArray(server.args) && allStrings(server.args) ? server.args as string[] : [];
+  const commandName = basenameAnyPlatform(command);
+  if (commandName === "npx" || commandName === "bunx" || commandName === "uvx") return undefined;
+
+  if ((commandName === "node" || commandName === "bun") && typeof args[0] === "string" && isAbsoluteAnyPlatform(args[0])) {
+    return await inferArtifactFromEntrypoint(name, commandName as "node" | "bun", args[0], args.slice(1), sourceHome);
+  }
+
+  const commandPath = await resolveMasterCommandPath(command);
+  if (!commandPath) return undefined;
+  return await inferArtifactFromCommandPath(name, commandPath, commandName, args, sourceHome);
+}
+
+async function inferArtifactFromCommandPath(name: string, commandPath: string, binaryHint: string, args: string[], sourceHome: string | undefined): Promise<McpArtifact | undefined> {
+  const resolved = await realpathIfExists(commandPath);
+  if (!resolved) return undefined;
+  const npmArtifact = await inferNpmArtifactFromEntrypoint(name, resolved, binaryHint, args);
+  if (npmArtifact) return npmArtifact;
+  const importedNpmArtifact = await inferNpmArtifactFromScriptImport(name, resolved, binaryHint, args);
+  if (importedNpmArtifact) return importedNpmArtifact;
+  const uvArtifact = await inferUvArtifactFromCommandPath(resolved, binaryHint, args);
+  if (uvArtifact) return uvArtifact;
+  return await inferArtifactFromEntrypoint(name, "node", resolved, args, sourceHome);
+}
+
+async function inferNpmArtifactFromScriptImport(name: string, scriptPath: string, binaryHint: string, args: string[]): Promise<NpmMcpArtifact | undefined> {
+  const text = await readTextIfExists(scriptPath);
+  if (!text || text.includes("\0")) return undefined;
+  const match = text.match(/(?:import\(|from\s+)["']([^"']*node_modules[^"']+)["']/);
+  if (!match?.[1]) return undefined;
+  return inferNpmArtifactFromEntrypoint(name, match[1], binaryHint, args);
+}
+
+async function inferArtifactFromEntrypoint(name: string, command: "node" | "bun", entrypoint: string, args: string[], sourceHome: string | undefined): Promise<McpArtifact | undefined> {
+  const npmArtifact = await inferNpmArtifactFromEntrypoint(name, entrypoint, basenameAnyPlatform(entrypoint), args);
+  if (npmArtifact) return npmArtifact;
+  const sourceRoot = await findPackageRoot(path.dirname(entrypoint));
+  if (!sourceRoot || isInsideNodeModules(sourceRoot)) return undefined;
+  if (sourceHome && !normalizePathForCompare(sourceRoot).startsWith(`${normalizePathForCompare(sourceHome)}/`)) return undefined;
+  const files = await collectArtifactFiles(sourceRoot);
+  if (!files) return undefined;
+  if (!files.length) return undefined;
+  const entryRelative = normalizeRelative(path.relative(sourceRoot, entrypoint));
+  return {
+    kind: "node-source",
+    command,
+    entrypoint: entryRelative,
+    args,
+    files,
+    hash: computeArtifactFilesHash(files)
+  };
+}
+
+async function inferNpmArtifactFromEntrypoint(name: string, entrypoint: string, binaryHint: string, args: string[]): Promise<NpmMcpArtifact | undefined> {
+  const resolved = await realpathIfExists(entrypoint);
+  if (!resolved || !isInsideNodeModules(resolved)) return undefined;
+  const packageRoot = await findNodeModulesPackageRoot(resolved);
+  if (!packageRoot) return undefined;
+  const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as { name?: string; bin?: string | Record<string, string> };
+  if (!packageJson.name) return undefined;
+  const binary = npmBinaryFromPackageJson(packageJson, packageRoot, resolved, binaryHint);
+  return {
+    kind: "npm",
+    packages: [packageJson.name],
+    binary,
+    args,
+    cacheKey: safeCacheKey(`${name}-${packageJson.name}-${binary}`)
+  };
+}
+
+async function inferUvArtifactFromCommandPath(commandPath: string, binary: string, args: string[]): Promise<UvMcpArtifact | undefined> {
+  const normalized = normalizePathForCompare(commandPath);
+  const marker = "/.local/share/uv/tools/";
+  const markerIndex = normalized.indexOf(marker);
+  if (markerIndex === -1) return undefined;
+  const afterMarker = normalized.slice(markerIndex + marker.length);
+  const toolName = afterMarker.split("/")[0];
+  if (!toolName) return undefined;
+  const toolRoot = normalized.slice(0, markerIndex + marker.length + toolName.length);
+  const from = await inferUvFromSpec(toolRoot, commandPath, toolName);
+  return { kind: "uv", from, binary, args };
+}
+
+async function inferUvFromSpec(toolRoot: string, commandPath: string, fallback: string): Promise<string> {
+  const topLevelModule = await inferPythonConsoleModule(commandPath);
+  const directUrl = await firstFileUnder(toolRoot, "direct_url.json");
+  if (directUrl) {
+    try {
+      const parsed = JSON.parse(await readFile(directUrl, "utf8")) as { url?: string };
+      if (parsed.url && !parsed.url.startsWith("file:")) return parsed.url;
+    } catch {
+      // Fall through to metadata. Invalid direct_url metadata should not block export.
+    }
+  }
+  const metadata = topLevelModule
+    ? await metadataForPythonModule(toolRoot, topLevelModule)
+    : await firstMatchingFileUnder(toolRoot, (filePath) => filePath.endsWith(".dist-info/METADATA"));
+  if (metadata) {
+    const text = await readFile(metadata, "utf8");
+    const match = text.match(/^Name:\s*(.+)$/m);
+    if (match?.[1]) return match[1].trim();
+  }
+  return fallback;
+}
+
+async function inferPythonConsoleModule(commandPath: string): Promise<string | undefined> {
+  const text = await readTextIfExists(commandPath);
+  if (!text) return undefined;
+  const match = text.match(/^from\s+([A-Za-z0-9_]+)(?:\.|\s+)/m);
+  return match?.[1];
+}
+
+async function metadataForPythonModule(toolRoot: string, moduleName: string): Promise<string | undefined> {
+  if (!(await pathExists(toolRoot))) return undefined;
+  for (const entry of await readdir(toolRoot, { withFileTypes: true })) {
+    const absolute = path.join(toolRoot, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name.endsWith(".dist-info")) {
+        const topLevel = path.join(absolute, "top_level.txt");
+        const topLevelText = await readTextIfExists(topLevel);
+        if (topLevelText?.split(/\r?\n/).includes(moduleName)) return path.join(absolute, "METADATA");
+      }
+      const found = await metadataForPythonModule(absolute, moduleName);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+async function resolveMasterCommandPath(command: string): Promise<string | undefined> {
+  if (isAbsoluteAnyPlatform(command) || command.includes("/") || command.includes("\\")) {
+    return await pathExists(command) ? command : undefined;
+  }
+  return await resolveExecutable(command, process.env);
+}
+
+async function realpathIfExists(filePath: string): Promise<string | undefined> {
+  if (!(await pathExists(filePath))) return undefined;
+  try {
+    return await realpath(filePath);
+  } catch {
+    return filePath;
+  }
+}
+
+async function findNodeModulesPackageRoot(entrypoint: string): Promise<string | undefined> {
+  let current = path.dirname(entrypoint);
+  while (true) {
+    const packageJsonPath = path.join(current, "package.json");
+    if (await pathExists(packageJsonPath)) {
+      const parent = path.basename(path.dirname(current));
+      const grandparent = path.basename(path.dirname(path.dirname(current)));
+      if (parent === "node_modules" || grandparent === "node_modules") return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+function npmBinaryFromPackageJson(packageJson: { name?: string; bin?: string | Record<string, string> }, packageRoot: string, entrypoint: string, binaryHint: string): string {
+  if (typeof packageJson.bin === "string") return packageJson.name?.split("/").pop() ?? binaryHint;
+  if (packageJson.bin && typeof packageJson.bin === "object") {
+    const entryRelative = normalizePathForCompare(path.relative(packageRoot, entrypoint));
+    for (const [binName, target] of Object.entries(packageJson.bin)) {
+      if (normalizePathForCompare(target).replace(/^\.\//, "") === entryRelative) return binName;
+    }
+    if (packageJson.bin[binaryHint]) return binaryHint;
+    const first = Object.keys(packageJson.bin)[0];
+    if (first) return first;
+  }
+  return binaryHint;
+}
+
+function isInsideNodeModules(value: string): boolean {
+  return normalizePathForCompare(value).split("/").includes("node_modules");
+}
+
+async function collectArtifactFiles(root: string): Promise<FileEntry[] | undefined> {
+  const files: FileEntry[] = [];
+  const budget: ArtifactBudget = { totalBytes: 0, tooLarge: false };
+  await walkArtifact(root, root, files, budget);
+  if (budget.tooLarge) return undefined;
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return files;
+}
+
+async function walkArtifact(root: string, absolute: string, files: FileEntry[], budget: ArtifactBudget): Promise<void> {
+  if (budget.tooLarge) return;
+  const relative = normalizeRelative(path.relative(root, absolute));
+  if (relative) {
+    const parts = relative.split("/");
+    if (parts.some((part) => part === "node_modules" || part === ".git" || part === ".jj" || part === ".venv" || part === "venv" || part === "__pycache__" || part.endsWith(".egg-info") || shouldExclude(relative))) return;
+  }
+  const entryStat = await lstat(absolute);
+  if (entryStat.isDirectory()) {
+    for (const child of await readdir(absolute)) {
+      await walkArtifact(root, path.join(absolute, child), files, budget);
+    }
+    return;
+  }
+  if (!entryStat.isFile()) return;
+  if (entryStat.size > MAX_MCP_ARTIFACT_FILE_BYTES || budget.totalBytes + entryStat.size > MAX_MCP_ARTIFACT_TOTAL_BYTES) {
+    budget.tooLarge = true;
+    return;
+  }
+  budget.totalBytes += entryStat.size;
+  files.push({
+    path: relative,
+    mode: entryStat.mode & 0o777,
+    kind: "file",
+    content: (await readFile(absolute)).toString("base64")
+  });
+}
+
+function computeArtifactFilesHash(files: FileEntry[]): string {
+  return sha256(JSON.stringify(files.map((file) => ({
+    path: file.path,
+    mode: file.mode,
+    kind: file.kind,
+    contentHash: sha256(Buffer.from(file.content, "base64"))
+  }))));
+}
+
+async function firstFileUnder(root: string, fileName: string): Promise<string | undefined> {
+  return firstMatchingFileUnder(root, (filePath) => path.basename(filePath) === fileName);
+}
+
+async function firstMatchingFileUnder(root: string, predicate: (filePath: string) => boolean): Promise<string | undefined> {
+  if (!(await pathExists(root))) return undefined;
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const absolute = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      const found = await firstMatchingFileUnder(absolute, predicate);
+      if (found) return found;
+    } else if (entry.isFile() && predicate(absolute)) {
+      return absolute;
+    }
+  }
+  return undefined;
 }
 
 function mergeSourceEnvForMcp(name: string, server: Record<string, unknown>, sourceEnv: Record<string, string>): void {
@@ -852,6 +1170,10 @@ function normalizePathForCompare(value: string): string {
   return value.replace(/\\/g, "/").replace(/\/+$/g, "");
 }
 
+function safeCacheKey(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "artifact";
+}
+
 async function bundleForCurrentRevision(ctx: CliContext, local: LocalConfig, meta: { revision: string }, timeoutMs: number): Promise<Bundle> {
   const cached = await readJsonIfExists<Bundle>(path.join(ctx.stateDir, CACHE_BUNDLE_FILE));
   if (cached?.revision === meta.revision) {
@@ -926,7 +1248,7 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
   if (configEntry) {
     const canonicalConfig = decodeFile(configEntry).toString("utf8");
     const localMcpText = await readTextIfExists(path.join(ctx.stateDir, MCPS_LOCAL_FILE));
-    const manifest = buildMcpManifest(canonicalConfig, bundle.sourceRoot, bundle.sourceEnv);
+    const manifest = buildMcpManifest(canonicalConfig, bundle.sourceRoot, bundle.sourceEnv, bundle.mcpArtifacts ?? {});
     if (manifest) {
       await writeJsonAtomic(path.join(ctx.stateDir, MCP_MANIFEST_FILE), manifest as unknown as Json);
     }
@@ -1065,16 +1387,76 @@ async function commandMcpRun(ctx: CliContext, name: string): Promise<void> {
     : [];
   if (!command) throw new CliError(`MCP ${name} has no command.`, 1);
   ensurePortablePathEnv(server);
+  const childEnv = { ...process.env, ...portableServerEnv(server, manifest.sourceRoot, sourceHome, { ...localConfig, codexDir: ctx.codexDir }) };
+  const artifact = manifest.artifacts?.[name];
+  if (artifact) {
+    await runMcpArtifact(ctx, artifact, childEnv, { ...localConfig, codexDir: ctx.codexDir }, manifest.sourceRoot, sourceHome);
+    return;
+  }
 
   const launcher = mcpHasRequiredPortableEnv(name, command, server)
     ? portableMcpLauncher(name, command, args, sourceHome, server)
     : undefined;
   const runCommandName = launcher?.command ?? rewritePortableCommand(command, manifest.sourceRoot);
   const runArgs = launcher?.args ?? args;
-  const childEnv = { ...process.env, ...portableServerEnv(server, manifest.sourceRoot, sourceHome, { ...localConfig, codexDir: ctx.codexDir }) };
   await repairMcpLauncherIfNeeded(launcher, childEnv);
   await repairGitquarryEnvIfNeeded(name, childEnv);
   await runCommandWithEnv(runCommandName, runArgs, childEnv);
+}
+
+async function runMcpArtifact(ctx: CliContext, artifact: McpArtifact, env: NodeJS.ProcessEnv, localConfig: LocalConfig, sourceRoot: string | undefined, sourceHome: string | undefined): Promise<void> {
+  if (artifact.kind === "npm") {
+    const launcher = await prepareNpmArtifact(ctx, artifact, env);
+    await runCommandWithEnv(launcher.command, rewriteArtifactArgs(launcher.args, localConfig, sourceRoot, sourceHome), env);
+    return;
+  }
+  if (artifact.kind === "uv") {
+    await repairMcpLauncherIfNeeded({ command: "uvx", args: [], repair: { whenMissing: "uvx", command: "__codexport_install_uv", args: [] } }, env);
+    await runCommandWithEnv("uvx", ["--from", artifact.from, artifact.binary, ...rewriteArtifactArgs(artifact.args, localConfig, sourceRoot, sourceHome)], env);
+    return;
+  }
+  const sourceDir = await hydrateNodeSourceArtifact(ctx, artifact);
+  const entrypoint = path.join(sourceDir, artifact.entrypoint);
+  await ensureNodeSourceDependencies(sourceDir, env);
+  await runCommandWithEnv(artifact.command, [entrypoint, ...rewriteArtifactArgs(artifact.args, localConfig, sourceRoot, sourceHome)], env);
+}
+
+function rewriteArtifactArgs(args: string[], localConfig: LocalConfig, sourceRoot: string | undefined, sourceHome: string | undefined): string[] {
+  return args.map((arg) => expandPathVariables(rewritePortablePath(arg, sourceRoot, sourceHome), localConfig));
+}
+
+async function prepareNpmArtifact(ctx: CliContext, artifact: NpmMcpArtifact, env: NodeJS.ProcessEnv): Promise<{ command: string; args: string[] }> {
+  const installDir = path.join(ctx.stateDir, "mcp-artifacts", "npm", artifact.cacheKey);
+  const binDir = path.join(installDir, "node_modules", ".bin");
+  const binaryPath = path.join(binDir, platform() === "win32" ? `${artifact.binary}.cmd` : artifact.binary);
+  if (!(await pathExists(binaryPath))) {
+    await ensureDir(installDir);
+    await runRepairCommandWithEnv("npm", ["install", "--prefix", installDir, "--no-audit", "--no-fund", "--save-exact", ...artifact.packages], env);
+  }
+  if (!(await pathExists(binaryPath))) {
+    throw new CliError(`MCP npm artifact install completed but ${artifact.binary} was not created in ${binDir}.`, 1);
+  }
+  return { command: binaryPath, args: artifact.args };
+}
+
+async function hydrateNodeSourceArtifact(ctx: CliContext, artifact: NodeSourceMcpArtifact): Promise<string> {
+  const targetDir = path.join(ctx.stateDir, "mcp-artifacts", "source", artifact.hash);
+  const markerPath = path.join(targetDir, ".codexport-artifact-hash");
+  if ((await readTextIfExists(markerPath))?.trim() === artifact.hash) return targetDir;
+  await rm(targetDir, { recursive: true, force: true });
+  for (const file of artifact.files) {
+    const target = path.join(targetDir, file.path);
+    await ensureDir(path.dirname(target));
+    await writeFileReplacingExisting(target, Buffer.from(file.content, "base64"), { mode: file.mode });
+  }
+  await writeFile(markerPath, `${artifact.hash}\n`, "utf8");
+  return targetDir;
+}
+
+async function ensureNodeSourceDependencies(sourceDir: string, env: NodeJS.ProcessEnv): Promise<void> {
+  if (!(await pathExists(path.join(sourceDir, "package.json")))) return;
+  if (await pathExists(path.join(sourceDir, "node_modules"))) return;
+  await runRepairCommandWithEnv("npm", ["install", "--prefix", sourceDir, "--omit=dev", "--no-audit", "--no-fund"], env);
 }
 
 function portableServerEnv(server: Record<string, unknown>, sourceRoot: string | undefined, sourceHome: string | undefined, localConfig: LocalConfig): NodeJS.ProcessEnv {
@@ -1278,7 +1660,7 @@ function runCommand(command: string, args: string[]): Promise<void> {
 
 function runCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["inherit", "pipe", "pipe"], env });
+    const child = spawn(command, args, { stdio: ["inherit", "pipe", "pipe"], env, shell: needsWindowsShell(command) });
     let stdoutBuffer = "";
     child.stdout.on("data", (chunk: Buffer) => {
       stdoutBuffer += chunk.toString("utf8");
@@ -1311,7 +1693,7 @@ function writeMcpStdoutLine(line: string): void {
 
 function runRepairCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env, shell: needsWindowsShell(command) });
     child.stdout.on("data", (chunk: Buffer) => process.stderr.write(chunk));
     child.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
     child.on("error", (error) => {
@@ -1325,6 +1707,12 @@ function runRepairCommandWithEnv(command: string, args: string[], env: NodeJS.Pr
       else reject(new CliError(`${command} ${args.join(" ")} exited with ${code}`, code ?? 1));
     });
   });
+}
+
+function needsWindowsShell(command: string): boolean {
+  if (platform() !== "win32") return false;
+  const lower = command.toLowerCase();
+  return lower.endsWith(".cmd") || lower.endsWith(".bat") || !path.extname(command);
 }
 
 async function installMasterService(ctx: CliContext, port: number, dryRun: boolean): Promise<string> {
@@ -1643,6 +2031,7 @@ async function main(argv: string[]): Promise<void> {
 
 function isCliEntrypoint(): boolean {
   if (!process.argv[1]) return false;
+  if (!existsSync(process.argv[1])) return false;
   return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
 }
 

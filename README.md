@@ -12,7 +12,7 @@
 
 the master serves a content-hashed bundle from its `~/.codex` directory. followers pin the master's fingerprint on join, fetch updates over a Tailscale-reachable HTTP address, and apply updates at Codex `SessionStart` through a short best-effort hook.
 
-MCPs are exported as full definitions, including env needed by supported tools. command-based MCPs are written through a quiet local managed launcher, so followers run `node ~/.codexport/bin/codexport-mcp-run.mjs mcp run <name>` and let `codexport` translate master-local paths into repairable package, Python tool, or source-built launchers.
+MCPs are exported as full definitions, including env needed by supported tools. command-based MCPs are written through a quiet local managed launcher, so followers run `node ~/.codexport/bin/codexport-mcp-run.mjs mcp run <name>` and let `codexport` translate master-local paths into portable npm, uv, or source artifacts when the master command shape can be inferred.
 
 [npm](https://www.npmjs.com/package/codexport) | [github](https://github.com/Microck/codexport)
 
@@ -24,7 +24,7 @@ if you keep a carefully tuned Codex setup on one machine and want the same defau
 - let followers preserve local MCPs, local skills, trust entries, and path overrides
 - sync auth-bearing files through the private Tailscale path instead of a plaintext GitHub commit
 - export every master MCP definition instead of dropping machine-local entries
-- repair known MCP launchers on followers through npm, uvx, released binaries, or source builds
+- hydrate inferred MCP artifacts on followers through npm, uvx, or copied local source trees
 - refresh followers at Codex session startup without interrupting active sessions
 - use content-hash revisions and pinned master fingerprints instead of blind file copies
 
@@ -127,17 +127,18 @@ command = "node"
 args = [ "~/.codexport/bin/codexport-mcp-run.mjs", "mcp", "run", "example" ]
 ```
 
-when Codex starts an MCP, `codexport mcp run` reads the original manifest entry, restores transferred environment values, rewrites master paths to follower paths, and chooses a runnable target:
+when Codex starts an MCP, `codexport mcp run` reads the original manifest entry, restores transferred environment values, rewrites master paths to follower paths, and chooses a runnable target. the master also exports MCP artifact metadata when it can infer the command shape:
 
 | source shape | follower action |
 | --- | --- |
-| npm-backed MCPs | run with `npx -y <package>` |
-| Python MCP tools | run with `uvx --from <package> <binary>` and install `uv` when missing |
+| npm package shims or `node .../node_modules/...` | install and run the inferred npm package/bin |
+| Python uv tool shims | run with `uvx --from <package-or-url> <binary>` and install `uv` when missing |
+| local Node package source | copy the source artifact to `~/.codexport/mcp-artifacts`, install production deps, and run the original entrypoint |
 | FFF MCP | download the matching upstream release binary when missing |
 | GitQuarry MCP | build `gitquarry-mcp` from its public source when missing and repair `GITQUARRY_CLI_PATH` |
 | URL MCPs | keep the URL config unchanged |
 
-unsupported local binaries are still kept in the manifest and generated config. if a follower cannot repair one, startup fails with the missing tool and repair step instead of silently removing the MCP.
+unsupported local binaries are still kept in the manifest and generated config. if a follower cannot repair one, startup fails with the missing tool and repair step instead of silently removing the MCP. large runtime payloads are not embedded in source artifacts; they must be installable or reachable from the follower.
 
 ## local follower state
 
