@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -529,7 +529,7 @@ function runCommand(command: string, args: string[]): Promise<void> {
 }
 
 async function installMasterService(ctx: CliContext, port: number, dryRun: boolean): Promise<string> {
-  const command = `codexport master serve --port ${port}`;
+  const command = `${process.execPath} ${realpathSync(fileURLToPath(import.meta.url))} master serve --port ${port}`;
   if (platform() === "linux") {
     const unitDir = path.join(ctx.homeDir, ".config", "systemd", "user");
     const unitPath = path.join(unitDir, "codexport-master.service");
