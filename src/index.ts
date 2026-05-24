@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.7";
+const VERSION = "0.3.8";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -977,8 +977,32 @@ async function writeManagedMcpRunner(ctx: CliContext): Promise<string> {
   const runnerPath = path.join(binDir, MANAGED_MCP_RUNNER_FILE);
   await ensureDir(binDir);
   await writeFileReplacingExisting(runnerPath, await readFile(fileURLToPath(import.meta.url)), { mode: 0o755 });
+  await copyManagedRunnerDependencies(binDir);
   if (platform() !== "win32") await chmod(runnerPath, 0o755);
   return runnerPath;
+}
+
+async function copyManagedRunnerDependencies(binDir: string): Promise<void> {
+  const packageRoot = await findPackageRoot(path.dirname(fileURLToPath(import.meta.url)));
+  if (!packageRoot) return;
+  const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as { dependencies?: Record<string, string> };
+  for (const packageName of Object.keys(packageJson.dependencies ?? {})) {
+    const source = path.join(packageRoot, "node_modules", ...packageName.split("/"));
+    if (!(await pathExists(source))) continue;
+    const target = path.join(binDir, "node_modules", ...packageName.split("/"));
+    await rm(target, { recursive: true, force: true });
+    await copyDirectory(source, target);
+  }
+}
+
+async function findPackageRoot(startDir: string): Promise<string | undefined> {
+  let current = startDir;
+  while (true) {
+    if (await pathExists(path.join(current, "package.json"))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
 }
 
 async function commandMcpRun(ctx: CliContext, name: string): Promise<void> {
