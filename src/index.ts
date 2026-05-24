@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -22,6 +22,8 @@ const MCPS_LOCAL_FILE = "mcps.local.toml";
 const LAST_BUNDLE_FILE = "last-bundle.json";
 const CACHE_BUNDLE_FILE = "bundle.json";
 const APPLIED_FILES_FILE = "applied-files.json";
+const MCP_MANIFEST_FILE = "mcp-manifest.json";
+const MANAGED_MCP_PACKAGE = "codexport@latest";
 
 const INCLUDE_ROOTS = [
   "AGENTS.md",
@@ -93,6 +95,13 @@ interface LocalConfig {
   allowMcpOverrides?: string[];
   allowSkillOverrides?: string[];
   pathVariables?: Record<string, string>;
+}
+
+interface McpManifest {
+  version: 1;
+  sourceRoot?: string;
+  sourceEnv?: Record<string, string>;
+  servers: Record<string, Json>;
 }
 
 interface CliContext {
@@ -474,10 +483,29 @@ function rewritePortableConfig(canonical: string, sourceRoot?: string, sourceEnv
     if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) continue;
     const server = rawServer as Record<string, unknown>;
     mergeSourceEnvForMcp(name, server, sourceEnv);
-    rewritePortableMcpServer(name, server, sourceRoot, sourceHome);
+    rewriteManagedMcpServer(name, server, sourceRoot, sourceHome);
   }
 
   return stringifyToml(parsed as Record<string, Json>);
+}
+
+function buildMcpManifest(canonical: string, sourceRoot?: string, sourceEnv: Record<string, string> = {}): McpManifest | undefined {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseTomlObject(canonical, "canonical config.toml");
+  } catch {
+    return undefined;
+  }
+  const mcpServers = parsed.mcp_servers;
+  if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) return undefined;
+  const servers: Record<string, Json> = {};
+  for (const [name, rawServer] of Object.entries(mcpServers as Record<string, unknown>)) {
+    if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) continue;
+    const server = structuredClone(rawServer) as Record<string, unknown>;
+    mergeSourceEnvForMcp(name, server, sourceEnv);
+    servers[name] = server as Json;
+  }
+  return { version: 1, sourceRoot, sourceEnv, servers };
 }
 
 function mergeSourceEnvForMcp(name: string, server: Record<string, unknown>, sourceEnv: Record<string, string>): void {
@@ -505,24 +533,12 @@ function rewritePortableTableKeys(table: Record<string, unknown>, sourceRoot?: s
   }
 }
 
-function rewritePortableMcpServer(_name: string, server: Record<string, unknown>, sourceRoot?: string, sourceHome?: string): void {
+function rewriteManagedMcpServer(name: string, server: Record<string, unknown>, sourceRoot?: string, sourceHome?: string): void {
   if (typeof server.url === "string") return;
 
-  const command = typeof server.command === "string" ? server.command : undefined;
   const args = Array.isArray(server.args) ? server.args : [];
-  const launcher = command && mcpHasRequiredPortableEnv(_name, command, server) ? portableMcpLauncher(_name, command, args, sourceHome, server) : undefined;
-  if (launcher) {
-    server.command = launcher.command;
-    server.args = launcher.args.map((arg) => rewritePortablePath(arg, sourceRoot, sourceHome));
-  } else if (command && isAbsoluteAnyPlatform(command)) {
-    server.enabled = false;
-  } else if (command) {
-    server.command = rewritePortableCommand(command, sourceRoot);
-  }
-
-  if (!launcher && args.length) {
-    server.args = args.map((arg) => typeof arg === "string" ? rewritePortablePath(arg, sourceRoot, sourceHome) : arg);
-  }
+  server.command = "npx";
+  server.args = ["-y", MANAGED_MCP_PACKAGE, "mcp", "run", name];
 
   if (server.env && typeof server.env === "object" && !Array.isArray(server.env)) {
     for (const [key, value] of Object.entries(server.env as Record<string, unknown>)) {
@@ -761,6 +777,10 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
   if (configEntry) {
     const canonicalConfig = decodeFile(configEntry).toString("utf8");
     const localMcpText = await readTextIfExists(path.join(ctx.stateDir, MCPS_LOCAL_FILE));
+    const manifest = buildMcpManifest(canonicalConfig, bundle.sourceRoot, bundle.sourceEnv);
+    if (manifest) {
+      await writeJsonAtomic(path.join(ctx.stateDir, MCP_MANIFEST_FILE), manifest as unknown as Json);
+    }
     const generated = mergeTomlText(canonicalConfig, localMcpText, { ...localConfig, codexDir: ctx.codexDir }, bundle.sourceRoot, bundle.sourceEnv);
     const configPath = path.join(ctx.codexDir, "config.toml");
     if (await pathExists(configPath)) {
@@ -779,6 +799,45 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
 
   await writeLocalConfig(ctx, { ...localConfig, lastRevision: bundle.revision, codexDir: ctx.codexDir });
   await writeJsonAtomic(path.join(ctx.stateDir, APPLIED_FILES_FILE), bundle.files.map((file) => file.path) as unknown as Json);
+}
+
+async function commandMcpRun(ctx: CliContext, name: string): Promise<void> {
+  const manifest = await readJsonIfExists<McpManifest>(path.join(ctx.stateDir, MCP_MANIFEST_FILE));
+  if (!manifest?.servers?.[name]) {
+    throw new CliError(`No managed MCP named ${name}. Run codexport sync --apply first.`, 1);
+  }
+  const localConfig = await readLocalConfig(ctx);
+  const sourceHome = inferHomeFromCodexDir(manifest.sourceRoot);
+  const server = structuredClone(manifest.servers[name]) as Record<string, unknown>;
+  mergeSourceEnvForMcp(name, server, manifest.sourceEnv ?? {});
+  rewritePortableTableKeys(server, manifest.sourceRoot, sourceHome);
+  if (typeof server.url === "string") {
+    throw new CliError(`MCP ${name} is URL-based and should not be launched through codexport mcp run.`, 2);
+  }
+  const command = typeof server.command === "string" ? expandPathVariables(server.command, { ...localConfig, codexDir: ctx.codexDir }) : undefined;
+  const args = Array.isArray(server.args)
+    ? server.args.map((arg) => typeof arg === "string" ? expandPathVariables(rewritePortablePath(arg, manifest.sourceRoot, sourceHome), { ...localConfig, codexDir: ctx.codexDir }) : String(arg))
+    : [];
+  if (!command) throw new CliError(`MCP ${name} has no command.`, 1);
+
+  const launcher = mcpHasRequiredPortableEnv(name, command, server)
+    ? portableMcpLauncher(name, command, args, sourceHome, server)
+    : undefined;
+  const runCommandName = launcher?.command ?? rewritePortableCommand(command, manifest.sourceRoot);
+  const runArgs = launcher?.args ?? args;
+  const childEnv = { ...process.env, ...portableServerEnv(server, manifest.sourceRoot, sourceHome, { ...localConfig, codexDir: ctx.codexDir }) };
+  await runCommandWithEnv(runCommandName, runArgs, childEnv);
+}
+
+function portableServerEnv(server: Record<string, unknown>, sourceRoot: string | undefined, sourceHome: string | undefined, localConfig: LocalConfig): NodeJS.ProcessEnv {
+  const env = server.env && typeof server.env === "object" && !Array.isArray(server.env) ? server.env as Record<string, unknown> : {};
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string") {
+      out[key] = expandPathVariables(rewritePortablePath(value, sourceRoot, sourceHome), localConfig);
+    }
+  }
+  return out;
 }
 
 async function copyDirectory(source: string, target: string): Promise<void> {
@@ -814,6 +873,22 @@ function runCommand(command: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: "inherit" });
     child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new CliError(`${command} ${args.join(" ")} exited with ${code}`, code ?? 1));
+    });
+  });
+}
+
+function runCommandWithEnv(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: "inherit", env });
+    child.on("error", (error) => {
+      const message = (error as NodeJS.ErrnoException).code === "ENOENT"
+        ? `MCP launcher program not found: ${command}. Install it on this follower or add it to PATH.`
+        : asError(error).message;
+      reject(new CliError(message, 1));
+    });
     child.on("exit", (code) => {
       if (code === 0) resolve();
       else reject(new CliError(`${command} ${args.join(" ")} exited with ${code}`, code ?? 1));
@@ -1100,6 +1175,10 @@ async function main(argv: string[]): Promise<void> {
   program.command("apply")
     .description("Apply the last staged bundle.")
     .action(async (_options, command) => commandApply(contextFromCommand(command)));
+  const mcp = program.command("mcp").description("Run managed follower MCP launchers.");
+  mcp.command("run <name>")
+    .description("Run a synced MCP through codexport's managed launcher.")
+    .action(async (name, _options, command) => commandMcpRun(contextFromCommand(command), name));
   const hook = program.command("hook").description("Manage follower Codex hooks.");
   hook.command("install")
     .description("Install a follower-only Codex SessionStart sync hook.")

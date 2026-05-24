@@ -107,7 +107,7 @@ describe("overlay application", () => {
     );
 
     expect(merged).toContain('command = "npx"');
-    expect(merged).toContain('args = [ "-y", "kagi-mcp" ]');
+    expect(merged).toContain('args = [ "-y", "codexport@latest", "mcp", "run", "kagi-mcp" ]');
     expect(merged).toContain('SEARCH_CONFIG = "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/search/config.json"');
     expect(merged).toContain('SEARCH_CACHE = "C:\\\\\\\\Users\\\\\\\\bob\\\\/.cache/search"');
   });
@@ -125,7 +125,7 @@ describe("overlay application", () => {
     const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
 
     expect(merged).toContain('command = "npx"');
-    expect(merged).toContain('args = [ "-y", "kagi-cli", "mcp" ]');
+    expect(merged).toContain('args = [ "-y", "codexport@latest", "mcp", "run", "kagi-mcp" ]');
     expect(merged).toContain('KAGI_SESSION_TOKEN = "session-token"');
   });
 
@@ -139,7 +139,7 @@ describe("overlay application", () => {
     const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex", { KAGI_API_KEY: "api-key" });
 
     expect(merged).toContain('command = "npx"');
-    expect(merged).toContain('args = [ "-y", "kagi-mcp" ]');
+    expect(merged).toContain('args = [ "-y", "codexport@latest", "mcp", "run", "kagi-mcp" ]');
     expect(merged).toContain('KAGI_API_KEY = "api-key"');
   });
 
@@ -158,12 +158,11 @@ describe("overlay application", () => {
       "/home/alice/.codex"
     );
 
-    expect(merged).toContain('command = "/home/alice/.local/bin/search-mcp"');
-    expect(merged).toContain('enabled = false');
-    expect(merged).toContain('args = [ "--index", "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/indexes/search.db" ]');
+    expect(merged).toContain('command = "npx"');
+    expect(merged).toContain('args = [ "-y", "codexport@latest", "mcp", "run", "search" ]');
   });
 
-  it("preserves already portable MCP commands", () => {
+  it("routes already portable MCP commands through the managed launcher", () => {
     const canonical = [
       "[mcp_servers.package]",
       'command = "npx"',
@@ -174,7 +173,7 @@ describe("overlay application", () => {
     const merged = mergeTomlText(canonical, undefined, {});
 
     expect(merged).toContain('command = "npx"');
-    expect(merged).toContain('args = [ "-y", "some-mcp" ]');
+    expect(merged).toContain('args = [ "-y", "codexport@latest", "mcp", "run", "package" ]');
   });
 
   it("adds common follower user-bin directories to command MCP PATH", () => {
@@ -188,7 +187,7 @@ describe("overlay application", () => {
     const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
 
     expect(merged).toContain('command = "npx"');
-    expect(merged).toContain('args = [ "-y", "@butttons/dora", "mcp" ]');
+    expect(merged).toContain('args = [ "-y", "codexport@latest", "mcp", "run", "dora" ]');
     expect(merged).toContain('PATH = "');
     expect(merged).toContain(".bun/bin");
     expect(merged).toContain(".local/bin");
@@ -203,8 +202,8 @@ describe("overlay application", () => {
 
     const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
 
-    expect(merged).toContain('command = "/home/alice/.local/bin/kagi-mcp"');
-    expect(merged).toContain("enabled = false");
+    expect(merged).toContain('command = "npx"');
+    expect(merged).toContain('args = [ "-y", "codexport@latest", "mcp", "run", "kagi-mcp" ]');
   });
 
   it("rewrites master-local project trust paths to follower paths", () => {
@@ -243,7 +242,7 @@ describe("overlay application", () => {
     const merged = mergeTomlText(canonical, undefined, {});
 
     expect(merged).toContain('command = "npx"');
-    expect(merged).toContain('args = [ "-y", "@scope/web-mcp", "--port", "3000" ]');
+    expect(merged).toContain('args = [ "-y", "codexport@latest", "mcp", "run", "web" ]');
   });
 
   it("rewrites workspace-local node MCP entrypoints to npx packages", () => {
@@ -257,7 +256,7 @@ describe("overlay application", () => {
     const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
 
     expect(merged).toContain('command = "npx"');
-    expect(merged).toContain('args = [ "-y", "reddit-mcp-buddy" ]');
+    expect(merged).toContain('args = [ "-y", "codexport@latest", "mcp", "run", "reddit-mcp-buddy" ]');
   });
 
   it("backs up and generates config.toml with follower-local MCPs", async () => {
