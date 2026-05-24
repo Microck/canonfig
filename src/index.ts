@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.3.12";
+const VERSION = "0.3.13";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -643,6 +643,11 @@ function portableMcpLauncher(name: string, command: string, args: unknown[], sou
   if (name === "qmd" || commandName === "qmd") {
     const remainingArgs = allStrings(args) ? args as string[] : [];
     return { command: "npx", args: ["-y", "-p", "@tobilu/qmd", "qmd", ...remainingArgs] };
+  }
+
+  if (name === "mcp-vnc" || commandName === "mcp-vnc") {
+    const remainingArgs = packageLauncherArgs(commandName, args);
+    return { command: "npx", args: ["-y", "-p", "node-addon-api", "-p", "node-gyp", "-p", "@hrrrsn/mcp-vnc", "mcp-vnc", ...remainingArgs] };
   }
 
   const npmPackage = npmPackageForPortableMcp(name, commandName);

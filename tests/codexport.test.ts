@@ -405,7 +405,7 @@ describe("managed MCP launcher repair", () => {
     });
     expect(portableMcpLauncher("mcp-vnc", "/home/alice/.nvm/bin/mcp-vnc", [], undefined, {})).toEqual({
       command: "npx",
-      args: ["-y", "@hrrrsn/mcp-vnc"]
+      args: ["-y", "-p", "node-addon-api", "-p", "node-gyp", "-p", "@hrrrsn/mcp-vnc", "mcp-vnc"]
     });
     expect(portableMcpLauncher("qmd", "/home/alice/.nvm/bin/qmd", ["mcp"], undefined, {})).toEqual({
       command: "npx",
