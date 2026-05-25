@@ -125,13 +125,19 @@ describe("overlay application", () => {
       "",
       "[mcp_servers.github.headers]",
       'Authorization = "Bearer token"',
+      "",
+      "[mcp_servers.github.env]",
+      'IGNORED_TOKEN = "token"',
       ""
     ].join("\n");
 
-    const merged = mergeTomlText(canonical, undefined, {});
+    const merged = mergeTomlText(canonical, undefined, {}, undefined, { EXPORTED_TOKEN: "token" });
 
     expect(merged).toContain('url = "https://api.githubcopilot.com/mcp/"');
     expect(merged).toContain('Authorization = "Bearer token"');
+    expect(merged).not.toContain("[mcp_servers.github.env]");
+    expect(merged).not.toContain("IGNORED_TOKEN");
+    expect(merged).not.toContain("EXPORTED_TOKEN");
   });
 
   it("rewrites loopback MCP URLs to the enrolled master host", () => {

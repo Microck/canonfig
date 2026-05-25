@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.5.2";
+const VERSION = "0.5.3";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -556,6 +556,10 @@ function rewritePortableConfig(canonical: string, localConfig: LocalConfig, sour
   for (const [name, rawServer] of Object.entries(mcpServers as Record<string, unknown>)) {
     if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) continue;
     const server = rawServer as Record<string, unknown>;
+    if (typeof server.url === "string") {
+      delete server.env;
+      continue;
+    }
     mergeSourceEnvForMcp(server, sourceEnv);
     rewriteManagedMcpServer(name, server, sourceRoot, sourceHome);
   }
