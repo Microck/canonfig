@@ -12,7 +12,7 @@
 
 the master serves a content-hashed bundle from its `~/.codex` directory. followers pin the master's fingerprint on join, fetch updates over a Tailscale-reachable HTTP address, and apply updates at Codex `SessionStart` through a short best-effort hook.
 
-MCPs are exported as full definitions, including env needed by supported tools. command-based MCPs are written through a quiet local managed launcher, so followers run `node ~/.codexport/bin/codexport-mcp-run.mjs mcp run <name>` and let `codexport` translate master-local paths into portable npm, uv, or source artifacts when the master command shape can be inferred.
+MCPs are exported as full definitions, including explicit per-MCP `env` entries. command-based MCPs are written through a quiet local managed launcher, so followers run `node ~/.codexport/bin/codexport-mcp-run.mjs mcp run <name>` and let `codexport` translate master-local paths into portable npm, uv, or source artifacts when the master command shape can be inferred.
 
 [npm](https://www.npmjs.com/package/codexport) | [github](https://github.com/Microck/codexport)
 
@@ -135,11 +135,17 @@ when Codex starts an MCP, `codexport mcp run` reads the original manifest entry,
 | Python uv tool shims | run with `uvx --from <package-or-url> <binary>` and install `uv` when missing |
 | editable/local Python uv tools | copy the source artifact to `~/.codexport/mcp-artifacts` and run it with `uvx --from <artifact>` |
 | local Node package source | copy the source artifact to `~/.codexport/mcp-artifacts`, install production deps, and run the original entrypoint |
-| FFF MCP | download the matching upstream release binary when missing |
-| GitQuarry MCP | build `gitquarry-mcp` from its public source when missing and repair `GITQUARRY_CLI_PATH` |
 | URL MCPs | keep the URL config unchanged |
 
 unsupported local binaries are still kept in the manifest and generated config. if a follower cannot repair one, startup fails with the missing tool and repair step instead of silently removing the MCP. large runtime payloads are not embedded in source artifacts; they must be installable or reachable from the follower.
+
+by default `codexport` exports env values already present in the MCP config. if a required secret only exists in the master process environment, opt it in explicitly before rebuilding the master bundle:
+
+```bash
+CODEXPORT_EXPORT_ENV=SEARCH_API_KEY,ANOTHER_TOKEN codexport master rebuild
+```
+
+there are no built-in MCP-name adapters. if a command cannot be inferred from its real npm, uv, or source shape, it runs as declared after path rewriting and logs the exact failure under `~/.codexport/logs/mcp/<name>.log`.
 
 ## local follower state
 

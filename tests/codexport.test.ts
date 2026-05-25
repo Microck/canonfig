@@ -151,12 +151,12 @@ describe("overlay application", () => {
 
   it("uses the quiet local runner for managed MCP commands", () => {
     const canonical = [
-      "[mcp_servers.kagi-mcp]",
-      'command = "/home/alice/.local/bin/kagi-mcp"',
+      "[mcp_servers.search]",
+      'command = "/home/alice/.local/bin/search-mcp"',
       'args = ["--index", "/home/alice/.codex/indexes/search.db"]',
       "",
-      "[mcp_servers.kagi-mcp.env]",
-      'KAGI_API_KEY = "api-key"',
+      "[mcp_servers.search.env]",
+      'SEARCH_API_KEY = "api-key"',
       'SEARCH_CONFIG = "/home/alice/.codex/search/config.json"',
       'SEARCH_CACHE = "/home/alice/.cache/search"',
       ""
@@ -170,40 +170,40 @@ describe("overlay application", () => {
     );
 
     expect(merged).toContain('command = "${node}"');
-    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "kagi-mcp" ]');
+    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "search" ]');
     expect(merged).toContain('SEARCH_CONFIG = "C:\\\\\\\\Users\\\\\\\\bob\\\\\\\\.codex/search/config.json"');
     expect(merged).toContain('SEARCH_CACHE = "C:\\\\\\\\Users\\\\\\\\bob\\\\/.cache/search"');
   });
 
-  it("uses kagi-cli mcp when only session-token auth is available", () => {
+  it("preserves explicit MCP env values", () => {
     const canonical = [
-      "[mcp_servers.kagi-mcp]",
-      'command = "/home/alice/.local/bin/kagi-mcp"',
+      "[mcp_servers.search]",
+      'command = "/home/alice/.local/bin/search-mcp"',
       "",
-      "[mcp_servers.kagi-mcp.env]",
-      'KAGI_SESSION_TOKEN = "session-token"',
+      "[mcp_servers.search.env]",
+      'SESSION_TOKEN = "session-token"',
       ""
     ].join("\n");
 
     const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
 
     expect(merged).toContain('command = "${node}"');
-    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "kagi-mcp" ]');
-    expect(merged).toContain('KAGI_SESSION_TOKEN = "session-token"');
+    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "search" ]');
+    expect(merged).toContain('SESSION_TOKEN = "session-token"');
   });
 
-  it("exports master Kagi env into generated follower MCP config", () => {
+  it("exports configured master env into generated follower MCP config", () => {
     const canonical = [
-      "[mcp_servers.kagi-mcp]",
-      'command = "/home/alice/.local/bin/kagi-mcp"',
+      "[mcp_servers.search]",
+      'command = "/home/alice/.local/bin/search-mcp"',
       ""
     ].join("\n");
 
-    const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex", { KAGI_API_KEY: "api-key" });
+    const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex", { SEARCH_API_KEY: "api-key" });
 
     expect(merged).toContain('command = "${node}"');
-    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "kagi-mcp" ]');
-    expect(merged).toContain('KAGI_API_KEY = "api-key"');
+    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "search" ]');
+    expect(merged).toContain('SEARCH_API_KEY = "api-key"');
   });
 
   it("routes master-local MCP commands through the managed launcher", () => {
@@ -241,8 +241,8 @@ describe("overlay application", () => {
 
   it("adds common follower user-bin directories to command MCP PATH", () => {
     const canonical = [
-      "[mcp_servers.dora]",
-      'command = "/home/alice/.bun/bin/dora"',
+      "[mcp_servers.local-tool]",
+      'command = "/home/alice/.bun/bin/local-tool"',
       'args = ["mcp"]',
       ""
     ].join("\n");
@@ -250,23 +250,23 @@ describe("overlay application", () => {
     const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
 
     expect(merged).toContain('command = "${node}"');
-    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "dora" ]');
+    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "local-tool" ]');
     expect(merged).toContain('PATH = "');
     expect(merged).toContain(".bun/bin");
     expect(merged).toContain(".local/bin");
   });
 
-  it("routes Kagi MCP through the managed launcher when no portable Kagi auth is available", () => {
+  it("routes command MCPs through the managed launcher when env is empty", () => {
     const canonical = [
-      "[mcp_servers.kagi-mcp]",
-      'command = "/home/alice/.local/bin/kagi-mcp"',
+      "[mcp_servers.search]",
+      'command = "/home/alice/.local/bin/search-mcp"',
       ""
     ].join("\n");
 
     const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
 
     expect(merged).toContain('command = "${node}"');
-    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "kagi-mcp" ]');
+    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "search" ]');
   });
 
   it("rewrites master-local project trust paths to follower paths", () => {
@@ -310,16 +310,16 @@ describe("overlay application", () => {
 
   it("rewrites workspace-local node MCP entrypoints to npx packages", () => {
     const canonical = [
-      "[mcp_servers.reddit-mcp-buddy]",
+      "[mcp_servers.local-package]",
       'command = "node"',
-      'args = ["/home/alice/workspace/reddit-mcp-buddy/dist/cli.js"]',
+      'args = ["/home/alice/workspace/local-package/dist/cli.js"]',
       ""
     ].join("\n");
 
     const merged = mergeTomlText(canonical, undefined, {}, "/home/alice/.codex");
 
     expect(merged).toContain('command = "${node}"');
-    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "reddit-mcp-buddy" ]');
+    expect(merged).toContain('args = [ "${codexportMcpRunner}", "mcp", "run", "local-package" ]');
   });
 
   it("backs up and generates config.toml with follower-local MCPs", async () => {
@@ -444,45 +444,32 @@ describe("overlay application", () => {
 });
 
 describe("managed MCP launcher repair", () => {
-  it("maps npm-backed MCP binaries to package launchers", () => {
-    expect(portableMcpLauncher("grep-app", "/home/alice/.bun/bin/mcp-grep", [], undefined, {})).toEqual({
+  it("preserves already portable package launchers", () => {
+    expect(portableMcpLauncher("package", "npx", ["-y", "some-mcp"], undefined, {})).toEqual({
       command: "npx",
-      args: ["-y", "@247arjun/mcp-grep"]
+      args: ["-y", "some-mcp"]
     });
-    expect(portableMcpLauncher("mcp-vnc", "/home/alice/.nvm/bin/mcp-vnc", [], undefined, {})).toEqual({
-      command: "npx",
-      args: ["-y", "-p", "node-addon-api", "-p", "node-gyp", "-p", "@hrrrsn/mcp-vnc", "mcp-vnc"]
-    });
-    expect(portableMcpLauncher("qmd", "/home/alice/.nvm/bin/qmd", ["mcp"], undefined, {})).toEqual({
-      command: "npx",
-      args: ["-y", "-p", "@tobilu/qmd", "qmd", "mcp"]
+    expect(portableMcpLauncher("package", "bunx", ["some-mcp", "--stdio"], undefined, {})).toEqual({
+      command: "bunx",
+      args: ["some-mcp", "--stdio"]
     });
   });
 
-  it("maps Python MCP binaries to uvx launchers with uv repair", () => {
-    expect(portableMcpLauncher("discord-py-self", "/home/alice/.local/bin/discord-py-self-mcp", [], undefined, {})).toMatchObject({
-      command: "uvx",
-      args: ["--from", "git+https://github.com/Microck/discord.py-self-mcp.git", "discord-py-self-mcp"],
-      repair: { whenMissing: "uvx", command: "__codexport_install_uv" }
-    });
-    expect(portableMcpLauncher("markitdown-mcp", "/home/alice/.local/bin/markitdown-mcp", [], undefined, {})).toMatchObject({
-      command: "uvx",
-      args: ["--from", "markitdown-mcp", "markitdown-mcp"],
-      repair: { whenMissing: "uvx", command: "__codexport_install_uv" }
+  it("maps node_modules entrypoints to their owning package", () => {
+    expect(portableMcpLauncher(
+      "web",
+      "node",
+      ["/home/alice/.nvm/versions/node/v24.0.0/lib/node_modules/@scope/web-mcp/dist/index.js", "--port", "3000"],
+      undefined,
+      {}
+    )).toEqual({
+      command: "npx",
+      args: ["-y", "@scope/web-mcp", "--port", "3000"]
     });
   });
 
-  it("maps local Rust MCP binaries to repairable launchers", () => {
-    expect(portableMcpLauncher("fff", "/home/alice/.local/bin/fff-mcp", [], undefined, {})).toMatchObject({
-      command: "fff-mcp",
-      args: [],
-      repair: { whenMissing: "fff-mcp" }
-    });
-    expect(portableMcpLauncher("gitquarry-mcp", "/home/alice/workspace/gitquarry-mcp/target/release/gitquarry-mcp", [], undefined, {})).toMatchObject({
-      command: "gitquarry-mcp",
-      args: [],
-      repair: { whenMissing: "gitquarry-mcp" }
-    });
+  it("does not infer packages from MCP names or binary names", () => {
+    expect(portableMcpLauncher("search", "/home/alice/.local/bin/search-mcp", [], undefined, {})).toBeUndefined();
   });
 });
 

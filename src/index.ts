@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.4.3";
+const VERSION = "0.5.0";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -57,12 +57,6 @@ const EXCLUDE_PARTS = new Set([
   ".sqlite",
   ".sqlite3"
 ]);
-
-const MCP_ENV_EXPORT_NAMES = [
-  "KAGI_API_KEY",
-  "KAGI_SESSION_TOKEN",
-  "KAGI_CLI_PROFILE"
-];
 
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 
@@ -391,11 +385,18 @@ async function buildBundle(codexDir: string): Promise<Bundle> {
 
 function collectSourceEnv(): Record<string, string> {
   const sourceEnv: Record<string, string> = {};
-  for (const name of MCP_ENV_EXPORT_NAMES) {
+  for (const name of exportedEnvNames()) {
     const value = process.env[name];
     if (value) sourceEnv[name] = value;
   }
   return sourceEnv;
+}
+
+function exportedEnvNames(): string[] {
+  return (process.env.CODEXPORT_EXPORT_ENV ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
 }
 
 async function saveMasterBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
@@ -555,7 +556,7 @@ function rewritePortableConfig(canonical: string, localConfig: LocalConfig, sour
   for (const [name, rawServer] of Object.entries(mcpServers as Record<string, unknown>)) {
     if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) continue;
     const server = rawServer as Record<string, unknown>;
-    mergeSourceEnvForMcp(name, server, sourceEnv);
+    mergeSourceEnvForMcp(server, sourceEnv);
     rewriteManagedMcpServer(name, server, sourceRoot, sourceHome);
   }
 
@@ -575,7 +576,7 @@ function buildMcpManifest(canonical: string, sourceRoot?: string, sourceEnv: Rec
   for (const [name, rawServer] of Object.entries(mcpServers as Record<string, unknown>)) {
     if (!rawServer || typeof rawServer !== "object" || Array.isArray(rawServer)) continue;
     const server = structuredClone(rawServer) as Record<string, unknown>;
-    mergeSourceEnvForMcp(name, server, sourceEnv);
+    mergeSourceEnvForMcp(server, sourceEnv);
     servers[name] = server as Json;
   }
   return { version: 1, sourceRoot, sourceEnv, servers, artifacts };
@@ -875,10 +876,10 @@ async function firstMatchingFileUnder(root: string, predicate: (filePath: string
   return undefined;
 }
 
-function mergeSourceEnvForMcp(name: string, server: Record<string, unknown>, sourceEnv: Record<string, string>): void {
-  if (name !== "kagi-mcp") return;
+function mergeSourceEnvForMcp(server: Record<string, unknown>, sourceEnv: Record<string, string>): void {
+  if (!Object.keys(sourceEnv).length) return;
   const env = server.env && typeof server.env === "object" && !Array.isArray(server.env) ? server.env as Record<string, unknown> : {};
-  for (const key of ["KAGI_API_KEY", "KAGI_SESSION_TOKEN", "KAGI_CLI_PROFILE"]) {
+  for (const key of Object.keys(sourceEnv)) {
     if (typeof env[key] !== "string" && sourceEnv[key]) env[key] = sourceEnv[key];
   }
   server.env = env;
@@ -959,20 +960,10 @@ function rewriteManagedMcpServer(name: string, server: Record<string, unknown>, 
   }
 }
 
-function portableMcpLauncher(name: string, command: string, args: unknown[], sourceHome: string | undefined, server: Record<string, unknown>): McpLaunchSpec | undefined {
+function portableMcpLauncher(_name: string, command: string, args: unknown[], sourceHome: string | undefined, _server: Record<string, unknown>): McpLaunchSpec | undefined {
   const commandName = basenameAnyPlatform(command);
   if (commandName === "npx" || commandName === "bunx" || commandName === "uvx") {
     return allStrings(args) ? { command: commandName, args: args as string[] } : undefined;
-  }
-
-  if (name === "kagi-mcp" || commandName === "kagi-mcp") {
-    const env = server.env && typeof server.env === "object" && !Array.isArray(server.env) ? server.env as Record<string, unknown> : {};
-    if (typeof env.KAGI_API_KEY === "string" && env.KAGI_API_KEY.length > 0) {
-      return { command: "npx", args: ["-y", "kagi-mcp"] };
-    }
-    if (typeof env.KAGI_SESSION_TOKEN === "string" && env.KAGI_SESSION_TOKEN.length > 0) {
-      return { command: "npx", args: ["-y", "kagi-cli", "mcp"] };
-    }
   }
 
   const nodePackage = nodePackageFromServer(command, args) ?? workspacePackageFromServer(command, args, sourceHome);
@@ -980,83 +971,7 @@ function portableMcpLauncher(name: string, command: string, args: unknown[], sou
     return { command: "npx", args: ["-y", nodePackage.packageName, ...nodePackage.remainingArgs] };
   }
 
-  if (name === "discord-py-self" || commandName === "discord-py-self-mcp") {
-    const remainingArgs = allStrings(args) ? args as string[] : [];
-    return {
-      command: "uvx",
-      args: ["--from", "git+https://github.com/Microck/discord.py-self-mcp.git", "discord-py-self-mcp", ...remainingArgs],
-      repair: {
-        whenMissing: "uvx",
-        command: "__codexport_install_uv",
-        args: []
-      }
-    };
-  }
-
-  if (name === "qmd" || commandName === "qmd") {
-    const remainingArgs = allStrings(args) ? args as string[] : [];
-    return { command: "npx", args: ["-y", "-p", "@tobilu/qmd", "qmd", ...remainingArgs] };
-  }
-
-  if (name === "mcp-vnc" || commandName === "mcp-vnc") {
-    const remainingArgs = packageLauncherArgs(commandName, args);
-    return { command: "npx", args: ["-y", "-p", "node-addon-api", "-p", "node-gyp", "-p", "@hrrrsn/mcp-vnc", "mcp-vnc", ...remainingArgs] };
-  }
-
-  const npmPackage = npmPackageForPortableMcp(name, commandName);
-  if (npmPackage) {
-    const remainingArgs = packageLauncherArgs(commandName, args);
-    return { command: "npx", args: ["-y", npmPackage, ...remainingArgs] };
-  }
-
-  const uvTool = uvToolForPortableMcp(name, commandName);
-  if (uvTool) {
-    const remainingArgs = allStrings(args) ? args as string[] : [];
-    return {
-      command: "uvx",
-      args: ["--from", uvTool.packageName, uvTool.binaryName, ...remainingArgs],
-      repair: {
-        whenMissing: "uvx",
-        command: "__codexport_install_uv",
-        args: []
-      }
-    };
-  }
-
-  if (name === "fff" || commandName === "fff-mcp") {
-    const remainingArgs = allStrings(args) ? args as string[] : [];
-    return {
-      command: "fff-mcp",
-      args: remainingArgs,
-      repair: {
-        whenMissing: "fff-mcp",
-        command: "__codexport_install_fff_mcp",
-        args: []
-      }
-    };
-  }
-
-  if (name === "gitquarry-mcp" || commandName === "gitquarry-mcp") {
-    const remainingArgs = allStrings(args) ? args as string[] : [];
-    return {
-      command: "gitquarry-mcp",
-      args: remainingArgs,
-      repair: {
-        whenMissing: "gitquarry-mcp",
-        command: "cargo",
-        args: ["install", "--git", "https://github.com/Microck/gitquarry-mcp.git", "--locked"]
-      }
-    };
-  }
-
   return undefined;
-}
-
-function mcpHasRequiredPortableEnv(name: string, command: string, server: Record<string, unknown>): boolean {
-  if (name !== "kagi-mcp" && basenameAnyPlatform(command) !== "kagi-mcp") return true;
-  const env = server.env && typeof server.env === "object" && !Array.isArray(server.env) ? server.env as Record<string, unknown> : undefined;
-  return (typeof env?.KAGI_API_KEY === "string" && env.KAGI_API_KEY.length > 0)
-    || (typeof env?.KAGI_SESSION_TOKEN === "string" && env.KAGI_SESSION_TOKEN.length > 0);
 }
 
 function ensurePortablePathEnv(server: Record<string, unknown>): void {
@@ -1068,47 +983,6 @@ function ensurePortablePathEnv(server: Record<string, unknown>): void {
   const portableBins = ["${home}/.bun/bin", "${home}/.local/bin", "${home}/.cargo/bin", "${home}/go/bin", ...fallbackPath];
   env.PATH = [...portableBins, existingPath].filter(Boolean).join(path.delimiter);
   server.env = env;
-}
-
-function npmPackageForPortableMcp(name: string, commandName: string): string | undefined {
-  const knownPackages: Record<string, string> = {
-    "camofox-browser-mcp": "camofox-browser-mcp",
-    "dora": "@butttons/dora",
-    "grep-app": "@247arjun/mcp-grep",
-    "kagi-mcp": "kagi-mcp",
-    "keywords-everywhere": "mcp-keywords-everywhere",
-    "mcp-grep": "@247arjun/mcp-grep",
-    "mcp-vnc": "@hrrrsn/mcp-vnc",
-    "opensrc-mcp": "opensrc-mcp",
-    "opensrc-mcp-stdio": "opensrc-mcp",
-    "perplexity-webui": "perplexity-webui-mcp",
-    "perplexity-webui-mcp": "perplexity-webui-mcp",
-    "reddit-mcp-buddy": "reddit-mcp-buddy",
-    "xcodebuildmcp": "xcodebuildmcp"
-  };
-  return knownPackages[name] ?? knownPackages[commandName];
-}
-
-function packageLauncherArgs(commandName: string, args: unknown[]): string[] {
-  if (!allStrings(args)) return [];
-  const remainingArgs = args as string[];
-  const [entrypoint, ...afterEntrypoint] = remainingArgs;
-  if ((commandName === "node" || commandName === "bun") && typeof entrypoint === "string") {
-    const normalized = normalizePathForCompare(entrypoint);
-    if (isAbsoluteAnyPlatform(entrypoint) || normalized.endsWith(".js") || normalized.endsWith(".mjs") || normalized.endsWith(".ts")) {
-      return afterEntrypoint;
-    }
-  }
-  return remainingArgs;
-}
-
-function uvToolForPortableMcp(name: string, commandName: string): { packageName: string; binaryName: string } | undefined {
-  const knownTools: Record<string, { packageName: string; binaryName: string }> = {
-    "discord-py-self": { packageName: "discord-py-self-mcp", binaryName: "discord-py-self-mcp" },
-    "discord-py-self-mcp": { packageName: "discord-py-self-mcp", binaryName: "discord-py-self-mcp" },
-    "markitdown-mcp": { packageName: "markitdown-mcp", binaryName: "markitdown-mcp" }
-  };
-  return knownTools[name] ?? knownTools[commandName];
 }
 
 function rewritePortableCommand(command: string, sourceRoot?: string): string {
@@ -1415,7 +1289,7 @@ async function commandMcpRun(ctx: CliContext, name: string): Promise<void> {
     const localConfig = await readLocalConfig(ctx);
     const sourceHome = inferHomeFromCodexDir(manifest.sourceRoot);
     const server = structuredClone(manifest.servers[name]) as Record<string, unknown>;
-    mergeSourceEnvForMcp(name, server, manifest.sourceEnv ?? {});
+    mergeSourceEnvForMcp(server, manifest.sourceEnv ?? {});
     rewritePortableTableKeys(server, manifest.sourceRoot, sourceHome);
     rewriteLoopbackUrls(server, localConfig.masterUrl);
     if (typeof server.url === "string") {
@@ -1435,14 +1309,11 @@ async function commandMcpRun(ctx: CliContext, name: string): Promise<void> {
       return;
     }
 
-    const launcher = mcpHasRequiredPortableEnv(name, command, server)
-      ? portableMcpLauncher(name, command, args, sourceHome, server)
-      : undefined;
+    const launcher = portableMcpLauncher(name, command, args, sourceHome, server);
     const runCommandName = launcher?.command ?? rewritePortableCommand(command, manifest.sourceRoot);
     const runArgs = launcher?.args ?? args;
     await appendLog(logPath, `command=${runCommandName}\nargs=${JSON.stringify(runArgs)}\n`);
     await repairMcpLauncherIfNeeded(launcher, childEnv);
-    await repairGitquarryEnvIfNeeded(name, childEnv);
     await runCommandWithEnv(runCommandName, runArgs, childEnv);
   } catch (error) {
     await appendLog(logPath, `error=${asError(error).message}\n`);
@@ -1529,9 +1400,7 @@ function portableServerEnv(server: Record<string, unknown>, sourceRoot: string |
 async function repairMcpLauncherIfNeeded(launcher: McpLaunchSpec | undefined, env: NodeJS.ProcessEnv): Promise<void> {
   if (!launcher?.repair) return;
   if (await executableExists(launcher.repair.whenMissing, env)) return;
-  if (launcher.repair.command === "__codexport_install_fff_mcp") {
-    await installFffMcp(env);
-  } else if (launcher.repair.command === "__codexport_install_uv") {
+  if (launcher.repair.command === "__codexport_install_uv") {
     await installUv(env);
   } else {
     await runRepairCommandWithEnv(launcher.repair.command, launcher.repair.args, env);
@@ -1561,82 +1430,6 @@ async function installUv(env: NodeJS.ProcessEnv): Promise<void> {
   if (!pathValue.split(path.delimiter).includes(uvBinDir)) {
     env.PATH = [uvBinDir, pathValue].filter(Boolean).join(path.delimiter);
   }
-}
-
-async function installFffMcp(env: NodeJS.ProcessEnv): Promise<void> {
-  const target = fffReleaseTarget();
-  const releasesResponse = await fetch("https://api.github.com/repos/dmtrKovalenko/fff.nvim/releases");
-  if (!releasesResponse.ok) {
-    throw new CliError(`Failed to fetch FFF MCP releases: HTTP ${releasesResponse.status}.`, 1);
-  }
-  const releases = await releasesResponse.json() as Array<{ tag_name?: string; assets?: Array<{ name?: string; browser_download_url?: string }> }>;
-  const assetName = `fff-mcp-${target}${platform() === "win32" ? ".exe" : ""}`;
-  const release = releases.find((item) => item.assets?.some((asset) => asset.name === assetName));
-  const asset = release?.assets?.find((item) => item.name === assetName);
-  if (!asset?.browser_download_url) {
-    throw new CliError(`No FFF MCP release asset found for ${target}.`, 1);
-  }
-
-  const binaryResponse = await fetch(asset.browser_download_url);
-  if (!binaryResponse.ok) {
-    throw new CliError(`Failed to download ${assetName}: HTTP ${binaryResponse.status}.`, 1);
-  }
-  const installHome = env.HOME ?? env.USERPROFILE ?? homedir();
-  const installDir = path.join(installHome, ".local", "bin");
-  const binaryPath = path.join(installDir, platform() === "win32" ? "fff-mcp.exe" : "fff-mcp");
-  await ensureDir(installDir);
-  await writeFileReplacingExisting(binaryPath, Buffer.from(await binaryResponse.arrayBuffer()), { mode: 0o755 });
-  if (platform() !== "win32") await chmod(binaryPath, 0o755);
-
-  const pathValue = env.PATH ?? "";
-  if (!pathValue.split(path.delimiter).includes(installDir)) {
-    env.PATH = [installDir, pathValue].filter(Boolean).join(path.delimiter);
-  }
-}
-
-function fffReleaseTarget(): string {
-  const os = platform();
-  const arch = process.arch;
-  if (os === "linux") {
-    if (arch === "x64") return "x86_64-unknown-linux-musl";
-    if (arch === "arm64") return "aarch64-unknown-linux-musl";
-  }
-  if (os === "darwin") {
-    if (arch === "x64") return "x86_64-apple-darwin";
-    if (arch === "arm64") return "aarch64-apple-darwin";
-  }
-  if (os === "win32") {
-    if (arch === "x64") return "x86_64-pc-windows-msvc";
-    if (arch === "arm64") return "aarch64-pc-windows-msvc";
-  }
-  throw new CliError(`Unsupported FFF MCP platform: ${os}/${arch}.`, 1);
-}
-
-async function repairGitquarryEnvIfNeeded(name: string, env: NodeJS.ProcessEnv): Promise<void> {
-  if (name !== "gitquarry-mcp") return;
-  const current = env.GITQUARRY_CLI_PATH;
-  if (current && await executableExists(current, env)) return;
-  const existing = await resolveExecutable("gitquarry", env);
-  if (existing) {
-    env.GITQUARRY_CLI_PATH = existing;
-    return;
-  }
-
-  const installHome = env.HOME ?? env.USERPROFILE ?? homedir();
-  const installDir = path.join(installHome, ".codexport", "tools", "gitquarry");
-  const binaryPath = platform() === "win32"
-    ? path.join(installDir, "node_modules", ".bin", "gitquarry.cmd")
-    : path.join(installDir, "node_modules", ".bin", "gitquarry");
-  if (await pathExists(binaryPath)) {
-    env.GITQUARRY_CLI_PATH = binaryPath;
-    return;
-  }
-  await ensureDir(installDir);
-  await runRepairCommandWithEnv("npm", ["install", "--prefix", installDir, "gitquarry"], env);
-  if (!(await pathExists(binaryPath))) {
-    throw new CliError("MCP repair installed gitquarry but could not find its npm shim.", 1);
-  }
-  env.GITQUARRY_CLI_PATH = binaryPath;
 }
 
 async function executableExists(command: string, env: NodeJS.ProcessEnv): Promise<boolean> {

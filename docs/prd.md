@@ -29,10 +29,10 @@ and local path overrides.
 
 ### Repository Location
 
-The project will live at:
+The project will live in the checked-out repository:
 
 ```text
-/home/ubuntu/workspaces/codexport
+codexport/
 ```
 
 ### Authority Model
