@@ -12,6 +12,7 @@ import {
   mergeTomlText,
   parseJoinLink,
   portableMcpLauncher,
+  sanitizeHooksJson,
   verifyBundle
 } from "../src/index.js";
 
@@ -474,6 +475,44 @@ describe("managed MCP launcher repair", () => {
 });
 
 describe("hooks", () => {
+  it("removes Windows-incompatible nested command hooks", () => {
+    const sanitized = JSON.parse(sanitizeHooksJson(JSON.stringify({
+      hooks: {
+        SessionStart: [
+          {
+            hooks: [
+              { type: "command", command: "bash ~/.codex/hooks/setup.sh", timeout: 10 },
+              { type: "command", command: "node C:/Users/Alice/.codexport/bin/hook.mjs", timeout: 10 }
+            ]
+          }
+        ],
+        Stop: [
+          {
+            hooks: [
+              { type: "command", command: "python3 ~/.codex/hooks/stop.py", timeout: 10 }
+            ]
+          }
+        ]
+      },
+      SessionStart: [
+        { name: "codexport-sync", command: "node hook.mjs hook sync", timeoutMs: 3000 },
+        { name: "other", command: "node other.mjs", timeoutMs: 3000 }
+      ]
+    }), "win32"));
+
+    expect(sanitized.hooks.SessionStart).toEqual([
+      {
+        hooks: [
+          { type: "command", command: "node C:/Users/Alice/.codexport/bin/hook.mjs", timeout: 10 }
+        ]
+      }
+    ]);
+    expect(sanitized.hooks.Stop).toEqual([]);
+    expect(sanitized.SessionStart).toEqual([
+      { name: "other", command: "node other.mjs", timeoutMs: 3000 }
+    ]);
+  });
+
   it("installs an idempotent SessionStart sync hook", async () => {
     const root = await tempDir("hook");
     const home = path.join(root, "home");

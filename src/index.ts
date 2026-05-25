@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.5.1";
+const VERSION = "0.5.2";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -1147,7 +1147,7 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
     await ensureDir(path.dirname(target));
     if (file.path === "config.toml") continue;
     if (file.path === "hooks.json") {
-      await writeFileReplacingExisting(target, sanitizeHooksJson(decodeFile(file).toString("utf8")), { mode: file.mode });
+      await writeFileReplacingExisting(target, sanitizeHooksJson(decodeFile(file).toString("utf8"), platform()), { mode: file.mode });
       continue;
     }
     await writeFileReplacingExisting(target, decodeFile(file), { mode: file.mode });
@@ -1196,18 +1196,66 @@ async function applyBundle(ctx: CliContext, bundle: Bundle): Promise<void> {
   await writeJsonAtomic(path.join(ctx.stateDir, APPLIED_FILES_FILE), bundle.files.map((file) => file.path) as unknown as Json);
 }
 
-function sanitizeHooksJson(text: string): string {
+function sanitizeHooksJson(text: string, targetPlatform: NodeJS.Platform = platform()): string {
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
     for (const [key, value] of Object.entries(parsed)) {
       if (Array.isArray(value)) {
-        parsed[key] = value.filter((hook) => !isCodexportHook(hook));
+        parsed[key] = sanitizeHookArray(value, targetPlatform).filter((hook) => !isCodexportHook(hook));
+      } else if (key === "hooks" && value && typeof value === "object" && !Array.isArray(value)) {
+        parsed[key] = sanitizeHookEventMap(value as Record<string, unknown>, targetPlatform);
       }
     }
     return `${JSON.stringify(parsed, null, 2)}\n`;
   } catch {
     return text;
   }
+}
+
+function sanitizeHookEventMap(events: Record<string, unknown>, targetPlatform: NodeJS.Platform): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [eventName, value] of Object.entries(events)) {
+    sanitized[eventName] = Array.isArray(value) ? sanitizeHookArray(value, targetPlatform) : value;
+  }
+  return sanitized;
+}
+
+function sanitizeHookArray(hooks: unknown[], targetPlatform: NodeJS.Platform): unknown[] {
+  const sanitized: unknown[] = [];
+  for (const hook of hooks) {
+    const sanitizedHook = sanitizeHookEntry(hook, targetPlatform);
+    if (sanitizedHook) sanitized.push(sanitizedHook);
+  }
+  return sanitized;
+}
+
+function sanitizeHookEntry(hook: unknown, targetPlatform: NodeJS.Platform): unknown | undefined {
+  if (!hook || typeof hook !== "object" || Array.isArray(hook)) return hook;
+  const entry = structuredClone(hook) as Record<string, unknown>;
+  if (typeof entry.command === "string" && isPlatformIncompatibleHookCommand(entry.command, targetPlatform)) {
+    return undefined;
+  }
+  if (Array.isArray(entry.hooks)) {
+    const nestedHooks = sanitizeHookArray(entry.hooks, targetPlatform);
+    entry.hooks = nestedHooks;
+    if (!nestedHooks.length) return undefined;
+  }
+  return entry;
+}
+
+function isPlatformIncompatibleHookCommand(command: string, targetPlatform: NodeJS.Platform): boolean {
+  if (targetPlatform !== "win32") return false;
+  const trimmed = command.trim().replace(/^"([^"]+)"/, "$1");
+  const executable = trimmed.split(/\s+/)[0]?.toLowerCase() ?? "";
+  return executable === "bash"
+    || executable === "sh"
+    || executable === "python3"
+    || executable.endsWith("/bash")
+    || executable.endsWith("\\bash.exe")
+    || executable.endsWith("/sh")
+    || executable.endsWith("\\sh.exe")
+    || executable.endsWith("/python3")
+    || executable.endsWith("\\python3.exe");
 }
 
 async function writeManagedMcpRunner(ctx: CliContext): Promise<string> {
@@ -1958,5 +2006,6 @@ export {
   mergeTomlText,
   parseJoinLink,
   portableMcpLauncher,
+  sanitizeHooksJson,
   verifyBundle
 };
