@@ -37,13 +37,13 @@ on the master:
 ```bash
 npx codexport master init
 npx codexport master service install
-npx codexport master link --host master.tailnet.ts.net
+npx codexport master link --host master.example.ts.net
 ```
 
 on a follower:
 
 ```bash
-npx codexport follower join "codexport://join?host=master.tailnet.ts.net&port=17342&fingerprint=..."
+npx codexport follower join "codexport://join?host=master.example.ts.net&port=17342&fingerprint=..."
 npx codexport hook install
 ```
 
@@ -65,7 +65,7 @@ flowchart LR
   end
 
   subgraph privateNet["tailscale network"]
-    http["http://master.tailnet.ts.net:17342"]
+    http["http://master.example.ts.net:17342"]
   end
 
   subgraph follower["follower machine"]
@@ -202,14 +202,14 @@ followers do not need a background service in v1. the hook runs a short best-eff
 generate a copy-paste join command:
 
 ```bash
-codexport master link --host master.tailnet.ts.net
+codexport master link --host master.example.ts.net
 ```
 
 join with explicit trust metadata:
 
 ```bash
 codexport follower join \
-  --master http://master.tailnet.ts.net:17342 \
+  --master http://master.example.ts.net:17342 \
   --fingerprint <fingerprint> \
   --apply
 ```

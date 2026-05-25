@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -1676,7 +1676,10 @@ async function commandMasterLink(ctx: CliContext, options: { host?: string; port
   const identity = await loadMasterIdentity(ctx);
   const local = await readLocalConfig(ctx);
   const port = options.port ?? local.port ?? DEFAULT_PORT;
-  const host = options.host ?? "master.tailnet.ts.net";
+  if (!options.host) {
+    throw new CliError("master link requires --host with a Tailscale DNS name, IP address, or full URL.", 2);
+  }
+  const host = options.host;
   const url = masterUrl(host, port);
   print(ctx, {
     joinLink: buildJoinLink(url, identity.fingerprint),
@@ -1865,7 +1868,7 @@ async function main(argv: string[]): Promise<void> {
     .action(async (_options, command) => commandMasterRebuild(contextFromCommand(command)));
   master.command("link")
     .description("Print a durable follower join link and copy-paste command.")
-    .option("--host <host>", "Tailscale host, IP, or full URL", "master.tailnet.ts.net")
+    .requiredOption("--host <host>", "Tailscale host, IP, or full URL")
     .option("--port <port>", "master port", parsePositiveInt, DEFAULT_PORT)
     .action(async (options, command) => commandMasterLink(contextFromCommand(command), options));
   master.command("serve")
@@ -1888,7 +1891,7 @@ async function main(argv: string[]): Promise<void> {
   const follower = program.command("follower").description("Enroll and manage a follower machine.");
   follower.command("join [link]")
     .description("Enroll this follower from a codexport://join link or explicit master URL.")
-    .option("--master <url>", "master URL, for example http://master.tailnet.ts.net:17342")
+    .option("--master <url>", "master URL, for example http://<master-host>:17342")
     .option("--fingerprint <hex>", "expected master fingerprint")
     .option("--apply", "download and apply immediately after enrollment")
     .option("--timeout-ms <ms>", "network timeout", parsePositiveInt, DEFAULT_TIMEOUT_MS)

@@ -23,9 +23,9 @@ async function tempDir(name: string): Promise<string> {
 
 describe("join links", () => {
   it("round-trips durable join metadata", () => {
-    const link = buildJoinLink("http://master.tailnet.ts.net:17342", "abc123");
+    const link = buildJoinLink("http://master.example.ts.net:17342", "abc123");
     expect(parseJoinLink(link)).toEqual({
-      masterUrl: "http://master.tailnet.ts.net:17342",
+      masterUrl: "http://master.example.ts.net:17342",
       fingerprint: "abc123"
     });
   });
@@ -143,10 +143,10 @@ describe("overlay application", () => {
       ""
     ].join("\n");
 
-    const merged = mergeTomlText(canonical, undefined, { masterUrl: "http://master.tailnet.ts.net:17342" });
+    const merged = mergeTomlText(canonical, undefined, { masterUrl: "http://master.example.ts.net:17342" });
 
-    expect(merged).toContain('url = "http://master.tailnet.ts.net:29979/mcp"');
-    expect(merged).toContain('CAMOFOX_BASE_URL = "http://master.tailnet.ts.net:8080/"');
+    expect(merged).toContain('url = "http://master.example.ts.net:29979/mcp"');
+    expect(merged).toContain('CAMOFOX_BASE_URL = "http://master.example.ts.net:8080/"');
   });
 
   it("uses the quiet local runner for managed MCP commands", () => {

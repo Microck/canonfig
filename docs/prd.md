@@ -52,7 +52,7 @@ Master:
 
 Follower:
   codexport join
-  > Master Tailscale IP/name: master.tailnet.ts.net
+  > Master Tailscale IP/name: master.example.ts.net
 ```
 
 Followers pull from the master. The master does not need to track and push to every
@@ -83,14 +83,14 @@ Outputs a permanent join link or command that a follower can run without
 manually typing the master address:
 
 ```text
-npx codexport follower join "codexport://join?host=master.tailnet.ts.net&port=17342&fingerprint=..."
+npx codexport follower join "codexport://join?host=master.example.ts.net&port=17342&fingerprint=..."
 ```
 
 If custom URL handling is too complex for the first implementation, the
 fallback is a one-time copy-paste command:
 
 ```text
-npx codexport follower join --master http://master.tailnet.ts.net:17342 --fingerprint ...
+npx codexport follower join --master http://master.example.ts.net:17342 --fingerprint ...
 ```
 
 The join link should not include plaintext Codex secrets. It should include only
