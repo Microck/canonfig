@@ -101,6 +101,33 @@ describe("bundle building", () => {
       args: ["--stdio"]
     });
   });
+
+  it("exports workspace Rust MCPs as source artifacts without target output", async () => {
+    const root = await tempDir("rust-artifact");
+    const home = path.join(root, "home");
+    const codex = path.join(home, ".codex");
+    const project = path.join(home, "workspace", "search-mcp");
+    await mkdir(path.join(project, "src"), { recursive: true });
+    await mkdir(path.join(project, "target", "release"), { recursive: true });
+    await mkdir(codex, { recursive: true });
+    await writeFile(path.join(project, "Cargo.toml"), "[package]\nname = \"search-mcp\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    await writeFile(path.join(project, "src", "main.rs"), "fn main() {}\n");
+    await writeFile(path.join(project, "target", "release", "search-mcp"), "binary\n");
+    await writeFile(path.join(codex, "config.toml"), [
+      "[mcp_servers.search-mcp]",
+      `command = "${path.join(project, "target", "release", "search-mcp").replace(/\\/g, "\\\\")}"`,
+      ""
+    ].join("\n"));
+
+    const bundle = await buildBundle(codex);
+    const artifact = bundle.mcpArtifacts?.["search-mcp"];
+
+    expect(artifact?.kind).toBe("rust-source");
+    expect(artifact && "files" in artifact ? artifact.files.map((file) => file.path) : []).toEqual([
+      "Cargo.toml",
+      "src/main.rs"
+    ]);
+  });
 });
 
 describe("overlay application", () => {

@@ -12,7 +12,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
-const VERSION = "0.5.3";
+const VERSION = "0.6.0";
 const DEFAULT_PORT = 17342;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const CODEXPORT_DIR = ".codexport";
@@ -117,7 +117,7 @@ interface McpLaunchSpec {
   repair?: McpRepairSpec;
 }
 
-type McpArtifact = NpmMcpArtifact | UvMcpArtifact | NodeSourceMcpArtifact | PythonSourceMcpArtifact;
+type McpArtifact = NpmMcpArtifact | UvMcpArtifact | NodeSourceMcpArtifact | PythonSourceMcpArtifact | RustSourceMcpArtifact;
 
 interface NpmMcpArtifact {
   kind: "npm";
@@ -145,6 +145,14 @@ interface NodeSourceMcpArtifact {
 
 interface PythonSourceMcpArtifact {
   kind: "python-source";
+  binary: string;
+  args: string[];
+  files: FileEntry[];
+  hash: string;
+}
+
+interface RustSourceMcpArtifact {
+  kind: "rust-source";
   binary: string;
   args: string[];
   files: FileEntry[];
@@ -360,7 +368,7 @@ function computeRevision(files: FileEntry[], sourceEnv: Record<string, string> =
   }));
   const normalizedArtifacts = Object.fromEntries(Object.entries(mcpArtifacts).map(([name, artifact]) => [
     name,
-    artifact.kind === "node-source" || artifact.kind === "python-source"
+    artifact.kind === "node-source" || artifact.kind === "python-source" || artifact.kind === "rust-source"
       ? { ...artifact, files: artifact.files.map((file) => ({ path: file.path, mode: file.mode, kind: file.kind, contentHash: sha256(Buffer.from(file.content, "base64")) })) }
       : artifact
   ]));
@@ -488,7 +496,7 @@ function verifyBundle(bundle: Bundle): void {
     }
   }
   for (const [name, artifact] of Object.entries(bundle.mcpArtifacts ?? {})) {
-    if (artifact.kind !== "node-source" && artifact.kind !== "python-source") continue;
+    if (artifact.kind !== "node-source" && artifact.kind !== "python-source" && artifact.kind !== "rust-source") continue;
     for (const file of artifact.files) {
       if (path.isAbsolute(file.path) || file.path.includes("..") || file.path.includes("\\")) {
         throw new CliError(`MCP artifact ${name} contains unsafe path: ${file.path}`, 1);
@@ -633,7 +641,47 @@ async function inferArtifactFromCommandPath(name: string, commandPath: string, b
   if (importedNpmArtifact) return importedNpmArtifact;
   const uvArtifact = await inferUvArtifactFromCommandPath(resolved, binaryHint, args);
   if (uvArtifact) return uvArtifact;
+  const rustArtifact = await inferRustSourceArtifact(name, resolved, binaryHint, args, sourceHome);
+  if (rustArtifact) return rustArtifact;
   return await inferArtifactFromEntrypoint(name, "node", resolved, args, sourceHome);
+}
+
+async function inferRustSourceArtifact(name: string, commandPath: string, binary: string, args: string[], sourceHome: string | undefined): Promise<RustSourceMcpArtifact | undefined> {
+  const sourceRoot = await findCargoRoot(path.dirname(commandPath)) ?? await findWorkspaceCargoRootForBinary(name, binary, sourceHome);
+  if (!sourceRoot) return undefined;
+  if (sourceHome && !normalizePathForCompare(sourceRoot).startsWith(`${normalizePathForCompare(sourceHome)}/`)) return undefined;
+  const cargoToml = await readTextIfExists(path.join(sourceRoot, "Cargo.toml"));
+  if (!cargoToml?.includes("[package]") && !cargoToml?.includes("[[bin]]")) return undefined;
+  const files = await collectArtifactFiles(sourceRoot);
+  if (!files?.length) return undefined;
+  return {
+    kind: "rust-source",
+    binary,
+    args,
+    files,
+    hash: computeArtifactFilesHash(files)
+  };
+}
+
+async function findCargoRoot(startDir: string): Promise<string | undefined> {
+  let current = startDir;
+  while (true) {
+    if (await pathExists(path.join(current, "Cargo.toml"))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+async function findWorkspaceCargoRootForBinary(name: string, binary: string, sourceHome: string | undefined): Promise<string | undefined> {
+  if (!sourceHome) return undefined;
+  const workspaceDir = path.join(sourceHome, "workspace");
+  const candidates = [...new Set([name, binary, binary.replace(/(?:\.exe|\.cmd|\.bat)$/i, "")])];
+  for (const candidate of candidates) {
+    const candidateRoot = path.join(workspaceDir, candidate);
+    if (await pathExists(path.join(candidateRoot, "Cargo.toml"))) return candidateRoot;
+  }
+  return undefined;
 }
 
 async function inferNpmArtifactFromScriptImport(name: string, scriptPath: string, binaryHint: string, args: string[]): Promise<NpmMcpArtifact | undefined> {
@@ -824,7 +872,7 @@ async function walkArtifact(root: string, absolute: string, files: FileEntry[], 
   const relative = normalizeRelative(path.relative(root, absolute));
   if (relative) {
     const parts = relative.split("/");
-    if (parts.some((part) => part === "node_modules" || part === ".git" || part === ".jj" || part === ".venv" || part === "venv" || part === "__pycache__" || part.endsWith(".egg-info") || shouldExclude(relative))) return;
+    if (parts.some((part) => part === "node_modules" || part === "target" || part === ".git" || part === ".jj" || part === ".venv" || part === "venv" || part === "__pycache__" || part.endsWith(".egg-info") || shouldExclude(relative))) return;
     if (isSkippableArtifactFile(relative)) return;
   }
   const entryStat = await lstat(absolute);
@@ -1390,6 +1438,11 @@ async function runMcpArtifact(ctx: CliContext, artifact: McpArtifact, env: NodeJ
     await runCommandWithEnv("uvx", ["--from", sourceDir, artifact.binary, ...rewriteArtifactArgs(artifact.args, localConfig, sourceRoot, sourceHome)], env);
     return;
   }
+  if (artifact.kind === "rust-source") {
+    const sourceDir = await hydrateSourceArtifact(ctx, "rust", artifact.hash, artifact.files);
+    await runCommandWithEnv("cargo", ["run", "--release", "--manifest-path", path.join(sourceDir, "Cargo.toml"), "--bin", artifact.binary, "--", ...rewriteArtifactArgs(artifact.args, localConfig, sourceRoot, sourceHome)], env);
+    return;
+  }
   const sourceDir = await hydrateSourceArtifact(ctx, "node", artifact.hash, artifact.files);
   const entrypoint = path.join(sourceDir, artifact.entrypoint);
   await ensureNodeSourceDependencies(sourceDir, env);
@@ -1418,7 +1471,7 @@ async function prepareNpmArtifact(ctx: CliContext, artifact: NpmMcpArtifact, env
   return { command: binaryPath, args: artifact.args };
 }
 
-async function hydrateSourceArtifact(ctx: CliContext, kind: "node" | "python", hash: string, files: FileEntry[]): Promise<string> {
+async function hydrateSourceArtifact(ctx: CliContext, kind: "node" | "python" | "rust", hash: string, files: FileEntry[]): Promise<string> {
   const targetDir = path.join(ctx.stateDir, "mcp-artifacts", "source", kind, hash);
   const markerPath = path.join(targetDir, ".codexport-artifact-hash");
   if ((await readTextIfExists(markerPath))?.trim() === hash) return targetDir;
