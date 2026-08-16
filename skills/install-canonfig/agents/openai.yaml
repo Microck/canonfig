@@ -1,0 +1,4 @@
+interface:
+  display_name: "Install Canonfig"
+  short_description: "Install and securely enroll Canonfig"
+  default_prompt: "Use $install-canonfig to install Canonfig and securely enroll this machine."

@@ -1,0 +1,69 @@
+---
+title: Concepts and architecture
+description: Understand Canonfig's authority model, deep modules, state, and synchronization outcomes.
+---
+
+Canonfig has exactly one **Source Machine** per installation. The Source Machine
+owns canonical configuration; **Follower Machines** consume it without becoming
+additional authorities.
+
+## System shape
+
+```text
+Source files → ProfileCatalog → Profile Change Proposal
+                                  ↓ explicit review
+                           signed Profile Revision
+                                  ↓ pinned HTTPS
+CLI or schedule → Synchronization → MachineState
+                         ↘ StateRepository
+                          ↘ AgentResolution, only when eligible
+```
+
+The CLI and native schedulers are thin adapters. They decode input, call a
+domain-shaped service, render the typed result, and set a distinct exit code.
+
+## Deep modules
+
+- **ProfileCatalog** owns source discovery, validation, proposals, publication,
+  revision history, content addressing, and signatures.
+- **Enrollment** owns Source identity, invitations, Follower Identities, groups,
+  credential rotation, and revocation.
+- **Synchronization** owns authenticated fetch, observation, planning, apply,
+  verification, status, and recovery.
+- **MachineState** provides equivalent filesystem, executable, process,
+  credential, and scheduler operations for Linux, macOS, and Windows.
+- **AgentResolution** can propose or execute only a declared Agent Task.
+- **StateRepository** persists identities, revisions, plans, journals, Applied
+  Resource Records, outcomes, drift, human actions, and schedules in SQLite.
+
+## Four kinds of action
+
+| Action class | Meaning | Authority |
+| --- | --- | --- |
+| Deterministic | Canonfig can choose one safe action from declared facts | Runs before any agent work |
+| Agent proposal | The Configuration Agent suggests a bounded resolution | Never changes a published revision |
+| Agent apply | A pre-authorized harness executes within explicit bounds | Completion still requires independent verification |
+| Human Action Required | Login, approval, or another human-only step is missing | Canonfig records exact recovery instructions and stops |
+
+<Callout title="An agent statement is not proof" type="warning">
+  Canonfig captures process output and changed paths, then runs the Profile
+  Resource's independent verification. Only that verification can establish
+  Convergence.
+</Callout>
+
+## Outcomes
+
+A **Synchronization Run** finishes as `Converged`, `HumanActionRequired`,
+`FollowerDrift`, `Failed`, or `Interrupted`. Partial application remains visible
+in the action journal. Canonfig never reports Convergence merely because some
+actions succeeded.
+
+## Content and state
+
+Profile Revisions and their blobs are immutable and content-addressed.
+Follower transfer is incremental: cached blobs are reused after digest
+verification. Apply behavior is separate and belongs to each resource's
+**Apply Policy**.
+
+The local state database lives under the Canonfig state directory. It stores
+credential references, never ordinary credential values.

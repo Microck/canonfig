@@ -1,0 +1,88 @@
+---
+title: Discover, review, and publish
+description: Turn deterministic source evidence into a reviewed, immutable Profile Revision.
+---
+
+Publication has three separate stages: deterministic discovery, human or policy
+review, and explicit publication. Discovery never edits a published Profile
+Revision.
+
+## 1. Scan evidence
+
+Pass each source file explicitly. Canonfig infers supported discovery kinds from
+the filename and extension.
+
+```bash
+canonfig source scan --file AGENTS.md --file package.json
+```
+
+Discovery inspects configured agent instructions, hooks, MCP definitions, tool
+configuration, executable references, and package-manager metadata. It records
+the source path and location, invocation shape, resolved executable when
+available, package metadata, upstream URL, confidence, and review status.
+
+Shell commands in executable Markdown fences and structured configuration can be
+deterministic evidence. Inline prose is only review evidence. It never becomes
+an executable Installation Recipe by itself.
+
+## 2. Review the proposal
+
+Review all accepted tools, skills, unresolved Agent Tasks, and evidence before
+publication. In particular, confirm:
+
+- the upstream URL belongs to the intended tool;
+- each platform recipe names its own package and version;
+- verification observes the declared capability;
+- login requirements do not include a secret;
+- prose-only evidence is either resolved or rejected.
+
+<Callout title="No silent publication" type="warning">
+  A Profile Change Proposal from discovery or a Configuration Agent is not a
+  Profile Revision. Canonfig rejects unresolved review evidence and Agent Tasks.
+</Callout>
+
+## 3. Publish explicitly
+
+Pass the reviewed discovery input through the publication command. The shipped
+CLI rescans the file named by `--proposal`, binds the review to that exact
+proposal, validates the resulting profile, signs it, and stores the immutable
+revision.
+
+```bash
+canonfig source publish --proposal package.json --profile workstation --name Workstation --reviewer operator
+```
+
+Profile IDs are stable names such as `workstation`. The resulting Profile
+Revision ID is content-addressed. Re-publishing identical canonical content
+returns the existing revision rather than mutating it.
+
+## Inspect revision history
+
+```bash
+canonfig profile list
+canonfig profile show revision-one
+```
+
+`profile show` takes a Profile Revision ID, not a Profile ID.
+
+## Create invitations and revoke followers
+
+With the local source endpoint running, create a short-lived, single-use
+invitation:
+
+```bash
+canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers
+```
+
+The returned invitation includes an endpoint, pinned TLS and signing
+fingerprints, groups, expiry, and one-time token. Treat it as temporary
+sensitive enrollment material.
+
+Revoke one independently issued Follower Identity:
+
+```bash
+canonfig source revoke follower-one
+```
+
+Revocation blocks that follower's future authenticated fetches. It does not
+invalidate signed revisions already downloaded by other followers.

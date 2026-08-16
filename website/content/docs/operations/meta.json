@@ -1,0 +1,10 @@
+{
+  "title": "Operations",
+  "pages": [
+    "agent-policies",
+    "synchronization",
+    "schedules",
+    "drift-and-human-action",
+    "recovery"
+  ]
+}

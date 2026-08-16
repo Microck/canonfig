@@ -1,0 +1,85 @@
+name: Cross-platform acceptance
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: Acceptance (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-latest
+            native_test: tests/machine-state-linux.test.ts
+          - platform: macos
+            os: macos-latest
+            native_test: tests/machine-state-macos.test.ts
+          - platform: windows
+            os: windows-latest
+            native_test: tests/machine-state-windows.test.ts
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build CLI
+        run: npm run build:cli
+
+      - name: Package npm artifact
+        run: npm pack --ignore-scripts
+
+      - name: Run native platform contract
+        run: npx vitest run ${{ matrix.native_test }}
+
+      - name: Run acceptance scenario
+        run: npm run test:acceptance
+        env:
+          CANONFIG_ACCEPTANCE_PLATFORM: ${{ matrix.platform }}
+
+  repository-validation:
+    name: Repository validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Validate release artifact
+        run: npm run release:validate
+
+      - name: Build
+        run: npm run build

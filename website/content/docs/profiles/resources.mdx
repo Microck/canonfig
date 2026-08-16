@@ -1,0 +1,84 @@
+---
+title: Profiles, revisions, resources, and policies
+description: Read the v2 Machine Profile contract and choose an Apply Policy for each Profile Resource.
+---
+
+A **Machine Profile** is the source-owned declaration of desired configuration.
+A **Profile Revision** is an immutable, validated, signed publication of that
+profile. JSONC authoring layout and comments do not affect the canonical digest.
+
+## Profile shape
+
+The v2 authoring contract contains a stable profile ID, display name, Follower
+Groups, Profile Resources, and a default schedule:
+
+```jsonc
+{
+  "id": "workstation",
+  "version": 2,
+  "name": "Developer workstation",
+  "groups": [
+    { "name": "developers", "description": "Developer tools" }
+  ],
+  "resources": [],
+  "scheduleDefault": {
+    "type": "daily",
+    "at": "00:00",
+    "timezone": "local"
+  }
+}
+```
+
+Canonfig normalizes omitted defaults and unordered collections before hashing.
+It rejects duplicate IDs, missing dependencies, dependency cycles, undeclared
+groups, invalid targets, incompatible policies, and incompatible verification.
+
+## Resource kinds and defaults
+
+| Kind | Desired outcome | Default Apply Policy |
+| --- | --- | --- |
+| `file` | Exact file or symlink content | `replace` |
+| `directory` | A source-owned tree | `mirror-owned` |
+| `config` | Declared keys in TOML, JSON, or YAML | `merge` |
+| `skill` | A canonical skill tree | `replace-if-unmodified` |
+| `tool` | Installed and verified executable capability | `ensure` |
+| `credential` | Usable local credential reference | `require-local` |
+| `schedule` | Native scheduled synchronization | `replace` |
+
+Every Profile Resource has a unique ID, kind, target, kind-specific
+specification, verification contract, optional groups, and optional
+dependencies. Dependencies form a directed acyclic graph.
+
+## Apply Policies
+
+- **`replace`** records rollback material and atomically replaces an owned
+  target where the platform supports that filesystem operation.
+- **`mirror-owned`** adds and updates desired files, then removes only files
+  previously owned by Canonfig and still unmodified.
+- **`merge`** updates declared keys through a format-aware codec while
+  preserving the **Local Overlay**.
+- **`replace-if-unmodified`** writes only when current content matches the
+  Applied Resource Record or already matches desired content.
+- **`ensure`** reaches and verifies a capability without removing unrelated
+  software.
+- **`require-local`** verifies a local credential reference and otherwise
+  produces Human Action Required.
+
+<Callout title="Transfer is not apply" type="info">
+  Content-addressed transfer decides which blobs must cross the source boundary.
+  The resource's Apply Policy independently decides how those bytes may affect
+  Observed State.
+</Callout>
+
+## Verification
+
+The v2 contract supports digest, command, executable-present,
+credential-present, and symlink verification. Allowed methods depend on resource
+kind. Verification is mandatory after mutation, including after agent apply.
+
+## Applied Resource Records
+
+An **Applied Resource Record** stores the exact resource revision and digest
+Canonfig last applied. This record enables safe mirror deletion, skill drift
+detection, audit, and recovery. It is not a Local Overlay and does not confer
+source authority on the follower.

@@ -1,0 +1,26 @@
+{
+  "name": "@canonfig/website",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "typecheck": "fumadocs-mdx && tsc --noEmit",
+    "lint": "oxlint app components lib source.config.ts next.config.mjs scripts"
+  },
+  "dependencies": {
+    "fumadocs-core": "16.14.4",
+    "fumadocs-mdx": "15.2.3",
+    "fumadocs-ui": "16.14.4",
+    "next": "16.3.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,80 @@
+---
+title: Security and credentials
+description: Protect source authority, pinned transport, local credentials, and recorded evidence.
+---
+
+Canonfig separates profile authority, transport trust, follower authentication,
+and local credentials. None is a substitute for another.
+
+## Source authority
+
+The Source Machine signs canonical Profile Revision payloads. Followers verify
+the signing fingerprint pinned at enrollment and verify every content digest.
+Profile Revisions are immutable after publication.
+
+Protect source signing material and the Source Machine user account. A copied
+source state database or signing key can undermine installation-wide authority.
+
+## Transport trust
+
+Enrollment pins the source HTTPS certificate fingerprint. Later transport
+rejects certificate changes, invalid signatures, digest mismatches, replayed
+invitations, and revoked follower credentials.
+
+The shipped source server is loopback-only:
+
+```bash
+canonfig source serve --host 127.0.0.1 --port 17342
+```
+
+Do not weaken TLS verification or document an unsupported public bind as a
+shortcut.
+
+## Follower credentials
+
+Each Follower Machine receives its own revocable credential. Followers never
+share one fleet token. Revocation is therefore scoped to one Follower Identity.
+
+Credential Profile Resources use the `require-local` Apply Policy. They carry a
+reference, not the credential value. The platform seam uses:
+
+- Secret Service on Linux when secure noninteractive storage is available;
+- Keychain on macOS;
+- Credential Manager on Windows;
+- a local file only when the operator explicitly selected that policy.
+
+Unavailable secure storage produces Human Action Required rather than silently
+writing plaintext.
+
+## Secrets in process evidence
+
+Canonfig redacts configured secrets from captured arguments, stdout, stderr, and
+CLI payload fields before persistence or rendering. Redaction is defense in
+depth; avoid placing a secret on a command line or in profile content in the
+first place.
+
+<Callout title="Keep these values out of examples" type="error">
+  Never publish real invitation payloads, follower credentials, tokens,
+  passwords, cookies, private keys, signing keys, TLS keys, or environment
+  values that contain authentication material.
+</Callout>
+
+## Agent execution
+
+Agent Tasks and harness configuration use intersecting allowlists for paths,
+executables, network origins, and capabilities. Network origins must be exact
+HTTPS origins. Direct process invocation avoids shell interpolation.
+
+Agent apply still requires independent verification. Authorization to execute a
+command is not proof that the desired resource exists or is correct.
+
+## Audit checks
+
+```bash
+canonfig doctor --no-input
+canonfig status --json
+```
+
+Review credential capability, source TLS and authentication probes, agent
+adapter state, action journals, Human Action Required records, and verification
+evidence.

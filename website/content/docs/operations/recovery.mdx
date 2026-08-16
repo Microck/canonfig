@@ -1,0 +1,72 @@
+---
+title: Recovery
+description: Resume an interrupted Synchronization Run from its persisted action journal.
+---
+
+Canonfig records the complete Synchronization Plan before mutation and journals
+each action before and after execution. Recovery uses that record; it does not
+guess from partial filesystem changes.
+
+## When to recover
+
+Recover after a run finishes as `Interrupted` or the process stops during apply.
+Inspect status first:
+
+```bash
+canonfig status
+```
+
+Resume the recorded plan:
+
+```bash
+canonfig recover
+```
+
+For a scheduler-like environment:
+
+```bash
+canonfig recover --no-input --json
+```
+
+`recover` takes no run ID. It loads the follower's recorded recoverable run. If
+there is no recoverable run, the command returns a usage or configuration
+failure rather than inventing work.
+
+## Recovery guarantees
+
+Recovery can safely resume when the targeted Profile Revision is still
+available and the journal has enough information to re-observe incomplete
+actions. Owned file writes use recorded rollback material, sibling temporary
+files, durability synchronization where supported, and atomic rename.
+
+Idempotent verification runs again before Canonfig records Convergence.
+
+## Recovery limits
+
+<Callout title="External installers are not rolled back" type="warning">
+  Package installation, login, and arbitrary agent commands cannot promise full
+  rollback. Canonfig records their evidence and reruns idempotent verification.
+  It never claims that a third-party installer was reversed.
+</Callout>
+
+Recovery does not silently switch to a different Profile Revision. If the
+recorded revision is unavailable or no longer authenticates, Canonfig explains
+why a new plan is required.
+
+## If recovery fails
+
+1. Preserve the SQLite state and action journal.
+2. Run bounded diagnostics.
+3. Resolve the reported authentication, transport, credential, scheduler, or
+   verification issue.
+4. Retry recovery while the original revision remains available.
+5. Build a new plan only when Canonfig says recovery cannot continue.
+
+```bash
+canonfig doctor --no-input --timeout-ms 5000
+canonfig recover --no-input
+```
+
+Do not delete the state database or manually mark actions complete. Either can
+destroy the evidence needed to distinguish partial application from
+Convergence.
