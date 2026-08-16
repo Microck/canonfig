@@ -8,7 +8,9 @@ import {
 import {
   basename,
   delimiter,
+  dirname,
   isAbsolute,
+  join,
   posix,
   relative,
   resolve,
@@ -30,6 +32,7 @@ import type {
   AgentActionProposal,
   AgentResolutionInput,
   AgentResolutionOutcome,
+  AgentHarnessConfiguration,
   ProposedProcessAction,
   ReviewedProfileChangeProposal,
   SourceDiscoveryResolution,
@@ -181,8 +184,11 @@ export const executableAllowed = (
 const portableBasename = (value: string): string =>
   value.includes("\\") ? win32.basename(value) : basename(value);
 
+const isWindowsPath = (value: string): boolean =>
+  /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith("\\\\");
+
 const pathWithin = (path: string, root: string): boolean => {
-  const windows = win32.isAbsolute(path) || win32.isAbsolute(root);
+  const windows = isWindowsPath(path) || isWindowsPath(root);
   const difference = windows
     ? win32.relative(win32.resolve(root), win32.resolve(path))
     : relative(resolve(root), resolve(path));
@@ -192,11 +198,60 @@ const pathWithin = (path: string, root: string): boolean => {
   );
 };
 
-const absoluteArgumentPath = (argument: string): string | undefined => {
-  const value = argument.includes("=")
-    ? argument.slice(argument.indexOf("=") + 1)
-    : argument;
-  return posix.isAbsolute(value) || win32.isAbsolute(value) ? value : undefined;
+const pathApi = (value: string, base: string): typeof posix =>
+  isWindowsPath(value) || isWindowsPath(base) || base.includes("\\")
+    ? win32
+    : posix;
+
+const lexicalPath = (value: string, base: string): string => {
+  const api = pathApi(value, base);
+  return api.resolve(base, value);
+};
+
+const canonicalPath = async (value: string, base: string): Promise<string> => {
+  const absolute = lexicalPath(value, base);
+  if (isWindowsPath(absolute) && process.platform !== "win32") {
+    return win32.normalize(absolute).toLowerCase();
+  }
+  const suffix: Array<string> = [];
+  let candidate = absolute;
+  while (true) {
+    try {
+      const canonical = await realpath(candidate);
+      return suffix.reduceRight((parent, part) => join(parent, part), canonical);
+    } catch {
+      const parent = dirname(candidate);
+      if (parent === candidate) return absolute;
+      suffix.push(basename(candidate));
+      candidate = parent;
+    }
+  }
+};
+
+const optionValue = (argument: string): string | undefined => {
+  const separator = argument.indexOf("=");
+  return separator > 0 ? argument.slice(separator + 1) : undefined;
+};
+
+const argumentPath = (argument: string): string | undefined => {
+  const value = optionValue(argument) ?? argument;
+  if (value.length === 0 || value.startsWith("-")) return undefined;
+  if (normalizeOrigin(value) !== undefined) return undefined;
+  const optionName = argument.includes("=")
+    ? argument.slice(0, argument.indexOf("=")).replace(/^-+/u, "")
+    : undefined;
+  const pathOption = optionName !== undefined
+    && /(?:^|[-_])(?:output|path|file|dir|directory|destination|dest|target|prefix|root|cwd|config|cache|store|write)(?:$|[-_])/iu
+      .test(optionName);
+  return pathOption
+      || posix.isAbsolute(value)
+      || win32.isAbsolute(value)
+      || value.startsWith(".")
+      || value.startsWith("~")
+      || value.includes("/")
+      || value.includes("\\")
+    ? value
+    : undefined;
 };
 
 const argumentOrigins = (argument: string): ReadonlyArray<string> =>
@@ -204,14 +259,30 @@ const argumentOrigins = (argument: string): ReadonlyArray<string> =>
 
 const ensureAllowedPath = (
   path: string,
-  task: AgentTask,
+  workingDirectory: string,
+  taskRoots: ReadonlyArray<string>,
+  harnessRoots: ReadonlyArray<string>,
 ): Effect.Effect<void, DeniedAgentCapabilityError> =>
-  task.allowedPaths.some((root) => pathWithin(path, root))
-    ? Effect.void
-    : Effect.fail(new DeniedAgentCapabilityError({
-      capability: "path",
-      value: path,
-    }));
+  Effect.promise(async () => {
+    const canonical = await canonicalPath(path, workingDirectory);
+    const taskBounds = await Promise.all(taskRoots.map((root) =>
+      canonicalPath(root, workingDirectory)
+    ));
+    const harnessBounds = await Promise.all(harnessRoots.map((root) =>
+      canonicalPath(root, workingDirectory)
+    ));
+    return taskBounds.some((root) => pathWithin(canonical, root))
+      && harnessBounds.some((root) => pathWithin(canonical, root));
+  }).pipe(
+    Effect.flatMap((allowed) =>
+      allowed
+        ? Effect.void
+        : Effect.fail(new DeniedAgentCapabilityError({
+          capability: "path",
+          value: lexicalPath(path, workingDirectory),
+        }))
+    ),
+  );
 
 const normalizeOrigin = (value: string): string | undefined => {
   try {
@@ -223,13 +294,19 @@ const normalizeOrigin = (value: string): string | undefined => {
 
 const ensureAllowedOrigin = (
   value: string,
-  task: AgentTask,
+  taskOrigins: ReadonlyArray<string>,
+  harnessOrigins: ReadonlyArray<string>,
 ): Effect.Effect<void, DeniedAgentCapabilityError> => {
   const origin = normalizeOrigin(value);
-  const allowed = task.allowedOrigins
+  const taskAllowed = taskOrigins
     .map(normalizeOrigin)
     .filter((candidate) => candidate !== undefined);
-  return origin !== undefined && allowed.includes(origin)
+  const harnessAllowed = harnessOrigins
+    .map(normalizeOrigin)
+    .filter((candidate) => candidate !== undefined);
+  return origin !== undefined
+      && taskAllowed.includes(origin)
+      && harnessAllowed.includes(origin)
     ? Effect.void
     : Effect.fail(new DeniedAgentCapabilityError({
       capability: "network-origin",
@@ -238,56 +315,149 @@ const ensureAllowedOrigin = (
 };
 
 const elevationExecutables = new Set(["sudo", "doas", "pkexec", "runas"]);
+const loginExecutables = new Set(["login", "logon", "su"]);
+const rebootExecutables = new Set(["reboot", "shutdown"]);
+type PrivilegedCapability = "elevation" | "login" | "restart" | "reboot";
+
+const derivedCapabilities = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+): ReadonlySet<PrivilegedCapability> => {
+  const capabilities = new Set<PrivilegedCapability>();
+  const command = portableBasename(executable).toLowerCase().replace(/\.(?:cmd|exe)$/u, "");
+  const tokens = arguments_.map((argument) => argument.toLowerCase());
+  if (
+    elevationExecutables.has(command)
+    || tokens.some((argument) =>
+      argument === "--sudo" || argument === "--elevated" || argument.startsWith("/runas")
+    )
+  ) {
+    capabilities.add("elevation");
+  }
+  if (
+    loginExecutables.has(command)
+    || tokens.some((argument) =>
+      argument === "login"
+      || argument === "logout"
+      || argument === "logon"
+      || argument === "session"
+    )
+  ) {
+    capabilities.add("login");
+  }
+  if (tokens.some((argument) => argument === "restart")) {
+    capabilities.add("restart");
+  }
+  if (
+    rebootExecutables.has(command)
+    || tokens.some((argument) => argument === "reboot")
+  ) {
+    capabilities.add("reboot");
+  }
+  return capabilities;
+};
+
+type AuthorizationBounds = Pick<
+  AgentHarnessConfiguration,
+  "allowedPaths" | "allowedExecutables" | "allowedOrigins" | "allowedCapabilities"
+>;
+
+const taskBounds = (task: AgentTask): AuthorizationBounds => ({
+  allowedPaths: task.allowedPaths,
+  allowedExecutables: task.allowedExecutables,
+  allowedOrigins: task.allowedOrigins,
+  allowedCapabilities: (["elevation", "login", "restart", "reboot"] as const)
+    .filter((capability) => !task.forbidden.includes(capability)),
+});
 
 export const authorizeAction = (
   action: ProposedProcessAction,
   task: AgentTask,
+  harness: AuthorizationBounds = taskBounds(task),
 ): Effect.Effect<void, DeniedAgentCapabilityError> =>
   Effect.gen(function*() {
-    if (!(yield* executableAllowed(action.executable, task.allowedExecutables))) {
+    if (
+      !(yield* executableAllowed(action.executable, task.allowedExecutables))
+      || !(yield* executableAllowed(action.executable, harness.allowedExecutables))
+    ) {
       return yield* new DeniedAgentCapabilityError({
         capability: "executable",
         value: action.executable,
       });
     }
-    if (
-      elevationExecutables.has(portableBasename(action.executable).toLowerCase())
-      || action.capabilities.includes("elevation")
-    ) {
-      return yield* new DeniedAgentCapabilityError({
-        capability: "elevation",
-        value: action.executable,
-      });
-    }
-    for (const capability of action.capabilities) {
-      if (task.forbidden.includes(capability)) {
+    const capabilities = new Set([
+      ...action.capabilities,
+      ...derivedCapabilities(action.executable, action.arguments),
+    ]);
+    for (const capability of capabilities) {
+      if (
+        task.forbidden.includes(capability)
+        || !harness.allowedCapabilities.includes(capability)
+      ) {
         return yield* new DeniedAgentCapabilityError({
           capability,
           value: action.executable,
         });
       }
     }
-    for (const path of action.paths) yield* ensureAllowedPath(path, task);
-    if (action.workingDirectory !== undefined) {
-      yield* ensureAllowedPath(action.workingDirectory, task);
+    const authorizedWorkingDirectory = action.workingDirectory
+      ?? task.allowedPaths[0];
+    if (authorizedWorkingDirectory === undefined) {
+      return yield* new DeniedAgentCapabilityError({
+        capability: "path",
+        value: action.workingDirectory ?? "",
+      });
+    }
+    yield* ensureAllowedPath(
+      authorizedWorkingDirectory,
+      authorizedWorkingDirectory,
+      task.allowedPaths,
+      harness.allowedPaths,
+    );
+    for (const path of action.paths) {
+      yield* ensureAllowedPath(
+        path,
+        authorizedWorkingDirectory,
+        task.allowedPaths,
+        harness.allowedPaths,
+      );
     }
     for (const argument of action.arguments) {
-      const path = absoluteArgumentPath(argument);
-      if (path !== undefined) yield* ensureAllowedPath(path, task);
+      const path = argumentPath(argument);
+      if (path !== undefined) {
+        yield* ensureAllowedPath(
+          path,
+          authorizedWorkingDirectory,
+          task.allowedPaths,
+          harness.allowedPaths,
+        );
+      }
       for (const origin of argumentOrigins(argument)) {
-        yield* ensureAllowedOrigin(origin, task);
+        yield* ensureAllowedOrigin(
+          origin,
+          task.allowedOrigins,
+          harness.allowedOrigins,
+        );
       }
     }
-    for (const origin of action.origins) yield* ensureAllowedOrigin(origin, task);
+    for (const origin of action.origins) {
+      yield* ensureAllowedOrigin(
+        origin,
+        task.allowedOrigins,
+        harness.allowedOrigins,
+      );
+    }
   });
 
 const authorizeVerification = (
   task: AgentTask,
+  harness: AuthorizationBounds,
 ): Effect.Effect<void, DeniedAgentCapabilityError> =>
   Effect.gen(function*() {
     const executable = task.verification.command[0] ?? "";
     if (
       !(yield* executableAllowed(executable, task.allowedExecutables))
+      || !(yield* executableAllowed(executable, harness.allowedExecutables))
       || elevationExecutables.has(portableBasename(executable).toLowerCase())
     ) {
       return yield* new DeniedAgentCapabilityError({
@@ -295,14 +465,26 @@ const authorizeVerification = (
         value: executable,
       });
     }
+    const workingDirectory = task.allowedPaths[0] ?? process.cwd();
     yield* Effect.forEach(
       task.verification.command.slice(1),
       (argument) => {
-        const path = absoluteArgumentPath(argument);
-        if (path !== undefined) return ensureAllowedPath(path, task);
+        const path = argumentPath(argument);
+        if (path !== undefined) {
+          return ensureAllowedPath(
+            path,
+            workingDirectory,
+            task.allowedPaths,
+            harness.allowedPaths,
+          );
+        }
         return Effect.forEach(
           argumentOrigins(argument),
-          (origin) => ensureAllowedOrigin(origin, task),
+          (origin) => ensureAllowedOrigin(
+            origin,
+            task.allowedOrigins,
+            harness.allowedOrigins,
+          ),
           { discard: true },
         );
       },
@@ -313,12 +495,13 @@ const authorizeVerification = (
 export const validateProposal = (
   proposal: AgentActionProposal,
   task: AgentTask,
+  harness: AuthorizationBounds = taskBounds(task),
 ): Effect.Effect<void, DeniedAgentCapabilityError> =>
   Effect.forEach(
     proposal.actions,
-    (action) => authorizeAction(action, task),
+    (action) => authorizeAction(action, task, harness),
     { discard: true },
-  ).pipe(Effect.andThen(authorizeVerification(task)));
+  ).pipe(Effect.andThen(authorizeVerification(task, harness)));
 
 export const profileChangeProposalFromResolution = (
   resolution: SourceDiscoveryResolution,

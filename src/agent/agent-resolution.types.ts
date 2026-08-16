@@ -18,6 +18,12 @@ export interface AgentHarnessConfiguration {
     readonly value: string;
   }> | undefined;
   readonly maximumInputBytes: number;
+  readonly allowedPaths: ReadonlyArray<string>;
+  readonly allowedExecutables: ReadonlyArray<string>;
+  readonly allowedOrigins: ReadonlyArray<string>;
+  readonly allowedCapabilities: ReadonlyArray<
+    "elevation" | "login" | "restart" | "reboot"
+  >;
 }
 
 export interface AgentTaskDocument {

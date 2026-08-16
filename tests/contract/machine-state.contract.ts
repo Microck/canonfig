@@ -377,7 +377,9 @@ export const machineStateContract = (
       expect(stored.value).toBe("credential-value");
       expect(stored.permissions.mode).toBe(0o600);
       expect(await readFile(stored.credentialPath, "utf8")).toBe("credential-value");
-      expect((await stat(stored.credentialPath)).mode & 0o777).toBe(0o600);
+      if (adapter.platform !== "windows") {
+        expect((await stat(stored.credentialPath)).mode & 0o777).toBe(0o600);
+      }
       },
     );
 

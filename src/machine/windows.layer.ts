@@ -1,5 +1,14 @@
-import { createHash } from "node:crypto";
-import { access } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import {
+  access,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { win32 } from "node:path";
 
@@ -15,6 +24,7 @@ import {
   HumanActionRequiredError,
   InvalidMachinePathError,
   InvalidSchedulerJobError,
+  MachineFilesystemError,
   type MachineStateError,
 } from "./machine-state.errors.ts";
 import { MachineState } from "./machine-state.service.ts";
@@ -22,6 +32,7 @@ import { linuxMachineStateLayer } from "./linux.layer.ts";
 import type {
   CredentialPolicy,
   CredentialStorageCapability,
+  FilePermissions,
   MachinePath,
   NormalizePathInput,
   ProcessEnvironmentEntry,
@@ -39,6 +50,7 @@ export interface WindowsMachineStateOptions {
 }
 
 const decode = Schema.decodeUnknownSync;
+class MissingPermissionIntent extends Error {}
 
 const environmentEntries = (): ReadonlyArray<ProcessEnvironmentEntry> =>
   Object.entries(process.env).flatMap(([name, value]) =>
@@ -65,11 +77,30 @@ const requireWindowsPath = (
   path: MachinePath,
 ): Effect.Effect<MachinePath, InvalidMachinePathError> =>
   path.platform === "windows"
+      && win32.isAbsolute(path.absolute)
+      && !path.absolute.includes("\0")
     ? Effect.succeed(linuxPath(path))
     : Effect.fail(new InvalidMachinePathError({
       path: path.absolute,
-      message: `expected a Windows path, received ${path.platform}`,
+      message: path.platform === "windows"
+        ? "a normalized absolute Windows path without NUL bytes is required"
+        : `expected a Windows path, received ${path.platform}`,
     }));
+
+export const windowsPrivateAclArguments = (
+  path: string,
+  user: string,
+  directory: boolean,
+): ReadonlyArray<string> => [
+  path,
+  "/inheritance:r",
+  "/grant:r",
+  `${user}:${directory ? "(OI)(CI)" : ""}(F)`,
+  "/remove:g",
+  "*S-1-1-0",
+  "*S-1-5-11",
+  "*S-1-5-32-545",
+];
 
 const normalizedPath = (
   input: NormalizePathInput,
@@ -213,6 +244,30 @@ const credentialKey = (
   return Effect.succeed(value.slice(prefix.length));
 };
 
+const localCredentialPath = (
+  reference: CredentialReferenceType,
+  root: string,
+): Effect.Effect<string, CredentialStorageError> => {
+  const prefix = "local-file:";
+  const value = String(reference);
+  if (!value.startsWith(prefix)) {
+    return Effect.fail(new CredentialStorageError({
+      operation: "resolve credential reference",
+      reference: value,
+      message: "credential reference is not owned by the local-file provider",
+    }));
+  }
+  const path = win32.resolve(value.slice(prefix.length));
+  if (win32.dirname(path).toLowerCase() !== root.toLowerCase()) {
+    return Effect.fail(new CredentialStorageError({
+      operation: "resolve credential reference",
+      reference: value,
+      message: "credential reference is outside the configured credential directory",
+    }));
+  }
+  return Effect.succeed(path);
+};
+
 const credentialScript = {
   store: [
     "$vault = New-Object Windows.Security.Credentials.PasswordVault",
@@ -241,6 +296,9 @@ export const windowsMachineStateLayer = (
     ?? environmentValue(environment, "HOME")
     ?? homedir();
   const policy = options.credentialPolicy ?? { kind: "secure-store" };
+  const localCredentialRoot = policy.kind === "local-file"
+    ? win32.resolve(policy.path)
+    : undefined;
   const powershell = environmentValue(environment, "CANONFIG_POWERSHELL")
     ?? win32.join(
       environmentValue(environment, "SystemRoot") ?? "C:\\Windows",
@@ -249,6 +307,20 @@ export const windowsMachineStateLayer = (
       "v1.0",
       "powershell.exe",
     );
+  const icacls = environmentValue(environment, "CANONFIG_ICACLS")
+    ?? win32.join(
+      environmentValue(environment, "SystemRoot") ?? "C:\\Windows",
+      "System32",
+      "icacls.exe",
+    );
+  const userName = environmentValue(environment, "USERNAME")
+    ?? process.env.USERNAME
+    ?? win32.basename(home);
+  const userDomain = environmentValue(environment, "USERDOMAIN")
+    ?? process.env.USERDOMAIN;
+  const currentUser = userDomain === undefined
+    ? userName
+    : `${userDomain}\\${userName}`;
   const base = linuxMachineStateLayer({
     credentialPolicy: policy,
     environment,
@@ -258,6 +330,141 @@ export const windowsMachineStateLayer = (
     MachineState,
     Effect.gen(function*() {
       const machine = yield* MachineState;
+      const semanticModes = new Map<string, number>();
+      const filesystemFailure = (
+        operation: string,
+        path: string,
+        cause: unknown,
+      ) => new MachineFilesystemError({
+        operation,
+        path,
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
+      const setPrivateAcl = (
+        path: string,
+        directory: boolean,
+      ): Effect.Effect<void, MachineStateError> =>
+        machine.runProcess({
+          executable: { platform: "linux", absolute: icacls },
+          arguments: windowsPrivateAclArguments(path, currentUser, directory),
+          timeoutMilliseconds: 10_000,
+          maximumOutputBytes: 1024 * 1024,
+        }).pipe(
+          Effect.flatMap((result) =>
+            result.exitCode === 0
+              ? Effect.void
+              : Effect.fail(new MachineFilesystemError({
+                operation: "restrict Windows ACL",
+                path,
+                message: "icacls did not apply the requested current-user ACL",
+              }))
+          ),
+        );
+      const writeSemanticMode = (
+        path: string,
+        mode: number,
+      ): Effect.Effect<void, MachineStateError> =>
+        Effect.tryPromise({
+          try: () => writeFile(`${path}:canonfig.mode`, mode.toString(8), "utf8"),
+          catch: (cause) =>
+            filesystemFailure("record Windows permission intent", path, cause),
+        }).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => semanticModes.set(win32.normalize(path), mode))
+          ),
+        );
+      const readSemanticMode = (
+        path: string,
+        fallback: number,
+      ): Effect.Effect<number, MachineStateError> => {
+        const remembered = semanticModes.get(win32.normalize(path));
+        if (remembered !== undefined) return Effect.succeed(remembered);
+        return Effect.tryPromise({
+          try: () => readFile(`${path}:canonfig.mode`, "utf8"),
+          catch: (cause) => {
+            const code = cause instanceof Error && "code" in cause
+              ? String(cause.code)
+              : "";
+            return code === "ENOENT"
+              ? new MissingPermissionIntent()
+              : filesystemFailure("read Windows permission intent", path, cause);
+          },
+        }).pipe(
+          Effect.catchIf(
+            (cause): cause is MissingPermissionIntent =>
+              cause instanceof MissingPermissionIntent,
+            () => Effect.succeed(undefined),
+          ),
+          Effect.flatMap((encoded) => {
+            if (encoded === undefined) return Effect.succeed(fallback);
+            const mode = Number.parseInt(encoded, 8);
+            return Number.isSafeInteger(mode) && mode >= 0 && mode <= 0o7777
+              ? Effect.succeed(mode)
+              : Effect.fail(new MachineFilesystemError({
+                operation: "read Windows permission intent",
+                path,
+                message: "stored permission intent is invalid",
+              }));
+          }),
+        );
+      };
+      const secureDirectory = (
+        path: string,
+        mode: number,
+      ): Effect.Effect<void, MachineStateError> =>
+        Effect.tryPromise({
+          try: () => mkdir(path, { recursive: true }).then(() => undefined),
+          catch: (cause) => filesystemFailure("ensure Windows directory", path, cause),
+        }).pipe(
+          Effect.andThen(setPrivateAcl(path, true)),
+          Effect.andThen(writeSemanticMode(path, mode)),
+        );
+      const secureAtomicWrite = (
+        path: string,
+        content: Uint8Array,
+        mode: number,
+      ): Effect.Effect<void, MachineStateError> => {
+        const parent = win32.dirname(path);
+        const temporary = win32.join(
+          parent,
+          `.${win32.basename(path)}.canonfig-${randomBytes(12).toString("hex")}`,
+        );
+        return Effect.gen(function*() {
+          yield* secureDirectory(parent, semanticModes.get(parent) ?? 0o700);
+          yield* Effect.tryPromise({
+            try: async () => {
+              let handle: Awaited<ReturnType<typeof open>> | undefined;
+              try {
+                handle = await open(temporary, "wx");
+                await handle.writeFile(content);
+                await handle.sync().catch((cause: NodeJS.ErrnoException) => {
+                  if (cause.code !== "EPERM" && cause.code !== "EINVAL") throw cause;
+                });
+                await handle.close();
+                handle = undefined;
+              } finally {
+                if (handle !== undefined) {
+                  await handle.close().catch(() => undefined);
+                }
+              }
+            },
+            catch: (cause) =>
+              filesystemFailure("atomically write Windows file", path, cause),
+          });
+          yield* setPrivateAcl(temporary, false);
+          yield* Effect.tryPromise({
+            try: () => rename(temporary, path),
+            catch: (cause) =>
+              filesystemFailure("replace Windows file", path, cause),
+          });
+          yield* setPrivateAcl(path, false);
+          yield* writeSemanticMode(path, mode);
+        }).pipe(
+          Effect.ensuring(Effect.promise(() =>
+            rm(temporary, { force: true }).catch(() => undefined)
+          )),
+        );
+      };
       const secureStoreAvailable = Effect.promise(() =>
         options.credentialStoreAccess !== "unavailable"
           && process.platform === "win32"
@@ -428,11 +635,19 @@ export const windowsMachineStateLayer = (
         }),
         ensureDirectory: (input) =>
           requireWindowsPath(input.path).pipe(
-            Effect.flatMap((path) => machine.ensureDirectory({ ...input, path })),
+            Effect.flatMap((path) =>
+              secureDirectory(path.absolute, input.mode ?? 0o700)
+            ),
           ),
         atomicWrite: (input) =>
           requireWindowsPath(input.path).pipe(
-            Effect.flatMap((path) => machine.atomicWrite({ ...input, path })),
+            Effect.flatMap((path) =>
+              secureAtomicWrite(
+                path.absolute,
+                input.content,
+                input.mode ?? 0o600,
+              )
+            ),
           ),
         readFile: (input) =>
           requireWindowsPath(input.path).pipe(
@@ -454,10 +669,44 @@ export const windowsMachineStateLayer = (
           ),
         setPermissions: (input) =>
           requireWindowsPath(input.path).pipe(
-            Effect.flatMap((path) => machine.setPermissions({ ...input, path })),
+            Effect.flatMap((path) =>
+              Effect.tryPromise({
+                try: () => stat(path.absolute),
+                catch: (cause) =>
+                  filesystemFailure("inspect Windows file type", path.absolute, cause),
+              }).pipe(
+                Effect.flatMap((metadata) =>
+                  setPrivateAcl(path.absolute, metadata.isDirectory())
+                ),
+                Effect.andThen(writeSemanticMode(path.absolute, input.mode)),
+              )
+            ),
           ),
         permissions: (path) =>
-          requireWindowsPath(path).pipe(Effect.flatMap(machine.permissions)),
+          requireWindowsPath(path).pipe(
+            Effect.flatMap((nativePath) =>
+              Effect.tryPromise({
+                try: () => stat(nativePath.absolute),
+                catch: (cause) =>
+                  filesystemFailure(
+                    "inspect Windows permissions",
+                    nativePath.absolute,
+                    cause,
+                  ),
+              }).pipe(
+                Effect.flatMap((metadata) =>
+                  readSemanticMode(
+                    nativePath.absolute,
+                    metadata.isDirectory() ? 0o700 : 0o600,
+                  )
+                ),
+                Effect.map((mode): FilePermissions => ({
+                  mode,
+                  executableByOwner: (mode & 0o100) !== 0,
+                })),
+              )
+            ),
+          ),
         findExecutable: (query) => {
           if (
             query.name.length === 0
@@ -510,10 +759,10 @@ export const windowsMachineStateLayer = (
           CredentialStorageCapability,
           MachineStateError
         > => {
-          if (policy.kind === "local-file") {
+          if (localCredentialRoot !== undefined) {
             return Effect.succeed({
               kind: "local-file",
-              path: windowsPath(win32.resolve(policy.path)),
+              path: windowsPath(localCredentialRoot),
             });
           }
           return secureStoreAvailable.pipe(Effect.map((available) =>
@@ -530,7 +779,24 @@ export const windowsMachineStateLayer = (
           ));
         },
         storeCredential: (input) => {
-          if (policy.kind === "local-file") return machine.storeCredential(input);
+          if (localCredentialRoot !== undefined) {
+            if (input.name.trim().length === 0) {
+              return Effect.fail(new CredentialStorageError({
+                operation: "store credential",
+                reference: "local-file",
+                message: "credential name must not be empty",
+              }));
+            }
+            const name = createHash("sha256").update(input.name).digest("hex");
+            const path = win32.join(localCredentialRoot, `${name}.credential`);
+            return secureAtomicWrite(
+              path,
+              new TextEncoder().encode(Redacted.value(input.value)),
+              0o600,
+            ).pipe(
+              Effect.as(decode(CredentialReference)(`local-file:${path}`)),
+            );
+          }
           if (input.name.trim().length === 0) {
             return Effect.fail(new CredentialStorageError({
               operation: "store credential",
@@ -559,7 +825,32 @@ export const windowsMachineStateLayer = (
           );
         },
         loadCredential: (input) => {
-          if (policy.kind === "local-file") return machine.loadCredential(input);
+          if (localCredentialRoot !== undefined) {
+            return Effect.gen(function*() {
+              const path = yield* localCredentialPath(
+                input.reference,
+                localCredentialRoot,
+              );
+              const metadata = yield* Effect.tryPromise({
+                try: () => stat(path),
+                catch: (cause) =>
+                  filesystemFailure("inspect local credential", path, cause),
+              });
+              if (metadata.size > 1024 * 1024) {
+                return yield* new CredentialStorageError({
+                  operation: "load credential",
+                  reference: String(input.reference),
+                  message: "credential exceeds the local-file size limit",
+                });
+              }
+              const content = yield* Effect.tryPromise({
+                try: () => readFile(path),
+                catch: (cause) =>
+                  filesystemFailure("read local credential", path, cause),
+              });
+              return Redacted.make(new TextDecoder().decode(content));
+            });
+          }
           return Effect.gen(function*() {
             const key = yield* credentialKey(input.reference);
             yield* requirePowerShell;
@@ -576,7 +867,17 @@ export const windowsMachineStateLayer = (
           });
         },
         removeCredential: (reference) => {
-          if (policy.kind === "local-file") return machine.removeCredential(reference);
+          if (localCredentialRoot !== undefined) {
+            return localCredentialPath(reference, localCredentialRoot).pipe(
+              Effect.flatMap((path) =>
+                Effect.tryPromise({
+                  try: () => rm(path, { force: true }),
+                  catch: (cause) =>
+                    filesystemFailure("remove local credential", path, cause),
+                })
+              ),
+            );
+          }
           return Effect.gen(function*() {
             const key = yield* credentialKey(reference);
             yield* requirePowerShell;

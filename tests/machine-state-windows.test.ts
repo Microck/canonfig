@@ -2,9 +2,12 @@ import { mkdtempSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { win32 } from "node:path";
 
-import { expect } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { windowsMachineStateLayer } from "../src/machine/windows.layer.ts";
+import {
+  windowsMachineStateLayer,
+  windowsPrivateAclArguments,
+} from "../src/machine/windows.layer.ts";
 import { machineStateContract } from "./contract/machine-state.contract.ts";
 
 // Windows adapter paths must stay Windows-shaped while still addressing real
@@ -36,6 +39,39 @@ const environment = (root: string) => {
     { name: "SystemRoot", value: process.env.SystemRoot ?? "C:\\Windows" },
   ];
 };
+
+describe("Windows ACL command rendering", () => {
+  it("renders shell-free current-user-only ACL arguments", () => {
+    expect(windowsPrivateAclArguments(
+      "C:\\Users\\operator\\secret & echo exposed",
+      "DOMAIN\\operator",
+      false,
+    )).toEqual([
+      "C:\\Users\\operator\\secret & echo exposed",
+      "/inheritance:r",
+      "/grant:r",
+      "DOMAIN\\operator:(F)",
+      "/remove:g",
+      "*S-1-1-0",
+      "*S-1-5-11",
+      "*S-1-5-32-545",
+    ]);
+    expect(windowsPrivateAclArguments(
+      "C:\\Users\\operator\\.canonfig",
+      "DOMAIN\\operator",
+      true,
+    )).toEqual([
+      "C:\\Users\\operator\\.canonfig",
+      "/inheritance:r",
+      "/grant:r",
+      "DOMAIN\\operator:(OI)(CI)(F)",
+      "/remove:g",
+      "*S-1-1-0",
+      "*S-1-5-11",
+      "*S-1-5-32-545",
+    ]);
+  });
+});
 
 machineStateContract("Windows", {
   platform: "windows",

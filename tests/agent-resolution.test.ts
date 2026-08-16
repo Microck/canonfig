@@ -73,6 +73,16 @@ const action = (changes: Partial<ProposedProcessAction> = {}): ProposedProcessAc
   ...changes,
 });
 
+const harness = (root: string) => ({
+  harness: "codex" as const,
+  executable: process.execPath,
+  maximumInputBytes: 64_000,
+  allowedPaths: [root],
+  allowedExecutables: ["tool", "verify", process.execPath],
+  allowedOrigins: ["https://packages.example.test"],
+  allowedCapabilities: [] as const,
+});
+
 class RecordingExecutor {
   readonly invocations: Array<ControlledProcessInput> = [];
   readonly proposal: AgentActionProposal;
@@ -113,11 +123,7 @@ const resolveWith = (
     return yield* service.resolve({
       policy,
       task: task(input),
-      harness: {
-        harness: "codex",
-        executable: process.execPath,
-        maximumInputBytes: 64_000,
-      },
+      harness: harness(input),
       scheduled: true,
     });
   }).pipe(Effect.provide(makeAgentResolutionLayer(selected)));
@@ -180,11 +186,7 @@ describe("agent resolution", () => {
       return yield* service.resolve({
         policy: "agent-propose",
         task: task(directory),
-        harness: {
-          harness: "claude",
-          executable: process.execPath,
-          maximumInputBytes: 64_000,
-        },
+        harness: { ...harness(directory), harness: "claude" },
       });
     }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
     expect(result.outcome).toBe("proposed");
@@ -199,11 +201,7 @@ describe("agent resolution", () => {
       return yield* service.resolve({
         policy: "agent-apply",
         task: task(directory),
-        harness: {
-          harness: "gemini",
-          executable: process.execPath,
-          maximumInputBytes: 64_000,
-        },
+        harness: { ...harness(directory), harness: "gemini" },
       });
     }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
     expect(result.outcome).toBe("applied");
@@ -229,11 +227,7 @@ describe("agent resolution", () => {
       return yield* service.resolve({
         policy: "agent-apply",
         task: task(directory),
-        harness: {
-          harness: "codex",
-          executable: process.execPath,
-          maximumInputBytes: 64_000,
-        },
+        harness: harness(directory),
       });
     }).pipe(
       Effect.provide(makeAgentResolutionLayer(recording.execute)),
@@ -242,6 +236,55 @@ describe("agent resolution", () => {
     expect(error).toBeInstanceOf(DeniedAgentCapabilityError);
     expect(error.capability).toBe(capability);
     expect(recording.invocations).toHaveLength(1);
+  });
+
+  it.each([
+    ["plain-relative traversal", ["../secret"], "path"],
+    ["option-valued traversal", ["--output=../secret"], "path"],
+    ["omitted elevation capability", ["--sudo"], "elevation"],
+    ["omitted login capability", ["login"], "login"],
+    ["omitted restart capability", ["restart"], "restart"],
+    ["omitted reboot capability", ["reboot"], "reboot"],
+  ])("derives and denies %s before execution", async (_name, arguments_, capability) => {
+    const recording = new RecordingExecutor(proposal(action({ arguments: arguments_ })));
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory),
+        harness: harness(directory),
+      });
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(recording.execute)),
+      Effect.flip,
+    ));
+    expect(error).toMatchObject({ capability });
+    expect(recording.invocations).toHaveLength(1);
+  });
+
+  it("denies a relative argument that resolves through a symlink outside the bounds", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "canonfig-agent-outside-"));
+    try {
+      await symlink(outside, join(directory, "escape"));
+      const recording = new RecordingExecutor(proposal(action({
+        arguments: [join("escape", "prospective-output")],
+      })));
+      const error = await Effect.runPromise(Effect.gen(function*() {
+        const service = yield* AgentResolution;
+        return yield* service.resolve({
+          policy: "agent-apply",
+          task: task(directory),
+          harness: harness(directory),
+        });
+      }).pipe(
+        Effect.provide(makeAgentResolutionLayer(recording.execute)),
+        Effect.flip,
+      ));
+      expect(error).toMatchObject({ capability: "path" });
+      expect(recording.invocations).toHaveLength(1);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("compares executable identities instead of trusting matching basenames", async () => {
@@ -318,11 +361,7 @@ describe("agent resolution", () => {
         task: task(directory, {
           observedEvidence: [`token=${secret}`],
         }),
-        harness: {
-          harness: "codex",
-          executable: process.execPath,
-          maximumInputBytes: 64_000,
-        },
+        harness: harness(directory),
         secrets: [secret],
       });
     }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));

@@ -124,7 +124,7 @@ const runResolution = (
     const proposal = yield* decodeAgentProposal(
       extractHarnessResponse(input.harness.harness, harness.stdout),
     );
-    yield* validateProposal(proposal, input.task);
+    yield* validateProposal(proposal, input.task, input.harness);
     if (input.policy === "agent-propose") {
       return {
         outcome: "proposed",
@@ -139,7 +139,7 @@ const runResolution = (
       const rawProcess = yield* executor({
         executable: action.executable,
         arguments: action.arguments,
-        workingDirectory: action.workingDirectory,
+        workingDirectory: action.workingDirectory ?? input.task.allowedPaths[0],
         timeoutMilliseconds: remainingTime(deadline),
         maximumInputBytes: 0,
         maximumOutputBytes: Math.max(0, input.task.outputLimitBytes - consumed),
