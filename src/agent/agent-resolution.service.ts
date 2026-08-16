@@ -374,6 +374,123 @@ const ambiguousWrapperExecutables = new Set([
 ]);
 type PrivilegedCapability = "elevation" | "login" | "restart" | "reboot";
 
+type InterpreterKind = "node" | "python" | "posix-shell" | "powershell";
+const posixShellExecutables = new Set([
+  "ash",
+  "bash",
+  "dash",
+  "fish",
+  "ksh",
+  "nu",
+  "sh",
+  "zsh",
+]);
+
+const interpreterKind = (value: string): InterpreterKind | undefined => {
+  const command = portableBasename(value)
+    .toLowerCase()
+    .replace(/\.(?:cmd|exe)$/u, "");
+  if (command === "node" || command === "nodejs") return "node";
+  if (/^(?:python|pypy)(?:\d+(?:\.\d+)*)?$/u.test(command) || command === "py") {
+    return "python";
+  }
+  if (posixShellExecutables.has(command)) {
+    return "posix-shell";
+  }
+  if (command === "powershell" || command === "pwsh") return "powershell";
+  return undefined;
+};
+
+const interpreterWrapperExecutables = new Set([
+  "command",
+  "doas",
+  "env",
+  "exec",
+  "nice",
+  "nohup",
+  "pkexec",
+  "stdbuf",
+  "sudo",
+  "timeout",
+]);
+
+interface InterpreterInvocation {
+  readonly executable: string;
+  readonly arguments: ReadonlyArray<string>;
+  readonly kind: InterpreterKind;
+}
+
+const interpreterInvocation = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+): InterpreterInvocation | undefined => {
+  const direct = interpreterKind(executable);
+  return direct === undefined
+    ? undefined
+    : { executable, arguments: arguments_, kind: direct };
+};
+
+const powershellOption = (argument: string): string | undefined => {
+  if (!argument.startsWith("-") && !argument.startsWith("/")) return undefined;
+  return argument.slice(1).split(/[=:]/u, 1)[0]?.toLowerCase();
+};
+
+const isPowershellOptionAbbreviation = (
+  argument: string,
+  option: "command" | "encodedcommand" | "file",
+): boolean => {
+  const token = powershellOption(argument);
+  return token !== undefined
+    && token.length > 0
+    && option.startsWith(token);
+};
+
+const isInlineInterpreterArgument = (
+  kind: InterpreterKind,
+  argument: string,
+): boolean => {
+  const lower = argument.toLowerCase();
+  switch (kind) {
+    case "node":
+      return /^-(?:e|p)(?:$|[^-])/u.test(lower)
+        || /^--(?:eval|print)(?:$|=)/u.test(lower);
+    case "python":
+      return /^-c(?:$|.)/u.test(lower);
+    case "posix-shell":
+      return /^-[^-]*c/u.test(lower)
+        || /^--command(?:$|=)/u.test(lower);
+    case "powershell":
+      return isPowershellOptionAbbreviation(argument, "command")
+        || isPowershellOptionAbbreviation(argument, "encodedcommand");
+  }
+};
+
+const interpreterScript = (
+  invocation: InterpreterInvocation,
+): string | undefined => {
+  const arguments_ = invocation.arguments;
+  if (invocation.kind === "powershell") {
+    const first = arguments_[0];
+    if (first === undefined || isInlineInterpreterArgument(invocation.kind, first)) {
+      return undefined;
+    }
+    if (isPowershellOptionAbbreviation(first, "file")) {
+      const separator = first.search(/[=:]/u);
+      return separator > 0 ? first.slice(separator + 1) : arguments_[1];
+    }
+    const slashOption = /^\/[A-Za-z]+(?:[=:]|$)/u.test(first);
+    return !first.startsWith("-") && !slashOption ? first : undefined;
+  }
+  const first = arguments_[0] === "--" ? arguments_[1] : arguments_[0];
+  if (
+    first === undefined
+    || first.startsWith("-")
+    || first.startsWith("+")
+    || isInlineInterpreterArgument(invocation.kind, first)
+  ) return undefined;
+  return first;
+};
+
 const derivedCapabilities = (
   executable: string,
   arguments_: ReadonlyArray<string>,
@@ -460,6 +577,40 @@ const taskBounds = (task: AgentTask): AuthorizationBounds => ({
     .filter((capability) => !task.forbidden.includes(capability)),
 });
 
+const authorizeInterpreterInvocation = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+  workingDirectory: string,
+  task: AgentTask,
+  harness: AuthorizationBounds & AuthorizationEnvironment,
+): Effect.Effect<void, DeniedAgentCapabilityError> =>
+  Effect.gen(function*() {
+    const command = portableBasename(executable)
+      .toLowerCase()
+      .replace(/\.(?:cmd|exe)$/u, "");
+    if (interpreterWrapperExecutables.has(command)) {
+      return yield* new DeniedAgentCapabilityError({
+        capability: "interpreter-wrapper",
+        value: executable,
+      });
+    }
+    const invocation = interpreterInvocation(executable, arguments_);
+    if (invocation === undefined) return;
+    const script = interpreterScript(invocation);
+    if (script === undefined) {
+      return yield* new DeniedAgentCapabilityError({
+        capability: "inline-program",
+        value: invocation.executable,
+      });
+    }
+    yield* ensureAllowedPath(
+      script,
+      workingDirectory,
+      task.allowedPaths,
+      harness.allowedPaths,
+    );
+  });
+
 const resolveAuthorizedAction = (
   action: ProposedProcessAction,
   task: AgentTask,
@@ -514,6 +665,13 @@ const resolveAuthorizedAction = (
         });
       }
     }
+    yield* authorizeInterpreterInvocation(
+      executable,
+      action.arguments,
+      workingDirectory,
+      task,
+      harness,
+    );
     const authorizedWorkingDirectory = action.workingDirectory
       ?? task.allowedPaths[0];
     if (authorizedWorkingDirectory === undefined) {
@@ -604,6 +762,13 @@ const resolveAuthorizedVerification = (
         value: requestedExecutable,
       });
     }
+    yield* authorizeInterpreterInvocation(
+      executable,
+      task.verification.command.slice(1),
+      workingDirectory,
+      task,
+      harness,
+    );
     yield* Effect.forEach(
       task.verification.command.slice(1),
       (argument) => {

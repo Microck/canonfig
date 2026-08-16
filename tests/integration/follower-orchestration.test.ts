@@ -17,6 +17,7 @@ import {
   AgentTaskId,
   BlobId,
   ContentDigest,
+  GroupName,
   ProfileId,
   ProfileRevisionId,
   ResourceId,
@@ -263,6 +264,7 @@ describe("production follower orchestration", () => {
     const target = join(root, "follower", "home", "managed.txt");
     const configTarget = join(root, "follower", "home", "managed.json");
     const directoryTarget = join(root, "follower", "home", "managed-directory");
+    const restrictedTarget = join(root, "follower", "home", "alpha-only.txt");
     const profileId = decode(ProfileId)("production-profile");
     const content = "canonical follower content\n";
     const spec = {
@@ -306,7 +308,7 @@ describe("production follower orchestration", () => {
         id: profileId,
         version: 2,
         name: "Production profile",
-        groups: [],
+        groups: [{ name: "alpha" }],
         resources: [
           {
             id: decode(ResourceId)("managed-file"),
@@ -344,6 +346,23 @@ describe("production follower orchestration", () => {
               digest: directoryDigest(directorySpec.files),
             },
           },
+          {
+            id: decode(ResourceId)("alpha-only-file"),
+            kind: "file",
+            policy: "replace",
+            target: restrictedTarget,
+            groups: ["alpha"],
+            dependsOn: [],
+            spec: {
+              kind: "file",
+              content: "alpha-only content\n",
+              executable: false,
+            },
+            verify: {
+              method: "digest",
+              digest: sha256Hex("alpha-only content\n"),
+            },
+          },
         ],
         scheduleDefault: {
           type: "daily",
@@ -354,14 +373,19 @@ describe("production follower orchestration", () => {
       const canonicalBytes = canonicalJson(asJson(profile));
       const digest = sha256Hex(canonicalBytes);
       const id = decode(ProfileRevisionId)(`${profileId}:${digest}`);
-      const resources = profile.resources.map((resource) => ({
-        id: decode(ResourceId)(resource.id),
-        kind: resource.kind,
-        policy: resource.policy ?? "replace",
-        target: resource.target,
-        dependsOn: [],
-        blobs: [decode(BlobId)(digestOf(asJson(resource.spec)))],
-      }));
+      const resources = profile.resources.map((resource) => {
+        const published = {
+          id: decode(ResourceId)(resource.id),
+          kind: resource.kind,
+          policy: resource.policy ?? "replace",
+          target: resource.target,
+          dependsOn: [],
+          blobs: [decode(BlobId)(digestOf(asJson(resource.spec)))],
+        };
+        return resource.groups === undefined
+          ? published
+          : { ...published, groups: resource.groups };
+      });
       const unsigned = {
         id,
         profileId,
@@ -370,7 +394,7 @@ describe("production follower orchestration", () => {
         digest,
         publishedAt: "2026-08-16T00:00:00Z",
         resources,
-        groups: [],
+        groups: profile.groups,
         signingKeyId: source.source.keyId,
       };
       const signed: ProfileRevision = {
@@ -390,7 +414,7 @@ describe("production follower orchestration", () => {
         ),
         publishedAt: unsigned.publishedAt,
         resources,
-        groups: [],
+        groups: profile.groups,
       };
       yield* repository.publishRevision({ revision: signed });
       return signed;
@@ -479,6 +503,78 @@ describe("production follower orchestration", () => {
       outcome: { outcome: "Converged" },
     });
     expect(server.blobRequests()).toBe(3);
+
+    const publicViewRevisions = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.listRevisions()
+      ).pipe(Effect.provide(followerRepository)),
+    );
+    const publicView = publicViewRevisions.find((entry) =>
+      entry.id.startsWith(`${revision.id}:view:`)
+    );
+    expect(publicView).toBeDefined();
+
+    await sourceRuntime.runPromise(
+      Effect.flatMap(Enrollment, (enrollment) =>
+        enrollment.updateFollowerGroups(
+          follower.id,
+          [decode(GroupName)("alpha")],
+        )
+      ),
+    );
+    const alphaViewSync = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "apply").pipe(
+        Effect.provide(application),
+      ),
+    );
+    expect(alphaViewSync).toMatchObject({
+      revision: revision.id,
+      downloadedBlobs: 1,
+      reusedBlobs: 3,
+      outcome: { outcome: "Converged" },
+    });
+    expect(await readFile(restrictedTarget, "utf8")).toBe("alpha-only content\n");
+    expect(server.blobRequests()).toBe(4);
+
+    const authorizedViewRevisions = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.listRevisions()
+      ).pipe(Effect.provide(followerRepository)),
+    );
+    const viewIds = authorizedViewRevisions
+      .map((entry) => entry.id)
+      .filter((id) => id.startsWith(`${revision.id}:view:`));
+    expect(viewIds).toHaveLength(2);
+    expect(new Set(viewIds).size).toBe(2);
+    expect(viewIds).toContain(publicView?.id);
+
+    await sourceRuntime.runPromise(
+      Effect.flatMap(Enrollment, (enrollment) =>
+        enrollment.updateFollowerGroups(follower.id, [])
+      ),
+    );
+    const publicViewAgain = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "apply").pipe(
+        Effect.provide(application),
+      ),
+    );
+    expect(publicViewAgain).toMatchObject({
+      revision: revision.id,
+      downloadedBlobs: 0,
+      reusedBlobs: 3,
+      outcome: { outcome: "Converged" },
+    });
+    expect(server.blobRequests()).toBe(4);
+    const stableViews = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.listRevisions()
+      ).pipe(Effect.provide(followerRepository)),
+    );
+    expect(
+      stableViews
+        .map((entry) => entry.id)
+        .filter((id) => id.startsWith(`${revision.id}:view:`)),
+    ).toHaveLength(2);
 
     const planned = await Effect.runPromise(
       synchronizeFollower(followerDatabase, "plan").pipe(

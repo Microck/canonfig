@@ -456,6 +456,142 @@ describe("agent resolution", () => {
     expect(recording.invocations).toHaveLength(1);
   });
 
+  it.each([
+    ["Node -e", process.execPath, ["-e", "process.exit(0)"]],
+    ["Node packed print", process.execPath, ["-p1+1"]],
+    ["Node assigned eval", process.execPath, ["--eval=process.exit(0)"]],
+    ["Python packed command", "python3", ["-cprint(1)"]],
+    ["Python combined options and command", "python3", ["-Ic", "print(1)"]],
+    ["POSIX shell packed command", "sh", ["-lc", "exit 0"]],
+    ["PowerShell abbreviated command", "pwsh", ["-CoMm", "exit 0"]],
+    ["PowerShell assigned encoded command", "powershell", ["/Enc=ZQB4AGkAdAA="]],
+  ])("denies separator-free inline programs through %s", async (
+    _name,
+    requestedExecutable,
+    arguments_,
+  ) => {
+    const executable = requestedExecutable === process.execPath
+      ? process.execPath
+      : join(directory, requestedExecutable);
+    if (requestedExecutable !== process.execPath) {
+      await writeFile(executable, "#!/bin/sh\nexit 0\n");
+      await chmod(executable, 0o755);
+    }
+    const boundedTask = task(directory, {
+      allowedExecutables: [executable, join(directory, "verify")],
+    });
+    const denied = await Effect.runPromise(authorizeAction(
+      action({ executable, arguments: arguments_ }),
+      boundedTask,
+      {
+        ...harness(directory),
+        allowedExecutables: [executable, join(directory, "verify")],
+      },
+    ).pipe(Effect.flip));
+    expect(denied).toMatchObject({
+      capability: "inline-program",
+      value: executable,
+    });
+  });
+
+  it("denies inline interpreter programs hidden behind an allowlisted wrapper", async () => {
+    const wrapper = join(directory, "env");
+    const node = join(directory, "node");
+    await writeFile(wrapper, "#!/bin/sh\nexit 0\n");
+    await Promise.all([
+      chmod(wrapper, 0o755),
+      symlink(process.execPath, node),
+    ]);
+    const allowedExecutables = [wrapper, node, join(directory, "verify")];
+    const boundedTask = task(directory, { allowedExecutables });
+    const denied = await Effect.runPromise(authorizeAction(
+      action({
+        executable: wrapper,
+        arguments: ["node", "--eval=process.exit(0)"],
+      }),
+      boundedTask,
+      {
+        ...harness(directory),
+        allowedExecutables,
+      },
+    ).pipe(Effect.flip));
+    expect(denied).toMatchObject({
+      capability: "interpreter-wrapper",
+      value: wrapper,
+    });
+  });
+
+  it("allows explicit interpreter script files only within path bounds", async () => {
+    const script = join(directory, "bounded-script.mjs");
+    await writeFile(script, "process.exit(0);\n");
+    const boundedTask = task(directory, {
+      allowedExecutables: [process.execPath, join(directory, "verify")],
+    });
+    const bounds = {
+      ...harness(directory),
+      allowedExecutables: [process.execPath, join(directory, "verify")],
+    };
+    await expect(Effect.runPromise(authorizeAction(
+      action({
+        executable: process.execPath,
+        arguments: [script, "-e", "literal;not-shell-syntax"],
+      }),
+      boundedTask,
+      bounds,
+    ))).resolves.toBeUndefined();
+
+    const outsideScript = join(directory, "..", "outside-script.mjs");
+    const denied = await Effect.runPromise(authorizeAction(
+      action({
+        executable: process.execPath,
+        arguments: [outsideScript],
+      }),
+      boundedTask,
+      bounds,
+    ).pipe(Effect.flip));
+    expect(denied).toMatchObject({ capability: "path" });
+
+    const powershell = join(directory, "pwsh");
+    const powershellScript = join(directory, "bounded-script.ps1");
+    await Promise.all([
+      writeFile(powershell, "#!/bin/sh\nexit 0\n"),
+      writeFile(powershellScript, "exit 0\n"),
+    ]);
+    await chmod(powershell, 0o755);
+    const powershellTask = task(directory, {
+      allowedExecutables: [powershell, join(directory, "verify")],
+    });
+    await expect(Effect.runPromise(authorizeAction(
+      action({
+        executable: powershell,
+        arguments: ["-File", powershellScript, "-Command", "literal argument"],
+      }),
+      powershellTask,
+      {
+        ...harness(directory),
+        allowedExecutables: [powershell, join(directory, "verify")],
+      },
+    ))).resolves.toBeUndefined();
+  });
+
+  it("fails closed on unknown interpreter modes instead of treating payloads as scripts", async () => {
+    const boundedTask = task(directory, {
+      allowedExecutables: [process.execPath, join(directory, "verify")],
+    });
+    const denied = await Effect.runPromise(authorizeAction(
+      action({
+        executable: process.execPath,
+        arguments: ["--unknown-inline-mode", "process.exit(0)"],
+      }),
+      boundedTask,
+      {
+        ...harness(directory),
+        allowedExecutables: [process.execPath, join(directory, "verify")],
+      },
+    ).pipe(Effect.flip));
+    expect(denied).toMatchObject({ capability: "inline-program" });
+  });
+
   it("fails when independent verification rejects the agent self-report", async () => {
     let count = 0;
     const executor: ControlledExecutor = (input) => {
