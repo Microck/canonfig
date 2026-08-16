@@ -37,6 +37,7 @@ import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
   digestOf,
+  sha256BytesHex,
   sha256Hex,
 } from "../../src/profile/profile-codec.ts";
 import { revisionSigningPayload } from "../../src/profile/publication.ts";
@@ -46,6 +47,11 @@ import {
   defaultScheduledInvocation,
   FollowerSynchronizationConfiguration,
 } from "../../src/synchronization/follower-sync-config.ts";
+import {
+  serializeConfigDocument,
+  setConfigPath,
+  type ConfigDocument,
+} from "../../src/synchronization/config-codec.ts";
 import {
   authorizationViewIdentity,
   recoverFollower,
@@ -81,6 +87,21 @@ const machineLayer = (root: string) =>
 
 const asJson = <Value>(value: Value) =>
   decode(Schema.MutableJson)(JSON.parse(JSON.stringify(value)));
+
+const directoryDigest = (
+  files: ReadonlyArray<{
+    readonly path: string;
+    readonly content: string;
+    readonly executable?: boolean | undefined;
+  }>,
+) => decode(ContentDigest)(sha256Hex(
+  [...files]
+    .sort((left, right) => left.path.localeCompare(right.path))
+    .map((file) =>
+      `${file.path}\0${sha256Hex(file.content)}\0${file.executable === true ? "x" : "-"}`
+    )
+    .join("\n"),
+));
 
 describe("production follower orchestration", () => {
   it("separates authorization-filtered views of one source revision", () => {
@@ -240,6 +261,8 @@ describe("production follower orchestration", () => {
     const sourceRuntime = ManagedRuntime.make(sourceLayer);
     runtimes.push(sourceRuntime);
     const target = join(root, "follower", "home", "managed.txt");
+    const configTarget = join(root, "follower", "home", "managed.json");
+    const directoryTarget = join(root, "follower", "home", "managed-directory");
     const profileId = decode(ProfileId)("production-profile");
     const content = "canonical follower content\n";
     const spec = {
@@ -247,6 +270,26 @@ describe("production follower orchestration", () => {
       content,
       executable: false,
     };
+    const configSpec = {
+      kind: "config" as const,
+      format: "json" as const,
+      keys: [{ path: "canonical.value", value: "source" }],
+    };
+    const managedConfigDocument: ConfigDocument = {};
+    setConfigPath(managedConfigDocument, "canonical.value", "source");
+    const configDigest = sha256BytesHex(
+      new TextEncoder().encode(
+        serializeConfigDocument("json", managedConfigDocument),
+      ),
+    );
+    const directorySpec = {
+      kind: "directory" as const,
+      files: [
+        { path: "kept.txt", content: "kept\n", executable: false },
+        { path: "removed.txt", content: "remove later\n", executable: false },
+      ],
+    };
+    let signingKey: ReturnType<typeof createPrivateKey> | undefined;
 
     const revision = await sourceRuntime.runPromise(Effect.gen(function*() {
       const enrollment = yield* Enrollment;
@@ -258,23 +301,50 @@ describe("production follower orchestration", () => {
           reference: source.signingKeyReference,
         }),
       ));
+      signingKey = privateKey;
       const profile: MachineProfile = {
         id: profileId,
         version: 2,
         name: "Production profile",
         groups: [],
-        resources: [{
-          id: decode(ResourceId)("managed-file"),
-          kind: "file",
-          policy: "replace-if-unmodified",
-          target,
-          dependsOn: [],
-          spec,
-          verify: {
-            method: "digest",
-            digest: sha256Hex(content),
+        resources: [
+          {
+            id: decode(ResourceId)("managed-file"),
+            kind: "file",
+            policy: "replace-if-unmodified",
+            target,
+            dependsOn: [],
+            spec,
+            verify: {
+              method: "digest",
+              digest: sha256Hex(content),
+            },
           },
-        }],
+          {
+            id: decode(ResourceId)("managed-config"),
+            kind: "config",
+            policy: "merge",
+            target: configTarget,
+            dependsOn: [],
+            spec: configSpec,
+            verify: {
+              method: "digest",
+              digest: configDigest,
+            },
+          },
+          {
+            id: decode(ResourceId)("managed-directory"),
+            kind: "directory",
+            policy: "mirror-owned",
+            target: directoryTarget,
+            dependsOn: [],
+            spec: directorySpec,
+            verify: {
+              method: "digest",
+              digest: directoryDigest(directorySpec.files),
+            },
+          },
+        ],
         scheduleDefault: {
           type: "daily",
           at: "00:00",
@@ -283,8 +353,15 @@ describe("production follower orchestration", () => {
       };
       const canonicalBytes = canonicalJson(asJson(profile));
       const digest = sha256Hex(canonicalBytes);
-      const blob = decode(BlobId)(digestOf(asJson(spec)));
       const id = decode(ProfileRevisionId)(`${profileId}:${digest}`);
+      const resources = profile.resources.map((resource) => ({
+        id: decode(ResourceId)(resource.id),
+        kind: resource.kind,
+        policy: resource.policy ?? "replace",
+        target: resource.target,
+        dependsOn: [],
+        blobs: [decode(BlobId)(digestOf(asJson(resource.spec)))],
+      }));
       const unsigned = {
         id,
         profileId,
@@ -292,14 +369,7 @@ describe("production follower orchestration", () => {
         canonicalBytes,
         digest,
         publishedAt: "2026-08-16T00:00:00Z",
-        resources: [{
-          id: decode(ResourceId)("managed-file"),
-          kind: "file" as const,
-          policy: "replace-if-unmodified" as const,
-          target,
-          dependsOn: [],
-          blobs: [blob],
-        }],
+        resources,
         groups: [],
         signingKeyId: source.source.keyId,
       };
@@ -319,7 +389,7 @@ describe("production follower orchestration", () => {
           }`,
         ),
         publishedAt: unsigned.publishedAt,
-        resources: unsigned.resources,
+        resources,
         groups: [],
       };
       yield* repository.publishRevision({ revision: signed });
@@ -389,11 +459,14 @@ describe("production follower orchestration", () => {
     );
     expect(first).toMatchObject({
       revision: revision.id,
-      downloadedBlobs: 1,
+      downloadedBlobs: 3,
       reusedBlobs: 0,
       outcome: { outcome: "Converged" },
     });
     expect(await readFile(target, "utf8")).toBe(content);
+    expect(await readFile(join(directoryTarget, "removed.txt"), "utf8")).toBe(
+      "remove later\n",
+    );
 
     const second = await Effect.runPromise(
       synchronizeFollower(followerDatabase, "apply").pipe(
@@ -402,10 +475,10 @@ describe("production follower orchestration", () => {
     );
     expect(second).toMatchObject({
       downloadedBlobs: 0,
-      reusedBlobs: 1,
+      reusedBlobs: 3,
       outcome: { outcome: "Converged" },
     });
-    expect(server.blobRequests()).toBe(1);
+    expect(server.blobRequests()).toBe(3);
 
     const planned = await Effect.runPromise(
       synchronizeFollower(followerDatabase, "plan").pipe(
@@ -439,9 +512,193 @@ describe("production follower orchestration", () => {
     expect(recovered).toMatchObject({
       revision: revision.id,
       downloadedBlobs: 0,
-      reusedBlobs: 1,
+      reusedBlobs: 3,
       outcome: { outcome: "Converged", run: "process-restart-run" },
     });
+
+    if (signingKey === undefined) throw new Error("source signing key was not initialized");
+    const nextDirectorySpec = {
+      ...directorySpec,
+      files: [directorySpec.files[0]!],
+    };
+    const nextProfile: MachineProfile = {
+      id: profileId,
+      version: 2,
+      name: "Production profile",
+      groups: [],
+      resources: [
+        {
+          id: decode(ResourceId)("managed-file"),
+          kind: "file",
+          policy: "replace-if-unmodified",
+          target,
+          dependsOn: [],
+          spec,
+          verify: { method: "digest", digest: sha256Hex(content) },
+        },
+        {
+          id: decode(ResourceId)("managed-config"),
+          kind: "config",
+          policy: "merge",
+          target: configTarget,
+          dependsOn: [],
+          spec: configSpec,
+          verify: { method: "digest", digest: configDigest },
+        },
+        {
+          id: decode(ResourceId)("managed-directory"),
+          kind: "directory",
+          policy: "mirror-owned",
+          target: directoryTarget,
+          dependsOn: [],
+          spec: nextDirectorySpec,
+          verify: {
+            method: "digest",
+            digest: directoryDigest(nextDirectorySpec.files),
+          },
+        },
+      ],
+      scheduleDefault: { type: "daily", at: "00:00", timezone: "local" },
+    };
+    const nextCanonicalBytes = canonicalJson(asJson(nextProfile));
+    const nextDigest = sha256Hex(nextCanonicalBytes);
+    const nextResources = nextProfile.resources.map((resource) => ({
+      id: decode(ResourceId)(resource.id),
+      kind: resource.kind,
+      policy: resource.policy ?? "replace",
+      target: resource.target,
+      dependsOn: [],
+      blobs: [decode(BlobId)(digestOf(asJson(resource.spec)))],
+    }));
+    const nextId = decode(ProfileRevisionId)(`${profileId}:${nextDigest}`);
+    const nextUnsigned = {
+      id: nextId,
+      profileId,
+      sequence: 2,
+      canonicalBytes: nextCanonicalBytes,
+      digest: nextDigest,
+      publishedAt: "2026-08-16T00:02:00Z",
+      resources: nextResources,
+      groups: [],
+      signingKeyId: enrolled.source.keyId,
+    };
+    await sourceRuntime.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.publishRevision({
+          revision: {
+            ...nextUnsigned,
+            signature: decode(SourceSignature)(
+              `ed25519:${
+                sign(
+                  null,
+                  Buffer.from(revisionSigningPayload(nextUnsigned)),
+                  signingKey,
+                ).toString("base64url")
+              }`,
+            ),
+          },
+        })
+      ),
+    );
+
+    const ownershipPlan = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "plan").pipe(
+        Effect.provide(application),
+      ),
+    );
+    const appliedBeforeOwnershipPlan = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadAppliedResources(follower.id)
+      ).pipe(Effect.provide(followerRepository)),
+    );
+    expect(
+      appliedBeforeOwnershipPlan.find((record) =>
+        record.resource === "managed-directory"
+      ),
+    ).toMatchObject({
+      ownedFiles: [
+        { path: "kept.txt" },
+        { path: "removed.txt" },
+      ],
+    });
+    expect(ownershipPlan.plan.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        resource: "managed-directory",
+        detail: expect.objectContaining({
+          kind: "mirror-directory",
+          adds: [],
+          removes: ["removed.txt"],
+        }),
+      }),
+    ]));
+    const ownershipApplied = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "apply").pipe(
+        Effect.provide(application),
+      ),
+    );
+    expect(ownershipApplied).toMatchObject({ outcome: { outcome: "Converged" } });
+    await expect(readFile(join(directoryTarget, "removed.txt"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await readFile(join(directoryTarget, "kept.txt"), "utf8")).toBe("kept\n");
+
+    const baseFollowerConfiguration = {
+      schemaVersion: 1 as const,
+      follower,
+      selectedProfile: profileId,
+      source: {
+        endpoint: server.endpoint,
+        tlsFingerprint: enrolled.tlsFingerprint,
+        signingFingerprint: enrolled.source.publicKeyFingerprint,
+      },
+      credentialReference: enrolled.credentialReference,
+      cacheDirectory: join(root, "follower-cache"),
+      stateLocation: followerDatabase,
+      agentPolicy: "deterministic-only" as const,
+      scheduledInvocation: defaultScheduledInvocation,
+      updatedAt: "2026-08-16T00:03:00Z",
+    };
+    await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.saveFollowerSynchronizationConfiguration({
+          sourceIdentity: enrolled.source,
+          configuration: {
+            ...baseFollowerConfiguration,
+            localOverlay: [{
+              resource: decode(ResourceId)("managed-config"),
+              keys: ["canonical.value"],
+            }],
+          },
+        })
+      ).pipe(Effect.provide(followerRepository)),
+    );
+    const overlayPlan = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "plan").pipe(
+        Effect.provide(application),
+      ),
+    );
+    expect(overlayPlan.plan.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        resource: "managed-config",
+        detail: expect.objectContaining({
+          kind: "human-action",
+          reason: expect.stringContaining(
+            "Local Overlay conflicts with canonical keys: canonical.value",
+          ),
+        }),
+      }),
+    ]));
+    await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.saveFollowerSynchronizationConfiguration({
+          sourceIdentity: enrolled.source,
+          configuration: {
+            ...baseFollowerConfiguration,
+            updatedAt: "2026-08-16T00:03:01Z",
+          },
+        })
+      ).pipe(Effect.provide(followerRepository)),
+    );
 
     await writeFile(target, "local drift\n");
     const drifted = await Effect.runPromise(

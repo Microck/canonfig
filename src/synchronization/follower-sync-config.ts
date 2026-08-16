@@ -25,6 +25,10 @@ export const AgentHarnessCapability = Schema.Literals([
 export const FollowerAgentHarnessConfiguration = Schema.Struct({
   kind: SupportedAgentHarness,
   executable: Schema.NonEmptyString,
+  environment: Schema.optional(Schema.Array(Schema.Struct({
+    name: Schema.NonEmptyString,
+    value: Schema.String,
+  }))),
   maximumInputBytes: Schema.Int.check(
     Schema.isGreaterThan(0),
     Schema.isLessThanOrEqualTo(1024 * 1024),

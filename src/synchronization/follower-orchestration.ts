@@ -687,6 +687,13 @@ const harnessConfigurationIssue = (
   if (configuration.executable.trim() !== configuration.executable) {
     return "agent harness executable reference is invalid";
   }
+  if (
+    configuration.environment?.some((entry) =>
+      entry.name.trim() !== entry.name || entry.name.includes("=")
+    ) === true
+  ) {
+    return "agent harness environment overrides are invalid";
+  }
   if (configuration.allowedPaths.some((path) => path.trim() !== path)) {
     return "agent harness path bounds are invalid";
   }
@@ -717,7 +724,12 @@ const boundedTask = (
   Effect.gen(function*() {
     const allowedExecutables = [];
     for (const executable of task.allowedExecutables) {
-      if (yield* executableAllowed(executable, configuration.allowedExecutables)) {
+      if (yield* executableAllowed(
+        executable,
+        configuration.allowedExecutables,
+        configuration.environment,
+        task.allowedPaths[0] ?? process.cwd(),
+      )) {
         allowedExecutables.push(executable);
       }
     }
@@ -809,6 +821,7 @@ export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTa
         harness: {
           harness: harness.kind,
           executable: harness.executable,
+          environment: harness.environment,
           maximumInputBytes: harness.maximumInputBytes,
           allowedPaths: harness.allowedPaths,
           allowedExecutables: harness.allowedExecutables,

@@ -6,6 +6,7 @@ import {
   X509Certificate,
 } from "node:crypto";
 import {
+  chmod,
   mkdir,
   open,
   readFile,
@@ -18,7 +19,7 @@ import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { connect as tlsConnect } from "node:tls";
 
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Option, Redacted, Schema } from "effect";
 
 import { BlobId, CertificateFingerprint } from "../domain/brand.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
@@ -686,11 +687,18 @@ const atomicWrite = (
   bytes: Uint8Array,
 ): Promise<void> => {
   const temporary = `${path}.${randomUUID()}.tmp`;
-  return writeFile(temporary, bytes, { flag: "wx" })
+  return writeFile(temporary, bytes, { flag: "wx", mode: 0o600 })
     .then(async () => {
       const file = await open(temporary, "r");
       try {
-        await file.sync();
+        await file.sync().catch((cause: NodeJS.ErrnoException) => {
+          if (
+            process.platform !== "win32"
+            || (cause.code !== "EPERM" && cause.code !== "EINVAL")
+          ) {
+            throw cause;
+          }
+        });
       } finally {
         await file.close();
       }
@@ -701,6 +709,36 @@ const atomicWrite = (
       throw cause;
     });
 };
+
+const filesystemCause = (cause: unknown): string => {
+  if (!(cause instanceof Error)) return "unknown filesystem failure";
+  const decodedCode = Schema.decodeUnknownOption(
+    Schema.Struct({ code: Schema.String }),
+  )(cause);
+  const code = Option.isSome(decodedCode) ? decodedCode.value.code : cause.name;
+  const message = cause.message
+    .replace(/(https?:\/\/)[^@\s/]+@/giu, "$1[REDACTED]@")
+    .replace(/(token|password|credential)=([^&\s]+)/giu, "$1=[REDACTED]")
+    .replace(/\s+/gu, " ")
+    .slice(0, 1024);
+  return `${code}: ${message}`;
+};
+
+const cacheFailure = (
+  operation: string,
+  cause: unknown,
+): EnrollmentTransportError =>
+  new EnrollmentTransportError({
+    operation,
+    message: `the follower transport cache is unavailable (${filesystemCause(cause)})`,
+  });
+
+const ensureCacheDirectory = async (path: string): Promise<void> => {
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") await chmod(path, 0o700);
+};
+
+export const atomicCacheWrite = atomicWrite;
 
 const cachedBlob = async (
   directory: string,
@@ -726,14 +764,11 @@ export const fetchRevision = (
     const revisionDirectory = join(input.cacheDirectory, "revisions");
     yield* Effect.tryPromise({
       try: () => Promise.all([
-        mkdir(blobDirectory, { recursive: true }),
-        mkdir(revisionDirectory, { recursive: true }),
+        ensureCacheDirectory(blobDirectory),
+        ensureCacheDirectory(revisionDirectory),
       ]),
-      catch: () =>
-        new EnrollmentTransportError({
-          operation: "create follower transport cache",
-          message: "the follower transport cache is unavailable",
-        }),
+      catch: (cause) =>
+        cacheFailure("create follower transport cache", cause),
     });
     const ids = [...new Set(
       metadata.resources.flatMap((resource) => resource.blobs),
@@ -761,11 +796,7 @@ export const fetchRevision = (
       const path = join(blobDirectory, id);
       yield* Effect.tryPromise({
         try: () => atomicWrite(path, bytes),
-        catch: () =>
-          new EnrollmentTransportError({
-            operation: "cache verified blob",
-            message: "the follower transport cache is unavailable",
-          }),
+        catch: (cause) => cacheFailure("cache verified blob", cause),
       });
       blobs.push({ id, path });
       downloadedBlobs += 1;
@@ -779,11 +810,8 @@ export const fetchRevision = (
         metadataPath,
         Buffer.from(JSON.stringify(metadata)),
       ),
-      catch: () =>
-        new EnrollmentTransportError({
-          operation: "cache verified revision metadata",
-          message: "the follower transport cache is unavailable",
-        }),
+      catch: (cause) =>
+        cacheFailure("cache verified revision metadata", cause),
     });
     return { metadata, blobs, downloadedBlobs, reusedBlobs };
   });

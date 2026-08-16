@@ -29,11 +29,19 @@ export const redactText = (
   return redacted;
 };
 
-const environmentObject = (
+export const controlledEnvironment = (
   entries: ReadonlyArray<{ readonly name: string; readonly value: string }>,
 ): NodeJS.ProcessEnv => {
   const environment: NodeJS.ProcessEnv = { ...process.env };
-  for (const entry of entries) environment[entry.name] = entry.value;
+  for (const entry of entries) {
+    if (process.platform === "win32") {
+      const existing = Object.keys(environment).find(
+        (name) => name.toLowerCase() === entry.name.toLowerCase(),
+      );
+      if (existing !== undefined) delete environment[existing];
+    }
+    environment[entry.name] = entry.value;
+  }
   return environment;
 };
 
@@ -63,7 +71,7 @@ export const executeControlledProcess = (
       let wasCancelled = false;
       const child = spawn(input.executable, [...input.arguments], {
         cwd: input.workingDirectory,
-        env: environmentObject(input.environment ?? []),
+        env: controlledEnvironment(input.environment ?? []),
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
       });

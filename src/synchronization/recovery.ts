@@ -485,11 +485,18 @@ export const recoverSynchronizationPlan = (
           ? undefined
           : desiredResourceDigest(value);
         if (digest !== undefined) {
+          const ownedFiles = value?.kind === "directory" || value?.kind === "skill"
+            ? value.files.map((file) => ({
+              path: file.path,
+              digest: file.digest,
+            }))
+            : undefined;
           appliedResources.push({
             resource,
             revision: recoveryInput.revision.id,
             digest,
             appliedAt,
+            ownedFiles,
           });
         }
       }

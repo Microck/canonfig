@@ -5,6 +5,7 @@ import {
   verify,
 } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -27,6 +28,7 @@ import type {
 } from "../../src/domain/profile.ts";
 import {
   RevokedFollowerCredentialError,
+  EnrollmentTransportError,
   TransportIntegrityError,
   TransportInterruptedError,
   TransportResourceNotFoundError,
@@ -36,6 +38,7 @@ import { EnrollmentLive } from "../../src/enrollment/enrollment.layer.ts";
 import { Enrollment } from "../../src/enrollment/enrollment.service.ts";
 import {
   enrollFollower,
+  atomicCacheWrite,
   fetchRevision,
   getRevisionMetadata,
   listRevisions,
@@ -312,6 +315,52 @@ const runFollower = <Value, Failure>(
   Effect.runPromise(effect.pipe(Effect.provide(setup.followerMachine)));
 
 describe("authenticated content-addressed transport", () => {
+  it("writes cache files atomically with private POSIX permissions", async () => {
+    const setup = fixture();
+    const directory = join(setup.root, "atomic-cache");
+    await mkdir(directory);
+    const path = join(directory, "blob");
+    await atomicCacheWrite(path, Buffer.from("verified"));
+    expect(await readdir(directory)).toEqual(["blob"]);
+    if (process.platform !== "win32") {
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it.runIf(process.platform === "win32")(
+    "uses a Windows-compatible flush and rename path for verified cache files",
+    async () => {
+      const setup = fixture();
+      const directory = join(setup.root, "windows-atomic-cache");
+      await mkdir(directory);
+      const path = join(directory, "blob");
+      await atomicCacheWrite(path, Buffer.from("verified"));
+      await atomicCacheWrite(join(directory, "second"), Buffer.from("second"));
+      expect((await readdir(directory)).sort()).toEqual(["blob", "second"]);
+    },
+  );
+
+  it("preserves the filesystem cause when cache creation fails", async () => {
+    const setup = fixture();
+    const published = await publishFixtureRevision(setup);
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const blocked = join(setup.root, "blocked-cache");
+    writeFileSync(blocked, "not a directory");
+    const error = await Effect.runPromise(Effect.flip(
+      fetchRevision({
+        ...transportInput(server, enrolled),
+        revisionId: published.revision.id,
+        cacheDirectory: blocked,
+      }).pipe(Effect.provide(setup.followerMachine)),
+    ));
+    expect(error).toBeInstanceOf(EnrollmentTransportError);
+    expect(error).toMatchObject({
+      operation: "create follower transport cache",
+      message: expect.stringMatching(/E(?:NOTDIR|EXIST)/u),
+    });
+  });
+
   it("filters groups, incrementally caches blobs, resumes, and converges without downloads", async () => {
     const setup = fixture();
     const published = await publishFixtureRevision(setup);

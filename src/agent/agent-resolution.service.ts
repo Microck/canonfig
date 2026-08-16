@@ -37,7 +37,10 @@ import type {
   ReviewedProfileChangeProposal,
   SourceDiscoveryResolution,
 } from "./agent-resolution.types.ts";
-import { redactText } from "./controlled-executor.ts";
+import {
+  controlledEnvironment,
+  redactText,
+} from "./controlled-executor.ts";
 
 export class AgentResolution extends Context.Service<AgentResolution, {
   readonly resolve: (
@@ -141,20 +144,52 @@ export const redactAgentTask = (
 const hasPathSeparator = (value: string): boolean =>
   value.includes("/") || value.includes("\\");
 
-const executableCandidates = (value: string): ReadonlyArray<string> => {
+type ProcessEnvironmentEntry = {
+  readonly name: string;
+  readonly value: string;
+};
+
+const environmentValue = (
+  environment: NodeJS.ProcessEnv,
+  name: string,
+): string | undefined => {
+  if (process.platform !== "win32") return environment[name];
+  const key = Object.keys(environment).find(
+    (candidate) => candidate.toLowerCase() === name.toLowerCase(),
+  );
+  return key === undefined ? undefined : environment[key];
+};
+
+const executableCandidates = (
+  value: string,
+  environmentEntries: ReadonlyArray<ProcessEnvironmentEntry>,
+  workingDirectory: string,
+): ReadonlyArray<string> => {
   if (isAbsolute(value) || win32.isAbsolute(value) || hasPathSeparator(value)) {
-    return [resolve(value)];
+    return [resolve(workingDirectory, value)];
   }
+  const environment = controlledEnvironment(environmentEntries);
   const extensions = process.platform === "win32"
-    ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")
+    ? (environmentValue(environment, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";")
     : [""];
-  return (process.env.PATH ?? "").split(delimiter).flatMap((directory) =>
-    extensions.map((extension) => resolve(directory, `${value}${extension}`))
+  const path = environmentValue(environment, "PATH") ?? "";
+  return path.split(delimiter).flatMap((directory) =>
+    extensions.map((extension) =>
+      resolve(
+        workingDirectory,
+        directory.length === 0 ? "." : directory,
+        `${value}${extension}`,
+      )
+    )
   );
 };
 
-const resolvedExecutableIdentity = async (value: string): Promise<string | undefined> => {
-  for (const candidate of executableCandidates(value)) {
+export const resolvedExecutableIdentity = async (
+  value: string,
+  environment: ReadonlyArray<ProcessEnvironmentEntry> = [],
+  workingDirectory = process.cwd(),
+): Promise<string | undefined> => {
+  for (const candidate of executableCandidates(value, environment, workingDirectory)) {
     try {
       await access(candidate, constants.X_OK);
       return await realpath(candidate);
@@ -169,13 +204,22 @@ const resolvedExecutableIdentity = async (value: string): Promise<string | undef
 export const executableAllowed = (
   executable: string,
   allowed: ReadonlyArray<string>,
+  environment: ReadonlyArray<ProcessEnvironmentEntry> = [],
+  workingDirectory = process.cwd(),
 ): Effect.Effect<boolean> =>
   Effect.promise(async () => {
-    if (allowed.includes(executable) && !hasPathSeparator(executable)) return true;
-    const executableIdentity = await resolvedExecutableIdentity(executable);
+    const executableIdentity = await resolvedExecutableIdentity(
+      executable,
+      environment,
+      workingDirectory,
+    );
     if (executableIdentity === undefined) return false;
     for (const entry of allowed) {
-      const allowedIdentity = await resolvedExecutableIdentity(entry);
+      const allowedIdentity = await resolvedExecutableIdentity(
+        entry,
+        environment,
+        workingDirectory,
+      );
       if (allowedIdentity === executableIdentity) return true;
     }
     return false;
@@ -317,6 +361,17 @@ const ensureAllowedOrigin = (
 const elevationExecutables = new Set(["sudo", "doas", "pkexec", "runas"]);
 const loginExecutables = new Set(["login", "logon", "su"]);
 const rebootExecutables = new Set(["reboot", "shutdown"]);
+const ambiguousWrapperExecutables = new Set([
+  "bash",
+  "cmd",
+  "env",
+  "fish",
+  "nu",
+  "powershell",
+  "pwsh",
+  "sh",
+  "zsh",
+]);
 type PrivilegedCapability = "elevation" | "login" | "restart" | "reboot";
 
 const derivedCapabilities = (
@@ -326,6 +381,17 @@ const derivedCapabilities = (
   const capabilities = new Set<PrivilegedCapability>();
   const command = portableBasename(executable).toLowerCase().replace(/\.(?:cmd|exe)$/u, "");
   const tokens = arguments_.map((argument) => argument.toLowerCase());
+  const commandTokens = [
+    command,
+    ...tokens
+      .filter((argument) =>
+        !argument.startsWith("-")
+        && !(/^\/[^/\\]+$/u.test(argument))
+      )
+      .map((argument) =>
+        portableBasename(argument).replace(/\.(?:cmd|exe)$/u, "")
+      ),
+  ];
   if (
     elevationExecutables.has(command)
     || tokens.some((argument) =>
@@ -335,7 +401,7 @@ const derivedCapabilities = (
     capabilities.add("elevation");
   }
   if (
-    loginExecutables.has(command)
+    commandTokens.some((token) => loginExecutables.has(token))
     || tokens.some((argument) =>
       argument === "login"
       || argument === "logout"
@@ -345,22 +411,46 @@ const derivedCapabilities = (
   ) {
     capabilities.add("login");
   }
-  if (tokens.some((argument) => argument === "restart")) {
+  if (commandTokens.includes("restart") || tokens.includes("restart")) {
     capabilities.add("restart");
   }
   if (
-    rebootExecutables.has(command)
-    || tokens.some((argument) => argument === "reboot")
+    commandTokens.some((token) => rebootExecutables.has(token))
+    || tokens.some((argument) =>
+      argument === "reboot"
+      || argument === "-r"
+      || argument === "/r"
+    )
   ) {
     capabilities.add("reboot");
   }
   return capabilities;
 };
 
+const hasAmbiguousPrivilegedWrapper = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+): boolean => {
+  const command = portableBasename(executable).toLowerCase().replace(/\.(?:cmd|exe)$/u, "");
+  if (!elevationExecutables.has(command)) return false;
+  return arguments_.some((argument) => {
+    const token = portableBasename(argument).toLowerCase().replace(/\.(?:cmd|exe)$/u, "");
+    return ambiguousWrapperExecutables.has(token)
+      || argument === "-c"
+      || argument === "/c"
+      || argument === "-command"
+      || argument === "-encodedcommand";
+  });
+};
+
 type AuthorizationBounds = Pick<
   AgentHarnessConfiguration,
   "allowedPaths" | "allowedExecutables" | "allowedOrigins" | "allowedCapabilities"
 >;
+
+type AuthorizationEnvironment = {
+  readonly environment?: ReadonlyArray<ProcessEnvironmentEntry> | undefined;
+};
 
 const taskBounds = (task: AgentTask): AuthorizationBounds => ({
   allowedPaths: task.allowedPaths,
@@ -370,24 +460,48 @@ const taskBounds = (task: AgentTask): AuthorizationBounds => ({
     .filter((capability) => !task.forbidden.includes(capability)),
 });
 
-export const authorizeAction = (
+const resolveAuthorizedAction = (
   action: ProposedProcessAction,
   task: AgentTask,
-  harness: AuthorizationBounds = taskBounds(task),
-): Effect.Effect<void, DeniedAgentCapabilityError> =>
+  harness: AuthorizationBounds & AuthorizationEnvironment = taskBounds(task),
+): Effect.Effect<ProposedProcessAction, DeniedAgentCapabilityError> =>
   Effect.gen(function*() {
+    const workingDirectory = action.workingDirectory
+      ?? task.allowedPaths[0]
+      ?? process.cwd();
+    const environment = harness.environment ?? [];
+    const executable = yield* Effect.promise(() =>
+      resolvedExecutableIdentity(action.executable, environment, workingDirectory)
+    );
     if (
-      !(yield* executableAllowed(action.executable, task.allowedExecutables))
-      || !(yield* executableAllowed(action.executable, harness.allowedExecutables))
+      executable === undefined
+      || !(yield* executableAllowed(
+        executable,
+        task.allowedExecutables,
+        environment,
+        workingDirectory,
+      ))
+      || !(yield* executableAllowed(
+        executable,
+        harness.allowedExecutables,
+        environment,
+        workingDirectory,
+      ))
     ) {
       return yield* new DeniedAgentCapabilityError({
         capability: "executable",
         value: action.executable,
       });
     }
+    if (hasAmbiguousPrivilegedWrapper(executable, action.arguments)) {
+      return yield* new DeniedAgentCapabilityError({
+        capability: "privileged-wrapper",
+        value: action.executable,
+      });
+    }
     const capabilities = new Set([
       ...action.capabilities,
-      ...derivedCapabilities(action.executable, action.arguments),
+      ...derivedCapabilities(executable, action.arguments),
     ]);
     for (const capability of capabilities) {
       if (
@@ -447,25 +561,49 @@ export const authorizeAction = (
         harness.allowedOrigins,
       );
     }
+    return { ...action, executable };
   });
 
-const authorizeVerification = (
+export const authorizeAction = (
+  action: ProposedProcessAction,
   task: AgentTask,
-  harness: AuthorizationBounds,
+  harness: AuthorizationBounds & AuthorizationEnvironment = taskBounds(task),
 ): Effect.Effect<void, DeniedAgentCapabilityError> =>
+  resolveAuthorizedAction(action, task, harness).pipe(Effect.asVoid);
+
+const resolveAuthorizedVerification = (
+  task: AgentTask,
+  harness: AuthorizationBounds & AuthorizationEnvironment,
+): Effect.Effect<ReadonlyArray<string>, DeniedAgentCapabilityError> =>
   Effect.gen(function*() {
-    const executable = task.verification.command[0] ?? "";
+    const requestedExecutable = task.verification.command[0] ?? "";
+    const workingDirectory = task.allowedPaths[0] ?? process.cwd();
+    const environment = harness.environment ?? [];
+    const executable = yield* Effect.promise(() =>
+      resolvedExecutableIdentity(requestedExecutable, environment, workingDirectory)
+    );
     if (
-      !(yield* executableAllowed(executable, task.allowedExecutables))
-      || !(yield* executableAllowed(executable, harness.allowedExecutables))
-      || elevationExecutables.has(portableBasename(executable).toLowerCase())
+      executable === undefined
+      || !(yield* executableAllowed(
+        executable,
+        task.allowedExecutables,
+        environment,
+        workingDirectory,
+      ))
+      || !(yield* executableAllowed(
+        executable,
+        harness.allowedExecutables,
+        environment,
+        workingDirectory,
+      ))
+      || derivedCapabilities(executable, task.verification.command.slice(1)).size > 0
+      || hasAmbiguousPrivilegedWrapper(executable, task.verification.command.slice(1))
     ) {
       return yield* new DeniedAgentCapabilityError({
         capability: "verification-executable",
-        value: executable,
+        value: requestedExecutable,
       });
     }
-    const workingDirectory = task.allowedPaths[0] ?? process.cwd();
     yield* Effect.forEach(
       task.verification.command.slice(1),
       (argument) => {
@@ -490,18 +628,38 @@ const authorizeVerification = (
       },
       { discard: true },
     );
+    return [executable, ...task.verification.command.slice(1)];
+  });
+
+export const resolveAuthorizedProposal = (
+  proposal: AgentActionProposal,
+  task: AgentTask,
+  harness: AuthorizationBounds & AuthorizationEnvironment = taskBounds(task),
+): Effect.Effect<
+  {
+    readonly proposal: AgentActionProposal;
+    readonly verificationCommand: ReadonlyArray<string>;
+  },
+  DeniedAgentCapabilityError
+> =>
+  Effect.gen(function*() {
+    const actions = yield* Effect.forEach(
+      proposal.actions,
+      (action) => resolveAuthorizedAction(action, task, harness),
+    );
+    const verificationCommand = yield* resolveAuthorizedVerification(task, harness);
+    return {
+      proposal: { ...proposal, actions },
+      verificationCommand,
+    };
   });
 
 export const validateProposal = (
   proposal: AgentActionProposal,
   task: AgentTask,
-  harness: AuthorizationBounds = taskBounds(task),
+  harness: AuthorizationBounds & AuthorizationEnvironment = taskBounds(task),
 ): Effect.Effect<void, DeniedAgentCapabilityError> =>
-  Effect.forEach(
-    proposal.actions,
-    (action) => authorizeAction(action, task, harness),
-    { discard: true },
-  ).pipe(Effect.andThen(authorizeVerification(task, harness)));
+  resolveAuthorizedProposal(proposal, task, harness).pipe(Effect.asVoid);
 
 export const profileChangeProposalFromResolution = (
   resolution: SourceDiscoveryResolution,

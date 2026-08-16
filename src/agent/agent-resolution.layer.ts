@@ -7,8 +7,9 @@ import {
   nonzeroProcessError,
   profileChangeProposalFromResolution,
   redactAgentTask,
+  resolvedExecutableIdentity,
+  resolveAuthorizedProposal,
   validateAgentTask,
-  validateProposal,
 } from "./agent-resolution.service.ts";
 import type { AgentResolutionError } from "./agent-resolution.errors.ts";
 import {
@@ -96,8 +97,21 @@ const runResolution = (
 
     const deadline = Date.now() + input.task.timeLimitSeconds * 1_000;
     const invocation = adaptHarnessInvocation(input.harness, input.task);
+    const harnessExecutable = yield* Effect.promise(() =>
+      resolvedExecutableIdentity(
+        invocation.executable,
+        invocation.environment,
+        process.cwd(),
+      )
+    );
+    if (harnessExecutable === undefined) {
+      return yield* new DeniedAgentCapabilityError({
+        capability: "harness-executable",
+        value: invocation.executable,
+      });
+    }
     const rawHarness = yield* executor({
-      executable: invocation.executable,
+      executable: harnessExecutable,
       arguments: invocation.arguments,
       environment: invocation.environment,
       standardInput: invocation.input,
@@ -121,10 +135,15 @@ const runResolution = (
       input.task.outputLimitBytes,
       consumed,
     );
-    const proposal = yield* decodeAgentProposal(
+    const decodedProposal = yield* decodeAgentProposal(
       extractHarnessResponse(input.harness.harness, harness.stdout),
     );
-    yield* validateProposal(proposal, input.task, input.harness);
+    const authorized = yield* resolveAuthorizedProposal(
+      decodedProposal,
+      input.task,
+      input.harness,
+    );
+    const proposal = authorized.proposal;
     if (input.policy === "agent-propose") {
       return {
         outcome: "proposed",
@@ -140,6 +159,7 @@ const runResolution = (
         executable: action.executable,
         arguments: action.arguments,
         workingDirectory: action.workingDirectory ?? input.task.allowedPaths[0],
+        environment: input.harness.environment,
         timeoutMilliseconds: remainingTime(deadline),
         maximumInputBytes: 0,
         maximumOutputBytes: Math.max(0, input.task.outputLimitBytes - consumed),
@@ -164,10 +184,12 @@ const runResolution = (
     }
 
     const [verificationExecutable = "", ...verificationArguments] =
-      input.task.verification.command;
+      authorized.verificationCommand;
     const rawObserved = yield* executor({
       executable: verificationExecutable,
       arguments: verificationArguments,
+      workingDirectory: input.task.allowedPaths[0],
+      environment: input.harness.environment,
       timeoutMilliseconds: remainingTime(deadline),
       maximumInputBytes: 0,
       maximumOutputBytes: Math.max(0, input.task.outputLimitBytes - consumed),

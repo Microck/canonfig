@@ -1,7 +1,8 @@
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   chmod,
+  mkdir,
   mkdtemp,
   rm,
   symlink,
@@ -73,6 +74,26 @@ const action = (changes: Partial<ProposedProcessAction> = {}): ProposedProcessAc
   ...changes,
 });
 
+type PrivilegedCapability = ProposedProcessAction["capabilities"][number];
+
+const wrappedPrivilegeCases: ReadonlyArray<readonly [
+  string,
+  string,
+  ReadonlyArray<string>,
+  ReadonlyArray<PrivilegedCapability>,
+]> = [
+  ["sudo su", "sudo", ["su", "-", "root"], ["elevation", "login"]],
+  ["sudo options then su", "sudo", ["-u", "root", "/usr/bin/su", "user"], [
+    "elevation",
+    "login",
+  ]],
+  ["sudo reboot", "sudo", ["/sbin/reboot"], ["elevation", "reboot"]],
+  ["sudo service restart", "sudo", ["service", "agent", "restart"], [
+    "elevation",
+    "restart",
+  ]],
+];
+
 const harness = (root: string) => ({
   harness: "codex" as const,
   executable: process.execPath,
@@ -81,6 +102,7 @@ const harness = (root: string) => ({
   allowedExecutables: ["tool", "verify", process.execPath],
   allowedOrigins: ["https://packages.example.test"],
   allowedCapabilities: [] as const,
+  environment: [{ name: "PATH", value: root }],
 });
 
 class RecordingExecutor {
@@ -134,6 +156,14 @@ describe("agent resolution", () => {
 
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), "canonfig-agent-"));
+    await Promise.all([
+      writeFile(join(directory, "tool"), "#!/bin/sh\nexit 0\n"),
+      writeFile(join(directory, "verify"), "#!/bin/sh\nexit 0\n"),
+    ]);
+    await Promise.all([
+      chmod(join(directory, "tool"), 0o755),
+      chmod(join(directory, "verify"), 0o755),
+    ]);
   });
 
   afterEach(async () => {
@@ -207,8 +237,8 @@ describe("agent resolution", () => {
     expect(result.outcome).toBe("applied");
     expect(recording.invocations.map((entry) => entry.executable)).toEqual([
       process.execPath,
-      "tool",
-      "verify",
+      join(directory, "tool"),
+      join(directory, "verify"),
     ]);
   });
 
@@ -319,6 +349,111 @@ describe("agent resolution", () => {
       capability: "executable",
       value: attacker,
     });
+  });
+
+  it("resolves bare executables with harness PATH precedence and binds execution", async () => {
+    const first = join(directory, "first");
+    const second = join(directory, "second");
+    await Promise.all([mkdir(first), mkdir(second)]);
+    const trusted = join(second, "tool");
+    const shadow = join(first, "tool");
+    await Promise.all([
+      writeFile(trusted, "#!/bin/sh\nexit 0\n"),
+      writeFile(shadow, "#!/bin/sh\nexit 0\n"),
+    ]);
+    await Promise.all([chmod(trusted, 0o755), chmod(shadow, 0o755)]);
+    const recording = new RecordingExecutor(proposal(action()));
+    const boundedTask = task(directory, {
+      allowedExecutables: [shadow, join(directory, "verify")],
+    });
+    const result = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: boundedTask,
+        harness: {
+          ...harness(directory),
+          allowedExecutables: [shadow, join(directory, "verify")],
+          environment: [{
+            name: "PATH",
+            value: `${first}${delimiter}${second}${delimiter}${directory}`,
+          }],
+        },
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+    expect(result.outcome).toBe("applied");
+    expect(recording.invocations[1]?.executable).toBe(shadow);
+  });
+
+  it.each(wrappedPrivilegeCases)("derives wrapped privileged capabilities for %s", async (
+    _name,
+    executable,
+    arguments_,
+    capabilities,
+  ) => {
+    const wrapper = join(directory, executable);
+    await writeFile(wrapper, "#!/bin/sh\nexit 0\n");
+    await chmod(wrapper, 0o755);
+    const bounded = task(directory, {
+      forbidden: [],
+      allowedExecutables: [wrapper, join(directory, "verify")],
+    });
+    for (const omitted of capabilities) {
+      const recording = new RecordingExecutor(proposal(action({
+        executable,
+        arguments: arguments_,
+        capabilities: capabilities.filter((capability) => capability !== omitted),
+      })));
+      const error = await Effect.runPromise(Effect.gen(function*() {
+        const service = yield* AgentResolution;
+        return yield* service.resolve({
+          policy: "agent-apply",
+          task: bounded,
+          harness: {
+            ...harness(directory),
+            allowedExecutables: [wrapper, join(directory, "verify")],
+            allowedCapabilities: capabilities.filter((capability) =>
+              capability !== omitted
+            ),
+          },
+        });
+      }).pipe(
+        Effect.provide(makeAgentResolutionLayer(recording.execute)),
+        Effect.flip,
+      ));
+      expect(error).toMatchObject({ capability: omitted });
+      expect(recording.invocations).toHaveLength(1);
+    }
+  });
+
+  it("fails closed on ambiguous privileged shell wrappers", async () => {
+    const sudo = join(directory, "sudo");
+    await writeFile(sudo, "#!/bin/sh\nexit 0\n");
+    await chmod(sudo, 0o755);
+    const recording = new RecordingExecutor(proposal(action({
+      executable: "sudo",
+      arguments: ["sh", "-c", "su - root"],
+    })));
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, {
+          forbidden: [],
+          allowedExecutables: [sudo, join(directory, "verify")],
+        }),
+        harness: {
+          ...harness(directory),
+          allowedExecutables: [sudo, join(directory, "verify")],
+          allowedCapabilities: ["elevation", "login", "restart", "reboot"],
+        },
+      });
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(recording.execute)),
+      Effect.flip,
+    ));
+    expect(error).toMatchObject({ capability: "privileged-wrapper" });
+    expect(recording.invocations).toHaveLength(1);
   });
 
   it("fails when independent verification rejects the agent self-report", async () => {
