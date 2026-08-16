@@ -1,235 +1,261 @@
-<h1 align="center">codexport</h1>
+# Canonfig
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/codexport"><img src="https://img.shields.io/npm/v/codexport?style=flat-square&label=npm&color=000000" alt="npm badge"></a>
-  <a href="https://www.npmjs.com/package/codexport"><img src="https://img.shields.io/npm/dt/codexport?style=flat-square&label=downloads&color=000000" alt="npm downloads"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-mit-000000?style=flat-square" alt="license badge"></a>
-</p>
+Canonfig 2 is a deterministic, one-way configuration synchronizer for AI agent
+setups. One **Source Machine** discovers and explicitly publishes immutable,
+authenticated **Profile Revisions**. Linux, macOS, and Windows **Follower
+Machines** fetch only revisions allowed for their identities and groups, then
+plan, apply, and independently verify the selected profile.
 
----
+Configuration Agents are optional and bounded. Canonfig always runs declared
+deterministic actions first, and an agent statement never counts as proof of
+convergence.
 
-`codexport` replicates a canonical master Codex setup to follower machines. it is built for operators who want one trusted `~/.codex` source of truth, follower-local overlays, and a low-friction `npx` join path without committing plaintext secrets to GitHub.
+## What Canonfig manages
 
-the master serves a content-hashed bundle from its `~/.codex` directory. followers pin the master's fingerprint on join, fetch updates over a Tailscale-reachable HTTP address, and apply updates at Codex `SessionStart` through a short best-effort hook.
+A Machine Profile can declare these resource kinds and apply policies:
 
-MCPs are exported as full definitions, including explicit per-MCP `env` entries. command-based MCPs are written through a quiet local managed launcher, so followers run `node ~/.codexport/bin/codexport-mcp-run.mjs mcp run <name>` and let `codexport` translate master-local paths into portable npm, uv, or source artifacts when the master command shape can be inferred.
+| Resource | Default policy | Outcome |
+| --- | --- | --- |
+| File | `replace` | Exact owned file or symlink content |
+| Directory | `mirror-owned` | Source-owned tree; only unchanged owned files are removed |
+| Config | `merge` | Declared TOML, JSON, or YAML keys with local keys preserved |
+| Skill | `replace-if-unmodified` | Canonical skill tree without overwriting follower edits |
+| Tool | `ensure` | Platform-specific installation and verification |
+| Credential | `require-local` | Usable local credential reference, never a copied secret |
+| Schedule | `replace` | Native user-level synchronization schedule |
 
-[npm](https://www.npmjs.com/package/codexport) | [github](https://github.com/Microck/codexport)
+Transfers are content-addressed and incremental. Transfer and apply are separate:
+a downloaded blob is not proof that a resource converged.
 
-## why
+## Supported platforms
 
-if you keep a carefully tuned Codex setup on one machine and want the same defaults elsewhere, `codexport` gives you a practical pull-based sync path.
+Canonfig requires Node.js 24 or newer and npm.
 
-- keep the master as the canonical Codex configuration source
-- let followers preserve local MCPs, local skills, trust entries, and path overrides
-- sync auth-bearing files through the private Tailscale path instead of a plaintext GitHub commit
-- export every master MCP definition instead of dropping machine-local entries
-- hydrate inferred MCP artifacts on followers through npm, uvx, or copied local source trees
-- refresh followers at Codex session startup without interrupting active sessions
-- use content-hash revisions and pinned master fingerprints instead of blind file copies
-
-## quickstart
-
-`codexport` requires Node.js 20+.
-
-on the master:
-
-```bash
-npx codexport master init
-npx codexport master service install
-npx codexport master link --host master.example.ts.net
-```
-
-on a follower:
-
-```bash
-npx codexport follower join "codexport://join?host=master.example.ts.net&port=17342&fingerprint=..."
-npx codexport hook install
-```
-
-manual sync remains available:
-
-```bash
-npx codexport sync --apply
-npx codexport status
-```
-
-## sync model
-
-```mermaid
-flowchart LR
-  subgraph master["master machine"]
-    masterCodex["~/.codex canonical state"]
-    masterCli["codexport master serve"]
-    masterBundle["content-hashed bundle"]
-  end
-
-  subgraph privateNet["tailscale network"]
-    http["http://master.example.ts.net:17342"]
-  end
-
-  subgraph follower["follower machine"]
-    localOverlay["~/.codexport local overlay"]
-    sessionHook["Codex SessionStart hook"]
-    generatedCodex["generated ~/.codex"]
-  end
-
-  masterCodex -->|select files and hash content| masterBundle
-  masterBundle --> masterCli
-  masterCli -->|serve bundle and fingerprint| http
-  sessionHook -->|check revision before session| http
-  http -->|download changed bundle| sessionHook
-  localOverlay -->|merge MCPs, skills, path variables| sessionHook
-  sessionHook -->|backup and apply| generatedCodex
-```
-
-followers trust the provided Tailscale address and store the master fingerprint. later syncs refuse changed fingerprints by default, so a changed master identity requires intentional re-enrollment.
-
-## trust flow
-
-```mermaid
-sequenceDiagram
-  participant Operator as operator
-  participant Master as master
-  participant Follower as follower
-  participant Codex as codex session
-
-  Operator->>Master: codexport master link
-  Master-->>Operator: join link with host, port, fingerprint
-  Operator->>Follower: codexport follower join "codexport://join?..."
-  Follower->>Master: GET /meta
-  Master-->>Follower: fingerprint and revision
-  Follower->>Follower: pin trusted fingerprint
-  Follower->>Master: GET /bundle
-  Master-->>Follower: content-hashed bundle
-  Follower->>Follower: apply bundle plus local overlay
-  Codex->>Follower: SessionStart hook
-  Follower->>Master: check revision and fingerprint
-  Follower-->>Codex: continue with latest applied config
-```
-
-## included state
-
-the master bundle includes canonical Codex config, auth files, hooks, prompts,
-rules, skills, skill libraries, `AGENTS.md`, `RTK.md`, and `mise.toml` when
-present.
-
-runtime state such as logs, caches, sessions, history, compact handoffs, and
-SQLite databases is excluded.
-
-## MCP export and repair
-
-all master MCP definitions are exported into `~/.codexport/mcp-manifest.json` on followers. generated command MCP entries in `~/.codex/config.toml` point at the managed launcher:
-
-```toml
-[mcp_servers.example]
-command = "node"
-args = [ "~/.codexport/bin/codexport-mcp-run.mjs", "mcp", "run", "example" ]
-```
-
-when Codex starts an MCP, `codexport mcp run` reads the original manifest entry, restores transferred environment values, rewrites master paths to follower paths, and chooses a runnable target. the master also exports MCP artifact metadata when it can infer the command shape:
-
-| source shape | follower action |
-| --- | --- |
-| npm package shims or `node .../node_modules/...` | install and run the inferred npm package/bin |
-| Python uv tool shims | run with `uvx --from <package-or-url> <binary>` and install `uv` when missing |
-| editable/local Python uv tools | copy the source artifact to `~/.codexport/mcp-artifacts` and run it with `uvx --from <artifact>` |
-| local Node package source | copy the source artifact to `~/.codexport/mcp-artifacts`, install production deps, and run the original entrypoint |
-| URL MCPs | keep the URL config unchanged |
-
-unsupported local binaries are still kept in the manifest and generated config. if a follower cannot repair one, startup fails with the missing tool and repair step instead of silently removing the MCP. large runtime payloads are not embedded in source artifacts; they must be installable or reachable from the follower.
-
-by default `codexport` exports env values already present in the MCP config. if a required secret only exists in the master process environment, opt it in explicitly before rebuilding the master bundle:
-
-```bash
-CODEXPORT_EXPORT_ENV=SEARCH_API_KEY,ANOTHER_TOKEN codexport master rebuild
-```
-
-there are no built-in MCP-name adapters. if a command cannot be inferred from its real npm, uv, or source shape, it runs as declared after path rewriting and logs the exact failure under `~/.codexport/logs/mcp/<name>.log`.
-
-## local follower state
-
-follower-local state lives under `~/.codexport`:
-
-```text
-~/.codexport/local.toml
-~/.codexport/mcps.local.toml
-~/.codexport/skills/
-~/.codexport/overrides/
-```
-
-canonical MCP and skill names win by default. same-name local MCPs or skills
-fail unless explicitly allowed in `local.toml`:
-
-```toml
-allowMcpOverrides = ["local-name"]
-allowSkillOverrides = ["local-skill"]
-
-[pathVariables]
-workspaceRoot = "D:/workspace"
-```
-
-path variables in canonical config such as `${workspaceRoot}` are expanded from
-the follower's `local.toml` before writing the generated `~/.codex/config.toml`.
-
-## command surface
-
-| command | purpose |
-| --- | --- |
-| `codexport master init` | create or refresh the master identity and bundle state |
-| `codexport master serve` | serve the current canonical bundle over HTTP |
-| `codexport master link` | print a durable follower join link and fallback command |
-| `codexport master rebuild` | force rebuild the master bundle for repair/debugging |
-| `codexport master service install` | install the user-level master background service |
-| `codexport follower join` | enroll a follower from a join link or explicit master URL |
-| `codexport sync` | fetch the latest master bundle |
-| `codexport apply` | apply the last staged bundle |
-| `codexport mcp run <name>` | run or repair a synced command MCP from the follower manifest |
-| `codexport hook install` | install the follower-only Codex `SessionStart` hook |
-| `codexport status` | report role, master URL, fingerprint, revision, and reachability |
-
-## platform support
-
-| platform | master service | follower hook | manual sync |
+| Platform | Secure credential provider | Native user scheduler | Common recipes |
 | --- | --- | --- | --- |
-| linux with systemd user services | supported | supported | supported |
-| windows 10/11 scheduled tasks | supported | supported | supported |
+| Linux | Secret Service | systemd user timer | apt, npm, uv, cargo, source |
+| macOS | Keychain | launchd user agent | Homebrew, npm, uv, cargo, source |
+| Windows 10/11 | Credential Manager | per-user Task Scheduler | winget, npm, uv, cargo, source |
 
-followers do not need a background service in v1. the hook runs a short best-effort sync at Codex session startup, and `codexport sync --apply` is available when an immediate refresh is needed.
+Paths, package identities, recipes, credential providers, and scheduler
+artifacts remain platform-specific even when the desired capability is shared.
 
-## examples
+## Install from the built package
 
-generate a copy-paste join command:
+Build and pack the repository:
 
 ```bash
-codexport master link --host master.example.ts.net
+npm ci
+npm run build:cli
+npm pack
 ```
 
-join with explicit trust metadata:
+Install the resulting local tarball. On Linux or macOS:
 
 ```bash
-codexport follower join \
-  --master http://master.example.ts.net:17342 \
-  --fingerprint <fingerprint> \
-  --apply
+npm install --global ./canonfig-2.0.0.tgz
+canonfig --version
 ```
 
-check current follower state:
+On Windows PowerShell:
 
-```bash
-codexport status
+```powershell
+npm install --global .\canonfig-2.0.0.tgz
+canonfig --version
 ```
 
-## development
+Use the exact artifact produced by `npm pack`; do not substitute an unverified
+same-named registry package.
+
+## Quickstart
+
+### 1. Initialize the Source Machine
 
 ```bash
-npm install
+canonfig source init
+canonfig doctor --no-input --timeout-ms 5000
+```
+
+Discover explicit source evidence, review the resulting proposal, and publish it
+intentionally:
+
+```bash
+canonfig source scan --file AGENTS.md --file package.json
+canonfig source publish --proposal package.json --profile workstation --name Workstation --reviewer operator
+canonfig profile list
+```
+
+Discovery and agent output are proposals. They never publish silently.
+
+### 2. Serve and invite
+
+The currently shipped source server accepts loopback hosts only:
+
+```bash
+canonfig source serve --host 127.0.0.1 --port 17342
+```
+
+While it is running, create a short-lived, single-use invitation:
+
+```bash
+canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers
+```
+
+Treat the returned invitation as temporary sensitive material. The enrolled
+endpoint must be reachable as that exact HTTPS origin.
+
+### 3. Enroll a follower
+
+Keep the complete invitation in an ephemeral local variable:
+
+```bash
+canonfig follower enroll "$INVITE" --name laptop --profile workstation
+canonfig profile select workstation
+canonfig sync --plan
+```
+
+Enrollment pins the source TLS and signing fingerprints and issues an
+independently revocable follower credential. Apply only after reviewing the
+plan:
+
+```bash
+canonfig sync --apply
+canonfig status
+```
+
+### 4. Configure synchronization
+
+The default follower schedule is daily at 00:00 in its configured local
+timezone:
+
+```bash
+canonfig schedule set daily@00:00
+canonfig schedule status
+```
+
+Native jobs invoke `canonfig sync --apply --no-input`; Canonfig does not require
+a resident follower daemon.
+
+## Security model
+
+- There is exactly one Source Machine. Followers never publish upstream state.
+- Profile Revisions are immutable, content-addressed, signed, and verified after
+  download.
+- Enrollment pins independent TLS and source-signing fingerprints. Later
+  synchronization rejects changed pins, invalid signatures, digest mismatches,
+  replayed invitations, and revoked credentials.
+- Every follower has its own revocable identity and group assignments.
+- Credentials remain local references backed by the platform provider. Canonfig
+  does not copy Source Machine credentials into profiles or followers.
+- Agent Tasks use intersecting task and harness bounds for paths, executables,
+  HTTPS origins, elevation, login, restart, reboot, time, input, and output.
+- Canonfig captures and redacts evidence, then performs independent verification.
+- Missing login, secure storage, approval, or another human-only capability
+  produces **Human Action Required** with exact recovery instructions.
+- A modified managed skill produces **Follower Drift** and remains untouched.
+
+Keep invitations, tokens, passwords, private keys, source signing material,
+follower credentials, and SQLite state out of repositories and command examples.
+
+## Verified CLI examples
+
+Plan, apply, inspect, and diagnose:
+
+```bash
+canonfig sync --plan
+canonfig sync --apply --no-input --json
+canonfig status --json
+canonfig doctor --no-input --timeout-ms 5000 --json
+```
+
+Inspect profiles and select one on a follower:
+
+```bash
+canonfig profile list
+canonfig profile show revision-one
+canonfig profile select workstation
+```
+
+Inspect or set agent policy and harness bounds:
+
+```bash
+canonfig agent policy
+canonfig agent policy agent-propose
+canonfig agent harness
+canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-executable npm --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
+```
+
+Manage schedules and recovery:
+
+```bash
+canonfig schedule set weekly:Mon@12:30 --timezone Europe/Paris
+canonfig schedule remove
+canonfig recover --no-input --json
+```
+
+Revoke one follower identity on the Source Machine:
+
+```bash
+canonfig source revoke follower-one
+```
+
+Human output is the default. `--json` emits the stable `canonfig.cli/v1`
+envelope. Exit codes distinguish success (`0`), internal failure (`1`), usage or
+configuration (`2`), Human Action Required (`3`), conflict or drift (`4`),
+authentication or revocation (`5`), transport (`6`), and verification or apply
+failure (`7`).
+
+## Documentation
+
+- [Architecture and authority](website/content/docs/concepts/architecture.mdx)
+- [Source setup](website/content/docs/source/setup.mdx)
+- [Discovery, review, and publication](website/content/docs/source/lifecycle.mdx)
+- [Follower enrollment and trust](website/content/docs/followers/enrollment.mdx)
+- [Profiles and apply policies](website/content/docs/profiles/resources.mdx)
+- [Synchronization](website/content/docs/operations/synchronization.mdx)
+- [Agent policies and harness bounds](website/content/docs/operations/agent-policies.mdx)
+- [Schedules](website/content/docs/operations/schedules.mdx)
+- [Drift and Human Action Required](website/content/docs/operations/drift-and-human-action.mdx)
+- [Recovery](website/content/docs/operations/recovery.mdx)
+- [CLI reference](website/content/docs/reference/cli.mdx)
+- [Installation skill](skills/install-canonfig/SKILL.md)
+- [Operations skill](skills/operate-canonfig/SKILL.md)
+
+## Shipped constraints
+
+- The source transport binds only to `127.0.0.1` or `::1`. Remote exposure,
+  public binding, and port-forwarding workflows are not part of the verified CLI
+  contract.
+- `schedule set` accepts daily and weekly calendars. The profile contract can
+  represent custom calendars, but the CLI does not accept cron or native
+  scheduler expressions.
+- Source discovery scans files passed through `--file`; it is not an implicit
+  whole-home scan.
+- Supported agent harness kinds are `codex`, `claude`, and `gemini`.
+- Third-party installers, login operations, and arbitrary agent commands do not
+  promise full rollback. Recovery re-observes and re-verifies them.
+- Canonfig is one-way. It does not provide bidirectional sync, automatic
+  credential transfer, silent skill conflict resolution, whole-home backup, or
+  a hosted fleet control plane.
+- Cross-platform acceptance and release-readiness certification is C13 work and
+  is not claimed by this documentation milestone.
+
+## Development and validation
+
+```bash
+npm ci
 npm run typecheck
+npm run lint
 npm test
 npm run build
+npm run docs:validate
+npm run skills:validate
 npm pack --dry-run
 ```
 
-## license
+The normal lint and test workflows include documentation command checks, skill
+structure checks, and representative skill scenarios.
 
-[mit license](LICENSE)
+## License
+
+[MIT](LICENSE)

@@ -1,55 +1,65 @@
 {
-  "name": "codexport",
-  "version": "0.6.0",
-  "description": "sync a canonical Codex setup from one master machine to follower machines",
+  "name": "canonfig",
+  "version": "2.0.0",
+  "description": "one-way configuration synchronizer: publish a canonical AI agent setup from one Source Machine and converge Linux, macOS, and Windows Follower Machines",
   "author": "Microck <contact@micr.dev>",
   "license": "MIT",
   "type": "module",
-  "homepage": "https://github.com/Microck/codexport#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Microck/codexport.git"
-  },
-  "bugs": {
-    "url": "https://github.com/Microck/codexport/issues"
-  },
   "keywords": [
-    "codex",
+    "canonfig",
     "cli",
     "sync",
-    "tailscale",
+    "configuration",
     "mcp",
     "skills",
-    "configuration",
-    "automation"
+    "ai-agents",
+    "effect"
   ],
   "bin": {
-    "codexport": "dist/index.js"
+    "canonfig": "dist/runtime/main.js"
   },
+  "workspaces": [
+    "website"
+  ],
   "files": [
     "dist",
     "README.md",
-    "LICENSE",
-    "docs/prd.md"
+    "LICENSE"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run build:cli && npm run website:build",
+    "build:cli": "tsc -p tsconfig.json",
+    "prepack": "npm run build:cli",
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm run website:typecheck",
+    "lint": "oxlint oxlint.config.ts vitest.config.ts tools/release src/agent src/cli src/domain src/enrollment src/machine src/profile src/runtime src/schedule src/state src/synchronization tests/agent-resolution.test.ts tests/acceptance tests/cli.test.ts tests/doctor.test.ts tests/foundation.test.ts tests/packed-cli.test.ts tests/profile-contract.test.ts tests/discovery.test.ts tests/publication.test.ts tests/state-repository.test.ts tests/machine-state-linux.test.ts tests/machine-state-macos.test.ts tests/machine-state-windows.test.ts tests/schedule-manager.test.ts tests/skills.test.ts tests/synchronization-planner.test.ts tests/contract/machine-state.contract.ts tests/contract/schedule-manager.contract.ts tests/integration/enrollment.test.ts tests/integration/transport.test.ts tests/integration/synchronization-run.test.ts tests/integration/recovery.test.ts tests/integration/follower-orchestration.test.ts && npm run website:lint && npm run docs:validate && npm run skills:validate",
     "test": "vitest run",
-    "dev": "tsx src/index.ts"
+    "test:acceptance": "vitest run tests/acceptance",
+    "dev": "tsx src/runtime/main.ts",
+    "docs:validate": "tsx website/scripts/validate-commands.ts",
+    "release:validate": "tsx tools/release/validate-release.ts",
+    "skills:validate": "tsx website/scripts/validate-skills.ts",
+    "website:dev": "npm run dev --workspace @canonfig/website",
+    "website:typecheck": "npm run typecheck --workspace @canonfig/website",
+    "website:lint": "npm run lint --workspace @canonfig/website",
+    "website:build": "npm run build --workspace @canonfig/website"
   },
   "dependencies": {
-    "chokidar": "4.0.3",
-    "commander": "14.0.2",
-    "smol-toml": "^1.6.1"
+    "@effect/platform-node": "4.0.0-rc.109",
+    "@effect/sql-sqlite-node": "4.0.0-rc.109",
+    "effect": "4.0.0-rc.109",
+    "selfsigned": "^5.5.0",
+    "smol-toml": "1.6.1"
   },
   "devDependencies": {
+    "@effect/vitest": "4.0.0-rc.109",
+    "@oxlint/plugins": "1.78.0",
     "@types/node": "24.10.1",
+    "oxlint": "1.78.0",
     "tsx": "4.20.6",
     "typescript": "5.9.3",
-    "vitest": "4.0.13"
+    "vitest": "4.1.10"
   }
 }

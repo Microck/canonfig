@@ -1,0 +1,754 @@
+import { Effect, Option, Schema } from "effect";
+
+import {
+  CertificateFingerprint,
+  FollowerId,
+  GroupName,
+  InvitationCode,
+  ProfileId,
+  ProfileRevisionId,
+  Timestamp,
+} from "../domain/brand.ts";
+import { AgentPolicy } from "../domain/identity.ts";
+import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
+import {
+  scheduleWeekdays,
+  type SyncSchedule,
+} from "../schedule/schedule-manager.types.ts";
+import {
+  AgentHarnessCapability,
+  type FollowerAgentHarnessConfiguration,
+  SupportedAgentHarness,
+} from "../synchronization/follower-sync-config.ts";
+import {
+  CliExitCode,
+  exitCodeForFailure,
+  type CliExitCode as CliExitCodeValue,
+} from "./exit-codes.ts";
+import { FollowerCommands } from "./follower-commands.ts";
+import {
+  renderCliResult,
+  type CliOutputFormat,
+} from "./render.ts";
+import {
+  CliCommandFailure,
+  SourceCommands,
+  type CliPayload,
+} from "./source-commands.ts";
+
+export const programName = "canonfig";
+export const programDisplayName = "Canonfig";
+export const programVersion = "2.0.0";
+
+export const helpText = `${programDisplayName} ${programVersion}
+
+Usage: ${programName} <command> [options]
+
+Source:
+  source init
+  source scan --file <path> [--file <path>...]
+  source publish --proposal <path> --profile <id> --name <name> --reviewer <name>
+  source serve [--host <127.0.0.1|::1>] [--port <port>]
+  source invite --endpoint <https-url> [--expires <duration>] [--group <name>...]
+  source revoke <follower-id>
+
+Follower:
+  follower enroll <invite> --name <name> --profile <id>
+  sync [--plan | --apply] [--no-input]
+  recover [--no-input]
+  status [--follower <id>]
+  doctor [--no-input] [--timeout-ms <ms>]
+
+Profiles and policy:
+  profile list
+  profile show <revision-id>
+  profile select <profile-id>
+  agent policy [deterministic-only|agent-propose|agent-apply]
+  agent harness [codex|claude|gemini] --executable <path> [--allow-path <path>...]
+    [--allow-executable <name>...] [--allow-origin <https-origin>...]
+    [--allow-capability <capability>...] [--maximum-input-bytes <bytes>]
+
+Scheduling:
+  schedule set <daily@HH:mm|weekly:Day@HH:mm> [--timezone <IANA>] [--executable <path>]
+  schedule status
+  schedule remove
+
+Global options:
+  -h, --help     Show help
+  -V, --version  Show version
+  --json         Emit stable machine-readable JSON
+`;
+
+export type CliCommand =
+  | { readonly _tag: "SourceInit" }
+  | { readonly _tag: "SourceScan"; readonly files: ReadonlyArray<{ readonly path: string }> }
+  | {
+    readonly _tag: "SourcePublish";
+    readonly proposalPath: string;
+    readonly profile: typeof ProfileId.Type;
+    readonly name: string;
+    readonly reviewer: string;
+  }
+  | {
+    readonly _tag: "SourceServe";
+    readonly hostname: "127.0.0.1" | "::1";
+    readonly port: number;
+  }
+  | {
+    readonly _tag: "SourceInvite";
+    readonly endpoint: string;
+    readonly expiresInMilliseconds: number;
+    readonly groups: ReadonlyArray<typeof GroupName.Type>;
+  }
+  | { readonly _tag: "SourceRevoke"; readonly follower: typeof FollowerId.Type }
+  | {
+    readonly _tag: "FollowerEnroll";
+    readonly invitation: EnrollmentInvitationGrant;
+    readonly followerName: string;
+    readonly selectedProfile?: typeof ProfileId.Type | undefined;
+  }
+  | {
+    readonly _tag: "Synchronize";
+    readonly mode: "plan" | "apply";
+    readonly noInput: boolean;
+  }
+  | { readonly _tag: "Recover"; readonly noInput: boolean }
+  | { readonly _tag: "Status"; readonly follower?: typeof FollowerId.Type | undefined }
+  | {
+    readonly _tag: "Doctor";
+    readonly noInput: boolean;
+    readonly timeoutMilliseconds: number;
+  }
+  | { readonly _tag: "ProfileList" }
+  | {
+    readonly _tag: "ProfileShow";
+    readonly revision: typeof ProfileRevisionId.Type;
+  }
+  | {
+    readonly _tag: "ProfileSelect";
+    readonly profile: typeof ProfileId.Type;
+  }
+  | { readonly _tag: "AgentPolicyGet" }
+  | { readonly _tag: "AgentPolicySet"; readonly policy: typeof AgentPolicy.Type }
+  | { readonly _tag: "AgentHarnessGet" }
+  | {
+    readonly _tag: "AgentHarnessSet";
+    readonly configuration: FollowerAgentHarnessConfiguration;
+  }
+  | {
+    readonly _tag: "ScheduleSet";
+    readonly schedule: SyncSchedule;
+    readonly executable?: string | undefined;
+  }
+  | { readonly _tag: "ScheduleStatus" }
+  | { readonly _tag: "ScheduleRemove" };
+
+export type CliOutcome =
+  | { readonly _tag: "Help"; readonly text: string; readonly exitCode: CliExitCodeValue }
+  | { readonly _tag: "Version"; readonly text: string; readonly exitCode: CliExitCodeValue }
+  | {
+    readonly _tag: "Command";
+    readonly command: CliCommand;
+    readonly format: CliOutputFormat;
+    readonly exitCode: CliExitCodeValue;
+  }
+  | { readonly _tag: "InvalidInput"; readonly message: string; readonly exitCode: CliExitCodeValue };
+
+export interface CliIo {
+  readonly writeStdout: (text: string) => void;
+  readonly writeStderr: (text: string) => void;
+  readonly setExitCode: (exitCode: CliExitCodeValue) => void;
+}
+
+interface Options {
+  readonly positionals: ReadonlyArray<string>;
+  readonly values: ReadonlyMap<string, ReadonlyArray<string>>;
+  readonly switches: ReadonlySet<string>;
+}
+
+const invalid = (message: string): CliOutcome => ({
+  _tag: "InvalidInput",
+  message: `${message}\nRun '${programName} --help' for usage.`,
+  exitCode: CliExitCode.usageOrConfiguration,
+});
+
+const command = (
+  value: CliCommand,
+  format: CliOutputFormat,
+): CliOutcome => ({
+  _tag: "Command",
+  command: value,
+  format,
+  exitCode: CliExitCode.success,
+});
+
+const parseOptions = (
+  arguments_: ReadonlyArray<string>,
+  valueOptions: ReadonlySet<string>,
+  switchOptions: ReadonlySet<string>,
+): Options => {
+  const positionals: Array<string> = [];
+  const values = new Map<string, Array<string>>();
+  const switches = new Set<string>();
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    if (!argument.startsWith("-")) {
+      positionals.push(argument);
+      continue;
+    }
+    if (switchOptions.has(argument)) {
+      if (switches.has(argument)) {
+        throw new Error(`Option may be specified only once: ${argument}`);
+      }
+      switches.add(argument);
+      continue;
+    }
+    if (!valueOptions.has(argument)) throw new Error(`Unknown option: ${argument}`);
+    const value = arguments_[index + 1];
+    if (value === undefined || value.startsWith("-")) {
+      throw new Error(`Option requires a value: ${argument}`);
+    }
+    index += 1;
+    const entries = values.get(argument) ?? [];
+    entries.push(value);
+    values.set(argument, entries);
+  }
+  return { positionals, values, switches };
+};
+
+const one = (
+  options: Options,
+  name: string,
+  required = false,
+): string | undefined => {
+  const entries = options.values.get(name) ?? [];
+  if (entries.length > 1) throw new Error(`Option may be specified only once: ${name}`);
+  const value = entries[0];
+  if (required && value === undefined) throw new Error(`Missing required option: ${name}`);
+  return value;
+};
+
+const decodeOption = <Value>(
+  decoder: (input: string) => Option.Option<Value>,
+  value: string,
+  label: string,
+): Value => {
+  const decoded = decoder(value);
+  if (Option.isNone(decoded)) throw new Error(`Invalid ${label}: ${value}`);
+  return decoded.value;
+};
+
+const parsePositiveInteger = (
+  value: string,
+  label: string,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number => {
+  if (!/^[1-9]\d*$/u.test(value)) throw new Error(`Invalid ${label}: ${value}`);
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number > maximum) {
+    throw new Error(`Invalid ${label}: ${value}`);
+  }
+  return number;
+};
+
+const durationMilliseconds = (value: string): number => {
+  const match = /^(?<amount>[1-9]\d*)(?<unit>ms|s|m|h)$/u.exec(value);
+  if (match?.groups === undefined) throw new Error(`Invalid duration: ${value}`);
+  const amount = parsePositiveInteger(match.groups.amount ?? "", "duration");
+  const multiplier = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[
+    match.groups.unit ?? ""
+  ];
+  if (multiplier === undefined || amount * multiplier > 86_400_000) {
+    throw new Error("Invitation duration must not exceed 24h");
+  }
+  return amount * multiplier;
+};
+
+const invitationSchema = Schema.Struct({
+  code: InvitationCode,
+  nonce: Schema.NonEmptyString,
+  endpoint: Schema.NonEmptyString,
+  sourceFingerprint: CertificateFingerprint,
+  tlsFingerprint: CertificateFingerprint,
+  groups: Schema.Array(GroupName),
+  expiresAt: Timestamp,
+});
+
+const decodeInvitation = (encoded: string): EnrollmentInvitationGrant => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("Invalid enrollment invitation");
+  }
+  const decoded = Schema.decodeUnknownOption(invitationSchema)(parsed);
+  if (Option.isNone(decoded)) throw new Error("Invalid enrollment invitation");
+  return decoded.value;
+};
+
+const parseSchedule = (
+  calendar: string,
+  timezone: string | undefined,
+): SyncSchedule => {
+  const daily = /^daily@(?<time>(?:[01]\d|2[0-3]):[0-5]\d)$/u.exec(calendar);
+  if (daily?.groups?.time !== undefined) {
+    const schedule: SyncSchedule = {
+      kind: "daily",
+      localTime: daily.groups.time,
+    };
+    return timezone === undefined ? schedule : { ...schedule, timezone };
+  }
+  const weekly = /^weekly:(?<day>Mon|Tue|Wed|Thu|Fri|Sat|Sun)@(?<time>(?:[01]\d|2[0-3]):[0-5]\d)$/u.exec(
+    calendar,
+  );
+  const weekday = weekly?.groups?.day;
+  const localTime = weekly?.groups?.time;
+  const decodedWeekday = weekday === undefined
+    ? undefined
+    : decodeOption(
+      Schema.decodeUnknownOption(Schema.Literals(scheduleWeekdays)),
+      weekday,
+      "schedule weekday",
+    );
+  if (decodedWeekday !== undefined && localTime !== undefined) {
+    const schedule: SyncSchedule = {
+      kind: "weekly",
+      weekday: decodedWeekday,
+      localTime,
+    };
+    return timezone === undefined ? schedule : { ...schedule, timezone };
+  }
+  throw new Error(`Invalid schedule calendar: ${calendar}`);
+};
+
+const evaluateCommand = (
+  arguments_: ReadonlyArray<string>,
+  format: CliOutputFormat,
+): CliOutcome => {
+  const [area, action, ...rest] = arguments_;
+  try {
+    if (area === "source") {
+      if (action === "init" && rest.length === 0) return command({ _tag: "SourceInit" }, format);
+      if (action === "scan") {
+        const options = parseOptions(rest, new Set(["--file"]), new Set());
+        if (options.positionals.length > 0) return invalid("source scan accepts only --file inputs");
+        const files = (options.values.get("--file") ?? []).map((path) => ({ path }));
+        if (files.length === 0) return invalid("source scan requires at least one --file");
+        return command({ _tag: "SourceScan", files }, format);
+      }
+      if (action === "publish") {
+        const options = parseOptions(
+          rest,
+          new Set(["--proposal", "--profile", "--name", "--reviewer"]),
+          new Set(),
+        );
+        if (options.positionals.length > 0) return invalid("source publish accepts only named options");
+        return command({
+          _tag: "SourcePublish",
+          proposalPath: one(options, "--proposal", true)!,
+          profile: decodeOption(Schema.decodeUnknownOption(ProfileId), one(options, "--profile", true)!, "profile id"),
+          name: one(options, "--name", true)!,
+          reviewer: one(options, "--reviewer", true)!,
+        }, format);
+      }
+      if (action === "serve") {
+        const options = parseOptions(rest, new Set(["--host", "--port"]), new Set());
+        if (options.positionals.length > 0) return invalid("source serve accepts only named options");
+        const hostname = one(options, "--host") ?? "127.0.0.1";
+        if (hostname !== "127.0.0.1" && hostname !== "::1") {
+          return invalid(`Invalid source host: ${hostname}`);
+        }
+        const port = parsePositiveInteger(one(options, "--port") ?? "17342", "port", 65_535);
+        return command({ _tag: "SourceServe", hostname, port }, format);
+      }
+      if (action === "invite") {
+        const options = parseOptions(
+          rest,
+          new Set(["--endpoint", "--expires", "--group"]),
+          new Set(),
+        );
+        if (options.positionals.length > 0) return invalid("source invite accepts only named options");
+        const endpoint = one(options, "--endpoint", true)!;
+        let url: URL;
+        try {
+          url = new URL(endpoint);
+        } catch {
+          return invalid(`Invalid source endpoint: ${endpoint}`);
+        }
+        if (url.protocol !== "https:") return invalid("Source endpoint must use HTTPS");
+        if (
+          url.hostname !== "127.0.0.1"
+          && url.hostname !== "[::1]"
+          && url.hostname !== "::1"
+        ) {
+          return invalid("Source endpoint must use a loopback host");
+        }
+        const groups = (options.values.get("--group") ?? []).map((value) =>
+          decodeOption(Schema.decodeUnknownOption(GroupName), value, "group name")
+        );
+        return command({
+          _tag: "SourceInvite",
+          endpoint: url.origin,
+          expiresInMilliseconds: durationMilliseconds(one(options, "--expires") ?? "15m"),
+          groups,
+        }, format);
+      }
+      if (action === "revoke") {
+        if (rest.length !== 1) return invalid("Usage: canonfig source revoke <follower-id>");
+        return command({
+          _tag: "SourceRevoke",
+          follower: decodeOption(Schema.decodeUnknownOption(FollowerId), rest[0]!, "follower id"),
+        }, format);
+      }
+      return invalid(`Unknown source command: ${action ?? ""}`);
+    }
+    if (area === "follower" && action === "enroll") {
+      const options = parseOptions(
+        rest,
+        new Set(["--name", "--profile"]),
+        new Set(),
+      );
+      if (options.positionals.length !== 1) {
+        return invalid("Usage: canonfig follower enroll <invite> --name <name>");
+      }
+      const selectedProfile = one(options, "--profile");
+      const enrollment: CliCommand = {
+        _tag: "FollowerEnroll",
+        invitation: decodeInvitation(options.positionals[0]!),
+        followerName: one(options, "--name", true)!,
+      };
+      return command(selectedProfile === undefined
+        ? enrollment
+        : {
+          ...enrollment,
+          selectedProfile: decodeOption(
+            Schema.decodeUnknownOption(ProfileId),
+            selectedProfile,
+            "profile id",
+          ),
+        }, format);
+    }
+    if (area === "profile") {
+      if (action === "list" && rest.length === 0) return command({ _tag: "ProfileList" }, format);
+      if (action === "show" && rest.length === 1) {
+        return command({
+          _tag: "ProfileShow",
+          revision: decodeOption(Schema.decodeUnknownOption(ProfileRevisionId), rest[0]!, "profile revision id"),
+        }, format);
+      }
+      if (action === "select" && rest.length === 1) {
+        return command({
+          _tag: "ProfileSelect",
+          profile: decodeOption(
+            Schema.decodeUnknownOption(ProfileId),
+            rest[0]!,
+            "profile id",
+          ),
+        }, format);
+      }
+      return invalid(`Unknown profile command: ${action ?? ""}`);
+    }
+    if (area === "sync") {
+      const options = parseOptions(
+        arguments_.slice(1),
+        new Set(),
+        new Set(["--plan", "--apply", "--no-input"]),
+      );
+      if (options.positionals.length > 0) return invalid("sync accepts no positional arguments");
+      if (options.switches.has("--plan") && options.switches.has("--apply")) {
+        return invalid("--plan and --apply are mutually exclusive");
+      }
+      return command({
+        _tag: "Synchronize",
+        mode: options.switches.has("--apply") ? "apply" : "plan",
+        noInput: options.switches.has("--no-input"),
+      }, format);
+    }
+    if (area === "recover") {
+      const options = parseOptions(arguments_.slice(1), new Set(), new Set(["--no-input"]));
+      if (options.positionals.length > 0) return invalid("recover accepts no positional arguments");
+      return command({ _tag: "Recover", noInput: options.switches.has("--no-input") }, format);
+    }
+    if (area === "status") {
+      const options = parseOptions(arguments_.slice(1), new Set(["--follower"]), new Set());
+      if (options.positionals.length > 0) return invalid("status accepts no positional arguments");
+      const follower = one(options, "--follower");
+      if (follower === undefined) return command({ _tag: "Status" }, format);
+      return command({
+        _tag: "Status",
+        follower: decodeOption(
+          Schema.decodeUnknownOption(FollowerId),
+          follower,
+          "follower id",
+        ),
+      }, format);
+    }
+    if (area === "doctor") {
+      const options = parseOptions(
+        arguments_.slice(1),
+        new Set(["--timeout-ms"]),
+        new Set(["--no-input"]),
+      );
+      if (options.positionals.length > 0) return invalid("doctor accepts no positional arguments");
+      return command({
+        _tag: "Doctor",
+        noInput: options.switches.has("--no-input"),
+        timeoutMilliseconds: parsePositiveInteger(
+          one(options, "--timeout-ms") ?? "5000",
+          "doctor timeout",
+          300_000,
+        ),
+      }, format);
+    }
+    if (area === "agent" && action === "policy") {
+      if (rest.length === 0) return command({ _tag: "AgentPolicyGet" }, format);
+      if (rest.length === 1) {
+        return command({
+          _tag: "AgentPolicySet",
+          policy: decodeOption(Schema.decodeUnknownOption(AgentPolicy), rest[0]!, "agent policy"),
+        }, format);
+      }
+      return invalid("Usage: canonfig agent policy [policy]");
+    }
+    if (area === "agent" && action === "harness") {
+      if (rest.length === 0) return command({ _tag: "AgentHarnessGet" }, format);
+      const [kind, ...harnessArguments] = rest;
+      const options = parseOptions(
+        harnessArguments,
+        new Set([
+          "--executable",
+          "--allow-path",
+          "--allow-executable",
+          "--allow-origin",
+          "--allow-capability",
+          "--maximum-input-bytes",
+        ]),
+        new Set(),
+      );
+      if (options.positionals.length > 0) {
+        return invalid("agent harness accepts one adapter kind and named options");
+      }
+      const origins = options.values.get("--allow-origin") ?? [];
+      for (const origin of origins) {
+        let url: URL;
+        try {
+          url = new URL(origin);
+        } catch {
+          return invalid(`Invalid agent harness origin: ${origin}`);
+        }
+        if (url.protocol !== "https:" || url.origin !== origin) {
+          return invalid(`Agent harness origin must be an exact HTTPS origin: ${origin}`);
+        }
+      }
+      const configuration = Schema.decodeUnknownOption(
+        Schema.Struct({
+          kind: SupportedAgentHarness,
+          executable: Schema.NonEmptyString,
+          maximumInputBytes: Schema.Int.check(
+            Schema.isGreaterThan(0),
+            Schema.isLessThanOrEqualTo(1024 * 1024),
+          ),
+          allowedPaths: Schema.Array(Schema.NonEmptyString),
+          allowedExecutables: Schema.Array(Schema.NonEmptyString),
+          allowedOrigins: Schema.Array(Schema.NonEmptyString),
+          allowedCapabilities: Schema.Array(AgentHarnessCapability),
+        }),
+      )({
+        kind,
+        executable: one(options, "--executable", true),
+        maximumInputBytes: parsePositiveInteger(
+          one(options, "--maximum-input-bytes") ?? `${1024 * 1024}`,
+          "agent harness maximum input bytes",
+          1024 * 1024,
+        ),
+        allowedPaths: options.values.get("--allow-path") ?? [],
+        allowedExecutables: options.values.get("--allow-executable") ?? [],
+        allowedOrigins: origins,
+        allowedCapabilities: options.values.get("--allow-capability") ?? [],
+      });
+      if (Option.isNone(configuration)) {
+        return invalid("Invalid agent harness configuration");
+      }
+      return command({
+        _tag: "AgentHarnessSet",
+        configuration: configuration.value,
+      }, format);
+    }
+    if (area === "schedule") {
+      if (action === "status" && rest.length === 0) return command({ _tag: "ScheduleStatus" }, format);
+      if (action === "remove" && rest.length === 0) return command({ _tag: "ScheduleRemove" }, format);
+      if (action === "set") {
+        const options = parseOptions(
+          rest,
+          new Set(["--timezone", "--executable"]),
+          new Set(),
+        );
+        if (options.positionals.length !== 1) {
+          return invalid("Usage: canonfig schedule set <calendar>");
+        }
+        const executable = one(options, "--executable");
+        const parsed: CliCommand = {
+          _tag: "ScheduleSet",
+          schedule: parseSchedule(options.positionals[0]!, one(options, "--timezone")),
+        };
+        return command(
+          executable === undefined ? parsed : { ...parsed, executable },
+          format,
+        );
+      }
+      return invalid(`Unknown schedule command: ${action ?? ""}`);
+    }
+    return invalid(`Unknown argument: ${area ?? ""}`);
+  } catch (error) {
+    return invalid(error instanceof Error ? error.message : "Invalid command input");
+  }
+};
+
+export const evaluateCli = (arguments_: ReadonlyArray<string>): CliOutcome => {
+  if (arguments_.length === 0 || arguments_.includes("--help") || arguments_.includes("-h")) {
+    return { _tag: "Help", text: helpText, exitCode: CliExitCode.success };
+  }
+  if (arguments_.includes("--version") || arguments_.includes("-V")) {
+    return { _tag: "Version", text: programVersion, exitCode: CliExitCode.success };
+  }
+  const format = arguments_.includes("--json") ? "json" : "human";
+  return evaluateCommand(arguments_.filter((argument) => argument !== "--json"), format);
+};
+
+const commandName = (value: CliCommand): string => {
+  switch (value._tag) {
+    case "SourceInit": return "source.init";
+    case "SourceScan": return "source.scan";
+    case "SourcePublish": return "source.publish";
+    case "SourceServe": return "source.serve";
+    case "SourceInvite": return "source.invite";
+    case "SourceRevoke": return "source.revoke";
+    case "FollowerEnroll": return "follower.enroll";
+    case "Synchronize": return `sync.${value.mode}`;
+    case "Recover": return "recover";
+    case "Status": return "status";
+    case "Doctor": return "doctor";
+    case "ProfileList": return "profile.list";
+    case "ProfileShow": return "profile.show";
+    case "ProfileSelect": return "profile.select";
+    case "AgentPolicyGet": return "agent.policy.get";
+    case "AgentPolicySet": return "agent.policy.set";
+    case "AgentHarnessGet": return "agent.harness.get";
+    case "AgentHarnessSet": return "agent.harness.set";
+    case "ScheduleSet": return "schedule.set";
+    case "ScheduleStatus": return "schedule.status";
+    case "ScheduleRemove": return "schedule.remove";
+  }
+};
+
+const executeCommand = Effect.fn("Cli.executeCommand")(function*(
+  value: CliCommand,
+): Effect.fn.Return<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands> {
+  const source = yield* SourceCommands;
+  const follower = yield* FollowerCommands;
+  switch (value._tag) {
+    case "SourceInit": return yield* source.initialize();
+    case "SourceScan": return yield* source.scan({ files: value.files });
+    case "SourcePublish":
+      return yield* source.publish({
+        proposalPath: value.proposalPath,
+        profile: value.profile,
+        name: value.name,
+        reviewer: value.reviewer,
+      });
+    case "SourceServe":
+      return yield* source.serve({ hostname: value.hostname, port: value.port });
+    case "SourceInvite":
+      return yield* source.invite({
+        endpoint: value.endpoint,
+        expiresInMilliseconds: value.expiresInMilliseconds,
+        groups: value.groups,
+      });
+    case "SourceRevoke": return yield* source.revoke(value.follower);
+    case "FollowerEnroll":
+      return yield* follower.enroll({
+        invitation: value.invitation,
+        followerName: value.followerName,
+        selectedProfile: value.selectedProfile,
+      });
+    case "Synchronize":
+      return yield* follower.synchronize({
+        mode: value.mode,
+        noInput: value.noInput,
+      });
+    case "Recover": return yield* follower.recover({ noInput: value.noInput });
+    case "Status": return yield* follower.status(value.follower);
+    case "Doctor":
+      return yield* follower.doctor({
+        noInput: value.noInput,
+        timeoutMilliseconds: value.timeoutMilliseconds,
+      });
+    case "ProfileList": return yield* source.listProfiles();
+    case "ProfileShow": return yield* source.inspectProfile(value.revision);
+    case "ProfileSelect": return yield* follower.selectProfile(value.profile);
+    case "AgentPolicyGet": return yield* follower.getAgentPolicy();
+    case "AgentPolicySet": return yield* follower.setAgentPolicy(value.policy);
+    case "AgentHarnessGet": return yield* follower.getAgentHarness();
+    case "AgentHarnessSet":
+      return yield* follower.setAgentHarness(value.configuration);
+    case "ScheduleSet":
+      return yield* follower.setSchedule(
+        value.executable === undefined
+          ? { schedule: value.schedule }
+          : { schedule: value.schedule, executable: value.executable },
+      );
+    case "ScheduleStatus": return yield* follower.scheduleStatus();
+    case "ScheduleRemove": return yield* follower.removeSchedule();
+  }
+});
+
+export const runCli = Effect.fn("runCli")(function*(
+  arguments_: ReadonlyArray<string>,
+  io: CliIo,
+): Effect.fn.Return<void, never, SourceCommands | FollowerCommands> {
+  const outcome = evaluateCli(arguments_);
+  if (outcome._tag === "Help" || outcome._tag === "Version") {
+    yield* Effect.sync(() => {
+      io.writeStdout(`${outcome.text}\n`);
+      io.setExitCode(outcome.exitCode);
+    });
+    return;
+  }
+  if (outcome._tag === "InvalidInput") {
+    yield* Effect.sync(() => {
+      io.writeStderr(`${outcome.message}\n`);
+      io.setExitCode(outcome.exitCode);
+    });
+    return;
+  }
+  const name = commandName(outcome.command);
+  const result = yield* executeCommand(outcome.command).pipe(
+    Effect.match({
+      onFailure: (failure) => ({
+        command: name,
+        message: failure.message,
+        data: failure.details,
+        exitCode: exitCodeForFailure(failure.category),
+      }),
+      onSuccess: (data) => ({
+        command: name,
+        message: `${name} completed`,
+        data,
+        exitCode: CliExitCode.success,
+      }),
+    }),
+  );
+  yield* Effect.sync(() => {
+    const rendered = renderCliResult(result, outcome.format);
+    const quietScheduledSuccess = result.exitCode === CliExitCode.success
+      && outcome.format === "human"
+      && outcome.command._tag === "Synchronize"
+      && outcome.command.mode === "apply"
+      && outcome.command.noInput;
+    if (quietScheduledSuccess) {
+      // Native schedulers need no success chatter; failures remain visible.
+    } else if (result.exitCode === CliExitCode.success) io.writeStdout(rendered);
+    else io.writeStderr(rendered);
+    io.setExitCode(result.exitCode);
+  });
+});
