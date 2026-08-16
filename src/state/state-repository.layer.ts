@@ -1100,7 +1100,7 @@ const makeRepository = Effect.gen(function*() {
     function*(input: JournalActionInput): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
         const run = yield* loadRunStatus(input.run);
-        if (run.status !== "applying") {
+        if (run.status !== "applying" && run.status !== "Interrupted") {
           return yield* new InvalidRunTransitionError({
             run: input.run,
             message: `cannot journal an action while run status is ${run.status}`,
@@ -1209,7 +1209,7 @@ const makeRepository = Effect.gen(function*() {
     function*(input: CompleteRunInput): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
         const run = yield* loadRunStatus(input.run);
-        if (run.status !== "applying") {
+        if (run.status !== "applying" && run.status !== "Interrupted") {
           return yield* new InvalidRunTransitionError({
             run: input.run,
             message: `run is already ${run.status}`,
@@ -1271,7 +1271,8 @@ const makeRepository = Effect.gen(function*() {
       const runRows = yield* sql`
         SELECT id, follower_id, revision_id, plan_json, started_at
         FROM synchronization_runs
-        WHERE follower_id = ${follower} AND status = 'applying'
+        WHERE follower_id = ${follower}
+          AND status IN ('applying', 'Interrupted')
         ORDER BY started_at DESC
         LIMIT 1
       `.pipe(Effect.mapError(sqlError("load active synchronization run")));

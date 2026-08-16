@@ -80,6 +80,17 @@ interface Fixture {
   readonly recovery: SynchronizationRecoveryInput;
 }
 
+type TestRollbackPayload =
+  | { readonly path: string; readonly existed: boolean; readonly content: string }
+  | { readonly path: string; readonly state: "absent" }
+  | {
+    readonly path: string;
+    readonly state: "regular";
+    readonly content: string;
+    readonly mode: number;
+  }
+  | { readonly path: string; readonly state: "symlink"; readonly target: string };
+
 const fixture = (
   root: string,
   options: {
@@ -244,10 +255,39 @@ const journal = (
     }).pipe(Effect.provide(stateRepositoryLayer(value.database))),
   );
 
+const interruptRun = (value: Fixture) =>
+  Effect.runPromise(
+    Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.completeRun({
+        run: decode(RunId)("run-recovery"),
+        completedAt: "2026-08-15T00:03:00Z",
+        outcome: {
+          outcome: "Interrupted",
+          run: decode(RunId)("run-recovery"),
+          completedActions: [],
+        },
+        appliedResources: [],
+      });
+    }).pipe(Effect.provide(stateRepositoryLayer(value.database))),
+  );
+
 const rollbackReference = (
   value: Fixture,
   action: string,
   previous: string,
+): string => {
+  return writeRollbackPayload(value, action, {
+    path: value.target,
+    existed: true,
+    content: Buffer.from(previous).toString("base64"),
+  });
+};
+
+const writeRollbackPayload = (
+  value: Fixture,
+  action: string,
+  payload: TestRollbackPayload,
 ): string => {
   const path = join(
     value.root,
@@ -259,11 +299,7 @@ const rollbackReference = (
     `${sha256Hex(action)}.json`,
   );
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify([{
-    path: value.target,
-    existed: true,
-    content: Buffer.from(previous).toString("base64"),
-  }]));
+  writeFileSync(path, JSON.stringify([payload]));
   return path;
 };
 
@@ -540,6 +576,7 @@ describe("synchronization crash recovery", () => {
     writeFileSync(value.target, "corrupt partial write");
     const reference = rollbackReference(value, plan.actions[0]!.id, "previous");
     await journal(value, plan.actions[0]!.id, "running", reference);
+    await interruptRun(value);
     const writes: Array<string> = [];
     const machine = decorateMachine(value.root, (service) => ({
       ...service,
@@ -558,6 +595,84 @@ describe("synchronization crash recovery", () => {
     await recover(value, machine);
     expect(writes).toEqual(["previous", "canonical content"]);
   });
+
+  it.each([
+    [
+      "absent",
+      (value: Fixture) => ({ path: value.target, state: "absent" }),
+      (_value: Fixture) => ["remove", "write:canonical content:384"],
+    ],
+    [
+      "regular",
+      (value: Fixture) => ({
+        path: value.target,
+        state: "regular",
+        content: Buffer.from("regular").toString("base64"),
+        mode: 0o600,
+      }),
+      (_value: Fixture) => ["write:regular:384", "write:canonical content:384"],
+    ],
+    [
+      "executable",
+      (value: Fixture) => ({
+        path: value.target,
+        state: "regular",
+        content: Buffer.from("executable").toString("base64"),
+        mode: 0o700,
+      }),
+      (_value: Fixture) => ["write:executable:448", "write:canonical content:384"],
+    ],
+    [
+      "symlink",
+      (value: Fixture) => ({
+        path: value.target,
+        state: "symlink",
+        target: join(value.root, "original-target"),
+      }),
+      (value: Fixture) => [
+        `symlink:${join(value.root, "original-target")}`,
+        "write:canonical content:384",
+      ],
+    ],
+  ] as const)(
+    "restores persisted %s state before retrying",
+    async (_state, payload, expectedOperations) => {
+      const value = fixture(temporaryDirectory());
+      const plan = persistedPlan(value);
+      await seed(value, plan);
+      mkdirSync(dirname(value.target), { recursive: true });
+      writeFileSync(value.target, "corrupt partial write");
+      const reference = writeRollbackPayload(value, plan.actions[0]!.id, payload(value));
+      await journal(value, plan.actions[0]!.id, "running", reference);
+      const operations: Array<string> = [];
+      const machine = decorateMachine(value.root, (service) => ({
+        ...service,
+        atomicWrite: (input) => {
+          if (input.path.absolute === value.target) {
+            operations.push(
+              `write:${Buffer.from(input.content).toString("utf8")}:${String(input.mode)}`,
+            );
+          }
+          return service.atomicWrite(input);
+        },
+        removeFile: (input) => {
+          if (input.path.absolute === value.target) operations.push("remove");
+          return service.removeFile(input);
+        },
+        replaceSymlink: (input) => {
+          if (input.path.absolute === value.target) {
+            operations.push(`symlink:${input.target.absolute}`);
+          }
+          return service.replaceSymlink(input);
+        },
+      }));
+
+      const outcome = await recover(value, machine);
+
+      expect(outcome.outcome).toBe("Converged");
+      expect(operations).toEqual(expectedOperations(value));
+    },
+  );
 
   it("preserves Interrupted when cancellation reaches resumed mutation", async () => {
     const value = fixture(temporaryDirectory());

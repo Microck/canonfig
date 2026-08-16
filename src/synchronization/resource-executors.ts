@@ -31,17 +31,40 @@ import {
 } from "./config-codec.ts";
 import { desiredResourceDigest } from "./resource-plans.ts";
 
-interface StoredFile {
+interface LegacyStoredFile {
   readonly path: string;
   readonly existed: boolean;
   readonly content: string;
 }
 
-const StoredFileSchema = Schema.Struct({
-  path: Schema.NonEmptyString,
-  existed: Schema.Boolean,
-  content: Schema.String,
-});
+type StoredFile =
+  | { readonly path: string; readonly state: "absent" }
+  | { readonly path: string; readonly state: "regular"; readonly content: string; readonly mode: number }
+  | { readonly path: string; readonly state: "symlink"; readonly target: string }
+  | LegacyStoredFile;
+
+const StoredFileSchema = Schema.Union([
+  Schema.Struct({
+    path: Schema.NonEmptyString,
+    state: Schema.Literal("absent"),
+  }),
+  Schema.Struct({
+    path: Schema.NonEmptyString,
+    state: Schema.Literal("regular"),
+    content: Schema.String,
+    mode: Schema.Int,
+  }),
+  Schema.Struct({
+    path: Schema.NonEmptyString,
+    state: Schema.Literal("symlink"),
+    target: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    path: Schema.NonEmptyString,
+    existed: Schema.Boolean,
+    content: Schema.String,
+  }),
+]);
 
 interface RollbackMaterial {
   readonly reference: string;
@@ -105,6 +128,65 @@ const readIfPresent = (
     );
   });
 
+const captureStoredFile = (
+  path: MachinePath,
+  maximumBytes: number,
+): Effect.Effect<StoredFile, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const symlink = yield* machine.readSymlink(path).pipe(
+      Effect.map((target) => target.absolute),
+      Effect.catchTag("MachineFilesystemError", () => Effect.succeed(undefined)),
+    );
+    if (symlink !== undefined) {
+      return { path: path.absolute, state: "symlink", target: symlink };
+    }
+    const content = yield* readIfPresent(path, maximumBytes);
+    if (content === undefined) return { path: path.absolute, state: "absent" };
+    const permissions = yield* machine.permissions(path);
+    return {
+      path: path.absolute,
+      state: "regular",
+      content: Buffer.from(content).toString("base64"),
+      mode: permissions.mode,
+    };
+  });
+
+const restoreStoredFile = (
+  entry: StoredFile,
+): Effect.Effect<void, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const path = yield* machine.normalizePath({ path: entry.path });
+    if ("existed" in entry) {
+      if (entry.existed) {
+        yield* machine.atomicWrite({
+          path,
+          content: Buffer.from(entry.content, "base64"),
+        });
+      } else {
+        yield* machine.removeFile({ path });
+      }
+      return;
+    }
+    switch (entry.state) {
+      case "absent":
+        yield* machine.removeFile({ path });
+        return;
+      case "regular":
+        yield* machine.atomicWrite({
+          path,
+          content: Buffer.from(entry.content, "base64"),
+          mode: entry.mode,
+        });
+        return;
+      case "symlink": {
+        const target = yield* machine.normalizePath({ path: entry.target });
+        yield* machine.replaceSymlink({ path, target });
+      }
+    }
+  });
+
 const normalizeRelative = (
   target: MachinePath,
   relative: string,
@@ -141,33 +223,17 @@ const captureRollback = (
       path: `${sha256Hex(context.action.id)}.json`,
       base: rollbackDirectory,
     });
-    const stored: Array<StoredFile> = [];
-    for (const path of paths) {
-      const content = yield* readIfPresent(path, context.limits.maximumFileBytes);
-      stored.push(content === undefined
-        ? { path: path.absolute, existed: false, content: "" }
-        : {
-          path: path.absolute,
-          existed: true,
-          content: Buffer.from(content).toString("base64"),
-        });
-    }
+    const stored = yield* Effect.forEach(
+      paths,
+      (path) => captureStoredFile(path, context.limits.maximumFileBytes),
+    );
     yield* machine.atomicWrite({
       path: rollbackPath,
       content: encoder.encode(JSON.stringify(stored)),
     });
     const restore = Effect.gen(function*() {
-      const activeMachine = yield* MachineState;
       for (const entry of stored) {
-        const path = yield* activeMachine.normalizePath({ path: entry.path });
-        if (entry.existed) {
-          yield* activeMachine.atomicWrite({
-            path,
-            content: Buffer.from(entry.content, "base64"),
-          });
-        } else {
-          yield* activeMachine.removeFile({ path });
-        }
+        yield* restoreStoredFile(entry);
       }
     });
     return { reference: rollbackPath.absolute, restore };
@@ -258,15 +324,7 @@ export const restoreRollbackReference = (
       });
     }
     for (const entry of stored) {
-      const path = yield* machine.normalizePath({ path: entry.path });
-      if (entry.existed) {
-        yield* machine.atomicWrite({
-          path,
-          content: Buffer.from(entry.content, "base64"),
-        });
-      } else {
-        yield* machine.removeFile({ path });
-      }
+      yield* restoreStoredFile(entry);
     }
   });
 

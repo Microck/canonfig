@@ -5,6 +5,7 @@ import {
   readlinkSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
@@ -619,13 +620,50 @@ describe("synchronization apply run", () => {
     const fixture = fileFixture(temporaryDirectory(), "run-rollback-material");
     mkdirSync(dirname(fixture.target), { recursive: true });
     await writeFile(fixture.target, "previous");
+    const previousMode = statSync(fixture.target).mode & 0o7777;
     await seedAndRun(fixture);
 
     const reference = actionRows(fixture.database)[2]?.rollback_reference;
     expect(reference).toBeTypeOf("string");
-    expect(await readFile(String(reference), "utf8")).toContain(
-      Buffer.from("previous").toString("base64"),
-    );
+    expect(JSON.parse(await readFile(String(reference), "utf8"))).toEqual([{
+      path: fixture.target,
+      state: "regular",
+      content: Buffer.from("previous").toString("base64"),
+      mode: previousMode,
+    }]);
+  });
+
+  it("snapshots absent, executable, and symlink states", async () => {
+    const absent = fileFixture(temporaryDirectory(), "run-rollback-absent");
+    const executable = fileFixture(temporaryDirectory(), "run-rollback-executable");
+    mkdirSync(dirname(executable.target), { recursive: true });
+    writeFileSync(executable.target, "script");
+    chmodSync(executable.target, 0o700);
+    const symlink = fileFixture(temporaryDirectory(), "run-rollback-symlink");
+    const symlinkTarget = join(symlink.root, "original-target");
+    mkdirSync(dirname(symlink.target), { recursive: true });
+    writeFileSync(symlinkTarget, "target");
+    symlinkSync(symlinkTarget, symlink.target);
+
+    for (const [value, expected] of [
+      [absent, { path: absent.target, state: "absent" }],
+      [executable, {
+        path: executable.target,
+        state: "regular",
+        content: Buffer.from("script").toString("base64"),
+        mode: 0o700,
+      }],
+      [symlink, {
+        path: symlink.target,
+        state: "symlink",
+        target: symlinkTarget,
+      }],
+    ] as const) {
+      await seedAndRun(value);
+      const reference = actionRows(value.database)[2]?.rollback_reference;
+      expect(reference).toBeTypeOf("string");
+      expect(JSON.parse(await readFile(String(reference), "utf8"))).toEqual([expected]);
+    }
   });
 
   it("never claims rollback for external installer actions", async () => {
