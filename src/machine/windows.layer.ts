@@ -9,6 +9,8 @@ import {
   rename,
   rm,
   stat,
+  symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -42,6 +44,7 @@ import type {
   SchedulerBackend,
   SchedulerCalendar,
   SchedulerJob,
+  SafeRootMutationInput,
 } from "./machine-state.types.ts";
 
 export interface WindowsMachineStateOptions {
@@ -49,6 +52,8 @@ export interface WindowsMachineStateOptions {
   readonly credentialStoreAccess?: "auto" | "unavailable" | undefined;
   readonly environment?: ReadonlyArray<ProcessEnvironmentEntry> | undefined;
   readonly schedulerBackend?: SchedulerBackend | undefined;
+  /** Test seam invoked after the managed root is identified but before custody. */
+  readonly beforeSafeRootMutation?: (() => Promise<void>) | undefined;
 }
 
 const decode = Schema.decodeUnknownSync;
@@ -532,6 +537,129 @@ export const windowsMachineStateLayer = (
             filesystemFailure("validate managed path containment", path, cause),
         });
       };
+      const mutateWithinRoot = (
+        input: SafeRootMutationInput,
+      ): Effect.Effect<void, MachineStateError> =>
+        Effect.gen(function*() {
+          const rootPath = yield* requireWindowsPath(input.root);
+          const targetPath = yield* requireWindowsPath(input.path);
+          const linkTarget = input.mutation.kind === "symlink"
+            ? yield* requireWindowsPath(input.mutation.target)
+            : undefined;
+          const root = rootPath.absolute;
+          const path = targetPath.absolute;
+          if (
+            !isWithinRoot(root, path)
+            || path.toLowerCase() === root.toLowerCase()
+          ) {
+            return yield* new MachineFilesystemError({
+              operation: "mutate managed path",
+              path,
+              message: `path is not a descendant of managed root ${root}`,
+            });
+          }
+          yield* Effect.tryPromise({
+            try: async () => {
+              const rootBefore = await lstat(root);
+              if (rootBefore.isSymbolicLink()) {
+                throw new Error("managed root must not be a reparse point");
+              }
+              await options.beforeSafeRootMutation?.();
+              const rootAfter = await lstat(root);
+              if (
+                rootAfter.isSymbolicLink()
+                || rootBefore.dev !== rootAfter.dev
+                || rootBefore.ino !== rootAfter.ino
+              ) {
+                throw new Error("managed root identity changed before mutation");
+              }
+
+              const relativePath = win32.relative(root, path);
+              const [topName, ...tail] = relativePath.split(/[\\/]/u);
+              const guard = win32.join(
+                root,
+                `.canonfig-guard-${randomBytes(12).toString("hex")}`,
+              );
+              const visibleTop = win32.join(root, topName!);
+              const heldTop = win32.join(guard, topName!);
+              let held = false;
+              await mkdir(guard);
+              try {
+                try {
+                  const top = await lstat(visibleTop);
+                  if (tail.length > 0 && top.isSymbolicLink()) {
+                    throw new Error(`managed ancestor is a reparse point: ${visibleTop}`);
+                  }
+                  await rename(visibleTop, heldTop);
+                  held = true;
+                  if (tail.length > 0 && (await lstat(heldTop)).isSymbolicLink()) {
+                    throw new Error(`managed ancestor is a reparse point: ${visibleTop}`);
+                  }
+                } catch (cause) {
+                  if (errorCode(cause) !== "ENOENT") throw cause;
+                  if (input.mutation.kind === "remove") return;
+                  if (tail.length > 0) {
+                    await mkdir(heldTop, { recursive: true });
+                    held = true;
+                  }
+                }
+                const guardedTarget = tail.length === 0
+                  ? heldTop
+                  : win32.join(heldTop, ...tail);
+                if (tail.length > 0) {
+                  await Effect.runPromise(
+                    validatePathWithinRoot(heldTop, guardedTarget),
+                  );
+                }
+                if (input.mutation.kind === "remove") {
+                  await rm(guardedTarget, { force: true });
+                  if (tail.length === 0) held = false;
+                } else if (input.mutation.kind === "write") {
+                  await Effect.runPromise(secureAtomicWrite(
+                    guardedTarget,
+                    input.mutation.content,
+                    input.mutation.mode ?? 0o600,
+                  ));
+                  held = true;
+                } else {
+                  await mkdir(win32.dirname(guardedTarget), { recursive: true });
+                  const temporary = win32.join(
+                    win32.dirname(guardedTarget),
+                    `.${win32.basename(guardedTarget)}.canonfig-${
+                      randomBytes(12).toString("hex")
+                    }`,
+                  );
+                  try {
+                    await symlink(linkTarget!.absolute, temporary);
+                    await rename(temporary, guardedTarget);
+                  } finally {
+                    await unlink(temporary).catch(() => undefined);
+                  }
+                  held = true;
+                }
+
+                const visibleRoot = await lstat(root);
+                if (
+                  visibleRoot.isSymbolicLink()
+                  || visibleRoot.dev !== rootBefore.dev
+                  || visibleRoot.ino !== rootBefore.ino
+                ) {
+                  throw new Error("managed root identity changed during mutation");
+                }
+                if (held) {
+                  await rename(heldTop, visibleTop);
+                  held = false;
+                }
+              } finally {
+                if (!held) {
+                  await rm(guard, { recursive: true, force: true }).catch(() => undefined);
+                }
+              }
+            },
+            catch: (cause) =>
+              filesystemFailure("mutate managed path", path, cause),
+          });
+        });
       const secureStoreAvailable = Effect.promise(() =>
         options.credentialStoreAccess !== "unavailable"
           && process.platform === "win32"
@@ -733,6 +861,7 @@ export const windowsMachineStateLayer = (
               validatePathWithinRoot(root.absolute, path.absolute)
             ),
           ),
+        mutateWithinRoot,
         replaceSymlink: (input) =>
           Effect.all({
             path: requireWindowsPath(input.path),

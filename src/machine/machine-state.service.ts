@@ -21,6 +21,7 @@ import type {
   ReadFileInput,
   RemoveFileInput,
   RenderedSchedulerJob,
+  SafeRootMutationInput,
   SchedulerInspection,
   SchedulerJob,
   SetPermissionsInput,
@@ -49,6 +50,9 @@ export class MachineState extends Context.Service<MachineState, {
   ) => Effect.Effect<void, MachineStateError>;
   readonly validatePathWithinRoot: (
     input: ValidatePathWithinRootInput,
+  ) => Effect.Effect<void, MachineStateError>;
+  readonly mutateWithinRoot: (
+    input: SafeRootMutationInput,
   ) => Effect.Effect<void, MachineStateError>;
   readonly replaceSymlink: (
     input: SymlinkInput,

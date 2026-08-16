@@ -200,6 +200,62 @@ export const machineStateContract = (
     );
 
     it.skipIf(!nativeOperations)(
+      "mutates descendants through a safe root without following final symlinks",
+      async () => {
+        const root = temporaryDirectory();
+        const managed = pathJoin(root, "managed");
+        const nested = pathJoin(managed, "nested", "settings.json");
+        const outside = pathJoin(root, "outside.json");
+        const result = await runWith(
+          adapter.localFileLayer(root),
+          Effect.gen(function*() {
+            const machine = yield* MachineState;
+            const managedPath = yield* machine.normalizePath({ path: managed });
+            const nestedPath = yield* machine.normalizePath({ path: nested });
+            const outsidePath = yield* machine.normalizePath({ path: outside });
+            yield* machine.ensureDirectory({ path: managedPath });
+            yield* machine.atomicWrite({
+              path: outsidePath,
+              content: new TextEncoder().encode("outside"),
+            });
+            yield* machine.mutateWithinRoot({
+              root: managedPath,
+              path: nestedPath,
+              mutation: {
+                kind: "symlink",
+                target: outsidePath,
+              },
+            });
+            const linkTarget = yield* machine.readSymlink(nestedPath);
+            yield* machine.mutateWithinRoot({
+              root: managedPath,
+              path: nestedPath,
+              mutation: {
+                kind: "write",
+                content: new TextEncoder().encode("managed"),
+              },
+            });
+            return {
+              linkTarget,
+              managedContent: yield* machine.readFile({
+                path: nestedPath,
+                maximumBytes: 1024,
+              }),
+              outsideContent: yield* machine.readFile({
+                path: outsidePath,
+                maximumBytes: 1024,
+              }),
+            };
+          }),
+        );
+
+        expect(result.linkTarget.absolute).toBe(outside);
+        expect(new TextDecoder().decode(result.managedContent)).toBe("managed");
+        expect(new TextDecoder().decode(result.outsideContent)).toBe("outside");
+      },
+    );
+
+    it.skipIf(!nativeOperations)(
       "discovers executables and computes SHA-256 digests",
       async () => {
       const root = temporaryDirectory();

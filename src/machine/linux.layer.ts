@@ -14,6 +14,7 @@ import {
   stat,
   symlink,
   unlink,
+  type FileHandle,
 } from "node:fs/promises";
 import { constants as filesystemConstants, createReadStream } from "node:fs";
 import { homedir } from "node:os";
@@ -68,6 +69,7 @@ import type {
   ReadFileInput,
   RemoveFileInput,
   RenderedSchedulerJob,
+  SafeRootMutationInput,
   SchedulerBackend,
   SchedulerCalendar,
   SchedulerJob,
@@ -283,6 +285,117 @@ const atomicWriteFile = (
       if (handle !== undefined) await handle.close().catch(() => undefined);
       await rm(temporary, { force: true }).catch(() => undefined);
     }
+  });
+
+const descriptorPath = (handle: FileHandle): string =>
+  `${process.platform === "darwin" ? "/dev/fd" : "/proc/self/fd"}/${handle.fd}`;
+
+const safeRootMutation = (
+  input: SafeRootMutationInput,
+  beforeMutation?: (() => Promise<void>) | undefined,
+): Effect.Effect<void, MachineStateError> =>
+  Effect.gen(function*() {
+    const root = yield* checkLinuxPath(input.root);
+    const path = yield* checkLinuxPath(input.path);
+    if (!isWithin(root, path) || path === root) {
+      return yield* new MachineFilesystemError({
+        operation: "mutate managed path",
+        path,
+        message: `path is not a descendant of managed root ${root}`,
+      });
+    }
+    const symlinkTarget = input.mutation.kind === "symlink"
+      ? yield* checkLinuxPath(input.mutation.target)
+      : undefined;
+    const remainder = relative(root, path);
+    const parts = remainder.split(sep);
+    yield* promiseEffect("mutate managed path", path, async () => {
+      const handles: Array<FileHandle> = [];
+      try {
+        const rootHandle = await open(
+          root,
+          filesystemConstants.O_RDONLY
+            | filesystemConstants.O_DIRECTORY
+            | filesystemConstants.O_NOFOLLOW,
+        );
+        handles.push(rootHandle);
+        const rootIdentity = await rootHandle.stat();
+        await beforeMutation?.();
+        const visibleRoot = await lstat(root);
+        if (
+          visibleRoot.isSymbolicLink()
+          || !sameFilesystemIdentity(rootIdentity, visibleRoot)
+        ) {
+          throw new Error("managed root identity changed before mutation");
+        }
+
+        let parent = rootHandle;
+        for (const part of parts.slice(0, -1)) {
+          const candidate = join(descriptorPath(parent), part);
+          let child: FileHandle;
+          try {
+            child = await open(
+              candidate,
+              filesystemConstants.O_RDONLY
+                | filesystemConstants.O_DIRECTORY
+                | filesystemConstants.O_NOFOLLOW,
+            );
+          } catch (cause) {
+            if (errorCode(cause) !== "ENOENT" || input.mutation.kind === "remove") {
+              if (errorCode(cause) === "ENOENT" && input.mutation.kind === "remove") {
+                return;
+              }
+              throw cause;
+            }
+            await mkdir(candidate, { mode: defaultDirectoryMode });
+            child = await open(
+              candidate,
+              filesystemConstants.O_RDONLY
+                | filesystemConstants.O_DIRECTORY
+                | filesystemConstants.O_NOFOLLOW,
+            );
+          }
+          handles.push(child);
+          parent = child;
+        }
+
+        const name = parts.at(-1)!;
+        const target = join(descriptorPath(parent), name);
+        if (input.mutation.kind === "remove") {
+          await rm(target, { force: true });
+          await syncHandle(parent);
+          return;
+        }
+
+        const temporary = join(
+          descriptorPath(parent),
+          `.${name}.canonfig-${randomBytes(12).toString("hex")}`,
+        );
+        try {
+          if (input.mutation.kind === "symlink") {
+            await symlink(symlinkTarget!, temporary);
+          } else {
+            const mode = input.mutation.mode ?? defaultFileMode;
+            const temporaryHandle = await open(temporary, "wx", mode);
+            try {
+              await temporaryHandle.writeFile(input.mutation.content);
+              await syncHandle(temporaryHandle);
+              await temporaryHandle.chmod(mode);
+            } finally {
+              await temporaryHandle.close();
+            }
+          }
+          await rename(temporary, target);
+          await syncHandle(parent);
+        } finally {
+          await unlink(temporary).catch(() => undefined);
+        }
+      } finally {
+        for (const handle of handles.reverse()) {
+          await handle.close().catch(() => undefined);
+        }
+      }
+    });
   });
 
 const normalizedInputPath = (
@@ -854,6 +967,14 @@ export const linuxMachineStateLayer = (
         },
       );
 
+      const mutateWithinRoot = Effect.fn("MachineState.mutateWithinRoot")(
+        function*(
+          input: SafeRootMutationInput,
+        ): Effect.fn.Return<void, MachineStateError> {
+          yield* safeRootMutation(input, options.beforeSafeRootMutation);
+        },
+      );
+
       const readSymlink = Effect.fn("MachineState.readSymlink")(
         function*(machinePath: MachinePath): Effect.fn.Return<MachinePath, MachineStateError> {
           const path = yield* checkLinuxPath(machinePath);
@@ -1034,6 +1155,7 @@ export const linuxMachineStateLayer = (
         readFile: Effect.fn("MachineState.readFile")(readBounded),
         removeFile,
         validatePathWithinRoot,
+        mutateWithinRoot,
         replaceSymlink,
         readSymlink,
         setPermissions,

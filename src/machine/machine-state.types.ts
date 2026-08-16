@@ -50,6 +50,24 @@ export interface ValidatePathWithinRootInput {
   readonly path: MachinePath;
 }
 
+export type SafeRootMutation =
+  | {
+    readonly kind: "write";
+    readonly content: Uint8Array;
+    readonly mode?: number | undefined;
+  }
+  | { readonly kind: "remove" }
+  | {
+    readonly kind: "symlink";
+    readonly target: MachinePath;
+  };
+
+export interface SafeRootMutationInput {
+  readonly root: MachinePath;
+  readonly path: MachinePath;
+  readonly mutation: SafeRootMutation;
+}
+
 export interface SymlinkInput {
   readonly path: MachinePath;
   readonly target: MachinePath;
@@ -180,6 +198,8 @@ export interface LinuxMachineStateOptions {
   readonly credentialPolicy?: CredentialPolicy | undefined;
   readonly environment?: ReadonlyArray<ProcessEnvironmentEntry> | undefined;
   readonly schedulerBackend?: SchedulerBackend | undefined;
+  /** Test seam invoked after the managed root is opened but before traversal. */
+  readonly beforeSafeRootMutation?: (() => Promise<void>) | undefined;
 }
 
 export interface FileDigest {

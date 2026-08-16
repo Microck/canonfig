@@ -36,6 +36,8 @@ export interface MacosMachineStateOptions {
   readonly credentialStoreAccess?: "auto" | "unavailable" | undefined;
   readonly environment?: ReadonlyArray<ProcessEnvironmentEntry> | undefined;
   readonly schedulerBackend?: SchedulerBackend | undefined;
+  /** Test seam invoked after the managed root is opened but before traversal. */
+  readonly beforeSafeRootMutation?: (() => Promise<void>) | undefined;
 }
 
 const decode = Schema.decodeUnknownSync;
@@ -214,6 +216,7 @@ export const macosMachineStateLayer = (
   const base = linuxMachineStateLayer({
     credentialPolicy: policy,
     environment,
+    beforeSafeRootMutation: options.beforeSafeRootMutation,
   });
 
   return Layer.effect(
@@ -351,6 +354,24 @@ export const macosMachineStateLayer = (
             root: requireMacosPath(input.root),
             path: requireMacosPath(input.path),
           }).pipe(Effect.flatMap(machine.validatePathWithinRoot)),
+        mutateWithinRoot: (input) =>
+          Effect.all({
+            root: requireMacosPath(input.root),
+            path: requireMacosPath(input.path),
+            target: input.mutation.kind === "symlink"
+              ? requireMacosPath(input.mutation.target)
+              : Effect.succeed(undefined),
+          }).pipe(
+            Effect.flatMap(({ root, path, target }) =>
+              machine.mutateWithinRoot({
+                root,
+                path,
+                mutation: input.mutation.kind === "symlink"
+                  ? { ...input.mutation, target: target! }
+                  : input.mutation,
+              })
+            ),
+          ),
         replaceSymlink: (input) =>
           Effect.all({
             path: requireMacosPath(input.path),

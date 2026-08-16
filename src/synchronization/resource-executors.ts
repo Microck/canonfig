@@ -159,34 +159,67 @@ const restoreStoredFile = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: entry.path });
-    if (root !== undefined) {
-      yield* machine.validatePathWithinRoot({ root, path });
-    }
     if ("existed" in entry) {
       if (entry.existed) {
-        yield* machine.atomicWrite({
-          path,
-          content: Buffer.from(entry.content, "base64"),
-        });
+        const content = Buffer.from(entry.content, "base64");
+        if (root === undefined) {
+          yield* machine.atomicWrite({ path, content });
+        } else {
+          yield* machine.mutateWithinRoot({
+            root,
+            path,
+            mutation: { kind: "write", content },
+          });
+        }
       } else {
-        yield* machine.removeFile({ path });
+        if (root === undefined) {
+          yield* machine.removeFile({ path });
+        } else {
+          yield* machine.mutateWithinRoot({
+            root,
+            path,
+            mutation: { kind: "remove" },
+          });
+        }
       }
       return;
     }
     switch (entry.state) {
       case "absent":
-        yield* machine.removeFile({ path });
+        if (root === undefined) {
+          yield* machine.removeFile({ path });
+        } else {
+          yield* machine.mutateWithinRoot({
+            root,
+            path,
+            mutation: { kind: "remove" },
+          });
+        }
         return;
-      case "regular":
-        yield* machine.atomicWrite({
-          path,
-          content: Buffer.from(entry.content, "base64"),
-          mode: entry.mode,
-        });
+      case "regular": {
+        const content = Buffer.from(entry.content, "base64");
+        if (root === undefined) {
+          yield* machine.atomicWrite({ path, content, mode: entry.mode });
+        } else {
+          yield* machine.mutateWithinRoot({
+            root,
+            path,
+            mutation: { kind: "write", content, mode: entry.mode },
+          });
+        }
         return;
+      }
       case "symlink": {
         const target = yield* machine.normalizePath({ path: entry.target });
-        yield* machine.replaceSymlink({ path, target });
+        if (root === undefined) {
+          yield* machine.replaceSymlink({ path, target });
+        } else {
+          yield* machine.mutateWithinRoot({
+            root,
+            path,
+            mutation: { kind: "symlink", target },
+          });
+        }
       }
     }
   });
@@ -477,22 +510,22 @@ const prepareMirror = (
       const activeMachine = yield* MachineState;
       yield* activeMachine.ensureDirectory({ path: root });
       for (const relative of adds) {
-        yield* activeMachine.validatePathWithinRoot({
+        yield* activeMachine.mutateWithinRoot({
           root,
           path: byRelative.get(relative)!,
-        });
-        yield* activeMachine.atomicWrite({
-          path: byRelative.get(relative)!,
-          content: contentByPath.get(relative)!,
-          mode: desiredByPath.get(relative)!.executable ? 0o700 : 0o600,
+          mutation: {
+            kind: "write",
+            content: contentByPath.get(relative)!,
+            mode: desiredByPath.get(relative)!.executable ? 0o700 : 0o600,
+          },
         });
       }
       for (const relative of removes) {
-        yield* activeMachine.validatePathWithinRoot({
+        yield* activeMachine.mutateWithinRoot({
           root,
           path: byRelative.get(relative)!,
+          mutation: { kind: "remove" },
         });
-        yield* activeMachine.removeFile({ path: byRelative.get(relative)! });
       }
     });
     return {

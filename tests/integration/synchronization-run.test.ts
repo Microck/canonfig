@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readlinkSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -389,7 +390,7 @@ describe("synchronization apply run", () => {
       Effect.runPromise(prepared.execute.pipe(Effect.provide(machineLayer(root)))),
     ).rejects.toMatchObject({
       _tag: "MachineFilesystemError",
-      operation: "validate managed path containment",
+      operation: "mutate managed path",
     });
     expect(await readFile(outsideFile, "utf8")).toBe("outside content");
   });
@@ -418,6 +419,154 @@ describe("synchronization apply run", () => {
 
     expect(await readFile(target, "utf8")).toBe("managed content");
     expect(await readFile(outside, "utf8")).toBe("outside content");
+  });
+
+  it("keeps outside paths untouched when an ancestor is swapped during a mirror write", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const nested = join(managed, "nested");
+    const displaced = join(managed, "displaced");
+    const outside = join(root, "outside");
+    const outsideFile = join(outside, "settings.json");
+    mkdirSync(nested, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(outsideFile, "outside content");
+    const context = mirrorContext(
+      root,
+      managed,
+      "nested/settings.json",
+      "managed content",
+    );
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(machineLayer(root))),
+    );
+    const adversarialLayer = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(root, "home") },
+        { name: "PATH", value: join(root, "bin") },
+      ],
+      credentialPolicy: {
+        kind: "local-file",
+        path: join(root, "credentials"),
+      },
+      beforeSafeRootMutation: async () => {
+        renameSync(nested, displaced);
+        symlinkSync(outside, nested);
+      },
+    });
+
+    await expect(
+      Effect.runPromise(prepared.execute.pipe(Effect.provide(adversarialLayer))),
+    ).rejects.toMatchObject({
+      _tag: "MachineFilesystemError",
+      operation: "mutate managed path",
+    });
+    expect(await readFile(outsideFile, "utf8")).toBe("outside content");
+  });
+
+  it("keeps outside paths untouched when an ancestor is swapped during a mirror removal", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const nested = join(managed, "nested");
+    const displaced = join(managed, "displaced");
+    const outside = join(root, "outside");
+    const outsideFile = join(outside, "settings.json");
+    mkdirSync(nested, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(nested, "settings.json"), "managed content");
+    writeFileSync(outsideFile, "outside content");
+    const base = mirrorContext(
+      root,
+      managed,
+      "nested/settings.json",
+      "managed content",
+    );
+    const context: ResourceExecutionContext = {
+      ...base,
+      action: {
+        ...base.action,
+        detail: {
+          kind: "mirror-directory",
+          target: managed,
+          adds: [],
+          removes: ["nested/settings.json"],
+        },
+      },
+      desired: { kind: "directory", files: [] },
+    };
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(machineLayer(root))),
+    );
+    const adversarialLayer = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(root, "home") },
+        { name: "PATH", value: join(root, "bin") },
+      ],
+      credentialPolicy: {
+        kind: "local-file",
+        path: join(root, "credentials"),
+      },
+      beforeSafeRootMutation: async () => {
+        renameSync(nested, displaced);
+        symlinkSync(outside, nested);
+      },
+    });
+
+    await expect(
+      Effect.runPromise(prepared.execute.pipe(Effect.provide(adversarialLayer))),
+    ).rejects.toMatchObject({
+      _tag: "MachineFilesystemError",
+      operation: "mutate managed path",
+    });
+    expect(await readFile(outsideFile, "utf8")).toBe("outside content");
+  });
+
+  it("keeps outside paths untouched when an ancestor is swapped during mirror rollback", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const nested = join(managed, "nested");
+    const displaced = join(managed, "displaced");
+    const target = join(nested, "settings.json");
+    const outside = join(root, "outside");
+    const outsideFile = join(outside, "settings.json");
+    mkdirSync(nested, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(target, "original content");
+    writeFileSync(outsideFile, "outside content");
+    const context = mirrorContext(
+      root,
+      managed,
+      "nested/settings.json",
+      "managed content",
+    );
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(machineLayer(root))),
+    );
+    await Effect.runPromise(
+      prepared.execute.pipe(Effect.provide(machineLayer(root))),
+    );
+    const adversarialLayer = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(root, "home") },
+        { name: "PATH", value: join(root, "bin") },
+      ],
+      credentialPolicy: {
+        kind: "local-file",
+        path: join(root, "credentials"),
+      },
+      beforeSafeRootMutation: async () => {
+        renameSync(nested, displaced);
+        symlinkSync(outside, nested);
+      },
+    });
+
+    await expect(
+      Effect.runPromise(prepared.rollback!.pipe(Effect.provide(adversarialLayer))),
+    ).rejects.toMatchObject({
+      _tag: "MachineFilesystemError",
+      operation: "mutate managed path",
+    });
+    expect(await readFile(outsideFile, "utf8")).toBe("outside content");
   });
 
   it("persists, atomically applies, verifies, and journals a successful plan", async () => {
