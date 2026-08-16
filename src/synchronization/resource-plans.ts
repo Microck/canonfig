@@ -396,6 +396,105 @@ const planRequireLocal = (context: ResourcePlanningContext): ReadonlyArray<Resou
   }];
 };
 
+const planRemovedResource = (
+  context: ResourcePlanningContext,
+): ReadonlyArray<ResourceActionDraft> => {
+  const applied = context.applied;
+  if (
+    applied === undefined
+    || applied.kind !== context.resource.kind
+    || applied.policy !== context.resource.policy
+    || applied.target === undefined
+  ) {
+    return [];
+  }
+  const currentDigest = observedDigest(context);
+  if (currentDigest !== applied.digest) return [];
+  switch (context.resource.kind) {
+    case "file":
+      if (context.resource.policy !== "replace"
+        && context.resource.policy !== "replace-if-unmodified") {
+        return [];
+      }
+      return [{
+        kind: "remove-resource",
+        detail: {
+          kind: "remove-resource",
+          target: applied.target,
+          paths: [],
+          keys: [],
+        },
+      }];
+    case "config":
+      if (context.resource.policy === "replace") {
+        return [{
+          kind: "remove-resource",
+          detail: {
+            kind: "remove-resource",
+            target: applied.target,
+            paths: [],
+            keys: [],
+          },
+        }];
+      }
+      if (
+        context.resource.policy !== "merge"
+        || applied.ownedKeys === undefined
+        || applied.configFormat === undefined
+      ) {
+        return [];
+      }
+      return [{
+        kind: "remove-resource",
+        detail: {
+          kind: "remove-resource",
+          target: applied.target,
+          paths: [],
+          keys: sortedUnique(applied.ownedKeys),
+        },
+      }];
+    case "directory":
+    case "skill":
+      if (
+        (context.resource.policy !== "mirror-owned"
+          && context.resource.policy !== "replace"
+          && context.resource.policy !== "replace-if-unmodified")
+        || applied.ownedFiles === undefined
+        || applied.ownedFiles.length === 0
+      ) {
+        return [];
+      }
+      return [{
+        kind: "remove-resource",
+        detail: {
+          kind: "remove-resource",
+          target: applied.target,
+          paths: sortedUnique(applied.ownedFiles.map((file) => file.path)),
+          keys: [],
+        },
+      }];
+    case "schedule":
+      if (context.resource.policy !== "replace" || applied.schedule === undefined) {
+        return [];
+      }
+      return [{
+        kind: "remove-resource",
+        detail: {
+          kind: "remove-resource",
+          target: applied.target,
+          paths: [],
+          keys: [],
+          schedule: applied.schedule,
+        },
+      }];
+    case "tool":
+    case "credential":
+      // Ensure and require-local intentionally do not claim ownership of
+      // follower software or secrets, so removal is never automatic.
+      return [];
+  }
+};
+
 /** Exhaustive Apply Policy dispatch. Transfer planning is intentionally absent. */
 export const planResource = (
   context: ResourcePlanningContext,
@@ -415,3 +514,5 @@ export const planResource = (
       return planRequireLocal(context);
   }
 };
+
+export const planRemoved = planRemovedResource;

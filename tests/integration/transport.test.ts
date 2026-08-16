@@ -132,6 +132,7 @@ const group = (name: string) => decode(GroupName)(name);
 
 const publishFixtureRevision = (
   setup: Fixture,
+  includeCrossGroupDependent = false,
 ): Promise<{
   readonly revision: ProfileRevision;
   readonly blobs: ReadonlyArray<typeof BlobId.Type>;
@@ -160,6 +161,11 @@ const publishFixtureRevision = (
       {
         kind: "file" as const,
         content: "beta\n",
+        executable: false,
+      },
+      {
+        kind: "file" as const,
+        content: "cross-group\n",
         executable: false,
       },
     ];
@@ -201,6 +207,21 @@ const publishFixtureRevision = (
           spec: specs[2],
           verify: { method: "digest", digest: digestOf(asJson(specs[2])) },
         },
+        ...(includeCrossGroupDependent
+          ? [{
+            id: decode(ResourceId)("alpha-needs-beta"),
+            kind: "file" as const,
+            policy: "replace" as const,
+            target: "~/.alpha-needs-beta",
+            groups: [group("alpha")],
+            dependsOn: [decode(ResourceId)("beta-only")],
+            spec: specs[3]!,
+            verify: {
+              method: "digest" as const,
+              digest: digestOf(asJson(specs[3])),
+            },
+          }]
+          : []),
       ],
       scheduleDefault: {
         type: "daily",
@@ -405,6 +426,25 @@ describe("authenticated content-addressed transport", () => {
     expect(converged.downloadedBlobs).toBe(0);
     expect(converged.reusedBlobs).toBe(2);
     expect(server.blobRequests()).toBe(3);
+  });
+
+  it("omits dependents whose cross-group dependency is unavailable", async () => {
+    const setup = fixture();
+    const published = await publishFixtureRevision(setup, true);
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const metadata = await runFollower(setup, getRevisionMetadata({
+      ...transportInput(server, enrolled),
+      revisionId: published.revision.id,
+    }));
+
+    expect(metadata.resources.map((resource) => resource.id)).toEqual([
+      "shared",
+      "alpha-only",
+    ]);
+    expect(metadata.resources.some((resource) =>
+      resource.id === "alpha-needs-beta"
+    )).toBe(false);
   });
 
   it("rechecks current groups and revocation without revealing unauthorized blobs", async () => {

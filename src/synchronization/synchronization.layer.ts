@@ -41,6 +41,7 @@ const makeSynchronization = Effect.gen(function*() {
                 reason: String(error).slice(0, 2048),
               } as const,
               appliedResources: [],
+              removedResources: [],
             })
           ),
         );
@@ -50,6 +51,7 @@ const makeSynchronization = Effect.gen(function*() {
           completedAt,
           outcome: result.outcome,
           appliedResources: result.appliedResources,
+          removedResources: result.removedResources,
         });
         return result.outcome;
       }).pipe(
@@ -66,6 +68,7 @@ const makeSynchronization = Effect.gen(function*() {
           completedAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
           outcome: result.outcome,
           appliedResources: result.appliedResources,
+          removedResources: result.removedResources,
         });
         return result.outcome;
       }).pipe(

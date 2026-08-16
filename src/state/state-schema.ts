@@ -202,4 +202,40 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       ADD COLUMN schedule_json TEXT
     `;
   }),
+  "0006_applied_resource_removal_ownership": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN kind TEXT
+    `;
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN policy TEXT
+    `;
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN target TEXT
+    `;
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN owned_keys_json TEXT
+    `;
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN config_format TEXT
+    `;
+  }),
+  "0007_applied_resource_file_ownership": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN executable INTEGER
+    `;
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN symlink_target TEXT
+    `;
+  }),
 });

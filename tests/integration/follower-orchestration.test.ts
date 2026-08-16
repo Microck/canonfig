@@ -772,6 +772,16 @@ describe("production follower orchestration", () => {
     await expect(readFile(join(directoryTarget, "removed.txt"))).rejects.toMatchObject({
       code: "ENOENT",
     });
+    await expect(readFile(restrictedTarget)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await readFile(join(directoryTarget, "kept.txt"), "utf8")).toBe("kept\n");
+    const ownershipAgain = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "apply").pipe(
+        Effect.provide(application),
+      ),
+    );
+    expect(ownershipAgain).toMatchObject({ outcome: { outcome: "Converged" } });
     expect(await readFile(join(directoryTarget, "kept.txt"), "utf8")).toBe("kept\n");
 
     const baseFollowerConfiguration = {

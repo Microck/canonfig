@@ -128,6 +128,7 @@ export interface CompleteRunInput {
   readonly completedAt: string;
   readonly outcome: SynchronizationOutcome;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+  readonly removedResources?: ReadonlyArray<ResourceId> | undefined;
 }
 
 export interface RecordDriftInput {

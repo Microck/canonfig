@@ -48,6 +48,7 @@ export const defaultSynchronizationExecutionLimits: SynchronizationExecutionLimi
 export interface SynchronizationExecutionResult {
   readonly outcome: SynchronizationOutcome;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+  readonly removedResources: ReadonlyArray<ResourceId>;
 }
 
 export interface ActionState {
@@ -349,6 +350,20 @@ export const executeSynchronizationAction = (
         );
         return { kind: "verified" } satisfies ActionResult;
       }
+      if (detail.kind === "remove-resource") {
+        yield* journal(
+          input.id,
+          state.action.id,
+          "succeeded",
+          { status: "passed", method: "owned-resource-removed" },
+          prepared.rollbackReference,
+          attempt,
+        );
+        return {
+          kind: "verified",
+          resource: state.action.resource,
+        } satisfies ActionResult;
+      }
       const verification = yield* verifyResource(state.context, scheduleManager);
       const evidence = verificationEvidence(verification);
       if (!verification.passed) {
@@ -451,6 +466,7 @@ export const executeSynchronizationPlan = (
     const applied: Array<AppliedResourceRecord> = [];
     const human: Array<HumanAction> = [];
     const drift: Array<DriftConflict> = [];
+    const removedResources = new Set<ResourceId>();
     let failedReason: string | undefined;
 
     const runActions = Effect.gen(function*() {
@@ -459,6 +475,12 @@ export const executeSynchronizationPlan = (
         const result = yield* executeSynchronizationAction(input, state);
         completedActions.push(state.action.id);
         if (result.resource !== undefined) verified.add(result.resource);
+        if (
+          result.resource !== undefined
+          && input.revision.removedResources?.includes(result.resource) === true
+        ) {
+          removedResources.add(result.resource);
+        }
         if (result.human !== undefined) human.push(result.human);
         if (result.drift !== undefined) drift.push(result.drift);
         if (result.reason !== undefined) failedReason = result.reason;
@@ -481,6 +503,7 @@ export const executeSynchronizationPlan = (
             completedAt: yield* now(),
             outcome,
             appliedResources: [],
+            removedResources: [],
           });
         }).pipe(Effect.ignore)
       ),
@@ -505,6 +528,10 @@ export const executeSynchronizationPlan = (
         entry.resource,
         entry.desired,
       ]));
+      const resourceById = new Map(input.revision.resources.map((resource) => [
+        resource.id,
+        resource,
+      ]));
       for (const resource of outcome.verified) {
         const desired = desiredByResource.get(resource);
         const digest = desired === undefined ? undefined : desiredResourceDigest(desired);
@@ -513,6 +540,7 @@ export const executeSynchronizationPlan = (
             ? desired.files.map((file) => ({
               path: file.path,
               digest: file.digest,
+              executable: file.executable,
             }))
             : undefined;
           applied.push({
@@ -520,7 +548,14 @@ export const executeSynchronizationPlan = (
             revision: input.revision.id,
             digest,
             appliedAt,
+            kind: resourceById.get(resource)?.kind,
+            policy: resourceById.get(resource)?.policy,
+            target: resourceById.get(resource)?.target,
+            executable: desired?.kind === "file" ? desired.executable : undefined,
+            symlinkTo: desired?.kind === "file" ? desired.symlinkTo : undefined,
             ownedFiles,
+            ownedKeys: desired?.kind === "config" ? desired.keys : undefined,
+            configFormat: desired?.kind === "config" ? desired.format : undefined,
             schedule: desired?.kind === "schedule"
               ? desired.schedule
               : undefined,
@@ -528,7 +563,13 @@ export const executeSynchronizationPlan = (
         }
       }
     }
-    return { outcome, appliedResources: applied };
+    return {
+      outcome,
+      appliedResources: applied,
+      removedResources: outcome.outcome === "Converged"
+        ? [...removedResources].sort()
+        : [],
+    };
   });
 
 export const executionFollower = (input: SynchronizationRunInput) =>

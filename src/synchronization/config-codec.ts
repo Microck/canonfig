@@ -106,3 +106,40 @@ export const getConfigPath = (
   }
   return value;
 };
+
+export const removeConfigPath = (
+  document: ConfigDocument,
+  path: string,
+): void => {
+  const segments = pathSegments(path);
+  const parents: Array<{
+    readonly document: ConfigDocument;
+    readonly segment: string;
+  }> = [];
+  let current = document;
+  for (const segment of segments.slice(0, -1)) {
+    const nested = Option.getOrUndefined(
+      Schema.decodeUnknownOption(ConfigDocumentSchema)(current[segment]),
+    );
+    if (nested === undefined) return;
+    parents.push({ document: current, segment });
+    const mutableNested = { ...nested };
+    current[segment] = mutableNested;
+    current = mutableNested;
+  }
+  delete current[segments.at(-1)!];
+  for (const parent of parents.reverse()) {
+    const child = parent.document[parent.segment];
+    const nested = child === undefined
+      ? undefined
+      : Option.getOrUndefined(
+        Schema.decodeUnknownOption(ConfigDocumentSchema)(child),
+      );
+    if (
+      nested !== undefined
+      && Object.keys(nested).length === 0
+    ) {
+      delete parent.document[parent.segment];
+    }
+  }
+};

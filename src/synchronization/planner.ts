@@ -26,7 +26,11 @@ import {
   PlannerResourceKindMismatchError,
   type SynchronizationPlanningError,
 } from "./synchronization.errors.ts";
-import { planResource, type ResourceActionDraft } from "./resource-plans.ts";
+import {
+  planRemoved,
+  planResource,
+  type ResourceActionDraft,
+} from "./resource-plans.ts";
 import type {
   AvailableBlob,
   DesiredResource,
@@ -325,19 +329,23 @@ const buildPlan = (
   const actions: Array<PlannedAction> = [...transfer.actions];
   const tasks: Array<PlannedAgentTask> = [];
   const terminalByResource = new Map<string, ActionId>();
+  const removedResources = new Set(input.revision.removedResources ?? []);
 
   for (const resource of orderedResources) {
     const desired = indexed.desired.get(resource.id);
     const observed = indexed.observed.get(resource.id);
     if (desired === undefined || observed === undefined) continue;
-    const drafts = planResource({
+    const context = {
       resource,
       desired,
       observed,
       overlayKeys: indexed.overlays.get(resource.id) ?? [],
       applied: indexed.applied.get(resource.id),
       platform: input.observedState.platform,
-    });
+    };
+    const drafts = removedResources.has(resource.id)
+      ? planRemoved(context)
+      : planResource(context);
     const resourcePrerequisites: Array<ActionId> = [];
     for (const dependency of sortedUnique(resource.dependsOn)) {
       const terminal = terminalByResource.get(dependency);

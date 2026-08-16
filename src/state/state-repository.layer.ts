@@ -101,11 +101,20 @@ const AppliedResourceRow = Schema.Struct({
   applied_at: Schema.String,
   owned_files_json: Schema.NullOr(Schema.String),
   schedule_json: Schema.NullOr(Schema.String),
+  kind: Schema.NullOr(Schema.String),
+  policy: Schema.NullOr(Schema.String),
+  target: Schema.NullOr(Schema.String),
+  owned_keys_json: Schema.NullOr(Schema.String),
+  config_format: Schema.NullOr(Schema.String),
+  executable: Schema.NullOr(Schema.Number),
+  symlink_target: Schema.NullOr(Schema.String),
 });
 const OwnedFilesSchema = Schema.Array(Schema.Struct({
   path: Schema.NonEmptyString,
   digest: ContentDigest,
+  executable: Schema.optional(Schema.Boolean),
 }));
+const OwnedKeysSchema = Schema.Array(Schema.NonEmptyString);
 const StoredScheduleSchema = SyncScheduleSchema;
 const FollowerRow = Schema.Struct({
   id: Schema.String,
@@ -968,7 +977,9 @@ const makeRepository = Effect.gen(function*() {
     StateRepositoryError
   > {
     const rows = yield* sql`
-      SELECT resource_id, revision_id, digest, applied_at, owned_files_json, schedule_json
+      SELECT resource_id, revision_id, digest, applied_at, owned_files_json, schedule_json,
+        kind, policy, target, owned_keys_json, config_format
+        , executable, symlink_target
       FROM applied_resources
       WHERE follower_id = ${follower}
       ORDER BY resource_id
@@ -997,12 +1008,29 @@ const makeRepository = Effect.gen(function*() {
             "applied resource schedule",
             row.resource_id,
           );
+        const ownedKeys = row.owned_keys_json === null
+          ? undefined
+          : yield* parseJson(
+            OwnedKeysSchema,
+            row.owned_keys_json,
+            "applied resource owned keys",
+            row.resource_id,
+          );
         return yield* Schema.decodeUnknownEffect(AppliedResourceRecordSchema)({
-        resource: row.resource_id,
-        revision: row.revision_id,
-        digest: row.digest,
-        appliedAt: row.applied_at,
+          resource: row.resource_id,
+          revision: row.revision_id,
+          digest: row.digest,
+          appliedAt: row.applied_at,
+          kind: row.kind ?? undefined,
+          policy: row.policy ?? undefined,
+          target: row.target ?? undefined,
+          executable: row.executable === null
+            ? undefined
+            : row.executable === 1,
+          symlinkTo: row.symlink_target ?? undefined,
           ownedFiles,
+          ownedKeys,
+          configFormat: row.config_format ?? undefined,
           schedule,
         }).pipe(
           Effect.mapError(decodeError("applied resource", row.resource_id)),
@@ -1241,6 +1269,13 @@ const makeRepository = Effect.gen(function*() {
             outcome_json = ${encodeJson(input.outcome)}
           WHERE id = ${input.run}
         `;
+        for (const resource of input.removedResources ?? []) {
+          yield* sql`
+            DELETE FROM applied_resources
+            WHERE follower_id = ${run.follower_id}
+              AND resource_id = ${resource}
+          `;
+        }
         for (const record of input.appliedResources) {
           yield* sql`
             INSERT INTO applied_resources (
@@ -1250,7 +1285,14 @@ const makeRepository = Effect.gen(function*() {
               digest,
               applied_at,
               owned_files_json,
-              schedule_json
+              schedule_json,
+              kind,
+              policy,
+              target,
+              owned_keys_json,
+              config_format,
+              executable,
+              symlink_target
             ) VALUES (
               ${run.follower_id},
               ${record.resource},
@@ -1263,6 +1305,17 @@ const makeRepository = Effect.gen(function*() {
               , ${record.schedule === undefined
                 ? null
                 : encodeJson(JSON.parse(JSON.stringify(record.schedule)))}
+              , ${record.kind ?? null}
+              , ${record.policy ?? null}
+              , ${record.target ?? null}
+              , ${record.ownedKeys === undefined
+                ? null
+                : encodeJson(JSON.parse(JSON.stringify(record.ownedKeys)))}
+              , ${record.configFormat ?? null}
+              , ${record.executable === undefined
+                ? null
+                : record.executable ? 1 : 0}
+              , ${record.symlinkTo ?? null}
             )
             ON CONFLICT(follower_id, resource_id) DO UPDATE SET
               revision_id = excluded.revision_id,
@@ -1270,6 +1323,13 @@ const makeRepository = Effect.gen(function*() {
               applied_at = excluded.applied_at,
               owned_files_json = excluded.owned_files_json
               , schedule_json = excluded.schedule_json
+              , kind = excluded.kind
+              , policy = excluded.policy
+              , target = excluded.target
+              , owned_keys_json = excluded.owned_keys_json
+              , config_format = excluded.config_format
+              , executable = excluded.executable
+              , symlink_target = excluded.symlink_target
           `;
         }
       });

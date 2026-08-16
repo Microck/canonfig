@@ -196,7 +196,9 @@ const baseRevision = (revision: SynchronizationRecoveryInput["revision"]) => ({
   digest: revision.digest,
   signature: revision.signature,
   publishedAt: revision.publishedAt,
-  resources: revision.resources.map((resource) => ({
+  resources: revision.resources
+    .filter((resource) => !revision.removedResources?.includes(resource.id))
+    .map((resource) => ({
     id: resource.id,
     kind: resource.kind,
     policy: resource.policy,
@@ -204,7 +206,7 @@ const baseRevision = (revision: SynchronizationRecoveryInput["revision"]) => ({
     groups: resource.groups,
     dependsOn: resource.dependsOn,
     blobs: resource.blobs,
-  })),
+    })),
   groups: revision.groups,
 });
 
@@ -391,6 +393,7 @@ export const recoverSynchronizationPlan = (
     };
     const states = yield* executionContexts(input, executionLimits(input));
     const verified = new Set<ResourceId>();
+    const removedResources = new Set<ResourceId>();
     const human: Array<HumanAction> = [];
     const drift: Array<DriftConflict> = recovery.drift.map((entry) => entry.conflict);
     let failedReason: string | undefined;
@@ -419,6 +422,11 @@ export const recoverSynchronizationPlan = (
           state.action,
           attempt,
         );
+      } else if (
+        state.action.detail.kind === "remove-resource"
+        && last.state === "succeeded"
+      ) {
+        result = yield* executeSynchronizationAction(input, state, attempt);
       } else if (last.state === "succeeded") {
         const verification = yield* verifyResource(state.context, scheduleManager).pipe(
           Effect.mapError((error) =>
@@ -460,6 +468,12 @@ export const recoverSynchronizationPlan = (
         result = yield* executeSynchronizationAction(input, state, attempt);
       }
       if (result.resource !== undefined) verified.add(result.resource);
+      if (
+        result.resource !== undefined
+        && recoveryInput.revision.removedResources?.includes(result.resource) === true
+      ) {
+        removedResources.add(result.resource);
+      }
       if (result.human !== undefined) human.push(result.human);
       if (
         result.drift !== undefined
@@ -489,6 +503,10 @@ export const recoverSynchronizationPlan = (
         entry.resource,
         entry.desired,
       ]));
+      const resourceById = new Map(recoveryInput.revision.resources.map((resource) => [
+        resource.id,
+        resource,
+      ]));
       for (const resource of outcome.verified) {
         const value = desired.get(resource);
         const digest = value === undefined
@@ -499,6 +517,7 @@ export const recoverSynchronizationPlan = (
             ? value.files.map((file) => ({
               path: file.path,
               digest: file.digest,
+              executable: file.executable,
             }))
             : undefined;
           appliedResources.push({
@@ -506,7 +525,14 @@ export const recoverSynchronizationPlan = (
             revision: recoveryInput.revision.id,
             digest,
             appliedAt,
+            kind: resourceById.get(resource)?.kind,
+            policy: resourceById.get(resource)?.policy,
+            target: resourceById.get(resource)?.target,
+            executable: value?.kind === "file" ? value.executable : undefined,
+            symlinkTo: value?.kind === "file" ? value.symlinkTo : undefined,
             ownedFiles,
+            ownedKeys: value?.kind === "config" ? value.keys : undefined,
+            configFormat: value?.kind === "config" ? value.format : undefined,
             schedule: value?.kind === "schedule"
               ? value.schedule
               : undefined,
@@ -514,5 +540,11 @@ export const recoverSynchronizationPlan = (
         }
       }
     }
-    return { outcome, appliedResources };
+    return {
+      outcome,
+      appliedResources,
+      removedResources: outcome.outcome === "Converged"
+        ? [...removedResources].sort()
+        : [],
+    };
   });

@@ -93,6 +93,7 @@ export interface ObservedResourceEntry {
 export interface PlanningProfileRevision extends ProfileRevision {
   readonly desired: ReadonlyArray<DesiredResourceEntry>;
   readonly blobs: ReadonlyArray<AvailableBlob>;
+  readonly removedResources?: ReadonlyArray<ResourceId> | undefined;
 }
 
 /** All follower observations used by planning, including its blob cache. */

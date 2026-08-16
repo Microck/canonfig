@@ -34,6 +34,7 @@ import type {
 import {
   getConfigPath,
   parseConfigDocument,
+  removeConfigPath,
   serializeConfigDocument,
   setConfigPath,
 } from "./config-codec.ts";
@@ -349,6 +350,19 @@ const rollbackPaths = (
           (path) => normalizeRelative(root, path),
         );
       }
+      case "remove-resource": {
+        if (context.resource.kind === "directory" || context.resource.kind === "skill") {
+          const root = yield* targetPath(detail.target);
+          return yield* Effect.forEach(
+            detail.paths,
+            (path) => normalizeRelative(root, path),
+          );
+        }
+        if (context.resource.kind === "file" || context.resource.kind === "config") {
+          return [yield* targetPath(detail.target)];
+        }
+        return [];
+      }
       default:
         return [];
     }
@@ -615,6 +629,129 @@ const prepareMirror = (
     };
   });
 
+const prepareRemoval = (
+  context: ResourceExecutionContext,
+  detail: Extract<PlannedAction["detail"], { readonly kind: "remove-resource" }>,
+  scheduleManager: ScheduleManager["Service"] | undefined,
+): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    switch (context.resource.kind) {
+      case "file": {
+        const path = yield* targetPath(detail.target);
+        const rollback = yield* captureRollback(context, [path]);
+        const execute = Effect.gen(function*() {
+          const machine = yield* MachineState;
+          yield* machine.removeFile({ path }).pipe(
+            Effect.catchTag("MachineFilesystemError", (error) =>
+              error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
+            ),
+          );
+        });
+        return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
+      }
+      case "config": {
+        if (context.resource.policy === "replace") {
+          const path = yield* targetPath(detail.target);
+          const rollback = yield* captureRollback(context, [path]);
+          const execute = Effect.gen(function*() {
+            const machine = yield* MachineState;
+            yield* machine.removeFile({ path }).pipe(
+              Effect.catchTag("MachineFilesystemError", (error) =>
+                error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
+              ),
+            );
+          });
+          return {
+            rollbackReference: rollback.reference,
+            execute,
+            rollback: rollback.restore,
+          };
+        }
+        if (context.desired.kind !== "config") {
+          return yield* new InvalidExecutionPlanError({
+            message: `removal action does not target a config resource: ${context.resource.id}`,
+          });
+        }
+        const config = context.desired;
+        const path = yield* targetPath(detail.target);
+        const rollback = yield* captureRollback(context, [path]);
+        const execute = Effect.gen(function*() {
+          const currentBytes = yield* readIfPresent(
+            path,
+            context.limits.maximumFileBytes,
+          );
+          if (currentBytes === undefined) return;
+          const current = yield* Effect.try({
+            try: () => parseConfigDocument(
+              config.format,
+              decoder.decode(currentBytes),
+            ),
+            catch: (error) => new InvalidExecutionPlanError({
+              message: `cannot remove keys from config ${detail.target}: ${String(error)}`,
+            }),
+          });
+          for (const key of detail.keys) removeConfigPath(current, key);
+          const machine = yield* MachineState;
+          yield* machine.atomicWrite({
+            path,
+            content: encoder.encode(serializeConfigDocument(config.format, current)),
+          });
+        });
+        return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
+      }
+      case "directory":
+      case "skill": {
+        if (context.desired.kind !== "directory" && context.desired.kind !== "skill") {
+          return yield* new InvalidExecutionPlanError({
+            message: `removal action does not target a directory resource: ${context.resource.id}`,
+          });
+        }
+        const root = yield* targetPath(detail.target);
+        const paths = yield* Effect.forEach(
+          detail.paths,
+          (path) => normalizeRelative(root, path),
+        );
+        const rollback = yield* captureRollback(context, paths, root);
+        const execute = Effect.gen(function*() {
+          const machine = yield* MachineState;
+          for (const path of paths) {
+            yield* machine.mutateWithinRoot({
+              root,
+              path,
+              mutation: { kind: "remove" },
+            }).pipe(
+              Effect.catchTag("MachineFilesystemError", (error) =>
+                error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
+              ),
+            );
+          }
+        });
+        return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
+      }
+      case "schedule": {
+        if (
+          scheduleManager === undefined
+          || detail.schedule === undefined
+          || context.desired.kind !== "schedule"
+        ) {
+          return yield* new InvalidExecutionPlanError({
+            message: `removal action requires a schedule manager for ${context.resource.id}`,
+          });
+        }
+        const input = { schedule: detail.schedule };
+        return {
+          execute: scheduleManager.remove(input).pipe(Effect.asVoid),
+          rollback: scheduleManager.install(input).pipe(Effect.asVoid),
+        };
+      }
+      case "tool":
+      case "credential":
+        return yield* new InvalidExecutionPlanError({
+          message: `resource ${context.resource.id} does not support automatic removal`,
+        });
+    }
+  });
+
 const installInvocation = (
   context: ResourceExecutionContext,
   method: string,
@@ -696,6 +833,8 @@ export const prepareResourceAction = (
       return prepareConfig(context, detail.target, detail.keys);
     case "mirror-directory":
       return prepareMirror(context, detail.target, detail.adds, detail.removes);
+    case "remove-resource":
+      return prepareRemoval(context, detail, scheduleManager);
     case "install-tool":
       return Effect.succeed({
         execute: installInvocation(

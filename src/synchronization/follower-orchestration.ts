@@ -64,6 +64,7 @@ import type {
   AvailableBlob,
   DesiredFile,
   DesiredResource,
+  DesiredResourceEntry,
   PlanningProfileRevision,
   PlannedSynchronization,
   SynchronizationArtifact,
@@ -281,6 +282,9 @@ export const authorizationViewIdentity = (
   };
 };
 
+const sourceRevisionIdentity = (revision: string): string =>
+  revision.replace(/:view:[a-f0-9]{64}$/u, "");
+
 const desiredFor = (
   spec: ResourceSpecInput,
 ): HydratedDesiredResource => {
@@ -429,7 +433,9 @@ const observeFile = (
   );
 
 const observeConfig = (
-  decoded: DecodedSpec,
+  decoded: {
+    readonly resource: Pick<ProfileRevision["resources"][number], "target">;
+  },
   desired: Extract<DesiredResource, { readonly kind: "config" }>,
 ): Effect.Effect<ObservedResourceState, never, MachineState> =>
   Effect.gen(function*() {
@@ -463,7 +469,9 @@ const observeConfig = (
   );
 
 const observe = (
-  decoded: DecodedSpec,
+  decoded: {
+    readonly resource: Pick<ProfileRevision["resources"][number], "kind" | "target">;
+  },
   desired: DesiredResource,
   verification: VerificationInput,
   applied?: AppliedResourceRecord,
@@ -506,7 +514,7 @@ const observe = (
         const candidates = [...new Map([
           ...(applied?.ownedFiles ?? []).map((file) => ({
             ...file,
-            executable: false,
+            executable: file.executable ?? false,
           })),
           ...desired.files,
         ].map((file) => [file.path, file])).values()];
@@ -583,6 +591,86 @@ const observe = (
   }
 };
 
+const removedResourceState = (
+  applied: AppliedResourceRecord,
+): {
+  readonly resource: ProfileRevision["resources"][number];
+  readonly desired: DesiredResource;
+} | undefined => {
+  if (
+    applied.kind === undefined
+    || applied.policy === undefined
+    || applied.target === undefined
+  ) {
+    return undefined;
+  }
+  const resource = {
+    id: applied.resource,
+    kind: applied.kind,
+    policy: applied.policy,
+    target: applied.target,
+    dependsOn: [],
+    blobs: [],
+  } satisfies ProfileRevision["resources"][number];
+  const digest = Schema.decodeUnknownSync(ContentDigest)(applied.digest);
+  switch (applied.kind) {
+    case "file":
+      return {
+        resource,
+        desired: {
+          kind: "file",
+          digest,
+          executable: applied.executable ?? false,
+          symlinkTo: applied.symlinkTo,
+        },
+      };
+    case "directory":
+    case "skill":
+      if (applied.ownedFiles === undefined) return undefined;
+      return {
+        resource,
+        desired: {
+          kind: applied.kind,
+          digest,
+          files: applied.ownedFiles.map((file) => ({
+            path: file.path,
+            digest: Schema.decodeUnknownSync(ContentDigest)(file.digest),
+            executable: file.executable ?? false,
+          })),
+        },
+      };
+    case "config":
+      if (
+        applied.ownedKeys === undefined
+        || applied.configFormat === undefined
+      ) {
+        return undefined;
+      }
+      return {
+        resource,
+        desired: {
+          kind: "config",
+          digest,
+          format: applied.configFormat,
+          keys: applied.ownedKeys,
+        },
+      };
+    case "schedule":
+      if (applied.schedule === undefined) return undefined;
+      return {
+        resource,
+        desired: {
+          kind: "schedule",
+          digest,
+          schedule: applied.schedule,
+        },
+      };
+    case "tool":
+    case "credential":
+      return undefined;
+  }
+};
+
 const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
   function*(
     fetched: FetchedRevision,
@@ -601,10 +689,11 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
     MachineState
   > {
     const decoded = yield* decodeSpecs(fetched);
-    const desired = [];
+    const desired: Array<DesiredResourceEntry> = [];
     const observations = [];
     const artifacts: Array<SynchronizationArtifact> = [];
     const blobs: Array<AvailableBlob> = [];
+    const removedResources = [];
     const appliedByResource = new Map(appliedResources.map((record) => [
       record.resource,
       record,
@@ -635,6 +724,38 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
         bytes: entry.blobBytes.byteLength,
       });
     }
+    const currentIds = new Set(fetched.metadata.resources.map((resource) => resource.id));
+    for (
+      const applied of [...appliedResources].sort((left, right) =>
+        left.resource.localeCompare(right.resource)
+      )
+    ) {
+      if (currentIds.has(applied.resource)) continue;
+      // A group change produces a different authorized view of the same
+      // source revision. It is not an ownership revocation, so retain the
+      // previously applied resource until a newer source revision omits it.
+      if (sourceRevisionIdentity(applied.revision) === fetched.metadata.id) {
+        continue;
+      }
+      const removed = removedResourceState(applied);
+      if (removed === undefined) continue;
+      removedResources.push(applied.resource);
+      desired.push({
+        resource: removed.resource.id,
+        desired: removed.desired,
+        verification: { method: "digest", digest: applied.digest },
+      });
+      observations.push({
+        resource: removed.resource.id,
+        observed: yield* observe(
+          { resource: removed.resource },
+          removed.desired,
+          { method: "digest", digest: applied.digest },
+          applied,
+          scheduleManager,
+        ),
+      });
+    }
     const metadata = fetched.metadata;
     const view = authorizationViewIdentity(metadata);
     const canonicalBytes = canonicalJson(
@@ -654,11 +775,16 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
         metadata.sourceSignature,
       ),
       publishedAt: metadata.publishedAt,
-      resources: metadata.resources,
+      resources: [
+        ...metadata.resources.map(({ verify: _, ...resource }) => resource),
+        ...removedResources.map((resource) =>
+          removedResourceState(appliedByResource.get(resource)!)!.resource
+        ),
+      ],
       groups: [],
     };
     return {
-      revision: { ...base, desired, blobs },
+      revision: { ...base, desired, blobs, removedResources },
       observations,
       artifacts: [...new Map(artifacts.map((entry) => [entry.digest, entry])).values()],
     };
@@ -675,7 +801,9 @@ const persistableRevision = (
   digest: revision.digest,
   signature: revision.signature,
   publishedAt: revision.publishedAt,
-  resources: revision.resources.map((resource) => ({
+  resources: revision.resources
+    .filter((resource) => !revision.removedResources?.includes(resource.id))
+    .map((resource) => ({
     id: resource.id,
     kind: resource.kind,
     policy: resource.policy,
@@ -683,7 +811,7 @@ const persistableRevision = (
     groups: resource.groups,
     dependsOn: resource.dependsOn,
     blobs: resource.blobs,
-  })),
+    })),
   groups: revision.groups,
 });
 

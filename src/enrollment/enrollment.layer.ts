@@ -572,23 +572,46 @@ const makeEnrollment = Effect.gen(function*() {
       const groups = new Set<string>(authenticated.follower.groups);
       return revisions
         .map((revision) => {
-          const visible = revision.resources.filter((resource) =>
-            resourceIsAuthorized(resource, groups)
+          const visibleIds = new Set(
+            revision.resources
+              .filter((resource) => resourceIsAuthorized(resource, groups))
+              .map((resource) => resource.id),
           );
-          const visibleIds = new Set(visible.map((resource) => resource.id));
-          const resources = visible.map((resource) => {
-            const base = {
-              ...resource,
-              dependsOn: resource.dependsOn.filter((dependency) =>
-                visibleIds.has(dependency)
-              ),
-            };
-            if (resource.groups === undefined) return base;
-            return {
-              ...base,
-              groups: resource.groups.filter((group) => groups.has(group)),
-            };
-          });
+          // Authorization is a projection of the signed revision, not a
+          // dependency rewrite. Remove every dependent whose complete
+          // dependency closure is not visible, including transitive
+          // dependents. This deliberately fails closed instead of allowing a
+          // follower to plan against an incomplete resource graph.
+          let changed = true;
+          while (changed) {
+            changed = false;
+            for (const resource of revision.resources) {
+              if (
+                visibleIds.has(resource.id)
+                && resource.dependsOn.some((dependency) =>
+                  !visibleIds.has(dependency)
+                )
+              ) {
+                visibleIds.delete(resource.id);
+                changed = true;
+              }
+            }
+          }
+          const resources = revision.resources
+            .filter((resource) => visibleIds.has(resource.id))
+            .map((resource) => {
+              const base = {
+                ...resource,
+                dependsOn: resource.dependsOn.filter((dependency) =>
+                  visibleIds.has(dependency)
+                ),
+              };
+              if (resource.groups === undefined) return base;
+              return {
+                ...base,
+                groups: resource.groups.filter((group) => groups.has(group)),
+              };
+            });
           return { revision, resources };
         })
         .filter(({ revision, resources }) =>

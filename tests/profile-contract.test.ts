@@ -283,6 +283,7 @@ const actionDetailLabel = (detail: ActionDetail): string => {
     case "write-file": return detail.target;
     case "write-config": return detail.target;
     case "mirror-directory": return detail.target;
+    case "remove-resource": return detail.target;
     case "install-tool": return detail.toolId;
     case "verify-only": return detail.method;
     case "human-action": return detail.reason;
@@ -325,9 +326,15 @@ describe("schema-backed synchronization contracts", () => {
         desiredDigest: digestA,
         observedDigest: digestB,
       },
+      {
+        kind: "remove-resource",
+        target: "~/a",
+        paths: ["a"],
+        keys: [],
+      },
     ];
     const decoded = fixtures.map(Schema.decodeUnknownSync(ActionDetailSchema));
-    expect(decoded.map(actionDetailLabel)).toHaveLength(10);
+    expect(decoded.map(actionDetailLabel)).toHaveLength(11);
     expect(decoded[5]).toMatchObject({ version: "14.1.0" });
     expect(Schema.decodeUnknownSync(ActionDetailSchema)({
       kind: "install-tool",
