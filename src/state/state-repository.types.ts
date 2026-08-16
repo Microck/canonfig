@@ -111,6 +111,12 @@ export interface JournalActionInput {
   readonly attempt: number;
   readonly verification?: VerificationEvidence | undefined;
   readonly rollbackReference?: string | undefined;
+  /**
+   * A successful action may update the durable ownership baseline in the
+   * same transaction as its terminal journal event.
+   */
+  readonly appliedResource?: AppliedResourceRecord | undefined;
+  readonly removedResource?: ResourceId | undefined;
 }
 
 export interface ActionJournalRecord {

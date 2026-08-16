@@ -694,6 +694,152 @@ describe("synchronization apply run", () => {
     expect(actionRows(fixture.database)[2]?.rollback_reference).toBeNull();
   });
 
+  it("persists successful ownership before a later action fails and reuses it on the next sync", async () => {
+    const base = fileFixture(temporaryDirectory(), "run-partial");
+    const secondTarget = join(base.root, "home", "other-settings.json");
+    const secondContent = new TextEncoder().encode("second canonical content");
+    const secondDigest = sha256BytesHex(secondContent);
+    const firstResource = base.revision.resources[0]!;
+    const secondResource: PublishedResource = {
+      ...firstResource,
+      id: decode(ResourceId)("zz-other-settings"),
+      target: secondTarget,
+    };
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      resources: [firstResource, secondResource],
+      desired: [
+        ...base.revision.desired,
+        {
+          resource: secondResource.id,
+          desired: {
+            kind: "file",
+            digest: decode(ContentDigest)(secondDigest),
+            executable: false,
+          },
+          verification: {
+            method: "digest",
+            digest: decode(ContentDigest)(secondDigest),
+          },
+        },
+      ],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [
+          { resource: firstResource.id, observed: { state: "absent" } },
+          { resource: secondResource.id, observed: { state: "absent" } },
+        ],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const failingMachine = decorateMachine(base.root, (service) => ({
+      ...service,
+      atomicWrite: (input) =>
+        input.path.absolute === secondTarget
+          ? Effect.fail({
+            _tag: "MachineFilesystemError",
+            operation: "test write",
+            path: input.path.absolute,
+            message: "injected later-action failure",
+          })
+          : service.atomicWrite(input),
+    }));
+    const failed = await seedAndRun({
+      ...base,
+      revision,
+      input: {
+        ...base.input,
+        id: decode(RunId)("run-partial"),
+        plan,
+        revision,
+        artifacts: [
+          base.artifact,
+          { digest: secondDigest, content: secondContent },
+        ],
+      },
+    }, failingMachine);
+    expect(failed.outcome).toBe("Failed");
+    expect(await readFile(base.target, "utf8")).toBe("canonical content");
+    expect(await readFile(secondTarget).catch(() => undefined)).toBeUndefined();
+
+    const appliedAfterFailure = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadAppliedResources(follower.id)
+      ).pipe(Effect.provide(stateRepositoryLayer(base.database))),
+    );
+    expect(appliedAfterFailure.map((record) => record.resource)).toEqual(["settings"]);
+
+    const nextPlan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [
+          {
+            resource: firstResource.id,
+            observed: {
+              state: "present",
+              digest: decode(ContentDigest)(base.artifact.digest),
+              executable: false,
+            },
+          },
+          { resource: secondResource.id, observed: { state: "absent" } },
+        ],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: appliedAfterFailure,
+    }));
+    expect(
+      nextPlan.actions
+        .filter((action) => action.kind !== "no-op")
+        .map((action) => action.resource),
+    ).toEqual(["zz-other-settings"]);
+    const nextInput: SynchronizationRunInput = {
+      ...base.input,
+      id: decode(RunId)("run-partial-retry"),
+      plan: nextPlan,
+      revision,
+      artifacts: [
+        base.artifact,
+        { digest: secondDigest, content: secondContent },
+      ],
+    };
+    const recovered = await Effect.runPromise(
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        yield* repository.registerFollower({ follower });
+        const synchronization = yield* Synchronization;
+        return yield* synchronization.run(nextInput);
+      }).pipe(Effect.provide(applicationLayer({
+        ...base,
+        revision,
+        input: nextInput,
+      }))),
+    );
+    expect(recovered).toEqual({
+      outcome: "Converged",
+      run: "run-partial-retry",
+      verified: ["settings", "zz-other-settings"],
+    });
+    expect(await readFile(secondTarget, "utf8")).toBe("second canonical content");
+    const appliedAfterRetry = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadAppliedResources(follower.id)
+      ).pipe(Effect.provide(stateRepositoryLayer(base.database))),
+    );
+    expect(appliedAfterRetry.map((record) => record.resource)).toEqual([
+      "settings",
+      "zz-other-settings",
+    ]);
+  });
+
   it("applies schedules through native adapters and restores them on rollback", async () => {
     const root = temporaryDirectory();
     const bin = join(root, "bin");

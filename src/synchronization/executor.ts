@@ -219,6 +219,8 @@ const journal = (
   verification?: VerificationEvidence | undefined,
   rollbackReference?: string | undefined,
   attempt = 1,
+  appliedResource?: AppliedResourceRecord | undefined,
+  removedResource?: ResourceId | undefined,
 ) =>
   Effect.gen(function*() {
     const repository = yield* StateRepository;
@@ -230,24 +232,49 @@ const journal = (
       recordedAt,
       attempt,
     };
-    if (verification === undefined && rollbackReference === undefined) {
-      yield* repository.journalAction(base);
-    } else if (verification === undefined) {
-      yield* repository.journalAction({ ...base, rollbackReference });
-    } else if (rollbackReference === undefined) {
-      yield* repository.journalAction({ ...base, verification });
-    } else {
-      yield* repository.journalAction({
-        ...base,
-        verification,
-        rollbackReference,
-      });
-    }
+    yield* repository.journalAction({
+      ...base,
+      verification,
+      rollbackReference,
+      appliedResource,
+      removedResource,
+    });
   });
 
 const rollbackPrepared = (
   prepared: PreparedResourceAction | undefined,
 ) => prepared?.rollback ?? Effect.void;
+
+const appliedResourceFor = (
+  input: SynchronizationRunInput,
+  state: ActionState,
+  appliedAt: string,
+): AppliedResourceRecord | undefined => {
+  const desired = state.context.desired;
+  const digest = desiredResourceDigest(desired);
+  if (digest === undefined) return undefined;
+  return {
+    resource: state.action.resource,
+    revision: input.revision.id,
+    digest,
+    appliedAt,
+    kind: state.context.resource.kind,
+    policy: state.context.resource.policy,
+    target: state.context.resource.target,
+    executable: desired.kind === "file" ? desired.executable : undefined,
+    symlinkTo: desired.kind === "file" ? desired.symlinkTo : undefined,
+    ownedFiles: desired.kind === "directory" || desired.kind === "skill"
+      ? desired.files.map((file) => ({
+        path: file.path,
+        digest: file.digest,
+        executable: file.executable,
+      }))
+      : undefined,
+    ownedKeys: desired.kind === "config" ? desired.keys : undefined,
+    configFormat: desired.kind === "config" ? desired.format : undefined,
+    schedule: desired.kind === "schedule" ? desired.schedule : undefined,
+  };
+};
 
 export interface ActionResult {
   readonly kind: "verified" | "human" | "drift" | "failed";
@@ -358,6 +385,8 @@ export const executeSynchronizationAction = (
           { status: "passed", method: "owned-resource-removed" },
           prepared.rollbackReference,
           attempt,
+          undefined,
+          state.action.resource,
         );
         return {
           kind: "verified",
@@ -381,6 +410,7 @@ export const executeSynchronizationAction = (
           reason: `verification failed for resource ${state.action.resource}`,
         } satisfies ActionResult;
       }
+      const appliedResource = appliedResourceFor(input, state, yield* now());
       yield* journal(
         input.id,
         state.action.id,
@@ -388,6 +418,7 @@ export const executeSynchronizationAction = (
         evidence,
         prepared.rollbackReference,
         attempt,
+        appliedResource,
       );
       return {
         kind: "verified",

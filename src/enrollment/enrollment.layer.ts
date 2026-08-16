@@ -4,6 +4,7 @@ import {
   createPublicKey,
   generateKeyPairSync,
   randomBytes,
+  randomUUID,
   sign,
   verify,
   X509Certificate,
@@ -444,23 +445,29 @@ const makeEnrollment = Effect.gen(function*() {
     const existingCredential = yield* repository.getFollowerCredential(followerId).pipe(
       Effect.match({
         onFailure: (error) => ({ found: false as const, error }),
-        onSuccess: () => ({ found: true as const }),
+        onSuccess: (record) => ({ found: true as const, record }),
       }),
     );
-    if (existingCredential.found) {
+    if (existingCredential.found && !existingCredential.record.follower.revoked) {
       return yield* new DuplicateFollowerIdentityError({
         message: "the follower identity is already enrolled",
       });
     }
-    if (!(existingCredential.error instanceof FollowerNotFoundError)) {
+    if (
+      !existingCredential.found
+      && !(existingCredential.error instanceof FollowerNotFoundError)
+    ) {
       return yield* new EnrollmentConfigurationError({
         operation: "enroll follower",
         message: "durable enrollment state is unavailable",
       });
     }
     const credential = randomBytes(32).toString("base64url");
+    const previousCredentialReference = existingCredential.found
+      ? existingCredential.record.credentialReference
+      : undefined;
     const credentialReference = yield* machine.storeCredential({
-      name: `canonfig-source-follower-${followerId}`,
+      name: `canonfig-source-follower-${followerId}-${randomUUID()}`,
       value: Redacted.make(credential),
     }).pipe(
       Effect.mapError(() =>
@@ -492,6 +499,12 @@ const makeEnrollment = Effect.gen(function*() {
       Effect.mapError(repositoryError("consume invitation")),
       Effect.tapError(() => machine.removeCredential(credentialReference).pipe(Effect.ignore)),
     );
+    if (
+      previousCredentialReference !== undefined
+      && previousCredentialReference !== credentialReference
+    ) {
+      yield* machine.removeCredential(previousCredentialReference).pipe(Effect.ignore);
+    }
     return {
       follower,
       credential,

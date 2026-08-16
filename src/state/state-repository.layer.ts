@@ -610,18 +610,38 @@ const makeRepository = Effect.gen(function*() {
         });
       }
       const identityRows = yield* sql`
-        SELECT count(*) AS count FROM followers WHERE id = ${input.follower.id}
+        SELECT revoked
+        FROM followers
+        WHERE id = ${input.follower.id}
       `;
-      const identityCount = yield* decodeRows(
-        CountRow,
+      const identities = yield* decodeRows(
+        Schema.Struct({ revoked: Schema.Number }),
         identityRows,
         "follower identity",
         input.follower.id,
       );
-      if ((identityCount[0]?.count ?? 0) !== 0) {
+      const existingIdentity = identities[0];
+      if (existingIdentity !== undefined && existingIdentity.revoked !== 1) {
         return yield* new EnrollmentStateConflictError({
           reason: "follower-identity-conflict",
           message: "the follower identity is already enrolled",
+        });
+      }
+      const invitationGroups = yield* parseJson(
+        Schema.Array(GroupName),
+        invitation.groups_json,
+        "enrollment invitation groups",
+        input.codeDigest,
+      );
+      const requestedGroups = [...input.follower.groups];
+      if (
+        requestedGroups.length !== invitationGroups.length
+        || requestedGroups.some((group, index) => group !== invitationGroups[index])
+        || input.follower.revoked
+      ) {
+        return yield* new EnrollmentStateConflictError({
+          reason: "invitation-mismatch",
+          message: "the follower enrollment does not match the invitation",
         });
       }
       const credentialRows = yield* sql`
@@ -641,34 +661,70 @@ const makeRepository = Effect.gen(function*() {
           message: "the follower credential is already assigned",
         });
       }
-      yield* sql`
-        INSERT INTO followers (
-          id,
-          name,
-          groups_json,
-          revoked,
-          credential_reference,
-          enrolled_at
-        ) VALUES (
-          ${input.follower.id},
-          ${input.follower.name},
-          ${encodeJson([...input.follower.groups])},
-          0,
-          ${input.credentialReference},
-          ${input.follower.enrolledAt}
-        )
-      `;
-      yield* sql`
-        INSERT INTO follower_credentials (
-          follower_id,
-          credential_digest,
-          credential_reference
-        ) VALUES (
-          ${input.follower.id},
-          ${input.credentialDigest},
-          ${input.credentialReference}
-        )
-      `;
+      if (existingIdentity === undefined) {
+        yield* sql`
+          INSERT INTO followers (
+            id,
+            name,
+            groups_json,
+            revoked,
+            credential_reference,
+            enrolled_at
+          ) VALUES (
+            ${input.follower.id},
+            ${input.follower.name},
+            ${encodeJson(requestedGroups)},
+            0,
+            ${input.credentialReference},
+            ${input.follower.enrolledAt}
+          )
+        `;
+        yield* sql`
+          INSERT INTO follower_credentials (
+            follower_id,
+            credential_digest,
+            credential_reference
+          ) VALUES (
+            ${input.follower.id},
+            ${input.credentialDigest},
+            ${input.credentialReference}
+          )
+        `;
+      } else {
+        yield* sql`
+          UPDATE followers
+          SET
+            name = ${input.follower.name},
+            groups_json = ${encodeJson(requestedGroups)},
+            revoked = 0,
+            credential_reference = ${input.credentialReference},
+            enrolled_at = ${input.follower.enrolledAt}
+          WHERE id = ${input.follower.id}
+        `;
+        yield* sql`
+          UPDATE follower_credentials
+          SET
+            credential_digest = ${input.credentialDigest},
+            credential_reference = ${input.credentialReference}
+          WHERE follower_id = ${input.follower.id}
+        `;
+        const credentialUpdated = yield* statusCount(
+          sql,
+          sql`
+            SELECT count(*) AS count
+            FROM follower_credentials
+            WHERE follower_id = ${input.follower.id}
+          `,
+          "follower credential",
+          input.follower.id,
+        );
+        if (credentialUpdated !== 1) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "follower-identity-conflict",
+            message: "the revoked follower credential is unavailable",
+          });
+        }
+      }
       yield* sql`
         UPDATE enrollment_invitations
         SET used_at = ${input.consumedAt}
@@ -680,6 +736,8 @@ const makeRepository = Effect.gen(function*() {
         error instanceof EnrollmentStateConflictError
           ? error
           : error instanceof RepositoryDecodeError
+          ? error
+          : error instanceof RepositorySqlError
           ? error
           : sqlError("consume enrollment invitation")(error)
       ),
@@ -1195,6 +1253,70 @@ const makeRepository = Effect.gen(function*() {
             ${input.rollbackReference ?? null}
           )
         `;
+        if (input.removedResource !== undefined) {
+          yield* sql`
+            DELETE FROM applied_resources
+            WHERE follower_id = ${run.follower_id}
+              AND resource_id = ${input.removedResource}
+          `;
+        }
+        if (input.appliedResource !== undefined) {
+          const record = input.appliedResource;
+          yield* sql`
+            INSERT INTO applied_resources (
+              follower_id,
+              resource_id,
+              revision_id,
+              digest,
+              applied_at,
+              owned_files_json,
+              schedule_json,
+              kind,
+              policy,
+              target,
+              owned_keys_json,
+              config_format,
+              executable,
+              symlink_target
+            ) VALUES (
+              ${run.follower_id},
+              ${record.resource},
+              ${record.revision},
+              ${record.digest},
+              ${record.appliedAt},
+              ${record.ownedFiles === undefined
+                ? null
+                : encodeJson(JSON.parse(JSON.stringify(record.ownedFiles)))}
+              , ${record.schedule === undefined
+                ? null
+                : encodeJson(JSON.parse(JSON.stringify(record.schedule)))}
+              , ${record.kind ?? null}
+              , ${record.policy ?? null}
+              , ${record.target ?? null}
+              , ${record.ownedKeys === undefined
+                ? null
+                : encodeJson(JSON.parse(JSON.stringify(record.ownedKeys)))}
+              , ${record.configFormat ?? null}
+              , ${record.executable === undefined
+                ? null
+                : record.executable ? 1 : 0}
+              , ${record.symlinkTo ?? null}
+            )
+            ON CONFLICT(follower_id, resource_id) DO UPDATE SET
+              revision_id = excluded.revision_id,
+              digest = excluded.digest,
+              applied_at = excluded.applied_at,
+              owned_files_json = excluded.owned_files_json
+              , schedule_json = excluded.schedule_json
+              , kind = excluded.kind
+              , policy = excluded.policy
+              , target = excluded.target
+              , owned_keys_json = excluded.owned_keys_json
+              , config_format = excluded.config_format
+              , executable = excluded.executable
+              , symlink_target = excluded.symlink_target
+          `;
+        }
       });
       yield* sql.withTransaction(transaction).pipe(
         Effect.mapError((error) =>

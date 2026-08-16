@@ -18,6 +18,7 @@ import {
   EnrollmentSourceMismatchError,
   InvitationExpiredError,
   InvitationReplayError,
+  InvalidFollowerCredentialError,
   RevokedFollowerCredentialError,
   type EnrollmentError,
 } from "../../src/enrollment/enrollment.errors.ts";
@@ -350,6 +351,94 @@ describe("loopback HTTPS enrollment", () => {
     );
     expect(follower.revoked).toBe(true);
     expect(follower.groups).toEqual(updatedGroups);
+  });
+
+  it("rotates revoked credentials for explicit re-enrollment and persists it across restart", async () => {
+    const setup = fixture();
+    const server = await start(setup);
+    const firstGrant = await invitation(setup, server, 60_000, [
+      decode(GroupName)("base"),
+    ]);
+    const first = await runFollower(
+      setup,
+      enrollFollower({ invitation: firstGrant, followerName: "Rotating Host" }),
+    );
+    const firstCredential = await runFollower(
+      setup,
+      Effect.flatMap(MachineState, (machine) =>
+        machine.loadCredential({ reference: first.credentialReference })
+      ),
+    );
+    await runSource(
+      setup,
+      Effect.flatMap(Enrollment, (enrollment) =>
+        enrollment.revokeFollower(first.follower.id)
+      ),
+    );
+
+    const secondGrant = await invitation(setup, server, 60_000, [
+      decode(GroupName)("production"),
+      decode(GroupName)("audited"),
+    ]);
+    const second = await runFollower(
+      setup,
+      enrollFollower({ invitation: secondGrant, followerName: "Rotating Host" }),
+    );
+    expect(second.follower.id).toBe(first.follower.id);
+    expect(second.follower.revoked).toBe(false);
+    expect(second.follower.groups).toEqual(secondGrant.groups);
+    const secondCredential = await runFollower(
+      setup,
+      Effect.flatMap(MachineState, (machine) =>
+        machine.loadCredential({ reference: second.credentialReference })
+      ),
+    );
+    expect(Redacted.value(secondCredential)).not.toBe(Redacted.value(firstCredential));
+    expect(Redacted.value(firstCredential)).toHaveLength(43);
+
+    const oldCredentialError = await runSource(
+      setup,
+      Effect.flip(Effect.flatMap(Enrollment, (enrollment) =>
+        enrollment.authenticate(Redacted.value(firstCredential))
+      )),
+    );
+    expect(oldCredentialError).toBeInstanceOf(InvalidFollowerCredentialError);
+    const authenticated = await runSource(
+      setup,
+      Effect.flatMap(Enrollment, (enrollment) =>
+        enrollment.authenticate(Redacted.value(secondCredential))
+      ),
+    );
+    expect(authenticated.follower.groups).toEqual(secondGrant.groups);
+
+    const replayError = await failure(
+      enrollFollower({
+        invitation: secondGrant,
+        followerName: "Rotating Host",
+      }).pipe(Effect.provide(setup.followerMachine)),
+    );
+    expect(replayError).toBeInstanceOf(InvitationReplayError);
+
+    await server.close();
+    openServers.splice(openServers.indexOf(server), 1);
+    await setup.sourceRuntime.dispose();
+    sourceRuntimes.splice(sourceRuntimes.indexOf(setup.sourceRuntime), 1);
+    const restartedRuntime = ManagedRuntime.make(
+      sourceApplicationLayer(setup.sourceDatabase, setup.sourceMachine),
+    );
+    sourceRuntimes.push(restartedRuntime);
+    const restartedSetup: Fixture = { ...setup, sourceRuntime: restartedRuntime };
+    const restartedServer = await start(restartedSetup);
+    const afterRestart = await runFollower(
+      setup,
+      authenticateFollower({
+        endpoint: restartedServer.endpoint,
+        tlsFingerprint: secondGrant.tlsFingerprint,
+        credentialReference: second.credentialReference,
+      }),
+    );
+    expect(afterRestart.follower.revoked).toBe(false);
+    expect(afterRestart.follower.groups).toEqual(secondGrant.groups);
   });
 
   it("reloads source trust and follower authorization after restart", async () => {
