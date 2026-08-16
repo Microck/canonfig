@@ -1,0 +1,13 @@
+{
+  "id": "broken",
+  "version": 2,
+  "name": "Broken",
+  "groups": [],
+  "resources": [],
+  "scheduleDefault": {
+    "type": "daily",
+    "at": "00:00",
+    "timezone": "UTC",
+    "unexpected": true
+  }
+}

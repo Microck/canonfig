@@ -1,0 +1,7 @@
+{
+  "platform": "linux",
+  "mechanism": "systemd-user-timer",
+  "serviceName": "canonfig-sync.service",
+  "service": "[Unit]\nDescription=Canonfig follower synchronization\n\n[Service]\nType=oneshot\nExecStart=\"/opt/Canonfig Tools/canonfig\" \"sync\" \"--apply\" \"--no-input\"\n",
+  "schedule": "[Unit]\nDescription=Canonfig follower synchronization schedule\n\n[Timer]\nOnCalendar=*-*-* 01:30:00 America/New_York\nPersistent=true\nUnit=canonfig-sync.service\n\n[Install]\nWantedBy=timers.target\n"
+}

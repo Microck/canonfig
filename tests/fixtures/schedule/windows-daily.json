@@ -1,0 +1,7 @@
+{
+  "platform": "windows",
+  "mechanism": "task-scheduler",
+  "serviceName": "Canonfig\\canonfig-sync",
+  "service": "$Action = New-ScheduledTaskAction -Execute 'C:\\Program Files\\Canonfig\\canonfig.exe' -Argument 'sync --apply --no-input'\r\n$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive\r\n$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)",
+  "schedule": "$Trigger = New-ScheduledTaskTrigger -Daily -At '00:00'\r\nRegister-ScheduledTask -TaskName 'Canonfig\\canonfig-sync' -Description 'Canonfig follower synchronization [canonfig:240ed2558984edeb32b526bd65a764ea6f991a9e71e2e32c46cbf0d77cd8d3a7]' -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings"
+}

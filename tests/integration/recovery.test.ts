@@ -1,0 +1,516 @@
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+import { Effect, Fiber, Layer, Schema } from "effect";
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  ActionId,
+  ProfileId,
+  ProfileRevisionId,
+  ResourceId,
+  RunId,
+} from "../../src/domain/brand.ts";
+import { FollowerIdentity } from "../../src/domain/identity.ts";
+import type {
+  ProfileRevision,
+  PublishedResource,
+} from "../../src/domain/profile.ts";
+import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { MachineState } from "../../src/machine/machine-state.service.ts";
+import {
+  canonicalJson,
+  sha256BytesHex,
+  sha256Hex,
+} from "../../src/profile/profile-codec.ts";
+import { RepositoryDecodeError } from "../../src/state/state-repository.errors.ts";
+import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
+import { StateRepository } from "../../src/state/state-repository.service.ts";
+import { planSynchronization } from "../../src/synchronization/planner.ts";
+import { RecoveryIntegrityError } from "../../src/synchronization/synchronization.errors.ts";
+import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
+import { Synchronization } from "../../src/synchronization/synchronization.service.ts";
+import type {
+  DesiredResource,
+  PlanningProfileRevision,
+  SynchronizationArtifact,
+  SynchronizationRecoveryInput,
+} from "../../src/synchronization/synchronization.types.ts";
+
+const decode = Schema.decodeUnknownSync;
+const temporaryDirectories: Array<string> = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+const temporaryDirectory = (): string => {
+  const directory = mkdtempSync(join(tmpdir(), "canonfig-recovery-"));
+  temporaryDirectories.push(directory);
+  return directory;
+};
+
+const follower = decode(FollowerIdentity)({
+  id: "follower-recovery",
+  name: "Recovery follower",
+  groups: [],
+  revoked: false,
+  credentialReference: "secure-store://recovery",
+  enrolledAt: "2026-08-15T00:00:00Z",
+});
+
+interface Fixture {
+  readonly root: string;
+  readonly database: string;
+  readonly target: string;
+  readonly artifact: SynchronizationArtifact;
+  readonly revision: PlanningProfileRevision;
+  readonly recovery: SynchronizationRecoveryInput;
+}
+
+const fixture = (
+  root: string,
+  options: {
+    readonly kind?: "file" | "tool";
+  } = {},
+): Fixture => {
+  const kind = options.kind ?? "file";
+  const target = kind === "file" ? join(root, "home", "settings.json") : "rg";
+  const content = new TextEncoder().encode("canonical content");
+  const digest = sha256BytesHex(content);
+  const resource: PublishedResource = kind === "file"
+    ? {
+      id: decode(ResourceId)("settings"),
+      kind: "file",
+      policy: "replace",
+      target,
+      dependsOn: [],
+      blobs: [],
+    }
+    : {
+      id: decode(ResourceId)("tool"),
+      kind: "tool",
+      policy: "ensure",
+      target,
+      dependsOn: [],
+      blobs: [],
+    };
+  const baseRevision: ProfileRevision = {
+    id: decode(ProfileRevisionId)("revision-recovery"),
+    profileId: decode(ProfileId)("profile-recovery"),
+    sequence: 1,
+    canonicalBytes: "{}",
+    digest,
+    signature: "test-signature",
+    publishedAt: "2026-08-15T00:00:00Z",
+    resources: [resource],
+    groups: [],
+  };
+  const desired: DesiredResource = kind === "file"
+    ? { kind: "file", digest }
+    : {
+      kind: "tool",
+      toolId: "rg",
+      recipes: [{ platform: "linux", method: "apt", package: "ripgrep" }],
+      loginRequired: false,
+    };
+  const revision: PlanningProfileRevision = {
+    ...baseRevision,
+    desired: [{ resource: resource.id, desired }],
+    blobs: [],
+  };
+  const artifact = { digest, content };
+  return {
+    root,
+    database: join(root, "state.sqlite"),
+    target,
+    artifact,
+    revision,
+    recovery: {
+      follower: follower.id,
+      revision,
+      artifacts: kind === "file" ? [artifact] : [],
+    },
+  };
+};
+
+const machineLayer = (root: string) =>
+  linuxMachineStateLayer({
+    environment: [
+      { name: "HOME", value: join(root, "home") },
+      { name: "PATH", value: join(root, "bin") },
+    ],
+    credentialPolicy: {
+      kind: "local-file",
+      path: join(root, "credentials"),
+    },
+  });
+
+const decorateMachine = (
+  root: string,
+  transform: (service: MachineState["Service"]) => MachineState["Service"],
+) =>
+  Layer.effect(
+    MachineState,
+    Effect.map(MachineState, transform),
+  ).pipe(Layer.provide(machineLayer(root)));
+
+const applicationLayer = (
+  value: Fixture,
+  machine = machineLayer(value.root),
+) =>
+  SynchronizationLive.pipe(
+    Layer.provideMerge(stateRepositoryLayer(value.database)),
+    Layer.provideMerge(machine),
+  );
+
+const persistedPlan = (value: Fixture) => {
+  const desired = value.revision.desired[0]!.desired;
+  const planned = Effect.runSync(planSynchronization({
+    revision: value.revision,
+    follower: follower.id,
+    observedState: {
+      platform: "linux",
+      resources: [{
+        resource: value.revision.resources[0]!.id,
+        observed: { state: "absent" },
+      }],
+      availableBlobs: [],
+    },
+    localOverlay: [],
+    appliedResources: [],
+  }));
+  if (desired.kind !== "file" || value.revision.resources.length !== 1) return planned;
+  return planned;
+};
+
+const seed = (
+  value: Fixture,
+  plan = persistedPlan(value),
+) =>
+  Effect.runPromise(
+    Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower });
+      yield* repository.publishRevision({ revision: value.revision });
+      yield* repository.startRun({
+        id: decode(RunId)("run-recovery"),
+        follower: follower.id,
+        revision: value.revision.id,
+        plan,
+        startedAt: "2026-08-15T00:01:00Z",
+      });
+    }).pipe(Effect.provide(stateRepositoryLayer(value.database))),
+  );
+
+const journal = (
+  value: Fixture,
+  action: string,
+  state: "running" | "succeeded" | "failed" | "skipped",
+  rollbackReference?: string,
+) =>
+  Effect.runPromise(
+    Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.journalAction({
+        run: decode(RunId)("run-recovery"),
+        action: decode(ActionId)(action),
+        state,
+        recordedAt: "2026-08-15T00:02:00Z",
+        attempt: 1,
+        verification: state === "succeeded"
+          ? { status: "passed" as const, method: "sha256" }
+          : undefined,
+        rollbackReference,
+      });
+    }).pipe(Effect.provide(stateRepositoryLayer(value.database))),
+  );
+
+const rollbackReference = (
+  value: Fixture,
+  action: string,
+  previous: string,
+): string => {
+  const path = join(
+    value.root,
+    "home",
+    ".cache",
+    "canonfig",
+    "rollback",
+    "run-recovery",
+    `${sha256Hex(action)}.json`,
+  );
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify([{
+    path: value.target,
+    existed: true,
+    content: Buffer.from(previous).toString("base64"),
+  }]));
+  return path;
+};
+
+const recover = (
+  value: Fixture,
+  machine = machineLayer(value.root),
+) =>
+  Effect.runPromise(
+    Effect.gen(function*() {
+      const synchronization = yield* Synchronization;
+      return yield* synchronization.recover(value.recovery);
+    }).pipe(Effect.provide(applicationLayer(value, machine))),
+  );
+
+const runRows = (value: Fixture) => {
+  const database = new DatabaseSync(value.database, { readOnly: true });
+  const rows = database.prepare(`
+    SELECT action_id, state, attempt, rollback_reference
+    FROM action_journal
+    ORDER BY sequence
+  `).all();
+  database.close();
+  return rows;
+};
+
+describe("synchronization crash recovery", () => {
+  it.each([
+    ["before mutation", "pending", false],
+    ["during write/replace", "running", true],
+    ["after mutation before journal completion", "running", true],
+    ["after completion before run finalization", "succeeded", true],
+  ] as const)(
+    "recovers an interruption %s",
+    async (_label, state, mutated) => {
+      const value = fixture(temporaryDirectory());
+      const plan = persistedPlan(value);
+      await seed(value, plan);
+      const action = plan.actions[0]!;
+      mkdirSync(dirname(value.target), { recursive: true });
+      writeFileSync(value.target, mutated ? "partial content" : "original");
+      if (state !== "pending") {
+        const reference = rollbackReference(value, action.id, "original");
+        await journal(value, action.id, "running", reference);
+        if (state === "succeeded") {
+          writeFileSync(value.target, value.artifact.content);
+          await journal(value, action.id, "succeeded", reference);
+        }
+      }
+
+      let targetWrites = 0;
+      const machine = decorateMachine(value.root, (service) => ({
+        ...service,
+        atomicWrite: (input) => {
+          if (input.path.absolute === value.target) targetWrites += 1;
+          return service.atomicWrite(input);
+        },
+      }));
+      const outcome = await recover(value, machine);
+
+      expect(outcome.outcome).toBe("Converged");
+      expect(await readFile(value.target, "utf8")).toBe("canonical content");
+      expect(targetWrites).toBe(state === "succeeded" ? 0 : mutated ? 2 : 1);
+    },
+  );
+
+  it("resumes actions in stable order without repeating verified terminals", async () => {
+    const value = fixture(temporaryDirectory());
+    const base = persistedPlan(value);
+    const first = base.actions[0]!;
+    const second = {
+      ...first,
+      id: decode(ActionId)("action:settings:second:write-file"),
+      before: [first.id],
+    };
+    const body = {
+      revision: base.revision,
+      follower: base.follower,
+      requiredBlobs: base.requiredBlobs,
+      actions: [first, second],
+      agentTasks: base.agentTasks,
+    };
+    const encoded = canonicalJson(
+      Schema.decodeUnknownSync(Schema.MutableJson)(body),
+    );
+    const plan = {
+      ...base,
+      actions: [first, second],
+      encoded,
+      digest: sha256Hex(encoded),
+    };
+    await seed(value, plan);
+    mkdirSync(dirname(value.target), { recursive: true });
+    writeFileSync(value.target, value.artifact.content);
+    await journal(value, first.id, "running");
+    await journal(value, first.id, "succeeded");
+
+    const outcome = await recover(value);
+    const rows = runRows(value);
+
+    expect(outcome.outcome).toBe("Converged");
+    expect(rows.map((row) => [row.action_id, row.state])).toEqual([
+      [first.id, "pending"],
+      [second.id, "pending"],
+      [first.id, "running"],
+      [first.id, "succeeded"],
+      [second.id, "running"],
+      [second.id, "succeeded"],
+    ]);
+  });
+
+  it("fails safely on malformed persisted plan data", async () => {
+    const value = fixture(temporaryDirectory());
+    await seed(value);
+    const database = new DatabaseSync(value.database);
+    database.prepare(
+      "UPDATE synchronization_runs SET plan_json = ? WHERE id = ?",
+    ).run('{"actions":', "run-recovery");
+    database.close();
+
+    const error = await Effect.runPromise(
+      Effect.gen(function*() {
+        const synchronization = yield* Synchronization;
+        return yield* Effect.flip(synchronization.recover(value.recovery));
+      }).pipe(Effect.provide(applicationLayer(value))),
+    );
+    expect(error).toBeInstanceOf(RepositoryDecodeError);
+  });
+
+  it("rejects a hydrated revision that does not match the recorded revision", async () => {
+    const value = fixture(temporaryDirectory());
+    await seed(value);
+    const mismatched = {
+      ...value.recovery,
+      revision: {
+        ...value.revision,
+        signature: "different-signature",
+      },
+    };
+
+    const error = await Effect.runPromise(
+      Effect.gen(function*() {
+        const synchronization = yield* Synchronization;
+        return yield* Effect.flip(synchronization.recover(mismatched));
+      }).pipe(Effect.provide(applicationLayer(value))),
+    );
+    expect(error).toBeInstanceOf(RecoveryIntegrityError);
+  });
+
+  it("independently verifies an uncertain installer without rerunning it", async () => {
+    const value = fixture(temporaryDirectory(), { kind: "tool" });
+    const plan = persistedPlan(value);
+    await seed(value, plan);
+    await journal(value, plan.actions[0]!.id, "running");
+    const bin = join(value.root, "bin");
+    mkdirSync(bin, { recursive: true });
+    const executable = join(bin, "rg");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    let processes = 0;
+    const machine = decorateMachine(value.root, (service) => ({
+      ...service,
+      runProcess: (input) => {
+        processes += 1;
+        return service.runProcess(input);
+      },
+    }));
+
+    const outcome = await recover(value, machine);
+    expect(outcome.outcome).toBe("Converged");
+    expect(processes).toBe(0);
+    expect(runRows(value).at(-1)?.rollback_reference).toBeNull();
+  });
+
+  it("requires human action when uncertain installer evidence stays ambiguous", async () => {
+    const value = fixture(temporaryDirectory(), { kind: "tool" });
+    const plan = persistedPlan(value);
+    await seed(value, plan);
+    await journal(value, plan.actions[0]!.id, "running");
+    const bin = join(value.root, "bin");
+    mkdirSync(bin, { recursive: true });
+    const installer = join(bin, "apt-get");
+    writeFileSync(installer, "#!/bin/sh\nexit 0\n");
+    chmodSync(installer, 0o755);
+    let processes = 0;
+    const machine = decorateMachine(value.root, (service) => ({
+      ...service,
+      runProcess: (input) => {
+        processes += 1;
+        return service.runProcess(input);
+      },
+    }));
+
+    const outcome = await recover(value, machine);
+    expect(outcome.outcome).toBe("HumanActionRequired");
+    expect(processes).toBe(0);
+    expect(runRows(value).at(-1)?.state).toBe("skipped");
+    expect(runRows(value).at(-1)?.rollback_reference).toBeNull();
+  });
+
+  it("restores owned-file rollback material before retrying an interrupted mutation", async () => {
+    const value = fixture(temporaryDirectory());
+    const plan = persistedPlan(value);
+    await seed(value, plan);
+    mkdirSync(dirname(value.target), { recursive: true });
+    writeFileSync(value.target, "corrupt partial write");
+    const reference = rollbackReference(value, plan.actions[0]!.id, "previous");
+    await journal(value, plan.actions[0]!.id, "running", reference);
+    const writes: Array<string> = [];
+    const machine = decorateMachine(value.root, (service) => ({
+      ...service,
+      atomicWrite: (input) =>
+        service.atomicWrite(input).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              if (input.path.absolute === value.target) {
+                writes.push(Buffer.from(input.content).toString("utf8"));
+              }
+            })
+          ),
+        ),
+    }));
+
+    await recover(value, machine);
+    expect(writes).toEqual(["previous", "canonical content"]);
+  });
+
+  it("preserves Interrupted when cancellation reaches resumed mutation", async () => {
+    const value = fixture(temporaryDirectory());
+    await seed(value);
+    let notifyStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    const machine = decorateMachine(value.root, (service) => ({
+      ...service,
+      atomicWrite: (input) => {
+        if (input.path.absolute !== value.target) return service.atomicWrite(input);
+        notifyStarted?.();
+        return Effect.never;
+      },
+    }));
+    const program = Effect.gen(function*() {
+      const synchronization = yield* Synchronization;
+      return yield* synchronization.recover(value.recovery);
+    }).pipe(Effect.provide(applicationLayer(value, machine)));
+    const fiber = Effect.runFork(program);
+    await started;
+    await Effect.runPromise(Fiber.interrupt(fiber));
+
+    const database = new DatabaseSync(value.database, { readOnly: true });
+    const row = database.prepare(
+      "SELECT status FROM synchronization_runs WHERE id = ?",
+    ).get("run-recovery");
+    database.close();
+    expect(row?.status).toBe("Interrupted");
+  });
+});

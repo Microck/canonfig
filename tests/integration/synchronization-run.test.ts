@@ -1,0 +1,448 @@
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+import { Effect, Fiber, Layer, Schema } from "effect";
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  ActionId,
+  ContentDigest,
+  FollowerId,
+  ProfileId,
+  ProfileRevisionId,
+  ResourceId,
+  RunId,
+} from "../../src/domain/brand.ts";
+import { FollowerIdentity } from "../../src/domain/identity.ts";
+import type { ProfileRevision, PublishedResource } from "../../src/domain/profile.ts";
+import type { SynchronizationOutcome } from "../../src/domain/synchronization.ts";
+import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { MachineState } from "../../src/machine/machine-state.service.ts";
+import {
+  canonicalJson,
+  sha256BytesHex,
+  sha256Hex,
+} from "../../src/profile/profile-codec.ts";
+import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
+import { StateRepository } from "../../src/state/state-repository.service.ts";
+import { planSynchronization } from "../../src/synchronization/planner.ts";
+import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
+import { Synchronization } from "../../src/synchronization/synchronization.service.ts";
+import type {
+  DesiredResource,
+  PlanningProfileRevision,
+  SynchronizationArtifact,
+  SynchronizationRunInput,
+} from "../../src/synchronization/synchronization.types.ts";
+
+const decode = Schema.decodeUnknownSync;
+const temporaryDirectories: Array<string> = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+const temporaryDirectory = (): string => {
+  const directory = mkdtempSync(join(tmpdir(), "canonfig-run-"));
+  temporaryDirectories.push(directory);
+  return directory;
+};
+
+interface Fixture {
+  readonly root: string;
+  readonly database: string;
+  readonly target: string;
+  readonly revision: PlanningProfileRevision;
+  readonly artifact: SynchronizationArtifact;
+  readonly input: SynchronizationRunInput;
+}
+
+const fileFixture = (
+  root: string,
+  run = "run-1",
+  observedDigest?: string | undefined,
+): Fixture => {
+  const content = new TextEncoder().encode("canonical content");
+  const digest = sha256BytesHex(content);
+  const target = join(root, "home", "settings.json");
+  const resource: PublishedResource = {
+    id: decode(ResourceId)("settings"),
+    kind: "file",
+    policy: "replace",
+    target,
+    dependsOn: [],
+    blobs: [],
+  };
+  const baseRevision: ProfileRevision = {
+    id: decode(ProfileRevisionId)("revision-1"),
+    profileId: decode(ProfileId)("profile-1"),
+    sequence: 1,
+    canonicalBytes: "{}",
+    digest,
+    signature: "test-signature",
+    publishedAt: "2026-08-15T00:00:00Z",
+    resources: [resource],
+    groups: [],
+  };
+  const desired: DesiredResource = { kind: "file", digest };
+  const revision: PlanningProfileRevision = {
+    ...baseRevision,
+    desired: [{ resource: resource.id, desired }],
+    blobs: [],
+  };
+  const follower = decode(FollowerId)("follower-1");
+  const plan = Effect.runSync(planSynchronization({
+    revision,
+    follower,
+    observedState: {
+      platform: "linux",
+      resources: [{
+        resource: resource.id,
+        observed: observedDigest === undefined
+          ? { state: "absent" }
+          : {
+            state: "present",
+            digest: decode(ContentDigest)(observedDigest),
+            executable: false,
+          },
+      }],
+      availableBlobs: [],
+    },
+    localOverlay: [],
+    appliedResources: [],
+  }));
+  const artifact = { digest, content };
+  return {
+    root,
+    database: join(root, "state.sqlite"),
+    target,
+    revision,
+    artifact,
+    input: {
+      id: decode(RunId)(run),
+      plan,
+      revision,
+      artifacts: [artifact],
+    },
+  };
+};
+
+const follower = decode(FollowerIdentity)({
+  id: "follower-1",
+  name: "Follower",
+  groups: [],
+  revoked: false,
+  credentialReference: "secure-store://follower",
+  enrolledAt: "2026-08-15T00:00:00Z",
+});
+
+const machineLayer = (root: string) =>
+  linuxMachineStateLayer({
+    environment: [
+      { name: "HOME", value: join(root, "home") },
+      { name: "PATH", value: join(root, "bin") },
+    ],
+    credentialPolicy: {
+      kind: "local-file",
+      path: join(root, "credentials"),
+    },
+  });
+
+const applicationLayer = (
+  fixture: Fixture,
+  machine = machineLayer(fixture.root),
+) =>
+  SynchronizationLive.pipe(
+    Layer.provideMerge(stateRepositoryLayer(fixture.database)),
+    Layer.provideMerge(machine),
+  );
+
+const seedAndRun = (
+  fixture: Fixture,
+  machine = machineLayer(fixture.root),
+): Promise<SynchronizationOutcome> =>
+  Effect.runPromise(
+    Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower });
+      yield* repository.publishRevision({ revision: fixture.revision });
+      const synchronization = yield* Synchronization;
+      return yield* synchronization.run(fixture.input);
+    }).pipe(
+      Effect.provide(applicationLayer(fixture, machine)),
+    ),
+  );
+
+const actionRows = (databasePath: string) => {
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  const rows = database.prepare(`
+    SELECT state, verification_json, rollback_reference
+    FROM action_journal
+    ORDER BY sequence
+  `).all();
+  database.close();
+  return rows;
+};
+
+const decorateMachine = (
+  root: string,
+  transform: (service: MachineState["Service"]) => MachineState["Service"],
+) =>
+  Layer.effect(
+    MachineState,
+    Effect.map(MachineState, transform),
+  ).pipe(Layer.provide(machineLayer(root)));
+
+const reencodePlan = (
+  plan: SynchronizationRunInput["plan"],
+): SynchronizationRunInput["plan"] => {
+  const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(
+    JSON.parse(JSON.stringify({
+      revision: plan.revision,
+      follower: plan.follower,
+      requiredBlobs: plan.requiredBlobs,
+      actions: plan.actions,
+      agentTasks: plan.agentTasks,
+    })),
+  ));
+  return { ...plan, encoded, digest: sha256Hex(encoded) };
+};
+
+describe("synchronization apply run", () => {
+  it("persists, atomically applies, verifies, and journals a successful plan", async () => {
+    const fixture = fileFixture(temporaryDirectory());
+    const outcome = await seedAndRun(fixture);
+
+    expect(outcome).toEqual({
+      outcome: "Converged",
+      run: "run-1",
+      verified: ["settings"],
+    });
+    expect(await readFile(fixture.target, "utf8")).toBe("canonical content");
+    expect(actionRows(fixture.database).map((row) => row.state)).toEqual([
+      "pending",
+      "running",
+      "succeeded",
+    ]);
+    expect(String(actionRows(fixture.database)[2]?.verification_json)).toContain(
+      "\"status\":\"passed\"",
+    );
+  });
+
+  it("verifies a no-op without rewriting the target", async () => {
+    const root = temporaryDirectory();
+    const first = fileFixture(root);
+    mkdirSync(dirname(first.target), { recursive: true });
+    writeFileSync(first.target, first.artifact.content);
+    const fixture = fileFixture(root, "run-no-op", first.artifact.digest);
+
+    const outcome = await seedAndRun(fixture);
+    expect(outcome.outcome).toBe("Converged");
+    expect(actionRows(fixture.database).map((row) => row.state)).toEqual([
+      "pending",
+      "running",
+      "succeeded",
+    ]);
+    expect(actionRows(fixture.database)[2]?.rollback_reference).toBeNull();
+  });
+
+  it("returns Failed and restores owned content when verification fails", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-verification");
+    mkdirSync(dirname(fixture.target), { recursive: true });
+    await writeFile(fixture.target, "original");
+    const wrongDigest = decode(ContentDigest)("f".repeat(64));
+    const machine = decorateMachine(fixture.root, (service) => ({
+      ...service,
+      digestFile: (input) =>
+        input.path.absolute === fixture.target
+          ? Effect.succeed({ algorithm: "sha256", value: wrongDigest })
+          : service.digestFile(input),
+    }));
+
+    const outcome = await seedAndRun(fixture, machine);
+    expect(outcome.outcome).toBe("Failed");
+    expect(await readFile(fixture.target, "utf8")).toBe("original");
+    expect(actionRows(fixture.database)[2]?.rollback_reference).toContain(
+      "canonfig/rollback",
+    );
+  });
+
+  it("returns Failed and rolls back an owned-file action failure", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-action-failure");
+    mkdirSync(dirname(fixture.target), { recursive: true });
+    await writeFile(fixture.target, "original");
+    let targetWrites = 0;
+    const machine = decorateMachine(fixture.root, (service) => ({
+      ...service,
+      atomicWrite: (input) => {
+        if (input.path.absolute !== fixture.target) return service.atomicWrite(input);
+        targetWrites += 1;
+        return targetWrites === 1
+          ? Effect.fail({
+            _tag: "MachineFilesystemError",
+            operation: "test write",
+            path: input.path.absolute,
+            message: "injected failure",
+          })
+          : service.atomicWrite(input);
+      },
+    }));
+
+    const outcome = await seedAndRun(fixture, machine);
+    expect(outcome.outcome).toBe("Failed");
+    expect(await readFile(fixture.target, "utf8")).toBe("original");
+  });
+
+  it("records Interrupted when cancellation reaches an in-flight mutation", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-cancelled");
+    let notifyStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolveStarted) => {
+      notifyStarted = resolveStarted;
+    });
+    const machine = decorateMachine(fixture.root, (service) => ({
+      ...service,
+      atomicWrite: (input) => {
+        if (input.path.absolute !== fixture.target) return service.atomicWrite(input);
+        notifyStarted?.();
+        return Effect.never;
+      },
+    }));
+    const layer = applicationLayer(fixture, machine);
+    const program = Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower });
+      yield* repository.publishRevision({ revision: fixture.revision });
+      const synchronization = yield* Synchronization;
+      return yield* synchronization.run(fixture.input);
+    }).pipe(Effect.provide(layer));
+    const fiber = Effect.runFork(program);
+    await started;
+    await Effect.runPromise(Fiber.interrupt(fiber));
+
+    const database = new DatabaseSync(fixture.database, { readOnly: true });
+    const row = database.prepare(
+      "SELECT status FROM synchronization_runs WHERE id = ?",
+    ).get("run-cancelled");
+    database.close();
+    expect(row?.status).toBe("Interrupted");
+  });
+
+  it("serializes mutations that share a target", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-serialized");
+    const firstAction = fixture.input.plan.actions[0]!;
+    const secondAction = {
+      ...firstAction,
+      id: decode(ActionId)("action:settings:second:write-file"),
+      before: [firstAction.id],
+    };
+    const serializedFixture: Fixture = {
+      ...fixture,
+      input: {
+        ...fixture.input,
+        plan: reencodePlan({
+          ...fixture.input.plan,
+          actions: [firstAction, secondAction],
+        }),
+      },
+    };
+    let active = 0;
+    let maximum = 0;
+    const machine = decorateMachine(fixture.root, (service) => ({
+      ...service,
+      atomicWrite: (input) =>
+        Effect.gen(function*() {
+          active += 1;
+          maximum = Math.max(maximum, active);
+          yield* service.atomicWrite(input);
+          active -= 1;
+        }),
+    }));
+    await seedAndRun(serializedFixture, machine);
+    expect(maximum).toBe(1);
+  });
+
+  it("orders running and terminal journal records around execution", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-journal");
+    await seedAndRun(fixture);
+    const rows = actionRows(fixture.database);
+    expect(rows.map((row) => row.state)).toEqual([
+      "pending",
+      "running",
+      "succeeded",
+    ]);
+    expect(rows[1]?.verification_json).toBeNull();
+    expect(rows[2]?.verification_json).not.toBeNull();
+  });
+
+  it("retains rollback material for owned files", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-rollback-material");
+    mkdirSync(dirname(fixture.target), { recursive: true });
+    await writeFile(fixture.target, "previous");
+    await seedAndRun(fixture);
+
+    const reference = actionRows(fixture.database)[2]?.rollback_reference;
+    expect(reference).toBeTypeOf("string");
+    expect(await readFile(String(reference), "utf8")).toContain(
+      Buffer.from("previous").toString("base64"),
+    );
+  });
+
+  it("never claims rollback for external installer actions", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    mkdirSync(bin, { recursive: true });
+    const installer = join(bin, "apt-get");
+    writeFileSync(installer, "#!/bin/sh\nexit 9\n");
+    chmodSync(installer, 0o755);
+    const base = fileFixture(root, "run-installer");
+    const tool: PublishedResource = {
+      id: decode(ResourceId)("tool"),
+      kind: "tool",
+      policy: "ensure",
+      target: "ripgrep",
+      dependsOn: [],
+      blobs: [],
+    };
+    const desired: DesiredResource = {
+      kind: "tool",
+      toolId: "rg",
+      recipes: [{ platform: "linux", method: "apt", package: "ripgrep" }],
+      loginRequired: false,
+    };
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      resources: [tool],
+      desired: [{ resource: tool.id, desired }],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{ resource: tool.id, observed: { state: "absent" } }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const fixture: Fixture = {
+      ...base,
+      revision,
+      input: {
+        id: decode(RunId)("run-installer"),
+        plan,
+        revision,
+        artifacts: [],
+      },
+    };
+
+    const outcome = await seedAndRun(fixture);
+    expect(outcome.outcome).toBe("Failed");
+    expect(actionRows(fixture.database)[2]?.rollback_reference).toBeNull();
+  });
+});
