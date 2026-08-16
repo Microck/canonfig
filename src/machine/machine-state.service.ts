@@ -27,6 +27,7 @@ import type {
   StoreCredentialInput,
   SymlinkInput,
   UserDirectories,
+  ValidatePathWithinRootInput,
 } from "./machine-state.types.ts";
 
 export class MachineState extends Context.Service<MachineState, {
@@ -45,6 +46,9 @@ export class MachineState extends Context.Service<MachineState, {
   ) => Effect.Effect<Uint8Array, MachineStateError>;
   readonly removeFile: (
     input: RemoveFileInput,
+  ) => Effect.Effect<void, MachineStateError>;
+  readonly validatePathWithinRoot: (
+    input: ValidatePathWithinRootInput,
   ) => Effect.Effect<void, MachineStateError>;
   readonly replaceSymlink: (
     input: SymlinkInput,

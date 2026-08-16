@@ -45,6 +45,11 @@ export interface RemoveFileInput {
   readonly path: MachinePath;
 }
 
+export interface ValidatePathWithinRootInput {
+  readonly root: MachinePath;
+  readonly path: MachinePath;
+}
+
 export interface SymlinkInput {
   readonly path: MachinePath;
   readonly target: MachinePath;

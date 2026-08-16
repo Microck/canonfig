@@ -162,6 +162,47 @@ const fileFixture = (
   };
 };
 
+const mirrorContext = (
+  root: string,
+  target: string,
+  relative: string,
+  content: string,
+): ResourceExecutionContext => {
+  const bytes = new TextEncoder().encode(content);
+  const digest = decode(ContentDigest)(sha256BytesHex(bytes));
+  const resource = decode(ResourceId)("managed-directory");
+  return {
+    run: decode(RunId)("run-mirror"),
+    action: {
+      id: decode(ActionId)("action:managed-directory:0:mirror"),
+      resource,
+      kind: "mirror-directory",
+      detail: {
+        kind: "mirror-directory",
+        target,
+        adds: [relative],
+        removes: [],
+      },
+      before: [],
+    },
+    resource: {
+      id: resource,
+      kind: "directory",
+      policy: "mirror-owned",
+      target,
+      dependsOn: [],
+      blobs: [],
+    },
+    desired: {
+      kind: "directory",
+      files: [{ path: relative, digest, executable: false }],
+    },
+    verification: { method: "digest", digest },
+    artifacts: new Map([[digest, { digest, content: bytes }]]),
+    limits: defaultSynchronizationExecutionLimits,
+  };
+};
+
 const follower = decode(FollowerIdentity)({
   id: "follower-1",
   name: "Follower",
@@ -325,6 +366,60 @@ const installerInvocation = async (
 };
 
 describe("synchronization apply run", () => {
+  it("does not follow an intermediate mirror symlink outside the managed root", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const outside = join(root, "outside");
+    const outsideFile = join(outside, "settings.json");
+    mkdirSync(managed, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(outsideFile, "outside content");
+    symlinkSync(outside, join(managed, "sub"));
+    const context = mirrorContext(
+      root,
+      managed,
+      "sub/settings.json",
+      "managed content",
+    );
+
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(machineLayer(root))),
+    );
+    await expect(
+      Effect.runPromise(prepared.execute.pipe(Effect.provide(machineLayer(root)))),
+    ).rejects.toMatchObject({
+      _tag: "MachineFilesystemError",
+      operation: "validate managed path containment",
+    });
+    expect(await readFile(outsideFile, "utf8")).toBe("outside content");
+  });
+
+  it("writes nested mirror files in-root and replaces only a final symlink", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const outside = join(root, "outside.txt");
+    const target = join(managed, "nested", "settings.json");
+    mkdirSync(join(managed, "nested"), { recursive: true });
+    writeFileSync(outside, "outside content");
+    symlinkSync(outside, target);
+    const context = mirrorContext(
+      root,
+      managed,
+      "nested/settings.json",
+      "managed content",
+    );
+
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(machineLayer(root))),
+    );
+    await Effect.runPromise(
+      prepared.execute.pipe(Effect.provide(machineLayer(root))),
+    );
+
+    expect(await readFile(target, "utf8")).toBe("managed content");
+    expect(await readFile(outside, "utf8")).toBe("outside content");
+  });
+
   it("persists, atomically applies, verifies, and journals a successful plan", async () => {
     const fixture = fileFixture(temporaryDirectory());
     const outcome = await seedAndRun(fixture);

@@ -3,10 +3,12 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   access,
   chmod,
+  lstat,
   mkdir,
   open,
   readFile,
   readlink,
+  realpath,
   rename,
   rm,
   stat,
@@ -21,7 +23,9 @@ import {
   isAbsolute,
   join,
   normalize,
+  relative,
   resolve,
+  sep,
 } from "node:path";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
@@ -71,6 +75,7 @@ import type {
   StoreCredentialInput,
   SymlinkInput,
   UserDirectories,
+  ValidatePathWithinRootInput,
 } from "./machine-state.types.ts";
 
 const decode = Schema.decodeUnknownSync;
@@ -84,6 +89,11 @@ class CredentialCommandSignal extends Error {}
 
 const messageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
+
+const errorCode = (cause: unknown): string | undefined =>
+  cause instanceof Error && "code" in cause
+    ? String(cause.code)
+    : undefined;
 
 const filesystemError = (
   operation: string,
@@ -123,6 +133,17 @@ const linuxPath = (absolute: string): MachinePath => ({
   platform: "linux",
   absolute: normalize(absolute),
 });
+
+const sameFilesystemIdentity = (
+  before: Awaited<ReturnType<typeof lstat>>,
+  after: Awaited<ReturnType<typeof lstat>>,
+): boolean => before.dev === after.dev && before.ino === after.ino;
+
+const isWithin = (root: string, candidate: string): boolean => {
+  const remainder = relative(root, candidate);
+  return remainder === ""
+    || (!remainder.startsWith(`..${sep}`) && remainder !== ".." && !isAbsolute(remainder));
+};
 
 const environmentValue = (
   entries: ReadonlyArray<ProcessEnvironmentEntry>,
@@ -780,6 +801,59 @@ export const linuxMachineStateLayer = (
         },
       );
 
+      const validatePathWithinRoot = Effect.fn("MachineState.validatePathWithinRoot")(
+        function*(
+          input: ValidatePathWithinRootInput,
+        ): Effect.fn.Return<void, MachineStateError> {
+          const root = yield* checkLinuxPath(input.root);
+          const path = yield* checkLinuxPath(input.path);
+          if (!isWithin(root, path) || path === root) {
+            return yield* new MachineFilesystemError({
+              operation: "validate managed path containment",
+              path,
+              message: `path is not a descendant of managed root ${root}`,
+            });
+          }
+          yield* promiseEffect("validate managed path containment", path, async () => {
+            const rootBefore = await lstat(root);
+            const actualRoot = await realpath(root);
+            const rootAfter = await lstat(root);
+            if (!sameFilesystemIdentity(rootBefore, rootAfter)) {
+              throw new Error("managed root identity changed during validation");
+            }
+
+            const ancestors: Array<string> = [];
+            for (let ancestor = dirname(path);; ancestor = dirname(ancestor)) {
+              ancestors.push(ancestor);
+              if (ancestor === root) break;
+              if (ancestor === dirname(ancestor)) {
+                throw new Error(`managed path ancestry did not reach root ${root}`);
+              }
+            }
+            ancestors.reverse();
+            for (const ancestor of ancestors) {
+              let before: Awaited<ReturnType<typeof lstat>>;
+              try {
+                before = await lstat(ancestor);
+              } catch (cause) {
+                if (errorCode(cause) === "ENOENT") break;
+                throw cause;
+              }
+              const actualAncestor = await realpath(ancestor);
+              const after = await lstat(ancestor);
+              if (!sameFilesystemIdentity(before, after)) {
+                throw new Error(`ancestor identity changed during validation: ${ancestor}`);
+              }
+              if (!isWithin(actualRoot, actualAncestor)) {
+                throw new Error(
+                  `ancestor resolves outside managed root ${root}: ${ancestor}`,
+                );
+              }
+            }
+          });
+        },
+      );
+
       const readSymlink = Effect.fn("MachineState.readSymlink")(
         function*(machinePath: MachinePath): Effect.fn.Return<MachinePath, MachineStateError> {
           const path = yield* checkLinuxPath(machinePath);
@@ -959,6 +1033,7 @@ export const linuxMachineStateLayer = (
         atomicWrite,
         readFile: Effect.fn("MachineState.readFile")(readBounded),
         removeFile,
+        validatePathWithinRoot,
         replaceSymlink,
         readSymlink,
         setPermissions,

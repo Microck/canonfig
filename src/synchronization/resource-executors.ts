@@ -154,10 +154,14 @@ const captureStoredFile = (
 
 const restoreStoredFile = (
   entry: StoredFile,
+  root?: MachinePath | undefined,
 ): Effect.Effect<void, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: entry.path });
+    if (root !== undefined) {
+      yield* machine.validatePathWithinRoot({ root, path });
+    }
     if ("existed" in entry) {
       if (entry.existed) {
         yield* machine.atomicWrite({
@@ -210,6 +214,7 @@ const normalizeRelative = (
 const captureRollback = (
   context: ResourceExecutionContext,
   paths: ReadonlyArray<MachinePath>,
+  root?: MachinePath | undefined,
 ): Effect.Effect<RollbackMaterial, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -233,7 +238,7 @@ const captureRollback = (
     });
     const restore = Effect.gen(function*() {
       for (const entry of stored) {
-        yield* restoreStoredFile(entry);
+        yield* restoreStoredFile(entry, root);
       }
     });
     return { reference: rollbackPath.absolute, restore };
@@ -323,8 +328,11 @@ export const restoreRollbackReference = (
         message: `rollback material targets do not match action ${context.action.id}`,
       });
     }
+    const root = context.action.detail.kind === "mirror-directory"
+      ? yield* targetPath(context.action.detail.target)
+      : undefined;
     for (const entry of stored) {
-      yield* restoreStoredFile(entry);
+      yield* restoreStoredFile(entry, root);
     }
   });
 
@@ -464,11 +472,15 @@ const prepareMirror = (
         yield* artifact(context.artifacts, desiredFile.digest),
       );
     }
-    const rollback = yield* captureRollback(context, paths);
+    const rollback = yield* captureRollback(context, paths, root);
     const execute = Effect.gen(function*() {
       const activeMachine = yield* MachineState;
       yield* activeMachine.ensureDirectory({ path: root });
       for (const relative of adds) {
+        yield* activeMachine.validatePathWithinRoot({
+          root,
+          path: byRelative.get(relative)!,
+        });
         yield* activeMachine.atomicWrite({
           path: byRelative.get(relative)!,
           content: contentByPath.get(relative)!,
@@ -476,6 +488,10 @@ const prepareMirror = (
         });
       }
       for (const relative of removes) {
+        yield* activeMachine.validatePathWithinRoot({
+          root,
+          path: byRelative.get(relative)!,
+        });
         yield* activeMachine.removeFile({ path: byRelative.get(relative)! });
       }
     });

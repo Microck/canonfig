@@ -1,9 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   access,
+  lstat,
   mkdir,
   open,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -62,6 +64,11 @@ const environmentValue = (
   name: string,
 ): string | undefined =>
   environment.find((entry) => entry.name.toUpperCase() === name.toUpperCase())?.value;
+
+const errorCode = (cause: unknown): string | undefined =>
+  cause instanceof Error && "code" in cause
+    ? String(cause.code)
+    : undefined;
 
 const windowsPath = (absolute: string): MachinePath => ({
   platform: "windows",
@@ -465,6 +472,66 @@ export const windowsMachineStateLayer = (
           )),
         );
       };
+      const isWithinRoot = (root: string, candidate: string): boolean => {
+        const remainder = win32.relative(root.toLowerCase(), candidate.toLowerCase());
+        return remainder === ""
+          || (!remainder.startsWith(`..${win32.sep}`)
+            && remainder !== ".."
+            && !win32.isAbsolute(remainder));
+      };
+      const validatePathWithinRoot = (
+        root: string,
+        path: string,
+      ): Effect.Effect<void, MachineStateError> => {
+        if (!isWithinRoot(root, path) || path.toLowerCase() === root.toLowerCase()) {
+          return Effect.fail(new MachineFilesystemError({
+            operation: "validate managed path containment",
+            path,
+            message: `path is not a descendant of managed root ${root}`,
+          }));
+        }
+        return Effect.tryPromise({
+          try: async () => {
+            const rootBefore = await lstat(root);
+            const actualRoot = await realpath(root);
+            const rootAfter = await lstat(root);
+            if (rootBefore.dev !== rootAfter.dev || rootBefore.ino !== rootAfter.ino) {
+              throw new Error("managed root identity changed during validation");
+            }
+
+            const ancestors: Array<string> = [];
+            for (let ancestor = win32.dirname(path);; ancestor = win32.dirname(ancestor)) {
+              ancestors.push(ancestor);
+              if (ancestor.toLowerCase() === root.toLowerCase()) break;
+              if (ancestor === win32.dirname(ancestor)) {
+                throw new Error(`managed path ancestry did not reach root ${root}`);
+              }
+            }
+            ancestors.reverse();
+            for (const ancestor of ancestors) {
+              let before: Awaited<ReturnType<typeof lstat>>;
+              try {
+                before = await lstat(ancestor);
+              } catch (cause) {
+                if (errorCode(cause) === "ENOENT") break;
+                throw cause;
+              }
+              const actualAncestor = await realpath(ancestor);
+              const after = await lstat(ancestor);
+              if (before.dev !== after.dev || before.ino !== after.ino) {
+                throw new Error(`ancestor identity changed during validation: ${ancestor}`);
+              }
+              if (!isWithinRoot(actualRoot, actualAncestor)) {
+                throw new Error(
+                  `ancestor resolves outside managed root ${root}: ${ancestor}`,
+                );
+              }
+            }
+          },
+          catch: (cause) =>
+            filesystemFailure("validate managed path containment", path, cause),
+        });
+      };
       const secureStoreAvailable = Effect.promise(() =>
         options.credentialStoreAccess !== "unavailable"
           && process.platform === "win32"
@@ -656,6 +723,15 @@ export const windowsMachineStateLayer = (
         removeFile: (input) =>
           requireWindowsPath(input.path).pipe(
             Effect.flatMap((path) => machine.removeFile({ ...input, path })),
+          ),
+        validatePathWithinRoot: (input) =>
+          Effect.all({
+            root: requireWindowsPath(input.root),
+            path: requireWindowsPath(input.path),
+          }).pipe(
+            Effect.flatMap(({ root, path }) =>
+              validatePathWithinRoot(root.absolute, path.absolute)
+            ),
           ),
         replaceSymlink: (input) =>
           Effect.all({

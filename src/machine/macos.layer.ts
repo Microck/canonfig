@@ -346,6 +346,11 @@ export const macosMachineStateLayer = (
           requireMacosPath(input.path).pipe(
             Effect.flatMap((path) => machine.removeFile({ ...input, path })),
           ),
+        validatePathWithinRoot: (input) =>
+          Effect.all({
+            root: requireMacosPath(input.root),
+            path: requireMacosPath(input.path),
+          }).pipe(Effect.flatMap(machine.validatePathWithinRoot)),
         replaceSymlink: (input) =>
           Effect.all({
             path: requireMacosPath(input.path),
