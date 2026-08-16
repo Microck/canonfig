@@ -566,6 +566,66 @@ describe("agent resolution", () => {
     });
   });
 
+  it("denies a bare POSIX shell script whose execution identity comes from PATH", async () => {
+    const shell = join(directory, "sh");
+    const boundedScript = join(directory, "xargs");
+    const shadowDirectory = await mkdtemp(join(tmpdir(), "canonfig-agent-shadow-"));
+    const shadowScript = join(shadowDirectory, "xargs");
+    try {
+      await Promise.all([
+        writeFile(shell, "#!/bin/sh\nexit 0\n"),
+        writeFile(boundedScript, "exit 0\n"),
+        writeFile(shadowScript, "exit 0\n"),
+      ]);
+      await Promise.all([
+        chmod(shell, 0o755),
+        chmod(boundedScript, 0o755),
+        chmod(shadowScript, 0o755),
+      ]);
+      const allowedExecutables = [shell, join(directory, "verify")];
+      const boundedTask = task(directory, { allowedExecutables });
+      const denied = await Effect.runPromise(authorizeAction(
+        action({
+          executable: shell,
+          arguments: ["xargs"],
+        }),
+        boundedTask,
+        {
+          ...harness(directory, allowedExecutables),
+          environment: [{ name: "PATH", value: shadowDirectory }],
+        },
+      ).pipe(Effect.flip));
+      expect(denied).toMatchObject({
+        capability: "script-identity",
+        value: "xargs",
+      });
+    } finally {
+      await rm(shadowDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("allows an explicit bounded POSIX shell script identity", async () => {
+    const shell = join(directory, "sh");
+    const script = join(directory, "bounded-script.sh");
+    await Promise.all([
+      writeFile(shell, "#!/bin/sh\nexit 0\n"),
+      writeFile(script, "exit 0\n"),
+    ]);
+    await chmod(shell, 0o755);
+    const allowedExecutables = [shell, join(directory, "verify")];
+    const boundedTask = task(directory, { allowedExecutables });
+    await expect(Effect.runPromise(authorizeAction(
+      action({
+        executable: shell,
+        arguments: ["./bounded-script.sh"],
+      }),
+      boundedTask,
+      {
+        ...harness(directory, allowedExecutables),
+      },
+    ))).resolves.toBeUndefined();
+  });
+
   it.each([
     ["xargs", ["denied-tool"], "nested-command-launcher"],
     ["xargs", ["-a", "commands.txt", "denied-tool"], "nested-command-launcher"],

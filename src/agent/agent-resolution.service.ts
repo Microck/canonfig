@@ -763,6 +763,12 @@ const authorizeExecutableBehavior = (
         value: invocation.executable,
       });
     }
+    if (invocation.kind === "posix-shell" && !hasPathSeparator(script)) {
+      return yield* new DeniedAgentCapabilityError({
+        capability: "script-identity",
+        value: script,
+      });
+    }
     yield* ensureAllowedPath(
       script,
       workingDirectory,
