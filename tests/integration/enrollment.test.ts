@@ -223,7 +223,7 @@ describe("loopback HTTPS enrollment", () => {
     expect(expiredError).toBeInstanceOf(InvitationExpiredError);
 
     const first = await invitation(setup, server);
-    await runFollower(
+    const primary = await runFollower(
       setup,
       enrollFollower({ invitation: first, followerName: "Primary Host" }),
     );
@@ -251,6 +251,24 @@ describe("loopback HTTPS enrollment", () => {
       }).pipe(Effect.provide(setup.followerMachine)),
     );
     expect(duplicateError).toBeInstanceOf(DuplicateFollowerIdentityError);
+
+    // A rejected duplicate enrollment must not destroy the enrolled
+    // follower's stored credential: the credential key is deterministic per
+    // follower identity, so any overwrite would lock out the real follower.
+    const primaryCredential = await runFollower(
+      setup,
+      Effect.flatMap(MachineState, (machine) =>
+        machine.loadCredential({
+          reference: primary.credentialReference,
+        })
+      ),
+    );
+    const stillAuthenticated = await runSource(
+      setup,
+      Effect.flatMap(Enrollment, (enrollment) =>
+        enrollment.authenticate(Redacted.value(primaryCredential))),
+    );
+    expect(stillAuthenticated.follower.id).toBe(primary.follower.id);
   });
 
   it("rejects TLS pin and intended source identity mismatches before enrollment", async () => {

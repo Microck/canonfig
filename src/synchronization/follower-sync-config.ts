@@ -4,6 +4,7 @@ import {
   CertificateFingerprint,
   CredentialReference,
   ProfileId,
+  ResourceId,
   Timestamp,
 } from "../domain/brand.ts";
 import { AgentPolicy, FollowerIdentity } from "../domain/identity.ts";
@@ -51,6 +52,10 @@ export const FollowerSynchronizationConfiguration = Schema.Struct({
   stateLocation: Schema.NonEmptyString,
   agentPolicy: AgentPolicy,
   agentHarness: Schema.optional(FollowerAgentHarnessConfiguration),
+  localOverlay: Schema.optional(Schema.Array(Schema.Struct({
+    resource: ResourceId,
+    keys: Schema.Array(Schema.NonEmptyString),
+  }))),
   scheduledInvocation: Schema.Struct({
     mode: Schema.Literal("apply"),
     noInput: Schema.Literal(true),

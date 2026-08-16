@@ -16,6 +16,7 @@ import {
   ActionId,
   AgentTaskId,
   BlobId,
+  ContentDigest,
   ProfileId,
   ProfileRevisionId,
   ResourceId,
@@ -46,6 +47,7 @@ import {
   FollowerSynchronizationConfiguration,
 } from "../../src/synchronization/follower-sync-config.ts";
 import {
+  authorizationViewIdentity,
   recoverFollower,
   resolveAgentTasks,
   synchronizeFollower,
@@ -81,6 +83,22 @@ const asJson = <Value>(value: Value) =>
   decode(Schema.MutableJson)(JSON.parse(JSON.stringify(value)));
 
 describe("production follower orchestration", () => {
+  it("separates authorization-filtered views of one source revision", () => {
+    const first = authorizationViewIdentity({
+      id: "revision-shared",
+      profileId: "profile-shared",
+      metadataDigest: decode(ContentDigest)("a".repeat(64)),
+    });
+    const second = authorizationViewIdentity({
+      id: "revision-shared",
+      profileId: "profile-shared",
+      metadataDigest: decode(ContentDigest)("b".repeat(64)),
+    });
+
+    expect(first.revision).not.toBe(second.revision);
+    expect(first.profile).not.toBe(second.profile);
+  });
+
   it("routes emitted agent tasks through configured bounded policy and preserves human fallback", async () => {
     const taskId = decode(AgentTaskId)("agent:tool:0");
     const actionId = decode(ActionId)("action:tool:0:agent-task");
@@ -399,7 +417,7 @@ describe("production follower orchestration", () => {
         repository.startRun({
           id: decode(RunId)("process-restart-run"),
           follower: follower.id,
-          revision: revision.id,
+          revision: planned.plan.revision,
           plan: planned.plan,
           startedAt: "2026-08-16T00:01:00Z",
         })

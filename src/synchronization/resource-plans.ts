@@ -34,11 +34,15 @@ const sortedUnique = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
 const pendingAgentTaskId = Schema.decodeUnknownSync(AgentTaskId)("pending");
 
 const filesDigest = (
-  files: ReadonlyArray<{ readonly path: string; readonly digest: string }>,
+  files: ReadonlyArray<{
+    readonly path: string;
+    readonly digest: string;
+    readonly executable?: boolean | undefined;
+  }>,
 ): ContentDigest => {
   const encoded = [...files]
     .sort((left, right) => compareText(left.path, right.path))
-    .map((file) => `${file.path}\0${file.digest}`)
+    .map((file) => `${file.path}\0${file.digest}\0${file.executable === true ? "x" : "-"}`)
     .join("\n");
   return sha256Hex(encoded);
 };
@@ -111,7 +115,10 @@ const replaceDirectory = (
     ? context.observed.files
     : [];
   const observedByPath = new Map(
-    observedFiles.map((file) => [file.path, file.digest] as const),
+    observedFiles.map((file) => [
+      file.path,
+      `${file.digest}\0${file.executable === true ? "x" : "-"}`,
+    ] as const),
   );
   const desiredPaths = new Set(desired.files.map((file) => file.path));
   return {
@@ -120,7 +127,10 @@ const replaceDirectory = (
       kind: "mirror-directory",
       target: context.resource.target,
       adds: desired.files
-        .filter((file) => observedByPath.get(file.path) !== file.digest)
+        .filter((file) =>
+          observedByPath.get(file.path)
+            !== `${file.digest}\0${file.executable ? "x" : "-"}`
+        )
         .map((file) => file.path)
         .sort(compareText),
       removes: observedFiles
@@ -237,13 +247,20 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   const observedFiles = context.observed.state === "directory"
     ? context.observed.files
     : [];
-  const currentByPath = new Map(observedFiles.map((file) => [file.path, file.digest] as const));
+  const currentByPath = new Map(observedFiles.map((file) => [
+    file.path,
+    `${file.digest}\0${file.executable === true ? "x" : "-"}`,
+  ] as const));
   const desiredPaths = new Set(desiredFiles.map((file) => file.path));
   const previousDigest = context.applied?.digest;
   const currentDigest = observedDigest(context);
   const removalsAreSafe = previousDigest !== undefined && currentDigest === previousDigest;
   const adds = desiredFiles
-    .filter((file) => file.digest !== undefined && currentByPath.get(file.path) !== file.digest)
+    .filter((file) =>
+      file.digest !== undefined
+      && currentByPath.get(file.path)
+        !== `${file.digest}\0${"executable" in file && file.executable ? "x" : "-"}`
+    )
     .map((file) => file.path)
     .sort(compareText);
   const removes = observedFiles

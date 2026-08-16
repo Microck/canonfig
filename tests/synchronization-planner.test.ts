@@ -16,6 +16,12 @@ import type {
   ObservedResourceState,
 } from "../src/domain/synchronization.ts";
 import { sha256Hex } from "../src/profile/profile-codec.ts";
+import {
+  getConfigPath,
+  parseConfigDocument,
+  serializeConfigDocument,
+  setConfigPath,
+} from "../src/synchronization/config-codec.ts";
 import { planSynchronization } from "../src/synchronization/planner.ts";
 import { detectSkillDrift } from "../src/synchronization/resource-plans.ts";
 import type {
@@ -34,16 +40,24 @@ const follower = decode(FollowerId)("follower-1");
 const desiredForKind = (kind: ResourceKind): DesiredResource => {
   switch (kind) {
     case "file":
-      return { kind, digest: digestA };
+      return { kind, digest: digestA, executable: false };
     case "directory":
-      return { kind, files: [{ path: "one.txt", digest: digestA }] };
+      return {
+        kind,
+        files: [{ path: "one.txt", digest: digestA, executable: false }],
+      };
     case "config":
-      return { kind, digest: digestA, keys: ["editor.theme", "mcp.github"] };
+      return {
+        kind,
+        digest: digestA,
+        format: "json",
+        keys: ["editor.theme", "mcp.github"],
+      };
     case "skill":
       return {
         kind,
         digest: digestA,
-        files: [{ path: "SKILL.md", digest: digestA }],
+        files: [{ path: "SKILL.md", digest: digestA, executable: false }],
       };
     case "tool":
       return {
@@ -76,6 +90,23 @@ const resource = (
   target: `~/.canonfig/${id}`,
   dependsOn: dependencies.map((dependency) => decode(ResourceId)(dependency)),
   blobs: blobs.map((blob) => decode(BlobId)(blob)),
+});
+
+describe("configuration codecs", () => {
+  it.each([
+    ["json", "{\n  \"local\": true\n}\n"],
+    ["toml", "local = true\n"],
+    ["yaml", "local: true\n"],
+  ] as const)("preserves local keys and applies dotted paths in %s", (format, source) => {
+    const document = parseConfigDocument(format, source);
+    setConfigPath(document, "agent.model", "review-model");
+    const encoded = serializeConfigDocument(format, document);
+    const decoded = parseConfigDocument(format, encoded);
+
+    expect(getConfigPath(decoded, "local")).toBe(true);
+    expect(getConfigPath(decoded, "agent.model")).toBe("review-model");
+    expect(Object.hasOwn(decoded, "agent.model")).toBe(false);
+  });
 });
 
 const revision = (resources: ReadonlyArray<PublishedResource>): ProfileRevision => ({
@@ -177,6 +208,42 @@ describe("resource and Apply Policy coverage", () => {
       localOverlay: [{ resource: decode(ResourceId)("config"), keys: ["mcp.github"] }],
     });
     expect(conflict.actions[0]?.kind).toBe("human-action");
+  });
+
+  it("removes unchanged files recorded as owned by the previous revision", () => {
+    const subject = resource("directory", "directory", "mirror-owned");
+    const desired = {
+      kind: "directory" as const,
+      files: [{ path: "kept.txt", digest: digestA, executable: false }],
+    };
+    const previouslyOwned = [
+      { path: "kept.txt", digest: digestA, executable: false },
+      { path: "removed.txt", digest: digestB, executable: false },
+    ];
+    const previousDigest = decode(ContentDigest)(sha256Hex(
+      previouslyOwned
+        .map((file) => `${file.path}\0${file.digest}\0-`)
+        .join("\n"),
+    ));
+    const input = plannerInput([subject], {
+      desired: [desired],
+      observed: [{ state: "directory", files: previouslyOwned }],
+      applied: [{
+        resource: subject.id,
+        revision: "revision-previous",
+        digest: previousDigest,
+        appliedAt: "2026-08-15T00:00:00Z",
+        ownedFiles: previouslyOwned.map(({ path, digest }) => ({ path, digest })),
+      }],
+    });
+
+    const plan = runPlan(input);
+    expect(plan.actions[0]?.detail).toEqual({
+      kind: "mirror-directory",
+      target: subject.target,
+      adds: [],
+      removes: ["removed.txt"],
+    });
   });
 });
 

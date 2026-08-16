@@ -66,6 +66,11 @@ import {
 import { revisionSigningPayload } from "../../src/profile/publication.ts";
 import { scheduleManagerLayer } from "../../src/schedule/schedule-manager.layer.ts";
 import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
+import {
+  serializeConfigDocument,
+  setConfigPath,
+  type ConfigDocument,
+} from "../../src/synchronization/config-codec.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import {
@@ -218,6 +223,38 @@ const machineFixture = (
   };
 };
 
+const declaredDigest = (spec: ResourceSpecInput): string => {
+  switch (spec.kind) {
+    case "file":
+      return sha256Hex(spec.symlinkTo ?? spec.content);
+    case "directory":
+    case "skill":
+      return sha256Hex(
+        [...spec.files]
+          .sort((left, right) => left.path.localeCompare(right.path))
+          .map((file) =>
+            `${file.path}\0${sha256Hex(file.content)}\0${
+              file.executable === true ? "x" : "-"
+            }`
+          )
+          .join("\n"),
+      );
+    case "config": {
+      const document: ConfigDocument = {};
+      for (const entry of [...spec.keys].sort((left, right) =>
+        left.path.localeCompare(right.path)
+      )) {
+        setConfigPath(document, entry.path, entry.value);
+      }
+      return sha256Hex(serializeConfigDocument(spec.format, document));
+    }
+    case "tool":
+    case "credential":
+    case "schedule":
+      return sha256Hex(spec.kind);
+  }
+};
+
 const resource = (
   id: string,
   kind: PublishedResource["kind"],
@@ -238,8 +275,8 @@ const resource = (
     : kind === "credential"
     ? { method: "credential-present", reference: spec.kind === "credential" ? spec.reference : target }
     : kind === "schedule"
-    ? { method: "command", command: ["canonfig", "schedule", "status"] }
-    : { method: "digest", digest: sha256Hex(id) },
+    ? { method: "command", command: [process.execPath, "--version"] }
+    : { method: "digest", digest: declaredDigest(spec) },
 });
 
 const latestPlan = (
@@ -782,7 +819,7 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         repository.startRun({
           id: decode(RunId)(`acceptance-recovery-${platform}`),
           follower: follower.id,
-          revision: revision.id,
+          revision: recoveryPlan.plan.revision,
           plan: recoveryPlan.plan,
           startedAt: "2026-08-16T00:10:00Z",
         })

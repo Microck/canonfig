@@ -1,6 +1,12 @@
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 
 import { Effect, Schema } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -20,6 +26,7 @@ import {
   type ControlledExecutor,
 } from "../src/agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../src/agent/agent-resolution.service.ts";
+import { authorizeAction } from "../src/agent/agent-resolution.service.ts";
 import type {
   AgentActionProposal,
   CapturedProcess,
@@ -235,6 +242,40 @@ describe("agent resolution", () => {
     expect(error).toBeInstanceOf(DeniedAgentCapabilityError);
     expect(error.capability).toBe(capability);
     expect(recording.invocations).toHaveLength(1);
+  });
+
+  it("compares executable identities instead of trusting matching basenames", async () => {
+    const [trustedRoot, attackerRoot] = await Promise.all([
+      mkdtemp(join(directory, "trusted-root-")),
+      mkdtemp(join(directory, "attacker-root-")),
+    ]);
+    const trusted = join(trustedRoot, "tool");
+    const attacker = join(attackerRoot, "tool");
+    const alias = join(directory, "trusted-tool-alias");
+    await Promise.all([
+      writeFile(trusted, "#!/bin/sh\nexit 0\n"),
+      writeFile(attacker, "#!/bin/sh\nexit 0\n"),
+    ]);
+    await Promise.all([chmod(trusted, 0o755), chmod(attacker, 0o755)]);
+    await symlink(trusted, alias);
+    const bounded = task(directory, {
+      allowedExecutables: [trusted],
+      verification: { command: [trusted] },
+    });
+
+    await expect(Effect.runPromise(authorizeAction(
+      action({ executable: alias }),
+      bounded,
+    ))).resolves.toBeUndefined();
+    const denied = await Effect.runPromise(
+      authorizeAction(action({ executable: attacker }), bounded).pipe(
+        Effect.flip,
+      ),
+    );
+    expect(denied).toMatchObject({
+      capability: "executable",
+      value: attacker,
+    });
   });
 
   it("fails when independent verification rejects the agent self-report", async () => {

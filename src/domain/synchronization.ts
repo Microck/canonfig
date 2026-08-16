@@ -102,7 +102,7 @@ export interface DriftConflict {
 export type ObservedResourceState =
   | { readonly state: "absent" }
   | { readonly state: "present"; readonly digest: string; readonly executable: boolean; readonly symlinkTo?: string | undefined }
-  | { readonly state: "directory"; readonly files: ReadonlyArray<{ readonly path: string; readonly digest: string }> }
+  | { readonly state: "directory"; readonly files: ReadonlyArray<{ readonly path: string; readonly digest: string; readonly executable?: boolean | undefined }> }
   | { readonly state: "unverifiable"; readonly reason: string };
 
 /** Applied Resource Record: what Canonfig last wrote for one resource. */
@@ -111,6 +111,10 @@ export interface AppliedResourceRecord {
   readonly revision: string;
   readonly digest: string;
   readonly appliedAt: string;
+  readonly ownedFiles?: ReadonlyArray<{
+    readonly path: string;
+    readonly digest: string;
+  }> | undefined;
 }
 
 export const PlannedActionKindSchema = Schema.Literals([
@@ -275,6 +279,7 @@ export const ObservedResourceStateSchema = Schema.Union([
     files: Schema.Array(Schema.Struct({
       path: Schema.NonEmptyString,
       digest: ContentDigest,
+      executable: Schema.optional(Schema.Boolean),
     })),
   }),
   Schema.Struct({
@@ -288,6 +293,10 @@ export const AppliedResourceRecordSchema = Schema.Struct({
   revision: ProfileRevisionId,
   digest: ContentDigest,
   appliedAt: Timestamp,
+  ownedFiles: Schema.optional(Schema.Array(Schema.Struct({
+    path: Schema.NonEmptyString,
+    digest: ContentDigest,
+  }))),
 });
 
 /** Runtime schema aliases share names with their corresponding domain types. */

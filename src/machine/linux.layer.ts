@@ -217,6 +217,24 @@ const runCredentialCommand = (
 const makeTemporarySibling = (path: string): string =>
   join(dirname(path), `.${basename(path)}.canonfig-${randomBytes(12).toString("hex")}`);
 
+const syncHandle = (
+  handle: Awaited<ReturnType<typeof open>>,
+): Promise<void> =>
+  handle.sync().then(
+    () => undefined,
+    // Windows raises EPERM for fsync on some filesystems and directory
+    // handles; durability there relies on the rename, not the flush.
+    (cause: NodeJS.ErrnoException) => {
+      if (
+        process.platform === "win32"
+        && (cause.code === "EPERM" || cause.code === "EINVAL")
+      ) {
+        return undefined;
+      }
+      throw cause;
+    },
+  );
+
 const atomicWriteFile = (
   path: string,
   content: Uint8Array,
@@ -229,14 +247,14 @@ const atomicWriteFile = (
     try {
       handle = await open(temporary, "wx", mode);
       await handle.writeFile(content);
-      await handle.sync();
+      await syncHandle(handle);
       await handle.chmod(mode);
       await handle.close();
       handle = undefined;
       await rename(temporary, path);
       const directory = await open(dirname(path), "r");
       try {
-        await directory.sync();
+        await syncHandle(directory);
       } finally {
         await directory.close();
       }

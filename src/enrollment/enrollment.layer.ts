@@ -24,7 +24,6 @@ import {
 import { FollowerIdentity, SourceIdentity } from "../domain/identity.ts";
 import {
   MachineProfileSchema,
-  PublishedResourceSchema,
   type ProfileRevision,
   type PublishedResource,
 } from "../domain/profile.ts";
@@ -52,6 +51,7 @@ import {
   type EnrollmentError,
 } from "./enrollment.errors.ts";
 import { Enrollment } from "./enrollment.service.ts";
+import { TransportPublishedResourceSchema } from "./enrollment.types.ts";
 import type {
   CreateInvitationInput,
   EnrollFollowerRequest,
@@ -438,6 +438,26 @@ const makeEnrollment = Effect.gen(function*() {
     const followerId = decode(FollowerId)(
       `follower-${sha256(`${material.source.publicKeyFingerprint}\0${normalizedName}`).slice(0, 32)}`,
     );
+    // Reject a duplicate identity before touching credential storage: the
+    // credential key is deterministic per follower identity, so storing first
+    // would overwrite and then delete an already enrolled follower's secret.
+    const existingCredential = yield* repository.getFollowerCredential(followerId).pipe(
+      Effect.match({
+        onFailure: (error) => ({ found: false as const, error }),
+        onSuccess: () => ({ found: true as const }),
+      }),
+    );
+    if (existingCredential.found) {
+      return yield* new DuplicateFollowerIdentityError({
+        message: "the follower identity is already enrolled",
+      });
+    }
+    if (!(existingCredential.error instanceof FollowerNotFoundError)) {
+      return yield* new EnrollmentConfigurationError({
+        operation: "enroll follower",
+        message: "durable enrollment state is unavailable",
+      });
+    }
     const credential = randomBytes(32).toString("base64url");
     const credentialReference = yield* machine.storeCredential({
       name: `canonfig-source-follower-${followerId}`,
@@ -608,8 +628,24 @@ const makeEnrollment = Effect.gen(function*() {
       keys.material.source.keyId,
       keys.publicKey,
     );
-    const resources = decode(Schema.Array(PublishedResourceSchema))(
-      selected.resources,
+    const profile = decode(MachineProfileSchema)(
+      JSON.parse(selected.revision.canonicalBytes),
+    );
+    const authoredById = new Map(profile.resources.map((resource) => [
+      resource.id,
+      resource,
+    ]));
+    const resources = decode(Schema.Array(TransportPublishedResourceSchema))(
+      selected.resources.map((resource) => {
+        const authored = authoredById.get(resource.id);
+        if (authored === undefined) {
+          throw new TransportIntegrityError({
+            artifact: resource.id,
+            message: "authorized resource has no canonical verification contract",
+          });
+        }
+        return { ...resource, verify: authored.verify };
+      }),
     );
     const unsigned = {
       id: selected.revision.id,

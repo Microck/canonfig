@@ -98,7 +98,12 @@ const AppliedResourceRow = Schema.Struct({
   revision_id: ProfileRevisionId,
   digest: ContentDigest,
   applied_at: Schema.String,
+  owned_files_json: Schema.NullOr(Schema.String),
 });
+const OwnedFilesSchema = Schema.Array(Schema.Struct({
+  path: Schema.NonEmptyString,
+  digest: ContentDigest,
+}));
 const FollowerRow = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -960,7 +965,7 @@ const makeRepository = Effect.gen(function*() {
     StateRepositoryError
   > {
     const rows = yield* sql`
-      SELECT resource_id, revision_id, digest, applied_at
+      SELECT resource_id, revision_id, digest, applied_at, owned_files_json
       FROM applied_resources
       WHERE follower_id = ${follower}
       ORDER BY resource_id
@@ -972,14 +977,25 @@ const makeRepository = Effect.gen(function*() {
       follower,
     );
     return yield* Effect.forEach(stored, (row) =>
-      Schema.decodeUnknownEffect(AppliedResourceRecordSchema)({
+      Effect.gen(function*() {
+        const ownedFiles = row.owned_files_json === null
+          ? undefined
+          : yield* parseJson(
+            OwnedFilesSchema,
+            row.owned_files_json,
+            "applied resource owned files",
+            row.resource_id,
+          );
+        return yield* Schema.decodeUnknownEffect(AppliedResourceRecordSchema)({
         resource: row.resource_id,
         revision: row.revision_id,
         digest: row.digest,
         appliedAt: row.applied_at,
-      }).pipe(
-        Effect.mapError(decodeError("applied resource", row.resource_id)),
-      )
+          ownedFiles,
+        }).pipe(
+          Effect.mapError(decodeError("applied resource", row.resource_id)),
+        );
+      })
     );
   });
 
@@ -1220,18 +1236,23 @@ const makeRepository = Effect.gen(function*() {
               resource_id,
               revision_id,
               digest,
-              applied_at
+              applied_at,
+              owned_files_json
             ) VALUES (
               ${run.follower_id},
               ${record.resource},
               ${record.revision},
               ${record.digest},
-              ${record.appliedAt}
+              ${record.appliedAt},
+              ${record.ownedFiles === undefined
+                ? null
+                : encodeJson(JSON.parse(JSON.stringify(record.ownedFiles)))}
             )
             ON CONFLICT(follower_id, resource_id) DO UPDATE SET
               revision_id = excluded.revision_id,
               digest = excluded.digest,
-              applied_at = excluded.applied_at
+              applied_at = excluded.applied_at,
+              owned_files_json = excluded.owned_files_json
           `;
         }
       });

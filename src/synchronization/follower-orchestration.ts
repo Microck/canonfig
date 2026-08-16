@@ -3,7 +3,10 @@ import { readFile } from "node:fs/promises";
 
 import { Effect, Redacted, Schema } from "effect";
 
-import { AgentResolution } from "../agent/agent-resolution.service.ts";
+import {
+  AgentResolution,
+  executableAllowed,
+} from "../agent/agent-resolution.service.ts";
 import type { AgentResolutionOutcome } from "../agent/agent-resolution.types.ts";
 import {
   BlobId,
@@ -19,8 +22,10 @@ import {
   ResourceSpecInputSchema,
   type ProfileRevision,
   type ResourceSpecInput,
+  type VerificationInput,
 } from "../domain/profile.ts";
 import type { ObservedResourceState } from "../domain/synchronization.ts";
+import type { AppliedResourceRecord } from "../domain/synchronization.ts";
 import {
   fetchRevision,
   listRevisions,
@@ -37,6 +42,13 @@ import {
 } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { Synchronization } from "./synchronization.service.ts";
+import {
+  getConfigPath,
+  parseConfigDocument,
+  serializeConfigDocument,
+  setConfigPath,
+  type ConfigDocument,
+} from "./config-codec.ts";
 import {
   FollowerSynchronizationConfigurationError,
   type FollowerSynchronizationConfiguration,
@@ -229,24 +241,40 @@ const filesDigest = (files: ReadonlyArray<DesiredFile>): typeof ContentDigest.Ty
   Schema.decodeUnknownSync(ContentDigest)(sha256Hex(
     [...files]
       .sort((left, right) => left.path.localeCompare(right.path))
-      .map((file) => `${file.path}\0${file.digest}`)
+      .map((file) => `${file.path}\0${file.digest}\0${file.executable ? "x" : "-"}`)
       .join("\n"),
   ));
 
 const configDocument = (
   spec: Extract<ResourceSpecInput, { readonly kind: "config" }>,
-): Uint8Array => encoder.encode(JSON.stringify(
-  Object.fromEntries(
-    [...spec.keys]
-      .sort((left, right) => left.path.localeCompare(right.path))
-      .map((entry) => [entry.path, entry.value]),
-  ),
-));
+): Uint8Array => {
+  const document: ConfigDocument = {};
+  for (const entry of [...spec.keys].sort((left, right) =>
+    left.path.localeCompare(right.path)
+  )) {
+    setConfigPath(document, entry.path, entry.value);
+  }
+  return encoder.encode(serializeConfigDocument(spec.format, document));
+};
 
 interface HydratedDesiredResource {
   readonly desired: DesiredResource;
   readonly artifacts: ReadonlyArray<SynchronizationArtifact>;
 }
+
+export const authorizationViewIdentity = (
+  metadata: Pick<RevisionMetadata, "id" | "profileId" | "metadataDigest">,
+) => {
+  const suffix = `view:${metadata.metadataDigest}`;
+  return {
+    revision: Schema.decodeUnknownSync(ProfileRevisionId)(
+      `${metadata.id}:${suffix}`,
+    ),
+    profile: Schema.decodeUnknownSync(ProfileId)(
+      `${metadata.profileId}:${suffix}`,
+    ),
+  };
+};
 
 const desiredFor = (
   spec: ResourceSpecInput,
@@ -254,10 +282,19 @@ const desiredFor = (
   switch (spec.kind) {
     case "file": {
       const content = encoder.encode(spec.content);
-      const digest = Schema.decodeUnknownSync(ContentDigest)(sha256BytesHex(content));
+      const digest = Schema.decodeUnknownSync(ContentDigest)(
+        spec.symlinkTo === undefined
+          ? sha256BytesHex(content)
+          : sha256Hex(spec.symlinkTo),
+      );
       return {
-        desired: { kind: "file", digest },
-        artifacts: [{ digest, content }],
+        desired: {
+          kind: "file",
+          digest,
+          executable: spec.executable ?? false,
+          symlinkTo: spec.symlinkTo,
+        },
+        artifacts: spec.symlinkTo === undefined ? [{ digest, content }] : [],
       };
     }
     case "directory":
@@ -265,6 +302,7 @@ const desiredFor = (
       const files = spec.files.map((file) => ({
         path: file.path,
         digest: fileDigest(file.content),
+        executable: file.executable ?? false,
       }));
       const artifacts = spec.files.map((file, index) => ({
         digest: files[index]!.digest,
@@ -285,7 +323,10 @@ const desiredFor = (
         desired: {
           kind: "config",
           digest,
-          keys: spec.keys.map((entry) => entry.path),
+          format: spec.format,
+          keys: spec.keys
+            .map((entry) => entry.path)
+            .sort((left, right) => left.localeCompare(right)),
         },
         artifacts: [{ digest, content }],
       };
@@ -328,16 +369,41 @@ const desiredFor = (
 
 const observeFile = (
   target: string,
+  desired: Extract<DesiredResource, { readonly kind: "file" }>,
 ): Effect.Effect<ObservedResourceState, never, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: target });
+    if (desired.symlinkTo !== undefined) {
+      const expected = yield* machine.normalizePath({
+        path: desired.symlinkTo,
+      });
+      return yield* machine.readSymlink(path).pipe(
+        Effect.map((symlinkTo): ObservedResourceState => ({
+          state: "present",
+          digest: symlinkTo.absolute === expected.absolute
+            ? desired.digest
+            : sha256Hex(symlinkTo.absolute),
+          executable: false,
+          symlinkTo: symlinkTo.absolute,
+        })),
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          Effect.succeed(error.message.includes("ENOENT")
+            ? { state: "absent" } as const
+            : { state: "unverifiable", reason: error.message } as const)
+        ),
+      );
+    }
     return yield* machine.digestFile({ path }).pipe(
-      Effect.map((digest): ObservedResourceState => ({
-        state: "present",
-        digest: digest.value,
-        executable: false,
-      })),
+      Effect.flatMap((digest) =>
+        machine.permissions(path).pipe(
+          Effect.map((permissions): ObservedResourceState => ({
+            state: "present",
+            digest: digest.value,
+            executable: permissions.executableByOwner,
+          })),
+        )
+      ),
       Effect.catchTag("MachineFilesystemError", (error) =>
         Effect.succeed(error.message.includes("ENOENT")
           ? { state: "absent" } as const
@@ -353,25 +419,82 @@ const observeFile = (
     ),
   );
 
+const observeConfig = (
+  decoded: DecodedSpec,
+  desired: Extract<DesiredResource, { readonly kind: "config" }>,
+): Effect.Effect<ObservedResourceState, never, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const path = yield* machine.normalizePath({ path: decoded.resource.target });
+    const bytes = yield* machine.readFile({
+      path,
+      maximumBytes: 8 * 1024 * 1024,
+    });
+    const current = parseConfigDocument(desired.format, decoder.decode(bytes));
+    const managed: ConfigDocument = {};
+    for (const key of desired.keys) {
+      const value = getConfigPath(current, key);
+      if (value !== undefined) setConfigPath(managed, key, value);
+    }
+    return {
+      state: "present",
+      digest: sha256BytesHex(
+        encoder.encode(serializeConfigDocument(desired.format, managed)),
+      ),
+      executable: false,
+    } as const;
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.succeed(
+        String(error).includes("ENOENT")
+          ? { state: "absent" } as const
+          : { state: "unverifiable", reason: String(error) } as const,
+      )
+    ),
+  );
+
 const observe = (
   decoded: DecodedSpec,
   desired: DesiredResource,
+  verification: VerificationInput,
+  applied?: AppliedResourceRecord,
 ): Effect.Effect<ObservedResourceState, never, MachineState> => {
   switch (desired.kind) {
     case "file":
+      return observeFile(decoded.resource.target, desired);
     case "config":
+      return observeConfig(decoded, desired);
     case "schedule":
-      return observeFile(decoded.resource.target);
+      return observeFile(decoded.resource.target, {
+        kind: "file",
+        digest: desired.digest,
+        executable: false,
+      });
     case "directory":
     case "skill":
       return Effect.gen(function*() {
         const machine = yield* MachineState;
         const root = yield* machine.normalizePath({ path: decoded.resource.target });
-        const files = yield* Effect.forEach(desired.files, (file) =>
+        const candidates = [...new Map([
+          ...(applied?.ownedFiles ?? []).map((file) => ({
+            ...file,
+            executable: false,
+          })),
+          ...desired.files,
+        ].map((file) => [file.path, file])).values()];
+        const files = yield* Effect.forEach(candidates, (file) =>
           Effect.gen(function*() {
             const path = yield* machine.normalizePath({ path: file.path, base: root });
             return yield* machine.digestFile({ path }).pipe(
-              Effect.map((digest) => ({ path: file.path, digest: digest.value })),
+              Effect.flatMap((digest) =>
+                machine.permissions(path).pipe(
+                  Effect.map((permissions) => ({
+                    path: file.path,
+                    digest: digest.value,
+                    executable: permissions.executableByOwner,
+                  })),
+                )
+              ),
               Effect.catch(() => Effect.succeed(undefined)),
             );
           })
@@ -388,8 +511,24 @@ const observe = (
     case "tool":
       return Effect.gen(function*() {
         const machine = yield* MachineState;
-        return yield* machine.findExecutable({ name: desired.toolId }).pipe(
-          Effect.as({ state: "present", digest: sha256Hex(desired.toolId), executable: true } as const),
+        const executable = verification.method === "executable-present"
+          ? verification.executable
+          : verification.method === "command"
+          ? verification.command[0] ?? desired.toolId
+          : desired.toolId;
+        if (executable.includes("/") || executable.includes("\\")) {
+          return yield* machine.normalizePath({ path: executable }).pipe(
+            Effect.flatMap((path) => machine.permissions(path)),
+            Effect.as({
+              state: "present",
+              digest: sha256Hex(executable),
+              executable: true,
+            } as const),
+            Effect.catch(() => Effect.succeed({ state: "absent" } as const)),
+          );
+        }
+        return yield* machine.findExecutable({ name: executable }).pipe(
+          Effect.as({ state: "present", digest: sha256Hex(executable), executable: true } as const),
           Effect.catch(() => Effect.succeed({ state: "absent" } as const)),
         );
       });
@@ -397,7 +536,9 @@ const observe = (
       return Effect.gen(function*() {
         const machine = yield* MachineState;
         const reference = Schema.decodeUnknownSync(CredentialReference)(
-          desired.reference,
+          verification.method === "credential-present"
+            ? verification.reference
+            : desired.reference,
         );
         return yield* machine.loadCredential({ reference }).pipe(
           Effect.map((value) => {
@@ -415,7 +556,10 @@ const observe = (
 };
 
 const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
-  function*(fetched: FetchedRevision): Effect.fn.Return<
+  function*(
+    fetched: FetchedRevision,
+    appliedResources: ReadonlyArray<AppliedResourceRecord> = [],
+  ): Effect.fn.Return<
     {
       readonly revision: PlanningProfileRevision;
       readonly observations: ReadonlyArray<{
@@ -432,12 +576,25 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
     const observations = [];
     const artifacts: Array<SynchronizationArtifact> = [];
     const blobs: Array<AvailableBlob> = [];
+    const appliedByResource = new Map(appliedResources.map((record) => [
+      record.resource,
+      record,
+    ]));
     for (const entry of decoded) {
       const hydration = desiredFor(entry.spec);
-      desired.push({ resource: entry.resource.id, desired: hydration.desired });
+      desired.push({
+        resource: entry.resource.id,
+        desired: hydration.desired,
+        verification: entry.resource.verify,
+      });
       observations.push({
         resource: entry.resource.id,
-        observed: yield* observe(entry, hydration.desired),
+        observed: yield* observe(
+          entry,
+          hydration.desired,
+          entry.resource.verify,
+          appliedByResource.get(entry.resource.id),
+        ),
       });
       artifacts.push(
         { digest: entry.blob.id, content: entry.blobBytes },
@@ -449,15 +606,20 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
       });
     }
     const metadata = fetched.metadata;
-    const base: ProfileRevision = {
-      id: Schema.decodeUnknownSync(ProfileRevisionId)(metadata.id),
-      profileId: Schema.decodeUnknownSync(ProfileId)(metadata.profileId),
-      sequence: metadata.sequence,
-      canonicalBytes: canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+    const view = authorizationViewIdentity(metadata);
+    const canonicalBytes = canonicalJson(
+      Schema.decodeUnknownSync(Schema.MutableJson)({
+        sourceRevision: metadata.id,
         metadataDigest: metadata.metadataDigest,
         resources: metadata.resources,
-      })),
-      digest: metadata.digest,
+      }),
+    );
+    const base: ProfileRevision = {
+      id: view.revision,
+      profileId: view.profile,
+      sequence: metadata.sequence,
+      canonicalBytes,
+      digest: sha256Hex(canonicalBytes),
       signature: Schema.decodeUnknownSync(SourceSignature)(
         metadata.sourceSignature,
       ),
@@ -483,20 +645,17 @@ const persistableRevision = (
   digest: revision.digest,
   signature: revision.signature,
   publishedAt: revision.publishedAt,
-  resources: revision.resources,
+  resources: revision.resources.map((resource) => ({
+    id: resource.id,
+    kind: resource.kind,
+    policy: resource.policy,
+    target: resource.target,
+    groups: resource.groups,
+    dependsOn: resource.dependsOn,
+    blobs: resource.blobs,
+  })),
   groups: revision.groups,
 });
-
-const portableBasename = (value: string): string =>
-  value.replaceAll("\\", "/").split("/").at(-1) ?? value;
-
-const executableWithinHarnessBounds = (
-  executable: string,
-  configuration: FollowerAgentHarnessConfiguration,
-): boolean => configuration.allowedExecutables.some((allowed) =>
-  allowed === executable
-  || portableBasename(allowed) === portableBasename(executable)
-);
 
 const pathWithinHarnessBounds = (
   path: string,
@@ -554,24 +713,31 @@ const harnessConfigurationIssue = (
 const boundedTask = (
   task: PlannedSynchronization["agentTasks"][number],
   configuration: FollowerAgentHarnessConfiguration,
-) => ({
-  ...task,
-  allowedPaths: task.allowedPaths.filter((path) =>
-    pathWithinHarnessBounds(path, configuration)
-  ),
-  allowedExecutables: task.allowedExecutables.filter((executable) =>
-    executableWithinHarnessBounds(executable, configuration)
-  ),
-  allowedOrigins: task.allowedOrigins.filter((origin) =>
-    originWithinHarnessBounds(origin, configuration)
-  ),
-  forbidden: [...new Set([
-    ...task.forbidden,
-    ...(["elevation", "login", "restart", "reboot"] as const).filter(
-      (capability) => !configuration.allowedCapabilities.includes(capability),
-    ),
-  ])],
-});
+) =>
+  Effect.gen(function*() {
+    const allowedExecutables = [];
+    for (const executable of task.allowedExecutables) {
+      if (yield* executableAllowed(executable, configuration.allowedExecutables)) {
+        allowedExecutables.push(executable);
+      }
+    }
+    return {
+      ...task,
+      allowedPaths: task.allowedPaths.filter((path) =>
+        pathWithinHarnessBounds(path, configuration)
+      ),
+      allowedExecutables,
+      allowedOrigins: task.allowedOrigins.filter((origin) =>
+        originWithinHarnessBounds(origin, configuration)
+      ),
+      forbidden: [...new Set([
+        ...task.forbidden,
+        ...(["elevation", "login", "restart", "reboot"] as const).filter(
+          (capability) => !configuration.allowedCapabilities.includes(capability),
+        ),
+      ])],
+    };
+  });
 
 const recanonicalizePlan = (
   plan: PlannedSynchronization,
@@ -636,9 +802,10 @@ export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTa
     const replacements = new Map<string, "resolved" | "human">();
     const reasons = new Map<string, string>();
     for (const task of plan.agentTasks) {
+      const bounded = yield* boundedTask(task, harness);
       const resolution = yield* agent.resolve({
         policy: configuration.agentPolicy,
-        task: boundedTask(task, harness),
+        task: bounded,
         harness: {
           harness: harness.kind,
           executable: harness.executable,
@@ -724,15 +891,15 @@ export const synchronizeFollower = Effect.fn(
       configuration.scheduledInvocation.maximumMetadataBytes,
     maximumBlobBytes: configuration.scheduledInvocation.maximumBlobBytes,
   }).pipe(Effect.provideService(MachineState, machine));
-  const hydrated = yield* hydrateRevision(fetched).pipe(
+  const appliedResources = yield* repository.loadAppliedResources(
+    configuration.follower.id,
+  );
+  const hydrated = yield* hydrateRevision(fetched, appliedResources).pipe(
     Effect.provideService(MachineState, machine),
   );
   yield* repository.publishRevision({
     revision: persistableRevision(hydrated.revision),
   });
-  const appliedResources = yield* repository.loadAppliedResources(
-    configuration.follower.id,
-  );
   const plan = yield* planSynchronization({
     revision: hydrated.revision,
     follower: configuration.follower.id,
@@ -741,7 +908,7 @@ export const synchronizeFollower = Effect.fn(
       resources: hydrated.observations,
       availableBlobs: fetched.blobs.map((blob) => blob.id),
     },
-    localOverlay: [],
+    localOverlay: configuration.localOverlay ?? [],
     appliedResources,
   });
   const resolved = yield* resolveAgentTasks(
@@ -797,9 +964,13 @@ export const recoverFollower = Effect.fn(
       "no durable interrupted synchronization run is available",
     );
   }
+  const sourceRevision = recovery.run.revision.replace(
+    /:view:[a-f0-9]{64}$/u,
+    "",
+  );
   const selected = yield* selectedRevision(
     configuration,
-    recovery.run.revision,
+    sourceRevision,
     signal,
   );
   const fetched = yield* fetchRevision({
@@ -810,7 +981,10 @@ export const recoverFollower = Effect.fn(
       configuration.scheduledInvocation.maximumMetadataBytes,
     maximumBlobBytes: configuration.scheduledInvocation.maximumBlobBytes,
   }).pipe(Effect.provideService(MachineState, machine));
-  const hydrated = yield* hydrateRevision(fetched).pipe(
+  const appliedResources = yield* repository.loadAppliedResources(
+    configuration.follower.id,
+  );
+  const hydrated = yield* hydrateRevision(fetched, appliedResources).pipe(
     Effect.provideService(MachineState, machine),
   );
   const outcome = yield* synchronization.recover({

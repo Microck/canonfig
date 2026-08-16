@@ -118,7 +118,7 @@ const fixture = (
     groups: [],
   };
   const desired: DesiredResource = kind === "file"
-    ? { kind: "file", digest }
+    ? { kind: "file", digest, executable: false }
     : {
       kind: "tool",
       toolId: "rg",
@@ -127,7 +127,13 @@ const fixture = (
     };
   const revision: PlanningProfileRevision = {
     ...baseRevision,
-    desired: [{ resource: resource.id, desired }],
+    desired: [{
+      resource: resource.id,
+      desired,
+      verification: kind === "file"
+        ? { method: "digest", digest }
+        : { method: "executable-present", executable: "rg" },
+    }],
     blobs: [],
   };
   const artifact = { digest, content };

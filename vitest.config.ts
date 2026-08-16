@@ -26,5 +26,6 @@ export default defineProject({
     hookTimeout: 30_000,
     pool: "forks",
     fileParallelism: true,
+    maxWorkers: 4,
   },
 });

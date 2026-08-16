@@ -11,7 +11,15 @@ import {
   Timestamp,
 } from "../domain/brand.ts";
 import { FollowerIdentity, SourceIdentity } from "../domain/identity.ts";
-import { PublishedResourceSchema } from "../domain/profile.ts";
+import {
+  PublishedResourceSchema,
+  VerificationInputSchema,
+} from "../domain/profile.ts";
+
+export const TransportPublishedResourceSchema = Schema.Struct({
+  ...PublishedResourceSchema.fields,
+  verify: VerificationInputSchema,
+});
 
 export interface CreateInvitationInput {
   readonly endpoint: string;
@@ -88,7 +96,7 @@ export interface RevisionMetadata {
   readonly sequence: number;
   readonly digest: typeof ContentDigest.Type;
   readonly publishedAt: string;
-  readonly resources: ReadonlyArray<typeof PublishedResourceSchema.Type>;
+  readonly resources: ReadonlyArray<typeof TransportPublishedResourceSchema.Type>;
   readonly metadataDigest: typeof ContentDigest.Type;
   readonly signingKeyId: string;
   readonly signingPublicKey: string;
@@ -189,7 +197,7 @@ export const RevisionMetadataSchema = Schema.Struct({
   sequence: Schema.Natural,
   digest: ContentDigest,
   publishedAt: Timestamp,
-  resources: Schema.Array(PublishedResourceSchema),
+  resources: Schema.Array(TransportPublishedResourceSchema),
   metadataDigest: ContentDigest,
   signingKeyId: Schema.NonEmptyString,
   signingPublicKey: Schema.NonEmptyString,

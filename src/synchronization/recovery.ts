@@ -189,7 +189,15 @@ const baseRevision = (revision: SynchronizationRecoveryInput["revision"]) => ({
   digest: revision.digest,
   signature: revision.signature,
   publishedAt: revision.publishedAt,
-  resources: revision.resources,
+  resources: revision.resources.map((resource) => ({
+    id: resource.id,
+    kind: resource.kind,
+    policy: resource.policy,
+    target: resource.target,
+    groups: resource.groups,
+    dependsOn: resource.dependsOn,
+    blobs: resource.blobs,
+  })),
   groups: revision.groups,
 });
 

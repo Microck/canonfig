@@ -7,6 +7,7 @@ import type {
   ResourceId,
 } from "../domain/brand.ts";
 import type { ProfileRevision, PublishedResource } from "../domain/profile.ts";
+import type { VerificationInput } from "../domain/profile.ts";
 import type {
   AppliedResourceRecord,
   ObservedResourceState,
@@ -23,7 +24,12 @@ export interface AvailableBlob {
 
 /** Canonical details needed to plan kind-specific behavior. */
 export type DesiredResource =
-  | { readonly kind: "file"; readonly digest: ContentDigest }
+  | {
+    readonly kind: "file";
+    readonly digest: ContentDigest;
+    readonly executable: boolean;
+    readonly symlinkTo?: string | undefined;
+  }
   | {
     readonly kind: "directory";
     readonly files: ReadonlyArray<DesiredFile>;
@@ -31,6 +37,7 @@ export type DesiredResource =
   | {
     readonly kind: "config";
     readonly digest: ContentDigest;
+    readonly format: "toml" | "json" | "yaml";
     readonly keys: ReadonlyArray<string>;
   }
   | {
@@ -55,6 +62,7 @@ export type DesiredResource =
 export interface DesiredFile {
   readonly path: string;
   readonly digest: ContentDigest;
+  readonly executable: boolean;
 }
 
 export interface ToolRecipe {
@@ -66,6 +74,7 @@ export interface ToolRecipe {
 export interface DesiredResourceEntry {
   readonly resource: ResourceId;
   readonly desired: DesiredResource;
+  readonly verification: VerificationInput;
 }
 
 export interface ObservedResourceEntry {

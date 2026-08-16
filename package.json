@@ -51,7 +51,8 @@
     "@effect/sql-sqlite-node": "4.0.0-rc.109",
     "effect": "4.0.0-rc.109",
     "selfsigned": "^5.5.0",
-    "smol-toml": "1.6.1"
+    "smol-toml": "1.6.1",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@effect/vitest": "4.0.0-rc.109",

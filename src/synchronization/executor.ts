@@ -67,7 +67,9 @@ const redact = (
     | SynchronizationExecutionInputError,
   secrets: ReadonlyArray<string>,
 ): string => {
-  let message = value instanceof Error ? value.message : String(value);
+  let message = value instanceof Error
+    ? value.message || value.constructor.name
+    : String(value);
   for (const secret of secrets) {
     if (secret.length > 0) message = message.replaceAll(secret, "[REDACTED]");
   }
@@ -132,7 +134,7 @@ export const executionContexts = (
     ]));
     const desired = new Map(input.revision.desired.map((entry) => [
       entry.resource,
-      entry.desired,
+      entry,
     ]));
     const artifacts = new Map(input.artifacts.map((entry) => [
       entry.digest,
@@ -158,8 +160,8 @@ export const executionContexts = (
         });
       }
       const resource = resources.get(action.resource);
-      const desiredResource = desired.get(action.resource);
-      if (resource === undefined || desiredResource === undefined) {
+      const desiredEntry = desired.get(action.resource);
+      if (resource === undefined || desiredEntry === undefined) {
         return yield* new MissingExecutionResourceError({
           resource: action.resource,
         });
@@ -172,7 +174,8 @@ export const executionContexts = (
           run: input.id,
           action,
           resource,
-          desired: desiredResource,
+          desired: desiredEntry.desired,
+          verification: desiredEntry.verification,
           artifacts,
           limits,
         },
@@ -499,11 +502,18 @@ export const executeSynchronizationPlan = (
         const desired = desiredByResource.get(resource);
         const digest = desired === undefined ? undefined : desiredResourceDigest(desired);
         if (digest !== undefined) {
+          const ownedFiles = desired?.kind === "directory" || desired?.kind === "skill"
+            ? desired.files.map((file) => ({
+              path: file.path,
+              digest: file.digest,
+            }))
+            : undefined;
           applied.push({
             resource,
             revision: input.revision.id,
             digest,
             appliedAt,
+            ownedFiles,
           });
         }
       }

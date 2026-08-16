@@ -186,4 +186,12 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       )
     `;
   }),
+  "0004_applied_resource_owned_files": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN owned_files_json TEXT
+    `;
+  }),
 });

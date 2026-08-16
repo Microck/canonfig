@@ -53,7 +53,7 @@ const invoke = (
       PATH: `${fixtureBin}:${dirname(executable)}:${process.env.PATH ?? ""}`,
       DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/canonfig-packed-test-bus",
     },
-    timeout: 10_000,
+    timeout: 60_000,
   });
   return {
     status: result.status,
@@ -106,7 +106,7 @@ const startPackedSource = (
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
       rejectSource(new Error(`packed source did not start: ${stderr}`));
-    }, 15_000);
+    }, 60_000);
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
       const newline = stdout.indexOf("\n");

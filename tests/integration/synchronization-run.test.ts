@@ -1,4 +1,12 @@
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -29,6 +37,12 @@ import {
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import { planSynchronization } from "../../src/synchronization/planner.ts";
+import {
+  getConfigPath,
+  parseConfigDocument,
+  serializeConfigDocument,
+  setConfigPath,
+} from "../../src/synchronization/config-codec.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 import { Synchronization } from "../../src/synchronization/synchronization.service.ts";
 import type {
@@ -89,10 +103,18 @@ const fileFixture = (
     resources: [resource],
     groups: [],
   };
-  const desired: DesiredResource = { kind: "file", digest };
+  const desired: DesiredResource = {
+    kind: "file",
+    digest,
+    executable: false,
+  };
   const revision: PlanningProfileRevision = {
     ...baseRevision,
-    desired: [{ resource: resource.id, desired }],
+    desired: [{
+      resource: resource.id,
+      desired,
+      verification: { method: "digest", digest },
+    }],
     blobs: [],
   };
   const follower = decode(FollowerId)("follower-1");
@@ -249,6 +271,220 @@ describe("synchronization apply run", () => {
       "succeeded",
     ]);
     expect(actionRows(fixture.database)[2]?.rollback_reference).toBeNull();
+  });
+
+  it("applies and verifies executable file intent", async () => {
+    const base = fileFixture(temporaryDirectory(), "run-executable");
+    const resource = base.revision.resources[0]!;
+    const desired: DesiredResource = {
+      kind: "file",
+      digest: base.artifact.digest,
+      executable: true,
+    };
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      desired: [{
+        resource: resource.id,
+        desired,
+        verification: {
+          method: "digest",
+          digest: base.artifact.digest,
+        },
+      }],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{ resource: resource.id, observed: { state: "absent" } }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const outcome = await seedAndRun({
+      ...base,
+      revision,
+      input: { ...base.input, plan, revision },
+    });
+
+    expect(outcome.outcome).toBe("Converged");
+    expect(statSync(base.target).mode & 0o100).toBe(0o100);
+  });
+
+  it("applies and verifies symlink file intent", async () => {
+    const base = fileFixture(temporaryDirectory(), "run-symlink");
+    const destination = join(base.root, "home", "destination.txt");
+    mkdirSync(dirname(destination), { recursive: true });
+    writeFileSync(destination, "destination");
+    const resource = base.revision.resources[0]!;
+    const digest = decode(ContentDigest)(sha256Hex(destination));
+    const desired: DesiredResource = {
+      kind: "file",
+      digest,
+      executable: false,
+      symlinkTo: destination,
+    };
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      desired: [{
+        resource: resource.id,
+        desired,
+        verification: { method: "symlink", target: destination },
+      }],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{ resource: resource.id, observed: { state: "absent" } }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const outcome = await seedAndRun({
+      ...base,
+      revision,
+      input: { ...base.input, plan, revision, artifacts: [] },
+    });
+
+    expect(outcome.outcome).toBe("Converged");
+    expect(readlinkSync(base.target)).toBe(destination);
+  });
+
+  it("runs the declared verification command instead of the tool id", async () => {
+    const base = fileFixture(temporaryDirectory(), "run-declared-verification");
+    const tool: PublishedResource = {
+      id: decode(ResourceId)("declared-tool"),
+      kind: "tool",
+      policy: "ensure",
+      target: "declared-tool",
+      dependsOn: [],
+      blobs: [],
+    };
+    const desired: DesiredResource = {
+      kind: "tool",
+      toolId: "package-identity-not-an-executable",
+      recipes: [],
+      loginRequired: false,
+    };
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      resources: [tool],
+      desired: [{
+        resource: tool.id,
+        desired,
+        verification: {
+          method: "command",
+          command: [
+            process.execPath,
+            "-e",
+            "process.stdout.write('declared-verification')",
+          ],
+          expectContains: "declared-verification",
+        },
+      }],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{
+          resource: tool.id,
+          observed: {
+            state: "present",
+            digest: decode(ContentDigest)(sha256Hex(process.execPath)),
+            executable: true,
+          },
+        }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const outcome = await seedAndRun({
+      ...base,
+      revision,
+      input: { ...base.input, plan, revision, artifacts: [] },
+    });
+
+    expect(outcome.outcome).toBe("Converged");
+  });
+
+  it.each([
+    ["json", "{\n  \"local\": true\n}\n"],
+    ["toml", "local = true\n"],
+    ["yaml", "local: true\n"],
+  ] as const)("merges dotted config keys with the declared %s codec", async (
+    format,
+    current,
+  ) => {
+    const base = fileFixture(temporaryDirectory(), `run-config-${format}`);
+    mkdirSync(dirname(base.target), { recursive: true });
+    writeFileSync(base.target, current);
+    const desiredDocument = {};
+    setConfigPath(desiredDocument, "agent.model", "review-model");
+    const desiredBytes = new TextEncoder().encode(
+      serializeConfigDocument(format, desiredDocument),
+    );
+    const digest = sha256BytesHex(desiredBytes);
+    const resource: PublishedResource = {
+      ...base.revision.resources[0]!,
+      kind: "config",
+      policy: "merge",
+    };
+    const desired: DesiredResource = {
+      kind: "config",
+      digest,
+      format,
+      keys: ["agent.model"],
+    };
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      resources: [resource],
+      desired: [{
+        resource: resource.id,
+        desired,
+        verification: { method: "digest", digest },
+      }],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{
+          resource: resource.id,
+          observed: {
+            state: "present",
+            digest: sha256BytesHex(new TextEncoder().encode(current)),
+            executable: false,
+          },
+        }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const artifact = { digest, content: desiredBytes };
+    const outcome = await seedAndRun({
+      ...base,
+      revision,
+      artifact,
+      input: { ...base.input, plan, revision, artifacts: [artifact] },
+    });
+    const document = parseConfigDocument(
+      format,
+      await readFile(base.target, "utf8"),
+    );
+
+    expect(outcome.outcome).toBe("Converged");
+    expect(getConfigPath(document, "local")).toBe(true);
+    expect(getConfigPath(document, "agent.model")).toBe("review-model");
   });
 
   it("returns Failed and restores owned content when verification fails", async () => {
@@ -417,7 +653,14 @@ describe("synchronization apply run", () => {
     const revision: PlanningProfileRevision = {
       ...base.revision,
       resources: [tool],
-      desired: [{ resource: tool.id, desired }],
+      desired: [{
+        resource: tool.id,
+        desired,
+        verification: {
+          method: "executable-present",
+          executable: "rg",
+        },
+      }],
     };
     const plan = Effect.runSync(planSynchronization({
       revision,

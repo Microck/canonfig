@@ -1,7 +1,11 @@
 import { Effect, Schema } from "effect";
+import { isAbsolute, win32 } from "node:path";
 
 import { CredentialReference, type RunId } from "../domain/brand.ts";
-import type { PublishedResource } from "../domain/profile.ts";
+import type {
+  PublishedResource,
+  VerificationInput,
+} from "../domain/profile.ts";
 import type { PlannedAction } from "../domain/synchronization.ts";
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
@@ -19,6 +23,13 @@ import type {
   SynchronizationArtifact,
   SynchronizationExecutionLimits,
 } from "./synchronization.types.ts";
+import {
+  getConfigPath,
+  parseConfigDocument,
+  serializeConfigDocument,
+  setConfigPath,
+} from "./config-codec.ts";
+import { desiredResourceDigest } from "./resource-plans.ts";
 
 interface StoredFile {
   readonly path: string;
@@ -42,6 +53,7 @@ export interface ResourceExecutionContext {
   readonly action: PlannedAction;
   readonly resource: PublishedResource;
   readonly desired: DesiredResource;
+  readonly verification: VerificationInput;
   readonly artifacts: ReadonlyMap<string, SynchronizationArtifact>;
   readonly limits: SynchronizationExecutionLimits;
 }
@@ -61,7 +73,6 @@ export interface ResourceVerification {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const JsonObject = Schema.Record(Schema.String, Schema.MutableJson);
 
 const artifact = (
   artifacts: ReadonlyMap<string, SynchronizationArtifact>,
@@ -274,11 +285,27 @@ const prepareWrite = (
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const path = yield* targetPath(target);
-    const content = yield* artifact(context.artifacts, digest);
     const rollback = yield* captureRollback(context, [path]);
     const execute = Effect.gen(function*() {
       const machine = yield* MachineState;
-      yield* machine.atomicWrite({ path, content });
+      if (context.desired.kind !== "file") {
+        const content = yield* artifact(context.artifacts, digest);
+        yield* machine.atomicWrite({ path, content });
+        return;
+      }
+      if (context.desired.symlinkTo !== undefined) {
+        const target = yield* machine.normalizePath({
+          path: context.desired.symlinkTo,
+        });
+        yield* machine.replaceSymlink({ path, target });
+        return;
+      }
+      const content = yield* artifact(context.artifacts, digest);
+      yield* machine.atomicWrite({
+        path,
+        content,
+        mode: context.desired.executable ? 0o700 : 0o600,
+      });
     });
     return {
       rollbackReference: rollback.reference,
@@ -298,34 +325,42 @@ const prepareConfig = (
         message: `write-config action does not target a config resource: ${context.resource.id}`,
       });
     }
+    const config = context.desired;
     const path = yield* targetPath(target);
-    const desiredBytes = yield* artifact(context.artifacts, context.desired.digest);
-    const desired = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(JsonObject),
-    )(decoder.decode(desiredBytes)).pipe(
-      Effect.mapError((error) =>
+    const desiredBytes = yield* artifact(context.artifacts, config.digest);
+    const desired = yield* Effect.try({
+      try: () =>
+        parseConfigDocument(
+          config.format,
+          decoder.decode(desiredBytes),
+        ),
+      catch: (error) =>
         new InvalidArtifactError({
-          digest: context.desired.kind === "config" ? context.desired.digest : "",
+          digest: config.digest,
           message: String(error),
-        })
-      ),
-    );
+        }),
+    });
     const currentBytes = yield* readIfPresent(path, context.limits.maximumFileBytes);
     const current = currentBytes === undefined
       ? {}
-      : yield* Schema.decodeUnknownEffect(
-        Schema.fromJsonString(JsonObject),
-      )(decoder.decode(currentBytes)).pipe(
-        Effect.mapError((error) =>
+      : yield* Effect.try({
+        try: () =>
+          parseConfigDocument(
+            config.format,
+            decoder.decode(currentBytes),
+          ),
+        catch: (error) =>
           new InvalidExecutionPlanError({
             message: `cannot merge non-object config ${target}: ${String(error)}`,
-          })
-        ),
-      );
-    const selected = Object.fromEntries(
-      keys.flatMap((key) => key in desired ? [[key, desired[key]]] : []),
+          }),
+      });
+    for (const key of keys) {
+      const value = getConfigPath(desired, key);
+      if (value !== undefined) setConfigPath(current, key, value);
+    }
+    const content = encoder.encode(
+      serializeConfigDocument(config.format, current),
     );
-    const content = encoder.encode(JSON.stringify({ ...current, ...selected }));
     const rollback = yield* captureRollback(context, [path]);
     const execute = Effect.gen(function*() {
       const machine = yield* MachineState;
@@ -354,16 +389,22 @@ const prepareMirror = (
     const allRelative = [...new Set([...adds, ...removes])];
     const paths = yield* Effect.forEach(allRelative, (path) => normalizeRelative(root, path));
     const byRelative = new Map(allRelative.map((path, index) => [path, paths[index]!]));
-    const desiredByPath = new Map(context.desired.files.map((file) => [file.path, file.digest]));
+    const desiredByPath = new Map(context.desired.files.map((file) => [
+      file.path,
+      file,
+    ]));
     const contentByPath = new Map<string, Uint8Array>();
     for (const relative of adds) {
-      const digest = desiredByPath.get(relative);
-      if (digest === undefined) {
+      const desiredFile = desiredByPath.get(relative);
+      if (desiredFile === undefined) {
         return yield* new InvalidExecutionPlanError({
           message: `mirror add is absent from desired content: ${relative}`,
         });
       }
-      contentByPath.set(relative, yield* artifact(context.artifacts, digest));
+      contentByPath.set(
+        relative,
+        yield* artifact(context.artifacts, desiredFile.digest),
+      );
     }
     const rollback = yield* captureRollback(context, paths);
     const execute = Effect.gen(function*() {
@@ -373,6 +414,7 @@ const prepareMirror = (
         yield* activeMachine.atomicWrite({
           path: byRelative.get(relative)!,
           content: contentByPath.get(relative)!,
+          mode: desiredByPath.get(relative)!.executable ? 0o700 : 0o600,
         });
       }
       for (const relative of removes) {
@@ -477,57 +519,151 @@ export const verifyResource = (
   context: ResourceExecutionContext,
 ): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> => {
   const desired = context.desired;
+  const verification = context.verification;
+  if (verification.method === "command") {
+    return verifyCommand(context, verification.command, verification.expectContains);
+  }
+  if (verification.method === "symlink") {
+    return verifySymlink(context, verification.target);
+  }
+  if (verification.method === "executable-present") {
+    return verifyExecutable(context, verification.executable);
+  }
+  if (verification.method === "credential-present") {
+    return verifyCredential(context, verification.reference);
+  }
+  const declaredDigest = verification.digest;
   switch (desired.kind) {
     case "file":
+      return Effect.gen(function*() {
+        const digest = yield* verifyDigest(
+          context.resource.target,
+          declaredDigest,
+        );
+        if (!digest.passed) return digest;
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({
+          path: context.resource.target,
+        });
+        const permissions = yield* machine.permissions(path);
+        return {
+          ...digest,
+          passed: permissions.executableByOwner === desired.executable,
+          method: `${digest.method}+permissions`,
+        };
+      });
     case "schedule":
       return verifyDigest(context.resource.target, desired.digest);
     case "skill":
-      return verifyDirectory(context, desired.files);
     case "directory":
-      return verifyDirectory(context, desired.files);
+      return desiredResourceDigest(desired) === declaredDigest
+        ? verifyDirectory(context, desired.files)
+        : Effect.succeed({
+          passed: false,
+          method: "declared-directory-digest",
+        });
     case "config":
-      return verifyConfig(context, desired.digest, desired.keys);
+      return desired.digest === declaredDigest
+        ? verifyConfig(context, desired.digest, desired.keys)
+        : Effect.succeed({
+          passed: false,
+          method: "declared-config-digest",
+        });
     case "tool":
-      return Effect.gen(function*() {
-        const machine = yield* MachineState;
-        return yield* machine.findExecutable({ name: desired.toolId }).pipe(
-          Effect.as({
-            passed: true,
-            method: `executable:${desired.toolId}`,
-          }),
-          Effect.catchTag("ExecutableNotFoundError", () =>
-            Effect.succeed({
-              passed: false,
-              method: `executable:${desired.toolId}`,
-            })
-          ),
-        );
-      });
     case "credential":
-      return Effect.gen(function*() {
-        const machine = yield* MachineState;
-        const reference = yield* Schema.decodeUnknownEffect(CredentialReference)(
-          desired.reference,
-        ).pipe(
-          Effect.mapError((error) =>
-            new InvalidExecutionPlanError({ message: String(error) })
-          ),
-        );
-        return yield* machine.loadCredential({ reference }).pipe(
-          Effect.as({
-            passed: true,
-            method: `credential:${desired.reference}`,
-          }),
-          Effect.catch(() =>
-            Effect.succeed({
-              passed: false,
-              method: `credential:${desired.reference}`,
-            })
-          ),
-        );
-      });
+      return Effect.fail(new InvalidExecutionPlanError({
+        message: `resource ${context.resource.id} has incompatible digest verification`,
+      }));
   }
 };
+
+const verifyCommand = (
+  context: ResourceExecutionContext,
+  command: ReadonlyArray<string>,
+  expectContains?: string,
+): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const [name, ...arguments_] = command;
+    if (name === undefined) {
+      return yield* new InvalidExecutionPlanError({
+        message: `resource ${context.resource.id} has an empty verification command`,
+      });
+    }
+    const machine = yield* MachineState;
+    const executable = isAbsolute(name) || win32.isAbsolute(name)
+      ? {
+        name,
+        path: yield* machine.normalizePath({ path: name }),
+      }
+      : yield* machine.findExecutable({ name });
+    const result = yield* machine.runProcess({
+      executable: executable.path,
+      arguments: arguments_,
+      timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
+      maximumOutputBytes: context.limits.maximumProcessOutputBytes,
+    });
+    const output = `${decoder.decode(result.standardOutput)}${decoder.decode(result.standardError)}`;
+    return {
+      passed: result.exitCode === 0
+        && (expectContains === undefined || output.includes(expectContains)),
+      method: `command:${name}`,
+      exitCode: result.exitCode ?? undefined,
+    };
+  });
+
+const verifyExecutable = (
+  context: ResourceExecutionContext,
+  executable: string,
+): Effect.Effect<ResourceVerification, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    return yield* machine.findExecutable({ name: executable }).pipe(
+      Effect.as({ passed: true, method: `executable:${executable}` }),
+      Effect.catch(() =>
+        Effect.succeed({ passed: false, method: `executable:${executable}` })
+      ),
+    );
+  });
+
+const verifyCredential = (
+  context: ResourceExecutionContext,
+  referenceValue: string,
+): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const reference = yield* Schema.decodeUnknownEffect(CredentialReference)(
+      referenceValue,
+    ).pipe(
+      Effect.mapError((error) =>
+        new InvalidExecutionPlanError({ message: String(error) })
+      ),
+    );
+    const machine = yield* MachineState;
+    return yield* machine.loadCredential({ reference }).pipe(
+      Effect.as({ passed: true, method: `credential:${referenceValue}` }),
+      Effect.catch(() =>
+        Effect.succeed({ passed: false, method: `credential:${referenceValue}` })
+      ),
+    );
+  });
+
+const verifySymlink = (
+  context: ResourceExecutionContext,
+  target: string,
+): Effect.Effect<ResourceVerification, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const path = yield* machine.normalizePath({ path: context.resource.target });
+    const expected = yield* machine.normalizePath({ path: target });
+    return yield* machine.readSymlink(path).pipe(
+      Effect.map((observed) => ({
+        passed: observed.absolute === expected.absolute,
+        method: "symlink-target",
+      })),
+      Effect.catch(() =>
+        Effect.succeed({ passed: false, method: "symlink-target" })
+      ),
+    );
+  });
 
 const verifyDirectory = (
   context: ResourceExecutionContext,
@@ -540,12 +676,19 @@ const verifyDirectory = (
       Effect.gen(function*() {
       const path = yield* normalizeRelative(root, file.path);
       const observed = yield* machine.digestFile({ path });
-        return { expected: file.digest, observed: observed.value };
+      const permissions = yield* machine.permissions(path);
+        return {
+          expected: file.digest,
+          observed: observed.value,
+          executable: permissions.executableByOwner,
+          expectedExecutable: "executable" in file && file.executable === true,
+        };
       }), {
       concurrency: context.limits.verificationConcurrency,
     });
     const mismatch = observations.find((observation) =>
       observation.observed !== observation.expected
+      || observation.executable !== observation.expectedExecutable
     );
     if (mismatch !== undefined) {
       return {
@@ -564,30 +707,40 @@ const verifyConfig = (
 ): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const desiredBytes = yield* artifact(context.artifacts, digest);
-    const desired = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(JsonObject),
-    )(decoder.decode(desiredBytes)).pipe(
-      Effect.mapError((error) =>
-        new InvalidArtifactError({ digest, message: String(error) })
-      ),
-    );
+    if (context.desired.kind !== "config") {
+      return yield* new InvalidExecutionPlanError({
+        message: `config verification targets non-config ${context.resource.id}`,
+      });
+    }
+    const desired = yield* Effect.try({
+      try: () =>
+        parseConfigDocument(
+          context.desired.kind === "config" ? context.desired.format : "json",
+          decoder.decode(desiredBytes),
+        ),
+      catch: (error) =>
+        new InvalidArtifactError({ digest, message: String(error) }),
+    });
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: context.resource.target });
     const observedBytes = yield* machine.readFile({
       path,
       maximumBytes: context.limits.maximumFileBytes,
     });
-    const observed = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(JsonObject),
-    )(decoder.decode(observedBytes)).pipe(
-      Effect.mapError((error) =>
+    const observed = yield* Effect.try({
+      try: () =>
+        parseConfigDocument(
+          context.desired.kind === "config" ? context.desired.format : "json",
+          decoder.decode(observedBytes),
+        ),
+      catch: (error) =>
         new InvalidExecutionPlanError({
           message: `cannot verify non-object config ${context.resource.target}: ${String(error)}`,
-        })
-      ),
-    );
+        }),
+    });
     const passed = keys.every((key) =>
-      JSON.stringify(observed[key]) === JSON.stringify(desired[key])
+      JSON.stringify(getConfigPath(observed, key))
+        === JSON.stringify(getConfigPath(desired, key))
     );
     return { passed, method: "config-keys" };
   });

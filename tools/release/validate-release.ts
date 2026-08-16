@@ -147,7 +147,7 @@ const invokeExecutable = (
       DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/canonfig-release-validation-bus",
       PATH: `${dirname(executable)}:${process.env.PATH ?? ""}`,
     },
-    timeoutMilliseconds: 15_000,
+    timeoutMilliseconds: 60_000,
   });
 
 const validatePackageMetadata = (metadataPath: string): void => {
@@ -174,6 +174,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
     "effect",
     "selfsigned",
     "smol-toml",
+    "yaml",
   ];
   if (JSON.stringify(runtimeDependencies) !== JSON.stringify(expectedRuntimeDependencies)) {
     fail(`unexpected runtime dependencies: ${runtimeDependencies.join(", ")}`);

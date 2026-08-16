@@ -1,5 +1,13 @@
 import {
+  constants,
+} from "node:fs";
+import {
+  access,
+  realpath,
+} from "node:fs/promises";
+import {
   basename,
+  delimiter,
   isAbsolute,
   posix,
   relative,
@@ -127,12 +135,48 @@ export const redactAgentTask = (
   },
 });
 
-const executableAllowed = (
+const hasPathSeparator = (value: string): boolean =>
+  value.includes("/") || value.includes("\\");
+
+const executableCandidates = (value: string): ReadonlyArray<string> => {
+  if (isAbsolute(value) || win32.isAbsolute(value) || hasPathSeparator(value)) {
+    return [resolve(value)];
+  }
+  const extensions = process.platform === "win32"
+    ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")
+    : [""];
+  return (process.env.PATH ?? "").split(delimiter).flatMap((directory) =>
+    extensions.map((extension) => resolve(directory, `${value}${extension}`))
+  );
+};
+
+const resolvedExecutableIdentity = async (value: string): Promise<string | undefined> => {
+  for (const candidate of executableCandidates(value)) {
+    try {
+      await access(candidate, constants.X_OK);
+      return await realpath(candidate);
+    } catch {
+      // Continue through PATH candidates. A missing or non-executable path is
+      // never treated as equivalent to an allowlisted executable.
+    }
+  }
+  return undefined;
+};
+
+export const executableAllowed = (
   executable: string,
   allowed: ReadonlyArray<string>,
-): boolean => allowed.some((entry) =>
-  entry === executable || portableBasename(entry) === portableBasename(executable)
-);
+): Effect.Effect<boolean> =>
+  Effect.promise(async () => {
+    if (allowed.includes(executable) && !hasPathSeparator(executable)) return true;
+    const executableIdentity = await resolvedExecutableIdentity(executable);
+    if (executableIdentity === undefined) return false;
+    for (const entry of allowed) {
+      const allowedIdentity = await resolvedExecutableIdentity(entry);
+      if (allowedIdentity === executableIdentity) return true;
+    }
+    return false;
+  });
 
 const portableBasename = (value: string): string =>
   value.includes("\\") ? win32.basename(value) : basename(value);
@@ -200,7 +244,7 @@ export const authorizeAction = (
   task: AgentTask,
 ): Effect.Effect<void, DeniedAgentCapabilityError> =>
   Effect.gen(function*() {
-    if (!executableAllowed(action.executable, task.allowedExecutables)) {
+    if (!(yield* executableAllowed(action.executable, task.allowedExecutables))) {
       return yield* new DeniedAgentCapabilityError({
         capability: "executable",
         value: action.executable,
@@ -239,31 +283,32 @@ export const authorizeAction = (
 
 const authorizeVerification = (
   task: AgentTask,
-): Effect.Effect<void, DeniedAgentCapabilityError> => {
-  const executable = task.verification.command[0] ?? "";
-  if (
-    !executableAllowed(executable, task.allowedExecutables)
-    || elevationExecutables.has(portableBasename(executable).toLowerCase())
-  ) {
-    return Effect.fail(new DeniedAgentCapabilityError({
-      capability: "verification-executable",
-      value: executable,
-    }));
-  }
-  return Effect.forEach(
-    task.verification.command.slice(1),
-    (argument) => {
-      const path = absoluteArgumentPath(argument);
-      if (path !== undefined) return ensureAllowedPath(path, task);
-      return Effect.forEach(
-        argumentOrigins(argument),
-        (origin) => ensureAllowedOrigin(origin, task),
-        { discard: true },
-      );
-    },
-    { discard: true },
-  );
-};
+): Effect.Effect<void, DeniedAgentCapabilityError> =>
+  Effect.gen(function*() {
+    const executable = task.verification.command[0] ?? "";
+    if (
+      !(yield* executableAllowed(executable, task.allowedExecutables))
+      || elevationExecutables.has(portableBasename(executable).toLowerCase())
+    ) {
+      return yield* new DeniedAgentCapabilityError({
+        capability: "verification-executable",
+        value: executable,
+      });
+    }
+    yield* Effect.forEach(
+      task.verification.command.slice(1),
+      (argument) => {
+        const path = absoluteArgumentPath(argument);
+        if (path !== undefined) return ensureAllowedPath(path, task);
+        return Effect.forEach(
+          argumentOrigins(argument),
+          (origin) => ensureAllowedOrigin(origin, task),
+          { discard: true },
+        );
+      },
+      { discard: true },
+    );
+  });
 
 export const validateProposal = (
   proposal: AgentActionProposal,
