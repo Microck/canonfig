@@ -1,4 +1,4 @@
-import { Clock, Effect, Schema } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
 
 import {
   AgentTaskId,
@@ -20,6 +20,7 @@ import {
   PlannedAction as PlannedActionSchema,
 } from "../domain/synchronization.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import type { StateRepositoryError } from "../state/state-repository.errors.ts";
@@ -397,6 +398,9 @@ export const recoverSynchronizationPlan = (
     for (const state of states) {
       const last = latest.get(state.action.id)!;
       const attempt = Math.max(1, last.attempt + 1);
+      const scheduleManager = state.context.resource.kind === "schedule"
+        ? Option.getOrUndefined(yield* Effect.serviceOption(ScheduleManager))
+        : undefined;
       let result: ActionResult;
       if (last.state === "skipped") {
         result = preservedOutcome(input, state.action);
@@ -416,7 +420,7 @@ export const recoverSynchronizationPlan = (
           attempt,
         );
       } else if (last.state === "succeeded") {
-        const verification = yield* verifyResource(state.context).pipe(
+        const verification = yield* verifyResource(state.context, scheduleManager).pipe(
           Effect.mapError((error) =>
             integrityError(recovery, `cannot reverify ${state.action.id}: ${String(error)}`)
           ),
@@ -503,6 +507,9 @@ export const recoverSynchronizationPlan = (
             digest,
             appliedAt,
             ownedFiles,
+            schedule: value?.kind === "schedule"
+              ? value.schedule
+              : undefined,
           });
         }
       }

@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   mkdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import {
   readFile,
@@ -168,6 +169,12 @@ const machineFixture = (
   const bin = join(root, "bin");
   const credentials = join(root, "credentials");
   mkdirSync(bin, { recursive: true });
+  const canonfigExecutable = join(
+    bin,
+    platform === "windows" ? "canonfig.exe" : "canonfig",
+  );
+  writeFileSync(canonfigExecutable, "");
+  if (platform !== "windows") chmodSync(canonfigExecutable, 0o755);
   const path = [bin, dirname(process.execPath)].join(
     platform === "windows" ? ";" : delimiter,
   );
@@ -602,9 +609,13 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     const synchronization = SynchronizationLive.pipe(
       Layer.provide(Layer.merge(followerRepository, followerMachine.layer)),
     );
+    const schedules = scheduleManagerLayer.pipe(
+      Layer.provide(followerMachine.layer),
+    );
     const application = Layer.mergeAll(
       followerRepository,
       followerMachine.layer,
+      schedules,
       synchronization,
       Layer.succeed(AgentResolution, agent),
     );
@@ -787,7 +798,7 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         manager.install({ executable: process.execPath })
       ).pipe(Effect.provide(scheduleLayer)),
     );
-    expect(installedSchedule.change).toBe("installed");
+    expect(installedSchedule.change).toBe("updated");
     expect(installedSchedule.status.platform).toBe(platform);
     expect(installedSchedule.status.definition.mechanism).toBe(
       platform === "linux"
@@ -796,14 +807,14 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         ? "launchd-user-agent"
         : "task-scheduler",
     );
-    expect(scheduler.installs).toBe(1);
+    expect(scheduler.installs).toBe(2);
     const unchangedSchedule = await Effect.runPromise(
       Effect.flatMap(ScheduleManager, (manager) =>
         manager.install({ executable: process.execPath })
       ).pipe(Effect.provide(scheduleLayer)),
     );
     expect(unchangedSchedule.change).toBe("unchanged");
-    expect(scheduler.installs).toBe(1);
+    expect(scheduler.installs).toBe(2);
 
     await writeFile(managedFile, "interrupted local state\n");
     const recoveryPlan = await Effect.runPromise(

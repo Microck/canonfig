@@ -16,6 +16,7 @@ import type {
   SynchronizationPlan,
 } from "../domain/synchronization.ts";
 import type { Platform } from "../domain/resource.ts";
+import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
 
 /** Transfer metadata is deliberately separate from a resource's Apply Policy. */
 export interface AvailableBlob {
@@ -58,7 +59,11 @@ export type DesiredResource =
     readonly reference: string;
     readonly instructions: string;
   }
-  | { readonly kind: "schedule"; readonly digest: ContentDigest };
+  | {
+    readonly kind: "schedule";
+    readonly digest: ContentDigest;
+    readonly schedule: SyncSchedule;
+  };
 
 export interface DesiredFile {
   readonly path: string;

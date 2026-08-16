@@ -194,4 +194,12 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       ADD COLUMN owned_files_json TEXT
     `;
   }),
+  "0005_applied_resource_schedule": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN schedule_json TEXT
+    `;
+  }),
 });

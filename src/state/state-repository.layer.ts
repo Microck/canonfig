@@ -31,6 +31,7 @@ import {
 import {
   FollowerSynchronizationConfiguration,
 } from "../synchronization/follower-sync-config.ts";
+import { SyncScheduleSchema } from "../schedule/schedule-manager.types.ts";
 import {
   ActionNotInPlanError,
   ActiveRunExistsError,
@@ -99,11 +100,13 @@ const AppliedResourceRow = Schema.Struct({
   digest: ContentDigest,
   applied_at: Schema.String,
   owned_files_json: Schema.NullOr(Schema.String),
+  schedule_json: Schema.NullOr(Schema.String),
 });
 const OwnedFilesSchema = Schema.Array(Schema.Struct({
   path: Schema.NonEmptyString,
   digest: ContentDigest,
 }));
+const StoredScheduleSchema = SyncScheduleSchema;
 const FollowerRow = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -965,7 +968,7 @@ const makeRepository = Effect.gen(function*() {
     StateRepositoryError
   > {
     const rows = yield* sql`
-      SELECT resource_id, revision_id, digest, applied_at, owned_files_json
+      SELECT resource_id, revision_id, digest, applied_at, owned_files_json, schedule_json
       FROM applied_resources
       WHERE follower_id = ${follower}
       ORDER BY resource_id
@@ -986,12 +989,21 @@ const makeRepository = Effect.gen(function*() {
             "applied resource owned files",
             row.resource_id,
           );
+        const schedule = row.schedule_json === null
+          ? undefined
+          : yield* parseJson(
+            StoredScheduleSchema,
+            row.schedule_json,
+            "applied resource schedule",
+            row.resource_id,
+          );
         return yield* Schema.decodeUnknownEffect(AppliedResourceRecordSchema)({
         resource: row.resource_id,
         revision: row.revision_id,
         digest: row.digest,
         appliedAt: row.applied_at,
           ownedFiles,
+          schedule,
         }).pipe(
           Effect.mapError(decodeError("applied resource", row.resource_id)),
         );
@@ -1237,7 +1249,8 @@ const makeRepository = Effect.gen(function*() {
               revision_id,
               digest,
               applied_at,
-              owned_files_json
+              owned_files_json,
+              schedule_json
             ) VALUES (
               ${run.follower_id},
               ${record.resource},
@@ -1247,12 +1260,16 @@ const makeRepository = Effect.gen(function*() {
               ${record.ownedFiles === undefined
                 ? null
                 : encodeJson(JSON.parse(JSON.stringify(record.ownedFiles)))}
+              , ${record.schedule === undefined
+                ? null
+                : encodeJson(JSON.parse(JSON.stringify(record.schedule)))}
             )
             ON CONFLICT(follower_id, resource_id) DO UPDATE SET
               revision_id = excluded.revision_id,
               digest = excluded.digest,
               applied_at = excluded.applied_at,
               owned_files_json = excluded.owned_files_json
+              , schedule_json = excluded.schedule_json
           `;
         }
       });

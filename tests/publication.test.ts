@@ -243,6 +243,111 @@ describe("reviewed profile publication", () => {
     )).toBe(true);
   });
 
+  it("publishes reviewed skills into immutable canonical revisions", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const skill = {
+      kind: "skill" as const,
+      id: "reviewed-skill",
+      sourcePath: join(fixture.directory, "AGENTS.md"),
+      target: "skills/reviewed-skill",
+      files: [{ path: "SKILL.md", content: "# reviewed skill\n" }],
+      evidence: [],
+      reviewStatus: "accepted" as const,
+    };
+    const withSkill = {
+      ...discovery,
+      resources: [...discovery.resources, skill],
+      skills: [skill],
+    };
+    const signing = makeSigner();
+    const first = await runCatalog(
+      fixture.database,
+      signing.signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        return yield* catalog.publish(inputFor(withSkill));
+      }),
+    );
+
+    expect(first.resources.map((resource) => [resource.id, resource.kind])).toEqual([
+      ["fixture-tool", "tool"],
+      ["reviewed-skill", "skill"],
+    ]);
+    // SAFETY: ProfileCatalog emits canonicalBytes as JSON with a resources array.
+    const canonical = JSON.parse(first.canonicalBytes) as {
+      readonly resources: ReadonlyArray<{ readonly id: string; readonly spec: { readonly kind: string } }>;
+    };
+    expect(canonical.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "reviewed-skill",
+        spec: expect.objectContaining({ kind: "skill" }),
+      }),
+    ]));
+    expect(first.resources.find((resource) => resource.id === "reviewed-skill")?.blobs[0])
+      .toMatch(/^[a-f0-9]{64}$/u);
+
+    const changedSkill = {
+      ...skill,
+      files: [{ path: "SKILL.md", content: "# changed reviewed skill\n" }],
+    };
+    const changed = await runCatalog(
+      fixture.database,
+      signing.signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        return yield* catalog.publish(inputFor({
+          ...discovery,
+          resources: [...discovery.resources, changedSkill],
+          skills: [changedSkill],
+        }));
+      }),
+    );
+    expect(changed.id).not.toBe(first.id);
+    expect(changed.digest).not.toBe(first.digest);
+    expect(first.resources.find((resource) => resource.id === "reviewed-skill"))
+      .not.toEqual(changed.resources.find((resource) => resource.id === "reviewed-skill"));
+  });
+
+  it("excludes rejected and unreviewed skills while publishing reviewed tools", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const accepted = {
+      kind: "skill" as const,
+      id: "accepted-skill",
+      sourcePath: join(fixture.directory, "AGENTS.md"),
+      target: "skills/accepted-skill",
+      files: [{ path: "SKILL.md", content: "# accepted\n" }],
+      evidence: [],
+      reviewStatus: "accepted" as const,
+    };
+    const rejected = {
+      ...accepted,
+      id: "rejected-skill",
+      target: "skills/rejected-skill",
+      reviewStatus: "needs-review" as const,
+    };
+    const published = await runCatalog(
+      fixture.database,
+      makeSigner().signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        return yield* catalog.publish(inputFor({
+          ...discovery,
+          resources: [...discovery.resources, accepted, rejected],
+          skills: [accepted, rejected],
+        }));
+      }),
+    );
+
+    expect(published.resources.map((resource) => resource.id)).toEqual([
+      "accepted-skill",
+      "fixture-tool",
+    ]);
+    expect(published.resources.some((resource) => resource.id === "rejected-skill"))
+      .toBe(false);
+  });
+
   it("returns the original immutable revision for duplicate publication", async () => {
     const fixture = workspace();
     const discovery = await proposal(fixture.directory);

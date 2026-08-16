@@ -95,6 +95,17 @@ export interface DiscoveredSkill {
   readonly kind: "skill";
   readonly id: string;
   readonly sourcePath: string;
+  /**
+   * Portable follower target and source-owned files are optional because
+   * discovery can identify a skill from a reference before its contents are
+   * supplied for review.
+   */
+  readonly target?: string | undefined;
+  readonly files?: ReadonlyArray<{
+    readonly path: string;
+    readonly content: string;
+    readonly executable?: boolean | undefined;
+  }> | undefined;
   readonly evidence: ReadonlyArray<ToolDiscoveryEvidence>;
   readonly reviewStatus: EvidenceReviewStatus;
 }
@@ -461,6 +472,8 @@ export const buildToolCatalog = (
         kind: "skill",
         id,
         sourcePath: ordered[0]!.sourcePath,
+        target: ordered.find((record) => record.target !== undefined)?.target,
+        files: ordered.find((record) => record.files !== undefined)?.files,
         evidence: orderAndDeduplicateEvidence(ordered.flatMap((record) => record.evidence)),
         reviewStatus,
       };

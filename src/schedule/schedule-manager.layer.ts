@@ -29,6 +29,38 @@ const validLocalTime = /^([01]\d|2[0-3]):[0-5]\d$/u;
 const validateSchedule = (
   schedule: SyncSchedule,
 ): Effect.Effect<SyncSchedule, InvalidScheduleError> => {
+  if (schedule.kind === "custom") {
+    if (
+      schedule.expression.trim() !== schedule.expression
+      || schedule.expression.length === 0
+      || /[\n\r\0]/u.test(schedule.expression)
+    ) {
+      return Effect.fail(new InvalidScheduleError({
+        field: "expression",
+        message: "custom calendar expression must be non-empty and single-line",
+      }));
+    }
+    if (schedule.timezone === undefined) return Effect.succeed(schedule);
+    if (
+      schedule.timezone.trim() !== schedule.timezone
+      || schedule.timezone.length === 0
+      || /[\n\r\0]/u.test(schedule.timezone)
+    ) {
+      return Effect.fail(new InvalidScheduleError({
+        field: "timezone",
+        message: "timezone must be a non-empty IANA timezone name",
+      }));
+    }
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: schedule.timezone }).format();
+    } catch {
+      return Effect.fail(new InvalidScheduleError({
+        field: "timezone",
+        message: `unsupported IANA timezone: ${schedule.timezone}`,
+      }));
+    }
+    return Effect.succeed(schedule);
+  }
   if (!validLocalTime.test(schedule.localTime)) {
     return Effect.fail(new InvalidScheduleError({
       field: "localTime",

@@ -33,8 +33,9 @@ import {
   type ProfileCatalogPublishError,
   UnresolvedPublicationProposalError,
 } from "./profile-catalog.errors.ts";
-import { canonicalJson, digestOf } from "./profile-codec.ts";
+import { canonicalJson, digestOf, sha256Hex } from "./profile-codec.ts";
 import type {
+  DiscoveredSkill,
   DiscoveredTool,
   InstallationRecipe,
 } from "./tool-catalog.ts";
@@ -169,6 +170,53 @@ const resourceForTool = (tool: DiscoveredTool): ProfileResourceInput => ({
   },
 });
 
+const skillFilesDigest = (
+  files: ReadonlyArray<{
+    readonly path: string;
+    readonly content: string;
+    readonly executable?: boolean | undefined;
+  }>,
+): ContentDigest =>
+  sha256Hex(
+    [...files]
+      .sort((left, right) => compareText(left.path, right.path))
+      .map((file) =>
+        `${file.path}\0${sha256Hex(file.content)}\0${
+          file.executable === true ? "x" : "-"
+        }`
+      )
+      .join("\n"),
+  );
+
+const resourceForSkill = (skill: DiscoveredSkill): ProfileResourceInput => {
+  const files = skill.files ?? [];
+  return {
+    id: Schema.decodeUnknownSync(ResourceId)(skill.id),
+    kind: "skill",
+    policy: "replace-if-unmodified",
+    target: skill.target ?? `skills/${skill.id}`,
+    dependsOn: [],
+    spec: {
+      kind: "skill",
+      name: skill.id,
+      files: files.map((file) => ({
+        path: file.path,
+        content: file.content,
+        executable: file.executable ?? false,
+      })),
+    },
+    verify: {
+      method: "digest",
+      digest: skillFilesDigest(files),
+    },
+  };
+};
+
+const skillEvidenceId = (invocation: string | undefined): string | undefined => {
+  const match = /^skills\/([A-Za-z0-9._-]+)\/SKILL\.md$/iu.exec(invocation ?? "");
+  return match?.[1]?.toLowerCase();
+};
+
 const unresolvedReasons = (
   proposal: DiscoveryScanResult,
 ): ReadonlyArray<string> => {
@@ -177,6 +225,10 @@ const unresolvedReasons = (
     reasons.push(`agent-task:${task.id}`);
   }
   for (const resource of proposal.resources) {
+    // Skills are reviewable proposals rather than executable evidence. An
+    // unreviewed or rejected skill is intentionally omitted below instead of
+    // preventing unrelated reviewed tools from being published.
+    if (resource.kind === "skill") continue;
     if (resource.reviewStatus !== "accepted") {
       reasons.push(`resource-needs-review:${resource.kind}:${resource.id}`);
     }
@@ -193,6 +245,7 @@ const unresolvedReasons = (
     }
   }
   for (const evidence of proposal.evidence) {
+    if (skillEvidenceId(evidence.invocation[0]) !== undefined) continue;
     if (
       evidence.reviewStatus !== "accepted"
       || evidence.confidence === "review"
@@ -247,18 +300,26 @@ const validateProposal = (
 
 const machineProfileFor = (
   input: PublishProfileInput,
-): MachineProfile => normalizeMachineProfile({
-  id: input.profile.id,
-  version: 2,
-  name: input.profile.name,
-  groups: input.profile.groups ?? [],
-  resources: input.proposal.tools.map(resourceForTool),
-  scheduleDefault: input.profile.scheduleDefault ?? {
-    type: "daily",
-    at: "00:00",
-    timezone: "local",
-  },
-});
+): MachineProfile => {
+  const acceptedSkills = input.proposal.skills
+    .filter((skill) => skill.reviewStatus === "accepted")
+    .map(resourceForSkill);
+  return normalizeMachineProfile({
+    id: input.profile.id,
+    version: 2,
+    name: input.profile.name,
+    groups: input.profile.groups ?? [],
+    resources: [
+      ...input.proposal.tools.map(resourceForTool),
+      ...acceptedSkills,
+    ],
+    scheduleDefault: input.profile.scheduleDefault ?? {
+      type: "daily",
+      at: "00:00",
+      timezone: "local",
+    },
+  });
+};
 
 const publishedResources = (
   profile: MachineProfile,

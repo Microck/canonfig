@@ -2,15 +2,23 @@ import { Effect, Schema } from "effect";
 import { isAbsolute, win32 } from "node:path";
 
 import { CredentialReference, type RunId } from "../domain/brand.ts";
-import type {
-  PublishedResource,
-  VerificationInput,
+import {
+  ResourceSpecInputSchema,
+  type PublishedResource,
+  type ResourceSpecInput,
+  type VerificationInput,
 } from "../domain/profile.ts";
 import type { PlannedAction } from "../domain/synchronization.ts";
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachinePath } from "../machine/machine-state.types.ts";
 import { sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
+import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
+import {
+  syncScheduleFromResourceSpec,
+  type SetScheduleInput,
+  type SyncSchedule,
+} from "../schedule/schedule-manager.types.ts";
 import {
   ActionExecutionError,
   InvalidArtifactError,
@@ -79,12 +87,17 @@ export interface ResourceExecutionContext {
   readonly verification: VerificationInput;
   readonly artifacts: ReadonlyMap<string, SynchronizationArtifact>;
   readonly limits: SynchronizationExecutionLimits;
+  readonly previousSchedule?: SyncSchedule | undefined;
 }
 
 export interface PreparedResourceAction {
   readonly rollbackReference?: string | undefined;
   readonly execute: Effect.Effect<void, SynchronizationExecutionInputError | MachineStateError, MachineState>;
-  readonly rollback?: Effect.Effect<void, MachineStateError, MachineState> | undefined;
+  readonly rollback?: Effect.Effect<
+    void,
+    SynchronizationExecutionInputError | MachineStateError,
+    MachineState
+  > | undefined;
 }
 
 export interface ResourceVerification {
@@ -96,6 +109,45 @@ export interface ResourceVerification {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+const scheduleInputFromSpec = (
+  spec: Extract<ResourceSpecInput, { readonly kind: "schedule" }>,
+): SetScheduleInput => ({
+  schedule: syncScheduleFromResourceSpec(spec),
+});
+
+const scheduleInputFor = (
+  context: ResourceExecutionContext,
+): Effect.Effect<
+  SetScheduleInput,
+  SynchronizationExecutionInputError | MachineStateError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    if (context.desired.kind !== "schedule") {
+      return yield* new InvalidExecutionPlanError({
+        message: `schedule action targets non-schedule resource ${context.resource.id}`,
+      });
+    }
+    const digest = context.desired.digest;
+    const bytes = yield* artifact(context.artifacts, digest);
+    return yield* Effect.try({
+      try: () => {
+        const spec = Schema.decodeUnknownSync(ResourceSpecInputSchema)(
+          JSON.parse(decoder.decode(bytes)),
+        );
+        if (spec.kind !== "schedule") {
+          throw new Error("schedule artifact does not contain a schedule specification");
+        }
+        return scheduleInputFromSpec(spec);
+      },
+      catch: (cause) =>
+        new InvalidArtifactError({
+          digest,
+          message: String(cause),
+        }),
+    });
+  });
 
 const artifact = (
   artifacts: ReadonlyMap<string, SynchronizationArtifact>,
@@ -377,6 +429,34 @@ const targetPath = (
     return yield* machine.normalizePath({ path: target });
   });
 
+const prepareSchedule = (
+  context: ResourceExecutionContext,
+  scheduleManager: ScheduleManager["Service"] | undefined,
+): Effect.Effect<
+  PreparedResourceAction,
+  SynchronizationExecutionInputError | MachineStateError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    if (scheduleManager === undefined) {
+      return yield* new InvalidExecutionPlanError({
+        message: `schedule resource ${context.resource.id} requires ScheduleManager`,
+      });
+    }
+    const input = yield* scheduleInputFor(context);
+    const execute = (context.previousSchedule === undefined
+      ? scheduleManager.install(input)
+      : scheduleManager.update(input)
+    ).pipe(Effect.asVoid);
+    const rollback = context.previousSchedule === undefined
+      ? scheduleManager.remove(input).pipe(Effect.asVoid)
+      : scheduleManager.update({
+        ...input,
+        schedule: context.previousSchedule,
+      }).pipe(Effect.asVoid);
+    return { execute, rollback };
+  });
+
 const prepareWrite = (
   context: ResourceExecutionContext,
   target: string,
@@ -603,10 +683,14 @@ const installInvocation = (
 /** Prepare deterministic work. Preparation stores rollback material before owned-file mutation. */
 export const prepareResourceAction = (
   context: ResourceExecutionContext,
+  scheduleManager?: ScheduleManager["Service"] | undefined,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> => {
   const detail = context.action.detail;
   switch (detail.kind) {
     case "write-file":
+      if (context.resource.kind === "schedule") {
+        return prepareSchedule(context, scheduleManager);
+      }
       return prepareWrite(context, detail.target, detail.digest);
     case "write-config":
       return prepareConfig(context, detail.target, detail.keys);
@@ -659,12 +743,38 @@ const verifyDigest = (
     };
   });
 
+const verifySchedule = (
+  context: ResourceExecutionContext,
+  scheduleManager: ScheduleManager["Service"] | undefined,
+): Effect.Effect<
+  ResourceVerification,
+  SynchronizationExecutionInputError | MachineStateError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    if (scheduleManager === undefined || context.desired.kind !== "schedule") {
+      return yield* new InvalidExecutionPlanError({
+        message: `schedule resource ${context.resource.id} requires ScheduleManager verification`,
+      });
+    }
+    const input = yield* scheduleInputFor(context);
+    const status = yield* scheduleManager.status(input);
+    return {
+      passed: status.state === "current",
+      method: `native-scheduler:${status.platform}`,
+    };
+  });
+
 /** Observe required postconditions independently from action execution. */
 export const verifyResource = (
   context: ResourceExecutionContext,
+  scheduleManager?: ScheduleManager["Service"] | undefined,
 ): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> => {
   const desired = context.desired;
   const verification = context.verification;
+  if (desired.kind === "schedule") {
+    return verifySchedule(context, scheduleManager);
+  }
   if (verification.method === "command") {
     return verifyCommand(context, verification.command, verification.expectContains);
   }
@@ -697,8 +807,6 @@ export const verifyResource = (
           method: `${digest.method}+permissions`,
         };
       });
-    case "schedule":
-      return verifyDigest(context.resource.target, desired.digest);
     case "skill":
     case "directory":
       return desiredResourceDigest(desired) === declaredDigest

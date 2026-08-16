@@ -12,6 +12,10 @@ import {
   Timestamp,
 } from "./brand.ts";
 import type { ResourceId } from "./brand.ts";
+import {
+  SyncScheduleSchema,
+  type SyncSchedule,
+} from "../schedule/schedule-manager.types.ts";
 
 /**
  * Synchronization domain types: plans, actions, outcomes, drift, agent tasks,
@@ -126,6 +130,7 @@ export interface AppliedResourceRecord {
     readonly path: string;
     readonly digest: string;
   }> | undefined;
+  readonly schedule?: SyncSchedule | undefined;
 }
 
 export const PlannedActionKindSchema = Schema.Literals([
@@ -315,6 +320,7 @@ export const AppliedResourceRecordSchema = Schema.Struct({
     path: Schema.NonEmptyString,
     digest: ContentDigest,
   }))),
+  schedule: Schema.optional(SyncScheduleSchema),
 });
 
 /** Runtime schema aliases share names with their corresponding domain types. */

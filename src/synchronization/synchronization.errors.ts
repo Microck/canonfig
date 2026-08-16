@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 
+import type { ScheduleManagerError } from "../schedule/schedule-manager.errors.ts";
+
 export class DuplicatePlannerInputError extends Schema.TaggedError<DuplicatePlannerInputError>()(
   "DuplicatePlannerInputError",
   {
@@ -126,7 +128,8 @@ export type SynchronizationExecutionInputError =
   | MissingExecutionResourceError
   | MissingArtifactError
   | InvalidArtifactError
-  | ActionExecutionError;
+  | ActionExecutionError
+  | ScheduleManagerError;
 
 export type SynchronizationRecoveryError =
   | RecoveryRunNotFoundError

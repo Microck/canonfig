@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Option, Redacted, Schema } from "effect";
 
 import {
   AgentResolution,
@@ -36,6 +36,10 @@ import type {
   RevisionMetadata,
 } from "../enrollment/enrollment.types.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
+import {
+  syncScheduleFromResourceSpec,
+} from "../schedule/schedule-manager.types.ts";
 import {
   canonicalJson,
   sha256BytesHex,
@@ -361,7 +365,11 @@ const desiredFor = (
       ));
       const digest = Schema.decodeUnknownSync(ContentDigest)(sha256BytesHex(content));
       return {
-        desired: { kind: "schedule", digest },
+        desired: {
+          kind: "schedule",
+          digest,
+          schedule: syncScheduleFromResourceSpec(spec),
+        },
         artifacts: [{ digest, content }],
       };
     }
@@ -459,6 +467,7 @@ const observe = (
   desired: DesiredResource,
   verification: VerificationInput,
   applied?: AppliedResourceRecord,
+  scheduleManager?: ScheduleManager["Service"] | undefined,
 ): Effect.Effect<ObservedResourceState, never, MachineState> => {
   switch (desired.kind) {
     case "file":
@@ -466,11 +475,29 @@ const observe = (
     case "config":
       return observeConfig(decoded, desired);
     case "schedule":
-      return observeFile(decoded.resource.target, {
-        kind: "file",
-        digest: desired.digest,
-        executable: false,
-      });
+      if (scheduleManager === undefined) {
+        return Effect.succeed({
+          state: "unverifiable",
+          reason: "ScheduleManager is unavailable",
+        });
+      }
+      return scheduleManager.status({ schedule: desired.schedule }).pipe(
+        Effect.map((status) =>
+          status.state === "current"
+            ? {
+              state: "present",
+              digest: desired.digest,
+              executable: false,
+            } as const
+            : { state: "absent" } as const
+        ),
+        Effect.catch(() =>
+          Effect.succeed({
+            state: "unverifiable",
+            reason: "native scheduler status is unavailable",
+          } as const)
+        ),
+      );
     case "directory":
     case "skill":
       return Effect.gen(function*() {
@@ -560,6 +587,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
   function*(
     fetched: FetchedRevision,
     appliedResources: ReadonlyArray<AppliedResourceRecord> = [],
+    scheduleManager?: ScheduleManager["Service"] | undefined,
   ): Effect.fn.Return<
     {
       readonly revision: PlanningProfileRevision;
@@ -595,6 +623,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
           hydration.desired,
           entry.resource.verify,
           appliedByResource.get(entry.resource.id),
+          scheduleManager,
         ),
       });
       artifacts.push(
@@ -914,6 +943,9 @@ export const synchronizeFollower = Effect.fn(
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
   const synchronization = yield* Synchronization;
+  const scheduleManager = Option.getOrUndefined(
+    yield* Effect.serviceOption(ScheduleManager),
+  );
   const configuration = yield* loadFollowerSynchronizationConfiguration(
     stateLocation,
   );
@@ -929,7 +961,11 @@ export const synchronizeFollower = Effect.fn(
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
   );
-  const hydrated = yield* hydrateRevision(fetched, appliedResources).pipe(
+  const hydrated = yield* hydrateRevision(
+    fetched,
+    appliedResources,
+    scheduleManager,
+  ).pipe(
     Effect.provideService(MachineState, machine),
   );
   yield* repository.publishRevision({
@@ -989,6 +1025,9 @@ export const recoverFollower = Effect.fn(
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
   const synchronization = yield* Synchronization;
+  const scheduleManager = Option.getOrUndefined(
+    yield* Effect.serviceOption(ScheduleManager),
+  );
   const configuration = yield* loadFollowerSynchronizationConfiguration(
     stateLocation,
   );
@@ -1019,7 +1058,11 @@ export const recoverFollower = Effect.fn(
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
   );
-  const hydrated = yield* hydrateRevision(fetched, appliedResources).pipe(
+  const hydrated = yield* hydrateRevision(
+    fetched,
+    appliedResources,
+    scheduleManager,
+  ).pipe(
     Effect.provideService(MachineState, machine),
   );
   const outcome = yield* synchronization.recover({

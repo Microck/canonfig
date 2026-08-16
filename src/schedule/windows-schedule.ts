@@ -7,6 +7,13 @@ import type { SyncSchedule } from "./schedule-manager.types.ts";
 export const windowsCalendar = (
   schedule: SyncSchedule,
 ): Effect.Effect<SchedulerCalendar, ScheduleHumanActionRequiredError> => {
+  if (schedule.kind === "custom") {
+    return Effect.fail(new ScheduleHumanActionRequiredError({
+      action: "use a daily or weekly schedule on Windows",
+      recovery:
+        "Task Scheduler does not support the requested custom calendar expression. Choose a daily or weekly schedule, then retry.",
+    }));
+  }
   if (schedule.timezone !== undefined) {
     return Effect.fail(new ScheduleHumanActionRequiredError({
       action: "use the Windows follower timezone for scheduled sync",

@@ -1,4 +1,4 @@
-import { Clock, Effect, Schema } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
 
 import {
   ContentDigest,
@@ -25,6 +25,7 @@ import {
   type ResourceExecutionContext,
 } from "./resource-executors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
+import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import type { StateRepositoryError } from "../state/state-repository.errors.ts";
 import type { VerificationEvidence } from "../state/state-repository.types.ts";
 import {
@@ -178,6 +179,9 @@ export const executionContexts = (
           verification: desiredEntry.verification,
           artifacts,
           limits,
+          previousSchedule: input.appliedResources?.find((record) =>
+            record.resource === action.resource
+          )?.schedule,
         },
       });
     }
@@ -320,8 +324,11 @@ export const executeSynchronizationAction = (
     }
 
     let prepared: PreparedResourceAction | undefined;
+    const scheduleManager = state.context.resource.kind === "schedule"
+      ? Option.getOrUndefined(yield* Effect.serviceOption(ScheduleManager))
+      : undefined;
     const work = Effect.gen(function*() {
-      prepared = yield* prepareResourceAction(state.context);
+      prepared = yield* prepareResourceAction(state.context, scheduleManager);
       yield* journal(
         input.id,
         state.action.id,
@@ -342,7 +349,7 @@ export const executeSynchronizationAction = (
         );
         return { kind: "verified" } satisfies ActionResult;
       }
-      const verification = yield* verifyResource(state.context);
+      const verification = yield* verifyResource(state.context, scheduleManager);
       const evidence = verificationEvidence(verification);
       if (!verification.passed) {
         yield* rollbackPrepared(prepared);
@@ -514,6 +521,9 @@ export const executeSynchronizationPlan = (
             digest,
             appliedAt,
             ownedFiles,
+            schedule: desired?.kind === "schedule"
+              ? desired.schedule
+              : undefined,
           });
         }
       }

@@ -30,6 +30,11 @@ import { FollowerIdentity } from "../../src/domain/identity.ts";
 import type { ProfileRevision, PublishedResource } from "../../src/domain/profile.ts";
 import type { SynchronizationOutcome } from "../../src/domain/synchronization.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import type {
+  RenderedSchedulerJob,
+  SchedulerBackend,
+  SchedulerInspection,
+} from "../../src/machine/machine-state.types.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
@@ -38,6 +43,8 @@ import {
 } from "../../src/profile/profile-codec.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
+import { scheduleManagerLayer } from "../../src/schedule/schedule-manager.layer.ts";
+import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
 import { planSynchronization } from "../../src/synchronization/planner.ts";
 import {
   defaultSynchronizationExecutionLimits,
@@ -83,6 +90,36 @@ interface Fixture {
   readonly revision: PlanningProfileRevision;
   readonly artifact: SynchronizationArtifact;
   readonly input: SynchronizationRunInput;
+}
+
+class RecordingScheduler implements SchedulerBackend {
+  definition: RenderedSchedulerJob | undefined;
+  readonly installs: Array<RenderedSchedulerJob> = [];
+  removals = 0;
+
+  readonly inspect = (
+    expected: RenderedSchedulerJob,
+  ): Effect.Effect<SchedulerInspection> =>
+    Effect.sync(() => ({
+      installed: this.definition !== undefined,
+      enabled: this.definition !== undefined,
+      matches: this.definition?.service === expected.service
+        && this.definition.schedule === expected.schedule,
+    }));
+
+  readonly install = (
+    definition: RenderedSchedulerJob,
+  ): Effect.Effect<void> =>
+    Effect.sync(() => {
+      this.definition = definition;
+      this.installs.push(definition);
+    });
+
+  readonly remove = (): Effect.Effect<void> =>
+    Effect.sync(() => {
+      this.definition = undefined;
+      this.removals += 1;
+    });
 }
 
 const fileFixture = (
@@ -201,6 +238,57 @@ const mirrorContext = (
     verification: { method: "digest", digest },
     artifacts: new Map([[digest, { digest, content: bytes }]]),
     limits: defaultSynchronizationExecutionLimits,
+  };
+};
+
+const scheduleContext = (
+  root: string,
+  previousSchedule?: {
+    readonly kind: "daily";
+    readonly localTime: string;
+  } | undefined,
+): ResourceExecutionContext => {
+  const spec = {
+    kind: "schedule" as const,
+    calendar: { type: "daily" as const, at: "03:30" },
+    timezone: "local",
+  };
+  const content = new TextEncoder().encode(JSON.stringify(spec));
+  const digest = decode(ContentDigest)(sha256BytesHex(content));
+  const resourceId = decode(ResourceId)("schedule");
+  return {
+    run: decode(RunId)("run-schedule"),
+    action: {
+      id: decode(ActionId)("action:schedule:0:write-file"),
+      resource: resourceId,
+      kind: "write-file",
+      detail: {
+        kind: "write-file",
+        target: join(root, "schedule.json"),
+        digest,
+      },
+      before: [],
+    },
+    resource: {
+      id: resourceId,
+      kind: "schedule",
+      policy: "replace",
+      target: join(root, "schedule.json"),
+      dependsOn: [],
+      blobs: [],
+    },
+    desired: {
+      kind: "schedule",
+      digest,
+      schedule: { kind: "daily", localTime: "03:30" },
+    },
+    verification: {
+      method: "command",
+      command: [process.execPath, "--version"],
+    },
+    artifacts: new Map([[digest, { digest, content }]]),
+    limits: defaultSynchronizationExecutionLimits,
+    previousSchedule,
   };
 };
 
@@ -604,6 +692,95 @@ describe("synchronization apply run", () => {
       "succeeded",
     ]);
     expect(actionRows(fixture.database)[2]?.rollback_reference).toBeNull();
+  });
+
+  it("applies schedules through native adapters and restores them on rollback", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    mkdirSync(bin, { recursive: true });
+    const canonfig = join(bin, "canonfig");
+    writeFileSync(canonfig, "#!/bin/sh\nexit 0\n");
+    chmodSync(canonfig, 0o755);
+    const scheduler = new RecordingScheduler();
+    const machine = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(root, "home") },
+        { name: "PATH", value: bin },
+      ],
+      credentialPolicy: {
+        kind: "local-file",
+        path: join(root, "credentials"),
+      },
+      schedulerBackend: scheduler,
+    });
+    const managerLayer = scheduleManagerLayer.pipe(Layer.provide(machine));
+    const context = scheduleContext(root);
+    const prepared = await Effect.runPromise(
+      Effect.gen(function*() {
+        const manager = yield* ScheduleManager;
+        return yield* prepareResourceAction(context, manager);
+      }).pipe(
+        Effect.provide(Layer.merge(machine, managerLayer)),
+      ),
+    );
+
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(machine)));
+    expect(scheduler.installs).toHaveLength(1);
+    expect(scheduler.definition?.schedule).toContain("03:30");
+    expect(await readFile(join(root, "schedule.json")).catch(() => undefined))
+      .toBeUndefined();
+
+    await Effect.runPromise(
+      prepared.rollback!.pipe(Effect.provide(machine)),
+    );
+    expect(scheduler.removals).toBe(1);
+    expect(scheduler.definition).toBeUndefined();
+  });
+
+  it("updates schedules through native adapters and rolls back to the prior cadence", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "canonfig"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(bin, "canonfig"), 0o755);
+    const scheduler = new RecordingScheduler();
+    const machine = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(root, "home") },
+        { name: "PATH", value: bin },
+      ],
+      credentialPolicy: {
+        kind: "local-file",
+        path: join(root, "credentials"),
+      },
+      schedulerBackend: scheduler,
+    });
+    const managerLayer = scheduleManagerLayer.pipe(Layer.provide(machine));
+    const prior = { kind: "daily" as const, localTime: "01:00" };
+    await Effect.runPromise(
+      Effect.flatMap(ScheduleManager, (manager) =>
+        manager.install({ schedule: prior })
+      ).pipe(Effect.provide(managerLayer)),
+    );
+    const context = scheduleContext(root, prior);
+    const prepared = await Effect.runPromise(
+      Effect.gen(function*() {
+        const manager = yield* ScheduleManager;
+        return yield* prepareResourceAction(context, manager);
+      }).pipe(
+        Effect.provide(Layer.merge(machine, managerLayer)),
+      ),
+    );
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(machine)));
+    expect(scheduler.installs).toHaveLength(2);
+    expect(scheduler.definition?.schedule).toContain("03:30");
+
+    await Effect.runPromise(
+      prepared.rollback!.pipe(Effect.provide(machine)),
+    );
+    expect(scheduler.installs).toHaveLength(3);
+    expect(scheduler.definition?.schedule).toContain("01:00");
+    expect(scheduler.removals).toBe(0);
   });
 
   it("applies and verifies executable file intent", async () => {
