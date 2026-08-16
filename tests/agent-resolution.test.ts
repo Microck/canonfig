@@ -1,6 +1,7 @@
-import { delimiter, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  access,
   chmod,
   mkdir,
   mkdtemp,
@@ -20,6 +21,7 @@ import {
   AgentInputLimitError,
   AgentOutputLimitError,
   DeniedAgentCapabilityError,
+  InvalidAgentTaskError,
 } from "../src/agent/agent-resolution.errors.ts";
 import {
   AgentResolutionLive,
@@ -27,7 +29,10 @@ import {
   type ControlledExecutor,
 } from "../src/agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../src/agent/agent-resolution.service.ts";
-import { authorizeAction } from "../src/agent/agent-resolution.service.ts";
+import {
+  authorizeAction,
+  isNestedCommandLauncher,
+} from "../src/agent/agent-resolution.service.ts";
 import type {
   AgentActionProposal,
   CapturedProcess,
@@ -44,20 +49,45 @@ import {
 
 const taskId = Schema.decodeUnknownSync(AgentTaskId)("agent:test");
 
-const task = (root: string, changes: Partial<AgentTask> = {}): AgentTask => ({
-  id: taskId,
-  summary: "Resolve test tool",
-  desiredOutcome: "test tool is installed",
-  observedEvidence: ["not installed"],
-  allowedPaths: [root],
-  allowedExecutables: ["tool", "verify", process.execPath],
-  allowedOrigins: ["https://packages.example.test"],
-  forbidden: ["elevation", "login", "restart", "reboot"],
-  timeLimitSeconds: 2,
-  outputLimitBytes: 32_000,
-  verification: { command: ["verify"], expectContains: "verified" },
-  ...changes,
-});
+const executableBehavior = (executable: string) =>
+  /^(?:node|nodejs|python\d*(?:\.\d+)*|pypy\d*(?:\.\d+)*|py|(?:ba|da|fi|k|z)?sh|pwsh|powershell)$/u
+    .test(basename(executable).replace(/\.(?:cmd|exe)$/u, "").toLowerCase())
+    ? "script-interpreter" as const
+    : "leaf" as const;
+
+// Mirrors the production rule: an executable that launches nested commands
+// can never carry an execution model, not even under an explicit operator
+// classification.
+const authorizationsFor = (
+  executables: ReadonlyArray<string>,
+): ReadonlyArray<{ executable: string; behavior: "leaf" | "script-interpreter" }> =>
+  executables
+    .filter((executable) => !isNestedCommandLauncher(executable))
+    .map((executable) => ({
+      executable,
+      behavior: executableBehavior(executable),
+    }));
+
+const task = (root: string, changes: Partial<AgentTask> = {}): AgentTask => {
+  const allowedExecutables = changes.allowedExecutables
+    ?? ["tool", "verify", process.execPath];
+  return {
+    id: taskId,
+    summary: "Resolve test tool",
+    desiredOutcome: "test tool is installed",
+    observedEvidence: ["not installed"],
+    allowedPaths: [root],
+    allowedExecutables,
+    executableAuthorizations: changes.executableAuthorizations
+      ?? authorizationsFor(allowedExecutables),
+    allowedOrigins: ["https://packages.example.test"],
+    forbidden: ["elevation", "login", "restart", "reboot"],
+    timeLimitSeconds: 2,
+    outputLimitBytes: 32_000,
+    verification: { command: ["verify"], expectContains: "verified" },
+    ...changes,
+  };
+};
 
 const proposal = (action: ProposedProcessAction): AgentActionProposal => ({
   summary: "bounded resolution",
@@ -94,12 +124,16 @@ const wrappedPrivilegeCases: ReadonlyArray<readonly [
   ]],
 ];
 
-const harness = (root: string) => ({
+const harness = (
+  root: string,
+  allowedExecutables: ReadonlyArray<string> = ["tool", "verify", process.execPath],
+) => ({
   harness: "codex" as const,
   executable: process.execPath,
   maximumInputBytes: 64_000,
   allowedPaths: [root],
-  allowedExecutables: ["tool", "verify", process.execPath],
+  allowedExecutables,
+  executableAuthorizations: authorizationsFor(allowedExecutables),
   allowedOrigins: ["https://packages.example.test"],
   allowedCapabilities: [] as const,
   environment: [{ name: "PATH", value: root }],
@@ -372,8 +406,7 @@ describe("agent resolution", () => {
         policy: "agent-apply",
         task: boundedTask,
         harness: {
-          ...harness(directory),
-          allowedExecutables: [shadow, join(directory, "verify")],
+          ...harness(directory, [shadow, join(directory, "verify")]),
           environment: [{
             name: "PATH",
             value: `${first}${delimiter}${second}${delimiter}${directory}`,
@@ -410,8 +443,7 @@ describe("agent resolution", () => {
           policy: "agent-apply",
           task: bounded,
           harness: {
-            ...harness(directory),
-            allowedExecutables: [wrapper, join(directory, "verify")],
+            ...harness(directory, [wrapper, join(directory, "verify")]),
             allowedCapabilities: capabilities.filter((capability) =>
               capability !== omitted
             ),
@@ -426,7 +458,7 @@ describe("agent resolution", () => {
     }
   });
 
-  it("fails closed on ambiguous privileged shell wrappers", async () => {
+  it("fails closed on privileged wrappers without an explicit execution model", async () => {
     const sudo = join(directory, "sudo");
     await writeFile(sudo, "#!/bin/sh\nexit 0\n");
     await chmod(sudo, 0o755);
@@ -441,10 +473,17 @@ describe("agent resolution", () => {
         task: task(directory, {
           forbidden: [],
           allowedExecutables: [sudo, join(directory, "verify")],
+          executableAuthorizations: [{
+            executable: join(directory, "verify"),
+            behavior: "leaf",
+          }],
         }),
         harness: {
-          ...harness(directory),
-          allowedExecutables: [sudo, join(directory, "verify")],
+          ...harness(directory, [sudo, join(directory, "verify")]),
+          executableAuthorizations: [{
+            executable: join(directory, "verify"),
+            behavior: "leaf",
+          }],
           allowedCapabilities: ["elevation", "login", "restart", "reboot"],
         },
       });
@@ -452,7 +491,7 @@ describe("agent resolution", () => {
       Effect.provide(makeAgentResolutionLayer(recording.execute)),
       Effect.flip,
     ));
-    expect(error).toMatchObject({ capability: "privileged-wrapper" });
+    expect(error).toMatchObject({ capability: "nested-command-launcher" });
     expect(recording.invocations).toHaveLength(1);
   });
 
@@ -484,8 +523,7 @@ describe("agent resolution", () => {
       action({ executable, arguments: arguments_ }),
       boundedTask,
       {
-        ...harness(directory),
-        allowedExecutables: [executable, join(directory, "verify")],
+        ...harness(directory, [executable, join(directory, "verify")]),
       },
     ).pipe(Effect.flip));
     expect(denied).toMatchObject({
@@ -503,7 +541,14 @@ describe("agent resolution", () => {
       symlink(process.execPath, node),
     ]);
     const allowedExecutables = [wrapper, node, join(directory, "verify")];
-    const boundedTask = task(directory, { allowedExecutables });
+    const executableAuthorizations = [
+      { executable: node, behavior: "script-interpreter" as const },
+      { executable: join(directory, "verify"), behavior: "leaf" as const },
+    ];
+    const boundedTask = task(directory, {
+      allowedExecutables,
+      executableAuthorizations,
+    });
     const denied = await Effect.runPromise(authorizeAction(
       action({
         executable: wrapper,
@@ -511,14 +556,190 @@ describe("agent resolution", () => {
       }),
       boundedTask,
       {
-        ...harness(directory),
-        allowedExecutables,
+        ...harness(directory, allowedExecutables),
+        executableAuthorizations,
       },
     ).pipe(Effect.flip));
     expect(denied).toMatchObject({
-      capability: "interpreter-wrapper",
+      capability: "nested-command-launcher",
       value: wrapper,
     });
+  });
+
+  it.each([
+    ["xargs", ["denied-tool"], "nested-command-launcher"],
+    ["xargs", ["-a", "commands.txt", "denied-tool"], "nested-command-launcher"],
+    ["find", [".", "-exec", "denied-tool", ";"], "nested-command-launcher"],
+    ["find", [".", "-ok", "denied-tool", ";"], "nested-command-launcher"],
+    ["awk", ["BEGIN { system(\"denied-tool\") }"], "nested-command-launcher"],
+    ["perl", ["-e", "system 'denied-tool'"], "nested-command-launcher"],
+    ["make", ["--eval=all:\n\tdenied-tool", "all"], "nested-command-launcher"],
+    ["make", ["SHELL=denied-tool", "all"], "nested-command-launcher"],
+    ["npx", ["denied-package"], "nested-command-launcher"],
+    ["npx", ["--package", "allowed-package", "--", "denied-tool"], "nested-command-launcher"],
+    ["env", ["denied-tool"], "nested-command-launcher"],
+    ["timeout", ["1", "denied-tool"], "nested-command-launcher"],
+    // `sudo denied-tool` derives the forbidden elevation capability first;
+    // the wrapper never reaches behavior classification.
+    ["sudo", ["denied-tool"], "elevation"],
+    ["docker", ["run", "denied-image"], "nested-command-launcher"],
+    ["git", ["-c", "alias.x=!denied-tool", "x"], "nested-command-launcher"],
+  ])("denies opaque %s descendant execution before spawn", async (
+    launcherName,
+    arguments_,
+    capability,
+  ) => {
+    const launcher = join(directory, launcherName);
+    await writeFile(launcher, "#!/bin/sh\nexit 0\n");
+    await chmod(launcher, 0o755);
+    const verify = join(directory, "verify");
+    const allowedExecutables = [launcher, verify];
+    // A launcher stays in the executable allowlist, but no classification can
+    // be attached to it: an operator attempt to authorize it as a direct leaf
+    // or script interpreter must not re-open the nested-command bypass.
+    const executableAuthorizations = [{
+      executable: verify,
+      behavior: "leaf" as const,
+    }];
+    const recording = new RecordingExecutor(proposal(action({
+      executable: launcher,
+      arguments: arguments_,
+    })));
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, {
+          allowedExecutables,
+          executableAuthorizations,
+        }),
+        harness: {
+          ...harness(directory, allowedExecutables),
+          executableAuthorizations,
+        },
+      });
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(recording.execute)),
+      Effect.flip,
+    ));
+    expect(error).toMatchObject({ capability });
+    expect(recording.invocations).toHaveLength(1);
+  });
+
+  it("rejects tasks and harnesses that classify a launcher with an execution model", async () => {
+    const launcher = join(directory, "xargs");
+    await writeFile(launcher, "#!/bin/sh\nexit 0\n");
+    await chmod(launcher, 0o755);
+    const classified = [{ executable: launcher, behavior: "leaf" as const }];
+    const recording = new RecordingExecutor(proposal(action()));
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, {
+          allowedExecutables: [launcher, join(directory, "verify")],
+          executableAuthorizations: [
+            ...classified,
+            { executable: join(directory, "verify"), behavior: "leaf" },
+          ],
+        }),
+        harness: harness(directory, [launcher, join(directory, "verify")]),
+      });
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(recording.execute)),
+      Effect.flip,
+    ));
+    expect(error).toBeInstanceOf(InvalidAgentTaskError);
+    expect(error.message).toContain("nested commands");
+    expect(recording.invocations).toHaveLength(0);
+  });
+
+  it("applies an explicitly classified direct leaf operation", async () => {
+    const recording = new RecordingExecutor(proposal(action()));
+    const result = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory),
+        harness: harness(directory),
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+    expect(result.outcome).toBe("applied");
+    expect(recording.invocations[1]?.executable).toBe(join(directory, "tool"));
+  });
+
+  it("applies the same fail-closed behavior to verification commands", async () => {
+    const launcher = join(directory, "xargs");
+    await writeFile(launcher, "#!/bin/sh\nexit 0\n");
+    await chmod(launcher, 0o755);
+    const allowedExecutables = [launcher];
+    const recording = new RecordingExecutor({ summary: "no action", actions: [] });
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, {
+          allowedExecutables,
+          executableAuthorizations: [],
+          verification: { command: [launcher, "denied-tool"] },
+        }),
+        harness: {
+          ...harness(directory, allowedExecutables),
+          executableAuthorizations: [],
+        },
+      });
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(recording.execute)),
+      Effect.flip,
+    ));
+    expect(error).toMatchObject({
+      capability: "nested-command-launcher",
+    });
+    expect(recording.invocations).toHaveLength(1);
+  });
+
+  it("prevents a real opaque launcher from reaching its descendant", async () => {
+    const marker = join(directory, "spawned");
+    const launcher = join(directory, "xargs");
+    const harnessScript = join(directory, "harness.mjs");
+    const verify = join(directory, "verify");
+    await Promise.all([
+      writeFile(launcher, `#!/bin/sh\nprintf spawned > ${JSON.stringify(marker)}\n`),
+      writeFile(
+        harnessScript,
+        `process.stdout.write(${JSON.stringify(JSON.stringify(proposal(action({
+          executable: launcher,
+          arguments: ["denied-tool"],
+        }))))});\n`,
+      ),
+    ]);
+    await chmod(launcher, 0o755);
+    const allowedExecutables = [launcher, verify];
+    const executableAuthorizations = [{
+      executable: verify,
+      behavior: "leaf" as const,
+    }];
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, {
+          allowedExecutables,
+          executableAuthorizations,
+        }),
+        harness: {
+          ...harness(directory, allowedExecutables),
+          executable: process.execPath,
+          arguments: [harnessScript],
+          executableAuthorizations,
+        },
+      });
+    }).pipe(
+      Effect.provide(AgentResolutionLive),
+      Effect.flip,
+    ));
+    expect(error).toMatchObject({ capability: "nested-command-launcher" });
+    await expect(access(marker)).rejects.toThrow();
   });
 
   it("allows explicit interpreter script files only within path bounds", async () => {
@@ -528,8 +749,7 @@ describe("agent resolution", () => {
       allowedExecutables: [process.execPath, join(directory, "verify")],
     });
     const bounds = {
-      ...harness(directory),
-      allowedExecutables: [process.execPath, join(directory, "verify")],
+      ...harness(directory, [process.execPath, join(directory, "verify")]),
     };
     await expect(Effect.runPromise(authorizeAction(
       action({
@@ -568,8 +788,7 @@ describe("agent resolution", () => {
       }),
       powershellTask,
       {
-        ...harness(directory),
-        allowedExecutables: [powershell, join(directory, "verify")],
+        ...harness(directory, [powershell, join(directory, "verify")]),
       },
     ))).resolves.toBeUndefined();
   });
@@ -585,8 +804,7 @@ describe("agent resolution", () => {
       }),
       boundedTask,
       {
-        ...harness(directory),
-        allowedExecutables: [process.execPath, join(directory, "verify")],
+        ...harness(directory, [process.execPath, join(directory, "verify")]),
       },
     ).pipe(Effect.flip));
     expect(denied).toMatchObject({ capability: "inline-program" });

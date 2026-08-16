@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   ActionId,
+  AgentTaskId,
   ProfileId,
   ProfileRevisionId,
   ResourceId,
@@ -371,6 +372,75 @@ describe("synchronization crash recovery", () => {
       [second.id, "running"],
       [second.id, "succeeded"],
     ]);
+  });
+
+  it("preserves executable execution-model metadata across persisted plan hydration", async () => {
+    const value = fixture(temporaryDirectory(), { kind: "tool" });
+    const base = persistedPlan(value);
+    const agentAction = {
+      id: decode(ActionId)("action:tool:1:agent-task"),
+      resource: value.revision.resources[0]!.id,
+      kind: "agent-task" as const,
+      detail: {
+        kind: "agent-task" as const,
+        taskId: decode(AgentTaskId)("agent:tool:1"),
+        summary: "Resolve tool",
+      },
+      before: [],
+    };
+    const agentTask = {
+      id: decode(AgentTaskId)("agent:tool:1"),
+      resource: value.revision.resources[0]!.id,
+      summary: "Resolve tool",
+      desiredOutcome: "Make the tool available",
+      observedEvidence: ["Observed state: absent"],
+      allowedPaths: ["~/.canonfig/tool"],
+      allowedExecutables: ["custom-tool"],
+      executableAuthorizations: [{
+        executable: "custom-tool",
+        behavior: "leaf" as const,
+      }],
+      allowedOrigins: [],
+      forbidden: ["elevation", "login", "restart", "reboot"] as const,
+      timeLimitSeconds: 300,
+      outputLimitBytes: 65_536,
+      verification: { command: ["custom-tool", "--version"] },
+    };
+    const body = {
+      revision: base.revision,
+      follower: base.follower,
+      requiredBlobs: base.requiredBlobs,
+      actions: [agentAction],
+      agentTasks: [agentTask],
+    };
+    const encoded = canonicalJson(
+      Schema.decodeUnknownSync(Schema.MutableJson)(body),
+    );
+    const plan = {
+      ...base,
+      actions: body.actions,
+      agentTasks: [agentTask],
+      encoded,
+      digest: sha256Hex(encoded),
+    };
+    await seed(value, plan);
+
+    // Recovery hydrates the persisted plan; the agent task action routes to
+    // Human Action Required without losing its recorded execution models.
+    const outcome = await recover(value);
+    expect(outcome.outcome).toBe("HumanActionRequired");
+    if (outcome.outcome !== "HumanActionRequired") return;
+    expect(outcome.actions).toHaveLength(1);
+    const database = new DatabaseSync(value.database, { readOnly: true });
+    const row = database.prepare(
+      "SELECT plan_json FROM synchronization_runs WHERE id = ?",
+    ).get("run-recovery");
+    database.close();
+    const persisted = JSON.parse(String(row?.plan_json));
+    expect(persisted.agentTasks[0].executableAuthorizations).toEqual([{
+      executable: "custom-tool",
+      behavior: "leaf",
+    }]);
   });
 
   it("fails safely on malformed persisted plan data", async () => {

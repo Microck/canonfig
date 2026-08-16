@@ -10,6 +10,7 @@ import type { ProfileRevision, PublishedResource } from "../domain/profile.ts";
 import type { VerificationInput } from "../domain/profile.ts";
 import type {
   AppliedResourceRecord,
+  ExecutableAuthorization,
   ObservedResourceState,
   PlannedAction,
   SynchronizationPlan,
@@ -144,6 +145,7 @@ export interface PlannedAgentTask {
   readonly observedEvidence: ReadonlyArray<string>;
   readonly allowedPaths: ReadonlyArray<string>;
   readonly allowedExecutables: ReadonlyArray<string>;
+  readonly executableAuthorizations?: ReadonlyArray<ExecutableAuthorization> | undefined;
   readonly allowedOrigins: ReadonlyArray<string>;
   readonly forbidden: ReadonlyArray<"elevation" | "login" | "restart" | "reboot">;
   readonly timeLimitSeconds: number;

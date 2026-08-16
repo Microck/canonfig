@@ -60,7 +60,17 @@ export interface SynchronizationPlan {
   readonly digest?: ContentDigest | undefined;
 }
 
-/** A bounded Agent Task given to the Configuration Agent. */
+/**
+ * An explicit per-executable execution model. A task or harness can only
+ * authorize behavior it can reason about: a direct leaf operation, or a
+ * bounded script-file interpreter. Launchers that execute nested commands
+ * cannot be authorized at all; they fail closed with Human Action Required.
+ */
+export interface ExecutableAuthorization {
+  readonly executable: string;
+  readonly behavior: "leaf" | "script-interpreter";
+}
+
 export interface AgentTask {
   readonly id: AgentTaskId;
   readonly summary: string;
@@ -68,6 +78,7 @@ export interface AgentTask {
   readonly observedEvidence: ReadonlyArray<string>;
   readonly allowedPaths: ReadonlyArray<string>;
   readonly allowedExecutables: ReadonlyArray<string>;
+  readonly executableAuthorizations?: ReadonlyArray<ExecutableAuthorization> | undefined;
   readonly allowedOrigins: ReadonlyArray<string>;
   readonly forbidden: ReadonlyArray<"elevation" | "login" | "restart" | "reboot">;
   readonly timeLimitSeconds: number;
@@ -204,6 +215,11 @@ export const ForbiddenAgentCapabilitySchema = Schema.Literals([
   "reboot",
 ]);
 
+export const ExecutableAuthorizationSchema = Schema.Struct({
+  executable: Schema.NonEmptyString,
+  behavior: Schema.Literals(["leaf", "script-interpreter"]),
+});
+
 export const AgentTaskSchema = Schema.Struct({
   id: AgentTaskId,
   summary: Schema.NonEmptyString,
@@ -211,6 +227,7 @@ export const AgentTaskSchema = Schema.Struct({
   observedEvidence: Schema.Array(Schema.String),
   allowedPaths: Schema.Array(Schema.NonEmptyString),
   allowedExecutables: Schema.Array(Schema.NonEmptyString),
+  executableAuthorizations: Schema.optional(Schema.Array(ExecutableAuthorizationSchema)),
   allowedOrigins: Schema.Array(Schema.NonEmptyString),
   forbidden: Schema.Array(ForbiddenAgentCapabilitySchema),
   timeLimitSeconds: Schema.Int.check(Schema.isGreaterThan(0)),

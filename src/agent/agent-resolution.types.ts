@@ -1,5 +1,8 @@
 import type { ProfileChangeProposal, ProfileResourceInput } from "../domain/profile.ts";
-import type { AgentTask } from "../domain/synchronization.ts";
+import type {
+  AgentTask,
+  ExecutableAuthorization,
+} from "../domain/synchronization.ts";
 import type { DiscoveryEvidenceRecord } from "../domain/profile.ts";
 
 export type AgentPolicy =
@@ -20,6 +23,7 @@ export interface AgentHarnessConfiguration {
   readonly maximumInputBytes: number;
   readonly allowedPaths: ReadonlyArray<string>;
   readonly allowedExecutables: ReadonlyArray<string>;
+  readonly executableAuthorizations?: ReadonlyArray<ExecutableAuthorization> | undefined;
   readonly allowedOrigins: ReadonlyArray<string>;
   readonly allowedCapabilities: ReadonlyArray<
     "elevation" | "login" | "restart" | "reboot"

@@ -8,6 +8,7 @@ import {
   Timestamp,
 } from "../domain/brand.ts";
 import { AgentPolicy, FollowerIdentity } from "../domain/identity.ts";
+import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 
 export const SupportedAgentHarness = Schema.Literals([
   "codex",
@@ -35,6 +36,9 @@ export const FollowerAgentHarnessConfiguration = Schema.Struct({
   ),
   allowedPaths: Schema.Array(Schema.NonEmptyString),
   allowedExecutables: Schema.Array(Schema.NonEmptyString),
+  executableAuthorizations: Schema.optional(
+    Schema.Array(ExecutableAuthorizationSchema),
+  ),
   allowedOrigins: Schema.Array(Schema.NonEmptyString),
   allowedCapabilities: Schema.Array(AgentHarnessCapability),
 });

@@ -133,6 +133,10 @@ describe("production follower orchestration", () => {
       observedEvidence: ["Observed state: absent"],
       allowedPaths: ["/tmp/canonfig-agent"],
       allowedExecutables: ["agent-tool"],
+      executableAuthorizations: [{
+        executable: "agent-tool",
+        behavior: "leaf" as const,
+      }],
       allowedOrigins: ["https://packages.example.test"],
       forbidden: ["elevation", "login", "restart", "reboot"] as const,
       timeLimitSeconds: 30,
@@ -188,6 +192,10 @@ describe("production follower orchestration", () => {
         maximumInputBytes: 8192,
         allowedPaths: ["/tmp/canonfig-agent"],
         allowedExecutables: ["agent-tool"],
+        executableAuthorizations: [{
+          executable: "agent-tool",
+          behavior: "leaf",
+        }],
         allowedOrigins: ["https://packages.example.test"],
         allowedCapabilities: [],
       },
@@ -246,6 +254,34 @@ describe("production follower orchestration", () => {
         reason: expect.stringContaining("not configured"),
       },
     });
+
+    // A persisted harness that classifies a nested-command launcher must fail
+    // closed at synchronization time, routing the task to Human Action
+    // Required instead of trusting the stored classification.
+    const launcherClassified = await Effect.runPromise(
+      resolveAgentTasks(
+        {
+          ...baseConfiguration,
+          agentHarness: {
+            ...baseConfiguration.agentHarness!,
+            executableAuthorizations: [{
+              executable: "xargs",
+              behavior: "leaf",
+            }],
+          },
+        },
+        plan,
+        true,
+      ).pipe(Effect.provideService(AgentResolution, recordingAgent)),
+    );
+    expect(launcherClassified.plan.actions[0]).toMatchObject({
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: expect.stringContaining("nested-command launcher"),
+      },
+    });
+    expect(launcherClassified.agentResolutions).toHaveLength(0);
   });
 
   it("persists enrollment config, transfers a selected revision, converges, reuses cache, detects drift, and rejects revocation", async () => {

@@ -11,6 +11,8 @@ import {
 } from "../domain/brand.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
+import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
+import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 import {
   scheduleWeekdays,
   type SyncSchedule,
@@ -65,7 +67,8 @@ Profiles and policy:
   profile select <profile-id>
   agent policy [deterministic-only|agent-propose|agent-apply]
   agent harness [codex|claude|gemini] --executable <path> [--allow-path <path>...]
-    [--allow-executable <name>...] [--allow-origin <https-origin>...]
+    [--allow-leaf-executable <name>...] [--allow-script-interpreter <path>...]
+    [--allow-origin <https-origin>...]
     [--allow-capability <capability>...] [--maximum-input-bytes <bytes>]
 
 Scheduling:
@@ -518,7 +521,8 @@ const evaluateCommand = (
         new Set([
           "--executable",
           "--allow-path",
-          "--allow-executable",
+          "--allow-leaf-executable",
+          "--allow-script-interpreter",
           "--allow-origin",
           "--allow-capability",
           "--maximum-input-bytes",
@@ -550,6 +554,7 @@ const evaluateCommand = (
           ),
           allowedPaths: Schema.Array(Schema.NonEmptyString),
           allowedExecutables: Schema.Array(Schema.NonEmptyString),
+          executableAuthorizations: Schema.Array(ExecutableAuthorizationSchema),
           allowedOrigins: Schema.Array(Schema.NonEmptyString),
           allowedCapabilities: Schema.Array(AgentHarnessCapability),
         }),
@@ -562,12 +567,36 @@ const evaluateCommand = (
           1024 * 1024,
         ),
         allowedPaths: options.values.get("--allow-path") ?? [],
-        allowedExecutables: options.values.get("--allow-executable") ?? [],
+        allowedExecutables: [
+          ...new Set([
+            ...(options.values.get("--allow-leaf-executable") ?? []),
+            ...(options.values.get("--allow-script-interpreter") ?? []),
+          ]),
+        ],
+        executableAuthorizations: [
+          ...(options.values.get("--allow-leaf-executable") ?? []).map(
+            (executable) => ({ executable, behavior: "leaf" as const }),
+          ),
+          ...(options.values.get("--allow-script-interpreter") ?? []).map(
+            (executable) => ({
+              executable,
+              behavior: "script-interpreter" as const,
+            }),
+          ),
+        ],
         allowedOrigins: origins,
         allowedCapabilities: options.values.get("--allow-capability") ?? [],
       });
       if (Option.isNone(configuration)) {
         return invalid("Invalid agent harness configuration");
+      }
+      const unclassifiable = configuration.value.executableAuthorizations.find(
+        (authorization) => isNestedCommandLauncher(authorization.executable),
+      );
+      if (unclassifiable !== undefined) {
+        return invalid(
+          `${unclassifiable.executable} launches nested commands that cannot be bounded by an execution model; remove it from the agent harness allowlist`,
+        );
       }
       return command({
         _tag: "AgentHarnessSet",

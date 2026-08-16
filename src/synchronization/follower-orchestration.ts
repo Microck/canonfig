@@ -6,6 +6,7 @@ import { Effect, Redacted, Schema } from "effect";
 import {
   AgentResolution,
   executableAllowed,
+  isNestedCommandLauncher,
 } from "../agent/agent-resolution.service.ts";
 import type { AgentResolutionOutcome } from "../agent/agent-resolution.types.ts";
 import {
@@ -701,8 +702,18 @@ const harnessConfigurationIssue = (
     configuration.allowedExecutables.some((executable) =>
       executable.trim() !== executable
     )
+    || configuration.executableAuthorizations?.some((authorization) =>
+      authorization.executable.trim() !== authorization.executable
+    ) === true
   ) {
     return "agent harness executable bounds are invalid";
+  }
+  if (
+    configuration.executableAuthorizations?.some((authorization) =>
+      isNestedCommandLauncher(authorization.executable)
+    ) === true
+  ) {
+    return "agent harness executable bounds include an unboundable nested-command launcher";
   }
   for (const origin of configuration.allowedOrigins) {
     try {
@@ -722,7 +733,7 @@ const boundedTask = (
   configuration: FollowerAgentHarnessConfiguration,
 ) =>
   Effect.gen(function*() {
-    const allowedExecutables = [];
+    const allowedExecutables: Array<string> = [];
     for (const executable of task.allowedExecutables) {
       if (yield* executableAllowed(
         executable,
@@ -733,12 +744,18 @@ const boundedTask = (
         allowedExecutables.push(executable);
       }
     }
+    // Authorizations may only claim executables that survived the harness
+    // allowlist; otherwise the bounded task would over-claim its bounds.
+    const boundedAuthorizations = task.executableAuthorizations?.filter(
+      (authorization) => allowedExecutables.includes(authorization.executable),
+    );
     return {
       ...task,
       allowedPaths: task.allowedPaths.filter((path) =>
         pathWithinHarnessBounds(path, configuration)
       ),
       allowedExecutables,
+      executableAuthorizations: boundedAuthorizations,
       allowedOrigins: task.allowedOrigins.filter((origin) =>
         originWithinHarnessBounds(origin, configuration)
       ),
@@ -825,6 +842,7 @@ export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTa
           maximumInputBytes: harness.maximumInputBytes,
           allowedPaths: harness.allowedPaths,
           allowedExecutables: harness.allowedExecutables,
+          executableAuthorizations: harness.executableAuthorizations,
           allowedOrigins: harness.allowedOrigins,
           allowedCapabilities: harness.allowedCapabilities,
         },

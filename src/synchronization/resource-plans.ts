@@ -6,6 +6,7 @@ import {
   type ContentDigest,
 } from "../domain/brand.ts";
 import type { ActionDetail, PlannedActionKind } from "../domain/synchronization.ts";
+import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { sha256Hex } from "../profile/profile-codec.ts";
 import { InvalidObservedStateError } from "./synchronization.errors.ts";
 import type {
@@ -166,6 +167,13 @@ const unresolvedAgentTask = (
       tool.toolId,
       ...tool.recipes.map((recipe) => recipe.method),
     ]);
+  // Verification stays on the tool itself; package-manager recipe methods can
+  // be launcher-class names (`make`, `npx`, ...), so they are never granted an
+  // execution model. The bounded agent remains free to propose them, but any
+  // launcher-class action fails closed at authorization time.
+  const verifiable = tool === undefined || isNestedCommandLauncher(tool.toolId)
+    ? undefined
+    : tool;
   return {
     kind: "agent-task",
     detail: {
@@ -180,12 +188,15 @@ const unresolvedAgentTask = (
       observedEvidence: [`Observed state: ${context.observed.state}`],
       allowedPaths: [context.resource.target],
       allowedExecutables,
+      executableAuthorizations: verifiable === undefined
+        ? []
+        : [{ executable: verifiable.toolId, behavior: "leaf" }],
       allowedOrigins: [],
       forbidden: ["elevation", "login", "restart", "reboot"],
       timeLimitSeconds: 300,
       outputLimitBytes: 65_536,
       verification: {
-        command: tool === undefined ? [] : [tool.toolId, "--version"],
+        command: verifiable === undefined ? [] : [verifiable.toolId, "--version"],
       },
     },
   };

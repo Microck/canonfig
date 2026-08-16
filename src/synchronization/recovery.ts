@@ -15,7 +15,10 @@ import type {
   PlannedAction,
   SynchronizationOutcome,
 } from "../domain/synchronization.ts";
-import { PlannedAction as PlannedActionSchema } from "../domain/synchronization.ts";
+import {
+  ExecutableAuthorizationSchema,
+  PlannedAction as PlannedActionSchema,
+} from "../domain/synchronization.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
@@ -62,6 +65,9 @@ const PersistedPlanBody = Schema.Struct({
     observedEvidence: Schema.Array(Schema.String),
     allowedPaths: Schema.Array(Schema.String),
     allowedExecutables: Schema.Array(Schema.String),
+    executableAuthorizations: Schema.optional(
+      Schema.Array(ExecutableAuthorizationSchema),
+    ),
     allowedOrigins: Schema.Array(Schema.String),
     forbidden: Schema.Array(Schema.Literals([
       "elevation",

@@ -19,7 +19,10 @@ import {
 
 import { Context, Effect, Schema } from "effect";
 
-import type { AgentTask } from "../domain/synchronization.ts";
+import type {
+  AgentTask,
+  ExecutableAuthorization,
+} from "../domain/synchronization.ts";
 import {
   AgentProcessError,
   AgentVerificationError,
@@ -113,6 +116,15 @@ export const validateAgentTask = (
       message: "at least one executable must be allowlisted",
     }));
   }
+  const unclassifiable = task.executableAuthorizations?.find((authorization) =>
+    isNestedCommandLauncher(authorization.executable)
+  );
+  if (unclassifiable !== undefined) {
+    return Effect.fail(new InvalidAgentTaskError({
+      task: task.id,
+      message: `${unclassifiable.executable} launches nested commands that cannot be bounded by an execution model`,
+    }));
+  }
   if (task.verification.command.length === 0) {
     return Effect.fail(new InvalidAgentTaskError({
       task: task.id,
@@ -132,6 +144,12 @@ export const redactAgentTask = (
   observedEvidence: task.observedEvidence.map((value) => redactText(value, secrets)),
   allowedPaths: task.allowedPaths.map((value) => redactText(value, secrets)),
   allowedExecutables: task.allowedExecutables.map((value) => redactText(value, secrets)),
+  executableAuthorizations: task.executableAuthorizations?.map(
+    (authorization) => ({
+      ...authorization,
+      executable: redactText(authorization.executable, secrets),
+    }),
+  ),
   allowedOrigins: task.allowedOrigins.map((value) => redactText(value, secrets)),
   verification: {
     command: task.verification.command.map((value) => redactText(value, secrets)),
@@ -361,17 +379,6 @@ const ensureAllowedOrigin = (
 const elevationExecutables = new Set(["sudo", "doas", "pkexec", "runas"]);
 const loginExecutables = new Set(["login", "logon", "su"]);
 const rebootExecutables = new Set(["reboot", "shutdown"]);
-const ambiguousWrapperExecutables = new Set([
-  "bash",
-  "cmd",
-  "env",
-  "fish",
-  "nu",
-  "powershell",
-  "pwsh",
-  "sh",
-  "zsh",
-]);
 type PrivilegedCapability = "elevation" | "login" | "restart" | "reboot";
 
 type InterpreterKind = "node" | "python" | "posix-shell" | "powershell";
@@ -401,18 +408,141 @@ const interpreterKind = (value: string): InterpreterKind | undefined => {
   return undefined;
 };
 
-const interpreterWrapperExecutables = new Set([
+/**
+ * Executables that run a nested command not derivable from their argv: the
+ * descendant is selected by an argument, read from a Makefile or project
+ * manifest, or embedded in program text. Neither a leaf nor a bounded
+ * script-file classification can bound such a descendant, so these are denied
+ * before any allowlist comparison and no configuration can authorize them.
+ * This closes the nested-command bypass reported through `xargs`, `find`,
+ * `awk`, `perl`, `make`, `npx`, and related wrappers and launchers.
+ *
+ * Package managers performing their own operations (`npm install`, `brew`,
+ * `winget`, `uv`, ...) remain classifiable as leaf operations: their
+ * side-effect scripts come from registry packages already bounded by the
+ * origin allowlist, not from an argv-chosen command. Runner forms that select
+ * a command to execute (`npx`, `uvx`, `make`, `go run`, ...) do not qualify.
+ * Recognized script-file interpreters (`interpreterKind`) keep the bounded
+ * script-file model. Every other executable still requires an explicit
+ * matching classification from both the task and the harness.
+ */
+const nestedCommandLaunchers = new Set([
+  // argument dispatch: a later argument names the command to run
+  "at",
+  "batch",
+  "cmd",
   "command",
-  "doas",
   "env",
   "exec",
+  "flock",
+  "ltrace",
   "nice",
   "nohup",
-  "pkexec",
+  "open",
+  "osascript",
+  "parallel",
+  "perf",
+  "screen",
+  "script",
+  "ssh",
   "stdbuf",
-  "sudo",
+  "strace",
+  "systemd-run",
+  "time",
   "timeout",
+  "tmux",
+  "valgrind",
+  "watch",
+  "wmic",
+  "xargs",
+  // runners: an argument selects a package, target, file, or task to execute
+  "bazel",
+  "bazelisk",
+  "buck",
+  "bun",
+  "bunx",
+  "bundle",
+  "cargo",
+  "compose",
+  "deno",
+  "docker",
+  "docker-compose",
+  "dotnet",
+  "go",
+  "gmake",
+  "gradle",
+  "helm",
+  "java",
+  "javaw",
+  "jshell",
+  "just",
+  "kubectl",
+  "mage",
+  "make",
+  "mix",
+  "mvn",
+  "nerdctl",
+  "ninja",
+  "npx",
+  "pipx",
+  "pnpx",
+  "podman",
+  "qjs",
+  "rake",
+  "task",
+  "tsx",
+  "uvx",
+  // program-text interpreters outside the bounded script-file model
+  "awk",
+  "ccl",
+  "cscript",
+  "clisp",
+  "erl",
+  "escript",
+  "expect",
+  "gawk",
+  "groovy",
+  "guile",
+  "julia",
+  "lua",
+  "luajit",
+  "mawk",
+  "mshta",
+  "perl",
+  "php",
+  "racket",
+  "regsvr32",
+  "rscript",
+  "ruby",
+  "rundll32",
+  "sbcl",
+  "swipl",
+  "tclsh",
+  "wish",
+  "wscript",
+  // tools with exec predicates, hooks, filters, or command escapes
+  "fd",
+  "find",
+  "git",
+  "hg",
+  "sqlite3",
+  "svn",
+  "tar",
+  // elevation and session wrappers; capability derivation gates these too
+  "doas",
+  "login",
+  "logon",
+  "pkexec",
+  "runas",
+  "su",
+  "sudo",
 ]);
+
+/** True when the executable runs nested commands that argv cannot bound. */
+export const isNestedCommandLauncher = (value: string): boolean =>
+  nestedCommandLaunchers.has(
+    portableBasename(value).toLowerCase().replace(/\.(?:cmd|exe|bat|com|ps1)$/u, ""),
+  );
 
 interface InterpreterInvocation {
   readonly executable: string;
@@ -544,25 +674,13 @@ const derivedCapabilities = (
   return capabilities;
 };
 
-const hasAmbiguousPrivilegedWrapper = (
-  executable: string,
-  arguments_: ReadonlyArray<string>,
-): boolean => {
-  const command = portableBasename(executable).toLowerCase().replace(/\.(?:cmd|exe)$/u, "");
-  if (!elevationExecutables.has(command)) return false;
-  return arguments_.some((argument) => {
-    const token = portableBasename(argument).toLowerCase().replace(/\.(?:cmd|exe)$/u, "");
-    return ambiguousWrapperExecutables.has(token)
-      || argument === "-c"
-      || argument === "/c"
-      || argument === "-command"
-      || argument === "-encodedcommand";
-  });
-};
-
 type AuthorizationBounds = Pick<
   AgentHarnessConfiguration,
-  "allowedPaths" | "allowedExecutables" | "allowedOrigins" | "allowedCapabilities"
+  | "allowedPaths"
+  | "allowedExecutables"
+  | "executableAuthorizations"
+  | "allowedOrigins"
+  | "allowedCapabilities"
 >;
 
 type AuthorizationEnvironment = {
@@ -572,29 +690,71 @@ type AuthorizationEnvironment = {
 const taskBounds = (task: AgentTask): AuthorizationBounds => ({
   allowedPaths: task.allowedPaths,
   allowedExecutables: task.allowedExecutables,
+  executableAuthorizations: task.executableAuthorizations,
   allowedOrigins: task.allowedOrigins,
   allowedCapabilities: (["elevation", "login", "restart", "reboot"] as const)
     .filter((capability) => !task.forbidden.includes(capability)),
 });
 
-const authorizeInterpreterInvocation = (
+const behaviorAuthorized = (
+  executable: string,
+  workingDirectory: string,
+  environment: ReadonlyArray<ProcessEnvironmentEntry>,
+  authorizations: ReadonlyArray<ExecutableAuthorization> | undefined,
+  behavior: ExecutableAuthorization["behavior"],
+): Effect.Effect<boolean> =>
+  executableAllowed(
+    executable,
+    (authorizations ?? [])
+      .filter((authorization) => authorization.behavior === behavior)
+      .map((authorization) => authorization.executable),
+    environment,
+    workingDirectory,
+  );
+
+const authorizeExecutableBehavior = (
   executable: string,
   arguments_: ReadonlyArray<string>,
   workingDirectory: string,
   task: AgentTask,
   harness: AuthorizationBounds & AuthorizationEnvironment,
+  deniedCapability: string,
 ): Effect.Effect<void, DeniedAgentCapabilityError> =>
   Effect.gen(function*() {
-    const command = portableBasename(executable)
-      .toLowerCase()
-      .replace(/\.(?:cmd|exe)$/u, "");
-    if (interpreterWrapperExecutables.has(command)) {
+    if (isNestedCommandLauncher(executable)) {
+      // The descendant command of a launcher is not derivable from argv, so
+      // neither a leaf nor a script-file classification can bound it. Deny
+      // before any allowlist comparison regardless of what it is named.
       return yield* new DeniedAgentCapabilityError({
-        capability: "interpreter-wrapper",
+        capability: "nested-command-launcher",
         value: executable,
       });
     }
+    const environment = harness.environment ?? [];
     const invocation = interpreterInvocation(executable, arguments_);
+    const behavior = invocation === undefined
+      ? "leaf" as const
+      : "script-interpreter" as const;
+    const taskAuthorized = yield* behaviorAuthorized(
+      executable,
+      workingDirectory,
+      environment,
+      task.executableAuthorizations,
+      behavior,
+    );
+    const harnessAuthorized = yield* behaviorAuthorized(
+      executable,
+      workingDirectory,
+      environment,
+      harness.executableAuthorizations,
+      behavior,
+    );
+    if (!taskAuthorized || !harnessAuthorized) {
+      return yield* new DeniedAgentCapabilityError({
+        capability: deniedCapability,
+        value: executable,
+      });
+    }
     if (invocation === undefined) return;
     const script = interpreterScript(invocation);
     if (script === undefined) {
@@ -644,12 +804,6 @@ const resolveAuthorizedAction = (
         value: action.executable,
       });
     }
-    if (hasAmbiguousPrivilegedWrapper(executable, action.arguments)) {
-      return yield* new DeniedAgentCapabilityError({
-        capability: "privileged-wrapper",
-        value: action.executable,
-      });
-    }
     const capabilities = new Set([
       ...action.capabilities,
       ...derivedCapabilities(executable, action.arguments),
@@ -665,12 +819,13 @@ const resolveAuthorizedAction = (
         });
       }
     }
-    yield* authorizeInterpreterInvocation(
+    yield* authorizeExecutableBehavior(
       executable,
       action.arguments,
       workingDirectory,
       task,
       harness,
+      "executable-behavior",
     );
     const authorizedWorkingDirectory = action.workingDirectory
       ?? task.allowedPaths[0];
@@ -755,19 +910,19 @@ const resolveAuthorizedVerification = (
         workingDirectory,
       ))
       || derivedCapabilities(executable, task.verification.command.slice(1)).size > 0
-      || hasAmbiguousPrivilegedWrapper(executable, task.verification.command.slice(1))
     ) {
       return yield* new DeniedAgentCapabilityError({
         capability: "verification-executable",
         value: requestedExecutable,
       });
     }
-    yield* authorizeInterpreterInvocation(
+    yield* authorizeExecutableBehavior(
       executable,
       task.verification.command.slice(1),
       workingDirectory,
       task,
       harness,
+      "verification-executable-behavior",
     );
     yield* Effect.forEach(
       task.verification.command.slice(1),

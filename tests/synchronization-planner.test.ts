@@ -463,6 +463,10 @@ describe("stable planning and bounded resolution", () => {
       observedEvidence: ["Observed state: absent"],
       allowedPaths: ["~/.canonfig/tool"],
       allowedExecutables: ["custom-tool"],
+      executableAuthorizations: [{
+        executable: "custom-tool",
+        behavior: "leaf",
+      }],
       allowedOrigins: [],
       forbidden: ["elevation", "login", "restart", "reboot"],
       timeLimitSeconds: 300,

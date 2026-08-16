@@ -205,11 +205,23 @@ Every Agent Task declares:
 - desired resource and verification contract
 - observed evidence and prior failed deterministic actions
 - allowed filesystem roots
-- allowed executable families
+- canonical executable identities classified as direct leaf operations or
+  bounded script-file interpreters
 - allowed network origins
 - whether elevation, login, restart, or reboot is forbidden
 - wall-clock and output limits
 - expected structured completion result
+
+The task and follower harness policies must both authorize the same executable
+execution model. Executables classified as launchers — tools that run a nested
+command selected by an argument or embedded in program text, such as `xargs`,
+`find -exec`, `awk`, `perl`, `make`, `npx`, elevation wrappers, and package or
+task runners — cannot be authorized by any configuration because their
+descendant command is not derivable from argv. They stop with Human Action
+Required before spawn. Inline interpreter programs and unclassified executables
+fail the same way. An allowlisted utility never implicitly authorizes
+descendants. The same rules apply to proposal actions and independent
+verification commands.
 
 The executor captures stdout, stderr, exit status, changed paths, and verification evidence. It redacts known credentials before persistence. An agent statement is never proof of completion by itself.
 
