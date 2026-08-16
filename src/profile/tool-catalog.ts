@@ -51,7 +51,7 @@ export type InstallationRecipe =
   | (VersionedRecipe & {
     readonly method: "npm";
     readonly package: string;
-    readonly command: readonly ["npm", "install", "--global", string];
+    readonly command: readonly ["npm", "install", "--global", string, "--ignore-scripts"];
   })
   | (VersionedRecipe & {
     readonly method: "homebrew";
@@ -66,7 +66,7 @@ export type InstallationRecipe =
   | (VersionedRecipe & {
     readonly method: "uv";
     readonly package: string;
-    readonly command: readonly ["uv", "tool", "install", string];
+    readonly command: readonly ["uv", "tool", "install", string, "--only-binary=:all:"];
   })
   | (VersionedRecipe & {
     readonly method: "cargo";
@@ -217,7 +217,7 @@ const recipeFromPackage = (
         package: metadata.name,
         version,
         source: metadata.source,
-        command: ["npm", "install", "--global", specification],
+        command: ["npm", "install", "--global", specification, "--ignore-scripts"],
       };
     }
     case "homebrew":
@@ -243,7 +243,7 @@ const recipeFromPackage = (
         package: metadata.name,
         version,
         source: metadata.source,
-        command: ["uv", "tool", "install", specification],
+        command: ["uv", "tool", "install", specification, "--only-binary=:all:"],
       };
     }
     case "cargo":

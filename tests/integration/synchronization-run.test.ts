@@ -850,7 +850,12 @@ describe("synchronization apply run", () => {
   });
 
   it.each([
-    ["npm", "npm", "@example/tool", "1.2.3", ["install", "--global", "@example/tool@1.2.3"]],
+    ["npm", "npm", "@example/tool", "1.2.3", [
+      "install",
+      "--global",
+      "@example/tool@1.2.3",
+      "--ignore-scripts",
+    ]],
     ["homebrew", "brew", "tool", "1.2.3", ["install", "tool@1.2.3"]],
     ["winget", "winget", "Example.Tool", "1.2.3", [
       "install",
@@ -861,7 +866,12 @@ describe("synchronization apply run", () => {
       "--exact",
       "--silent",
     ]],
-    ["uv", "uv", "tool", "1.2.3", ["tool", "install", "tool==1.2.3"]],
+    ["uv", "uv", "tool", "1.2.3", [
+      "tool",
+      "install",
+      "tool==1.2.3",
+      "--only-binary=:all:",
+    ]],
     ["cargo", "cargo", "tool", "1.2.3", [
       "install",
       "tool",
@@ -884,10 +894,10 @@ describe("synchronization apply run", () => {
   );
 
   it.each([
-    ["npm", "npm", ["install", "--global", "tool"]],
+    ["npm", "npm", ["install", "--global", "tool", "--ignore-scripts"]],
     ["homebrew", "brew", ["install", "tool"]],
     ["winget", "winget", ["install", "--id", "tool", "--silent"]],
-    ["uv", "uv", ["tool", "install", "tool"]],
+    ["uv", "uv", ["tool", "install", "tool", "--only-binary=:all:"]],
     ["cargo", "cargo", ["install", "tool"]],
     ["apt", "apt-get", ["install", "-y", "tool"]],
     ["source", "source", ["install", "tool"]],

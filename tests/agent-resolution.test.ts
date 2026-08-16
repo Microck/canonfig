@@ -728,6 +728,154 @@ describe("agent resolution", () => {
     expect(recording.invocations[1]?.executable).toBe(join(directory, "tool"));
   });
 
+  it.each([
+    ["npm install", "npm", ["install", "--global", "tool@1.2.3"], ["--ignore-scripts"]],
+    ["npm install alias", "npm", ["--prefix", directory, "i", "tool"], ["--ignore-scripts"]],
+    ["pnpm add alias", "pnpm", ["--dir", directory, "add", "tool"], [
+      "--ignore-scripts",
+      "--ignore-pnpmfile",
+    ]],
+    ["bun install", "bun", ["--cwd", directory, "install"], ["--ignore-scripts"]],
+    ["uv tool install", "uv", ["tool", "install", "tool==1.2.3"], [
+      "--only-binary=:all:",
+    ]],
+    ["uv pip install", "uv", ["pip", "install", "tool==1.2.3"], [
+      "--only-binary=:all:",
+    ]],
+  ])("injects the canonical script-disabled mode for %s", async (
+    _name,
+    managerName,
+    arguments_,
+    disableFlags,
+  ) => {
+    const manager = join(directory, managerName);
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const verify = join(directory, "verify");
+    const allowedExecutables = [manager, verify];
+    const recording = new RecordingExecutor(proposal(action({
+      executable: manager,
+      arguments: arguments_,
+    })));
+    await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, { allowedExecutables }),
+        harness: harness(directory, allowedExecutables),
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+    expect(recording.invocations[1]?.arguments).toEqual([
+      ...arguments_,
+      ...disableFlags,
+    ]);
+  });
+
+  it.each([
+    ["npm run", "npm", ["run", "postinstall"]],
+    ["npm exec alias", "npm", ["x", "denied-package"]],
+    ["npm separator ambiguity", "npm", ["install", "tool", "--", "--ignore-scripts"]],
+    ["npm explicit scripts", "npm", ["install", "tool", "--ignore-scripts=false"]],
+    ["pnpm script", "pnpm", ["run", "postinstall"]],
+    ["yarn install without a stable script gate", "yarn", ["install", "tool"]],
+    ["bun run", "bun", ["run", "postinstall"]],
+    ["uv run", "uv", ["run", "denied-tool"]],
+    ["uv source build override", "uv", [
+      "pip",
+      "install",
+      "tool",
+      "--no-binary=:all:",
+    ]],
+  ])("denies script-capable package-manager bypass through %s", async (
+    _name,
+    managerName,
+    arguments_,
+  ) => {
+    const manager = join(directory, managerName);
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const verify = join(directory, "verify");
+    const allowedExecutables = [manager, verify];
+    const denied = await Effect.runPromise(authorizeAction(
+      action({ executable: manager, arguments: arguments_ }),
+      task(directory, { allowedExecutables }),
+      harness(directory, allowedExecutables),
+    ).pipe(Effect.flip));
+    expect(denied).toMatchObject({
+      capability: "package-manager-scripts",
+      value: manager,
+    });
+  });
+
+  it.each([
+    ["npm metadata", "npm", ["view", "tool", "version"]],
+    ["pnpm metadata", "pnpm", ["list", "--depth=0"]],
+    ["bun help", "bun", ["help"]],
+    ["uv installed-package metadata", "uv", ["pip", "list"]],
+  ])("allows structurally non-executing package-manager operation %s", async (
+    _name,
+    managerName,
+    arguments_,
+  ) => {
+    const manager = join(directory, managerName);
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const verify = join(directory, "verify");
+    const allowedExecutables = [manager, verify];
+    await expect(Effect.runPromise(authorizeAction(
+      action({ executable: manager, arguments: arguments_ }),
+      task(directory, { allowedExecutables }),
+      harness(directory, allowedExecutables),
+    ))).resolves.toBeUndefined();
+  });
+
+  it("prevents a real package lifecycle script from running", async () => {
+    const marker = join(directory, "lifecycle-ran");
+    const manager = join(directory, "npm");
+    const harnessScript = join(directory, "package-harness.mjs");
+    const verify = join(directory, "verify");
+    await Promise.all([
+      writeFile(
+        manager,
+        [
+          "#!/bin/sh",
+          "for argument in \"$@\"; do",
+          "  if [ \"$argument\" = \"--ignore-scripts\" ]; then exit 0; fi",
+          "done",
+          `printf lifecycle > ${JSON.stringify(marker)}`,
+          "",
+        ].join("\n"),
+      ),
+      writeFile(
+        harnessScript,
+        `process.stdout.write(${JSON.stringify(JSON.stringify(proposal(action({
+          executable: manager,
+          arguments: ["install", "--global", "hostile-package"],
+        }))))});\n`,
+      ),
+    ]);
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, verify];
+    const result = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, {
+          allowedExecutables,
+          verification: { command: [verify] },
+        }),
+        harness: {
+          ...harness(directory, allowedExecutables),
+          executable: process.execPath,
+          arguments: [harnessScript],
+        },
+      });
+    }).pipe(Effect.provide(AgentResolutionLive)));
+    expect(result.outcome).toBe("applied");
+    expect(result.executions[0]?.arguments).toContain("--ignore-scripts");
+    await expect(access(marker)).rejects.toThrow();
+  });
+
   it("applies the same fail-closed behavior to verification commands", async () => {
     const launcher = join(directory, "xargs");
     await writeFile(launcher, "#!/bin/sh\nexit 0\n");

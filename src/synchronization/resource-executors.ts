@@ -529,7 +529,12 @@ const installInvocation = (
     }
     const executable = yield* machine.findExecutable({ name: executableName });
     const arguments_ = method === "npm"
-      ? ["install", "--global", version === undefined ? packageName : `${packageName}@${version}`]
+      ? [
+        "install",
+        "--global",
+        version === undefined ? packageName : `${packageName}@${version}`,
+        "--ignore-scripts",
+      ]
       : method === "brew" || method === "homebrew"
       ? ["install", version === undefined ? packageName : `${packageName}@${version}`]
       : method === "winget"
@@ -537,7 +542,12 @@ const installInvocation = (
         ? ["install", "--id", packageName, "--silent"]
         : ["install", "--id", packageName, "--version", version, "--exact", "--silent"]
       : method === "uv"
-      ? ["tool", "install", version === undefined ? packageName : `${packageName}==${version}`]
+      ? [
+        "tool",
+        "install",
+        version === undefined ? packageName : `${packageName}==${version}`,
+        "--only-binary=:all:",
+      ]
       : method === "apt"
       ? ["install", "-y", version === undefined ? packageName : `${packageName}=${version}`]
       : method === "cargo" && version !== undefined

@@ -417,11 +417,12 @@ const interpreterKind = (value: string): InterpreterKind | undefined => {
  * This closes the nested-command bypass reported through `xargs`, `find`,
  * `awk`, `perl`, `make`, `npx`, and related wrappers and launchers.
  *
- * Package managers performing their own operations (`npm install`, `brew`,
- * `winget`, `uv`, ...) remain classifiable as leaf operations: their
- * side-effect scripts come from registry packages already bounded by the
- * origin allowlist, not from an argv-chosen command. Runner forms that select
- * a command to execute (`npx`, `uvx`, `make`, `go run`, ...) do not qualify.
+ * Package-manager operations are classified separately below. A registry
+ * origin does not bound lifecycle scripts, project configuration, plugins, or
+ * installers, so a package manager is a leaf only for structurally recognized
+ * non-executing operations or when its canonical script-disable option is
+ * present. Runner forms that select a command to execute (`npx`, `uvx`,
+ * `make`, `go run`, ...) do not qualify.
  * Recognized script-file interpreters (`interpreterKind`) keep the bounded
  * script-file model. Every other executable still requires an explicit
  * matching classification from both the task and the harness.
@@ -459,7 +460,6 @@ const nestedCommandLaunchers = new Set([
   "bazel",
   "bazelisk",
   "buck",
-  "bun",
   "bunx",
   "bundle",
   "cargo",
@@ -543,6 +543,364 @@ export const isNestedCommandLauncher = (value: string): boolean =>
   nestedCommandLaunchers.has(
     portableBasename(value).toLowerCase().replace(/\.(?:cmd|exe|bat|com|ps1)$/u, ""),
   );
+
+type PackageManagerPolicy =
+  | {
+    readonly kind: "scripts-disabled";
+    readonly arguments: ReadonlyArray<string>;
+  }
+  | { readonly kind: "non-executing" }
+  | { readonly kind: "denied" };
+
+const packageManagerName = (value: string): string =>
+  portableBasename(value)
+    .toLowerCase()
+    .replace(/\.(?:cmd|exe|bat|com|ps1)$/u, "")
+    .replace(/^(npm)-cli\.js$/u, "$1")
+    .replace(/^(pnpm)\.(?:cjs|js)$/u, "$1")
+    .replace(/^(yarn)\.js$/u, "$1");
+
+const argumentsBeforeSeparator = (
+  arguments_: ReadonlyArray<string>,
+): ReadonlyArray<string> | undefined => {
+  const separator = arguments_.indexOf("--");
+  return separator === -1 ? arguments_ : undefined;
+};
+
+const firstCommandIndex = (
+  arguments_: ReadonlyArray<string>,
+  optionsWithValues: ReadonlySet<string>,
+): number | undefined => {
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    if (!argument.startsWith("-") || argument === "-") return index;
+    const option = argument.split("=", 1)[0]!;
+    if (!argument.includes("=") && optionsWithValues.has(option)) {
+      index += 1;
+      if (index >= arguments_.length) return undefined;
+    }
+  }
+  return undefined;
+};
+
+const hasEnabledOption = (
+  arguments_: ReadonlyArray<string>,
+  option: string,
+): boolean =>
+  arguments_.some((argument) =>
+    argument === option || argument === `${option}=true`
+  );
+
+const hasDisabledOption = (
+  arguments_: ReadonlyArray<string>,
+  option: string,
+): boolean => arguments_.some((argument) =>
+  (
+    argument.startsWith(`${option}=`)
+    && argument !== `${option}=true`
+  )
+);
+
+/**
+ * Classify package-manager argv without consulting package/project metadata.
+ * Unknown commands and ambiguous option layouts are denied: a package manager
+ * may execute lifecycle hooks, project configuration, plugins, or downloaded
+ * installers even though its top-level executable itself is allowlisted.
+ */
+const packageManagerPolicy = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+): PackageManagerPolicy | undefined => {
+  const resolvedName = packageManagerName(executable);
+  const manager = /^(?:pip|pip3)(?:\d+(?:\.\d+)*)?$/u.test(resolvedName)
+    ? "pip"
+    : resolvedName;
+  const knownManagers = new Set([
+    "apt",
+    "apt-get",
+    "brew",
+    "bun",
+    "composer",
+    "dnf",
+    "gem",
+    "npm",
+    "pip",
+    "pipenv",
+    "pnpm",
+    "poetry",
+    "uv",
+    "winget",
+    "yarn",
+    "yum",
+    "zypper",
+  ]);
+  if (!knownManagers.has(manager)) return undefined;
+  const unambiguous = argumentsBeforeSeparator(arguments_);
+  if (unambiguous === undefined) return { kind: "denied" };
+
+  if (manager === "npm" || manager === "pnpm") {
+    const commandIndex = firstCommandIndex(
+      unambiguous,
+      new Set([
+        "-C",
+        "--cache",
+        "--config-dir",
+        "--dir",
+        "--global-bin-dir",
+        "--global-dir",
+        "--prefix",
+        "--registry",
+        "--store-dir",
+        "--userconfig",
+        "--virtual-store-dir",
+        "--workspace-dir",
+      ]),
+    );
+    const command = commandIndex === undefined
+      ? undefined
+      : unambiguous[commandIndex]?.toLowerCase();
+    const nonExecuting = new Set([
+      "diff",
+      "info",
+      "list",
+      "ls",
+      "outdated",
+      "ping",
+      "prefix",
+      "root",
+      "search",
+      "show",
+      "view",
+      "why",
+    ]);
+    if (command !== undefined && nonExecuting.has(command)) {
+      if (manager === "npm") return { kind: "non-executing" };
+      const canonical = "--ignore-pnpmfile";
+      if (
+        hasDisabledOption(unambiguous, canonical)
+        || unambiguous.includes("--use-pnpmfile")
+      ) return { kind: "denied" };
+      return {
+        kind: "scripts-disabled",
+        arguments: hasEnabledOption(unambiguous, canonical)
+          ? arguments_
+          : [...arguments_, canonical],
+      };
+    }
+    if (
+      command !== undefined
+      && new Set([
+        "add",
+        "ci",
+        "i",
+        "in",
+        "ins",
+        "inst",
+        "insta",
+        "instal",
+        "install",
+        "isnt",
+        "isnta",
+        "isntal",
+        "r",
+        "remove",
+        "rm",
+        "un",
+        "uninstall",
+        "unlink",
+      ])
+        .has(command)
+    ) {
+      const canonical = "--ignore-scripts";
+      if (
+        hasDisabledOption(unambiguous, canonical)
+        || unambiguous.includes("--no-ignore-scripts")
+      ) return { kind: "denied" };
+      if (manager === "pnpm") {
+        const projectHookGate = "--ignore-pnpmfile";
+        if (
+          hasDisabledOption(unambiguous, projectHookGate)
+          || unambiguous.includes("--use-pnpmfile")
+        ) return { kind: "denied" };
+        return {
+          kind: "scripts-disabled",
+          arguments: [
+            ...arguments_,
+            ...(hasEnabledOption(unambiguous, canonical) ? [] : [canonical]),
+            ...(hasEnabledOption(unambiguous, projectHookGate)
+              ? []
+              : [projectHookGate]),
+          ],
+        };
+      }
+      return {
+        kind: "scripts-disabled",
+        arguments: hasEnabledOption(unambiguous, canonical)
+          ? arguments_
+          : [...arguments_, canonical],
+      };
+    }
+    return { kind: "denied" };
+  }
+
+  if (manager === "bun") {
+    const commandIndex = firstCommandIndex(
+      unambiguous,
+      new Set(["--cwd", "--config", "--filter"]),
+    );
+    const command = commandIndex === undefined
+      ? undefined
+      : unambiguous[commandIndex]?.toLowerCase();
+    if (command === "help") {
+      return { kind: "non-executing" };
+    }
+    if (
+      command !== undefined
+      && new Set(["add", "install", "i", "remove", "rm", "update"]).has(command)
+    ) {
+      const canonical = "--ignore-scripts";
+      if (hasDisabledOption(unambiguous, canonical)) return { kind: "denied" };
+      return {
+        kind: "scripts-disabled",
+        arguments: hasEnabledOption(unambiguous, canonical)
+          ? arguments_
+          : [...arguments_, canonical],
+      };
+    }
+    return { kind: "denied" };
+  }
+
+  if (manager === "yarn") {
+    // Yarn aliases and plugins can redefine commands, and Yarn has no stable
+    // cross-version argv switch that independently disables all script paths.
+    return { kind: "denied" };
+  }
+
+  if (manager === "pip") {
+    const commandIndex = firstCommandIndex(
+      unambiguous,
+      new Set(["--cache-dir", "--config-settings", "--proxy", "--requirement"]),
+    );
+    const command = commandIndex === undefined
+      ? undefined
+      : unambiguous[commandIndex]?.toLowerCase();
+    if (
+      command !== undefined
+      && new Set(["check", "freeze", "index", "inspect", "list", "show"]).has(command)
+    ) {
+      return { kind: "non-executing" };
+    }
+    if (command === "install") {
+      if (unambiguous.some((argument) => argument.startsWith("--no-binary"))) {
+        return { kind: "denied" };
+      }
+      const canonical = "--only-binary=:all:";
+      return {
+        kind: "scripts-disabled",
+        arguments: unambiguous.includes(canonical)
+          ? arguments_
+          : [...arguments_, canonical],
+      };
+    }
+    return { kind: "denied" };
+  }
+
+  if (manager === "apt" || manager === "apt-get") {
+    const commandIndex = firstCommandIndex(
+      unambiguous,
+      new Set(["-c", "-o", "--config-file", "--option"]),
+    );
+    return commandIndex !== undefined
+      && new Set(["check", "download", "indextargets"]).has(
+        unambiguous[commandIndex]!.toLowerCase(),
+      )
+      ? { kind: "non-executing" }
+      : { kind: "denied" };
+  }
+
+  if (manager === "winget") {
+    const commandIndex = firstCommandIndex(
+      unambiguous,
+      new Set(["--accept-source-agreements", "--disable-interactivity"]),
+    );
+    return commandIndex !== undefined
+      && new Set(["download", "export", "list", "search", "show"]).has(
+        unambiguous[commandIndex]!.toLowerCase(),
+      )
+      ? { kind: "non-executing" }
+      : { kind: "denied" };
+  }
+
+  if (manager !== "uv") {
+    // These managers have lifecycle hooks, plugins, build extensions, or
+    // installer execution with no complete cross-version script-disable mode.
+    return { kind: "denied" };
+  }
+
+  // uv can execute arbitrary build backends and project configuration during
+  // install/sync. Only binary-only installs avoid that execution surface.
+  const commandIndex = firstCommandIndex(
+    unambiguous,
+    new Set(["--cache-dir", "--config-file", "--directory", "--project"]),
+  );
+  const command = commandIndex === undefined
+    ? undefined
+    : unambiguous[commandIndex]?.toLowerCase();
+  if (command !== undefined && new Set(["help", "version"]).has(command)) {
+    return { kind: "non-executing" };
+  }
+  if (
+    command === "tool"
+    && unambiguous[commandIndex! + 1]?.toLowerCase() === "install"
+  ) {
+    if (unambiguous.some((argument) => argument.startsWith("--no-binary"))) {
+      return { kind: "denied" };
+    }
+    const canonical = "--only-binary=:all:";
+    return {
+      kind: "scripts-disabled",
+      arguments: unambiguous.includes(canonical)
+        ? arguments_
+        : [...arguments_, canonical],
+    };
+  }
+  if (command === "pip") {
+    const subcommand = unambiguous[commandIndex! + 1]?.toLowerCase();
+    if (subcommand !== undefined && new Set(["list", "show", "tree", "freeze"]).has(subcommand)) {
+      return { kind: "non-executing" };
+    }
+    if (subcommand === "install") {
+      if (unambiguous.some((argument) => argument.startsWith("--no-binary"))) {
+        return { kind: "denied" };
+      }
+      const canonical = "--only-binary=:all:";
+      return {
+        kind: "scripts-disabled",
+        arguments: unambiguous.includes(canonical)
+          ? arguments_
+          : [...arguments_, canonical],
+      };
+    }
+  }
+  return { kind: "denied" };
+};
+
+const authorizePackageManagerInvocation = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+): Effect.Effect<ReadonlyArray<string>, DeniedAgentCapabilityError> => {
+  const policy = packageManagerPolicy(executable, arguments_);
+  if (policy === undefined || policy.kind === "non-executing") {
+    return Effect.succeed(arguments_);
+  }
+  if (policy.kind === "scripts-disabled") {
+    return Effect.succeed(policy.arguments);
+  }
+  return Effect.fail(new DeniedAgentCapabilityError({
+    capability: "package-manager-scripts",
+    value: executable,
+  }));
+};
 
 interface InterpreterInvocation {
   readonly executable: string;
@@ -719,8 +1077,12 @@ const authorizeExecutableBehavior = (
   task: AgentTask,
   harness: AuthorizationBounds & AuthorizationEnvironment,
   deniedCapability: string,
-): Effect.Effect<void, DeniedAgentCapabilityError> =>
+): Effect.Effect<ReadonlyArray<string>, DeniedAgentCapabilityError> =>
   Effect.gen(function*() {
+    const authorizedArguments = yield* authorizePackageManagerInvocation(
+      executable,
+      arguments_,
+    );
     if (isNestedCommandLauncher(executable)) {
       // The descendant command of a launcher is not derivable from argv, so
       // neither a leaf nor a script-file classification can bound it. Deny
@@ -731,7 +1093,7 @@ const authorizeExecutableBehavior = (
       });
     }
     const environment = harness.environment ?? [];
-    const invocation = interpreterInvocation(executable, arguments_);
+    const invocation = interpreterInvocation(executable, authorizedArguments);
     const behavior = invocation === undefined
       ? "leaf" as const
       : "script-interpreter" as const;
@@ -755,7 +1117,7 @@ const authorizeExecutableBehavior = (
         value: executable,
       });
     }
-    if (invocation === undefined) return;
+    if (invocation === undefined) return authorizedArguments;
     const script = interpreterScript(invocation);
     if (script === undefined) {
       return yield* new DeniedAgentCapabilityError({
@@ -775,6 +1137,7 @@ const authorizeExecutableBehavior = (
       task.allowedPaths,
       harness.allowedPaths,
     );
+    return authorizedArguments;
   });
 
 const resolveAuthorizedAction = (
@@ -825,7 +1188,7 @@ const resolveAuthorizedAction = (
         });
       }
     }
-    yield* authorizeExecutableBehavior(
+    const authorizedArguments = yield* authorizeExecutableBehavior(
       executable,
       action.arguments,
       workingDirectory,
@@ -855,7 +1218,7 @@ const resolveAuthorizedAction = (
         harness.allowedPaths,
       );
     }
-    for (const argument of action.arguments) {
+    for (const argument of authorizedArguments) {
       const path = argumentPath(argument);
       if (path !== undefined) {
         yield* ensureAllowedPath(
@@ -880,7 +1243,7 @@ const resolveAuthorizedAction = (
         harness.allowedOrigins,
       );
     }
-    return { ...action, executable };
+    return { ...action, executable, arguments: authorizedArguments };
   });
 
 export const authorizeAction = (
@@ -922,7 +1285,7 @@ const resolveAuthorizedVerification = (
         value: requestedExecutable,
       });
     }
-    yield* authorizeExecutableBehavior(
+    const authorizedArguments = yield* authorizeExecutableBehavior(
       executable,
       task.verification.command.slice(1),
       workingDirectory,
@@ -931,7 +1294,7 @@ const resolveAuthorizedVerification = (
       "verification-executable-behavior",
     );
     yield* Effect.forEach(
-      task.verification.command.slice(1),
+      authorizedArguments,
       (argument) => {
         const path = argumentPath(argument);
         if (path !== undefined) {
@@ -954,7 +1317,7 @@ const resolveAuthorizedVerification = (
       },
       { discard: true },
     );
-    return [executable, ...task.verification.command.slice(1)];
+    return [executable, ...authorizedArguments];
   });
 
 export const resolveAuthorizedProposal = (

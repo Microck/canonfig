@@ -83,7 +83,13 @@ describe("profile discovery", () => {
         method: "npm",
         package: "@scope/real-cli",
         version: "2.4.0",
-        command: ["npm", "install", "--global", "@scope/real-cli@2.4.0"],
+        command: [
+          "npm",
+          "install",
+          "--global",
+          "@scope/real-cli@2.4.0",
+          "--ignore-scripts",
+        ],
       }),
     ]);
     expect(result.skills).toEqual([
@@ -248,7 +254,13 @@ describe("profile discovery", () => {
     });
     expect(result.tools.find((tool) => tool.id === "npm-tool")?.recipes[0]).toMatchObject({
       method: "npm",
-      command: ["npm", "install", "--global", "@example/npm-tool@1.2.3"],
+      command: [
+        "npm",
+        "install",
+        "--global",
+        "@example/npm-tool@1.2.3",
+        "--ignore-scripts",
+      ],
     });
     expect(result.tools.find((tool) => tool.id === "brew-tool")?.recipes[0]).toMatchObject({
       method: "homebrew",
@@ -268,7 +280,13 @@ describe("profile discovery", () => {
     });
     expect(result.tools.find((tool) => tool.id === "uv-tool")?.recipes[0]).toMatchObject({
       method: "uv",
-      command: ["uv", "tool", "install", "uv-tool==5.0.0"],
+      command: [
+        "uv",
+        "tool",
+        "install",
+        "uv-tool==5.0.0",
+        "--only-binary=:all:",
+      ],
     });
     expect(result.tools.find((tool) => tool.id === "cargo-tool")?.recipes[0]).toMatchObject({
       method: "cargo",
