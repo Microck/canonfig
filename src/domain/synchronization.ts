@@ -45,7 +45,7 @@ export type ActionDetail =
   | { readonly kind: "write-file"; readonly target: string; readonly digest: string }
   | { readonly kind: "write-config"; readonly target: string; readonly keys: ReadonlyArray<string> }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
-  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: string; readonly package: string }
+  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: string; readonly package: string; readonly version?: string | undefined }
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
   | { readonly kind: "agent-task"; readonly taskId: AgentTaskId; readonly summary: string }
@@ -169,6 +169,7 @@ export const ActionDetailSchema = Schema.Union([
     toolId: Schema.NonEmptyString,
     method: Schema.NonEmptyString,
     package: Schema.NonEmptyString,
+    version: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     kind: Schema.Literal("verify-only"),

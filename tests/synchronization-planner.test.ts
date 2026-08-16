@@ -475,6 +475,43 @@ describe("stable planning and bounded resolution", () => {
     }]);
   });
 
+  it("carries optional recipe versions into canonical install actions", () => {
+    const subject = resource("tool", "tool", "ensure");
+    const versioned = runPlan(plannerInput(
+      [subject],
+      {
+        desired: [{
+          kind: "tool",
+          toolId: "ripgrep",
+          recipes: [{
+            platform: "linux",
+            method: "apt",
+            package: "ripgrep",
+            version: "14.1.0",
+          }],
+          loginRequired: false,
+        }],
+      },
+    ));
+    const unversioned = runPlan(plannerInput([subject]));
+
+    expect(versioned.actions[0]?.detail).toEqual({
+      kind: "install-tool",
+      toolId: "ripgrep",
+      method: "apt",
+      package: "ripgrep",
+      version: "14.1.0",
+    });
+    expect(JSON.parse(versioned.encoded).actions[0].detail.version).toBe("14.1.0");
+    expect(unversioned.actions[0]?.detail).toEqual({
+      kind: "install-tool",
+      toolId: "ripgrep",
+      method: "apt",
+      package: "ripgrep",
+    });
+    expect(JSON.parse(unversioned.encoded).actions[0].detail).not.toHaveProperty("version");
+  });
+
   it("rejects duplicate planner evidence rather than depending on input order", () => {
     const input = plannerInput([resource("file", "file", "replace")]);
     const duplicate = {

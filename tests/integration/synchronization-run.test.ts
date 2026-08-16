@@ -39,11 +39,18 @@ import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts"
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import { planSynchronization } from "../../src/synchronization/planner.ts";
 import {
+  defaultSynchronizationExecutionLimits,
+} from "../../src/synchronization/executor.ts";
+import {
   getConfigPath,
   parseConfigDocument,
   serializeConfigDocument,
   setConfigPath,
 } from "../../src/synchronization/config-codec.ts";
+import {
+  prepareResourceAction,
+  type ResourceExecutionContext,
+} from "../../src/synchronization/resource-executors.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 import { Synchronization } from "../../src/synchronization/synchronization.service.ts";
 import type {
@@ -234,6 +241,87 @@ const reencodePlan = (
     })),
   ));
   return { ...plan, encoded, digest: sha256Hex(encoded) };
+};
+
+const installerInvocation = async (
+  method: string,
+  packageName: string,
+  version?: string | undefined,
+) => {
+  const root = temporaryDirectory();
+  const executableQueries: Array<string> = [];
+  const invocations: Array<{ readonly executable: string; readonly arguments: ReadonlyArray<string> }> = [];
+  const machine = decorateMachine(root, (service) => ({
+    ...service,
+    findExecutable: ({ name }) => {
+      executableQueries.push(name);
+      return Effect.succeed({
+        name,
+        path: { platform: "linux", absolute: join(root, "bin", name) },
+      });
+    },
+    runProcess: (input) => {
+      invocations.push({
+        executable: input.executable.absolute,
+        arguments: input.arguments,
+      });
+      return Effect.succeed({
+        exitCode: 0,
+        signal: null,
+        standardOutput: new Uint8Array(),
+        standardError: new Uint8Array(),
+      });
+    },
+  }));
+  const resourceId = decode(ResourceId)("tool");
+  const detail = version === undefined
+    ? {
+      kind: "install-tool" as const,
+      toolId: "tool",
+      method,
+      package: packageName,
+    }
+    : {
+      kind: "install-tool" as const,
+      toolId: "tool",
+      method,
+      package: packageName,
+      version,
+    };
+  const context: ResourceExecutionContext = {
+    run: decode(RunId)(`run-${method}`),
+    action: {
+      id: decode(ActionId)(`action:tool:0:install-${method}`),
+      resource: resourceId,
+      kind: "install-tool",
+      detail,
+      before: [],
+    },
+    resource: {
+      id: resourceId,
+      kind: "tool",
+      policy: "ensure",
+      target: "tool",
+      dependsOn: [],
+      blobs: [],
+    },
+    desired: {
+      kind: "tool",
+      toolId: "tool",
+      recipes: [],
+      loginRequired: false,
+    },
+    verification: { method: "executable-present", executable: "tool" },
+    artifacts: new Map(),
+    limits: defaultSynchronizationExecutionLimits,
+  };
+  await Effect.runPromise(
+    Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(context);
+      yield* prepared.execute;
+    }).pipe(Effect.provide(machine)),
+  );
+  return { executableQueries, invocations };
 };
 
 describe("synchronization apply run", () => {
@@ -664,6 +752,69 @@ describe("synchronization apply run", () => {
       expect(reference).toBeTypeOf("string");
       expect(JSON.parse(await readFile(String(reference), "utf8"))).toEqual([expected]);
     }
+  });
+
+  it.each([
+    ["npm", "npm", "@example/tool", "1.2.3", ["install", "--global", "@example/tool@1.2.3"]],
+    ["homebrew", "brew", "tool", "1.2.3", ["install", "tool@1.2.3"]],
+    ["winget", "winget", "Example.Tool", "1.2.3", [
+      "install",
+      "--id",
+      "Example.Tool",
+      "--version",
+      "1.2.3",
+      "--exact",
+      "--silent",
+    ]],
+    ["uv", "uv", "tool", "1.2.3", ["tool", "install", "tool==1.2.3"]],
+    ["cargo", "cargo", "tool", "1.2.3", [
+      "install",
+      "tool",
+      "--version",
+      "1.2.3",
+      "--locked",
+    ]],
+    ["apt", "apt-get", "tool", "1.2.3", ["install", "-y", "tool=1.2.3"]],
+  ] as const)(
+    "executes versioned %s recipes with ecosystem-specific arguments",
+    async (method, executable, packageName, version, arguments_) => {
+      const result = await installerInvocation(method, packageName, version);
+
+      expect(result.executableQueries).toEqual([executable]);
+      expect(result.invocations).toEqual([{
+        executable: expect.stringMatching(new RegExp(`/${executable}$`, "u")),
+        arguments: arguments_,
+      }]);
+    },
+  );
+
+  it.each([
+    ["npm", "npm", ["install", "--global", "tool"]],
+    ["homebrew", "brew", ["install", "tool"]],
+    ["winget", "winget", ["install", "--id", "tool", "--silent"]],
+    ["uv", "uv", ["tool", "install", "tool"]],
+    ["cargo", "cargo", ["install", "tool"]],
+    ["apt", "apt-get", ["install", "-y", "tool"]],
+    ["source", "source", ["install", "tool"]],
+  ] as const)(
+    "preserves unversioned %s installer behavior",
+    async (method, executable, arguments_) => {
+      const result = await installerInvocation(method, "tool");
+
+      expect(result.executableQueries).toEqual([executable]);
+      expect(result.invocations[0]?.arguments).toEqual(arguments_);
+    },
+  );
+
+  it("fails closed when an installer cannot honor a requested version", async () => {
+    await expect(installerInvocation(
+      "source",
+      "https://github.com/example/tool",
+      "v1.2.3",
+    )).rejects.toMatchObject({
+      _tag: "InvalidExecutionPlanError",
+      message: "installer source cannot honor requested version v1.2.3",
+    });
   });
 
   it("never claims rollback for external installer actions", async () => {

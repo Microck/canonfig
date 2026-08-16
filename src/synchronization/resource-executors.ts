@@ -490,19 +490,42 @@ const installInvocation = (
   context: ResourceExecutionContext,
   method: string,
   packageName: string,
-): Effect.Effect<void, MachineStateError | ActionExecutionError, MachineState> =>
+  version?: string | undefined,
+): Effect.Effect<
+  void,
+  MachineStateError | ActionExecutionError | InvalidExecutionPlanError,
+  MachineState
+> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    const executableName = method === "apt" ? "apt-get" : method;
+    const executableName = method === "apt"
+      ? "apt-get"
+      : method === "homebrew"
+      ? "brew"
+      : method;
+    if (
+      version !== undefined
+      && !["npm", "brew", "homebrew", "winget", "uv", "cargo", "apt"].includes(method)
+    ) {
+      return yield* new InvalidExecutionPlanError({
+        message: `installer ${method} cannot honor requested version ${version}`,
+      });
+    }
     const executable = yield* machine.findExecutable({ name: executableName });
     const arguments_ = method === "npm"
-      ? ["install", "--global", packageName]
+      ? ["install", "--global", version === undefined ? packageName : `${packageName}@${version}`]
+      : method === "brew" || method === "homebrew"
+      ? ["install", version === undefined ? packageName : `${packageName}@${version}`]
       : method === "winget"
-      ? ["install", "--id", packageName, "--silent"]
+      ? version === undefined
+        ? ["install", "--id", packageName, "--silent"]
+        : ["install", "--id", packageName, "--version", version, "--exact", "--silent"]
       : method === "uv"
-      ? ["tool", "install", packageName]
+      ? ["tool", "install", version === undefined ? packageName : `${packageName}==${version}`]
       : method === "apt"
-      ? ["install", "-y", packageName]
+      ? ["install", "-y", version === undefined ? packageName : `${packageName}=${version}`]
+      : method === "cargo" && version !== undefined
+      ? ["install", packageName, "--version", version, "--locked"]
       : ["install", packageName];
     const result = yield* machine.runProcess({
       executable: executable.path,
@@ -532,7 +555,12 @@ export const prepareResourceAction = (
       return prepareMirror(context, detail.target, detail.adds, detail.removes);
     case "install-tool":
       return Effect.succeed({
-        execute: installInvocation(context, detail.method, detail.package),
+        execute: installInvocation(
+          context,
+          detail.method,
+          detail.package,
+          detail.version,
+        ),
       });
     case "transfer-blob":
       return artifact(context.artifacts, detail.blob).pipe(

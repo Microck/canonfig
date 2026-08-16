@@ -95,6 +95,7 @@ const fixture = (
   root: string,
   options: {
     readonly kind?: "file" | "tool";
+    readonly version?: string | undefined;
   } = {},
 ): Fixture => {
   const kind = options.kind ?? "file";
@@ -134,7 +135,18 @@ const fixture = (
     : {
       kind: "tool",
       toolId: "rg",
-      recipes: [{ platform: "linux", method: "apt", package: "ripgrep" }],
+      recipes: [options.version === undefined
+        ? {
+          platform: "linux",
+          method: "apt",
+          package: "ripgrep",
+        }
+        : {
+          platform: "linux",
+          method: "apt",
+          package: "ripgrep",
+          version: options.version,
+        }],
       loginRequired: false,
     };
   const revision: PlanningProfileRevision = {
@@ -518,8 +530,12 @@ describe("synchronization crash recovery", () => {
   });
 
   it("independently verifies an uncertain installer without rerunning it", async () => {
-    const value = fixture(temporaryDirectory(), { kind: "tool" });
+    const value = fixture(temporaryDirectory(), {
+      kind: "tool",
+      version: "14.1.0",
+    });
     const plan = persistedPlan(value);
+    expect(plan.actions[0]?.detail).toMatchObject({ version: "14.1.0" });
     await seed(value, plan);
     await journal(value, plan.actions[0]!.id, "running");
     const bin = join(value.root, "bin");

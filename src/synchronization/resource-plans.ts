@@ -338,21 +338,31 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     .filter((candidate) => candidate.platform === context.platform)
     .sort((left, right) =>
       compareText(
-        `${left.method}\0${left.package}`,
-        `${right.method}\0${right.package}`,
+        `${left.method}\0${left.package}\0${left.version ?? ""}`,
+        `${right.method}\0${right.package}\0${right.version ?? ""}`,
       )
     )[0];
   if (recipe === undefined) {
     return [unresolvedAgentTask(context, `Find an installation recipe for ${context.desired.toolId}`)];
   }
+  const detail: Extract<ActionDetail, { readonly kind: "install-tool" }> =
+    recipe.version === undefined
+      ? {
+        kind: "install-tool",
+        toolId: context.desired.toolId,
+        method: recipe.method,
+        package: recipe.package,
+      }
+      : {
+        kind: "install-tool",
+        toolId: context.desired.toolId,
+        method: recipe.method,
+        package: recipe.package,
+        version: recipe.version,
+      };
   const actions: Array<ResourceActionDraft> = [{
     kind: "install-tool",
-    detail: {
-      kind: "install-tool",
-      toolId: context.desired.toolId,
-      method: recipe.method,
-      package: recipe.package,
-    },
+    detail,
   }];
   if (context.desired.loginRequired) {
     actions.push({

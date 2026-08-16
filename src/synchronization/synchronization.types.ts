@@ -70,6 +70,7 @@ export interface ToolRecipe {
   readonly platform: Platform;
   readonly method: string;
   readonly package: string;
+  readonly version?: string | undefined;
 }
 
 export interface DesiredResourceEntry {

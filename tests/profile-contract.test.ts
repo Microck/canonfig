@@ -309,7 +309,13 @@ describe("schema-backed synchronization contracts", () => {
       { kind: "write-file", target: "~/a", digest: digestA },
       { kind: "write-config", target: "~/a", keys: ["a"] },
       { kind: "mirror-directory", target: "~/a", adds: ["a"], removes: ["b"] },
-      { kind: "install-tool", toolId: "rg", method: "apt", package: "ripgrep" },
+      {
+        kind: "install-tool",
+        toolId: "rg",
+        method: "apt",
+        package: "ripgrep",
+        version: "14.1.0",
+      },
       { kind: "verify-only", method: "digest" },
       { kind: "human-action", reason: "login", instructions: "Run gh auth login" },
       { kind: "agent-task", taskId: "task-1", summary: "Resolve package" },
@@ -322,6 +328,13 @@ describe("schema-backed synchronization contracts", () => {
     ];
     const decoded = fixtures.map(Schema.decodeUnknownSync(ActionDetailSchema));
     expect(decoded.map(actionDetailLabel)).toHaveLength(10);
+    expect(decoded[5]).toMatchObject({ version: "14.1.0" });
+    expect(Schema.decodeUnknownSync(ActionDetailSchema)({
+      kind: "install-tool",
+      toolId: "rg",
+      method: "apt",
+      package: "ripgrep",
+    })).not.toHaveProperty("version");
     expect(() => Schema.decodeUnknownSync(ActionDetailSchema)({ kind: "future-action" })).toThrow();
   });
 
