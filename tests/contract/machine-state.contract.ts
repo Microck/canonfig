@@ -256,6 +256,63 @@ export const machineStateContract = (
     );
 
     it.skipIf(!nativeOperations)(
+      "fails closed without touching files behind symlink ancestors",
+      async () => {
+        const root = temporaryDirectory();
+        const managed = pathJoin(root, "managed");
+        const ancestor = pathJoin(managed, "nested");
+        const target = pathJoin(ancestor, "settings.json");
+        const outsideDirectory = pathJoin(root, "outside");
+        const outside = pathJoin(outsideDirectory, "settings.json");
+        const layer = adapter.localFileLayer(root);
+
+        await runWith(
+          layer,
+          Effect.gen(function*() {
+            const machine = yield* MachineState;
+            const managedPath = yield* machine.normalizePath({ path: managed });
+            const ancestorPath = yield* machine.normalizePath({ path: ancestor });
+            const outsideDirectoryPath = yield* machine.normalizePath({
+              path: outsideDirectory,
+            });
+            const outsidePath = yield* machine.normalizePath({ path: outside });
+            yield* machine.ensureDirectory({ path: managedPath });
+            yield* machine.ensureDirectory({ path: outsideDirectoryPath });
+            yield* machine.atomicWrite({
+              path: outsidePath,
+              content: new TextEncoder().encode("outside"),
+            });
+            yield* machine.replaceSymlink({
+              path: ancestorPath,
+              target: outsideDirectoryPath,
+            });
+          }),
+        );
+
+        await expect(runWith(
+          layer,
+          Effect.gen(function*() {
+            const machine = yield* MachineState;
+            const managedPath = yield* machine.normalizePath({ path: managed });
+            const targetPath = yield* machine.normalizePath({ path: target });
+            yield* machine.mutateWithinRoot({
+              root: managedPath,
+              path: targetPath,
+              mutation: {
+                kind: "write",
+                content: new TextEncoder().encode("managed"),
+              },
+            });
+          }),
+        )).rejects.toMatchObject({
+          _tag: "MachineFilesystemError",
+          operation: "mutate managed path",
+        });
+        expect(await readFile(outside, "utf8")).toBe("outside");
+      },
+    );
+
+    it.skipIf(!nativeOperations)(
       "discovers executables and computes SHA-256 digests",
       async () => {
       const root = temporaryDirectory();

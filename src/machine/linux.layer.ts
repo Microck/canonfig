@@ -288,11 +288,128 @@ const atomicWriteFile = (
   });
 
 const descriptorPath = (handle: FileHandle): string =>
-  `${process.platform === "darwin" ? "/dev/fd" : "/proc/self/fd"}/${handle.fd}`;
+  `/proc/self/fd/${handle.fd}`;
+
+const portableSafeRootMutation = async (
+  root: string,
+  path: string,
+  input: SafeRootMutationInput,
+  symlinkTarget: string | undefined,
+  beforeMutation: (() => Promise<void>) | undefined,
+): Promise<void> => {
+  const rootHandle = await open(
+    root,
+    filesystemConstants.O_RDONLY
+      | filesystemConstants.O_DIRECTORY
+      | filesystemConstants.O_NOFOLLOW,
+  );
+  const rootIdentity = await rootHandle.stat();
+  const guard = join(
+    dirname(root),
+    `.${basename(root)}.canonfig-guard-${randomBytes(12).toString("hex")}`,
+  );
+  const heldRoot = join(guard, basename(root));
+  let held = false;
+  try {
+    await beforeMutation?.();
+    const visibleRoot = await lstat(root);
+    if (
+      visibleRoot.isSymbolicLink()
+      || !sameFilesystemIdentity(rootIdentity, visibleRoot)
+    ) {
+      throw new Error("managed root identity changed before mutation");
+    }
+
+    await mkdir(guard, { mode: defaultDirectoryMode });
+    await rename(root, heldRoot);
+    held = true;
+    const isolatedRoot = await lstat(heldRoot);
+    if (
+      isolatedRoot.isSymbolicLink()
+      || !sameFilesystemIdentity(rootIdentity, isolatedRoot)
+    ) {
+      throw new Error("managed root identity changed while isolating mutation");
+    }
+
+    const parts = relative(root, path).split(sep);
+    let parent = heldRoot;
+    for (const part of parts.slice(0, -1)) {
+      const candidate = join(parent, part);
+      try {
+        const ancestor = await lstat(candidate);
+        if (ancestor.isSymbolicLink() || !ancestor.isDirectory()) {
+          throw new Error(`managed ancestor is not a directory: ${candidate}`);
+        }
+      } catch (cause) {
+        if (errorCode(cause) !== "ENOENT" || input.mutation.kind === "remove") {
+          if (errorCode(cause) === "ENOENT" && input.mutation.kind === "remove") {
+            return;
+          }
+          throw cause;
+        }
+        await mkdir(candidate, { mode: defaultDirectoryMode });
+      }
+      parent = candidate;
+    }
+
+    const name = parts.at(-1)!;
+    const target = join(parent, name);
+    if (input.mutation.kind === "remove") {
+      await rm(target, { force: true });
+      return;
+    }
+
+    const temporary = join(
+      parent,
+      `.${name}.canonfig-${randomBytes(12).toString("hex")}`,
+    );
+    try {
+      if (input.mutation.kind === "symlink") {
+        await symlink(symlinkTarget!, temporary);
+      } else {
+        const mode = input.mutation.mode ?? defaultFileMode;
+        const temporaryHandle = await open(temporary, "wx", mode);
+        try {
+          await temporaryHandle.writeFile(input.mutation.content);
+          await syncHandle(temporaryHandle);
+          await temporaryHandle.chmod(mode);
+        } finally {
+          await temporaryHandle.close();
+        }
+      }
+      await rename(temporary, target);
+      const parentHandle = await open(
+        parent,
+        filesystemConstants.O_RDONLY
+          | filesystemConstants.O_DIRECTORY
+          | filesystemConstants.O_NOFOLLOW,
+      );
+      try {
+        await syncHandle(parentHandle);
+      } finally {
+        await parentHandle.close();
+      }
+    } finally {
+      await unlink(temporary).catch(() => undefined);
+    }
+  } finally {
+    await rootHandle.close().catch(() => undefined);
+    if (held) {
+      await rename(heldRoot, root);
+      held = false;
+    }
+    if (!held) {
+      await rm(guard, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+};
 
 const safeRootMutation = (
   input: SafeRootMutationInput,
   beforeMutation?: (() => Promise<void>) | undefined,
+  strategy: "descriptor" | "portable" = process.platform === "darwin"
+    ? "portable"
+    : "descriptor",
 ): Effect.Effect<void, MachineStateError> =>
   Effect.gen(function*() {
     const root = yield* checkLinuxPath(input.root);
@@ -310,6 +427,16 @@ const safeRootMutation = (
     const remainder = relative(root, path);
     const parts = remainder.split(sep);
     yield* promiseEffect("mutate managed path", path, async () => {
+      if (strategy === "portable") {
+        await portableSafeRootMutation(
+          root,
+          path,
+          input,
+          symlinkTarget,
+          beforeMutation,
+        );
+        return;
+      }
       const handles: Array<FileHandle> = [];
       try {
         const rootHandle = await open(
@@ -971,7 +1098,11 @@ export const linuxMachineStateLayer = (
         function*(
           input: SafeRootMutationInput,
         ): Effect.fn.Return<void, MachineStateError> {
-          yield* safeRootMutation(input, options.beforeSafeRootMutation);
+          yield* safeRootMutation(
+            input,
+            options.beforeSafeRootMutation,
+            options.safeRootMutationStrategy,
+          );
         },
       );
 

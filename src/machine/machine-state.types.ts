@@ -200,6 +200,8 @@ export interface LinuxMachineStateOptions {
   readonly schedulerBackend?: SchedulerBackend | undefined;
   /** Test seam invoked after the managed root is opened but before traversal. */
   readonly beforeSafeRootMutation?: (() => Promise<void>) | undefined;
+  /** Selects the descriptor-relative or rename-isolated safe-root implementation. */
+  readonly safeRootMutationStrategy?: "descriptor" | "portable" | undefined;
 }
 
 export interface FileDigest {

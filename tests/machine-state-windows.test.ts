@@ -18,6 +18,17 @@ import { machineStateContract } from "./contract/machine-state.contract.ts";
 const windowsRoots = new Map<string, string>();
 
 const windowsRoot = (root: string): string => {
+  for (const mapped of windowsRoots.values()) {
+    const remainder = win32.relative(mapped, root);
+    if (
+      remainder === ""
+      || (!remainder.startsWith(`..${win32.sep}`)
+        && remainder !== ".."
+        && !win32.isAbsolute(remainder))
+    ) {
+      return root;
+    }
+  }
   const existing = windowsRoots.get(root);
   if (existing !== undefined) return existing;
   const created = win32.join(

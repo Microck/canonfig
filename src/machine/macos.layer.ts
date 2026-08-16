@@ -217,6 +217,7 @@ export const macosMachineStateLayer = (
     credentialPolicy: policy,
     environment,
     beforeSafeRootMutation: options.beforeSafeRootMutation,
+    safeRootMutationStrategy: "portable",
   });
 
   return Layer.effect(
