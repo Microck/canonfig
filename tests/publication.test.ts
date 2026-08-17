@@ -35,6 +35,7 @@ import {
 } from "../src/state/state-repository.errors.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
+import { sha256Hex } from "../src/profile/profile-codec.ts";
 
 const temporaryDirectories: Array<string> = [];
 
@@ -465,7 +466,7 @@ describe("reviewed profile publication", () => {
         kind: "file",
         target: "~/.canonfig/authored.txt",
         spec: { kind: "file", content: "authored\n", executable: false },
-        verify: { method: "digest", digest: "a".repeat(64) },
+        verify: { method: "digest", digest: sha256Hex("authored\n") },
       },
       {
         id: "authored-directory",

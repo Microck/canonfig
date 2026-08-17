@@ -72,7 +72,7 @@ Profiles and policy:
   profile select <profile-id>
   agent policy [deterministic-only|agent-propose|agent-apply]
   agent harness [codex|claude|gemini] --executable <path> [--allow-path <path>...]
-    [--allow-leaf-executable <name>...] [--allow-script-interpreter <path>...]
+    [--allow-leaf-executable <name>...]
     [--allow-origin <https-origin>...]
     [--allow-capability <capability>...] [--maximum-input-bytes <bytes>]
 
@@ -591,7 +591,6 @@ const evaluateCommand = (
           "--executable",
           "--allow-path",
           "--allow-leaf-executable",
-          "--allow-script-interpreter",
           "--allow-origin",
           "--allow-capability",
           "--maximum-input-bytes",
@@ -637,22 +636,10 @@ const evaluateCommand = (
         ),
         allowedPaths: options.values.get("--allow-path") ?? [],
         allowedExecutables: [
-          ...new Set([
-            ...(options.values.get("--allow-leaf-executable") ?? []),
-            ...(options.values.get("--allow-script-interpreter") ?? []),
-          ]),
+          ...new Set(options.values.get("--allow-leaf-executable") ?? []),
         ],
-        executableAuthorizations: [
-          ...(options.values.get("--allow-leaf-executable") ?? []).map(
-            (executable) => ({ executable, behavior: "leaf" as const }),
-          ),
-          ...(options.values.get("--allow-script-interpreter") ?? []).map(
-            (executable) => ({
-              executable,
-              behavior: "script-interpreter" as const,
-            }),
-          ),
-        ],
+        executableAuthorizations: (options.values.get("--allow-leaf-executable") ?? [])
+          .map((executable) => ({ executable, behavior: "leaf" as const })),
         allowedOrigins: origins,
         allowedCapabilities: options.values.get("--allow-capability") ?? [],
       });

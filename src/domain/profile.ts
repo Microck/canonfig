@@ -37,6 +37,7 @@ import {
   canonicalJson,
   decodeJsonc,
   digestOf,
+  sha256Hex,
   type JsonValue,
 } from "../profile/profile-codec.ts";
 
@@ -249,6 +250,22 @@ const verificationAllowedForSpec = (
   return verificationAllowed(kind, method);
 };
 
+const verificationContentIssue = (
+  resource: Pick<ProfileResourceInput, "kind" | "spec" | "verify">,
+): string | undefined => {
+  if (resource.kind !== "file" || resource.spec.kind !== "file") return undefined;
+  if (resource.spec.symlinkTo === undefined) {
+    return resource.verify.method === "digest"
+      && resource.verify.digest !== sha256Hex(resource.spec.content)
+      ? "digest verification does not match authored file content"
+      : undefined;
+  }
+  return resource.verify.method === "symlink"
+    && resource.verify.target !== resource.spec.symlinkTo
+    ? "symlink verification target does not match authored symlink target"
+    : undefined;
+};
+
 export const ProfileResourceInputSchema = Schema.Struct({
   id: ResourceIdSchema,
   kind: ResourceKindSchema,
@@ -265,6 +282,13 @@ export const ProfileResourceInputSchema = Schema.Struct({
       return {
         path: ["policy"],
         issue: `policy ${policy} is not compatible with resource kind ${resource.kind}`,
+      };
+    }
+    const verificationIssue = verificationContentIssue(resource);
+    if (verificationIssue !== undefined) {
+      return {
+        path: ["verify"],
+        issue: verificationIssue,
       };
     }
     return undefined;
@@ -451,6 +475,11 @@ export class VerificationKindMismatchError extends Schema.TaggedError<Verificati
   { id: Schema.String, kind: Schema.String, method: Schema.String },
 ) {}
 
+export class VerificationContentMismatchError extends Schema.TaggedError<VerificationContentMismatchError>()(
+  "VerificationContentMismatchError",
+  { id: Schema.String, method: Schema.String, reason: Schema.String },
+) {}
+
 export class InvalidBuildPolicyError extends Schema.TaggedError<InvalidBuildPolicyError>()(
   "InvalidBuildPolicyError",
   { id: Schema.String, reason: Schema.String },
@@ -473,6 +502,7 @@ export type ProfileValidationError =
   | MissingGroupReferenceError
   | ResourceSpecKindMismatchError
   | VerificationKindMismatchError
+  | VerificationContentMismatchError
   | InvalidBuildPolicyError
   | InvalidRecipeError;
 
@@ -550,6 +580,7 @@ export const validateProfileResources = (
       if (scheduleError !== null) errors.push(scheduleError);
     }
     errors.push(...validateRecipes(resource));
+    errors.push(...validateVerificationContent(resource));
     errors.push(...validateBuildPolicies(resource));
     if (!verificationAllowedForSpec(resource.kind, resource.spec, resource.verify.method)) {
       errors.push(new VerificationKindMismatchError({
@@ -578,6 +609,19 @@ const validateRecipes = (
         reason: `recipe ${recipe.method}/${recipe.package}: ${reason}`,
       })];
   });
+};
+
+const validateVerificationContent = (
+  resource: ProfileResourceInput,
+): ReadonlyArray<VerificationContentMismatchError> => {
+  const reason = verificationContentIssue(resource);
+  return reason !== undefined
+    ? [new VerificationContentMismatchError({
+      id: resource.id,
+      method: resource.verify.method,
+      reason,
+    })]
+    : [];
 };
 
 const validateBuildPolicies = (

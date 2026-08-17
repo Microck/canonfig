@@ -31,6 +31,7 @@ import {
   PlannerMissingDependencyError,
   PlannerPolicyKindMismatchError,
   PlannerResourceKindMismatchError,
+  PlannerVerificationContentMismatchError,
   PlannerVerificationKindMismatchError,
   type SynchronizationPlanningError,
 } from "./synchronization.errors.ts";
@@ -242,6 +243,27 @@ const validateResourceInputs = (
         resource: resource.id,
         kind: resource.kind,
         method: verification?.method ?? "missing",
+      });
+    }
+    if (
+      verification !== undefined
+      && desired.kind === "file"
+      && (
+        desired.symlinkTo === undefined
+          && verification.method === "digest"
+          && verification.digest !== desired.digest
+        || desired.symlinkTo !== undefined
+          && verification.method === "symlink"
+          && verification.target !== desired.symlinkTo
+      )
+    ) {
+      return new PlannerVerificationContentMismatchError({
+        resource: resource.id,
+        kind: resource.kind,
+        method: verification.method,
+        reason: desired.symlinkTo === undefined
+          ? "digest verification does not match authored file content"
+          : "symlink verification target does not match authored symlink target",
       });
     }
     if (desired.kind === "tool") {

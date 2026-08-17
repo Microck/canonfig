@@ -38,7 +38,7 @@ configuration names the executable and allowlists. This example authorizes only
 one path, executable family, exact HTTPS origin, and restart capability:
 
 ```bash
-canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-leaf-executable npm --allow-script-interpreter /usr/bin/node --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
+canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-leaf-executable npm --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
 ```
 
 Inspect the active harness:
@@ -48,14 +48,15 @@ canonfig agent harness
 ```
 
 Each `--allow-origin` value must be an exact HTTPS origin with no path.
-`--allow-leaf-executable` authorizes only a direct leaf operation.
-`--allow-script-interpreter` authorizes only bounded script-file invocation.
+`--allow-leaf-executable` authorizes only a direct leaf operation. Script
+interpreters are intentionally unsupported because path allowlists cannot
+constrain their descendants.
 Launchers that run nested commands — `xargs`, `find -exec`, `awk`, `perl`,
 `make`, `npx`, elevation wrappers, and similar — are rejected at configuration
 time and always require Human Action Required. Inline programs and
 unclassified executables fail closed the same way.
 `--maximum-input-bytes` is positive and cannot exceed 1 MiB. Repeat
-`--allow-path`, either executable classification option, `--allow-origin`, or
+`--allow-path`, `--allow-leaf-executable`, `--allow-origin`, or
 `--allow-capability` to add entries.
 
 <Callout title="An allowlist does not expand the task" type="warning">

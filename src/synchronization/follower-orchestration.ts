@@ -590,9 +590,7 @@ const observe = (
           })
         );
         const present = files.filter((file) => file !== undefined);
-        return present.length === 0
-          ? { state: "absent" } as const
-          : { state: "directory", objectKind: "directory", files: present } as const;
+        return { state: "directory", objectKind: "directory", files: present } as const;
       }).pipe(
         Effect.catch((error) =>
           Effect.succeed({ state: "unverifiable", reason: String(error) } as const)
@@ -921,6 +919,13 @@ const harnessConfigurationIssue = (
     ) === true
   ) {
     return "agent harness executable bounds include an unboundable nested-command launcher";
+  }
+  if (
+    configuration.executableAuthorizations?.some((authorization) =>
+      authorization.behavior === "script-interpreter"
+    ) === true
+  ) {
+    return "agent harness script-interpreter execution requires an unavailable cross-platform sandbox";
   }
   for (const origin of configuration.allowedOrigins) {
     try {

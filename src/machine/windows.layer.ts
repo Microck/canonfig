@@ -41,6 +41,7 @@ import type {
   NormalizePathInput,
   ProcessEnvironmentEntry,
   RenderedSchedulerJob,
+  RemoveEmptyDirectoryInput,
   SchedulerBackend,
   SchedulerCalendar,
   SchedulerJob,
@@ -859,6 +860,10 @@ export const windowsMachineStateLayer = (
         removeFile: (input) =>
           requireWindowsPath(input.path).pipe(
             Effect.flatMap((path) => machine.removeFile({ ...input, path })),
+          ),
+        removeEmptyDirectory: (input: RemoveEmptyDirectoryInput) =>
+          requireWindowsPath(input.path).pipe(
+            Effect.flatMap((path) => machine.removeEmptyDirectory({ ...input, path })),
           ),
         validatePathWithinRoot: (input) =>
           Effect.all({

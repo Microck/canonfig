@@ -249,7 +249,7 @@ esac
         "target": "~/.canonfig-packed/authored.txt",
         "groups": ["base"],
         "spec": { "kind": "file", "content": "authored\\n" },
-        "verify": { "method": "digest", "digest": "${"a".repeat(64)}" }
+        "verify": { "method": "digest", "digest": "482f22bb838d45d8f795b20277cc427d029d867ed166e7909cdcec7d9f73adbd" }
       },
       {
         "id": "authored-directory",

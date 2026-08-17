@@ -2057,79 +2057,15 @@ const authorizePackageManagerInvocation = (
 
 interface InterpreterInvocation {
   readonly executable: string;
-  readonly arguments: ReadonlyArray<string>;
-  readonly kind: InterpreterKind;
 }
 
 const interpreterInvocation = (
   executable: string,
-  arguments_: ReadonlyArray<string>,
 ): InterpreterInvocation | undefined => {
   const direct = interpreterKind(executable);
   return direct === undefined
     ? undefined
-    : { executable, arguments: arguments_, kind: direct };
-};
-
-const powershellOption = (argument: string): string | undefined => {
-  if (!argument.startsWith("-") && !argument.startsWith("/")) return undefined;
-  return argument.slice(1).split(/[=:]/u, 1)[0]?.toLowerCase();
-};
-
-const isPowershellOptionAbbreviation = (
-  argument: string,
-  option: "command" | "encodedcommand" | "file",
-): boolean => {
-  const token = powershellOption(argument);
-  return token !== undefined
-    && token.length > 0
-    && option.startsWith(token);
-};
-
-const isInlineInterpreterArgument = (
-  kind: InterpreterKind,
-  argument: string,
-): boolean => {
-  const lower = argument.toLowerCase();
-  switch (kind) {
-    case "node":
-      return /^-(?:e|p)(?:$|[^-])/u.test(lower)
-        || /^--(?:eval|print)(?:$|=)/u.test(lower);
-    case "python":
-      return /^-c(?:$|.)/u.test(lower);
-    case "posix-shell":
-      return /^-[^-]*c/u.test(lower)
-        || /^--command(?:$|=)/u.test(lower);
-    case "powershell":
-      return isPowershellOptionAbbreviation(argument, "command")
-        || isPowershellOptionAbbreviation(argument, "encodedcommand");
-  }
-};
-
-const interpreterScript = (
-  invocation: InterpreterInvocation,
-): string | undefined => {
-  const arguments_ = invocation.arguments;
-  if (invocation.kind === "powershell") {
-    const first = arguments_[0];
-    if (first === undefined || isInlineInterpreterArgument(invocation.kind, first)) {
-      return undefined;
-    }
-    if (isPowershellOptionAbbreviation(first, "file")) {
-      const separator = first.search(/[=:]/u);
-      return separator > 0 ? first.slice(separator + 1) : arguments_[1];
-    }
-    const slashOption = /^\/[A-Za-z]+(?:[=:]|$)/u.test(first);
-    return !first.startsWith("-") && !slashOption ? first : undefined;
-  }
-  const first = arguments_[0] === "--" ? arguments_[1] : arguments_[0];
-  if (
-    first === undefined
-    || first.startsWith("-")
-    || first.startsWith("+")
-    || isInlineInterpreterArgument(invocation.kind, first)
-  ) return undefined;
-  return first;
+    : { executable };
 };
 
 const normalizedCommand = (value: string): string =>
@@ -2364,23 +2300,26 @@ const authorizeExecutableBehavior = (
       });
     }
     const environment = harness.environment ?? [];
-    const invocation = interpreterInvocation(executable, authorizedArguments);
-    const behavior = invocation === undefined
-      ? "leaf" as const
-      : "script-interpreter" as const;
+    const invocation = interpreterInvocation(executable);
+    if (invocation !== undefined) {
+      return yield* new DeniedAgentCapabilityError({
+        capability: "script-interpreter",
+        value: executable,
+      });
+    }
     const taskAuthorized = yield* behaviorAuthorized(
       executable,
       workingDirectory,
       environment,
       task.executableAuthorizations,
-      behavior,
+      "leaf",
     );
     const harnessAuthorized = yield* behaviorAuthorized(
       executable,
       workingDirectory,
       environment,
       harness.executableAuthorizations,
-      behavior,
+      "leaf",
     );
     if (!taskAuthorized || !harnessAuthorized) {
       return yield* new DeniedAgentCapabilityError({
@@ -2388,31 +2327,6 @@ const authorizeExecutableBehavior = (
         value: executable,
       });
     }
-    if (invocation === undefined) {
-      return {
-        arguments: authorizedArguments,
-        pipRequirementFiles: pipRequirementAuthorization.files,
-      };
-    }
-    const script = interpreterScript(invocation);
-    if (script === undefined) {
-      return yield* new DeniedAgentCapabilityError({
-        capability: "inline-program",
-        value: invocation.executable,
-      });
-    }
-    if (invocation.kind === "posix-shell" && !hasPathSeparator(script)) {
-      return yield* new DeniedAgentCapabilityError({
-        capability: "script-identity",
-        value: script,
-      });
-    }
-    yield* ensureAllowedPath(
-      script,
-      workingDirectory,
-      task.allowedPaths,
-      harness.allowedPaths,
-    );
     return {
       arguments: authorizedArguments,
       pipRequirementFiles: pipRequirementAuthorization.files,

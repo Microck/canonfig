@@ -45,6 +45,10 @@ export interface RemoveFileInput {
   readonly path: MachinePath;
 }
 
+export interface RemoveEmptyDirectoryInput {
+  readonly path: MachinePath;
+}
+
 export interface ValidatePathWithinRootInput {
   readonly root: MachinePath;
   readonly path: MachinePath;

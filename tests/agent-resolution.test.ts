@@ -551,7 +551,7 @@ describe("agent resolution", () => {
       },
     ).pipe(Effect.flip));
     expect(denied).toMatchObject({
-      capability: "inline-program",
+      capability: "script-interpreter",
       value: executable,
     });
   });
@@ -620,15 +620,15 @@ describe("agent resolution", () => {
         },
       ).pipe(Effect.flip));
       expect(denied).toMatchObject({
-        capability: "script-identity",
-        value: "xargs",
+        capability: "script-interpreter",
+        value: shell,
       });
     } finally {
       await rm(shadowDirectory, { recursive: true, force: true });
     }
   });
 
-  it("allows an explicit bounded POSIX shell script identity", async () => {
+  it("rejects an explicit bounded POSIX shell script identity", async () => {
     const shell = join(directory, "sh");
     const script = join(directory, "bounded-script.sh");
     await Promise.all([
@@ -638,7 +638,7 @@ describe("agent resolution", () => {
     await chmod(shell, 0o755);
     const allowedExecutables = [shell, join(directory, "verify")];
     const boundedTask = task(directory, { allowedExecutables });
-    await expect(Effect.runPromise(authorizeAction(
+    const denied = await Effect.runPromise(authorizeAction(
       action({
         executable: shell,
         arguments: ["./bounded-script.sh"],
@@ -647,7 +647,11 @@ describe("agent resolution", () => {
       {
         ...harness(directory, allowedExecutables),
       },
-    ))).resolves.toBeUndefined();
+    ).pipe(Effect.flip));
+    expect(denied).toMatchObject({
+      capability: "script-interpreter",
+      value: shell,
+    });
   });
 
   it.each([
@@ -1785,7 +1789,47 @@ process.exit(
     await expect(access(marker)).rejects.toThrow();
   });
 
-  it("allows explicit interpreter script files only within path bounds", async () => {
+  it("does not spawn an allowlisted interpreter", async () => {
+    const marker = join(directory, "interpreter-ran");
+    const script = join(directory, "bounded-script.mjs");
+    const harnessScript = join(directory, "interpreter-harness.mjs");
+    await Promise.all([
+      writeFile(
+        script,
+        `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "ran");\n`,
+      ),
+      writeFile(
+        harnessScript,
+        `process.stdout.write(${JSON.stringify(JSON.stringify(proposal(action({
+          executable: process.execPath,
+          arguments: [script],
+        }))))});\n`,
+      ),
+    ]);
+    const allowedExecutables = [process.execPath, join(directory, "verify")];
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, { allowedExecutables }),
+        harness: {
+          ...harness(directory, allowedExecutables),
+          executable: process.execPath,
+          arguments: [harnessScript],
+        },
+      });
+    }).pipe(
+      Effect.provide(AgentResolutionLive),
+      Effect.flip,
+    ));
+    expect(error).toMatchObject({
+      capability: "script-interpreter",
+      value: process.execPath,
+    });
+    await expect(access(marker)).rejects.toThrow();
+  });
+
+  it("rejects interpreter script files even when path bounded", async () => {
     const script = join(directory, "bounded-script.mjs");
     await writeFile(script, "process.exit(0);\n");
     const boundedTask = task(directory, {
@@ -1794,46 +1838,18 @@ process.exit(
     const bounds = {
       ...harness(directory, [process.execPath, join(directory, "verify")]),
     };
-    await expect(Effect.runPromise(authorizeAction(
+    const denied = await Effect.runPromise(authorizeAction(
       action({
         executable: process.execPath,
         arguments: [script, "-e", "literal;not-shell-syntax"],
       }),
       boundedTask,
       bounds,
-    ))).resolves.toBeUndefined();
-
-    const outsideScript = join(directory, "..", "outside-script.mjs");
-    const denied = await Effect.runPromise(authorizeAction(
-      action({
-        executable: process.execPath,
-        arguments: [outsideScript],
-      }),
-      boundedTask,
-      bounds,
     ).pipe(Effect.flip));
-    expect(denied).toMatchObject({ capability: "path" });
-
-    const powershell = join(directory, "pwsh");
-    const powershellScript = join(directory, "bounded-script.ps1");
-    await Promise.all([
-      writeFile(powershell, "#!/bin/sh\nexit 0\n"),
-      writeFile(powershellScript, "exit 0\n"),
-    ]);
-    await chmod(powershell, 0o755);
-    const powershellTask = task(directory, {
-      allowedExecutables: [powershell, join(directory, "verify")],
+    expect(denied).toMatchObject({
+      capability: "script-interpreter",
+      value: process.execPath,
     });
-    await expect(Effect.runPromise(authorizeAction(
-      action({
-        executable: powershell,
-        arguments: ["-File", powershellScript, "-Command", "literal argument"],
-      }),
-      powershellTask,
-      {
-        ...harness(directory, [powershell, join(directory, "verify")]),
-      },
-    ))).resolves.toBeUndefined();
   });
 
   it("fails closed on unknown interpreter modes instead of treating payloads as scripts", async () => {
@@ -1850,7 +1866,7 @@ process.exit(
         ...harness(directory, [process.execPath, join(directory, "verify")]),
       },
     ).pipe(Effect.flip));
-    expect(denied).toMatchObject({ capability: "inline-program" });
+    expect(denied).toMatchObject({ capability: "script-interpreter" });
   });
 
   it("fails when independent verification rejects the agent self-report", async () => {

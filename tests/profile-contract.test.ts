@@ -7,6 +7,7 @@ import {
   canonicalJson,
   digestOf,
   parseJsonc,
+  sha256Hex,
   stripJsonc,
 } from "../src/profile/profile-codec.ts";
 import {
@@ -46,7 +47,7 @@ const fileResource = (id: string, over: Partial<ProfileResourceInput> = {}): Pro
   kind: "file",
   target: `~/.codex/${id}.txt`,
   spec: { kind: "file", content: "hello" },
-  verify: { method: "digest", digest: "a".repeat(64) },
+  verify: { method: "digest", digest: sha256Hex("hello") },
   ...over,
 });
 
@@ -175,7 +176,7 @@ describe("resource graph validation", () => {
         content: "",
         symlinkTo: "/tmp/target",
       },
-      verify: { method: "digest" as const, digest: digestA },
+      verify: { method: "digest" as const, digest: sha256Hex("hello") },
     },
     {
       name: "symlink file with executable verification",
@@ -195,12 +196,12 @@ describe("resource graph validation", () => {
     {
       name: "regular",
       spec: { kind: "file" as const, content: "hello", executable: false },
-      verify: { method: "digest" as const, digest: digestA },
+      verify: { method: "digest" as const, digest: sha256Hex("hello") },
     },
     {
       name: "executable",
       spec: { kind: "file" as const, content: "hello", executable: true },
-      verify: { method: "digest" as const, digest: digestA },
+      verify: { method: "digest" as const, digest: sha256Hex("hello") },
     },
     {
       name: "symlink",
@@ -213,7 +214,7 @@ describe("resource graph validation", () => {
 
   it("accepts default policies for every kind", () => {
     const resources: Array<ProfileResourceInput> = [
-      { id: "f", kind: "file", target: "~/f", spec: { kind: "file", content: "x" }, verify: { method: "digest", digest: "d".repeat(64) } },
+      { id: "f", kind: "file", target: "~/f", spec: { kind: "file", content: "x" }, verify: { method: "digest", digest: sha256Hex("x") } },
       { id: "d", kind: "directory", target: "~/d", spec: { kind: "directory", files: [] }, verify: { method: "digest", digest: "d".repeat(64) } },
       { id: "c", kind: "config", target: "~/c.toml", spec: { kind: "config", format: "toml", keys: [{ path: "a.b", value: 1 }] }, verify: { method: "digest", digest: "d".repeat(64) } },
       { id: "s", kind: "skill", target: "~/skills/s", spec: { kind: "skill", name: "s", files: [] }, verify: { method: "digest", digest: "d".repeat(64) } },
@@ -750,7 +751,7 @@ describe("v2 profile fixtures", () => {
     expect(encodeMachineProfile(implicit)).toBe(encodeMachineProfile(explicit));
     expect(digestMachineProfile(implicit)).toBe(digestMachineProfile(explicit));
     expect(digestMachineProfile(implicit)).toBe(
-      "ccf685bc2f151bad69b87917cdf30496e89c468bbe9ca0cd293ebf8e449ea29d",
+      "f684f5075a8557c96da8446a778b4f9fc9e9b79c18f24915e0c0c63a476c3d4e",
     );
   });
 

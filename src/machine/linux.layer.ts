@@ -10,6 +10,7 @@ import {
   readlink,
   realpath,
   rename,
+  rmdir,
   rm,
   symlink,
   unlink,
@@ -67,6 +68,7 @@ import type {
   ProcessInvocation,
   ProcessResult,
   ReadFileInput,
+  RemoveEmptyDirectoryInput,
   RemoveFileInput,
   RenderedSchedulerJob,
   SafeRootMutationInput,
@@ -1166,6 +1168,13 @@ export const linuxMachineStateLayer = (
         },
       );
 
+      const removeEmptyDirectory = Effect.fn("MachineState.removeEmptyDirectory")(
+        function*(input: RemoveEmptyDirectoryInput): Effect.fn.Return<void, MachineStateError> {
+          const path = yield* checkLinuxPath(input.path);
+          yield* promiseEffect("remove empty directory", path, () => rmdir(path));
+        },
+      );
+
       const validatePathWithinRoot = Effect.fn("MachineState.validatePathWithinRoot")(
         function*(
           input: ValidatePathWithinRootInput,
@@ -1418,6 +1427,7 @@ export const linuxMachineStateLayer = (
         atomicWrite,
         readFile: Effect.fn("MachineState.readFile")(readBounded),
         removeFile,
+        removeEmptyDirectory,
         validatePathWithinRoot,
         mutateWithinRoot,
         replaceSymlink,

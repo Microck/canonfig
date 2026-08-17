@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -776,6 +776,27 @@ describe("synchronization apply run", () => {
 
     expect(await readFile(target, "utf8")).toBe("managed content");
     expect(await readFile(outside, "utf8")).toBe("outside content");
+  });
+
+  it("rolls back a newly-created directory root to missing", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const context = mirrorContext(
+      root,
+      managed,
+      "nested/settings.json",
+      "managed content",
+    );
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(machineLayer(root))),
+    );
+
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(machineLayer(root))));
+    expect(await readFile(join(managed, "nested", "settings.json"), "utf8"))
+      .toBe("managed content");
+
+    await Effect.runPromise(prepared.rollback!.pipe(Effect.provide(machineLayer(root))));
+    await expect(access(managed)).rejects.toThrow();
   });
 
   it("keeps outside paths untouched when an ancestor is swapped during a mirror write", async () => {
@@ -1948,9 +1969,36 @@ describe("synchronization apply run", () => {
   );
 
   it.each([
-    ["npm", "npm", ["install", "--global", "tool", "--ignore-scripts"]],
-    ["pnpm", "pnpm", ["add", "--global", "tool", "--ignore-scripts"]],
-    ["bun", "bun", ["add", "--global", "tool", "--ignore-scripts"]],
+    ["npm", "npm"],
+    ["pnpm", "pnpm"],
+    ["bun", "bun"],
+  ] as const)(
+    "rejects unversioned %s recipes before lookup or spawn",
+    async (method, executable) => {
+      let lookups = 0;
+      let invocations = 0;
+      await expect(installerInvocation(
+        method,
+        "tool",
+        undefined,
+        () => {
+          invocations += 1;
+        },
+        () => {
+          lookups += 1;
+        },
+      )).rejects.toMatchObject({
+        message: expect.stringContaining(
+          "require an exact version or a reviewed tarball with integrity",
+        ),
+      });
+      expect(lookups).toBe(0);
+      expect(invocations).toBe(0);
+      expect(executable).toBe(method);
+    },
+  );
+
+  it.each([
     ["homebrew", "brew", ["install", "tool"]],
     ["winget", "winget", ["install", "--id", "tool", "--silent"]],
     ["uv", "uv", ["tool", "install", "tool", "--only-binary=:all:"]],

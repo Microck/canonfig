@@ -191,7 +191,7 @@ const publishFixtureRevision = (
             target: "~/.shared",
             dependsOn: [],
             spec: specs[0]!,
-            verify: { method: "digest" as const, digest: digestOf(asJson(specs[0])) },
+            verify: { method: "digest" as const, digest: sha256Hex(specs[0].content) },
           }]
           : []),
         {
@@ -202,7 +202,7 @@ const publishFixtureRevision = (
           groups: [group("alpha")],
           dependsOn: includeShared ? [decode(ResourceId)("shared")] : [],
           spec: specs[1],
-          verify: { method: "digest", digest: digestOf(asJson(specs[1])) },
+          verify: { method: "digest", digest: sha256Hex(specs[1].content) },
         },
         {
           id: decode(ResourceId)("beta-only"),
@@ -212,7 +212,7 @@ const publishFixtureRevision = (
           groups: [group("beta")],
           dependsOn: includeShared ? [decode(ResourceId)("shared")] : [],
           spec: specs[2],
-          verify: { method: "digest", digest: digestOf(asJson(specs[2])) },
+          verify: { method: "digest", digest: sha256Hex(specs[2].content) },
         },
         ...(includeCrossGroupDependent
           ? [{
@@ -225,7 +225,7 @@ const publishFixtureRevision = (
             spec: specs[3]!,
             verify: {
               method: "digest" as const,
-              digest: digestOf(asJson(specs[3])),
+              digest: sha256Hex(specs[3].content),
             },
           }]
           : []),

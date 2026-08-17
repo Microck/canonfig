@@ -127,16 +127,37 @@ export const recipeValidationError = (input: {
   if (method !== "source" && !isSafePackageArgument(packageName)) {
     return `package argument is unsafe: ${packageName}`;
   }
-  const sourceReason = recipeSourceValidationError(input);
+  const metadata = sourceValue(input.source);
+  const integrity = metadata?.integrity ?? input.integrity;
+  const sourceVersion = (
+    (method === "npm" || method === "pnpm" || method === "bun")
+      && version === undefined
+  )
+    ? npmVersionFromTarballSource(packageName, metadata?.source ?? "")
+    : version;
+  if (
+    (method === "npm" || method === "pnpm" || method === "bun")
+    && version === undefined
+    && (
+      sourceVersion === undefined
+      || integrity === undefined
+    )
+  ) {
+    return "npm-family registry installs require an exact version or a reviewed tarball with integrity";
+  }
+  const sourceReason = recipeSourceValidationError({
+    ...input,
+    version: sourceVersion,
+  });
   if (sourceReason !== undefined) return sourceReason;
-  if (version === undefined) return undefined;
+  if (version === undefined && sourceVersion === undefined) return undefined;
   const pattern = versionPatternFor(method);
   if (
     pattern === undefined
-    || !isSafeScalar(version, unsafeVersionCharacter)
-    || !pattern.test(version)
+    || !isSafeScalar(sourceVersion!, unsafeVersionCharacter)
+    || !pattern.test(sourceVersion!)
   ) {
-    return `installer ${method} cannot honor requested version ${version}`;
+    return `installer ${method} cannot honor requested version ${sourceVersion}`;
   }
   return undefined;
 };
@@ -158,6 +179,19 @@ const npmTarballPath = (packageName: string, version: string): string => {
     ? packageName.slice(packageName.indexOf("/") + 1)
     : packageName;
   return `/${packageName}/-/${packagePart}-${version}.tgz`;
+};
+
+export const npmVersionFromTarballSource = (
+  packageName: string,
+  source: string,
+): string | undefined => {
+  const packagePart = packageName.startsWith("@")
+    ? packageName.slice(packageName.indexOf("/") + 1)
+    : packageName;
+  const prefix = `https://registry.npmjs.org/${packageName}/-/${packagePart}-`;
+  if (!source.startsWith(prefix) || !source.endsWith(".tgz")) return undefined;
+  const candidate = source.slice(prefix.length, -".tgz".length);
+  return npmVersion.test(candidate) ? candidate : undefined;
 };
 
 /**

@@ -198,7 +198,7 @@ Inspect or set agent policy and harness bounds:
 canonfig agent policy
 canonfig agent policy agent-propose
 canonfig agent harness
-canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-leaf-executable npm --allow-script-interpreter /usr/bin/node --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
+canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-leaf-executable npm --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
 ```
 
 Manage schedules and recovery:

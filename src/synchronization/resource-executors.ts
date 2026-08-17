@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { isAbsolute, join, win32 } from "node:path";
+import { dirname, isAbsolute, join, win32 } from "node:path";
 
 import { CredentialReference, type RunId } from "../domain/brand.ts";
 import {
@@ -48,6 +48,7 @@ import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
 import {
   recipeSourceDetails,
   recipeValidationError,
+  npmVersionFromTarballSource,
 } from "../domain/recipe-versions.ts";
 import {
   defaultNpmArtifactTransport,
@@ -70,14 +71,28 @@ interface LegacyStoredFile {
 
 type StoredFile =
   | { readonly path: string; readonly state: "absent" }
+  | { readonly path: string; readonly state: "directory" }
   | { readonly path: string; readonly state: "regular"; readonly content: string; readonly mode: number }
   | { readonly path: string; readonly state: "symlink"; readonly target: string }
   | LegacyStoredFile;
+
+const storedState = (
+  entry: StoredFile,
+): "absent" | "directory" | "regular" | "symlink" =>
+  "state" in entry
+    ? entry.state
+    : entry.existed
+    ? "regular"
+    : "absent";
 
 const StoredFileSchema = Schema.Union([
   Schema.Struct({
     path: Schema.NonEmptyString,
     state: Schema.Literal("absent"),
+  }),
+  Schema.Struct({
+    path: Schema.NonEmptyString,
+    state: Schema.Literal("directory"),
   }),
   Schema.Struct({
     path: Schema.NonEmptyString,
@@ -215,6 +230,17 @@ const captureStoredFile = (
 ): Effect.Effect<StoredFile, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
+    const kind = yield* machine.inspectPath(path).pipe(
+      Effect.catchTag("MachineFilesystemError", (error) =>
+        error.message.includes("ENOENT")
+          ? Effect.succeed(undefined)
+          : Effect.fail(error)
+      ),
+    );
+    if (kind === undefined) return { path: path.absolute, state: "absent" };
+    if (kind.kind === "directory") {
+      return { path: path.absolute, state: "directory" };
+    }
     const symlink = yield* machine.readSymlink(path).pipe(
       Effect.map((target) => target.absolute),
       Effect.catchTag("MachineFilesystemError", () => Effect.succeed(undefined)),
@@ -270,12 +296,26 @@ const restoreStoredFile = (
         if (root === undefined) {
           yield* machine.removeFile({ path });
         } else {
-          yield* machine.mutateWithinRoot({
-            root,
-            path,
-            mutation: { kind: "remove" },
-          });
+          const currentKind = yield* machine.inspectPath(path).pipe(
+            Effect.catchTag("MachineFilesystemError", (error) =>
+              error.message.includes("ENOENT")
+                ? Effect.succeed(undefined)
+                : Effect.fail(error)
+            ),
+          );
+          if (currentKind?.kind === "directory") {
+            yield* machine.removeEmptyDirectory({ path });
+          } else {
+            yield* machine.mutateWithinRoot({
+              root,
+              path,
+              mutation: { kind: "remove" },
+            });
+          }
         }
+        return;
+      case "directory":
+        yield* machine.ensureDirectory({ path });
         return;
       case "regular": {
         const content = Buffer.from(entry.content, "base64");
@@ -342,8 +382,28 @@ const captureRollback = (
       path: `${sha256Hex(context.action.id)}.json`,
       base: rollbackDirectory,
     });
+    const pathsWithAncestors = new Map(
+      paths.map((path) => [path.absolute, path] as const),
+    );
+    if (root !== undefined) {
+      for (const path of paths) {
+        if (path.absolute === root.absolute) continue;
+        let ancestor = path.platform === "windows"
+          ? win32.dirname(path.absolute)
+          : dirname(path.absolute);
+        while (ancestor !== root.absolute) {
+          const normalized = yield* machine.normalizePath({ path: ancestor });
+          pathsWithAncestors.set(normalized.absolute, normalized);
+          const parent = normalized.platform === "windows"
+            ? win32.dirname(normalized.absolute)
+            : dirname(normalized.absolute);
+          if (parent === normalized.absolute) break;
+          ancestor = parent;
+        }
+      }
+    }
     const stored = yield* Effect.forEach(
-      paths,
+      [...pathsWithAncestors.values()],
       (path) => captureStoredFile(path, context.limits.maximumFileBytes),
     );
     yield* machine.atomicWrite({
@@ -351,8 +411,28 @@ const captureRollback = (
       content: encoder.encode(JSON.stringify(stored)),
     });
     const restore = Effect.gen(function*() {
-      for (const entry of stored) {
-        yield* restoreStoredFile(entry, root);
+      const rootEntry = root === undefined
+        ? undefined
+        : stored.find((entry) => entry.path === root.absolute);
+      if (root !== undefined && rootEntry !== undefined && storedState(rootEntry) !== "absent") {
+        yield* restoreStoredFile(rootEntry);
+      }
+      if (
+        rootEntry === undefined
+        || storedState(rootEntry) === "absent"
+        || storedState(rootEntry) === "directory"
+      ) {
+        for (const entry of stored) {
+          if (entry === rootEntry) continue;
+          yield* restoreStoredFile(entry, root);
+        }
+      }
+      if (root !== undefined && rootEntry !== undefined && storedState(rootEntry) === "absent") {
+        yield* machine.removeEmptyDirectory({ path: root }).pipe(
+          Effect.catchTag("MachineFilesystemError", (error) =>
+            error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
+          ),
+        );
       }
     });
     return { reference: rollbackPath.absolute, restore };
@@ -373,10 +453,11 @@ const rollbackPaths = (
         return [yield* targetPath(detail.target)];
       case "mirror-directory": {
         const root = yield* targetPath(detail.target);
-        return yield* Effect.forEach(
+        const descendants = yield* Effect.forEach(
           [...new Set([...detail.adds, ...detail.removes])],
           (path) => normalizeRelative(root, path),
         );
+        return [root, ...descendants];
       }
       case "remove-resource": {
         if (context.resource.kind === "directory" || context.resource.kind === "skill") {
@@ -458,8 +539,28 @@ export const restoreRollbackReference = (
     const root = context.action.detail.kind === "mirror-directory"
       ? yield* targetPath(context.action.detail.target)
       : undefined;
-    for (const entry of stored) {
-      yield* restoreStoredFile(entry, root);
+    const rootEntry = root === undefined
+      ? undefined
+      : stored.find((entry) => entry.path === root.absolute);
+    if (root !== undefined && rootEntry !== undefined && storedState(rootEntry) !== "absent") {
+      yield* restoreStoredFile(rootEntry);
+    }
+    if (
+      rootEntry === undefined
+      || storedState(rootEntry) === "absent"
+      || storedState(rootEntry) === "directory"
+    ) {
+      for (const entry of stored) {
+        if (entry === rootEntry) continue;
+        yield* restoreStoredFile(entry, root);
+      }
+    }
+    if (root !== undefined && rootEntry !== undefined && storedState(rootEntry) === "absent") {
+      yield* machine.removeEmptyDirectory({ path: root }).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
+        ),
+      );
     }
   });
 
@@ -627,7 +728,7 @@ const prepareMirror = (
         yield* artifact(context.artifacts, desiredFile.digest),
       );
     }
-    const rollback = yield* captureRollback(context, paths, root);
+    const rollback = yield* captureRollback(context, [root, ...paths], root);
     const execute = Effect.gen(function*() {
       const activeMachine = yield* MachineState;
       yield* activeMachine.ensureDirectory({ path: root });
@@ -861,8 +962,14 @@ const installInvocation = (
         message: recipeError,
       });
     }
-    const sourceDetailsValue = recipeSourceDetails(source);
     const npmFamily = method === "npm" || method === "pnpm" || method === "bun";
+    const sourceDetailsValue = recipeSourceDetails(source);
+    const effectiveVersion = version
+      ?? (
+        npmFamily && sourceDetailsValue.source !== undefined
+          ? npmVersionFromTarballSource(packageName, sourceDetailsValue.source)
+          : undefined
+      );
     const sourceUrl = npmFamily
       && sourceDetailsValue.source !== undefined
       && sourceDetailsValue.source.startsWith("https://")
@@ -894,7 +1001,7 @@ const installInvocation = (
         .download({
           source: sourceUrl,
           packageName,
-          version: version!,
+          version: effectiveVersion!,
           integrity,
           cacheDirectory,
           maximumBytes: 32 * 1024 * 1024,
@@ -943,7 +1050,11 @@ const installInvocation = (
           message: "verified npm artifact changed or is corrupt before installation",
         });
       }
-      const provenanceError = validateNpmArtifactProvenance(bytes, packageName, version);
+      const provenanceError = validateNpmArtifactProvenance(
+        bytes,
+        packageName,
+        effectiveVersion,
+      );
       if (provenanceError !== undefined) {
         return yield* new InvalidExecutionPlanError({
           message: `verified npm artifact provenance is not safe: ${provenanceError}; Human Action Required`,
@@ -959,9 +1070,9 @@ const installInvocation = (
     const executable = yield* machine.findExecutable({ name: executableName });
     const packageSpecifier = npmFamily && verifiedArtifactPath !== undefined
       ? verifiedArtifactPath
-      : version === undefined
+      : effectiveVersion === undefined
       ? packageName
-      : `${packageName}@${version}`;
+      : `${packageName}@${effectiveVersion}`;
     const packageEnvironment = method === "npm" || method === "pnpm" || method === "bun"
       ? [
         { name: "NPM_CONFIG_USERCONFIG", value: process.platform === "win32" ? "NUL" : "/dev/null" },
@@ -1303,6 +1414,22 @@ const verifyDirectory = (
   Effect.gen(function*() {
     const root = yield* targetPath(context.resource.target);
     const machine = yield* MachineState;
+    const rootKind = yield* machine.inspectPath(root).pipe(
+      Effect.catchTag("MachineFilesystemError", (error) =>
+        error.message.includes("ENOENT")
+          ? Effect.succeed(undefined)
+          : Effect.fail(error)
+      ),
+    );
+    if (rootKind === undefined) {
+      return { passed: false, method: "directory-root-missing" };
+    }
+    if (rootKind.kind !== "directory") {
+      return {
+        passed: false,
+        method: `directory-root-non-${rootKind.kind}`,
+      };
+    }
     const observations = yield* Effect.forEach(files, (file) =>
       Effect.gen(function*() {
       const path = yield* normalizeRelative(root, file.path);

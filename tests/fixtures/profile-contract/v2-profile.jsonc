@@ -62,7 +62,7 @@
       "kind": "file",
       "target": "~/.codex/AGENTS.md",
       "spec": { "kind": "file", "content": "# Instructions\n" },
-      "verify": { "method": "digest", "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
+      "verify": { "method": "digest", "digest": "13e04580c3f98fb192e91fc9e31e8ef1824c82e228978be1c1ad94476f0cccdf" }
     },
     {
       "id": "prompts",

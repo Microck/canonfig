@@ -29,6 +29,7 @@ import {
   type MachineProfile,
   type ProfileRevision,
   type PublishedResource,
+  validateMachineProfile,
 } from "../domain/profile.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {
@@ -150,6 +151,10 @@ const validateRevision = (
       const profile = decode(MachineProfileSchema)(
         JSON.parse(revision.canonicalBytes),
       );
+      const profileErrors = validateMachineProfile(profile);
+      if (profileErrors.length > 0) {
+        throw new Error("profile verification contract mismatch");
+      }
       if (profile.id !== revision.profileId) {
         throw new Error("profile identity mismatch");
       }

@@ -227,6 +227,43 @@ describe("resource and Apply Policy coverage", () => {
     expect(plan.actions[0]?.detail).toEqual({ kind: "no-op" });
   });
 
+  it("observes empty directory roots directly", () => {
+    const desired: DesiredResource = { kind: "directory", files: [] };
+    const observed = {
+      state: "directory" as const,
+      objectKind: "directory" as const,
+      files: [],
+    };
+    const existing = runPlan(plannerInput(
+      [resource("empty", "directory", "replace")],
+      { desired: [desired], observed: [observed] },
+    ));
+    expect(existing.actions.map((action) => action.kind)).toEqual(["no-op"]);
+
+    const missing = runPlan(plannerInput(
+      [resource("empty", "directory", "replace")],
+      { desired: [desired] },
+    ));
+    expect(missing.actions.map((action) => action.kind)).toEqual(["mirror-directory"]);
+  });
+
+  it("plans a non-directory root as drift instead of applying a mirror", () => {
+    const desired: DesiredResource = { kind: "directory", files: [] };
+    const plan = runPlan(plannerInput(
+      [resource("root-conflict", "directory", "replace")],
+      {
+        desired: [desired],
+        observed: [{
+          state: "present",
+          objectKind: "regular",
+          digest: digestA,
+          executable: false,
+        }],
+      },
+    ));
+    expect(plan.actions.map((action) => action.kind)).toEqual(["drift-conflict"]);
+  });
+
   it.each([
     {
       name: "regular to executable",

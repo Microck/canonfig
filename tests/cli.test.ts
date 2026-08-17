@@ -327,26 +327,24 @@ describe("typed CLI command boundary", () => {
 
   it("rejects classifying a nested-command launcher as bounded at parse time", async () => {
     for (const launcher of ["xargs", "find", "awk", "perl", "make", "npx"]) {
-      for (const flag of ["--allow-leaf-executable", "--allow-script-interpreter"]) {
-        const result = await execute([
-          "agent",
-          "harness",
-          "codex",
-          "--executable",
-          "/opt/codex",
-          "--allow-path",
-          "/home/operator",
-          flag,
-          launcher,
-        ]);
-        expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
-        expect(result.invocations).toEqual([]);
-        expect(result.stderr).toContain("nested commands");
-      }
+      const result = await execute([
+        "agent",
+        "harness",
+        "codex",
+        "--executable",
+        "/opt/codex",
+        "--allow-path",
+        "/home/operator",
+        "--allow-leaf-executable",
+        launcher,
+      ]);
+      expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
+      expect(result.invocations).toEqual([]);
+      expect(result.stderr).toContain("nested commands");
     }
   });
 
-  it("keeps script-interpreter classification separate from leaf classification", async () => {
+  it("rejects the removed script-interpreter authorization option", async () => {
     const result = await execute([
       "agent",
       "harness",
@@ -360,14 +358,9 @@ describe("typed CLI command boundary", () => {
       "--allow-script-interpreter",
       "/usr/bin/node",
     ]);
-    expect(result.exitCode).toBe(CliExitCode.success);
-    expect(result.invocations[0]?.input).toMatchObject({
-      allowedExecutables: ["npm", "/usr/bin/node"],
-      executableAuthorizations: [
-        { executable: "npm", behavior: "leaf" },
-        { executable: "/usr/bin/node", behavior: "script-interpreter" },
-      ],
-    });
+    expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
+    expect(result.invocations).toEqual([]);
+    expect(result.stderr).toContain("Unknown option: --allow-script-interpreter");
   });
 });
 

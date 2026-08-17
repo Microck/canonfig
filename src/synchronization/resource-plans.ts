@@ -276,6 +276,40 @@ const driftConflict = (
   return { kind: "drift-conflict", detail };
 };
 
+const directoryRootConflict = (
+  context: ResourcePlanningContext,
+): ResourceActionDraft | undefined => {
+  if (context.desired.kind !== "directory" && context.desired.kind !== "skill") {
+    return undefined;
+  }
+  if (
+    context.observed.state === "directory"
+    && (
+      context.observed.objectKind === undefined
+      || context.observed.objectKind === "directory"
+    )
+  ) {
+    return undefined;
+  }
+  if (context.observed.state === "present" && context.observed.objectKind === undefined) {
+    return undefined;
+  }
+  if (context.observed.state === "absent") return undefined;
+  const observedDigest = observedDigestForDirectoryRoot(context);
+  return driftConflict(
+    context,
+    desiredResourceDigest(context.desired)!,
+    observedDigest,
+  );
+};
+
+const observedDigestForDirectoryRoot = (
+  context: ResourcePlanningContext,
+): ContentDigest =>
+  context.observed.state === "present"
+    ? Schema.decodeUnknownSync(ContentDigestSchema)(context.observed.digest)
+    : sha256Hex("canonfig:unverifiable-directory-root");
+
 const unresolvedAgentTask = (
   context: ResourcePlanningContext,
   summary: string,
@@ -413,7 +447,13 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     )
     .map((file) => file.path)
     .sort(compareText);
-  if (adds.length === 0 && removes.length === 0) return [noOp()];
+  if (
+    adds.length === 0
+    && removes.length === 0
+    && context.observed.state !== "absent"
+  ) {
+    return [noOp()];
+  }
   return [{
     kind: "mirror-directory",
     detail: {
@@ -738,6 +778,8 @@ const planRemovedResource = (
 export const planResource = (
   context: ResourcePlanningContext,
 ): ReadonlyArray<ResourceActionDraft> => {
+  const rootConflict = directoryRootConflict(context);
+  if (rootConflict !== undefined) return [rootConflict];
   switch (context.resource.policy) {
     case "replace":
       return planReplace(context);
