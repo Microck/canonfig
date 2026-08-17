@@ -54,14 +54,46 @@ const isRegistryPackageManager = (manager: string): boolean =>
   || manager === "uv";
 
 const canonicalRegistryOrigin = (value: string): string | undefined => {
+  return canonicalRegistryUrl(value)?.origin;
+};
+
+const hasUnsafeUrlCharacter = (value: string): boolean =>
+  [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 0x20
+      || (code >= 0x7f && code <= 0x9f)
+      || "\"'<>\\ ".includes(character);
+  });
+
+const hasExplicitUrlCredentialOrFragment = (value: string): boolean => {
+  if (value.includes("#")) return true;
+  const authority = /^https?:\/\/([^/?#]*)/iu.exec(value)?.[1];
+  return authority?.includes("@") ?? false;
+};
+
+const canonicalRegistryUrl = (
+  value: string,
+): { readonly url: string; readonly origin: string } | undefined => {
+  if (
+    value.trim() !== value
+    || hasUnsafeUrlCharacter(value)
+    || hasExplicitUrlCredentialOrFragment(value)
+  ) return undefined;
   try {
     const url = new URL(value);
     if (
       url.protocol !== "https:"
       || url.username.length > 0
       || url.password.length > 0
+      || url.hash.length > 0
+      || url.hostname.length === 0
     ) return undefined;
-    return url.origin;
+    return {
+      url: url.pathname === "/" && url.search.length === 0
+        ? url.origin
+        : url.href,
+      origin: url.origin,
+    };
   } catch {
     return undefined;
   }
@@ -92,6 +124,7 @@ const packageOperationRequiresRegistry = (
       "--config-settings",
       "--config-setting",
       "--constraint",
+      "-c",
       "--extra-index-url",
       "--find-links",
       "-f",
@@ -99,6 +132,7 @@ const packageOperationRequiresRegistry = (
       "--index-url",
       "--proxy",
       "--requirement",
+      "-r",
       "--trusted-host",
     ])
     : manager === "bun"
@@ -216,6 +250,18 @@ const packageRegistryInvocationIsSafe = (
   return true;
 };
 
+const hasPipRequirementFileOption = (
+  arguments_: ReadonlyArray<string>,
+): boolean => arguments_.some((argument) => {
+  const name = argument.split("=", 1)[0]!.toLowerCase();
+  return name === "-r"
+    || name === "-c"
+    || name === "--requirement"
+    || name === "--constraint"
+    || (argument.length > 2
+      && (argument.startsWith("-r") || argument.startsWith("-c")));
+});
+
 const protectedPackageEnvironment = (name: string): boolean => {
   const lower = name.toLowerCase();
   return lower.startsWith("npm_config_")
@@ -278,7 +324,7 @@ export const sanitizedPackageManagerEnvironment = (
   if (!isRegistryPackageManager(manager)) return environment;
   const registry = packageRegistryOrigin === undefined
     ? undefined
-    : canonicalRegistryOrigin(packageRegistryOrigin);
+    : canonicalRegistryUrl(packageRegistryOrigin)?.url;
   return [
     ...environment.filter((entry) => !protectedPackageEnvironment(entry.name)),
     ...packageManagerConfigurationEnvironment(executable),
@@ -360,6 +406,16 @@ export const executeControlledProcess = (
     return Effect.fail(new AgentProcessError({
       executable: input.executable,
       message: "package-manager separator form is not authorized",
+    }));
+  }
+  if (
+    packageManagerName(input.executable) === "pip"
+      && hasPipRequirementFileOption(input.arguments)
+      && input.pipRequirementFilesAuthorized !== true
+  ) {
+    return Effect.fail(new AgentProcessError({
+      executable: input.executable,
+      message: "pip requirement files are not authorized by the resolution boundary",
     }));
   }
   if (

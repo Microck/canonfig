@@ -116,6 +116,11 @@ export interface ControlledProcessInput {
   readonly environmentUnsetPrefixes?: ReadonlyArray<string> | undefined;
   readonly packageRegistryOrigin?: string | undefined;
   readonly packageRegistryScopes?: ReadonlyArray<string> | undefined;
+  /**
+   * Set only by AgentResolution after bounded requirement-file authorization.
+   * The low-level executor otherwise rejects pip include files fail-closed.
+   */
+  readonly pipRequirementFilesAuthorized?: boolean | undefined;
   readonly standardInput?: Uint8Array | undefined;
   readonly timeoutMilliseconds: number;
   readonly maximumInputBytes: number;

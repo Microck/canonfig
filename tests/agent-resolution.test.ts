@@ -30,7 +30,10 @@ import {
   makeAgentResolutionLayer,
   type ControlledExecutor,
 } from "../src/agent/agent-resolution.layer.ts";
-import { AgentResolution } from "../src/agent/agent-resolution.service.ts";
+import {
+  AgentResolution,
+  registryOriginForInvocation,
+} from "../src/agent/agent-resolution.service.ts";
 import {
   authorizeAction,
   isNestedCommandLauncher,
@@ -904,6 +907,140 @@ describe("agent resolution", () => {
     ]);
   });
 
+  it("recursively authorizes bounded pip requirement and constraint files", async () => {
+    const manager = join(directory, "pip");
+    const rootRequirements = join(directory, "requirements.txt");
+    const nestedRequirements = join(directory, "nested requirements.txt");
+    const deeperRequirements = join(directory, "deeper.txt");
+    const constraints = join(directory, "constraints.txt");
+    await Promise.all([
+      writeFile(manager, "#!/bin/sh\nexit 0\n"),
+      writeFile(rootRequirements, [
+        "\uFEFF# root requirements",
+        "# root requirements",
+        "-r \"nested requirements.txt\"",
+        "--index-url=https://packages.example.test/private/simple",
+        "requests[socks] \\",
+        "==2.32.0",
+        "",
+      ].join("\n")),
+      writeFile(nestedRequirements, [
+        "-r deeper.txt",
+        "urllib3>=2.0; python_version >= \"3.9\"",
+        "",
+      ].join("\n")),
+      writeFile(deeperRequirements, "-c constraints.txt\n"),
+      writeFile(constraints, "requests<3\n"),
+    ]);
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const recording = new RecordingExecutor(proposal(action({
+      executable: manager,
+      arguments: ["install", "-r", rootRequirements],
+    })));
+    await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, { allowedExecutables }),
+        harness: harness(directory, allowedExecutables),
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+    expect(recording.invocations[1]?.arguments).toEqual([
+      "install",
+      "-r",
+      rootRequirements,
+      "--only-binary=:all:",
+      "--isolated",
+      "--index-url=https://packages.example.test",
+    ]);
+  });
+
+  it.each([
+    ["unauthorized nested index", "--extra-index-url=https://evil.example.test\n", "network-origin"],
+    ["unauthorized nested find-links", "--find-links=https://evil.example.test\n", "network-origin"],
+    ["fragmented nested index", "--index-url=https://packages.example.test/simple#fragment\n", "network-origin"],
+    ["credentialed nested index", "--index-url=https://user:password@packages.example.test/simple\n", "network-origin"],
+    ["unsupported nested option", "--trusted-host=evil.example.test\n", "package-manager-requirements"],
+    ["direct URL requirement", "https://evil.example.test/tool.whl\n", "package-manager-requirements"],
+    ["editable requirement", "-e ./local-tool\n", "package-manager-requirements"],
+  ] as const)("denies %s before the package manager can run", async (_name, content, capability) => {
+    const manager = join(directory, "pip");
+    const requirements = join(directory, "requirements.txt");
+    await Promise.all([
+      writeFile(manager, "#!/bin/sh\nprintf spawned > pip-marker\n"),
+      writeFile(requirements, content),
+    ]);
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const error = await Effect.runPromise(authorizeAction(
+      action({ executable: manager, arguments: ["install", "-r", requirements] }),
+      task(directory, { allowedExecutables }),
+      harness(directory, allowedExecutables),
+    ).pipe(Effect.flip));
+    expect(error).toMatchObject({ capability });
+    await expect(access(join(directory, "pip-marker"))).rejects.toThrow();
+  });
+
+  it.each([
+    ["nested cycle", "-r cycle-b.txt\n", "-r requirements.txt\n"],
+    ["path escape", "-r ../outside.txt\n", undefined],
+  ] as const)("denies %s and does not follow unbounded includes", async (
+    _name,
+    rootContent,
+    nestedContent,
+  ) => {
+    const manager = join(directory, "pip");
+    const requirements = join(directory, "requirements.txt");
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await writeFile(requirements, rootContent);
+    if (nestedContent !== undefined) {
+      await writeFile(join(directory, "cycle-b.txt"), nestedContent);
+    }
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const error = await Effect.runPromise(authorizeAction(
+      action({ executable: manager, arguments: ["install", "-r", requirements] }),
+      task(directory, { allowedExecutables }),
+      harness(directory, allowedExecutables),
+    ).pipe(Effect.flip));
+    expect(error).toMatchObject({ capability: _name === "path escape" ? "path" : "package-manager-requirements" });
+  });
+
+  it.each([
+    ["pypi simple", "https://pypi.org/simple"],
+    ["private simple subpath", "https://packages.example.test/repository/simple?trusted=1"],
+  ] as const)("preserves the full approved pip index URL for %s", async (_name, index) => {
+    const manager = join(directory, "pip");
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const recording = new RecordingExecutor(proposal(action({
+      executable: manager,
+      arguments: ["install", "tool", "--index-url", index],
+    })));
+    await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, { allowedExecutables, allowedOrigins: [index] }),
+        harness: {
+          ...harness(directory, allowedExecutables),
+          allowedOrigins: [index],
+        },
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+    expect(recording.invocations[1]?.arguments).toEqual([
+      "install",
+      "tool",
+      "--only-binary=:all:",
+      "--isolated",
+      `--index-url=${index}`,
+    ]);
+    expect(registryOriginForInvocation(manager, recording.invocations[1]?.arguments ?? []))
+      .toBe(index);
+  });
+
   it("redacts credentials from rejected pip index options", async () => {
     const manager = join(directory, "pip");
     await writeFile(manager, "#!/bin/sh\nexit 0\n");
@@ -1619,6 +1756,46 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
     }
   });
 
+  it("injects the full approved pip index URL into argv and environment", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-pip-index-path-"));
+    try {
+      const marker = join(root, "pip-index.json");
+      const manager = join(root, "pip");
+      const index = "https://packages.example.test/repository/simple?channel=stable";
+      await writeFile(
+        manager,
+        `#!${process.execPath}
+const { writeFileSync } = require("node:fs");
+writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+  index: process.env.PIP_INDEX_URL,
+  args: process.argv.slice(2),
+}));
+`,
+      );
+      await chmod(manager, 0o755);
+      const result = await Effect.runPromise(executeControlledProcess({
+        executable: manager,
+        arguments: ["install", "tool", `--index-url=${index}`],
+        workingDirectory: root,
+        packageRegistryOrigin: index,
+        timeoutMilliseconds: 2_000,
+        maximumInputBytes: 0,
+        maximumOutputBytes: 10_000,
+        secrets: [],
+      }));
+      expect(result.exitCode).toBe(0);
+      // SAFETY: The fixture writes exactly these JSON fields before exiting.
+      const observed = JSON.parse(await readFile(marker, "utf8")) as {
+        index: string;
+        args: string[];
+      };
+      expect(observed.index).toBe(index);
+      expect(observed.args).toContain(`--index-url=${index}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects an extra pip index before spawning", async () => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-pip-extra-index-"));
     try {
@@ -1642,6 +1819,29 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       }).pipe(Effect.flip));
       expect(error).toBeInstanceOf(AgentProcessError);
       await expect(access(join(root, "hostile-pip-download"))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects pip requirement files at the controlled-executor boundary", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-pip-requirements-boundary-"));
+    try {
+      const manager = join(root, "pip");
+      await writeFile(manager, "#!/bin/sh\nprintf spawned > pip-requirements-marker\n");
+      await chmod(manager, 0o755);
+      const error = await Effect.runPromise(executeControlledProcess({
+        executable: manager,
+        arguments: ["install", "-r", "requirements.txt"],
+        workingDirectory: root,
+        packageRegistryOrigin: "https://packages.example.test",
+        timeoutMilliseconds: 2_000,
+        maximumInputBytes: 0,
+        maximumOutputBytes: 1_000,
+        secrets: [],
+      }).pipe(Effect.flip));
+      expect(error).toBeInstanceOf(AgentProcessError);
+      await expect(access(join(root, "pip-requirements-marker"))).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

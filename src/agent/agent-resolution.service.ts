@@ -3,6 +3,8 @@ import {
 } from "node:fs";
 import {
   access,
+  lstat,
+  open,
   realpath,
 } from "node:fs/promises";
 import {
@@ -374,13 +376,33 @@ const ensureAllowedPath = (
     ),
   );
 
+const hasUnsafeUrlCharacter = (value: string): boolean =>
+  [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 0x20
+      || (code >= 0x7f && code <= 0x9f)
+      || "\"'<>\\ ".includes(character);
+  });
+
+const hasExplicitUrlCredentialOrFragment = (value: string): boolean => {
+  if (value.includes("#")) return true;
+  const authority = /^https?:\/\/([^/?#]*)/iu.exec(value)?.[1];
+  return authority?.includes("@") ?? false;
+};
+
 const normalizeOrigin = (value: string): string | undefined => {
+  if (
+    value.trim() !== value
+    || hasUnsafeUrlCharacter(value)
+    || hasExplicitUrlCredentialOrFragment(value)
+  ) return undefined;
   try {
     const url = new URL(value);
     if (
       (url.protocol !== "http:" && url.protocol !== "https:")
       || url.username.length > 0
       || url.password.length > 0
+      || url.hash.length > 0
     ) return undefined;
     return url.origin;
   } catch {
@@ -771,6 +793,7 @@ const registryOperation = (
       "--config-settings",
       "--config-setting",
       "--constraint",
+      "-c",
       "--extra-index-url",
       "--find-links",
       "-f",
@@ -781,6 +804,7 @@ const registryOperation = (
       "--only-binary",
       "--proxy",
       "--requirement",
+      "-r",
       "--trusted-host",
     ])
     : manager === "bun"
@@ -858,11 +882,13 @@ const packageManagerOptionValues = (manager: string): ReadonlySet<string> =>
       "--config-setting",
       "--config-settings",
       "--constraint",
+      "-c",
       "--extra-index-url",
       "--find-links",
       "--index-url",
       "--proxy",
       "--requirement",
+      "-r",
       "--trusted-host",
       "-f",
       "-i",
@@ -907,10 +933,36 @@ export const registryScopesForInvocation = (
 };
 
 const canonicalRegistryOrigin = (value: string): string | undefined => {
-  const origin = normalizeOrigin(value);
-  if (origin === undefined) return undefined;
+  return canonicalRegistryUrl(value)?.origin;
+};
+
+interface CanonicalRegistryUrl {
+  readonly url: string;
+  readonly origin: string;
+}
+
+const canonicalRegistryUrl = (value: string): CanonicalRegistryUrl | undefined => {
+  if (
+    value.trim() !== value
+    || hasUnsafeUrlCharacter(value)
+    || hasExplicitUrlCredentialOrFragment(value)
+  ) return undefined;
   try {
-    return new URL(value).protocol === "https:" ? origin : undefined;
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:"
+      || url.username.length > 0
+      || url.password.length > 0
+      || url.hash.length > 0
+      || url.hostname.length === 0
+    ) return undefined;
+    const urlValue = url.pathname === "/" && url.search.length === 0
+      ? url.origin
+      : url.href;
+    return {
+      url: urlValue,
+      origin: url.origin,
+    };
   } catch {
     return undefined;
   }
@@ -926,7 +978,7 @@ export const registryOriginForInvocation = (
   const option = registryOptions(manager, arguments_)[0];
   return option?.value === undefined
     ? undefined
-    : canonicalRegistryOrigin(option.value);
+    : canonicalRegistryUrl(option.value)?.url;
 };
 
 const safeRegistryValue = (value: string): string => {
@@ -945,24 +997,388 @@ const canonicalAllowedRegistry = (
   harnessOrigins: ReadonlyArray<string>,
   actionOrigins: ReadonlyArray<string>,
 ): string | undefined => {
-  const task = new Set(
-    taskOrigins
-      .map(canonicalRegistryOrigin)
-      .filter((origin): origin is string => origin !== undefined),
+  const task = taskOrigins
+    .map(canonicalRegistryUrl)
+    .filter((registry): registry is CanonicalRegistryUrl => registry !== undefined);
+  const harness = harnessOrigins
+    .map(canonicalRegistryUrl)
+    .filter((registry): registry is CanonicalRegistryUrl => registry !== undefined);
+  const taskOriginsSet = new Set(
+    task
+      .map((registry) => registry.origin),
   );
-  const harness = new Set(
-    harnessOrigins
-      .map(canonicalRegistryOrigin)
-      .filter((origin): origin is string => origin !== undefined),
+  const harnessOriginsSet = new Set(
+    harness
+      .map((registry) => registry.origin),
   );
-  const shared = [...task].filter((origin) => harness.has(origin));
+  const sharedOrigins = [...taskOriginsSet].filter((origin) => harnessOriginsSet.has(origin));
   const reviewed = actionOrigins
-    .map(canonicalRegistryOrigin)
-    .filter((origin): origin is string => origin !== undefined)
-    .filter((origin) => shared.includes(origin));
-  const candidates = reviewed.length > 0 ? [...new Set(reviewed)] : shared;
+    .map(canonicalRegistryUrl)
+    .filter((registry): registry is CanonicalRegistryUrl => registry !== undefined)
+    .filter((registry) => sharedOrigins.includes(registry.origin));
+  const taskCandidates = task.filter((registry) => sharedOrigins.includes(registry.origin));
+  const harnessCandidates = harness.filter((registry) => sharedOrigins.includes(registry.origin));
+  const candidates = reviewed.length > 0
+    ? [...new Set(reviewed.map((registry) => registry.url))]
+    : taskCandidates.length > 0
+    ? [...new Set(taskCandidates.map((registry) => registry.url))]
+    : [...new Set(harnessCandidates.map((registry) => registry.url))];
   return candidates.length === 1 ? candidates[0] : undefined;
 };
+
+const pipRequirementOption = (
+  argument: string,
+): { readonly kind: "include" | "index"; readonly value?: string } | undefined => {
+  const separator = argument.indexOf("=");
+  const name = (separator > 0 ? argument.slice(0, separator) : argument).toLowerCase();
+  const inline = separator > 0 ? argument.slice(separator + 1) : undefined;
+  if (name === "-r" || name === "--requirement") {
+    return { kind: "include", value: inline };
+  }
+  if (name === "-c" || name === "--constraint") {
+    return { kind: "include", value: inline };
+  }
+  if (name === "-i" || name === "--index-url" || name === "--extra-index-url"
+    || name === "-f" || name === "--find-links") {
+    return { kind: "index", value: inline };
+  }
+  if (argument.length > 2 && (argument.startsWith("-r") || argument.startsWith("-c"))) {
+    return { kind: "include", value: argument.slice(2) };
+  }
+  if (argument.length > 2 && (argument.startsWith("-i") || argument.startsWith("-f"))) {
+    return { kind: "index", value: argument.slice(2) };
+  }
+  return undefined;
+};
+
+const pipRequirementOptionName = (
+  argument: string,
+): boolean => argument.startsWith("-");
+
+const pipRequirementFileReference = (value: string): boolean =>
+  value.length > 0
+  && value !== "-"
+  && !value.startsWith("//")
+  && !/^[A-Za-z][A-Za-z0-9+.-]*:(?![\\/])/u.test(value);
+
+const pipRequirementTokens = (line: string): ReadonlyArray<string> | undefined => {
+  const tokens: Array<string> = [];
+  let token = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  for (const character of line) {
+    if (escaped) {
+      token += character === "\\" || character === "'" || character === '"'
+        || /\s/u.test(character)
+        ? character
+        : `\\${character}`;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+      else token += character;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (/\s/u.test(character)) {
+      if (token.length > 0) {
+        tokens.push(token);
+        token = "";
+      }
+      continue;
+    }
+    token += character;
+  }
+  if (escaped || quote !== undefined) return undefined;
+  if (token.length > 0) tokens.push(token);
+  return tokens;
+};
+
+const pipRequirementLogicalLines = (
+  text: string,
+): ReadonlyArray<string> | undefined => {
+  if (text.includes("\u0000")) return undefined;
+  const physical = text.replace(/\r\n?/gu, "\n").split("\n");
+  const logical: Array<string> = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+  for (const line of physical) {
+    let content = "";
+    let escaped = false;
+    for (const character of line) {
+      if (escaped) {
+        content += character;
+        escaped = false;
+        continue;
+      }
+      if (character === "\\" && quote !== "'") {
+        escaped = true;
+        content += character;
+        continue;
+      }
+      if (quote !== undefined) {
+        if (character === quote) quote = undefined;
+        content += character;
+        continue;
+      }
+      if (character === "'" || character === '"') {
+        quote = character;
+        content += character;
+        continue;
+      }
+      if (
+        character === "#"
+          && (content.length === 0 || /\s/u.test(content.at(-1) ?? ""))
+      ) break;
+      content += character;
+    }
+    if (quote !== undefined) {
+      if (!line.endsWith("\\")) return undefined;
+    }
+    const continuation = /(?<!\\)(?:\\\\)*\\$/u.test(content);
+    if (continuation) {
+      current += `${content.slice(0, -1)} `;
+      continue;
+    }
+    current += content;
+    if (current.trim().length > 0) logical.push(current.trim());
+    current = "";
+    quote = undefined;
+  }
+  return current.trim().length === 0 && quote === undefined ? logical : undefined;
+};
+
+const pipRequirementPackage = (line: string): boolean => {
+  if (
+    line.length === 0
+    || line.startsWith("-")
+    || /[\\/@:]/u.test(line)
+    || /(?:^|\s)https?:/iu.test(line)
+    || /(?:^|\s)(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|file:|link:|editable)/iu.test(line)
+  ) return false;
+  const match = /^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[([A-Za-z0-9._,-]+)\])?(.*)$/u.exec(line);
+  if (match === null) return false;
+  const remainder = match[3] ?? "";
+  const markerSeparator = remainder.indexOf(";");
+  const specifier = markerSeparator === -1
+    ? remainder
+    : remainder.slice(0, markerSeparator);
+  const marker = markerSeparator === -1
+    ? undefined
+    : remainder.slice(markerSeparator + 1);
+  if (!/^\s*(?:(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9.*+!_-]+(?:\s*,\s*(?:===|==|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9.*+!_-]+)*)?\s*$/u.test(specifier)) {
+    return false;
+  }
+  if (
+    marker !== undefined
+      && !/^\s*[A-Za-z0-9_.-]+\s*(?:===|==|!=|<=|>=|<|>|in|not\s+in)\s*["'A-Za-z0-9_.!*+<>=(), -]+\s*$/u.test(marker)
+  ) {
+    return false;
+  }
+  return !/--/u.test(remainder);
+};
+
+const pipRequirementSafeOption = (tokens: ReadonlyArray<string>): boolean => {
+  const name = tokens[0]?.toLowerCase();
+  if (name === "--isolated") return tokens.length === 1;
+  if (name !== "--only-binary" && !name.startsWith("--only-binary=")) return false;
+  const value = name === "--only-binary"
+    ? tokens[1]?.toLowerCase()
+    : name.slice("--only-binary=".length);
+  return tokens.length === (name === "--only-binary" ? 2 : 1) && value === ":all:";
+};
+
+const requirementFileIdentityEqual = (
+  left: { readonly dev: number; readonly ino: number; readonly size: number },
+  right: { readonly dev: number; readonly ino: number; readonly size: number },
+): boolean => left.dev === right.dev && left.ino === right.ino && left.size === right.size;
+
+const readPipRequirementFile = async (path: string): Promise<string> => {
+  const maximumBytes = 128 * 1024;
+  const before = await lstat(path);
+  if (!before.isFile() || before.size > maximumBytes) {
+    throw new Error("requirement file is not a bounded regular file");
+  }
+  const handle = await open(path, "r");
+  try {
+    const opened = await handle.stat();
+    if (!requirementFileIdentityEqual(before, opened)) {
+      throw new Error("requirement file identity changed before reading");
+    }
+    const buffer = Buffer.alloc(maximumBytes + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
+    if (bytesRead > maximumBytes) throw new Error("requirement file exceeds size limit");
+    const after = await lstat(path);
+    if (!requirementFileIdentityEqual(before, after)) {
+      throw new Error("requirement file identity changed while reading");
+    }
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(
+      buffer.subarray(0, bytesRead),
+    );
+    return decoded.startsWith("\uFEFF") ? decoded.slice(1) : decoded;
+  } finally {
+    await handle.close();
+  }
+};
+
+const validatePipRequirementInputs = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+  workingDirectory: string,
+  task: Pick<AuthorizationBounds, "allowedPaths" | "allowedOrigins">,
+  harness: Pick<AuthorizationBounds, "allowedPaths" | "allowedOrigins">,
+): Effect.Effect<void, DeniedAgentCapabilityError> =>
+  Effect.gen(function*() {
+    if (packageManagerName(executable) !== "pip") return;
+    const fileOptions: Array<{ readonly path: string }> = [];
+    for (let index = 0; index < arguments_.length; index += 1) {
+      const option = pipRequirementOption(arguments_[index]!);
+      if (option?.kind !== "include") continue;
+      const value = option.value ?? arguments_[index + 1];
+      if (option.value === undefined) index += 1;
+      if (
+        value === undefined
+          || !pipRequirementFileReference(value)
+          || normalizeOrigin(value) !== undefined
+      ) {
+        return yield* new DeniedAgentCapabilityError({
+          capability: "package-manager-requirements",
+          value: executable,
+        });
+      }
+      fileOptions.push({
+        path: lexicalPath(value, workingDirectory),
+      });
+    }
+    const visited: Array<string> = [];
+    let fileCount = 0;
+    let totalBytes = 0;
+    const visit = (
+      file: string,
+      depth: number,
+    ): Effect.Effect<void, DeniedAgentCapabilityError> =>
+      Effect.gen(function*() {
+        if (depth > 8 || fileCount >= 64) {
+          return yield* new DeniedAgentCapabilityError({
+            capability: "package-manager-requirements",
+            value: file,
+          });
+        }
+        yield* ensureAllowedPath(
+          file,
+          workingDirectory,
+          task.allowedPaths,
+          harness.allowedPaths,
+        );
+        const canonical = yield* Effect.promise(() => canonicalPath(file, workingDirectory));
+        if (visited.includes(canonical)) {
+          return yield* new DeniedAgentCapabilityError({
+            capability: "package-manager-requirements",
+            value: file,
+          });
+        }
+        visited.push(canonical);
+        fileCount += 1;
+        const content = yield* Effect.tryPromise({
+          try: () => readPipRequirementFile(file),
+          catch: () => new DeniedAgentCapabilityError({
+            capability: "package-manager-requirements",
+            value: file,
+          }),
+        });
+        totalBytes += Buffer.byteLength(content, "utf8");
+        if (totalBytes > 1024 * 1024) {
+          return yield* new DeniedAgentCapabilityError({
+            capability: "package-manager-requirements",
+            value: file,
+          });
+        }
+        const lines = pipRequirementLogicalLines(content);
+        if (lines === undefined) {
+          return yield* new DeniedAgentCapabilityError({
+            capability: "package-manager-requirements",
+            value: file,
+          });
+        }
+        for (const line of lines) {
+          const tokens = pipRequirementTokens(line);
+          if (tokens === undefined || tokens.length === 0) {
+            return yield* new DeniedAgentCapabilityError({
+              capability: "package-manager-requirements",
+              value: file,
+            });
+          }
+          const option = pipRequirementOption(tokens[0]!);
+          if (option?.value !== undefined && tokens.length !== 1) {
+            return yield* new DeniedAgentCapabilityError({
+              capability: "package-manager-requirements",
+              value: file,
+            });
+          }
+          if (option?.kind === "include") {
+            const include = option.value ?? (
+              tokens.length === 2 ? tokens[1] : undefined
+            );
+            if (include === undefined || (option.value === undefined && tokens.length !== 2)) {
+              return yield* new DeniedAgentCapabilityError({
+                capability: "package-manager-requirements",
+                value: file,
+              });
+            }
+            if (!pipRequirementFileReference(include)) {
+              return yield* new DeniedAgentCapabilityError({
+                capability: "package-manager-requirements",
+                value: file,
+              });
+            }
+            const nested = lexicalPath(include, dirname(file));
+            yield* visit(nested, depth + 1);
+            continue;
+          }
+          if (option?.kind === "index") {
+            const value = option.value ?? (tokens.length === 2 ? tokens[1] : undefined);
+            if (value === undefined || (option.value === undefined && tokens.length !== 2)) {
+              return yield* new DeniedAgentCapabilityError({
+                capability: "network-origin",
+                value: executable,
+              });
+            }
+            if (canonicalRegistryUrl(value) === undefined) {
+              return yield* new DeniedAgentCapabilityError({
+                capability: "network-origin",
+                value: safeRegistryValue(value),
+              });
+            }
+            yield* ensureAllowedOrigin(
+              value,
+              task.allowedOrigins,
+              harness.allowedOrigins,
+            );
+            continue;
+          }
+          if (
+            pipRequirementOptionName(tokens[0]!)
+              ? !pipRequirementSafeOption(tokens)
+              : !pipRequirementPackage(line)
+          ) {
+            return yield* new DeniedAgentCapabilityError({
+              capability: "package-manager-requirements",
+              value: file,
+            });
+          }
+        }
+        visited.pop();
+      });
+    for (const entry of fileOptions) yield* visit(entry.path, 0);
+  });
 
 const registryArguments = (
   manager: string,
@@ -1021,8 +1437,13 @@ const authorizeRegistryInvocation = (
     }));
   }
   const options = registryOptions(manager, arguments_);
+  const registryOrigin = canonicalRegistryOrigin(registry);
   for (const option of options) {
-    if (option.value === undefined || canonicalRegistryOrigin(option.value) !== registry) {
+    if (
+      option.value === undefined
+        || registryOrigin === undefined
+        || canonicalRegistryOrigin(option.value) !== registryOrigin
+    ) {
       return Effect.fail(new DeniedAgentCapabilityError({
         capability: "network-origin",
         value: option.value === undefined
@@ -1045,7 +1466,16 @@ const isExplicitSourceDependency = (argument: string): boolean => {
   return /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
     .test(value)
     || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
+      .test(value)
+    || /\s+@\s*(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|https?:\/\/)/iu
       .test(value);
+};
+
+const isPipSourceDependency = (argument: string): boolean => {
+  const value = optionValue(argument) ?? argument;
+  return isExplicitSourceDependency(value)
+    || /^(?:[.~]{0,2}[\\/]|[A-Za-z]:[\\/]|[\\/])/u.test(value)
+    || /^(?:-e|--editable)(?:=|$)/iu.test(argument);
 };
 
 const npmDependencyArgumentIndexes = (
@@ -1173,6 +1603,8 @@ const packageManagerPolicy = (
       ? [...dependencyIndexes].some((index) =>
         isUnboundedSourceDependency(unambiguous[index] ?? "")
       )
+      : manager === "pip"
+      ? sourceArguments.some(isPipSourceDependency)
       : sourceArguments.some(isExplicitSourceDependency)
   ) {
     return { kind: "denied" };
@@ -1326,12 +1758,15 @@ const packageManagerPolicy = (
       new Set([
         "--cache-dir",
         "--config-settings",
+        "--constraint",
         "--extra-index-url",
         "--find-links",
         "--index-url",
         "--isolated",
         "--proxy",
         "--requirement",
+        "-r",
+        "-c",
         "--trusted-host",
         "-f",
         "-i",
@@ -1611,7 +2046,7 @@ const derivedCapabilities = (
     commandTokens.some((token) => rebootExecutables.has(token))
     || tokens.some((argument) =>
       argument === "reboot"
-      || argument === "-r"
+      || (argument === "-r" && packageManagerName(executable) !== "pip")
       || argument === "/r"
     )
   ) {
@@ -1668,6 +2103,13 @@ const authorizeExecutableBehavior = (
   actionOrigins: ReadonlyArray<string> = [],
 ): Effect.Effect<ReadonlyArray<string>, DeniedAgentCapabilityError> =>
   Effect.gen(function*() {
+    yield* validatePipRequirementInputs(
+      executable,
+      arguments_,
+      workingDirectory,
+      task,
+      harness,
+    );
     const scriptAuthorizedArguments = yield* authorizePackageManagerInvocation(
       executable,
       arguments_,
