@@ -1,4 +1,6 @@
 import { Clock, Effect, Layer } from "effect";
+import { Option } from "effect";
+import { AgentResolution } from "../agent/agent-resolution.service.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import {
@@ -12,6 +14,9 @@ import { Synchronization } from "./synchronization.service.ts";
 const makeSynchronization = Effect.gen(function*() {
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
+  const agentResolution = Option.getOrUndefined(
+    yield* Effect.serviceOption(AgentResolution),
+  );
 
   return Synchronization.of({
     run: (input) =>
@@ -30,7 +35,10 @@ const makeSynchronization = Effect.gen(function*() {
           startedAt,
         });
 
-        const result = yield* executeSynchronizationPlan(input).pipe(
+        const result = yield* executeSynchronizationPlan({
+          ...input,
+          agentResolution: input.agentResolution ?? agentResolution,
+        }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
           Effect.catch((error) =>
@@ -59,7 +67,10 @@ const makeSynchronization = Effect.gen(function*() {
       ),
     recover: (input) =>
       Effect.gen(function*() {
-        const result = yield* recoverSynchronizationPlan(input).pipe(
+        const result = yield* recoverSynchronizationPlan({
+          ...input,
+          agentResolution: input.agentResolution ?? agentResolution,
+        }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
         );

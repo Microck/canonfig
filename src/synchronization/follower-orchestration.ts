@@ -68,6 +68,7 @@ import type {
   PlanningProfileRevision,
   PlannedSynchronization,
   SynchronizationArtifact,
+  SynchronizationAgentConfiguration,
 } from "./synchronization.types.ts";
 
 const encoder = new TextEncoder();
@@ -942,12 +943,36 @@ const recanonicalizePlan = (
   return { ...body, encoded, digest: sha256Hex(encoded) };
 };
 
+const agentConfigurationFor = (
+  configuration: FollowerSynchronizationConfiguration,
+  scheduled: boolean,
+  signal?: AbortSignal,
+): SynchronizationAgentConfiguration => ({
+  policy: configuration.agentPolicy,
+  harness: configuration.agentHarness === undefined
+    ? undefined
+    : {
+      harness: configuration.agentHarness.kind,
+      executable: configuration.agentHarness.executable,
+      environment: configuration.agentHarness.environment,
+      maximumInputBytes: configuration.agentHarness.maximumInputBytes,
+      allowedPaths: configuration.agentHarness.allowedPaths,
+      allowedExecutables: configuration.agentHarness.allowedExecutables,
+      executableAuthorizations: configuration.agentHarness.executableAuthorizations,
+      allowedOrigins: configuration.agentHarness.allowedOrigins,
+      allowedCapabilities: configuration.agentHarness.allowedCapabilities,
+    },
+  scheduled,
+  signal,
+});
+
 export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTasks")(
   function*(
     configuration: FollowerSynchronizationConfiguration,
     plan: PlannedSynchronization,
     scheduled: boolean,
     signal?: AbortSignal,
+    planning = false,
   ) {
     const noResolutions: ReadonlyArray<AgentResolutionOutcome> = [];
     if (
@@ -990,7 +1015,7 @@ export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTa
     for (const task of plan.agentTasks) {
       const bounded = yield* boundedTask(task, harness);
       const resolution = yield* agent.resolve({
-        policy: configuration.agentPolicy,
+        policy: planning ? "agent-propose" : configuration.agentPolicy,
         task: bounded,
         harness: {
           harness: harness.kind,
@@ -1033,6 +1058,7 @@ export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTa
     }
     const actions = plan.actions.map((action) => {
       if (action.detail.kind !== "agent-task") return action;
+      if (planning) return action;
       const replacement = replacements.get(action.detail.taskId);
       if (replacement === "resolved") {
         return {
@@ -1071,6 +1097,9 @@ export const synchronizeFollower = Effect.fn(
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
   const synchronization = yield* Synchronization;
+  const agentResolution = Option.getOrUndefined(
+    yield* Effect.serviceOption(AgentResolution),
+  );
   const scheduleManager = Option.getOrUndefined(
     yield* Effect.serviceOption(ScheduleManager),
   );
@@ -1096,9 +1125,11 @@ export const synchronizeFollower = Effect.fn(
   ).pipe(
     Effect.provideService(MachineState, machine),
   );
-  yield* repository.publishRevision({
-    revision: persistableRevision(hydrated.revision),
-  });
+  if (mode === "apply") {
+    yield* repository.publishRevision({
+      revision: persistableRevision(hydrated.revision),
+    });
+  }
   const plan = yield* planSynchronization({
     revision: hydrated.revision,
     follower: configuration.follower.id,
@@ -1110,28 +1141,48 @@ export const synchronizeFollower = Effect.fn(
     localOverlay: configuration.localOverlay ?? [],
     appliedResources,
   });
-  const resolved = yield* resolveAgentTasks(
-    configuration,
-    plan,
-    scheduled,
-    signal,
-  );
+  const noAgentResolutions: ReadonlyArray<AgentResolutionOutcome> = [];
+  const planned = mode === "plan"
+    ? yield* resolveAgentTasks(
+      configuration,
+      plan,
+      scheduled,
+      signal,
+      true,
+    )
+    : { plan, agentResolutions: noAgentResolutions };
+  const appliedAgentResolutions: Array<AgentResolutionOutcome> = [];
+  const journaledAgentResolution = mode === "apply" && agentResolution !== undefined
+    ? AgentResolution.of({
+      resolve: (input) =>
+        agentResolution.resolve(input).pipe(
+          Effect.tap((outcome) =>
+            Effect.sync(() => {
+              appliedAgentResolutions.push(outcome);
+            })
+          ),
+        ),
+      proposeProfileChange: agentResolution.proposeProfileChange,
+    })
+    : undefined;
   if (mode === "plan") {
     return {
       mode,
       revision: selected.id,
       downloadedBlobs: fetched.downloadedBlobs,
       reusedBlobs: fetched.reusedBlobs,
-      plan: resolved.plan,
-      agentResolutions: resolved.agentResolutions,
+      plan: planned.plan,
+      agentResolutions: planned.agentResolutions,
     };
   }
   const outcome = yield* synchronization.run({
     id: Schema.decodeUnknownSync(RunId)(`run-${randomUUID()}`),
-    plan: resolved.plan,
+    plan: planned.plan,
     revision: hydrated.revision,
     appliedResources,
     artifacts: hydrated.artifacts,
+    agent: agentConfigurationFor(configuration, scheduled, signal),
+    agentResolution: journaledAgentResolution,
     limits: {
       processTimeoutMilliseconds:
         configuration.scheduledInvocation.timeoutMilliseconds,
@@ -1142,7 +1193,7 @@ export const synchronizeFollower = Effect.fn(
     revision: selected.id,
     downloadedBlobs: fetched.downloadedBlobs,
     reusedBlobs: fetched.reusedBlobs,
-    agentResolutions: resolved.agentResolutions,
+    agentResolutions: appliedAgentResolutions,
     outcome,
   };
 });
@@ -1153,6 +1204,9 @@ export const recoverFollower = Effect.fn(
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
   const synchronization = yield* Synchronization;
+  const agentResolution = Option.getOrUndefined(
+    yield* Effect.serviceOption(AgentResolution),
+  );
   const scheduleManager = Option.getOrUndefined(
     yield* Effect.serviceOption(ScheduleManager),
   );
@@ -1200,6 +1254,8 @@ export const recoverFollower = Effect.fn(
     follower: configuration.follower.id,
     revision: hydrated.revision,
     artifacts: hydrated.artifacts,
+    agent: agentConfigurationFor(configuration, false, signal),
+    agentResolution,
     limits: {
       processTimeoutMilliseconds:
         configuration.scheduledInvocation.timeoutMilliseconds,

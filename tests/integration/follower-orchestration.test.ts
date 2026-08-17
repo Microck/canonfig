@@ -513,6 +513,22 @@ describe("production follower orchestration", () => {
       AgentResolutionLive,
     );
 
+    const planOnly = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "plan").pipe(
+        Effect.provide(application),
+      ),
+    );
+    expect(planOnly.plan.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "write-file" }),
+    ]));
+    await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });
+    const appliedDuringPlan = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadAppliedResources(follower.id)
+      ).pipe(Effect.provide(followerRepository)),
+    );
+    expect(appliedDuringPlan).toEqual([]);
+
     const first = await Effect.runPromise(
       synchronizeFollower(followerDatabase, "apply").pipe(
         Effect.provide(application),
@@ -520,8 +536,8 @@ describe("production follower orchestration", () => {
     );
     expect(first).toMatchObject({
       revision: revision.id,
-      downloadedBlobs: 3,
-      reusedBlobs: 0,
+      downloadedBlobs: 0,
+      reusedBlobs: 3,
       outcome: { outcome: "Converged" },
     });
     expect(await readFile(target, "utf8")).toBe(content);

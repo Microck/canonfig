@@ -396,6 +396,8 @@ export const recoverSynchronizationPlan = (
       artifacts: recoveryInput.artifacts,
       knownSecrets: recoveryInput.knownSecrets,
       limits: recoveryInput.limits,
+      agent: recoveryInput.agent,
+      agentResolution: recoveryInput.agentResolution,
     };
     const states = yield* executionContexts(input, executionLimits(input));
     const verified = new Set<ResourceId>();

@@ -309,6 +309,141 @@ export const driftResult = (
   };
 };
 
+const agentActionResult = (
+  input: SynchronizationRunInput,
+  state: ActionState,
+  attempt = 1,
+): Effect.Effect<ActionResult, never, StateRepository | MachineState> =>
+  Effect.gen(function*() {
+    const detail = state.action.detail;
+    if (detail.kind !== "agent-task") {
+      return { kind: "failed", reason: "invalid agent action" } satisfies ActionResult;
+    }
+    const task = input.plan.agentTasks.find((candidate) =>
+      candidate.id === detail.taskId
+    );
+    const agent = input.agent;
+    const resolution = input.agentResolution;
+    if (
+      task === undefined
+      || agent?.policy !== "agent-apply"
+      || agent.harness === undefined
+      || resolution === undefined
+    ) {
+      yield* journal(
+        input.id,
+        state.action.id,
+        "skipped",
+        undefined,
+        undefined,
+        attempt,
+      );
+      return {
+        kind: "human",
+        human: {
+          reason: `Bounded agent task requires an apply-authorized harness: ${detail.summary}`,
+          instructions:
+            "Configure an agent-apply harness, or resolve the task manually, then rerun synchronization.",
+          resource: state.action.resource,
+        },
+      } satisfies ActionResult;
+    }
+
+    yield* journal(
+      input.id,
+      state.action.id,
+      "running",
+      undefined,
+      undefined,
+      attempt,
+    );
+    const outcome = yield* resolution.resolve({
+      policy: agent.policy,
+      task,
+      harness: agent.harness,
+      scheduled: agent.scheduled,
+      signal: agent.signal,
+    });
+    if (outcome.outcome !== "applied") {
+      yield* journal(
+        input.id,
+        state.action.id,
+        "skipped",
+        undefined,
+        undefined,
+        attempt,
+      );
+      return {
+        kind: "human",
+        human: {
+          reason: `Agent did not apply the requested task: ${detail.summary}`,
+          instructions:
+            "Review the agent proposal or complete the task manually, then rerun synchronization.",
+          resource: state.action.resource,
+        },
+      } satisfies ActionResult;
+    }
+
+    const scheduleManager = state.context.resource.kind === "schedule"
+      ? Option.getOrUndefined(yield* Effect.serviceOption(ScheduleManager))
+      : undefined;
+    const verification = yield* verifyResource(state.context, scheduleManager);
+    const evidence = verificationEvidence(verification);
+    if (!verification.passed) {
+      yield* journal(
+        input.id,
+        state.action.id,
+        "failed",
+        evidence,
+        undefined,
+        attempt,
+      );
+      return {
+        kind: "failed",
+        reason: `verification failed for agent task ${state.action.resource}`,
+      } satisfies ActionResult;
+    }
+    yield* journal(
+      input.id,
+      state.action.id,
+      "succeeded",
+      evidence,
+      undefined,
+      attempt,
+    );
+    return {
+      kind: "verified",
+      resource: state.action.resource,
+    } satisfies ActionResult;
+  }).pipe(
+    Effect.onInterrupt(() =>
+      journal(
+        input.id,
+        state.action.id,
+        "failed",
+        { status: "not-run", method: "interrupted" },
+        undefined,
+        attempt,
+      ).pipe(Effect.ignore)
+    ),
+    Effect.catch((error) =>
+      journal(
+        input.id,
+        state.action.id,
+        "failed",
+        { status: "not-run", method: "action-failed" },
+        undefined,
+        attempt,
+      ).pipe(
+        Effect.ignore,
+        Effect.andThen(Effect.succeed({
+          kind: "failed",
+          reason: redact(error, input.knownSecrets ?? []),
+        } satisfies ActionResult)),
+      )
+    ),
+  );
+
 export const executeSynchronizationAction = (
   input: SynchronizationRunInput,
   state: ActionState,
@@ -328,16 +463,7 @@ export const executeSynchronizationAction = (
       } satisfies ActionResult;
     }
     if (detail.kind === "agent-task") {
-      yield* journal(input.id, state.action.id, "skipped", undefined, undefined, attempt);
-      return {
-        kind: "human",
-        human: {
-          reason: `Bounded agent task requires resolution: ${detail.summary}`,
-          instructions:
-            `Resolve task ${detail.taskId} under the configured agent policy, then rerun synchronization.`,
-          resource: state.action.resource,
-        },
-      } satisfies ActionResult;
+      return yield* agentActionResult(input, state, attempt);
     }
     if (detail.kind === "drift-conflict") {
       const result = driftResult(input, state);

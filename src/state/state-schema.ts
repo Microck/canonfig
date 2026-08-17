@@ -246,4 +246,31 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       ADD COLUMN removed_resource_json TEXT
     `;
   }),
+  "0009_recoverable_run_blocks_new_runs": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    // Interrupted runs retain rollback and journal evidence and are therefore
+    // still recoverable work, not terminal history. Keep the original unique
+    // index for concurrent applying inserts and add a durable guard for
+    // interrupted recovery. This remains migratable even when older databases
+    // already contain more than one historical Interrupted row.
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS recoverable_runs_by_follower
+      ON synchronization_runs(follower_id, status)
+      WHERE status IN ('applying', 'Interrupted')
+    `;
+    yield* sql`
+      CREATE TRIGGER IF NOT EXISTS block_run_while_recoverable
+      BEFORE INSERT ON synchronization_runs
+      WHEN EXISTS (
+        SELECT 1
+        FROM synchronization_runs
+        WHERE follower_id = NEW.follower_id
+          AND status IN ('applying', 'Interrupted')
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'recoverable synchronization run exists');
+      END
+    `;
+  }),
 });

@@ -327,17 +327,35 @@ describe("StateRepository SQLite adapter", () => {
           outcome,
           appliedResources: [],
         });
+        const blockedDuringRecovery = yield* Effect.flip(start(
+          repository,
+          "run-after-interruption",
+          follower().id,
+          revision().id,
+        ));
+        // Explicitly abandon the interrupted run before allowing a new run.
+        yield* repository.completeRun({
+          run: asRunId("run-active"),
+          completedAt: "2026-08-15T12:03:00Z",
+          outcome: {
+            outcome: "Failed",
+            run: asRunId("run-active"),
+            reason: "test abandonment",
+          },
+          appliedResources: [],
+        });
         yield* start(
           repository,
           "run-after-completion",
           follower().id,
           revision().id,
         );
-        return duplicate;
+        return { duplicate, blockedDuringRecovery };
       }),
     );
 
-    expect(result).toBeInstanceOf(ActiveRunExistsError);
+    expect(result.duplicate).toBeInstanceOf(ActiveRunExistsError);
+    expect(result.blockedDuringRecovery).toBeInstanceOf(ActiveRunExistsError);
 
     const database = new DatabaseSync(path, { readOnly: true });
     const indexes = database.prepare(
@@ -345,6 +363,50 @@ describe("StateRepository SQLite adapter", () => {
     ).get("one_active_applying_run_per_follower");
     database.close();
     expect(String(indexes?.sql)).toContain("WHERE status = 'applying'");
+  });
+
+  it("blocks a new run after restart until interrupted recovery is terminal", async () => {
+    const path = databasePath();
+    await runWithRepository(
+      path,
+      Effect.gen(function*() {
+        yield* seed();
+        const repository = yield* StateRepository;
+        yield* start(repository, "run-restart", follower().id, revision().id);
+        yield* repository.completeRun({
+          run: asRunId("run-restart"),
+          completedAt: "2026-08-15T12:02:00Z",
+          outcome: decode(SynchronizationOutcomeSchema)({
+            outcome: "Interrupted",
+            run: "run-restart",
+            completedActions: [],
+          }),
+          appliedResources: [],
+        });
+      }),
+    );
+
+    const blocked = await runWithRepository(
+      path,
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        return yield* Effect.flip(start(
+          repository,
+          "run-after-restart",
+          follower().id,
+          revision().id,
+        ));
+      }),
+    );
+    expect(blocked).toBeInstanceOf(ActiveRunExistsError);
+
+    const state = await runWithRepository(
+      path,
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadState(follower().id)
+      ),
+    );
+    expect(state.activeRecovery?.run.id).toBe("run-restart");
   });
 
   it("maps malformed persisted plan JSON into a contextual decoding error", async () => {

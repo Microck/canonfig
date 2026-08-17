@@ -286,10 +286,14 @@ Canonfig does not merge modified canonical skills in v2. The user can keep the f
 3. Download only missing content-addressed blobs.
 4. Load Applied Resource Records and the Local Overlay.
 5. Observe every target resource.
-6. Build and persist a complete Synchronization Plan.
-7. Return the plan when running in plan-only mode.
+6. Build a complete Synchronization Plan and persist it before apply mode can
+   mutate the follower.
+7. Return the plan when running in plan-only mode. Planning may refresh the
+   verified transport cache, but does not persist revisions, journals, or
+   resource records and never resolves an `agent-apply` action.
 8. Apply deterministic actions in dependency order.
-9. Escalate eligible unresolved actions through AgentResolution.
+9. Escalate eligible unresolved actions through AgentResolution only after
+   the apply run and its pending action journal have been durably recorded.
 10. Verify every required resource.
 11. Commit Applied Resource Records and the run outcome.
 ```
@@ -305,7 +309,7 @@ durable journal even after the live Applied Resource Record is deleted. Recovery
 uses that metadata to reconstruct the removal context and never re-persists a
 resource that was successfully removed.
 
-Package installation, login, and arbitrary agent commands cannot promise full rollback. Canonfig records their evidence and reruns their idempotent verification during recovery. `canonfig recover` resumes the recorded plan when its Profile Revision is still available. Otherwise it explains why a new plan is required.
+Package installation, login, and arbitrary agent commands cannot promise full rollback. Canonfig records their evidence and reruns their idempotent verification during recovery. `canonfig recover` resumes the recorded plan when its Profile Revision is still available. Otherwise it explains why a new plan is required. An `Interrupted` run remains recoverable and blocks a new synchronization run for that follower until recovery completes or an explicit terminal abandonment outcome is recorded; terminal historical runs remain available to status and diagnostic queries.
 
 Profile Revisions and content blobs are immutable. V2 does not perform automatic source garbage collection. A later explicit source maintenance command can remove unreachable revisions after policy is defined.
 

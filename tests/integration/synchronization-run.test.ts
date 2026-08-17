@@ -17,8 +17,10 @@ import { DatabaseSync } from "node:sqlite";
 import { Effect, Fiber, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { AgentResolution } from "../../src/agent/agent-resolution.service.ts";
 import {
   ActionId,
+  AgentTaskId,
   ContentDigest,
   FollowerId,
   ProfileId,
@@ -67,6 +69,7 @@ import type {
   SynchronizationArtifact,
   SynchronizationRunInput,
 } from "../../src/synchronization/synchronization.types.ts";
+import type { AgentResolutionOutcome } from "../../src/agent/agent-resolution.types.ts";
 
 const decode = Schema.decodeUnknownSync;
 const temporaryDirectories: Array<string> = [];
@@ -196,6 +199,98 @@ const fileFixture = (
       plan,
       revision,
       artifacts: [artifact],
+    },
+  };
+};
+
+const agentFixture = (root: string): Fixture => {
+  const target = join(root, "home", "agent-tool");
+  const resource: PublishedResource = {
+    id: decode(ResourceId)("agent-tool"),
+    kind: "tool",
+    policy: "ensure",
+    target,
+    dependsOn: [],
+    blobs: [],
+  };
+  const revision: PlanningProfileRevision = {
+    id: decode(ProfileRevisionId)("revision-agent"),
+    profileId: decode(ProfileId)("profile-agent"),
+    sequence: 1,
+    canonicalBytes: "{}",
+    digest: decode(ContentDigest)(sha256Hex("{}")),
+    signature: "test-signature",
+    publishedAt: "2026-08-15T00:00:00Z",
+    resources: [resource],
+    groups: [],
+    desired: [{
+      resource: resource.id,
+      desired: {
+        kind: "tool",
+        toolId: "agent-tool",
+        recipes: [],
+        loginRequired: false,
+      },
+      verification: {
+        method: "executable-present",
+        executable: "agent-tool",
+      },
+    }],
+    blobs: [],
+  };
+  const task = {
+    id: decode(AgentTaskId)("agent:agent-tool:0"),
+    resource: resource.id,
+    summary: "Resolve agent tool",
+    desiredOutcome: "Make agent-tool available",
+    observedEvidence: ["Observed state: absent"],
+    allowedPaths: [target],
+    allowedExecutables: ["agent-tool"],
+    executableAuthorizations: [{
+      executable: "agent-tool",
+      behavior: "leaf" as const,
+    }],
+    allowedOrigins: [],
+    forbidden: ["elevation", "login", "restart", "reboot"] as const,
+    timeLimitSeconds: 30,
+    outputLimitBytes: 4096,
+    verification: { command: ["agent-tool", "--version"] },
+  };
+  const action = {
+    id: decode(ActionId)("action:agent-tool:0:agent-task"),
+    resource: resource.id,
+    kind: "agent-task" as const,
+    detail: {
+      kind: "agent-task" as const,
+      taskId: task.id,
+      summary: task.summary,
+    },
+    before: [],
+  };
+  const body = {
+    revision: revision.id,
+    follower: follower.id,
+    requiredBlobs: [],
+    actions: [action],
+    agentTasks: [task],
+  };
+  const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(body));
+  const persistedPlan = {
+    ...body,
+    encoded,
+    digest: sha256Hex(encoded),
+  };
+  return {
+    root,
+    database: join(root, "state.sqlite"),
+    target,
+    revision,
+    artifact: { digest: "unused", content: new Uint8Array() },
+    input: {
+      id: decode(RunId)("run-agent"),
+      plan: persistedPlan,
+      revision,
+      artifacts: [],
     },
   };
 };
@@ -465,6 +560,127 @@ const installerInvocation = async (
 };
 
 describe("synchronization apply run", () => {
+  it("journals agent-apply before mutation and recovers an interrupted task", async () => {
+    const fixture = agentFixture(temporaryDirectory());
+    const bin = join(fixture.root, "bin");
+    mkdirSync(bin, { recursive: true });
+    const executable = join(bin, "agent-tool");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+
+    const harness = {
+      harness: "codex" as const,
+      executable: process.execPath,
+      maximumInputBytes: 4096,
+      allowedPaths: [fixture.target],
+      allowedExecutables: ["agent-tool"],
+      executableAuthorizations: [{
+        executable: "agent-tool",
+        behavior: "leaf" as const,
+      }],
+      allowedOrigins: [],
+      allowedCapabilities: [],
+      environment: [{ name: "PATH", value: bin }],
+    };
+    let resolutions = 0;
+    let releaseInterrupted: (() => void) | undefined;
+    const interrupted = new Promise<void>((resolve) => {
+      releaseInterrupted = resolve;
+    });
+    const task = fixture.input.plan.agentTasks[0]!;
+    const applied = (): AgentResolutionOutcome => ({
+      outcome: "applied",
+      task,
+      proposal: { summary: "Install agent tool", actions: [] },
+      harness: {
+        executable: process.execPath,
+        arguments: [],
+        exitCode: 0,
+        signal: null,
+        stdout: "",
+        stderr: "",
+      },
+      executions: [],
+      verification: {
+        command: task.verification.command,
+        exitCode: 0,
+        stdout: "agent-tool 1.0",
+        stderr: "",
+        matched: true,
+      },
+    });
+    const agentResolution = AgentResolution.of({
+      resolve: () => {
+        resolutions += 1;
+        if (resolutions === 1) {
+          releaseInterrupted?.();
+          return Effect.never;
+        }
+        return Effect.succeed(applied());
+      },
+      proposeProfileChange: () => Effect.die("unused"),
+    });
+    const agent = {
+      policy: "agent-apply" as const,
+      harness,
+    };
+    const layer = applicationLayer(fixture);
+    const run = Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      const {
+        desired: _desired,
+        blobs: _blobs,
+        ...persistableRevision
+      } = fixture.revision;
+      yield* repository.registerFollower({ follower });
+      yield* repository.publishRevision({ revision: persistableRevision });
+      const synchronization = yield* Synchronization;
+      return yield* synchronization.run({
+        ...fixture.input,
+        agent,
+        agentResolution,
+      });
+    }).pipe(Effect.provide(layer));
+
+    const fiber = Effect.runFork(run);
+    await interrupted;
+    await Effect.runPromise(Fiber.interrupt(fiber));
+
+    const interruptedDatabase = new DatabaseSync(fixture.database, { readOnly: true });
+    const interruptedRow = interruptedDatabase.prepare(
+      "SELECT status FROM synchronization_runs WHERE id = ?",
+    ).get(fixture.input.id);
+    interruptedDatabase.close();
+    expect(interruptedRow?.status).toBe("Interrupted");
+    expect(await readFile(fixture.target).catch(() => undefined)).toBeUndefined();
+
+    const recovered = await Effect.runPromise(
+      Effect.gen(function*() {
+        const synchronization = yield* Synchronization;
+        return yield* synchronization.recover({
+          follower: follower.id,
+          revision: fixture.revision,
+          artifacts: [],
+          agent,
+          agentResolution,
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(recovered).toEqual({
+      outcome: "Converged",
+      run: fixture.input.id,
+      verified: ["agent-tool"],
+    });
+    expect(resolutions).toBe(2);
+    expect(actionRows(fixture.database).map((row) => row.state)).toEqual([
+      "pending",
+      "running",
+      "failed",
+      "running",
+      "succeeded",
+    ]);
+  });
+
   it("does not follow an intermediate mirror symlink outside the managed root", async () => {
     const root = temporaryDirectory();
     const managed = join(root, "managed");

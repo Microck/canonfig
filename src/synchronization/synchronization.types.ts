@@ -6,6 +6,7 @@ import type {
   RunId,
   ResourceId,
 } from "../domain/brand.ts";
+import type { AgentPolicy } from "../domain/identity.ts";
 import type { ProfileRevision, PublishedResource } from "../domain/profile.ts";
 import type { VerificationInput } from "../domain/profile.ts";
 import type {
@@ -16,6 +17,8 @@ import type {
   SynchronizationPlan,
 } from "../domain/synchronization.ts";
 import type { BuildPolicy, Platform, RecipeMethod } from "../domain/resource.ts";
+import type { AgentHarnessConfiguration } from "../agent/agent-resolution.types.ts";
+import type { AgentResolution } from "../agent/agent-resolution.service.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
 
 /** Transfer metadata is deliberately separate from a resource's Apply Policy. */
@@ -185,6 +188,13 @@ export interface SynchronizationExecutionLimits {
   readonly verificationConcurrency: number;
 }
 
+export interface SynchronizationAgentConfiguration {
+  readonly policy: AgentPolicy;
+  readonly harness?: AgentHarnessConfiguration | undefined;
+  readonly scheduled?: boolean | undefined;
+  readonly signal?: AbortSignal | undefined;
+}
+
 export interface SynchronizationRunInput {
   readonly id: RunId;
   readonly plan: PlannedSynchronization;
@@ -193,6 +203,12 @@ export interface SynchronizationRunInput {
   readonly artifacts: ReadonlyArray<SynchronizationArtifact>;
   readonly knownSecrets?: ReadonlyArray<string> | undefined;
   readonly limits?: Partial<SynchronizationExecutionLimits> | undefined;
+  /**
+   * Agent resolution is supplied only to the durable apply engine. It is not
+   * part of the persisted plan and is never consulted during planning.
+   */
+  readonly agent?: SynchronizationAgentConfiguration | undefined;
+  readonly agentResolution?: AgentResolution["Service"] | undefined;
 }
 
 /** Hydrated immutable inputs needed to resume one persisted follower run. */
@@ -202,4 +218,6 @@ export interface SynchronizationRecoveryInput {
   readonly artifacts: ReadonlyArray<SynchronizationArtifact>;
   readonly knownSecrets?: ReadonlyArray<string> | undefined;
   readonly limits?: Partial<SynchronizationExecutionLimits> | undefined;
+  readonly agent?: SynchronizationAgentConfiguration | undefined;
+  readonly agentResolution?: AgentResolution["Service"] | undefined;
 }

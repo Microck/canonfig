@@ -1121,6 +1121,20 @@ const makeRepository = Effect.gen(function*() {
         if (revisionCount === 0) {
           return yield* new RevisionNotFoundError({ revision: input.revision });
         }
+        const recoverableRunCount = yield* statusCount(
+          sql,
+          sql`
+            SELECT COUNT(*) AS count
+            FROM synchronization_runs
+            WHERE follower_id = ${input.follower}
+              AND status IN ('applying', 'Interrupted')
+          `,
+          "recoverable synchronization run",
+          input.follower,
+        );
+        if (recoverableRunCount > 0) {
+          return yield* new ActiveRunExistsError({ follower: input.follower });
+        }
         yield* sql`
           INSERT INTO synchronization_runs (
             id,
