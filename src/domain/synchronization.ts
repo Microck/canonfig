@@ -21,6 +21,7 @@ import {
   type BuildPolicy,
 } from "./resource.ts";
 
+import { recipeValidationError } from "./recipe-versions.ts";
 /**
  * Synchronization domain types: plans, actions, outcomes, drift, agent tasks,
  * and human action records.
@@ -161,6 +162,22 @@ export const PlannedActionKindSchema = Schema.Literals([
   "drift-conflict",
 ]);
 
+const InstallToolActionDetailSchema = Schema.Struct({
+  kind: Schema.Literal("install-tool"),
+  toolId: Schema.NonEmptyString,
+  method: Schema.NonEmptyString,
+  package: Schema.NonEmptyString,
+  version: Schema.optional(Schema.NonEmptyString),
+  buildPolicy: Schema.optional(BuildPolicySchema),
+}).check(
+  Schema.makeFilter((detail) => {
+    const reason = recipeValidationError(detail);
+    return reason === undefined
+      ? undefined
+      : { path: ["version"], issue: reason };
+  }),
+);
+
 export const ActionDetailSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("no-op") }),
   Schema.Struct({
@@ -191,14 +208,7 @@ export const ActionDetailSchema = Schema.Union([
     keys: Schema.Array(Schema.NonEmptyString),
     schedule: Schema.optional(SyncScheduleSchema),
   }),
-  Schema.Struct({
-    kind: Schema.Literal("install-tool"),
-    toolId: Schema.NonEmptyString,
-    method: Schema.NonEmptyString,
-    package: Schema.NonEmptyString,
-    version: Schema.optional(Schema.NonEmptyString),
-    buildPolicy: Schema.optional(BuildPolicySchema),
-  }),
+  InstallToolActionDetailSchema,
   Schema.Struct({
     kind: Schema.Literal("verify-only"),
     method: Schema.NonEmptyString,

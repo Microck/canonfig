@@ -2,6 +2,10 @@ import { Schema } from "effect";
 
 import { AgentTaskId } from "../domain/brand.ts";
 import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
+import {
+  isSafeSourceRevision,
+  recipeValidationError,
+} from "../domain/recipe-versions.ts";
 import type { BuildPolicy } from "../domain/resource.ts";
 import type { AgentTask } from "../domain/synchronization.ts";
 
@@ -258,6 +262,19 @@ const recipeFromPackage = (
       || (metadata.ecosystem === "npm" && isUnboundedNpmSpecification(metadata.name))
     )
   ) {
+    return undefined;
+  }
+  if (metadata.ecosystem === "source" && !isSafeSourceRevision(version)) {
+    return undefined;
+  }
+  const recipeMethod = metadata.ecosystem === "homebrew"
+    ? "homebrew"
+    : metadata.ecosystem;
+  if (metadata.ecosystem !== "source" && recipeValidationError({
+    method: recipeMethod,
+    package: metadata.name,
+    version,
+  }) !== undefined) {
     return undefined;
   }
   const buildPolicy: BuildPolicy = metadata.buildPolicy ?? { mode: "scripts-disabled" };

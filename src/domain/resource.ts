@@ -8,6 +8,7 @@ import {
   ResourceId,
   ToolId,
 } from "./brand.ts";
+import { recipeValidationError } from "./recipe-versions.ts";
 
 /**
  * Profile Resource kinds and Apply Policies from the architecture contract.
@@ -163,13 +164,22 @@ export const SkillResourceSpec = Schema.Struct({
 });
 export type SkillResourceSpec = Schema.Schema.Type<typeof SkillResourceSpec>;
 
-export const ToolRecipeRef = Schema.Struct({
+const ToolRecipeRefSchema = Schema.Struct({
   platform: Platform,
   method: Schema.NonEmptyString,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
   buildPolicy: Schema.optional(BuildPolicy),
 });
+
+export const ToolRecipeRef = ToolRecipeRefSchema.check(
+  Schema.makeFilter((recipe) => {
+    const reason = recipeValidationError(recipe);
+    return reason === undefined
+      ? undefined
+      : { path: ["version"], issue: reason };
+  }),
+);
 export type ToolRecipeRef = Schema.Schema.Type<typeof ToolRecipeRef>;
 
 export const LoginRequirement = Schema.Union([
@@ -280,6 +290,8 @@ export type InvocationEvidence = Schema.Schema.Type<typeof InvocationEvidence>;
 
 export const RecipeMethod = Schema.Literals([
   "npm",
+  "pnpm",
+  "bun",
   "brew",
   "apt",
   "winget",
@@ -289,12 +301,20 @@ export const RecipeMethod = Schema.Literals([
 ]);
 export type RecipeMethod = Schema.Schema.Type<typeof RecipeMethod>;
 
-export const ToolRecipe = Schema.Struct({
+const ToolRecipeSchema = Schema.Struct({
   platform: Platform,
   method: RecipeMethod,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
 });
+export const ToolRecipe = ToolRecipeSchema.check(
+  Schema.makeFilter((recipe) => {
+    const reason = recipeValidationError(recipe);
+    return reason === undefined
+      ? undefined
+      : { path: ["version"], issue: reason };
+  }),
+);
 export type ToolRecipe = Schema.Schema.Type<typeof ToolRecipe>;
 
 export const DiscoveredTool = Schema.Struct({

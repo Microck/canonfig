@@ -15,6 +15,7 @@ import {
   encodeMachineProfile,
   findDependencyCycle,
   ProfileContractError,
+  ResourceSpecInputSchema,
   topologicalOrder,
   validateMachineProfile,
   validateProfileResources,
@@ -236,6 +237,76 @@ describe("resource graph validation", () => {
   });
 });
 
+describe("installation recipe version boundaries", () => {
+  it("accepts exact npm semver, including scoped prerelease and build metadata", () => {
+    const decoded = Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+      kind: "tool",
+      toolId: "tool",
+      recipes: [{
+        platform: "linux",
+        method: "npm",
+        package: "@scope/tool",
+        version: "1.2.3-alpha.1+build.7",
+      }],
+      login: { required: false },
+    });
+    expect(decoded).toMatchObject({
+      kind: "tool",
+      recipes: [{
+        package: "@scope/tool",
+        version: "1.2.3-alpha.1+build.7",
+      }],
+    });
+  });
+
+  it.each([
+    ["dist-tag", "@scope/tool", "latest"],
+    ["range", "@scope/tool", "^1.2.3"],
+    ["URL", "@scope/tool", "https://registry.npmjs.org/tool.tgz"],
+    ["Git", "@scope/tool", "git+https://github.com/example/tool.git#v1.2.3"],
+    ["GitHub", "@scope/tool", "github:example/tool"],
+    ["alias", "alias@npm:real-tool", "1.2.3"],
+    ["file", "@scope/tool", "file:../tool"],
+    ["workspace", "@scope/tool", "workspace:*"],
+    ["link", "@scope/tool", "link:../tool"],
+    ["encoded", "@scope/tool", "1.2.3%2Ftool"],
+    ["option", "@scope/tool", "--ignore-scripts"],
+    ["separator", "@scope/tool", "1.2.3;--ignore-scripts"],
+  ])("rejects npm %s recipe at schema boundary", (_name, packageName, version) => {
+    expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+      kind: "tool",
+      toolId: "tool",
+      recipes: [{
+        platform: "linux",
+        method: "npm",
+        package: packageName,
+        version,
+      }],
+      login: { required: false },
+    })).toThrow();
+  });
+
+  it("reports invalid typed recipes at the profile validation boundary", () => {
+    const errors = validateProfileResources([{
+      id: "tool",
+      kind: "tool",
+      target: "tool",
+      spec: {
+        kind: "tool",
+        toolId: "tool",
+        recipes: [{
+          platform: "linux",
+          method: "npm",
+          package: "@scope/tool",
+          version: "latest",
+        }],
+      },
+      verify: { method: "executable-present", executable: "tool" },
+    }]);
+    expect(errors.map((error) => error._tag)).toEqual(["InvalidRecipeError"]);
+  });
+});
+
 describe("topological order", () => {
   it("places dependencies before dependents regardless of input order", () => {
     const resources = [
@@ -397,6 +468,13 @@ describe("schema-backed synchronization contracts", () => {
       method: "apt",
       package: "ripgrep",
     })).not.toHaveProperty("version");
+    expect(() => Schema.decodeUnknownSync(ActionDetailSchema)({
+      kind: "install-tool",
+      toolId: "tool",
+      method: "npm",
+      package: "@scope/tool",
+      version: "latest",
+    })).toThrow();
     expect(() => Schema.decodeUnknownSync(ActionDetailSchema)({ kind: "future-action" })).toThrow();
   });
 

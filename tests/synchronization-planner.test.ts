@@ -548,6 +548,40 @@ describe("stable planning and bounded resolution", () => {
     expect(JSON.parse(unversioned.encoded).actions[0].detail).not.toHaveProperty("version");
   });
 
+
+  it.each([
+    ["dist-tag", "@scope/tool", "latest"],
+    ["range", "@scope/tool", "^1.2.3"],
+    ["URL", "@scope/tool", "https://registry.npmjs.org/tool.tgz"],
+    ["Git", "@scope/tool", "git+https://github.com/example/tool.git#v1.2.3"],
+    ["GitHub", "@scope/tool", "github:example/tool"],
+    ["alias", "alias@npm:real-tool", "1.2.3"],
+    ["file", "@scope/tool", "file:../tool"],
+    ["workspace", "@scope/tool", "workspace:*"],
+    ["link", "@scope/tool", "link:../tool"],
+    ["encoded", "@scope/tool", "1.2.3%2Ftool"],
+    ["option", "@scope/tool", "--ignore-scripts"],
+    ["separator", "@scope/tool", "1.2.3;--ignore-scripts"],
+  ])("rejects npm %s recipe before creating an install action", (_name, packageName, version) => {
+    const subject = resource("tool", "tool", "ensure");
+    const error = Effect.runSync(Effect.flip(planSynchronization(plannerInput(
+      [subject],
+      {
+        desired: [{
+          kind: "tool",
+          toolId: "tool",
+          recipes: [{
+            platform: "linux",
+            method: "npm",
+            package: packageName,
+            version,
+          }],
+          loginRequired: false,
+        }],
+      },
+    ))));
+    expect(error._tag).toBe("PlannerInvalidRecipeError");
+  });
   it("escalates reviewed build-hook recipes when descendants cannot be sandboxed", () => {
     const subject = resource("tool", "tool", "ensure");
     const plan = runPlan(plannerInput(

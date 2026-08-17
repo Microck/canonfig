@@ -1434,16 +1434,22 @@ describe("synchronization apply run", () => {
       "@example/tool@1.2.3",
       "--ignore-scripts",
     ]],
-    ["npm", "npm", "alias@npm:real-tool", undefined, [
+    ["npm", "npm", "@scope/tool", "1.2.3-alpha.1+build.7", [
       "install",
       "--global",
-      "alias@npm:real-tool",
+      "@scope/tool@1.2.3-alpha.1+build.7",
       "--ignore-scripts",
     ]],
-    ["npm", "npm", "@scope/alias@npm:@scope/real-tool", undefined, [
-      "install",
+    ["pnpm", "pnpm", "@scope/tool", "1.2.3", [
+      "add",
       "--global",
-      "@scope/alias@npm:@scope/real-tool",
+      "@scope/tool@1.2.3",
+      "--ignore-scripts",
+    ]],
+    ["bun", "bun", "@scope/tool", "1.2.3", [
+      "add",
+      "--global",
+      "@scope/tool@1.2.3",
       "--ignore-scripts",
     ]],
     ["homebrew", "brew", "tool", "1.2.3", ["install", "tool@1.2.3"]],
@@ -1485,6 +1491,8 @@ describe("synchronization apply run", () => {
 
   it.each([
     ["npm", "npm", ["install", "--global", "tool", "--ignore-scripts"]],
+    ["pnpm", "pnpm", ["add", "--global", "tool", "--ignore-scripts"]],
+    ["bun", "bun", ["add", "--global", "tool", "--ignore-scripts"]],
     ["homebrew", "brew", ["install", "tool"]],
     ["winget", "winget", ["install", "--id", "tool", "--silent"]],
     ["uv", "uv", ["tool", "install", "tool", "--only-binary=:all:"]],
@@ -1520,6 +1528,8 @@ describe("synchronization apply run", () => {
     ["Bitbucket shorthand", "bitbucket:example/tool"],
     ["git SSH URL", "git+ssh://git@github.com/example/tool.git"],
     ["hosted tarball", "https://github.com/example/tool/archive/v1.2.3.tgz"],
+    ["npm alias", "alias@npm:real-tool"],
+    ["scoped npm alias", "@scope/alias@npm:@scope/real-tool"],
     ["alias with remote", "alias@github:example/tool"],
     ["scoped alias with remote", "@scope/alias@git+https://github.com/example/tool.git"],
     ["credential-bearing remote", "https://user:pass@github.com/example/tool.tgz"],
@@ -1534,6 +1544,36 @@ describe("synchronization apply run", () => {
       "npm",
       packageName,
       undefined,
+      () => {
+        descendantExecuted = true;
+      },
+    )).rejects.toMatchObject({
+      _tag: "InvalidExecutionPlanError",
+    });
+    expect(descendantExecuted).toBe(false);
+  });
+
+  it.each([
+    ["dist-tag", "latest"],
+    ["range", "^1.2.3"],
+    ["range wildcard", "1.2.x"],
+    ["URL", "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz"],
+    ["Git URL", "git+https://github.com/example/tool.git#v1.2.3"],
+    ["GitHub spec", "github:example/tool"],
+    ["alias", "npm:real-tool"],
+    ["file spec", "file:../tool"],
+    ["workspace spec", "workspace:*"],
+    ["link spec", "link:../tool"],
+    ["encoded separator", "1.2.3%2F--ignore-scripts"],
+    ["option", "--ignore-scripts"],
+    ["separator", "1.2.3;--ignore-scripts"],
+    ["control", "1.2.3\n--ignore-scripts"],
+  ])("rejects npm %s versions before spawn", async (_name, version) => {
+    let descendantExecuted = false;
+    await expect(installerInvocation(
+      "npm",
+      "@scope/tool",
+      version,
       () => {
         descendantExecuted = true;
       },

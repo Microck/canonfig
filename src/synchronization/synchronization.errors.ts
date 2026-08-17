@@ -38,6 +38,16 @@ export class PlannerPolicyKindMismatchError extends Schema.TaggedError<PlannerPo
   },
 ) {}
 
+export class PlannerInvalidRecipeError extends Schema.TaggedError<PlannerInvalidRecipeError>()(
+  "PlannerInvalidRecipeError",
+  {
+    resource: Schema.String,
+    method: Schema.String,
+    package: Schema.String,
+    reason: Schema.String,
+  },
+) {}
+
 export class PlannerMissingDependencyError extends Schema.TaggedError<PlannerMissingDependencyError>()(
   "PlannerMissingDependencyError",
   {
@@ -118,6 +128,7 @@ export type SynchronizationPlanningError =
   | MissingObservedResourceError
   | PlannerResourceKindMismatchError
   | PlannerPolicyKindMismatchError
+  | PlannerInvalidRecipeError
   | PlannerMissingDependencyError
   | PlannerDependencyCycleError
   | MissingBlobMetadataError

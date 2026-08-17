@@ -21,11 +21,13 @@ import {
   MissingDesiredResourceError,
   MissingObservedResourceError,
   PlannerDependencyCycleError,
+  PlannerInvalidRecipeError,
   PlannerMissingDependencyError,
   PlannerPolicyKindMismatchError,
   PlannerResourceKindMismatchError,
   type SynchronizationPlanningError,
 } from "./synchronization.errors.ts";
+import { recipeValidationError } from "../domain/recipe-versions.ts";
 import {
   planRemoved,
   planResource,
@@ -191,6 +193,19 @@ const validateResourceInputs = (
         publishedKind: resource.kind,
         desiredKind: desired.kind,
       });
+    }
+    if (desired.kind === "tool") {
+      for (const recipe of desired.recipes) {
+        const reason = recipeValidationError(recipe);
+        if (reason !== undefined) {
+          return new PlannerInvalidRecipeError({
+            resource: resource.id,
+            method: recipe.method,
+            package: recipe.package,
+            reason,
+          });
+        }
+      }
     }
     if (!indexed.observed.has(resource.id)) {
       return new MissingObservedResourceError({ resource: resource.id });

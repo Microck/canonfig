@@ -41,6 +41,7 @@ import {
 } from "./config-codec.ts";
 import { desiredResourceDigest } from "./resource-plans.ts";
 import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
+import { recipeValidationError } from "../domain/recipe-versions.ts";
 
 const isUnboundedNonNpmPackage = (value: string): boolean =>
   /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
@@ -780,7 +781,17 @@ const installInvocation = (
     }
     if (
       version !== undefined
-      && !["npm", "brew", "homebrew", "winget", "uv", "cargo", "apt"].includes(method)
+      && ![
+        "npm",
+        "pnpm",
+        "bun",
+        "brew",
+        "homebrew",
+        "winget",
+        "uv",
+        "cargo",
+        "apt",
+      ].includes(method)
     ) {
       return yield* new InvalidExecutionPlanError({
         message: `installer ${method} cannot honor requested version ${version}`,
@@ -800,6 +811,12 @@ const installInvocation = (
         message: `ambiguous or source dependency ${packageName} requires a separately bounded execution plan`,
       });
     }
+    const recipeError = recipeValidationError({ method, package: packageName, version });
+    if (recipeError !== undefined) {
+      return yield* new InvalidExecutionPlanError({
+        message: recipeError,
+      });
+    }
     const machine = yield* MachineState;
     const executableName = method === "apt"
       ? "apt-get"
@@ -810,6 +827,13 @@ const installInvocation = (
     const arguments_ = method === "npm"
       ? [
         "install",
+        "--global",
+        version === undefined ? packageName : `${packageName}@${version}`,
+        ...(buildPolicy.mode === "scripts-disabled" ? ["--ignore-scripts"] : []),
+      ]
+      : method === "pnpm" || method === "bun"
+      ? [
+        "add",
         "--global",
         version === undefined ? packageName : `${packageName}@${version}`,
         ...(buildPolicy.mode === "scripts-disabled" ? ["--ignore-scripts"] : []),

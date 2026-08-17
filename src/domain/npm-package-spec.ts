@@ -89,7 +89,7 @@ const remoteOrigin = (value: string): string | undefined => {
   return originForHttpUrl(withoutGitPrefix);
 };
 
-const isRegistryName = (value: string): boolean =>
+export const isNpmRegistryPackageName = (value: string): boolean =>
   /^[A-Za-z0-9][A-Za-z0-9._~-]*$/u.test(value)
   || /^@[A-Za-z0-9._~-]+\/[A-Za-z0-9._~-]+$/u.test(value);
 
@@ -147,14 +147,14 @@ const classifyRegistryOrAlias = (
   if (localProtocol.test(value)) return localSpecification(value);
   if (value.startsWith("npm:")) {
     const target = value.slice("npm:".length);
-    if (!isRegistryName(target) && !packageNameAndTarget(target)) {
+    if (!isNpmRegistryPackageName(target) && !packageNameAndTarget(target)) {
       return { kind: "ambiguous" };
     }
     return classifyRegistryOrAlias(target);
   }
   const alias = packageNameAndTarget(value);
   if (alias !== undefined) {
-    if (!isRegistryName(alias.name)) return { kind: "ambiguous" };
+    if (!isNpmRegistryPackageName(alias.name)) return { kind: "ambiguous" };
     if (alias.target.startsWith("npm:")) {
       return classifyRegistryOrAlias(alias.target.slice("npm:".length));
     }
@@ -165,7 +165,7 @@ const classifyRegistryOrAlias = (
       ? { kind: "registry" }
       : { kind: "ambiguous" };
   }
-  if (isRegistryName(value)) return { kind: "registry" };
+  if (isNpmRegistryPackageName(value)) return { kind: "registry" };
   return { kind: "ambiguous" };
 };
 

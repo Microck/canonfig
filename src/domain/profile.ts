@@ -10,14 +10,15 @@ import type {
 import {
   defaultPolicyForKind,
   ApplyPolicy as ApplyPolicySchema,
-  Platform as PlatformSchema,
   BuildPolicy as BuildPolicySchema,
   ResourceKind as ResourceKindSchema,
+  ToolRecipeRef,
   policyCompatibleWithKind,
   type Platform,
   type ResourceKind,
   type ApplyPolicy,
 } from "./resource.ts";
+import { recipeValidationError } from "./recipe-versions.ts";
 import {
   BlobId,
   ContentDigest as ContentDigestSchema,
@@ -187,13 +188,7 @@ export const ResourceSpecInputSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("tool"),
     toolId: ToolId,
-    recipes: Schema.Array(Schema.Struct({
-      platform: PlatformSchema,
-      method: Schema.NonEmptyString,
-      package: Schema.NonEmptyString,
-      version: Schema.optional(Schema.NonEmptyString),
-      buildPolicy: Schema.optional(BuildPolicySchema),
-    })),
+    recipes: Schema.Array(ToolRecipeRef),
     login: Schema.optional(AuthoringLoginSchema),
   }),
   Schema.Struct({
@@ -423,6 +418,11 @@ export class InvalidBuildPolicyError extends Schema.TaggedError<InvalidBuildPoli
   { id: Schema.String, reason: Schema.String },
 ) {}
 
+export class InvalidRecipeError extends Schema.TaggedError<InvalidRecipeError>()(
+  "InvalidRecipeError",
+  { id: Schema.String, reason: Schema.String },
+) {}
+
 export type ProfileValidationError =
   | DuplicateResourceError
   | MissingDependencyError
@@ -435,7 +435,8 @@ export type ProfileValidationError =
   | MissingGroupReferenceError
   | ResourceSpecKindMismatchError
   | VerificationKindMismatchError
-  | InvalidBuildPolicyError;
+  | InvalidBuildPolicyError
+  | InvalidRecipeError;
 
 /** Aggregate contract failure preserving all precise tagged graph errors. */
 export class ProfileContractError extends Error {
@@ -510,6 +511,7 @@ export const validateProfileResources = (
       const scheduleError = validateSchedule(resource);
       if (scheduleError !== null) errors.push(scheduleError);
     }
+    errors.push(...validateRecipes(resource));
     errors.push(...validateBuildPolicies(resource));
     if (!verificationAllowed(resource.kind, resource.verify.method)) {
       errors.push(new VerificationKindMismatchError({
@@ -523,6 +525,21 @@ export const validateProfileResources = (
   const cycle = findDependencyCycle(resources);
   if (cycle !== null) errors.push(new DependencyCycleError({ cycle }));
   return errors;
+};
+
+const validateRecipes = (
+  resource: ProfileResourceInput,
+): ReadonlyArray<InvalidRecipeError> => {
+  if (resource.spec.kind !== "tool") return [];
+  return resource.spec.recipes.flatMap((recipe) => {
+    const reason = recipeValidationError(recipe);
+    return reason === undefined
+      ? []
+      : [new InvalidRecipeError({
+        id: resource.id,
+        reason: `recipe ${recipe.method}/${recipe.package}: ${reason}`,
+      })];
+  });
 };
 
 const validateBuildPolicies = (

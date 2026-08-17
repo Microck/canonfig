@@ -192,6 +192,15 @@ Each tool entry contains:
 
 An Installation Recipe must be platform-specific and version-aware. Canonfig never assumes that a package has the same name or installation method across operating systems.
 
+Recipe versions are validated at authoring, planning, and execution boundaries
+with the grammar of the selected method. npm-family recipes (npm, pnpm, and
+bun) require an exact registry package name and exact three-part semver,
+including only valid prerelease and build metadata; tags, ranges, aliases,
+URLs, Git/GitHub references, local/workspace/link forms, encoded separators,
+and option-like values are rejected. Homebrew, winget, uv, cargo, and apt use
+their corresponding safe version grammars. A method that cannot represent a
+requested version fails closed before its installer is spawned.
+
 Every recipe also carries a reviewed `buildPolicy`. The backward-compatible
 default is `{ "mode": "scripts-disabled" }`; npm installs use
 `--ignore-scripts` and uv installs use `--only-binary=:all:`. A package that
