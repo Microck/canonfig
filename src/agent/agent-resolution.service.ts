@@ -479,7 +479,7 @@ const systemctlUnitOperations = new Set([
   "try-reload-or-restart",
   "try-restart",
 ]);
-const systemctlEnableOperations = new Set(["enable", "preset"]);
+const systemctlEnableOperations = new Set(["enable", "preset", "reenable"]);
 const commandWrappers = new Set([
   "cmd",
   "doas",
@@ -2118,17 +2118,19 @@ const systemctlGlobalOptionArity = new Map<string, OptionArity>([
   ["--failed", 0],
   ["--firmware-setup", 0],
   ["--force", 0],
+  ["--full", 0],
   ["--global", 0],
   ["--help", 0],
   ["--host", 1],
   ["--job-mode", 1],
-  ["--kill-who", 1],
+  ["--kill-whom", 1],
   ["--legend", 1],
   ["--machine", 1],
   ["--marked", 0],
   ["--mkdir", 0],
   ["--no-ask-password", 0],
   ["--no-block", 0],
+  ["--no-legend", 0],
   ["--no-pager", 0],
   ["--no-reload", 0],
   ["--no-wall", 0],

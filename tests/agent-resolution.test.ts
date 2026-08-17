@@ -242,6 +242,24 @@ describe("agent resolution", () => {
       "--now",
       "reboot.target",
     ], ["reboot"]],
+    ["systemctl reenables power-state target now", "systemctl", [
+      "reenable",
+      "--now",
+      "reboot.target",
+    ], ["reboot"]],
+    ["systemctl reenables power-state target with kill-whom value", "systemctl", [
+      "reenable",
+      "--kill-whom",
+      "main",
+      "poweroff.target",
+      "--now",
+    ], ["reboot"]],
+    ["systemctl accepts full output option around reenable", "systemctl", [
+      "--full",
+      "reenable",
+      "soft-reboot.target",
+      "--now",
+    ], ["reboot"]],
     ["systemctl presets power-state target now", "systemctl", [
       "--user",
       "preset",
@@ -295,6 +313,18 @@ describe("agent resolution", () => {
       "--now",
       "reboot.target",
     ], ["reboot"]],
+    ["wrapped systemctl reenable-now command with aliases and multiple units", "sudo", [
+      "-u",
+      "root",
+      "--",
+      "/usr/bin/systemctl",
+      "--user",
+      "reenable",
+      "--kill-whom=main",
+      "runlevel6.target",
+      "--now",
+      "/etc/systemd/system/poweroff.target",
+    ], ["reboot"]],
     ["service restart subcommand", "service", ["agent", "restart"], ["restart"]],
     ["sudo reboot wrapper", "sudo", ["-u", "root", "reboot"], ["reboot"]],
     ["cmd shutdown wrapper", "cmd", ["/c", "shutdown", "/r"], ["reboot"]],
@@ -323,7 +353,19 @@ describe("agent resolution", () => {
     ["mask of power-state target", ["mask", "emergency.target"]],
     ["unrelated systemctl operation", ["enable", "reboot.target"]],
     ["enable without now", ["enable", "poweroff.target"]],
+    ["reenable without now", ["reenable", "reboot.target"]],
+    ["reenable with kill-whom but without now", [
+      "reenable",
+      "--kill-whom=main",
+      "reboot.target",
+    ]],
     ["preset without now", ["preset", "reboot.target"]],
+    ["kill-whom on non-activating operation", [
+      "--kill-whom",
+      "main",
+      "status",
+      "reboot.target",
+    ]],
     ["restart argument after separator", ["restart", "--", "reboot.service"]],
     ["option value hides power-state-looking target", [
       "--machine=reboot.target",
@@ -343,6 +385,11 @@ describe("agent resolution", () => {
     ["unknown short option", ["-x", "reboot.target", "status", "default.target"]],
     ["missing option value", ["--host"]],
     ["invalid value on flag", ["--now=reboot", "status", "default.target"]],
+    ["invalid kill option spelling", [
+      "--kill-who=main",
+      "status",
+      "default.target",
+    ]],
   ] as const)(
     "fails closed for malformed systemctl grammar: %s",
     (_name, arguments_) => {
@@ -384,6 +431,12 @@ describe("agent resolution", () => {
       "halt.target",
     ]],
     ["enable now reboot target", ["enable", "--now", "reboot.target"]],
+    ["reenable now reboot target", [
+      "reenable",
+      "--kill-whom=main",
+      "reboot.target",
+      "--now",
+    ]],
     ["preset now poweroff target", ["preset", "poweroff.target", "--now"]],
   ] as const)(
     "allows and denies derived systemctl reboot capability: %s",
@@ -427,10 +480,26 @@ describe("agent resolution", () => {
       "halt.target",
     ]],
     ["enable now reboot target", ["enable", "--now", "reboot.target"]],
+    ["reenable now reboot target", [
+      "reenable",
+      "--kill-whom",
+      "main",
+      "reboot.target",
+      "--now",
+    ]],
     ["preset now poweroff target", ["preset", "poweroff.target", "--now"]],
+    ["invalid kill option spelling", [
+      "--kill-who=main",
+      "status",
+      "default.target",
+    ], "systemctl-grammar"],
   ] as const)(
     "does not spawn denied systemctl reboot operation: %s",
-    async (_name, arguments_) => {
+    async (
+      _name,
+      arguments_,
+      expectedCapability: "reboot" | "systemctl-grammar" = "reboot",
+    ) => {
       const marker = join(directory, "systemctl-marker");
       const systemctl = join(directory, "systemctl");
       const harnessExecutable = join(directory, "agent-harness");
@@ -465,7 +534,7 @@ describe("agent resolution", () => {
         Effect.provide(AgentResolutionLive),
         Effect.flip,
       ));
-      expect(error).toMatchObject({ capability: "reboot" });
+      expect(error).toMatchObject({ capability: expectedCapability });
       await expect(access(marker)).rejects.toThrow();
     },
   );
