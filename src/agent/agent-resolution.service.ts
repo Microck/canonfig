@@ -610,8 +610,11 @@ const hasSeparateOptionValue = (
 
 const isUnboundedSourceDependency = (argument: string): boolean => {
   const value = optionValue(argument) ?? argument;
-  return /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
-    .test(value);
+  return value === "--"
+    || /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
+      .test(value)
+    || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|file:|link:|workspace:|https?:\/\/)/iu
+      .test(value);
 };
 
 /**

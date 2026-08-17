@@ -554,6 +554,49 @@ describe("stable planning and bounded resolution", () => {
     ]);
   });
 
+  it("routes a reviewed uv sdist recipe to Human Action Required before execution", () => {
+    const subject = resource("tool", "tool", "ensure");
+    const plan = runPlan(plannerInput(
+      [subject],
+      {
+        desired: [{
+          kind: "tool",
+          toolId: "sdist-tool",
+          recipes: [{
+            platform: "linux",
+            method: "uv",
+            package: "sdist-tool",
+            version: "2.0.0",
+            buildPolicy: {
+              mode: "required",
+              reviewedBy: "reviewer",
+              reviewedAt: "2026-08-16T00:00:00Z",
+              executables: ["python"],
+              paths: ["/tmp/sdist-tool"],
+              origins: ["https://pypi.org"],
+              capabilities: ["execute", "read-files", "write-files"],
+              steps: [{
+                executable: "python",
+                arguments: ["-m", "build"],
+              }],
+            },
+          }],
+          loginRequired: false,
+        }],
+      },
+    ));
+    expect(plan.actions).toEqual([
+      expect.objectContaining({
+        kind: "human-action",
+        detail: expect.objectContaining({
+          kind: "human-action",
+          reason: "Installing sdist-tool requires reviewed build hooks",
+        }),
+      }),
+    ]);
+    expect(plan.actions.some((action) => action.kind === "install-tool")).toBe(false);
+  });
+
   it("rejects duplicate planner evidence rather than depending on input order", () => {
     const input = plannerInput([resource("file", "file", "replace")]);
     const duplicate = {

@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -702,6 +703,7 @@ describe("production follower orchestration", () => {
       dependsOn: [],
       blobs: [decode(BlobId)(digestOf(asJson(resource.spec)))],
     }));
+    expect(nextResources.some((resource) => resource.id === "alpha-only-file")).toBe(false);
     const nextId = decode(ProfileRevisionId)(`${profileId}:${nextDigest}`);
     const nextUnsigned = {
       id: nextId,
@@ -753,6 +755,15 @@ describe("production follower orchestration", () => {
         { path: "removed.txt" },
       ],
     });
+    expect(
+      appliedBeforeOwnershipPlan.find((record) =>
+        record.resource === "alpha-only-file"
+      ),
+    ).toMatchObject({
+      kind: "file",
+      policy: "replace",
+      target: restrictedTarget,
+    });
     expect(ownershipPlan.plan.actions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         resource: "managed-directory",
@@ -776,6 +787,22 @@ describe("production follower orchestration", () => {
       code: "ENOENT",
     });
     expect(await readFile(join(directoryTarget, "kept.txt"), "utf8")).toBe("kept\n");
+    const appliedAfterOwnership = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadAppliedResources(follower.id)
+      ).pipe(Effect.provide(followerRepository)),
+    );
+    expect(appliedAfterOwnership.some((record) =>
+      record.resource === "alpha-only-file"
+    )).toBe(false);
+    const ownershipReplan = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "plan").pipe(
+        Effect.provide(application),
+      ),
+    );
+    expect(
+      ownershipReplan.plan.actions.filter((action) => action.kind !== "no-op"),
+    ).toEqual([]);
     const ownershipAgain = await Effect.runPromise(
       synchronizeFollower(followerDatabase, "apply").pipe(
         Effect.provide(application),
@@ -783,6 +810,16 @@ describe("production follower orchestration", () => {
     );
     expect(ownershipAgain).toMatchObject({ outcome: { outcome: "Converged" } });
     expect(await readFile(join(directoryTarget, "kept.txt"), "utf8")).toBe("kept\n");
+    const database = new DatabaseSync(followerDatabase, { readOnly: true });
+    // SAFETY: COUNT(*) AS count always returns one numeric SQLite aggregate row.
+    const removalCount = database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM action_journal
+      WHERE action_id LIKE 'action:alpha-only-file:%:remove-resource'
+        AND state = 'succeeded'
+    `).get() as { count: number };
+    database.close();
+    expect(removalCount.count).toBe(1);
 
     const baseFollowerConfiguration = {
       schemaVersion: 1 as const,

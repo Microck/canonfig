@@ -772,11 +772,24 @@ const installInvocation = (
       });
     }
     if (
-      /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|https?:\/\/.+\.git(?:#.*)?$)/iu
+      version !== undefined
+      && !["npm", "brew", "homebrew", "winget", "uv", "cargo", "apt"].includes(method)
+    ) {
+      return yield* new InvalidExecutionPlanError({
+        message: `installer ${method} cannot honor requested version ${version}`,
+      });
+    }
+    if (
+      packageName === "--"
+      || /^\s*-{1,2}\S*/u.test(packageName)
+      || /\s/u.test(packageName)
+      || /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
+        .test(packageName)
+      || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|file:|link:|workspace:|https?:\/\/)/iu
         .test(packageName)
     ) {
       return yield* new InvalidExecutionPlanError({
-        message: `git/source dependency ${packageName} requires a separately bounded execution plan`,
+        message: `ambiguous or source dependency ${packageName} requires a separately bounded execution plan`,
       });
     }
     const machine = yield* MachineState;
@@ -785,14 +798,6 @@ const installInvocation = (
       : method === "homebrew"
       ? "brew"
       : method;
-    if (
-      version !== undefined
-      && !["npm", "brew", "homebrew", "winget", "uv", "cargo", "apt"].includes(method)
-    ) {
-      return yield* new InvalidExecutionPlanError({
-        message: `installer ${method} cannot honor requested version ${version}`,
-      });
-    }
     const executable = yield* machine.findExecutable({ name: executableName });
     const arguments_ = method === "npm"
       ? [

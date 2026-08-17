@@ -564,6 +564,7 @@ export const executeSynchronizationPlan = (
         resource,
       ]));
       for (const resource of outcome.verified) {
+        if (removedResources.has(resource)) continue;
         const desired = desiredByResource.get(resource);
         const digest = desired === undefined ? undefined : desiredResourceDigest(desired);
         if (digest !== undefined) {

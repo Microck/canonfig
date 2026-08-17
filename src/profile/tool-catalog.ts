@@ -224,6 +224,14 @@ const packageUpstream = (metadata: DiscoveredPackageMetadata): string | undefine
   }
 };
 
+const isUnboundedPackageSpecification = (value: string): boolean =>
+  value === "--"
+  || /^\s*-{1,2}\S*/u.test(value)
+  || /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
+    .test(value)
+  || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
+    .test(value);
+
 const recipeFromPackage = (
   metadata: DiscoveredPackageMetadata,
 ): InstallationRecipe | undefined => {
@@ -231,8 +239,10 @@ const recipeFromPackage = (
   if (version === undefined || version.trim().length === 0) return undefined;
   if (
     metadata.ecosystem !== "source"
-    && /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
-      .test(metadata.source)
+    && (
+      isUnboundedPackageSpecification(metadata.source)
+      || (metadata.ecosystem === "npm" && isUnboundedPackageSpecification(metadata.name))
+    )
   ) {
     return undefined;
   }

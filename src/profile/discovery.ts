@@ -165,7 +165,12 @@ const packageSpecification = (
 };
 
 const isUnboundedPackageSpecification = (value: string): boolean =>
-  /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
+  value === "--"
+  || /^\s*-{1,2}\S*/u.test(value)
+  || /\s/u.test(value)
+  || /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
+    .test(value)
+  || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|file:|link:|workspace:|https?:\/\/)/iu
     .test(value);
 
 const valueAfter = (tokens: ReadonlyArray<string>, options: ReadonlyArray<string>): string | undefined => {
@@ -192,6 +197,7 @@ const metadataFromInvocation = (
   const tokens = stripEnvironmentPrefix(input);
   const executable = tokens[0];
   if (executable === "npm" || executable === "npx") {
+    if (tokens.includes("--")) return undefined;
     const specification = executable === "npx"
       ? tokens.find((token, index) => index > 0 && !token.startsWith("-"))
       : positionalAfter(tokens, ["install", "i", "add"]);
@@ -226,6 +232,7 @@ const metadataFromInvocation = (
     };
   }
   if (executable === "uv" || executable === "uvx") {
+    if (tokens.includes("--")) return undefined;
     const specification = executable === "uvx"
       ? tokens.find((token, index) => index > 0 && !token.startsWith("-"))
       : positionalAfter(tokens, ["install"]);

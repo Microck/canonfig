@@ -383,6 +383,7 @@ const installerInvocation = async (
   method: string,
   packageName: string,
   version?: string | undefined,
+  onInvocation?: () => void,
 ) => {
   const root = temporaryDirectory();
   const executableQueries: Array<string> = [];
@@ -397,6 +398,7 @@ const installerInvocation = async (
       });
     },
     runProcess: (input) => {
+      onInvocation?.();
       invocations.push({
         executable: input.executable.absolute,
         arguments: input.arguments,
@@ -1486,6 +1488,31 @@ describe("synchronization apply run", () => {
       _tag: "InvalidExecutionPlanError",
       message: "installer source cannot honor requested version v1.2.3",
     });
+  });
+
+  it.each([
+    ["git URL", "git+https://github.com/example/tool.git#v1.2.3"],
+    ["GitHub shorthand", "github:example/tool"],
+    ["local file", "file:../tool"],
+    ["linked package", "link:../tool"],
+    ["workspace package", "workspace:*"],
+    ["npm alias", "alias@npm:real-tool"],
+    ["bare npm alias", "npm:real-tool"],
+    ["leading option", "--ignore-scripts"],
+    ["separator variant", "tool --ignore-scripts"],
+  ])("rejects npm %s dependency forms before spawn", async (_name, packageName) => {
+    let descendantExecuted = false;
+    await expect(installerInvocation(
+      "npm",
+      packageName,
+      undefined,
+      () => {
+        descendantExecuted = true;
+      },
+    )).rejects.toMatchObject({
+      _tag: "InvalidExecutionPlanError",
+    });
+    expect(descendantExecuted).toBe(false);
   });
 
   it("never claims rollback for external installer actions", async () => {

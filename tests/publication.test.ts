@@ -243,6 +243,71 @@ describe("reviewed profile publication", () => {
     )).toBe(true);
   });
 
+  it("round-trips a reviewed uv sdist build policy through publication", async () => {
+    const fixture = workspace();
+    const path = join(fixture.directory, "package.json");
+    writeFileSync(path, JSON.stringify({
+      canonfig: {
+        tools: [{
+          ecosystem: "uv",
+          name: "sdist-tool",
+          executable: "sdist-tool",
+          version: "2.0.0",
+          source: "pyproject.toml",
+          upstream: "https://pypi.org/project/sdist-tool/",
+          buildPolicy: {
+            mode: "required",
+            reviewedBy: "reviewer@example.test",
+            reviewedAt: "2026-08-16T00:00:00Z",
+            executables: ["sdist-tool"],
+            paths: ["/tmp/sdist-tool"],
+            origins: ["https://pypi.org"],
+            capabilities: ["execute", "read-files", "write-files"],
+            steps: [{
+              executable: "sdist-tool",
+              arguments: ["-m", "build"],
+            }],
+          },
+        }],
+      },
+    }, null, 2));
+    const discovery = await Effect.runPromise(scanDiscovery({
+      files: [{ path, kind: "package-metadata" }],
+      path: "",
+    }));
+    const signing = makeSigner();
+    const published = await runCatalog(
+      fixture.database,
+      signing.signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        const revision = yield* catalog.publish(inputFor(discovery));
+        const loaded = yield* catalog.getRevision(revision.id);
+        return { revision, loaded };
+      }),
+    );
+
+    expect(published.loaded).toEqual(published.revision);
+    // SAFETY: The published canonical payload is JSON with the profile resource shape.
+    const canonical = JSON.parse(published.loaded.canonicalBytes) as {
+      readonly resources: ReadonlyArray<{
+        readonly spec: {
+          readonly recipes: ReadonlyArray<{
+            readonly method: string;
+            readonly buildPolicy?: { readonly mode: string; readonly reviewedBy?: string };
+          }>;
+        };
+      }>;
+    };
+    const recipe = canonical.resources
+      .flatMap((resource) => resource.spec.recipes)
+      .find((candidate) => candidate.method === "uv");
+    expect(recipe?.buildPolicy).toMatchObject({
+      mode: "required",
+      reviewedBy: "reviewer@example.test",
+    });
+  });
+
   it("publishes reviewed skills into immutable canonical revisions", async () => {
     const fixture = workspace();
     const discovery = await proposal(fixture.directory);

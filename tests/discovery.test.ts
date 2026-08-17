@@ -154,6 +154,89 @@ describe("profile discovery", () => {
     ]);
   });
 
+  it("keeps uv binary-only defaults and preserves reviewed sdist build policy", async () => {
+    const metadata = await fixture("package.json", JSON.stringify({
+      canonfig: {
+        tools: [
+          {
+            ecosystem: "uv",
+            name: "binary-tool",
+            version: "1.0.0",
+            source: "uv.lock",
+            upstream: "https://pypi.org/project/binary-tool/",
+          },
+          {
+            ecosystem: "uv",
+            name: "sdist-tool",
+            version: "2.0.0",
+            source: "pyproject.toml",
+            upstream: "https://pypi.org/project/sdist-tool/",
+            buildPolicy: {
+              mode: "required",
+              reviewedBy: "fixture-reviewer",
+              reviewedAt: "2026-08-16T00:00:00Z",
+              executables: ["python"],
+              paths: ["/tmp/sdist-tool"],
+              origins: ["https://pypi.org"],
+              capabilities: ["execute", "read-files", "write-files"],
+              steps: [{
+                executable: "python",
+                arguments: ["-m", "build"],
+              }],
+            },
+          },
+        ],
+      },
+    }, null, 2));
+
+    const result = await Effect.runPromise(scanDiscovery({
+      files: [{ path: metadata, kind: "package-metadata" }],
+      path: fixtureBin,
+    }));
+
+    expect(result.tools.find((tool) => tool.id === "binary-tool")?.recipes[0])
+      .toMatchObject({
+        method: "uv",
+        buildPolicy: { mode: "scripts-disabled" },
+        command: [
+          "uv",
+          "tool",
+          "install",
+          "binary-tool==1.0.0",
+          "--only-binary=:all:",
+        ],
+      });
+    expect(result.tools.find((tool) => tool.id === "sdist-tool")?.recipes[0])
+      .toMatchObject({
+        method: "uv",
+        buildPolicy: {
+          mode: "required",
+          reviewedBy: "fixture-reviewer",
+          steps: [{ executable: "python", arguments: ["-m", "build"] }],
+        },
+        command: ["uv", "tool", "install", "sdist-tool==2.0.0"],
+      });
+  });
+
+  it("rejects npm source, alias, and separator specifications during discovery", async () => {
+    const agents = await fixture("AGENTS.md", [
+      "```sh",
+      "npm install git+https://github.com/example/tool.git#v1.2.3",
+      "npm install alias@npm:real-tool",
+      "npm install -- --ignore-scripts",
+      "```",
+      "",
+    ].join("\n"));
+
+    const result = await Effect.runPromise(scanDiscovery({
+      files: [{ path: agents, kind: "agents" }],
+      path: fixtureBin,
+    }));
+
+    expect(result.tools.every((tool) => tool.recipes.length === 0)).toBe(true);
+    expect(result.tools.map((tool) => tool.id)).toEqual(["npm"]);
+  });
+
   it("scans executable hook scripts and npm lockfile bin metadata", async () => {
     const hook = await fixture("pre-commit.sh", "#!/bin/sh\nrg --quiet TODO .\n");
     const lockfile = await fixture("package-lock.json", JSON.stringify({
