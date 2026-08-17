@@ -186,6 +186,18 @@ Each tool entry contains:
 
 An Installation Recipe must be platform-specific and version-aware. Canonfig never assumes that a package has the same name or installation method across operating systems.
 
+Every recipe also carries a reviewed `buildPolicy`. The backward-compatible
+default is `{ "mode": "scripts-disabled" }`; npm installs use
+`--ignore-scripts` and uv installs use `--only-binary=:all:`. A package that
+requires lifecycle hooks or an sdist must publish
+`{ "mode": "required", "reviewedBy", "reviewedAt", "executables", "paths",
+"origins", "capabilities", "steps" }`. Those bounds are part of the signed
+recipe/action contract and are validated at publication. The current process
+executor cannot confine lifecycle descendants, so required-build recipes stop
+with Human Action Required rather than silently enabling scripts. Git, local,
+and other source dependency specifications are likewise denied unless a
+separately bounded execution plan is reviewed and published.
+
 When no recipe is unambiguous, Canonfig creates an Agent Task containing the upstream URL and discovery evidence. The Configuration Agent may propose a recipe. The controlled executor applies it only under the configured agent policy, and verification must pass before the tool converges.
 
 ## Agent execution policy

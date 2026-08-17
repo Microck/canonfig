@@ -15,7 +15,7 @@ import type {
   PlannedAction,
   SynchronizationPlan,
 } from "../domain/synchronization.ts";
-import type { Platform } from "../domain/resource.ts";
+import type { BuildPolicy, Platform } from "../domain/resource.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
 
 /** Transfer metadata is deliberately separate from a resource's Apply Policy. */
@@ -76,6 +76,7 @@ export interface ToolRecipe {
   readonly method: string;
   readonly package: string;
   readonly version?: string | undefined;
+  readonly buildPolicy?: BuildPolicy | undefined;
 }
 
 export interface DesiredResourceEntry {

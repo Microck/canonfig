@@ -5,6 +5,7 @@ import { basename, delimiter, extname, join, resolve } from "node:path";
 import { Effect, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
 
+import { BuildPolicy as BuildPolicySchema } from "../domain/resource.ts";
 import { parseJsonc, type JsonValue } from "./profile-codec.ts";
 import {
   DiscoveryFilesystemError,
@@ -163,6 +164,10 @@ const packageSpecification = (
   return { name: specification };
 };
 
+const isUnboundedPackageSpecification = (value: string): boolean =>
+  /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
+    .test(value);
+
 const valueAfter = (tokens: ReadonlyArray<string>, options: ReadonlyArray<string>): string | undefined => {
   for (const option of options) {
     const index = tokens.indexOf(option);
@@ -191,6 +196,7 @@ const metadataFromInvocation = (
       ? tokens.find((token, index) => index > 0 && !token.startsWith("-"))
       : positionalAfter(tokens, ["install", "i", "add"]);
     if (specification === undefined) return undefined;
+    if (isUnboundedPackageSpecification(specification)) return undefined;
     const parsed = packageSpecification(specification, "@");
     return {
       ecosystem: "npm",
@@ -224,6 +230,7 @@ const metadataFromInvocation = (
       ? tokens.find((token, index) => index > 0 && !token.startsWith("-"))
       : positionalAfter(tokens, ["install"]);
     if (specification === undefined) return undefined;
+    if (isUnboundedPackageSpecification(specification)) return undefined;
     const parsed = packageSpecification(specification, "==");
     return {
       ecosystem: "uv",
@@ -422,6 +429,9 @@ const explicitMetadata = (
   const buildCommands = Schema.is(JsonCommandArray)(object.buildCommands)
     ? object.buildCommands
     : undefined;
+  const buildPolicy = Schema.is(BuildPolicySchema)(object.buildPolicy)
+    ? object.buildPolicy
+    : undefined;
   // SAFETY: ecosystem has been checked against every PackageEcosystem literal.
   const checkedEcosystem = Schema.decodeUnknownSync(
     Schema.Literals(["npm", "homebrew", "winget", "uv", "cargo", "source"]),
@@ -433,6 +443,7 @@ const explicitMetadata = (
     source: source ?? `${sourcePath}#canonfig.tools`,
     upstream: jsonString(object.upstream),
     buildCommands,
+    buildPolicy,
   };
 };
 

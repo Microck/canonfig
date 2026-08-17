@@ -154,6 +154,7 @@ const resourceForTool = (tool: DiscoveredTool): ProfileResourceInput => ({
           method: recipe.method,
           package: packageForRecipe(recipe),
           version: recipe.version,
+          buildPolicy: recipe.buildPolicy,
         }))
       )
       .sort((left, right) =>

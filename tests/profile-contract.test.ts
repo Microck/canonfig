@@ -158,6 +158,36 @@ describe("resource graph validation", () => {
     expect(validateProfileResources(resources)).toEqual([]);
   });
 
+  it("rejects required build policies without complete reviewed bounds", () => {
+    const errors = validateProfileResources([{
+      id: "native-tool",
+      kind: "tool",
+      target: "~/.local/bin/native-tool",
+      spec: {
+        kind: "tool",
+        toolId: "native-tool",
+        recipes: [{
+          platform: "linux",
+          method: "npm",
+          package: "native-tool",
+          version: "1.0.0",
+          buildPolicy: {
+            mode: "required",
+            reviewedBy: "reviewer",
+            reviewedAt: "2026-08-16T00:00:00Z",
+            executables: [],
+            paths: [],
+            origins: [],
+            capabilities: [],
+            steps: [],
+          },
+        }],
+      },
+      verify: { method: "executable-present", executable: "native-tool" },
+    }]);
+    expect(errors.map((error) => error._tag)).toContain("InvalidBuildPolicyError");
+  });
+
   it("rejects invalid targets", () => {
     const errors = validateProfileResources([
       fileResource("a", { target: "~/../escape" }),
@@ -238,7 +268,7 @@ describe("v2 profile fixtures", () => {
     expect(encodeMachineProfile(implicit)).toBe(encodeMachineProfile(explicit));
     expect(digestMachineProfile(implicit)).toBe(digestMachineProfile(explicit));
     expect(digestMachineProfile(implicit)).toBe(
-      "b31f793a10e3c6e04a77be65e29eeb23641f2f88c19496a2a4d594cf3d67bca7",
+      "ccf685bc2f151bad69b87917cdf30496e89c468bbe9ca0cd293ebf8e449ea29d",
     );
   });
 

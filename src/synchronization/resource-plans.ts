@@ -6,6 +6,7 @@ import {
   type ContentDigest,
 } from "../domain/brand.ts";
 import type { ActionDetail, PlannedActionKind } from "../domain/synchronization.ts";
+import type { BuildPolicy } from "../domain/resource.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { sha256Hex } from "../profile/profile-codec.ts";
 import { InvalidObservedStateError } from "./synchronization.errors.ts";
@@ -21,6 +22,15 @@ export interface ResourceActionDraft {
   readonly kind: Exclude<PlannedActionKind, "transfer-blob">;
   readonly detail: Exclude<ActionDetail, { readonly kind: "transfer-blob" }>;
   readonly task?: Omit<PlannedAgentTask, "id"> | undefined;
+}
+
+interface InstallToolActionDetail {
+  kind: "install-tool";
+  toolId: string;
+  method: string;
+  package: string;
+  version?: string;
+  buildPolicy?: BuildPolicy;
 }
 
 const compareText = (left: string, right: string): number => {
@@ -345,21 +355,25 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   if (recipe === undefined) {
     return [unresolvedAgentTask(context, `Find an installation recipe for ${context.desired.toolId}`)];
   }
-  const detail: Extract<ActionDetail, { readonly kind: "install-tool" }> =
-    recipe.version === undefined
-      ? {
-        kind: "install-tool",
-        toolId: context.desired.toolId,
-        method: recipe.method,
-        package: recipe.package,
-      }
-      : {
-        kind: "install-tool",
-        toolId: context.desired.toolId,
-        method: recipe.method,
-        package: recipe.package,
-        version: recipe.version,
-      };
+  const detail: InstallToolActionDetail = {
+    kind: "install-tool",
+    toolId: context.desired.toolId,
+    method: recipe.method,
+    package: recipe.package,
+  };
+  if (recipe.version !== undefined) detail.version = recipe.version;
+  if (recipe.buildPolicy !== undefined) detail.buildPolicy = recipe.buildPolicy;
+  if (detail.buildPolicy?.mode === "required") {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `Installing ${context.desired.toolId} requires reviewed build hooks`,
+        instructions:
+          `The ${recipe.method} recipe has a reviewed build policy, but Canonfig's current process executor cannot confine lifecycle descendants. Run the bounded build plan manually within its declared executable, path, origin, and capability bounds, then rerun synchronization.`,
+      },
+    }];
+  }
   const actions: Array<ResourceActionDraft> = [{
     kind: "install-tool",
     detail,

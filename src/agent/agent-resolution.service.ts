@@ -601,6 +601,19 @@ const hasDisabledOption = (
   )
 );
 
+const hasSeparateOptionValue = (
+  arguments_: ReadonlyArray<string>,
+  option: string,
+): boolean => arguments_.some((argument, index) =>
+  argument === option && arguments_[index + 1] !== undefined
+);
+
+const isUnboundedSourceDependency = (argument: string): boolean => {
+  const value = optionValue(argument) ?? argument;
+  return /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
+    .test(value);
+};
+
 /**
  * Classify package-manager argv without consulting package/project metadata.
  * Unknown commands and ambiguous option layouts are denied: a package manager
@@ -637,6 +650,9 @@ const packageManagerPolicy = (
   if (!knownManagers.has(manager)) return undefined;
   const unambiguous = argumentsBeforeSeparator(arguments_);
   if (unambiguous === undefined) return { kind: "denied" };
+  if (unambiguous.some(isUnboundedSourceDependency)) {
+    return { kind: "denied" };
+  }
 
   if (manager === "npm" || manager === "pnpm") {
     const commandIndex = firstCommandIndex(
@@ -715,6 +731,7 @@ const packageManagerPolicy = (
       if (
         hasDisabledOption(unambiguous, canonical)
         || unambiguous.includes("--no-ignore-scripts")
+        || hasSeparateOptionValue(unambiguous, canonical)
       ) return { kind: "denied" };
       if (manager === "pnpm") {
         const projectHookGate = "--ignore-pnpmfile";
@@ -759,7 +776,10 @@ const packageManagerPolicy = (
       && new Set(["add", "install", "i", "remove", "rm", "update"]).has(command)
     ) {
       const canonical = "--ignore-scripts";
-      if (hasDisabledOption(unambiguous, canonical)) return { kind: "denied" };
+      if (
+        hasDisabledOption(unambiguous, canonical)
+        || hasSeparateOptionValue(unambiguous, canonical)
+      ) return { kind: "denied" };
       return {
         kind: "scripts-disabled",
         arguments: hasEnabledOption(unambiguous, canonical)
@@ -791,7 +811,16 @@ const packageManagerPolicy = (
       return { kind: "non-executing" };
     }
     if (command === "install") {
-      if (unambiguous.some((argument) => argument.startsWith("--no-binary"))) {
+      if (
+        unambiguous.some((argument) =>
+          argument.startsWith("--no-binary")
+          || (
+            argument.startsWith("--only-binary=")
+            && argument !== "--only-binary=:all:"
+          )
+        )
+        || hasSeparateOptionValue(unambiguous, "--only-binary")
+      ) {
         return { kind: "denied" };
       }
       const canonical = "--only-binary=:all:";
@@ -853,7 +882,16 @@ const packageManagerPolicy = (
     command === "tool"
     && unambiguous[commandIndex! + 1]?.toLowerCase() === "install"
   ) {
-    if (unambiguous.some((argument) => argument.startsWith("--no-binary"))) {
+    if (
+      unambiguous.some((argument) =>
+        argument.startsWith("--no-binary")
+        || (
+          argument.startsWith("--only-binary=")
+          && argument !== "--only-binary=:all:"
+        )
+      )
+      || hasSeparateOptionValue(unambiguous, "--only-binary")
+    ) {
       return { kind: "denied" };
     }
     const canonical = "--only-binary=:all:";
@@ -870,7 +908,16 @@ const packageManagerPolicy = (
       return { kind: "non-executing" };
     }
     if (subcommand === "install") {
-      if (unambiguous.some((argument) => argument.startsWith("--no-binary"))) {
+      if (
+        unambiguous.some((argument) =>
+          argument.startsWith("--no-binary")
+          || (
+            argument.startsWith("--only-binary=")
+            && argument !== "--only-binary=:all:"
+          )
+        )
+        || hasSeparateOptionValue(unambiguous, "--only-binary")
+      ) {
         return { kind: "denied" };
       }
       const canonical = "--only-binary=:all:";

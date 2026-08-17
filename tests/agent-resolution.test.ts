@@ -774,6 +774,8 @@ describe("agent resolution", () => {
   it.each([
     ["npm run", "npm", ["run", "postinstall"]],
     ["npm exec alias", "npm", ["x", "denied-package"]],
+    ["npm git dependency", "npm", ["install", "git+https://github.com/example/tool.git#v1.2.3"]],
+    ["npm separate ignore-scripts value", "npm", ["install", "tool", "--ignore-scripts", "true"]],
     ["npm separator ambiguity", "npm", ["install", "tool", "--", "--ignore-scripts"]],
     ["npm explicit scripts", "npm", ["install", "tool", "--ignore-scripts=false"]],
     ["pnpm script", "pnpm", ["run", "postinstall"]],
@@ -785,6 +787,12 @@ describe("agent resolution", () => {
       "install",
       "tool",
       "--no-binary=:all:",
+    ]],
+    ["uv noncanonical binary mode", "uv", [
+      "tool",
+      "install",
+      "tool",
+      "--only-binary=:none:",
     ]],
   ])("denies script-capable package-manager bypass through %s", async (
     _name,

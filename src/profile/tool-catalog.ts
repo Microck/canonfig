@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { AgentTaskId } from "../domain/brand.ts";
+import type { BuildPolicy } from "../domain/resource.ts";
 import type { AgentTask } from "../domain/synchronization.ts";
 
 export type DiscoverySourceKind =
@@ -28,6 +29,12 @@ export interface DiscoveredPackageMetadata {
   readonly source: string;
   readonly upstream?: string | undefined;
   readonly buildCommands?: ReadonlyArray<ReadonlyArray<string>> | undefined;
+  /**
+   * Required build hooks are never inferred from buildCommands. They must be
+   * explicitly reviewed with executable, path, origin, capability, and step
+   * bounds before publication.
+   */
+  readonly buildPolicy?: BuildPolicy | undefined;
 }
 
 export interface ToolDiscoveryEvidence {
@@ -45,33 +52,34 @@ export interface ToolDiscoveryEvidence {
 interface VersionedRecipe {
   readonly version: string;
   readonly source: string;
+  readonly buildPolicy: BuildPolicy;
 }
 
 export type InstallationRecipe =
   | (VersionedRecipe & {
     readonly method: "npm";
     readonly package: string;
-    readonly command: readonly ["npm", "install", "--global", string, "--ignore-scripts"];
+    readonly command: ReadonlyArray<string>;
   })
   | (VersionedRecipe & {
     readonly method: "homebrew";
     readonly formula: string;
-    readonly command: readonly ["brew", "install", string];
+    readonly command: ReadonlyArray<string>;
   })
   | (VersionedRecipe & {
     readonly method: "winget";
     readonly id: string;
-    readonly command: readonly ["winget", "install", "--id", string, "--version", string, "--exact"];
+    readonly command: ReadonlyArray<string>;
   })
   | (VersionedRecipe & {
     readonly method: "uv";
     readonly package: string;
-    readonly command: readonly ["uv", "tool", "install", string, "--only-binary=:all:"];
+    readonly command: ReadonlyArray<string>;
   })
   | (VersionedRecipe & {
     readonly method: "cargo";
     readonly crate: string;
-    readonly command: readonly ["cargo", "install", string, "--version", string, "--locked"];
+    readonly command: ReadonlyArray<string>;
   })
   | (VersionedRecipe & {
     readonly method: "source";
@@ -172,6 +180,7 @@ const packageKey = (metadata: DiscoveredPackageMetadata | undefined): string =>
       metadata.source,
       metadata.upstream ?? "",
       (metadata.buildCommands ?? []).map((command) => command.join("\0")).join("\u0001"),
+      metadata.buildPolicy === undefined ? "" : JSON.stringify(metadata.buildPolicy),
     ].join("\0");
 
 const evidenceKey = (evidence: ToolDiscoveryEvidence): string =>
@@ -220,6 +229,14 @@ const recipeFromPackage = (
 ): InstallationRecipe | undefined => {
   const version = metadata.version;
   if (version === undefined || version.trim().length === 0) return undefined;
+  if (
+    metadata.ecosystem !== "source"
+    && /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
+      .test(metadata.source)
+  ) {
+    return undefined;
+  }
+  const buildPolicy: BuildPolicy = metadata.buildPolicy ?? { mode: "scripts-disabled" };
   switch (metadata.ecosystem) {
     case "npm": {
       const specification = `${metadata.name}@${version}`;
@@ -228,7 +245,10 @@ const recipeFromPackage = (
         package: metadata.name,
         version,
         source: metadata.source,
-        command: ["npm", "install", "--global", specification, "--ignore-scripts"],
+        buildPolicy,
+        command: buildPolicy.mode === "scripts-disabled"
+          ? ["npm", "install", "--global", specification, "--ignore-scripts"]
+          : ["npm", "install", "--global", specification],
       };
     }
     case "homebrew":
@@ -237,6 +257,7 @@ const recipeFromPackage = (
         formula: metadata.name,
         version,
         source: metadata.source,
+        buildPolicy,
         command: ["brew", "install", metadata.name],
       };
     case "winget":
@@ -245,6 +266,7 @@ const recipeFromPackage = (
         id: metadata.name,
         version,
         source: metadata.source,
+        buildPolicy,
         command: ["winget", "install", "--id", metadata.name, "--version", version, "--exact"],
       };
     case "uv": {
@@ -254,7 +276,10 @@ const recipeFromPackage = (
         package: metadata.name,
         version,
         source: metadata.source,
-        command: ["uv", "tool", "install", specification, "--only-binary=:all:"],
+        buildPolicy,
+        command: buildPolicy.mode === "scripts-disabled"
+          ? ["uv", "tool", "install", specification, "--only-binary=:all:"]
+          : ["uv", "tool", "install", specification],
       };
     }
     case "cargo":
@@ -263,11 +288,16 @@ const recipeFromPackage = (
         crate: metadata.name,
         version,
         source: metadata.source,
+        buildPolicy,
         command: ["cargo", "install", metadata.name, "--version", version, "--locked"],
       };
     case "source": {
       const upstream = packageUpstream(metadata);
-      if (upstream === undefined || metadata.buildCommands === undefined || metadata.buildCommands.length === 0) {
+      if (
+        upstream === undefined
+        || metadata.buildPolicy?.mode !== "required"
+        || metadata.buildPolicy.steps.length === 0
+      ) {
         return undefined;
       }
       return {
@@ -276,7 +306,11 @@ const recipeFromPackage = (
         revision: version,
         version,
         source: metadata.source,
-        buildCommands: metadata.buildCommands,
+        buildPolicy: metadata.buildPolicy,
+        buildCommands: metadata.buildPolicy.steps.map((step) => [
+          step.executable,
+          ...step.arguments,
+        ]),
       };
     }
   }
@@ -285,17 +319,17 @@ const recipeFromPackage = (
 const recipeKey = (recipe: InstallationRecipe): string => {
   switch (recipe.method) {
     case "npm":
-      return `${recipe.method}\0${recipe.package}\0${recipe.version}\0${recipe.source}`;
+      return `${recipe.method}\0${recipe.package}\0${recipe.version}\0${recipe.source}\0${JSON.stringify(recipe.buildPolicy)}`;
     case "homebrew":
-      return `${recipe.method}\0${recipe.formula}\0${recipe.version}\0${recipe.source}`;
+      return `${recipe.method}\0${recipe.formula}\0${recipe.version}\0${recipe.source}\0${JSON.stringify(recipe.buildPolicy)}`;
     case "winget":
-      return `${recipe.method}\0${recipe.id}\0${recipe.version}\0${recipe.source}`;
+      return `${recipe.method}\0${recipe.id}\0${recipe.version}\0${recipe.source}\0${JSON.stringify(recipe.buildPolicy)}`;
     case "uv":
-      return `${recipe.method}\0${recipe.package}\0${recipe.version}\0${recipe.source}`;
+      return `${recipe.method}\0${recipe.package}\0${recipe.version}\0${recipe.source}\0${JSON.stringify(recipe.buildPolicy)}`;
     case "cargo":
-      return `${recipe.method}\0${recipe.crate}\0${recipe.version}\0${recipe.source}`;
+      return `${recipe.method}\0${recipe.crate}\0${recipe.version}\0${recipe.source}\0${JSON.stringify(recipe.buildPolicy)}`;
     case "source":
-      return `${recipe.method}\0${recipe.repository}\0${recipe.revision}\0${recipe.buildCommands.map((command) => command.join("\u0001")).join("\u0002")}`;
+      return `${recipe.method}\0${recipe.repository}\0${recipe.revision}\0${JSON.stringify(recipe.buildPolicy)}\0${recipe.buildCommands.map((command) => command.join("\u0001")).join("\u0002")}`;
   }
 };
 

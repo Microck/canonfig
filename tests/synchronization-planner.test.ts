@@ -512,6 +512,48 @@ describe("stable planning and bounded resolution", () => {
     expect(JSON.parse(unversioned.encoded).actions[0].detail).not.toHaveProperty("version");
   });
 
+  it("escalates reviewed build-hook recipes when descendants cannot be sandboxed", () => {
+    const subject = resource("tool", "tool", "ensure");
+    const plan = runPlan(plannerInput(
+      [subject],
+      {
+        desired: [{
+          kind: "tool",
+          toolId: "native-tool",
+          recipes: [{
+            platform: "linux",
+            method: "npm",
+            package: "native-tool",
+            version: "1.0.0",
+            buildPolicy: {
+              mode: "required",
+              reviewedBy: "reviewer",
+              reviewedAt: "2026-08-16T00:00:00Z",
+              executables: ["node-gyp"],
+              paths: ["/tmp/native-tool"],
+              origins: ["https://registry.npmjs.org"],
+              capabilities: ["execute", "read-files", "write-files"],
+              steps: [{
+                executable: "node-gyp",
+                arguments: ["rebuild"],
+              }],
+            },
+          }],
+          loginRequired: false,
+        }],
+      },
+    ));
+    expect(plan.actions).toEqual([
+      expect.objectContaining({
+        kind: "human-action",
+        detail: expect.objectContaining({
+          kind: "human-action",
+          reason: "Installing native-tool requires reviewed build hooks",
+        }),
+      }),
+    ]);
+  });
+
   it("rejects duplicate planner evidence rather than depending on input order", () => {
     const input = plannerInput([resource("file", "file", "replace")]);
     const duplicate = {

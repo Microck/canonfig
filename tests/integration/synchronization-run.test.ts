@@ -330,7 +330,13 @@ const seedAndRun = (
     Effect.gen(function*() {
       const repository = yield* StateRepository;
       yield* repository.registerFollower({ follower });
-      yield* repository.publishRevision({ revision: fixture.revision });
+      const {
+        removedResources: _,
+        desired: __,
+        blobs: ___,
+        ...persistableRevision
+      } = fixture.revision;
+      yield* repository.publishRevision({ revision: persistableRevision });
       const synchronization = yield* Synchronization;
       return yield* synchronization.run(fixture.input);
     }).pipe(
@@ -692,6 +698,94 @@ describe("synchronization apply run", () => {
       "succeeded",
     ]);
     expect(actionRows(fixture.database)[2]?.rollback_reference).toBeNull();
+  });
+
+  it("removes an entire previously owned resource once and preserves unowned files", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-remove-resource-initial");
+    const unowned = join(dirname(fixture.target), "unowned.txt");
+    const first = await seedAndRun(fixture);
+    expect(first.outcome).toBe("Converged");
+    await writeFile(unowned, "keep me\n");
+
+    const applied = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadAppliedResources(follower.id)
+      ).pipe(Effect.provide(stateRepositoryLayer(fixture.database))),
+    );
+    const removedRevision: PlanningProfileRevision = {
+      ...fixture.revision,
+      id: decode(ProfileRevisionId)("revision-removed"),
+      sequence: 2,
+      canonicalBytes: "{\"removed\":true}",
+      digest: decode(ContentDigest)(sha256Hex("{\"removed\":true}")),
+      removedResources: [fixture.revision.resources[0]!.id],
+    };
+    const removalPlan = Effect.runSync(planSynchronization({
+      revision: removedRevision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{
+          resource: fixture.revision.resources[0]!.id,
+          observed: {
+            state: "present",
+            digest: decode(ContentDigest)(fixture.artifact.digest),
+            executable: false,
+          },
+        }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: applied,
+    }));
+    expect(removalPlan.actions.map((action) => action.kind)).toContain("remove-resource");
+
+    const removed = await seedAndRun({
+      ...fixture,
+      revision: removedRevision,
+      input: {
+        ...fixture.input,
+        id: decode(RunId)("run-remove-resource"),
+        plan: removalPlan,
+        revision: removedRevision,
+      },
+    });
+    expect(removed.outcome).toBe("Converged");
+    await expect(readFile(fixture.target)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(unowned, "utf8")).toBe("keep me\n");
+
+    const remainingApplied = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadAppliedResources(follower.id)
+      ).pipe(Effect.provide(stateRepositoryLayer(fixture.database))),
+    );
+    const repeatedPlan = Effect.runSync(planSynchronization({
+      revision: removedRevision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{
+          resource: fixture.revision.resources[0]!.id,
+          observed: { state: "absent" },
+        }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: remainingApplied,
+    }));
+    expect(repeatedPlan.actions).toEqual([]);
+    const repeated = await seedAndRun({
+      ...fixture,
+      revision: removedRevision,
+      input: {
+        ...fixture.input,
+        id: decode(RunId)("run-remove-resource-again"),
+        plan: repeatedPlan,
+        revision: removedRevision,
+      },
+    });
+    expect(repeated.outcome).toBe("Converged");
+    expect(await readFile(unowned, "utf8")).toBe("keep me\n");
   });
 
   it("persists successful ownership before a later action fails and reuses it on the next sync", async () => {

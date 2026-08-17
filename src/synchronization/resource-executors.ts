@@ -8,6 +8,7 @@ import {
   type ResourceSpecInput,
   type VerificationInput,
 } from "../domain/profile.ts";
+import type { BuildPolicy } from "../domain/resource.ts";
 import type { PlannedAction } from "../domain/synchronization.ts";
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
@@ -757,12 +758,27 @@ const installInvocation = (
   method: string,
   packageName: string,
   version?: string | undefined,
+  buildPolicy: BuildPolicy = { mode: "scripts-disabled" },
 ): Effect.Effect<
   void,
   MachineStateError | ActionExecutionError | InvalidExecutionPlanError,
   MachineState
 > =>
   Effect.gen(function*() {
+    if (buildPolicy.mode === "required") {
+      return yield* new InvalidExecutionPlanError({
+        message:
+          `recipe ${method}/${packageName} requires a bounded build policy; the process executor cannot confine lifecycle descendants`,
+      });
+    }
+    if (
+      /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|https?:\/\/.+\.git(?:#.*)?$)/iu
+        .test(packageName)
+    ) {
+      return yield* new InvalidExecutionPlanError({
+        message: `git/source dependency ${packageName} requires a separately bounded execution plan`,
+      });
+    }
     const machine = yield* MachineState;
     const executableName = method === "apt"
       ? "apt-get"
@@ -783,7 +799,7 @@ const installInvocation = (
         "install",
         "--global",
         version === undefined ? packageName : `${packageName}@${version}`,
-        "--ignore-scripts",
+        ...(buildPolicy.mode === "scripts-disabled" ? ["--ignore-scripts"] : []),
       ]
       : method === "brew" || method === "homebrew"
       ? ["install", version === undefined ? packageName : `${packageName}@${version}`]
@@ -796,7 +812,7 @@ const installInvocation = (
         "tool",
         "install",
         version === undefined ? packageName : `${packageName}==${version}`,
-        "--only-binary=:all:",
+        ...(buildPolicy.mode === "scripts-disabled" ? ["--only-binary=:all:"] : []),
       ]
       : method === "apt"
       ? ["install", "-y", version === undefined ? packageName : `${packageName}=${version}`]
@@ -842,6 +858,7 @@ export const prepareResourceAction = (
           detail.method,
           detail.package,
           detail.version,
+          detail.buildPolicy,
         ),
       });
     case "transfer-blob":

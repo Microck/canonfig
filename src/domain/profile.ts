@@ -11,6 +11,7 @@ import {
   defaultPolicyForKind,
   ApplyPolicy as ApplyPolicySchema,
   Platform as PlatformSchema,
+  BuildPolicy as BuildPolicySchema,
   ResourceKind as ResourceKindSchema,
   policyCompatibleWithKind,
   type Platform,
@@ -79,7 +80,7 @@ export type ResourceSpecInput =
   | { readonly kind: "directory"; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined }> }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: string | number | boolean | ReadonlyArray<string> }> }
   | { readonly kind: "skill"; readonly name: string; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined }> }
-  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: string; readonly package: string; readonly version?: string | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined }
+  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: string; readonly package: string; readonly version?: string | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string }
   | { readonly kind: "schedule"; readonly calendar: { readonly type: "daily"; readonly at: string } | { readonly type: "weekly"; readonly days: ReadonlyArray<string>; readonly at: string } | { readonly type: "custom"; readonly expression: string }; readonly timezone: string };
 
@@ -191,6 +192,7 @@ export const ResourceSpecInputSchema = Schema.Union([
       method: Schema.NonEmptyString,
       package: Schema.NonEmptyString,
       version: Schema.optional(Schema.NonEmptyString),
+      buildPolicy: Schema.optional(BuildPolicySchema),
     })),
     login: Schema.optional(AuthoringLoginSchema),
   }),
@@ -406,6 +408,11 @@ export class VerificationKindMismatchError extends Schema.TaggedError<Verificati
   { id: Schema.String, kind: Schema.String, method: Schema.String },
 ) {}
 
+export class InvalidBuildPolicyError extends Schema.TaggedError<InvalidBuildPolicyError>()(
+  "InvalidBuildPolicyError",
+  { id: Schema.String, reason: Schema.String },
+) {}
+
 export type ProfileValidationError =
   | DuplicateResourceError
   | MissingDependencyError
@@ -416,7 +423,8 @@ export type ProfileValidationError =
   | DuplicateGroupError
   | MissingGroupReferenceError
   | ResourceSpecKindMismatchError
-  | VerificationKindMismatchError;
+  | VerificationKindMismatchError
+  | InvalidBuildPolicyError;
 
 /** Aggregate contract failure preserving all precise tagged graph errors. */
 export class ProfileContractError extends Error {
@@ -491,6 +499,7 @@ export const validateProfileResources = (
       const scheduleError = validateSchedule(resource);
       if (scheduleError !== null) errors.push(scheduleError);
     }
+    errors.push(...validateBuildPolicies(resource));
     if (!verificationAllowed(resource.kind, resource.verify.method)) {
       errors.push(new VerificationKindMismatchError({
         id: resource.id,
@@ -501,6 +510,62 @@ export const validateProfileResources = (
   }
   const cycle = findDependencyCycle(resources);
   if (cycle !== null) errors.push(new DependencyCycleError({ cycle }));
+  return errors;
+};
+
+const validateBuildPolicies = (
+  resource: ProfileResourceInput,
+): ReadonlyArray<InvalidBuildPolicyError> => {
+  if (resource.spec.kind !== "tool") return [];
+  const errors: Array<InvalidBuildPolicyError> = [];
+  for (const recipe of resource.spec.recipes) {
+    const policy = recipe.buildPolicy ?? { mode: "scripts-disabled" as const };
+    if (policy.mode === "scripts-disabled") continue;
+    if (!Number.isFinite(Date.parse(policy.reviewedAt))) {
+      errors.push(new InvalidBuildPolicyError({
+        id: resource.id,
+        reason: `recipe ${recipe.method}/${recipe.package} has an invalid review timestamp`,
+      }));
+    }
+    if (
+      policy.executables.length === 0
+      || policy.paths.length === 0
+      || policy.steps.length === 0
+    ) {
+      errors.push(new InvalidBuildPolicyError({
+        id: resource.id,
+        reason: `recipe ${recipe.method}/${recipe.package} requires executable, path, and build-step bounds`,
+      }));
+    }
+    if (!policy.capabilities.includes("execute")) {
+      errors.push(new InvalidBuildPolicyError({
+        id: resource.id,
+        reason: `recipe ${recipe.method}/${recipe.package} must explicitly allow execute`,
+      }));
+    }
+    if (policy.steps.some((step) => !policy.executables.includes(step.executable))) {
+      errors.push(new InvalidBuildPolicyError({
+        id: resource.id,
+        reason: `recipe ${recipe.method}/${recipe.package} has an unbounded build executable`,
+      }));
+    }
+    for (const origin of policy.origins) {
+      try {
+        const url = new URL(origin);
+        if (url.protocol !== "https:" || url.origin !== origin) {
+          errors.push(new InvalidBuildPolicyError({
+            id: resource.id,
+            reason: `recipe ${recipe.method}/${recipe.package} has a non-exact HTTPS origin`,
+          }));
+        }
+      } catch {
+        errors.push(new InvalidBuildPolicyError({
+          id: resource.id,
+          reason: `recipe ${recipe.method}/${recipe.package} has an invalid origin`,
+        }));
+      }
+    }
+  }
   return errors;
 };
 
@@ -728,7 +793,10 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
             `${left.platform}\0${left.method}\0${left.package}\0${left.version ?? ""}`,
             `${right.platform}\0${right.method}\0${right.package}\0${right.version ?? ""}`,
           )
-        ),
+        ).map((recipe) => ({
+          ...recipe,
+          buildPolicy: recipe.buildPolicy ?? { mode: "scripts-disabled" as const },
+        })),
         login: spec.login ?? { required: false },
       };
     case "credential":

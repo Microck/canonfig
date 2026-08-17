@@ -65,6 +65,43 @@ export const Platform = Schema.Literals(["linux", "macos", "windows"]);
 export type Platform = Schema.Schema.Type<typeof Platform>;
 
 /**
+ * A build policy is part of the reviewed recipe contract. The default keeps
+ * package lifecycle hooks disabled. A required build policy records the
+ * bounds a future sandboxed builder would need; the current process executor
+ * deliberately escalates this mode to Human Action Required.
+ */
+export const BuildCapability = Schema.Literals([
+  "read-files",
+  "write-files",
+  "network",
+  "execute",
+]);
+export type BuildCapability = Schema.Schema.Type<typeof BuildCapability>;
+
+export const BuildStep = Schema.Struct({
+  executable: Schema.NonEmptyString,
+  arguments: Schema.Array(Schema.String),
+});
+export type BuildStep = Schema.Schema.Type<typeof BuildStep>;
+
+export const BuildPolicy = Schema.Union([
+  Schema.Struct({
+    mode: Schema.Literal("scripts-disabled"),
+  }),
+  Schema.Struct({
+    mode: Schema.Literal("required"),
+    reviewedBy: Schema.NonEmptyString,
+    reviewedAt: Schema.NonEmptyString,
+    executables: Schema.Array(Schema.NonEmptyString),
+    paths: Schema.Array(Schema.NonEmptyString),
+    origins: Schema.Array(Schema.NonEmptyString),
+    capabilities: Schema.Array(BuildCapability),
+    steps: Schema.Array(BuildStep),
+  }),
+]);
+export type BuildPolicy = Schema.Schema.Type<typeof BuildPolicy>;
+
+/**
  * A Profile Resource: one named item of desired configuration.
  * `spec` carries kind-specific fields decoded by `resourceSpecSchema`.
  */
@@ -131,6 +168,7 @@ export const ToolRecipeRef = Schema.Struct({
   method: Schema.NonEmptyString,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
+  buildPolicy: Schema.optional(BuildPolicy),
 });
 export type ToolRecipeRef = Schema.Schema.Type<typeof ToolRecipeRef>;
 

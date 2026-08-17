@@ -40,6 +40,14 @@ Canonfig requires Node.js 24 or newer and npm.
 Paths, package identities, recipes, credential providers, and scheduler
 artifacts remain platform-specific even when the desired capability is shared.
 
+Package recipes default to fail-closed builds: npm uses `--ignore-scripts` and
+uv uses `--only-binary=:all:`. Recipes that require lifecycle hooks or source
+distributions must include a reviewed build policy with bounded toolchain
+executables, paths, HTTPS origins, capabilities, and steps. The current
+executor escalates those recipes to Human Action Required because it cannot
+confine lifecycle descendants. Git and other source dependency specifications
+are not accepted without a separately bounded execution plan.
+
 ## Install from the built package
 
 Build and pack the repository:

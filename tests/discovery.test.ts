@@ -133,6 +133,27 @@ describe("profile discovery", () => {
       .toEqual(["missing-upstream", "unresolved-executable"]);
   });
 
+  it("does not turn npm git dependencies into deterministic recipes", async () => {
+    const agents = await fixture("AGENTS.md", [
+      "```sh",
+      "npm install git+https://github.com/example/tool.git#v1.2.3",
+      "```",
+      "",
+    ].join("\n"));
+
+    const result = await Effect.runPromise(scanDiscovery({
+      files: [{ path: agents, kind: "agents" }],
+      path: fixtureBin,
+    }));
+
+    expect(result.tools).toEqual([
+      expect.objectContaining({
+        recipes: [],
+        reviewStatus: "needs-review",
+      }),
+    ]);
+  });
+
   it("scans executable hook scripts and npm lockfile bin metadata", async () => {
     const hook = await fixture("pre-commit.sh", "#!/bin/sh\nrg --quiet TODO .\n");
     const lockfile = await fixture("package-lock.json", JSON.stringify({
@@ -232,6 +253,19 @@ describe("profile discovery", () => {
               ["cmake", "-S", ".", "-B", "build"],
               ["cmake", "--build", "build"],
             ],
+            buildPolicy: {
+              mode: "required",
+              reviewedBy: "fixture-reviewer",
+              reviewedAt: "2026-08-15T00:00:00Z",
+              executables: ["cmake"],
+              paths: ["/tmp/source-tool"],
+              origins: ["https://github.com"],
+              capabilities: ["execute", "read-files", "write-files"],
+              steps: [
+                { executable: "cmake", arguments: ["-S", ".", "-B", "build"] },
+                { executable: "cmake", arguments: ["--build", "build"] },
+              ],
+            },
           },
         ],
       },
