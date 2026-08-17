@@ -203,6 +203,36 @@ describe("reviewed profile publication", () => {
     expect(error).toBeInstanceOf(InvalidPublicationResourcesError);
   });
 
+  it("rejects noncanonical npm artifact sources before publication", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const tool = discovery.tools[0]!;
+    const invalidTool = {
+      ...tool,
+      recipes: [{
+        ...tool.recipes[0]!,
+        source: "HTTPS://registry.npmjs.org/fixture-tool/-/fixture-tool-1.2.3.tgz",
+      }],
+    };
+    const invalid = {
+      ...discovery,
+      tools: [invalidTool],
+      resources: [invalidTool],
+    };
+    const signing = makeSigner();
+    const error = await runCatalog(
+      fixture.database,
+      signing.signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        return yield* Effect.flip(catalog.publish(inputFor(invalid)));
+      }),
+    );
+
+    expect(error).toBeInstanceOf(InvalidPublicationResourcesError);
+    expect(signing.calls).toEqual({ signed: 0, verified: 0 });
+  });
+
   it("canonically publishes, signs, verifies, persists, and looks up revisions", async () => {
     const fixture = workspace();
     const discovery = await proposal(fixture.directory);

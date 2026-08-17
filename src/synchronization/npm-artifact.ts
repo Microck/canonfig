@@ -11,11 +11,17 @@ import {
 } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import { Effect, Schema } from "effect";
+import type { JsonValue } from "../profile/profile-codec.ts";
 
 const defaultMaximumBytes = 32 * 1024 * 1024;
 const defaultTimeoutMilliseconds = 30_000;
+const maximumArchiveEntries = 4_096;
+const maximumArchiveBytes = 128 * 1024 * 1024;
+const maximumManifestBytes = 1 * 1024 * 1024;
+const tarBlockBytes = 512;
 
 export class NpmArtifactError extends Schema.TaggedError<NpmArtifactError>()(
   "NpmArtifactError",
@@ -88,6 +94,434 @@ export const verifyNpmArtifactBytes = (
   const actual = createHash(expected.algorithm).update(bytes).digest();
   return actual.length === expected.digest.length
     && actual.equals(expected.digest);
+};
+
+const NpmJsonObject = Schema.Record(Schema.String, Schema.MutableJson);
+type NpmJsonObject = Schema.Schema.Type<typeof NpmJsonObject>;
+
+interface NpmPackageManifest {
+  readonly path: string;
+  readonly directory: string;
+  readonly value: NpmJsonObject;
+}
+
+interface NpmArchiveEntry {
+  readonly path: string;
+  readonly kind: "file" | "directory";
+  readonly bytes?: Uint8Array | undefined;
+}
+
+const textDecoder = new TextDecoder("utf-8", { fatal: true });
+
+const tarString = (
+  header: Uint8Array,
+  offset: number,
+  length: number,
+): string => {
+  const end = header.subarray(offset, offset + length).indexOf(0);
+  const value = header.subarray(
+    offset,
+    offset + (end < 0 ? length : end),
+  );
+  return textDecoder.decode(value);
+};
+
+const tarOctal = (
+  header: Uint8Array,
+  offset: number,
+  length: number,
+): number | undefined => {
+  const raw = tarString(header, offset, length).replace(/^\s+|\s+$/gu, "");
+  if (raw.length === 0) return 0;
+  if (!/^[0-7]+$/u.test(raw)) return undefined;
+  const value = Number.parseInt(raw, 8);
+  return Number.isSafeInteger(value) ? value : undefined;
+};
+
+const tarChecksumValid = (header: Uint8Array): boolean => {
+  const expected = tarOctal(header, 148, 8);
+  if (expected === undefined) return false;
+  let actual = 0;
+  for (let index = 0; index < header.byteLength; index += 1) {
+    actual += index >= 148 && index < 156 ? 0x20 : header[index]!;
+  }
+  return actual === expected;
+};
+
+const normalizedArchivePath = (name: string, prefix: string): string | undefined => {
+  const rawPath = `${prefix}${prefix.length > 0 && name.length > 0 ? "/" : ""}${name}`;
+  const path = rawPath.endsWith("/") ? rawPath.slice(0, -1) : rawPath;
+  if (
+    path.length === 0
+    || path.includes("\0")
+    || path.includes("\\")
+    || path.startsWith("/")
+    || path.split("/").some((part) => part.length === 0 || part === "." || part === "..")
+    || (path !== "package" && !path.startsWith("package/"))
+  ) {
+    return undefined;
+  }
+  return path;
+};
+
+type ArchiveParseResult =
+  | { readonly ok: true; readonly entries: ReadonlyArray<NpmArchiveEntry> }
+  | { readonly ok: false; readonly message: string };
+
+const parseNpmArchive = (bytes: Uint8Array): ArchiveParseResult => {
+  let expanded: Uint8Array;
+  try {
+    expanded = gunzipSync(bytes, { maxOutputLength: maximumArchiveBytes });
+  } catch {
+    return {
+      ok: false,
+      message: "npm artifact is not a bounded gzip-compressed tar archive",
+    };
+  }
+  const entries: Array<NpmArchiveEntry> = [];
+  const byPath = new Map<string, NpmArchiveEntry>();
+  let offset = 0;
+  let zeroBlocks = 0;
+  while (offset + tarBlockBytes <= expanded.byteLength) {
+    const header = expanded.subarray(offset, offset + tarBlockBytes);
+    if (header.every((byte) => byte === 0)) {
+      zeroBlocks += 1;
+      offset += tarBlockBytes;
+      if (zeroBlocks === 2) break;
+      continue;
+    }
+    zeroBlocks = 0;
+    if (entries.length >= maximumArchiveEntries || !tarChecksumValid(header)) {
+      return {
+        ok: false,
+        message: "npm artifact has too many entries or an invalid tar header",
+      };
+    }
+    let name: string;
+    let prefix: string;
+    try {
+      name = tarString(header, 0, 100);
+      prefix = tarString(header, 345, 155);
+    } catch {
+      return { ok: false, message: "npm artifact contains an invalid UTF-8 tar path" };
+    }
+    const path = normalizedArchivePath(name, prefix);
+    if (path === undefined) return { ok: false, message: "npm artifact contains an unsafe tar path" };
+    const type = header[156];
+    const kind = type === 0 || type === 48
+      ? "file"
+      : type === 5
+      ? "directory"
+      : undefined;
+    if (kind === undefined) {
+      return {
+        ok: false,
+        message: "npm artifact contains a symlink, hardlink, special file, or extended tar entry",
+      };
+    }
+    const size = tarOctal(header, 124, 12);
+    if (size === undefined || size > maximumArchiveBytes) {
+      return {
+        ok: false,
+        message: "npm artifact contains an invalid or oversized tar entry",
+      };
+    }
+    const dataOffset = offset + tarBlockBytes;
+    const paddedSize = Math.ceil(size / tarBlockBytes) * tarBlockBytes;
+    if (
+      dataOffset > expanded.byteLength
+      || paddedSize > expanded.byteLength - dataOffset
+      || entries.reduce((total, entry) => total + (entry.bytes?.byteLength ?? 0), 0) + size
+        > maximumArchiveBytes
+    ) {
+      return { ok: false, message: "npm artifact exceeds the archive decompression limit" };
+    }
+    const entry: NpmArchiveEntry = {
+      path,
+      kind,
+      bytes: kind === "file"
+        ? expanded.slice(dataOffset, dataOffset + size)
+        : undefined,
+    };
+    if (byPath.has(path)) {
+      return { ok: false, message: "npm artifact contains duplicate tar paths" };
+    }
+    if (
+      kind === "file"
+      && [...byPath.keys()].some((existing) => existing.startsWith(`${path}/`))
+    ) {
+      return {
+        ok: false,
+        message: "npm artifact contains a file/descendant tar path collision",
+      };
+    }
+    const pathParts = path.split("/");
+    for (let index = 1; index < pathParts.length - 1; index += 1) {
+      const ancestorPath = pathParts.slice(0, index + 1).join("/");
+      if (byPath.get(ancestorPath)?.kind === "file") {
+        return {
+          ok: false,
+          message: "npm artifact contains a file/descendant tar path collision",
+        };
+      }
+    }
+    byPath.set(path, entry);
+    entries.push(entry);
+    offset = dataOffset + paddedSize;
+  }
+  if (
+    zeroBlocks < 2
+    || expanded.subarray(offset).some((byte) => byte !== 0)
+  ) {
+    return { ok: false, message: "npm artifact has truncated or trailing tar data" };
+  }
+  return { ok: true, entries };
+};
+
+type DependencyObjectResult =
+  | { readonly ok: true; readonly value: Readonly<Record<string, string>> }
+  | { readonly ok: false; readonly message: string };
+
+const dependencyObject = (
+  value: JsonValue | undefined,
+  field: string,
+): DependencyObjectResult => {
+  if (value === undefined) return { ok: true, value: {} };
+  if (!Schema.is(NpmJsonObject)(value)) {
+    return {
+      ok: false,
+      message: `npm package manifest field ${field} must be an object`,
+    };
+  }
+  const result: Record<string, string> = {};
+  for (const [name, spec] of Object.entries(value)) {
+    if (
+      !/^(?:[A-Za-z0-9][A-Za-z0-9._~-]*|@[A-Za-z0-9._~-]+\/[A-Za-z0-9._~-]+)$/u.test(name)
+      || !Schema.is(Schema.String)(spec)
+      || spec.length === 0
+    ) {
+      return {
+        ok: false,
+        message: `npm package manifest has an invalid ${field} dependency`,
+      };
+    }
+    result[name] = spec;
+  }
+  return { ok: true, value: result };
+};
+
+const dependencySpecificationError = (
+  field: string,
+  name: string,
+  specification: string,
+): string | undefined =>
+  /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(specification)
+    || specification.startsWith("git@")
+    || specification.includes("\\")
+    || /^(?:\.{1,2}[/]|[/]|~[/]|[A-Za-z]:[/])/u.test(specification)
+    ? `npm package manifest ${field} dependency ${name} is an external or ambiguous specification`
+    : undefined;
+
+const embeddedPackageManifest = (
+  manifests: ReadonlyMap<string, NpmPackageManifest>,
+  directory: string,
+  name: string,
+): NpmPackageManifest | undefined => {
+  let current = directory;
+  while (current.startsWith("package")) {
+    const candidate = `${current}/node_modules/${name}/package.json`;
+    const manifest = manifests.get(candidate);
+    if (manifest !== undefined) return manifest;
+    if (current === "package") break;
+    const separator = current.lastIndexOf("/");
+    if (separator < 0) break;
+    current = current.slice(0, separator);
+  }
+  return undefined;
+};
+
+type BundledDependencyResult =
+  | { readonly ok: true; readonly value: ReadonlyArray<string> }
+  | { readonly ok: false; readonly message: string };
+
+const bundledDependencyNames = (
+  manifest: NpmPackageManifest,
+): BundledDependencyResult => {
+  const bundled = manifest.value.bundledDependencies;
+  const bundle = manifest.value.bundleDependencies;
+  if (bundled !== undefined && bundle !== undefined) {
+    return {
+      ok: false,
+      message: "npm package manifest has ambiguous bundledDependencies and bundleDependencies",
+    };
+  }
+  const value = bundled ?? bundle;
+  if (value === undefined) return { ok: true, value: [] };
+  if (!Schema.is(Schema.Array(Schema.String))(value) || value.some((name) =>
+    !/^(?:[A-Za-z0-9][A-Za-z0-9._~-]*|@[A-Za-z0-9._~-]+\/[A-Za-z0-9._~-]+)$/u.test(name)
+  )) {
+    return {
+      ok: false,
+      message: "npm package manifest has invalid bundled dependency metadata",
+    };
+  }
+  if (new Set(value).size !== value.length) {
+    return {
+      ok: false,
+      message: "npm package manifest has duplicate bundled dependency metadata",
+    };
+  }
+  return { ok: true, value };
+};
+
+/**
+ * Inspect the exact reviewed tarball before giving it to a package manager.
+ * The top-level SRI digest authenticates every byte, while this inspection
+ * proves that npm has no unreviewed dependency or package-manager indirection
+ * to resolve. Only dependency trees physically embedded in the same archive
+ * are accepted.
+ */
+export const validateNpmArtifactProvenance = (
+  bytes: Uint8Array,
+  packageName?: string | undefined,
+  version?: string | undefined,
+): string | undefined => {
+  const parsed = parseNpmArchive(bytes);
+  if (!parsed.ok) return parsed.message;
+  const manifests = new Map<string, NpmPackageManifest>();
+  for (const entry of parsed.entries) {
+    if (!entry.path.endsWith("/package.json") || entry.kind !== "file") continue;
+    const content = entry.bytes;
+    if (content === undefined || content.byteLength > maximumManifestBytes) {
+      return "npm package manifest exceeds the size limit";
+    }
+    let value: JsonValue;
+    try {
+      value = Schema.decodeUnknownSync(Schema.MutableJson)(
+        JSON.parse(textDecoder.decode(content)),
+      );
+    } catch {
+      return "npm artifact contains invalid package manifest JSON";
+    }
+    if (!Schema.is(NpmJsonObject)(value)) {
+      return "npm package manifest must be a JSON object";
+    }
+    const directory = entry.path.slice(0, -"/package.json".length);
+    manifests.set(entry.path, {
+      path: entry.path,
+      directory,
+      value,
+    });
+  }
+  const root = manifests.get("package/package.json");
+  if (root === undefined) return "npm artifact has no unambiguous package/package.json";
+  if (
+    packageName !== undefined
+    && (
+      !Schema.is(Schema.String)(root.value.name)
+      || root.value.name !== packageName
+    )
+  ) {
+    return "npm package manifest name does not match the reviewed package";
+  }
+  if (
+    version !== undefined
+    && (
+      !Schema.is(Schema.String)(root.value.version)
+      || root.value.version !== version
+    )
+  ) {
+    return "npm package manifest version does not match the reviewed version";
+  }
+  const bundled = bundledDependencyNames(root);
+  if (!bundled.ok) return bundled.message;
+  const bundledSet = new Set(bundled.value);
+  const rootDependencies = dependencyObject(root.value.dependencies, "dependencies");
+  const rootOptionalDependencies = dependencyObject(
+    root.value.optionalDependencies,
+    "optionalDependencies",
+  );
+  if (!rootDependencies.ok) return rootDependencies.message;
+  if (!rootOptionalDependencies.ok) return rootOptionalDependencies.message;
+  if (
+    root.value.peerDependencies !== undefined
+    || root.value.peerDependenciesMeta !== undefined
+  ) {
+    return "npm package manifest declares peer dependency resolution metadata";
+  }
+  if (
+    root.value.packageManager !== undefined
+    || root.value.devEngines !== undefined
+    || root.value.workspaces !== undefined
+  ) {
+    return "npm package manifest declares install-time package manager indirection";
+  }
+  const rootDependencyNames = new Set([
+    ...Object.keys(rootDependencies.value),
+    ...Object.keys(rootOptionalDependencies.value),
+  ]);
+  for (const name of rootDependencyNames) {
+    if (!bundledSet.has(name)) {
+      return `npm package dependency ${name} is not declared as bundled`;
+    }
+  }
+  for (const name of bundledSet) {
+    if (embeddedPackageManifest(manifests, root.directory, name) === undefined) {
+      return `npm bundled dependency ${name} is not embedded in the artifact`;
+    }
+  }
+  if (rootDependencyNames.size === 0 && bundledSet.size > 0) {
+    return "npm artifact has bundled dependencies without declared dependencies";
+  }
+  const referencedManifestPaths = new Set<string>([root.path]);
+  for (const manifest of manifests.values()) {
+    if (
+      manifest.path !== root.path
+      && !manifest.path.includes("/node_modules/")
+    ) {
+      return "npm artifact contains a package manifest outside node_modules";
+    }
+    const dependencies = dependencyObject(manifest.value.dependencies, "dependencies");
+    const optionalDependencies = dependencyObject(
+      manifest.value.optionalDependencies,
+      "optionalDependencies",
+    );
+    if (!dependencies.ok) return dependencies.message;
+    if (!optionalDependencies.ok) return optionalDependencies.message;
+    if (
+      manifest.value.peerDependencies !== undefined
+      || manifest.value.peerDependenciesMeta !== undefined
+    ) {
+      return "npm embedded package declares peer dependency resolution metadata";
+    }
+    if (
+      manifest.value.packageManager !== undefined
+      || manifest.value.devEngines !== undefined
+      || manifest.value.workspaces !== undefined
+    ) {
+      return "npm embedded package declares install-time package manager indirection";
+    }
+    for (const [field, values] of [
+      ["dependencies", dependencies.value],
+      ["optionalDependencies", optionalDependencies.value],
+    ] as const) {
+      for (const [name, specification] of Object.entries(values)) {
+        const specificationError = dependencySpecificationError(field, name, specification);
+        if (specificationError !== undefined) return specificationError;
+        const embedded = embeddedPackageManifest(manifests, manifest.directory, name);
+        if (embedded === undefined) {
+          return `npm embedded package dependency ${name} is not fully embedded`;
+        }
+        referencedManifestPaths.add(embedded.path);
+      }
+    }
+  }
+  for (const manifest of manifests.values()) {
+    if (!referencedManifestPaths.has(manifest.path)) {
+      return `npm artifact contains an unreferenced embedded package ${manifest.path}`;
+    }
+  }
+  return undefined;
 };
 
 const npmTarballPath = (

@@ -225,6 +225,15 @@ following redirects, verifies the digest before atomically caching them under a
 digest-coupled cache entry, and invokes the package manager only with that
 verified local tarball path. A remote source without supported integrity is
 Human Action Required rather than an automatic install.
+The source spelling is exact and case-sensitive: mixed-case schemes or hosts,
+default ports, dot segments, encoded path aliases, credentials, queries, and
+fragments are rejected rather than normalized. Before spawn, Canonfig parses
+the verified gzip/tar archive within entry, manifest, and decompression bounds.
+Only a single `package/package.json` with no peer or package-manager
+indirection, and with dependencies physically embedded and covered by the
+same top-level digest, is accepted. npm and pnpm then receive explicit offline
+installation flags; bun artifacts remain Human Action Required because its
+local tarball command has no guaranteed offline mode.
 
 Every recipe also carries a reviewed `buildPolicy`. The backward-compatible
 default is `{ "mode": "scripts-disabled" }`; npm installs use

@@ -4,6 +4,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,7 +14,9 @@ import {
   makeNpmArtifactTransport,
   type NpmArtifactRequest,
   type NpmArtifactResponse,
+  validateNpmArtifactProvenance,
 } from "../../src/synchronization/npm-artifact.ts";
+import type { JsonValue } from "../../src/profile/profile-codec.ts";
 
 const source = "https://registry.npmjs.org/fixture-tool/-/fixture-tool-1.2.3.tgz";
 const temporaryDirectories: Array<string> = [];
@@ -23,6 +26,45 @@ const bytesFor = (value: string): Buffer => Buffer.from(value);
 
 const integrityFor = (bytes: Uint8Array): string =>
   `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+
+interface TarFixtureEntry {
+  readonly path: string;
+  readonly content?: Uint8Array | undefined;
+  readonly type?: number | undefined;
+  readonly declaredSize?: number | undefined;
+}
+
+const tarArchive = (entries: ReadonlyArray<TarFixtureEntry>): Buffer =>
+  gzipSync(Buffer.concat([
+    ...entries.flatMap((entry) => {
+      const content = Buffer.from(entry.content ?? new Uint8Array());
+      const header = Buffer.alloc(512);
+      header.write(entry.path, 0, 100, "utf8");
+      header.write("0000644\0", 100, 8, "ascii");
+      header.write("0000000\0", 108, 8, "ascii");
+      header.write("0000000\0", 116, 8, "ascii");
+      header.write(
+        `${(entry.declaredSize ?? content.byteLength).toString(8).padStart(11, "0")}\0`,
+        124,
+        12,
+        "ascii",
+      );
+      header.write("00000000000\0", 136, 12, "ascii");
+      header.fill(0x20, 148, 156);
+      header[156] = entry.type ?? 0x30;
+      header.write("ustar\0", 257, 6, "ascii");
+      header.write("00", 263, 2, "ascii");
+      const checksum = header.reduce((total, byte) => total + byte, 0);
+      header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
+      const padding = Buffer.alloc((512 - (content.byteLength % 512)) % 512);
+      return [header, content, padding];
+    }),
+    Buffer.alloc(1024),
+  ]));
+
+const packageManifest = (
+  value: JsonValue,
+): Buffer => Buffer.from(JSON.stringify(value));
 
 const fixtureServer = async (
   responseBody: (response: import("node:http").ServerResponse) => void,
@@ -114,6 +156,106 @@ afterEach(async () => {
 });
 
 describe("verified npm artifact transport", () => {
+  it.each([
+    ["transitive dependencies", tarArchive([
+      {
+        path: "package/package.json",
+        content: packageManifest({
+          name: "fixture-tool",
+          version: "1.2.3",
+          dependencies: { first: "1.0.0" },
+          bundledDependencies: ["first"],
+        }),
+      },
+      {
+        path: "package/node_modules/first/package.json",
+        content: packageManifest({
+          name: "first",
+          version: "1.0.0",
+          dependencies: { second: "1.0.0" },
+        }),
+      },
+      {
+        path: "package/node_modules/second/package.json",
+        content: packageManifest({ name: "second", version: "1.0.0" }),
+      },
+    ])],
+    ["optional dependencies", tarArchive([
+      {
+        path: "package/package.json",
+        content: packageManifest({
+          name: "fixture-tool",
+          version: "1.2.3",
+          optionalDependencies: { optional: "1.0.0" },
+          bundledDependencies: ["optional"],
+        }),
+      },
+      {
+        path: "package/node_modules/optional/package.json",
+        content: packageManifest({ name: "optional", version: "1.0.0" }),
+      },
+    ])],
+  ] as const)("accepts fully embedded %s", (_name, bytes) => {
+    expect(validateNpmArtifactProvenance(bytes, "fixture-tool", "1.2.3")).toBeUndefined();
+  });
+
+  it.each([
+    ["unbundled dependency", {
+      dependencies: { dependency: "1.0.0" },
+    }],
+    ["peer dependency", {
+      peerDependencies: { peer: "1.0.0" },
+    }],
+    ["optional peer metadata", {
+      peerDependenciesMeta: { peer: { optional: true } },
+    }],
+    ["workspace dependency", {
+      dependencies: { dependency: "workspace:*" },
+      bundledDependencies: ["dependency"],
+    }],
+    ["package manager indirection", {
+      packageManager: "pnpm@9.0.0",
+    }],
+    ["bundled dependency missing", {
+      dependencies: { dependency: "1.0.0" },
+      bundledDependencies: ["dependency"],
+    }],
+    ["bundled dependency metadata ambiguity", {
+      dependencies: { dependency: "1.0.0" },
+      bundledDependencies: ["dependency"],
+      bundleDependencies: ["dependency"],
+    }],
+  ] as const)("rejects %s", (_name, fields) => {
+    const bytes = tarArchive([{
+      path: "package/package.json",
+      content: packageManifest({
+        name: "fixture-tool",
+        version: "1.2.3",
+        ...fields,
+      }),
+    }]);
+    expect(validateNpmArtifactProvenance(bytes, "fixture-tool", "1.2.3")).toMatch(
+      /npm|dependency|package manager/iu,
+    );
+  });
+
+  it.each([
+    ["path traversal", [{ path: "package/../package.json" }]],
+    ["symlink", [{ path: "package/link", type: 0x32 }]],
+    ["duplicate manifest", [
+      { path: "package/package.json" },
+      { path: "package/package.json" },
+    ]],
+    ["oversized entry", [{
+      path: "package/package.json",
+      declaredSize: 128 * 1024 * 1024 + 1,
+    }]],
+  ] as const)("rejects malicious or oversized %s archives", (_name, entries) => {
+    expect(validateNpmArtifactProvenance(tarArchive(entries))).toMatch(
+      /npm artifact/iu,
+    );
+  });
+
   it("fetches exact bytes through local HTTPS and reuses a verified cache entry", async () => {
     const body = bytesFor("valid npm tarball bytes");
     const fixture = await fixtureServer((response) => {

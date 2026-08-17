@@ -51,6 +51,7 @@ import {
 } from "../domain/recipe-versions.ts";
 import {
   defaultNpmArtifactTransport,
+  validateNpmArtifactProvenance,
   verifyNpmArtifactBytes,
   type NpmArtifactTransport,
 } from "./npm-artifact.ts";
@@ -870,6 +871,12 @@ const installInvocation = (
     const machine = yield* MachineState;
     let verifiedArtifactPath: string | undefined;
     if (sourceUrl !== undefined) {
+      if (method === "bun") {
+        return yield* new InvalidExecutionPlanError({
+          message:
+            "bun cannot guarantee an offline local tarball installation; Human Action Required",
+        });
+      }
       const integrity = sourceDetailsValue.integrity;
       if (integrity === undefined) {
         return yield* new InvalidExecutionPlanError({
@@ -936,6 +943,12 @@ const installInvocation = (
           message: "verified npm artifact changed or is corrupt before installation",
         });
       }
+      const provenanceError = validateNpmArtifactProvenance(bytes, packageName, version);
+      if (provenanceError !== undefined) {
+        return yield* new InvalidExecutionPlanError({
+          message: `verified npm artifact provenance is not safe: ${provenanceError}; Human Action Required`,
+        });
+      }
       verifiedArtifactPath = artifactPath.absolute;
     }
     const executableName = method === "apt"
@@ -955,8 +968,16 @@ const installInvocation = (
         { name: "NPM_CONFIG_GLOBALCONFIG", value: process.platform === "win32" ? "NUL" : "/dev/null" },
         { name: "NPM_CONFIG_LOCATION", value: "global" },
         { name: "NPM_CONFIG_REGISTRY", value: "https://registry.npmjs.org/" },
+        ...(verifiedArtifactPath !== undefined
+          ? [{ name: "NPM_CONFIG_OFFLINE", value: "true" }]
+          : []),
         ...(method === "pnpm"
-          ? [{ name: "PNPM_CONFIG_REGISTRY", value: "https://registry.npmjs.org/" }]
+          ? [
+            { name: "PNPM_CONFIG_REGISTRY", value: "https://registry.npmjs.org/" },
+            ...(verifiedArtifactPath !== undefined
+              ? [{ name: "PNPM_CONFIG_OFFLINE", value: "true" }]
+              : []),
+          ]
           : []),
         ...(method === "bun"
           ? [
@@ -972,6 +993,7 @@ const installInvocation = (
         "--global",
         packageSpecifier,
         ...(buildPolicy.mode === "scripts-disabled" ? ["--ignore-scripts"] : []),
+        ...(verifiedArtifactPath !== undefined ? ["--offline"] : []),
       ]
       : method === "pnpm" || method === "bun"
       ? [
@@ -979,6 +1001,7 @@ const installInvocation = (
         "--global",
         packageSpecifier,
         ...(buildPolicy.mode === "scripts-disabled" ? ["--ignore-scripts"] : []),
+        ...(verifiedArtifactPath !== undefined ? ["--offline"] : []),
       ]
       : method === "brew" || method === "homebrew"
       ? ["install", version === undefined ? packageName : `${packageName}@${version}`]

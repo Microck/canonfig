@@ -655,6 +655,35 @@ describe("stable planning and bounded resolution", () => {
     expect(plan.actions.some((action) => action.kind === "install-tool")).toBe(false);
   });
 
+  it.each([
+    "HTTPS://registry.npmjs.org/tool/-/tool-1.2.3.tgz",
+    "https://REGISTRY.NPMJS.ORG/tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org:443/tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org/tool/../tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz%23fragment",
+    "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz#fragment",
+    "https://user:password@registry.npmjs.org/tool/-/tool-1.2.3.tgz",
+  ])("rejects noncanonical npm artifact sources before planning: %s", (source) => {
+    const subject = resource("tool", "tool", "ensure");
+    expect(() => runPlan(plannerInput(
+      [subject],
+      {
+        desired: [{
+          kind: "tool",
+          toolId: "tool",
+          recipes: [{
+            platform: "linux",
+            method: "npm",
+            package: "tool",
+            version: "1.2.3",
+            source: { source, integrity: "sha512-c2FtcGxl" },
+          }],
+          loginRequired: false,
+        }],
+      },
+    ))).toThrow();
+  });
+
   it("routes Cargo scripts-disabled recipes to Human Action Required", () => {
     const subject = resource("tool", "tool", "ensure");
     const plan = runPlan(plannerInput(

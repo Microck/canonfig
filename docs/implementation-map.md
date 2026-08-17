@@ -239,7 +239,10 @@ C11 -> C12 -> C13
 - OS-specific package names remain independent.
 - Publication is immutable and canonical.
 - An npm-family artifact is streamed, verified, atomically cached by digest,
-  and installed only from the verified local cache path.
+  and installed only from the verified local cache path. Archive manifests
+  reject external dependency resolution, package-manager indirection, unsafe
+  paths, duplicate entries, and decompression bombs; npm and pnpm use explicit
+  offline mode while bun artifacts remain Human Action Required.
 
 ## C8. Enrollment and transport
 

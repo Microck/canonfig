@@ -187,6 +187,12 @@ export const recipeSourceValidationError = (input: {
     url = new URL(metadata.source);
   } catch {
     // Lockfile paths and evidence locators are not install arguments.
+    if (
+      (input.method === "npm" || input.method === "pnpm" || input.method === "bun")
+      && integrity !== undefined
+    ) {
+      return "npm-family recipe integrity requires a canonical HTTPS registry tarball source";
+    }
     return undefined;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -216,6 +222,10 @@ export const recipeSourceValidationError = (input: {
     return "recipe source URLs are only supported for npm-family registry artifacts or reviewed source recipes";
   }
   if (input.method === "npm" || input.method === "pnpm" || input.method === "bun") {
+    const expectedSource = `https://registry.npmjs.org${npmTarballPath(input.package, input.version ?? "")}`;
+    if (input.version === undefined || metadata.source !== expectedSource) {
+      return "npm-family recipe source must be the canonical registry tarball for package and version";
+    }
     if (url.origin !== "https://registry.npmjs.org") {
       return "npm-family recipe source must use the canonical npm registry origin";
     }

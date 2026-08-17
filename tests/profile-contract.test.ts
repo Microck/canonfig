@@ -446,6 +446,13 @@ describe("installation recipe version boundaries", () => {
     "https://registry.npmjs.org/@scope/other/-/other-1.2.3.tgz",
     "https://evil.example/@scope/tool/-/tool-1.2.3.tgz",
     "https://registry.npmjs.org/@scope/tool/-/tool-1.2.3.tgz?redirect=evil",
+    "HTTPS://registry.npmjs.org/@scope/tool/-/tool-1.2.3.tgz",
+    "https://REGISTRY.NPMJS.ORG/@scope/tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org:443/@scope/tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org/@scope/tool/../tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org/@scope/%74ool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org/@scope/tool/-/tool-1.2.3.tgz#fragment",
+    "https://user:password@registry.npmjs.org/@scope/tool/-/tool-1.2.3.tgz",
     "https://user:password@registry.npmjs.org/@scope/tool/-/tool-1.2.3.tgz",
   ])("rejects an unapproved or mismatched reviewed npm source: %s", (source) => {
     expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
@@ -457,6 +464,26 @@ describe("installation recipe version boundaries", () => {
         package: "@scope/tool",
         version: "1.2.3",
         source,
+      }],
+      login: { required: false },
+    })).toThrow();
+  });
+
+  it.each([
+    "HTTPS://registry.npmjs.org/tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org:443/tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz?redirect=evil",
+    "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz#fragment",
+  ])("rejects integrity paired with a noncanonical npm source: %s", (source) => {
+    expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+      kind: "tool",
+      toolId: "tool",
+      recipes: [{
+        platform: "linux",
+        method: "npm",
+        package: "tool",
+        version: "1.2.3",
+        source: { source, integrity: "sha512-c2FtcGxl" },
       }],
       login: { required: false },
     })).toThrow();

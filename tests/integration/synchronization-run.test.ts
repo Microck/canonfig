@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 
 import { Effect, Fiber, Layer, Schema } from "effect";
@@ -51,6 +52,7 @@ import {
   sha256BytesHex,
   sha256Hex,
 } from "../../src/profile/profile-codec.ts";
+import type { JsonValue } from "../../src/profile/profile-codec.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import { scheduleManagerLayer } from "../../src/schedule/schedule-manager.layer.ts";
@@ -481,6 +483,27 @@ const reencodePlan = (
     })),
   ));
   return { ...plan, encoded, digest: sha256Hex(encoded) };
+};
+
+const npmTarballBytes = (
+  manifest: JsonValue,
+): Buffer => {
+  const content = Buffer.from(JSON.stringify(manifest));
+  const header = Buffer.alloc(512);
+  header.write("package/package.json", 0, 100, "utf8");
+  header.write("0000644\0", 100, 8, "ascii");
+  header.write("0000000\0", 108, 8, "ascii");
+  header.write("0000000\0", 116, 8, "ascii");
+  header.write(`${content.byteLength.toString(8).padStart(11, "0")}\0`, 124, 12, "ascii");
+  header.write("00000000000\0", 136, 12, "ascii");
+  header.fill(0x20, 148, 156);
+  header[156] = 0x30;
+  header.write("ustar\0", 257, 6, "ascii");
+  header.write("00", 263, 2, "ascii");
+  const checksum = header.reduce((total, byte) => total + byte, 0);
+  header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
+  const padding = Buffer.alloc((512 - (content.byteLength % 512)) % 512);
+  return gzipSync(Buffer.concat([header, content, padding, Buffer.alloc(1024)]));
 };
 
 const installerInvocation = async (
@@ -1740,7 +1763,10 @@ describe("synchronization apply run", () => {
 
   it("uses the verified local npm artifact and pins source-less installs", async () => {
     const artifact = "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz";
-    const artifactBytes = Buffer.from("verified npm artifact");
+    const artifactBytes = npmTarballBytes({
+      name: "tool",
+      version: "1.2.3",
+    });
     const integrity = `sha512-${createHash("sha512").update(artifactBytes).digest("base64")}`;
     const reviewed = await installerInvocation(
       "npm",
@@ -1785,7 +1811,12 @@ describe("synchronization apply run", () => {
       "--global",
       artifactPath,
       "--ignore-scripts",
+      "--offline",
     ]);
+    expect(reviewed.environments[0]).toContainEqual({
+      name: "NPM_CONFIG_OFFLINE",
+      value: "true",
+    });
 
     const fallback = await installerInvocation("npm", "tool", "1.2.3");
     expect(fallback.environments[0]).toContainEqual({
@@ -1793,6 +1824,202 @@ describe("synchronization apply run", () => {
       value: "https://registry.npmjs.org/",
     });
     expect(fallback.invocations[0]?.arguments).toContain("tool@1.2.3");
+  });
+
+  it("uses offline mode for pnpm reviewed local artifacts", async () => {
+    const artifact = "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz";
+    const artifactBytes = npmTarballBytes({ name: "tool", version: "1.2.3" });
+    const integrity = `sha512-${createHash("sha512").update(artifactBytes).digest("base64")}`;
+    const reviewed = await installerInvocation(
+      "pnpm",
+      "tool",
+      "1.2.3",
+      undefined,
+      undefined,
+      { source: artifact, integrity },
+      (root) => {
+        const artifactPath = join(
+          root,
+          "home",
+          ".cache",
+          "canonfig",
+          "npm-artifacts",
+          "verified.tgz",
+        );
+        return {
+          download: () => Effect.promise(async () => {
+            await mkdir(dirname(artifactPath), { recursive: true });
+            await writeFile(artifactPath, artifactBytes);
+            return {
+              path: artifactPath,
+              bytes: artifactBytes.byteLength,
+              integrity,
+              source: artifact,
+            };
+          }),
+        };
+      },
+    );
+    expect(reviewed.invocations[0]?.arguments).toEqual([
+      "add",
+      "--global",
+      expect.stringContaining("/.cache/canonfig/npm-artifacts/verified.tgz"),
+      "--ignore-scripts",
+      "--offline",
+    ]);
+    expect(reviewed.environments[0]).toContainEqual({
+      name: "PNPM_CONFIG_OFFLINE",
+      value: "true",
+    });
+  });
+
+  it.each([
+    ["dependency", {
+      dependencies: { dependency: "1.0.0" },
+    }],
+    ["optional dependency", {
+      optionalDependencies: { dependency: "1.0.0" },
+    }],
+    ["peer dependency", {
+      peerDependencies: { dependency: "1.0.0" },
+    }],
+    ["optional peer metadata", {
+      peerDependenciesMeta: { dependency: { optional: true } },
+    }],
+    ["workspace alias", {
+      dependencies: { dependency: "workspace:*" },
+      bundledDependencies: ["dependency"],
+    }],
+    ["package manager indirection", {
+      packageManager: "pnpm@9.0.0",
+    }],
+    ["bundled dependency inconsistency", {
+      dependencies: { dependency: "1.0.0" },
+      bundledDependencies: ["missing"],
+    }],
+  ] as const)("rejects reviewed npm artifacts with %s before lookup or spawn", async (
+    _name,
+    fields,
+  ) => {
+    const artifact = "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz";
+    const artifactBytes = npmTarballBytes({
+      name: "tool",
+      version: "1.2.3",
+      ...fields,
+    });
+    const integrity = `sha512-${createHash("sha512").update(artifactBytes).digest("base64")}`;
+    let lookedUp = false;
+    let spawned = false;
+    await expect(installerInvocation(
+      "npm",
+      "tool",
+      "1.2.3",
+      () => {
+        spawned = true;
+      },
+      () => {
+        lookedUp = true;
+      },
+      { source: artifact, integrity },
+      (root) => {
+        const artifactPath = join(
+          root,
+          "home",
+          ".cache",
+          "canonfig",
+          "npm-artifacts",
+          "verified.tgz",
+        );
+        return {
+          download: () => Effect.promise(async () => {
+            await mkdir(dirname(artifactPath), { recursive: true });
+            await writeFile(artifactPath, artifactBytes);
+            return {
+              path: artifactPath,
+              bytes: artifactBytes.byteLength,
+              integrity,
+              source: artifact,
+            };
+          }),
+        };
+      },
+    )).rejects.toMatchObject({ _tag: "InvalidExecutionPlanError" });
+    expect(lookedUp).toBe(false);
+    expect(spawned).toBe(false);
+  });
+
+  it("does not spawn bun when offline local installation cannot be guaranteed", async () => {
+    const artifact = "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz";
+    const artifactBytes = npmTarballBytes({ name: "tool", version: "1.2.3" });
+    const integrity = `sha512-${createHash("sha512").update(artifactBytes).digest("base64")}`;
+    let lookedUp = false;
+    let spawned = false;
+    let downloaded = false;
+    await expect(installerInvocation(
+      "bun",
+      "tool",
+      "1.2.3",
+      () => {
+        spawned = true;
+      },
+      () => {
+        lookedUp = true;
+      },
+      { source: artifact, integrity },
+      (root) => {
+        const artifactPath = join(
+          root,
+          "home",
+          ".cache",
+          "canonfig",
+          "npm-artifacts",
+          "verified.tgz",
+        );
+        return {
+          download: () => Effect.promise(async () => {
+            downloaded = true;
+            await mkdir(dirname(artifactPath), { recursive: true });
+            await writeFile(artifactPath, artifactBytes);
+            return {
+              path: artifactPath,
+              bytes: artifactBytes.byteLength,
+              integrity,
+              source: artifact,
+            };
+          }),
+        };
+      },
+    )).rejects.toMatchObject({ _tag: "InvalidExecutionPlanError" });
+    expect(lookedUp).toBe(false);
+    expect(spawned).toBe(false);
+    expect(downloaded).toBe(false);
+  });
+
+  it.each([
+    "HTTPS://registry.npmjs.org/tool/-/tool-1.2.3.tgz",
+    "https://REGISTRY.NPMJS.ORG/tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org:443/tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org/tool/../tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz%23fragment",
+    "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz#fragment",
+    "https://user:password@registry.npmjs.org/tool/-/tool-1.2.3.tgz",
+  ])("rejects noncanonical npm sources before executable lookup: %s", async (source) => {
+    let lookedUp = false;
+    let spawned = false;
+    await expect(installerInvocation(
+      "npm",
+      "tool",
+      "1.2.3",
+      () => {
+        spawned = true;
+      },
+      () => {
+        lookedUp = true;
+      },
+      { source, integrity: "sha512-c2FtcGxl" },
+    )).rejects.toMatchObject({ _tag: "InvalidExecutionPlanError" });
+    expect(lookedUp).toBe(false);
+    expect(spawned).toBe(false);
   });
 
   const missingIntegritySource: RecipeSource =
