@@ -57,6 +57,8 @@ import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts"
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import { scheduleManagerLayer } from "../../src/schedule/schedule-manager.layer.ts";
 import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
+import { ScheduleVerificationError } from "../../src/schedule/schedule-manager.errors.ts";
+import type { SyncSchedule } from "../../src/schedule/schedule-manager.types.ts";
 import { planSynchronization } from "../../src/synchronization/planner.ts";
 import {
   defaultSynchronizationExecutionLimits,
@@ -485,6 +487,103 @@ const reencodePlan = (
   return { ...plan, encoded, digest: sha256Hex(encoded) };
 };
 
+const scheduleDefaultRunInput = (
+  fixture: Fixture,
+  run: string,
+): SynchronizationRunInput => {
+  const schedule = { kind: "daily" as const, localTime: "03:30" };
+  const previousSchedule = { kind: "daily" as const, localTime: "02:15" };
+  const action = {
+    id: decode(ActionId)("action:canonfig.schedule-default:0:schedule-default"),
+    resource: decode(ResourceId)("canonfig.schedule-default"),
+    kind: "schedule-default" as const,
+    detail: {
+      kind: "schedule-default" as const,
+      operation: "upsert" as const,
+      schedule,
+      previousSchedule,
+    },
+    before: [],
+  };
+  const body = {
+    revision: fixture.revision.id,
+    follower: follower.id,
+    requiredBlobs: [],
+    actions: [action],
+    agentTasks: [],
+  };
+  const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(body));
+  return {
+    id: decode(RunId)(run),
+    plan: {
+      ...body,
+      encoded,
+      digest: sha256Hex(encoded),
+    },
+    revision: fixture.revision,
+    artifacts: [],
+  };
+};
+
+const scheduleManagerFor = (controls: {
+  failUpdate: boolean;
+  blockUpdate: boolean;
+  started?: (() => void) | undefined;
+}): ScheduleManager["Service"] => {
+  let current: SyncSchedule | undefined;
+  let blockedOnce = false;
+  const status = (schedule: SyncSchedule) => ({
+    state: current === undefined
+      ? "not-installed" as const
+      : JSON.stringify(current) === JSON.stringify(schedule)
+        ? "current" as const
+        : "drifted" as const,
+    platform: "linux" as const,
+    schedule,
+    definition: {
+      platform: "linux" as const,
+      mechanism: "systemd-user-timer" as const,
+      serviceName: "test",
+      service: "",
+      schedule: "",
+    },
+  });
+  const update = (input?: { readonly schedule?: SyncSchedule }) => {
+    const schedule = input?.schedule ?? { kind: "daily" as const, localTime: "00:00" };
+    if (controls.blockUpdate && !blockedOnce) {
+      blockedOnce = true;
+      controls.started?.();
+      return Effect.never;
+    }
+    if (controls.failUpdate) {
+      return Effect.fail(new ScheduleVerificationError({
+        operation: "update",
+        state: "failed",
+        message: "injected schedule update failure",
+      }));
+    }
+    current = schedule;
+    return Effect.succeed({
+      change: "updated" as const,
+      status: status(schedule),
+    });
+  };
+  return ScheduleManager.of({
+    install: update,
+    update,
+    inspect: (input) => Effect.succeed(status(
+      input?.schedule ?? { kind: "daily", localTime: "00:00" },
+    )),
+    status: (input) => Effect.succeed(status(
+      input?.schedule ?? { kind: "daily", localTime: "00:00" },
+    )),
+    remove: () => {
+      current = undefined;
+      return Effect.succeed({ change: "removed" as const });
+    },
+  });
+};
+
 const npmTarballBytes = (
   manifest: JsonValue,
 ): Buffer => {
@@ -603,6 +702,128 @@ const installerInvocation = async (
 };
 
 describe("synchronization apply run", () => {
+  it("fails and journals a profile schedule mutation instead of converging", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "schedule-failure");
+    const controls = { failUpdate: true, blockUpdate: false };
+    const manager = scheduleManagerFor(controls);
+    const state = stateRepositoryLayer(fixture.database);
+    const machine = machineLayer(fixture.root);
+    const synchronization = SynchronizationLive.pipe(
+      Layer.provide(Layer.merge(state, machine)),
+    );
+    const layer = Layer.mergeAll(
+      state,
+      machine,
+      synchronization,
+      Layer.succeed(ScheduleManager, manager),
+    );
+    const outcome = await Effect.runPromise(
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        yield* repository.registerFollower({ follower });
+        yield* repository.publishRevision({ revision: fixture.revision });
+        const service = yield* Synchronization;
+        return yield* service.run(scheduleDefaultRunInput(
+          fixture,
+          "schedule-failure",
+        ));
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(outcome).toMatchObject({
+      outcome: "Failed",
+      reason: expect.stringContaining("injected schedule update failure"),
+    });
+    expect(actionRows(fixture.database).map((row) => row.state)).toEqual([
+      "pending",
+      "running",
+      "failed",
+    ]);
+    const database = new DatabaseSync(fixture.database, { readOnly: true });
+    // SAFETY: this SELECT reads the status row for the run created above.
+    const row = database.prepare(
+      "SELECT status FROM synchronization_runs WHERE id = ?",
+    ).get("schedule-failure") as { status: string };
+    database.close();
+    expect(row.status).toBe("Failed");
+  });
+
+  it("journals an interrupted schedule mutation and recovers it after restart", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "schedule-restart");
+    const controls = {
+      failUpdate: false,
+      blockUpdate: false,
+    };
+    const manager = scheduleManagerFor(controls);
+    const state = stateRepositoryLayer(fixture.database);
+    const machine = machineLayer(fixture.root);
+    const synchronization = SynchronizationLive.pipe(
+      Layer.provide(Layer.merge(state, machine)),
+    );
+    const layer = Layer.mergeAll(
+      state,
+      machine,
+      synchronization,
+      Layer.succeed(ScheduleManager, manager),
+    );
+    await Effect.runPromise(
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        yield* repository.registerFollower({ follower });
+        yield* repository.publishRevision({ revision: fixture.revision });
+        yield* repository.startRun({
+          id: decode(RunId)("schedule-restart"),
+          follower: follower.id,
+          revision: fixture.revision.id,
+          plan: scheduleDefaultRunInput(fixture, "schedule-restart").plan,
+          startedAt: "2026-08-16T00:00:00Z",
+        });
+        yield* repository.completeRun({
+          run: decode(RunId)("schedule-restart"),
+          completedAt: "2026-08-16T00:00:01Z",
+          outcome: {
+            outcome: "Interrupted",
+            run: decode(RunId)("schedule-restart"),
+            completedActions: [],
+          },
+          appliedResources: [],
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+
+    const interruptedDatabase = new DatabaseSync(fixture.database, { readOnly: true });
+    // SAFETY: this SELECT reads the status row for the run created above.
+    const interruptedRow = interruptedDatabase.prepare(
+      "SELECT status FROM synchronization_runs WHERE id = ?",
+    ).get("schedule-restart") as { status: string };
+    interruptedDatabase.close();
+    expect(interruptedRow.status).toBe("Interrupted");
+    expect(actionRows(fixture.database).map((row) => row.state)).toEqual([
+      "pending",
+    ]);
+
+    const recovered = await Effect.runPromise(
+      Effect.gen(function*() {
+        const service = yield* Synchronization;
+        return yield* service.recover({
+          follower: follower.id,
+          revision: fixture.revision,
+          artifacts: [],
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(recovered).toEqual({
+      outcome: "Converged",
+      run: decode(RunId)("schedule-restart"),
+      verified: [],
+    });
+    expect(actionRows(fixture.database).map((row) => row.state)).toEqual([
+      "pending",
+      "running",
+      "succeeded",
+    ]);
+  });
+
   it("journals agent-apply before mutation and recovers an interrupted task", async () => {
     const fixture = agentFixture(temporaryDirectory());
     const bin = join(fixture.root, "bin");

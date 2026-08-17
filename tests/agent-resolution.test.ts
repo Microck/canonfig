@@ -254,6 +254,28 @@ describe("agent resolution", () => {
       "poweroff.target",
       "--now",
     ], ["reboot"]],
+    ["systemctl reenables power-state target with kill-value value", "systemctl", [
+      "reenable",
+      "--kill-value",
+      "INT",
+      "poweroff.target",
+      "--now",
+    ], ["reboot"]],
+    ["systemctl reenables power-state target with equals kill-value", "systemctl", [
+      "reenable",
+      "--kill-value=INT",
+      "poweroff.target",
+      "--now",
+    ], ["reboot"]],
+    ["systemctl accepts documented kill options together", "systemctl", [
+      "reenable",
+      "--kill-whom=main",
+      "--kill-value=INT",
+      "--signal",
+      "SIGINT",
+      "poweroff.target",
+      "--now",
+    ], ["reboot"]],
     ["systemctl accepts full output option around reenable", "systemctl", [
       "--full",
       "reenable",
@@ -366,6 +388,11 @@ describe("agent resolution", () => {
       "status",
       "reboot.target",
     ]],
+    ["kill-value on non-activating operation", [
+      "--kill-value=INT",
+      "status",
+      "reboot.target",
+    ]],
     ["restart argument after separator", ["restart", "--", "reboot.service"]],
     ["option value hides power-state-looking target", [
       "--machine=reboot.target",
@@ -387,6 +414,19 @@ describe("agent resolution", () => {
     ["invalid value on flag", ["--now=reboot", "status", "default.target"]],
     ["invalid kill option spelling", [
       "--kill-who=main",
+      "status",
+      "default.target",
+    ]],
+    ["missing kill-value", [
+      "--kill-value",
+    ]],
+    ["empty kill-value", [
+      "--kill-value=",
+      "status",
+      "default.target",
+    ]],
+    ["unknown kill-values option", [
+      "--kill-values=INT",
       "status",
       "default.target",
     ]],

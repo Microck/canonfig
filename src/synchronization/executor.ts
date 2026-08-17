@@ -4,9 +4,10 @@ import {
   ContentDigest,
   FollowerId,
   ProfileRevisionId,
+  ResourceId,
   type ActionId,
-  type ResourceId,
 } from "../domain/brand.ts";
+import type { PublishedResource } from "../domain/profile.ts";
 import type {
   AppliedResourceRecord,
   DriftConflict,
@@ -55,6 +56,31 @@ export interface ActionState {
   readonly action: PlannedAction;
   readonly context: ResourceExecutionContext;
 }
+
+const profileScheduleResourceId = Schema.decodeUnknownSync(ResourceId)(
+  "canonfig.schedule-default",
+);
+
+const profileScheduleResource: PublishedResource = {
+  id: profileScheduleResourceId,
+  kind: "schedule",
+  policy: "replace",
+  target: "canonfig.schedule-default",
+  dependsOn: [],
+  blobs: [],
+};
+
+const profileScheduleDesired = (
+  schedule: Extract<PlannedAction["detail"], { readonly kind: "schedule-default" }>["schedule"],
+) => ({
+  kind: "schedule" as const,
+  digest: Schema.decodeUnknownSync(ContentDigest)(
+    sha256Hex(canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(
+      JSON.parse(JSON.stringify(schedule)),
+    ))),
+  ),
+  schedule,
+});
 
 const now = (): Effect.Effect<string> =>
   Effect.map(Clock.currentTimeMillis, (milliseconds) =>
@@ -183,6 +209,29 @@ export const executionContexts = (
         return yield* new InvalidExecutionPlanError({
           message: `invalid or duplicate action ${action.id}`,
         });
+      }
+      if (action.detail.kind === "schedule-default") {
+        if (action.resource !== profileScheduleResourceId) {
+          return yield* new InvalidExecutionPlanError({
+            message: `profile schedule action ${action.id} has an invalid resource`,
+          });
+        }
+        seen.add(action.id);
+        completed.add(action.id);
+        ordered.push({
+          action,
+          context: {
+            run: input.id,
+            action,
+            resource: profileScheduleResource,
+            desired: profileScheduleDesired(action.detail.schedule),
+            verification: { method: "command", command: [] },
+            artifacts,
+            limits,
+            previousSchedule: action.detail.previousSchedule,
+          },
+        });
+        continue;
       }
       const resource = resources.get(action.resource);
       const desiredEntry = desired.get(action.resource);
@@ -358,6 +407,144 @@ export const driftResult = (
   };
 };
 
+const executeScheduleDefaultAction = (
+  input: SynchronizationRunInput,
+  state: ActionState,
+  attempt: number,
+): Effect.Effect<ActionResult, never, StateRepository | MachineState> =>
+  Effect.gen(function*() {
+    const detail = state.action.detail;
+    if (detail.kind !== "schedule-default") {
+      return {
+        kind: "failed",
+        reason: `invalid profile schedule action ${state.action.id}`,
+      } satisfies ActionResult;
+    }
+    const scheduleManager = Option.getOrUndefined(
+      yield* Effect.serviceOption(ScheduleManager),
+    );
+    if (scheduleManager === undefined) {
+      yield* journal(
+        input.id,
+        state.action.id,
+        "failed",
+        { status: "not-run", method: "native-scheduler-unavailable" },
+        undefined,
+        attempt,
+      ).pipe(Effect.ignore);
+      return {
+        kind: "failed",
+        reason: "native scheduler is unavailable for the profile schedule default",
+      } satisfies ActionResult;
+    }
+
+    const rollback = detail.operation === "upsert"
+      ? detail.previousSchedule === undefined
+        ? scheduleManager.remove({ schedule: detail.schedule }).pipe(Effect.asVoid)
+        : scheduleManager.update({ schedule: detail.previousSchedule }).pipe(Effect.asVoid)
+      : detail.previousSchedule === undefined
+        ? Effect.void
+        : scheduleManager.install({ schedule: detail.previousSchedule }).pipe(Effect.asVoid);
+
+    const work = Effect.gen(function*() {
+      yield* journal(
+        input.id,
+        state.action.id,
+        "running",
+        undefined,
+        undefined,
+        attempt,
+      );
+      if (detail.operation === "remove") {
+        yield* scheduleManager.remove({ schedule: detail.schedule });
+      } else {
+        const change = yield* scheduleManager.update({ schedule: detail.schedule });
+        const verification = {
+          status: change.status.state === "current"
+            ? "passed" as const
+            : "failed" as const,
+          method: `native-scheduler:${change.status.platform}`,
+        };
+        if (verification.status === "failed") {
+          yield* rollback.pipe(Effect.ignore);
+          yield* journal(
+            input.id,
+            state.action.id,
+            "failed",
+            verification,
+            undefined,
+            attempt,
+          );
+          return {
+            kind: "failed",
+            reason: "native scheduler did not verify the profile schedule default",
+          } satisfies ActionResult;
+        }
+      }
+      const verification = {
+        status: "passed" as const,
+        method: detail.operation === "remove"
+          ? "native-scheduler:removed"
+          : "native-scheduler:current",
+      };
+      yield* journal(
+        input.id,
+        state.action.id,
+        "succeeded",
+        verification,
+        undefined,
+        attempt,
+      );
+      return { kind: "verified" } satisfies ActionResult;
+    });
+
+    return yield* work.pipe(
+      Effect.onInterrupt(() =>
+        rollback.pipe(
+          Effect.catch(() => Effect.void),
+          Effect.andThen(journal(
+            input.id,
+            state.action.id,
+            "failed",
+            { status: "not-run", method: "interrupted" },
+            undefined,
+            attempt,
+          )),
+          Effect.ignore,
+        )
+      ),
+      Effect.catch((error) =>
+        rollback.pipe(
+          Effect.catch(() => Effect.void),
+          Effect.andThen(journal(
+            input.id,
+            state.action.id,
+            "failed",
+            { status: "not-run", method: "action-failed" },
+            undefined,
+            attempt,
+          )),
+          Effect.ignore,
+          Effect.andThen(Effect.succeed({
+            kind: "failed",
+            reason:
+              `native scheduler mutation failed for profile schedule default: ${redact(
+                error,
+                input.knownSecrets ?? [],
+              )}`,
+          } satisfies ActionResult)),
+        )
+      ),
+    );
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.succeed({
+        kind: "failed",
+        reason: redact(error, input.knownSecrets ?? []),
+      } satisfies ActionResult)
+    ),
+  );
+
 const agentActionResult = (
   input: SynchronizationRunInput,
   state: ActionState,
@@ -513,6 +700,9 @@ export const executeSynchronizationAction = (
     }
     if (detail.kind === "agent-task") {
       return yield* agentActionResult(input, state, attempt);
+    }
+    if (detail.kind === "schedule-default") {
+      return yield* executeScheduleDefaultAction(input, state, attempt);
     }
     if (detail.kind === "drift-conflict") {
       const result = driftResult(input, state);

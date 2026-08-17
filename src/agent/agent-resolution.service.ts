@@ -2123,6 +2123,7 @@ const systemctlGlobalOptionArity = new Map<string, OptionArity>([
   ["--help", 0],
   ["--host", 1],
   ["--job-mode", 1],
+  ["--kill-value", 1],
   ["--kill-whom", 1],
   ["--legend", 1],
   ["--machine", 1],
@@ -2271,8 +2272,18 @@ const parseSystemctlArguments = (
         return invalidSystemctlArguments();
       }
       const inlineValue = match?.[2];
-      if (arity === 1 && inlineValue === undefined) {
-        if (arguments_[index + 1] === undefined) return invalidSystemctlArguments();
+      if (
+        arity === 1
+        && (inlineValue === undefined || inlineValue.length === 0)
+      ) {
+        const separateValue = arguments_[index + 1];
+        if (
+          separateValue === undefined
+          || separateValue.startsWith("-")
+        ) {
+          return invalidSystemctlArguments();
+        }
+        if (inlineValue !== undefined) return invalidSystemctlArguments();
         index += 1;
       } else if (arity === 0 && inlineValue !== undefined) {
         return invalidSystemctlArguments();

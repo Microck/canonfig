@@ -414,7 +414,12 @@ export const recoverSynchronizationPlan = (
         ? Option.getOrUndefined(yield* Effect.serviceOption(ScheduleManager))
         : undefined;
       let result: ActionResult;
-      if (last.state === "skipped") {
+      if (state.action.detail.kind === "schedule-default") {
+        // A native scheduler mutation is an external side effect. Re-run the
+        // idempotent action on recovery, including after a previously
+        // journaled success, so a restart cannot trust stale scheduler state.
+        result = yield* executeSynchronizationAction(input, state, attempt);
+      } else if (last.state === "skipped") {
         result = preservedOutcome(input, state.action);
       } else if (
         last.state === "succeeded"

@@ -37,6 +37,7 @@ import type { SourceServerHandle } from "../../src/enrollment/enrollment.types.t
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
+import type { SyncSchedule } from "../../src/schedule/schedule-manager.types.ts";
 import {
   canonicalJson,
   digestOf,
@@ -508,6 +509,10 @@ describe("production follower orchestration", () => {
       Layer.provide(Layer.merge(followerRepository, followerMachine)),
     );
     const profileScheduleCalls: Array<unknown> = [];
+    let profileSchedule: SyncSchedule | undefined = {
+      kind: "daily",
+      localTime: "00:00",
+    };
     const profileScheduleManager = ScheduleManager.of({
       install: () => Effect.die("unused"),
       inspect: () => Effect.die("unused"),
@@ -517,6 +522,7 @@ describe("production follower orchestration", () => {
           kind: "daily" as const,
           localTime: "00:00",
         };
+        profileSchedule = schedule;
         return {
           change: "updated" as const,
           status: {
@@ -533,9 +539,31 @@ describe("production follower orchestration", () => {
           },
         };
       }),
-      status: () => Effect.die("unused"),
+      status: (input) => Effect.sync(() => {
+        const schedule = input?.schedule ?? {
+          kind: "daily" as const,
+          localTime: "00:00",
+        };
+        return {
+          state: profileSchedule === undefined
+            ? "not-installed" as const
+            : JSON.stringify(profileSchedule) === JSON.stringify(schedule)
+              ? "current" as const
+              : "drifted" as const,
+          platform: "linux" as const,
+          schedule,
+          definition: {
+            platform: "linux" as const,
+            mechanism: "systemd-user-timer" as const,
+            serviceName: "test",
+            service: "",
+            schedule: "",
+          },
+        };
+      }),
       remove: () => Effect.sync(() => {
         profileScheduleCalls.push(undefined);
+        profileSchedule = undefined;
         return { change: "removed" as const };
       }),
     });

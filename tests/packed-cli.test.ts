@@ -592,24 +592,38 @@ describe("packed Canonfig executable", () => {
     expect(JSON.parse(overlays.stdout).data).toEqual({ overlays: [] });
 
     const first = invoke(followerHome, ["sync", "--apply", "--json"]);
-    expect(first.status, first.stderr).toBe(0);
-    expect(JSON.parse(first.stdout).data).toMatchObject({
-      revision: packedRevision,
-      downloadedBlobs: 1,
-      reusedBlobs: 0,
-      outcome: { outcome: "Converged" },
+    expect(first.status).toBe(7);
+    expect(first.stdout).toBe("");
+    expect(JSON.parse(first.stderr)).toMatchObject({
+      command: "sync.apply",
+      status: "error",
+      exitCode: 7,
+      message: "synchronization failed",
+      data: {
+        revision: packedRevision,
+        downloadedBlobs: 1,
+        reusedBlobs: 0,
+        outcome: { outcome: "Failed" },
+      },
     });
 
     const second = invoke(
       followerHome,
       ["sync", "--apply", "--no-input", "--json"],
     );
-    expect(second.status, second.stderr).toBe(0);
-    expect(JSON.parse(second.stdout).data).toMatchObject({
-      revision: packedRevision,
-      downloadedBlobs: 0,
-      reusedBlobs: 1,
-      outcome: { outcome: "Converged" },
+    expect(second.status).toBe(7);
+    expect(second.stdout).toBe("");
+    expect(JSON.parse(second.stderr)).toMatchObject({
+      command: "sync.apply",
+      status: "error",
+      exitCode: 7,
+      message: "synchronization failed",
+      data: {
+        revision: packedRevision,
+        downloadedBlobs: 0,
+        reusedBlobs: 1,
+        outcome: { outcome: "Failed" },
+      },
     });
 
     const status = invoke(followerHome, ["status", "--json"]);

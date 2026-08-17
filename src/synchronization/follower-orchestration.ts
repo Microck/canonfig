@@ -10,6 +10,7 @@ import {
 } from "../agent/agent-resolution.service.ts";
 import type { AgentResolutionOutcome } from "../agent/agent-resolution.types.ts";
 import {
+  ActionId,
   BlobId,
   ContentDigest,
   CredentialReference,
@@ -39,6 +40,7 @@ import { MachineState } from "../machine/machine-state.service.ts";
 import { MachineFilesystemError } from "../machine/machine-state.errors.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
+  defaultSyncSchedule,
   syncScheduleFromResourceSpec,
   syncScheduleFromDefault,
 } from "../schedule/schedule-manager.types.ts";
@@ -1014,6 +1016,73 @@ const recanonicalizePlan = (
   return { ...body, encoded, digest: sha256Hex(encoded) };
 };
 
+const profileScheduleDefaultResource = Schema.decodeUnknownSync(ResourceId)(
+  "canonfig.schedule-default",
+);
+
+const appendProfileScheduleDefaultAction = (
+  plan: PlannedSynchronization,
+  configuration: FollowerSynchronizationConfiguration,
+  scheduleDefault: RevisionMetadata["scheduleDefault"],
+): PlannedSynchronization => {
+  const previousSchedule = configuration.scheduleDefault === undefined
+    ? undefined
+    : syncScheduleFromDefault(configuration.scheduleDefault);
+  const operation = scheduleDefault === undefined ? "remove" as const : "upsert" as const;
+  const schedule = scheduleDefault === undefined
+    ? previousSchedule ?? defaultSyncSchedule
+    : syncScheduleFromDefault(scheduleDefault);
+  const action = {
+    id: Schema.decodeUnknownSync(ActionId)(
+      "action:canonfig.schedule-default:0:schedule-default",
+    ),
+    resource: profileScheduleDefaultResource,
+    kind: "schedule-default" as const,
+    detail: {
+      kind: "schedule-default" as const,
+      operation,
+      schedule,
+      previousSchedule,
+    },
+    before: plan.actions.map((candidate) => candidate.id),
+  };
+  return recanonicalizePlan(plan, [...plan.actions, action]);
+};
+
+const planProfileScheduleDefault = Effect.fn(
+  "FollowerOrchestration.planProfileScheduleDefault",
+)(function*(
+  plan: PlannedSynchronization,
+  configuration: FollowerSynchronizationConfiguration,
+  scheduleDefault: RevisionMetadata["scheduleDefault"],
+  scheduleManager: ScheduleManager["Service"] | undefined,
+) {
+  const previousSchedule = configuration.scheduleDefault === undefined
+    ? undefined
+    : syncScheduleFromDefault(configuration.scheduleDefault);
+  const operation = scheduleDefault === undefined ? "remove" as const : "upsert" as const;
+  const schedule = scheduleDefault === undefined
+    ? previousSchedule ?? defaultSyncSchedule
+    : syncScheduleFromDefault(scheduleDefault);
+  if (scheduleManager !== undefined) {
+    const status = yield* scheduleManager.status({ schedule }).pipe(
+      Effect.match({
+        onFailure: () => undefined,
+        onSuccess: (value) => value,
+      }),
+    );
+    const current = operation === "remove"
+      ? status?.state === "not-installed"
+      : status?.state === "current";
+    if (current) return plan;
+  }
+  return appendProfileScheduleDefaultAction(
+    plan,
+    configuration,
+    scheduleDefault,
+  );
+});
+
 const agentConfigurationFor = (
   configuration: FollowerSynchronizationConfiguration,
   scheduled: boolean,
@@ -1037,30 +1106,13 @@ const agentConfigurationFor = (
   signal,
 });
 
-const applyProfileScheduleDefault = Effect.fn(
-  "FollowerOrchestration.applyProfileScheduleDefault",
+const persistProfileScheduleDefault = Effect.fn(
+  "FollowerOrchestration.persistProfileScheduleDefault",
 )(function*(
   configuration: FollowerSynchronizationConfiguration,
   scheduleDefault: RevisionMetadata["scheduleDefault"],
-  scheduleManager: ScheduleManager["Service"] | undefined,
 ) {
   const repository = yield* StateRepository;
-  if (scheduleManager === undefined) {
-    // Persisting the authorized metadata is still useful when a caller
-    // supplies a scheduler layer later (and keeps this path testable).
-  } else if (scheduleDefault === undefined) {
-    const previous = configuration.scheduleDefault === undefined
-      ? undefined
-      : { schedule: syncScheduleFromDefault(configuration.scheduleDefault) };
-    // Native scheduler availability is independent of resource convergence.
-    // Keep the signed default durable and retry the native update on the next
-    // synchronization if this machine's scheduler is temporarily unavailable.
-    yield* scheduleManager.remove(previous).pipe(Effect.catch(() => Effect.void));
-  } else {
-    yield* scheduleManager.update({
-      schedule: syncScheduleFromDefault(scheduleDefault),
-    }).pipe(Effect.catch(() => Effect.void));
-  }
   const state = yield* repository.loadState(configuration.follower.id);
   if (state.sourceIdentity === undefined) return;
   yield* repository.saveFollowerSynchronizationConfiguration({
@@ -1248,16 +1300,22 @@ export const synchronizeFollower = Effect.fn(
     localOverlay: configuration.localOverlay ?? [],
     appliedResources,
   });
+  const planWithSchedule = yield* planProfileScheduleDefault(
+    plan,
+    configuration,
+    fetched.metadata.scheduleDefault,
+    scheduleManager,
+  );
   const noAgentResolutions: ReadonlyArray<AgentResolutionOutcome> = [];
   const planned = mode === "plan"
     ? yield* resolveAgentTasks(
       configuration,
-      plan,
+      planWithSchedule,
       scheduled,
       signal,
       true,
     )
-    : { plan, agentResolutions: noAgentResolutions };
+    : { plan: planWithSchedule, agentResolutions: noAgentResolutions };
   const appliedAgentResolutions: Array<AgentResolutionOutcome> = [];
   const journaledAgentResolution = mode === "apply" && agentResolution !== undefined
     ? AgentResolution.of({
@@ -1296,10 +1354,9 @@ export const synchronizeFollower = Effect.fn(
     },
   });
   if (outcome.outcome === "Converged") {
-    yield* applyProfileScheduleDefault(
+    yield* persistProfileScheduleDefault(
       configuration,
       fetched.metadata.scheduleDefault,
-      scheduleManager,
     );
   }
   return {
@@ -1376,10 +1433,9 @@ export const recoverFollower = Effect.fn(
     },
   });
   if (outcome.outcome === "Converged") {
-    yield* applyProfileScheduleDefault(
+    yield* persistProfileScheduleDefault(
       configuration,
       fetched.metadata.scheduleDefault,
-      scheduleManager,
     );
   }
   return {

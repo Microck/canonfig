@@ -1306,6 +1306,7 @@ export const prepareResourceAction = (
     case "no-op":
     case "verify-only":
       return Effect.succeed({ execute: Effect.void });
+    case "schedule-default":
     case "human-action":
     case "agent-task":
     case "drift-conflict":
