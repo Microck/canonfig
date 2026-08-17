@@ -229,6 +229,8 @@ C11 -> C12 -> C13
 - Resolve deterministic npm, Homebrew, winget, uv, cargo, and source recipes when evidence is sufficient.
 - Produce Agent Tasks for ambiguous recipes.
 - Publish only validated, reviewed proposals.
+- Preserve lockfile SRI values for npm-family tarballs; an automatic remote
+  artifact without supported integrity becomes Human Action Required.
 
 **Verification:**
 
@@ -236,6 +238,8 @@ C11 -> C12 -> C13
 - Every accepted tool has an upstream reference and at least one verification method.
 - OS-specific package names remain independent.
 - Publication is immutable and canonical.
+- An npm-family artifact is streamed, verified, atomically cached by digest,
+  and installed only from the verified local cache path.
 
 ## C8. Enrollment and transport
 

@@ -214,13 +214,17 @@ coerce unrecognized aliases.
 
 Reviewed package recipes retain optional `source` and `integrity` metadata from
 discovery through the signed profile, transport, plan, and execution boundary.
-An HTTPS npm tarball source must be the canonical registry tarball for the
-declared package and exact version, and package-manager installs without an
+An HTTPS npm-family tarball source must be the canonical registry tarball for
+the declared package and exact version, and package-manager installs without an
 artifact source are pinned to `https://registry.npmjs.org`. Credentials,
 redirected or non-HTTPS sources, mutable Git forms, and package/source
-mismatches are rejected before an installer is looked up. When an SRI
-`integrity` value is present for an npm artifact, the artifact is fetched
-without following redirects and its digest is checked before installation.
+mismatches are rejected before an installer is looked up. Automatic
+npm-family artifact installation requires a reviewed `sha256` or `sha512`
+SRI `integrity` value. The bounded transport streams exact bytes without
+following redirects, verifies the digest before atomically caching them under a
+digest-coupled cache entry, and invokes the package manager only with that
+verified local tarball path. A remote source without supported integrity is
+Human Action Required rather than an automatic install.
 
 Every recipe also carries a reviewed `buildPolicy`. The backward-compatible
 default is `{ "mode": "scripts-disabled" }`; npm installs use

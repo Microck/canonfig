@@ -595,6 +595,36 @@ describe("stable planning and bounded resolution", () => {
     expect(JSON.parse(unversioned.encoded).actions[0].detail).not.toHaveProperty("version");
   });
 
+  it("routes remote npm-family artifacts without integrity to Human Action Required", () => {
+    const subject = resource("tool", "tool", "ensure");
+    const plan = runPlan(plannerInput(
+      [subject],
+      {
+        desired: [{
+          kind: "tool",
+          toolId: "tool",
+          recipes: [{
+            platform: "linux",
+            method: "npm",
+            package: "tool",
+            version: "1.2.3",
+            source: "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz",
+          }],
+          loginRequired: false,
+        }],
+      },
+    ));
+    expect(plan.actions).toEqual([
+      expect.objectContaining({
+        kind: "human-action",
+        detail: expect.objectContaining({
+          reason: "Installing tool requires a reviewed npm artifact integrity",
+        }),
+      }),
+    ]);
+    expect(plan.actions.some((action) => action.kind === "install-tool")).toBe(false);
+  });
+
   it("routes reviewed source recipes to Human Action Required", () => {
     const subject = resource("tool", "tool", "ensure");
     const plan = runPlan(plannerInput(

@@ -151,7 +151,7 @@ const sourceValue = (
     : source;
 
 const isSRI = (value: string): boolean =>
-  /^(?:sha256|sha384|sha512)-[A-Za-z0-9+/]+={0,2}$/u.test(value);
+  /^(?:sha256|sha512)-[A-Za-z0-9+/]+={0,2}$/u.test(value);
 
 const npmTarballPath = (packageName: string, version: string): string => {
   const packagePart = packageName.startsWith("@")
@@ -179,7 +179,7 @@ export const recipeSourceValidationError = (input: {
     return "recipe source integrity is duplicated";
   }
   if (integrity !== undefined && !isSRI(integrity)) {
-    return "recipe source integrity must be a valid sha256, sha384, or sha512 SRI value";
+    return "recipe source integrity must be a valid sha256 or sha512 SRI value";
   }
   if (metadata === undefined) return undefined;
   let url: URL;
@@ -207,21 +207,26 @@ export const recipeSourceValidationError = (input: {
   ) {
     return "recipe source must be an exact HTTPS URL without credentials, redirects, query, or fragment";
   }
-  if (input.method !== "npm" && input.method !== "source") {
-    return "recipe source URLs are only supported for npm registry artifacts or reviewed source recipes";
+  if (
+    input.method !== "npm"
+    && input.method !== "pnpm"
+    && input.method !== "bun"
+    && input.method !== "source"
+  ) {
+    return "recipe source URLs are only supported for npm-family registry artifacts or reviewed source recipes";
   }
-  if (input.method === "npm") {
+  if (input.method === "npm" || input.method === "pnpm" || input.method === "bun") {
     if (url.origin !== "https://registry.npmjs.org") {
-      return "npm recipe source must use the canonical npm registry origin";
+      return "npm-family recipe source must use the canonical npm registry origin";
     }
     let path: string;
     try {
       path = decodeURIComponent(url.pathname);
     } catch {
-      return "npm recipe source has an invalid encoded path";
+      return "npm-family recipe source has an invalid encoded path";
     }
     if (input.version === undefined || path !== npmTarballPath(input.package, input.version)) {
-      return "npm recipe source must match the exact registry tarball for package and version";
+      return "npm-family recipe source must match the exact registry tarball for package and version";
     }
   }
   return undefined;

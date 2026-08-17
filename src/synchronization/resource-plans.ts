@@ -9,6 +9,7 @@ import type { ActionDetail, PlannedActionKind } from "../domain/synchronization.
 import type { AutomaticRecipeMethod, BuildPolicy } from "../domain/resource.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { sha256Hex } from "../profile/profile-codec.ts";
+import { recipeSourceDetails } from "../domain/recipe-versions.ts";
 import { InvalidObservedStateError } from "./synchronization.errors.ts";
 import type {
   DesiredResource,
@@ -385,6 +386,22 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
         reason: `Installing ${context.desired.toolId} with Cargo requires Human Action Required`,
         instructions:
           `Cargo may execute build.rs and procedural macros for ${recipe.package}, but Cargo has no disable-scripts mode. Review and apply this recipe with a separately bounded builder policy, then rerun synchronization.`,
+      },
+    }];
+  }
+  const sourceDetails = recipeSourceDetails(recipe.source);
+  if (
+    (recipe.method === "npm" || recipe.method === "pnpm" || recipe.method === "bun")
+    && sourceDetails.source?.startsWith("https://") === true
+    && sourceDetails.integrity === undefined
+  ) {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `Installing ${context.desired.toolId} requires a reviewed npm artifact integrity`,
+        instructions:
+          `The reviewed ${recipe.method} tarball for ${recipe.package}@${recipe.version ?? "the declared version"} has no supported sha256 or sha512 SRI value. Add a lockfile integrity value, or install the package manually and rerun synchronization.`,
       },
     }];
   }

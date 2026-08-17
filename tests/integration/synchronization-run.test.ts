@@ -9,7 +9,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -68,6 +69,7 @@ import {
   prepareResourceAction,
   type ResourceExecutionContext,
 } from "../../src/synchronization/resource-executors.ts";
+import type { NpmArtifactTransport } from "../../src/synchronization/npm-artifact.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 import { Synchronization } from "../../src/synchronization/synchronization.service.ts";
 import type {
@@ -488,6 +490,7 @@ const installerInvocation = async (
   onInvocation?: () => void,
   onLookup?: () => void,
   source?: RecipeSource | undefined,
+  npmArtifactTransport?: ((root: string) => NpmArtifactTransport) | undefined,
 ) => {
   const root = temporaryDirectory();
   const executableQueries: Array<string> = [];
@@ -565,6 +568,7 @@ const installerInvocation = async (
     verification: { method: "executable-present", executable: "tool" },
     artifacts: new Map(),
     limits: defaultSynchronizationExecutionLimits,
+    npmArtifactTransport: npmArtifactTransport?.(root),
   };
   await Effect.runPromise(
     Effect.gen(function*() {
@@ -1734,20 +1738,52 @@ describe("synchronization apply run", () => {
     },
   );
 
-  it("uses the reviewed npm artifact and pins source-less installs", async () => {
+  it("uses the verified local npm artifact and pins source-less installs", async () => {
     const artifact = "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz";
+    const artifactBytes = Buffer.from("verified npm artifact");
+    const integrity = `sha512-${createHash("sha512").update(artifactBytes).digest("base64")}`;
     const reviewed = await installerInvocation(
       "npm",
       "tool",
       "1.2.3",
       undefined,
       undefined,
-      artifact,
+      { source: artifact, integrity },
+      (root) => {
+        const artifactPath = join(
+          root,
+          "home",
+          ".cache",
+          "canonfig",
+          "npm-artifacts",
+          "verified.tgz",
+        );
+        return {
+          download: () => Effect.promise(async () => {
+            await mkdir(dirname(artifactPath), { recursive: true });
+            await writeFile(artifactPath, artifactBytes);
+            return {
+              path: artifactPath,
+              bytes: artifactBytes.byteLength,
+              integrity,
+              source: artifact,
+            };
+          }),
+        };
+      },
+    );
+    const artifactPath = join(
+      temporaryDirectories.at(-1)!,
+      "home",
+      ".cache",
+      "canonfig",
+      "npm-artifacts",
+      "verified.tgz",
     );
     expect(reviewed.invocations[0]?.arguments).toEqual([
       "install",
       "--global",
-      artifact,
+      artifactPath,
       "--ignore-scripts",
     ]);
 
@@ -1758,6 +1794,39 @@ describe("synchronization apply run", () => {
     });
     expect(fallback.invocations[0]?.arguments).toContain("tool@1.2.3");
   });
+
+  const missingIntegritySource: RecipeSource =
+    "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz";
+  const unsupportedIntegritySource: RecipeSource = {
+    source: "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz",
+    integrity: "sha384-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  };
+  it.each([
+    ["missing", missingIntegritySource],
+    ["unsupported", unsupportedIntegritySource],
+  ] satisfies ReadonlyArray<readonly [string, RecipeSource]>)(
+    "does not spawn for %s reviewed npm artifact integrity",
+    async (_name, source) => {
+    let lookedUp = false;
+    let spawned = false;
+    await expect(installerInvocation(
+      "npm",
+      "tool",
+      "1.2.3",
+      () => {
+        spawned = true;
+      },
+      () => {
+        lookedUp = true;
+      },
+      source,
+    )).rejects.toMatchObject({
+      _tag: "InvalidExecutionPlanError",
+    });
+    expect(lookedUp).toBe(false);
+    expect(spawned).toBe(false);
+    },
+  );
 
   it("rejects Cargo scripts-disabled recipes before lookup or spawn", async () => {
     let lookedUp = false;

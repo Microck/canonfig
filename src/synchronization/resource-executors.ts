@@ -1,6 +1,5 @@
 import { Effect, Schema } from "effect";
-import { createHash } from "node:crypto";
-import { isAbsolute, win32 } from "node:path";
+import { isAbsolute, join, win32 } from "node:path";
 
 import { CredentialReference, type RunId } from "../domain/brand.ts";
 import {
@@ -50,6 +49,11 @@ import {
   recipeSourceDetails,
   recipeValidationError,
 } from "../domain/recipe-versions.ts";
+import {
+  defaultNpmArtifactTransport,
+  verifyNpmArtifactBytes,
+  type NpmArtifactTransport,
+} from "./npm-artifact.ts";
 
 const isUnboundedNonNpmPackage = (value: string): boolean =>
   /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
@@ -106,6 +110,12 @@ export interface ResourceExecutionContext {
   readonly artifacts: ReadonlyMap<string, SynchronizationArtifact>;
   readonly limits: SynchronizationExecutionLimits;
   readonly previousSchedule?: SyncSchedule | undefined;
+  /**
+   * The default is the bounded HTTPS artifact transport. This optional seam
+   * lets integration tests use a local HTTPS fixture without altering a
+   * reviewed source or the production transport policy.
+   */
+  readonly npmArtifactTransport?: NpmArtifactTransport | undefined;
 }
 
 export interface PreparedResourceAction {
@@ -851,38 +861,91 @@ const installInvocation = (
       });
     }
     const sourceDetailsValue = recipeSourceDetails(source);
-    const sourceUrl = method === "npm"
+    const npmFamily = method === "npm" || method === "pnpm" || method === "bun";
+    const sourceUrl = npmFamily
       && sourceDetailsValue.source !== undefined
       && sourceDetailsValue.source.startsWith("https://")
       ? sourceDetailsValue.source
       : undefined;
-    if (sourceUrl !== undefined && sourceDetailsValue.integrity !== undefined) {
-      yield* Effect.tryPromise({
-        try: async () => {
-          const response = await fetch(sourceUrl, { redirect: "error" });
-          if (!response.ok) throw new Error(`artifact request returned ${response.status}`);
-          const bytes = new Uint8Array(await response.arrayBuffer());
-          const [algorithm, expected] = sourceDetailsValue.integrity!.split("-", 2);
-          if (algorithm === undefined || expected === undefined) {
-            throw new Error("artifact integrity metadata is malformed");
-          }
-          const actual = createHash(algorithm).update(bytes).digest("base64");
-          if (actual !== expected) throw new Error("artifact integrity mismatch");
-        },
-        catch: (cause) => new InvalidExecutionPlanError({
-          message: `reviewed package artifact could not be verified: ${String(cause)}`,
-        }),
-      });
-    }
     const machine = yield* MachineState;
+    let verifiedArtifactPath: string | undefined;
+    if (sourceUrl !== undefined) {
+      const integrity = sourceDetailsValue.integrity;
+      if (integrity === undefined) {
+        return yield* new InvalidExecutionPlanError({
+          message:
+            `reviewed ${method} package artifact ${sourceUrl} has no supported integrity; Human Action Required`,
+        });
+      }
+      const directories = yield* machine.userDirectories();
+      const cacheDirectory = join(
+        directories.cache.absolute,
+        "canonfig",
+        "npm-artifacts",
+      );
+      const artifact = yield* (context.npmArtifactTransport ?? defaultNpmArtifactTransport)
+        .download({
+          source: sourceUrl,
+          packageName,
+          version: version!,
+          integrity,
+          cacheDirectory,
+          maximumBytes: 32 * 1024 * 1024,
+          timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
+        }).pipe(
+          Effect.mapError((error) =>
+            new InvalidExecutionPlanError({
+              message: `reviewed package artifact could not be verified: ${error.message}`,
+            })
+          ),
+        );
+      if (artifact.source !== sourceUrl || artifact.integrity !== integrity) {
+        return yield* new InvalidExecutionPlanError({
+          message: "verified npm artifact metadata changed before installation",
+        });
+      }
+      const artifactPath = yield* machine.normalizePath({ path: artifact.path });
+      yield* machine.validatePathWithinRoot({
+        root: directories.cache,
+        path: artifactPath,
+      });
+      const symlinkTarget = yield* machine.readSymlink(artifactPath).pipe(
+        Effect.map((target) => target.absolute),
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
+      if (symlinkTarget !== undefined) {
+        return yield* new InvalidExecutionPlanError({
+          message: "verified npm artifact cache entry is a symlink",
+        });
+      }
+      if (
+        !Number.isSafeInteger(artifact.bytes)
+        || artifact.bytes <= 0
+        || artifact.bytes > 32 * 1024 * 1024
+      ) {
+        return yield* new InvalidExecutionPlanError({
+          message: "verified npm artifact size is outside the execution bound",
+        });
+      }
+      const bytes = yield* machine.readFile({
+        path: artifactPath,
+        maximumBytes: artifact.bytes,
+      });
+      if (bytes.byteLength !== artifact.bytes || !verifyNpmArtifactBytes(bytes, integrity)) {
+        return yield* new InvalidExecutionPlanError({
+          message: "verified npm artifact changed or is corrupt before installation",
+        });
+      }
+      verifiedArtifactPath = artifactPath.absolute;
+    }
     const executableName = method === "apt"
       ? "apt-get"
       : method === "homebrew"
       ? "brew"
       : method;
     const executable = yield* machine.findExecutable({ name: executableName });
-    const packageSpecifier = method === "npm" && sourceUrl !== undefined
-      ? sourceUrl
+    const packageSpecifier = npmFamily && verifiedArtifactPath !== undefined
+      ? verifiedArtifactPath
       : version === undefined
       ? packageName
       : `${packageName}@${version}`;
@@ -896,7 +959,10 @@ const installInvocation = (
           ? [{ name: "PNPM_CONFIG_REGISTRY", value: "https://registry.npmjs.org/" }]
           : []),
         ...(method === "bun"
-          ? [{ name: "BUN_CONFIG_REGISTRY", value: "https://registry.npmjs.org/" }]
+          ? [
+            { name: "BUN_CONFIG_FILE", value: process.platform === "win32" ? "NUL" : "/dev/null" },
+            { name: "BUN_CONFIG_REGISTRY", value: "https://registry.npmjs.org/" },
+          ]
           : []),
       ]
       : undefined;
@@ -938,6 +1004,9 @@ const installInvocation = (
       timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
       maximumOutputBytes: context.limits.maximumProcessOutputBytes,
       environment: packageEnvironment,
+      environmentUnsetPrefixes: npmFamily
+        ? ["NPM_CONFIG_", "PNPM_CONFIG_", "BUN_CONFIG_"]
+        : undefined,
     });
     if (result.exitCode !== 0) {
       return yield* new ActionExecutionError({

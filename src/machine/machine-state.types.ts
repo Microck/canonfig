@@ -103,6 +103,8 @@ export interface ProcessInvocation {
   readonly arguments: ReadonlyArray<string>;
   readonly workingDirectory?: MachinePath | undefined;
   readonly environment?: ReadonlyArray<ProcessEnvironmentEntry> | undefined;
+  readonly environmentUnset?: ReadonlyArray<string> | undefined;
+  readonly environmentUnsetPrefixes?: ReadonlyArray<string> | undefined;
   readonly timeoutMilliseconds: number;
   readonly maximumOutputBytes: number;
 }

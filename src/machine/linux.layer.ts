@@ -160,9 +160,17 @@ const processEnvironmentEntries = (): ReadonlyArray<ProcessEnvironmentEntry> =>
 const environmentObject = (
   base: ReadonlyArray<ProcessEnvironmentEntry>,
   additions: ReadonlyArray<ProcessEnvironmentEntry>,
+  unset: ReadonlyArray<string> = [],
+  unsetPrefixes: ReadonlyArray<string> = [],
 ): NodeJS.ProcessEnv => {
   const output: NodeJS.ProcessEnv = {};
-  for (const entry of base) output[entry.name] = entry.value;
+  const blocked = new Set(unset.map((name) => name.toLowerCase()));
+  const prefixes = unsetPrefixes.map((prefix) => prefix.toLowerCase());
+  for (const entry of base) {
+    const lower = entry.name.toLowerCase();
+    if (blocked.has(lower) || prefixes.some((prefix) => lower.startsWith(prefix))) continue;
+    output[entry.name] = entry.value;
+  }
   for (const entry of additions) output[entry.name] = entry.value;
   return output;
 };
@@ -650,6 +658,8 @@ const runBoundedProcess = (
           env: environmentObject(
             baseEnvironment,
             invocation.environment ?? [],
+            invocation.environmentUnset ?? [],
+            invocation.environmentUnsetPrefixes ?? [],
           ),
           shell: false,
           stdio: ["ignore", "pipe", "pipe"],
