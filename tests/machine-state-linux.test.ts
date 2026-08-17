@@ -173,4 +173,47 @@ describe("portable safe-root mutation", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("inspects final objects without following links and refuses non-regular reads", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-no-follow-"));
+    try {
+      const outside = join(root, "outside.txt");
+      const link = join(root, "link.txt");
+      const directory = join(root, "directory");
+      writeFileSync(outside, "outside");
+      mkdirSync(directory);
+      symlinkSync(outside, link);
+
+      const result = await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const linkPath = yield* machine.normalizePath({ path: link });
+          const directoryPath = yield* machine.normalizePath({ path: directory });
+          const specialPath = yield* machine.normalizePath({ path: "/dev/null" });
+          const linkKind = yield* machine.inspectPath(linkPath);
+          const directoryKind = yield* machine.inspectPath(directoryPath);
+          const specialKind = yield* machine.inspectPath(specialPath);
+          const linkDigest = yield* machine.digestFile({ path: linkPath }).pipe(Effect.exit);
+          const linkRead = yield* machine.readFile({
+            path: linkPath,
+            maximumBytes: 1024,
+          }).pipe(Effect.exit);
+          const directoryDigest = yield* machine.digestFile({ path: directoryPath }).pipe(Effect.exit);
+          return { linkKind, directoryKind, specialKind, linkDigest, linkRead, directoryDigest };
+        }).pipe(Effect.provide(linuxMachineStateLayer({
+          environment: environment(root),
+        }))),
+      );
+
+      expect(result.linkKind).toEqual({ kind: "symlink" });
+      expect(result.directoryKind).toEqual({ kind: "directory" });
+      expect(result.specialKind).toEqual({ kind: "special" });
+      expect(result.linkDigest._tag).toBe("Failure");
+      expect(result.linkRead._tag).toBe("Failure");
+      expect(result.directoryDigest._tag).toBe("Failure");
+      expect(readFileSync(outside, "utf8")).toBe("outside");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

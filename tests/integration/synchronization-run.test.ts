@@ -1527,6 +1527,61 @@ describe("synchronization apply run", () => {
     expect(readlinkSync(base.target)).toBe(destination);
   });
 
+  it("preserves a follower deletion of a previously applied replace-if-unmodified file", async () => {
+    const base = fileFixture(temporaryDirectory(), "run-missing-owned");
+    const original = base.revision.resources[0]!;
+    const resource: PublishedResource = {
+      ...original,
+      policy: "replace-if-unmodified",
+    };
+    const desired = base.revision.desired[0]!.desired;
+    if (desired.kind !== "file") throw new Error("file fixture produced a non-file resource");
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      resources: [resource],
+      desired: [{
+        resource: resource.id,
+        desired,
+        verification: { method: "digest", digest: desired.digest },
+      }],
+    };
+    const applied = {
+      resource: resource.id,
+      revision: "revision-previous",
+      digest: desired.digest,
+      appliedAt: "2026-08-15T00:00:00Z",
+      kind: "file" as const,
+      policy: "replace-if-unmodified" as const,
+      target: resource.target,
+      executable: desired.executable,
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{ resource: resource.id, observed: { state: "absent" } }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [applied],
+    }));
+    expect(plan.actions.map((action) => action.kind)).toEqual(["human-action"]);
+    const outcome = await seedAndRun({
+      ...base,
+      revision,
+      input: {
+        ...base.input,
+        plan,
+        revision,
+        appliedResources: [applied],
+      },
+    });
+
+    expect(outcome.outcome).toBe("HumanActionRequired");
+    expect(await readFile(base.target).catch(() => undefined)).toBeUndefined();
+  });
+
   it("runs the declared verification command instead of the tool id", async () => {
     const base = fileFixture(temporaryDirectory(), "run-declared-verification");
     const tool: PublishedResource = {

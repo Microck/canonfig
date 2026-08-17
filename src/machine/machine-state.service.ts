@@ -15,6 +15,7 @@ import type {
   FilePermissions,
   LoadCredentialInput,
   MachinePath,
+  MachineObject,
   NormalizePathInput,
   ProcessInvocation,
   ProcessResult,
@@ -60,6 +61,10 @@ export class MachineState extends Context.Service<MachineState, {
   readonly readSymlink: (
     path: MachinePath,
   ) => Effect.Effect<MachinePath, MachineStateError>;
+  /** Inspect the final path component without following symlinks or reparse points. */
+  readonly inspectPath: (
+    path: MachinePath,
+  ) => Effect.Effect<MachineObject, MachineStateError>;
   readonly setPermissions: (
     input: SetPermissionsInput,
   ) => Effect.Effect<void, MachineStateError>;

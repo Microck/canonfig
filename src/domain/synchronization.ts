@@ -138,10 +138,38 @@ export interface DriftConflict {
 }
 
 /** Observed state of one resource target on the follower. */
+export const ObservedObjectKind = Schema.Literals([
+  "regular",
+  "directory",
+  "symlink",
+  "reparse-point",
+  "special",
+]);
+export type ObservedObjectKind = Schema.Schema.Type<typeof ObservedObjectKind>;
+
 export type ObservedResourceState =
   | { readonly state: "absent" }
-  | { readonly state: "present"; readonly digest: string; readonly executable: boolean; readonly symlinkTo?: string | undefined }
-  | { readonly state: "directory"; readonly files: ReadonlyArray<{ readonly path: string; readonly digest: string; readonly executable?: boolean | undefined }> }
+  | {
+    readonly state: "present";
+    readonly digest: string;
+    readonly executable: boolean;
+    /**
+     * Actual final path kind. Optional for compatibility with observations
+     * produced before no-follow object inspection was introduced.
+     */
+    readonly objectKind?: ObservedObjectKind | undefined;
+    readonly symlinkTo?: string | undefined;
+  }
+  | {
+    readonly state: "directory";
+    readonly objectKind?: ObservedObjectKind | undefined;
+    readonly files: ReadonlyArray<{
+      readonly path: string;
+      readonly digest: string;
+      readonly executable?: boolean | undefined;
+      readonly objectKind?: ObservedObjectKind | undefined;
+    }>;
+  }
   | { readonly state: "unverifiable"; readonly reason: string };
 
 /** Applied Resource Record: what Canonfig last wrote for one resource. */
@@ -354,14 +382,17 @@ export const ObservedResourceStateSchema = Schema.Union([
     state: Schema.Literal("present"),
     digest: ContentDigest,
     executable: Schema.Boolean,
+    objectKind: Schema.optional(ObservedObjectKind),
     symlinkTo: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     state: Schema.Literal("directory"),
+    objectKind: Schema.optional(ObservedObjectKind),
     files: Schema.Array(Schema.Struct({
       path: Schema.NonEmptyString,
       digest: ContentDigest,
       executable: Schema.optional(Schema.Boolean),
+      objectKind: Schema.optional(ObservedObjectKind),
     })),
   }),
   Schema.Struct({

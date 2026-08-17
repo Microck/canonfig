@@ -145,6 +145,9 @@ const observedMatchesDesired = (
   observed: ResourcePlanningContext["observed"],
 ): boolean => {
   if (observed.state === "absent" || observed.state === "unverifiable") return false;
+  const observedObjectKind = observed.state === "present" || observed.state === "directory"
+    ? observed.objectKind
+    : undefined;
   switch (desired.kind) {
     case "file":
       return observed.state === "present"
@@ -153,14 +156,19 @@ const observedMatchesDesired = (
         && (
           desired.symlinkTo === undefined
             ? observed.symlinkTo === undefined
+              && (observedObjectKind === undefined || observedObjectKind === "regular")
             : observed.symlinkTo !== undefined
+              && (observedObjectKind === undefined || observedObjectKind === "symlink")
         );
     case "config":
     case "schedule":
-      return observed.state === "present" && observed.digest === desired.digest;
+      return observed.state === "present"
+        && observed.digest === desired.digest
+        && (observedObjectKind === undefined || observedObjectKind === "regular");
     case "directory":
     case "skill":
       return observed.state === "directory"
+        && (observed.objectKind === undefined || observed.objectKind === "directory")
         && filesDigest(observed.files) === desiredResourceDigest(desired);
     case "tool":
     case "credential":
@@ -178,8 +186,16 @@ const observedMatchesApplied = (
   if (
     context.resource.kind === "file"
     && context.observed.state === "present"
-    && applied.executable !== undefined
-    && context.observed.executable !== applied.executable
+    && (
+      applied.executable !== undefined
+        && context.observed.executable !== applied.executable
+      || applied.symlinkTo === undefined
+        && context.observed.objectKind !== undefined
+        && context.observed.objectKind !== "regular"
+      || applied.symlinkTo !== undefined
+        && context.observed.objectKind !== undefined
+        && context.observed.objectKind !== "symlink"
+    )
   ) {
     return false;
   }
@@ -416,7 +432,31 @@ const planReplaceIfUnmodified = (
   if (desiredDigest === undefined) {
     return [unresolvedAgentTask(context, `Resolve ${context.resource.kind} ${context.resource.id}`)];
   }
+  if (
+    context.observed.state === "unverifiable"
+    || (
+      context.applied !== undefined
+      && context.observed.state === "absent"
+    )
+  ) {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason:
+          `Previously applied ${context.resource.kind} ${context.resource.id} is missing or unverifiable`,
+        instructions:
+          `Restore ${context.resource.target} or explicitly review and remove the local change, then rerun synchronization. Canonfig will not rewrite this target under replace-if-unmodified.`,
+      },
+    }];
+  }
   const currentDigest = observedDigest(context);
+  const observedStateMatchesDesired = observedMatchesDesired(context.desired, context.observed)
+    || (
+      context.desired.kind === "skill"
+      && context.observed.state === "present"
+      && context.observed.objectKind === undefined
+    );
   const drift = detectSkillDrift({
     desiredDigest,
     observedDigest: currentDigest,
@@ -434,7 +474,17 @@ const planReplaceIfUnmodified = (
   switch (drift) {
     case "unchanged":
     case "converged":
-      return [noOp()];
+      return observedStateMatchesDesired
+        ? [noOp()]
+        : [driftConflict(
+          context,
+          desiredDigest,
+          currentDigest ?? sha256Hex("canonfig:unverifiable-observed-state"),
+          context.desired.kind === "file" ? context.desired.executable : undefined,
+          context.observed.state === "present"
+            ? context.observed.executable
+            : undefined,
+        )];
     case "remote-only":
       if (context.desired.kind === "skill") {
         return [replaceDirectory(context, context.desired)];

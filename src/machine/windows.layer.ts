@@ -880,6 +880,8 @@ export const windowsMachineStateLayer = (
             Effect.flatMap(machine.readSymlink),
             Effect.map((target) => windowsPath(target.absolute)),
           ),
+        inspectPath: (path) =>
+          requireWindowsPath(path).pipe(Effect.flatMap(machine.inspectPath)),
         setPermissions: (input) =>
           requireWindowsPath(input.path).pipe(
             Effect.flatMap((path) =>
@@ -899,7 +901,7 @@ export const windowsMachineStateLayer = (
           requireWindowsPath(path).pipe(
             Effect.flatMap((nativePath) =>
               Effect.tryPromise({
-                try: () => stat(nativePath.absolute),
+                try: () => lstat(nativePath.absolute),
                 catch: (cause) =>
                   filesystemFailure(
                     "inspect Windows permissions",

@@ -388,6 +388,8 @@ export const macosMachineStateLayer = (
             Effect.flatMap(machine.readSymlink),
             Effect.map((target) => macosPath(target.absolute)),
           ),
+        inspectPath: (path) =>
+          requireMacosPath(path).pipe(Effect.flatMap(machine.inspectPath)),
         setPermissions: (input) =>
           requireMacosPath(input.path).pipe(
             Effect.flatMap((path) => machine.setPermissions({ ...input, path })),

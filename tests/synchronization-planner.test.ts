@@ -300,6 +300,95 @@ describe("resource and Apply Policy coverage", () => {
     }
   });
 
+  it.each([
+    ["file", "file"],
+    ["skill", "skill"],
+  ] as const)(
+    "reports a missing previously applied %s as local intent under replace-if-unmodified",
+    (_name, kind) => {
+      const subject = resource(kind, kind, "replace-if-unmodified");
+      const plan = runPlan(plannerInput([subject], {
+        desired: [desiredForKind(kind)],
+        observed: [{ state: "absent" }],
+        applied: [{
+          resource: subject.id,
+          revision: "previous",
+          digest: digestA,
+          appliedAt: "2026-08-15T00:00:00Z",
+          kind,
+          policy: "replace-if-unmodified",
+          target: subject.target,
+        }],
+      }));
+      expect(plan.actions.map((action) => action.kind)).toEqual(["human-action"]);
+      expect(plan.actions.some((action) =>
+        action.kind === "write-file" || action.kind === "mirror-directory"
+      )).toBe(false);
+    },
+  );
+
+  it("reports a missing applied skill member as drift without rewriting the skill", () => {
+    const subject = resource("skill", "skill", "replace-if-unmodified");
+    const desired = {
+      kind: "skill" as const,
+      digest: digestA,
+      files: [{ path: "SKILL.md", digest: digestA, executable: false }],
+    };
+    const plan = runPlan(plannerInput([subject], {
+      desired: [desired],
+      observed: [{ state: "directory", files: [] }],
+      applied: [{
+        resource: subject.id,
+        revision: "previous",
+        digest: desired.digest,
+        appliedAt: "2026-08-15T00:00:00Z",
+        kind: "skill",
+        policy: "replace-if-unmodified",
+        target: subject.target,
+        ownedFiles: desired.files,
+      }],
+    }));
+    expect(plan.actions.map((action) => action.kind)).toEqual(["drift-conflict"]);
+    expect(plan.actions.some((action) => action.kind === "mirror-directory")).toBe(false);
+  });
+
+  it.each([
+    ["symlink", "replace"],
+    ["directory", "replace"],
+    ["special", "replace"],
+    ["symlink", "replace-if-unmodified"],
+  ] as const)(
+    "does not converge a %s at a regular-file target under %s",
+    (objectKind, policy) => {
+      const subject = resource("file", "file", policy);
+      const plan = runPlan(plannerInput([subject], {
+        observed: [{
+          state: "present",
+          digest: digestA,
+          executable: false,
+          objectKind,
+          symlinkTo: objectKind === "symlink" ? "/outside" : undefined,
+        }],
+        applied: policy === "replace-if-unmodified"
+          ? [{
+            resource: subject.id,
+            revision: "previous",
+            digest: digestA,
+            appliedAt: "2026-08-15T00:00:00Z",
+            kind: "file",
+            policy,
+            target: subject.target,
+            executable: false,
+          }]
+          : [],
+      }));
+      expect(plan.actions[0]?.kind).not.toBe("no-op");
+      expect(plan.actions[0]?.kind).toBe(
+        policy === "replace-if-unmodified" ? "drift-conflict" : "write-file",
+      );
+    },
+  );
+
   it("preserves non-conflicting Local Overlay keys and reports conflicts", () => {
     const base = plannerInput([resource("config", "config", "merge")]);
     const preserved = runPlan({

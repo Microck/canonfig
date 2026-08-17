@@ -386,25 +386,38 @@ const observeFile = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: target });
-    if (desired.symlinkTo !== undefined) {
-      const expected = yield* machine.normalizePath({
-        path: desired.symlinkTo,
-      });
+    const observedKind = yield* machine.inspectPath(path);
+    if (observedKind.kind === "symlink") {
+      const expected = desired.symlinkTo === undefined
+        ? undefined
+        : yield* machine.normalizePath({ path: desired.symlinkTo });
       return yield* machine.readSymlink(path).pipe(
         Effect.map((symlinkTo): ObservedResourceState => ({
           state: "present",
-          digest: symlinkTo.absolute === expected.absolute
+          digest: expected?.absolute === symlinkTo.absolute
             ? desired.digest
             : sha256Hex(symlinkTo.absolute),
           executable: false,
+          objectKind: "symlink",
           symlinkTo: symlinkTo.absolute,
         })),
-        Effect.catchTag("MachineFilesystemError", (error) =>
-          Effect.succeed(error.message.includes("ENOENT")
-            ? { state: "absent" } as const
-            : { state: "unverifiable", reason: error.message } as const)
-        ),
       );
+    }
+    if (observedKind.kind !== "regular") {
+      return {
+        state: "present",
+        digest: sha256Hex(`canonfig:observed-object:${observedKind.kind}`),
+        executable: false,
+        objectKind: observedKind.kind,
+      } as const;
+    }
+    if (desired.symlinkTo !== undefined) {
+      return {
+        state: "present",
+        digest: sha256Hex("canonfig:observed-object:regular"),
+        executable: false,
+        objectKind: "regular",
+      } as const;
     }
     return yield* machine.digestFile({ path }).pipe(
       Effect.flatMap((digest) =>
@@ -413,6 +426,7 @@ const observeFile = (
             state: "present",
             digest: digest.value,
             executable: permissions.executableByOwner,
+            objectKind: "regular",
           })),
         )
       ),
@@ -426,6 +440,11 @@ const observeFile = (
       ),
     );
   }).pipe(
+    Effect.catchTag("MachineFilesystemError", (error) =>
+      Effect.succeed(error.message.includes("ENOENT")
+        ? { state: "absent" } as const
+        : { state: "unverifiable", reason: error.message } as const)
+    ),
     Effect.catch((error) =>
       Effect.succeed({ state: "unverifiable", reason: String(error) } as const)
     ),
@@ -440,6 +459,15 @@ const observeConfig = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: decoded.resource.target });
+    const observedKind = yield* machine.inspectPath(path);
+    if (observedKind.kind !== "regular") {
+      return {
+        state: "present",
+        digest: sha256Hex(`canonfig:observed-object:${observedKind.kind}`),
+        executable: false,
+        objectKind: observedKind.kind,
+      } as const;
+    }
     const bytes = yield* machine.readFile({
       path,
       maximumBytes: 8 * 1024 * 1024,
@@ -456,6 +484,7 @@ const observeConfig = (
         encoder.encode(serializeConfigDocument(desired.format, managed)),
       ),
       executable: false,
+      objectKind: "regular",
     } as const;
   }).pipe(
     Effect.catch((error) =>
@@ -510,6 +539,22 @@ const observe = (
       return Effect.gen(function*() {
         const machine = yield* MachineState;
         const root = yield* machine.normalizePath({ path: decoded.resource.target });
+        const rootKind = yield* machine.inspectPath(root).pipe(
+          Effect.catchTag("MachineFilesystemError", (error) =>
+            Effect.succeed(error.message.includes("ENOENT")
+              ? undefined
+              : { kind: "special" } as const)
+          ),
+        );
+        if (rootKind === undefined) return { state: "absent" } as const;
+        if (rootKind.kind !== "directory") {
+          return {
+            state: "present",
+            digest: sha256Hex(`canonfig:observed-object:${rootKind.kind}`),
+            executable: false,
+            objectKind: rootKind.kind,
+          } as const;
+        }
         const candidates = [...new Map([
           ...(applied?.ownedFiles ?? []).map((file) => ({
             ...file,
@@ -520,6 +565,15 @@ const observe = (
         const files = yield* Effect.forEach(candidates, (file) =>
           Effect.gen(function*() {
             const path = yield* machine.normalizePath({ path: file.path, base: root });
+            const kind = yield* machine.inspectPath(path);
+            if (kind.kind !== "regular") {
+              return {
+                path: file.path,
+                digest: sha256Hex(`canonfig:observed-object:${kind.kind}`),
+                executable: false,
+                objectKind: kind.kind,
+              } as const;
+            }
             return yield* machine.digestFile({ path }).pipe(
               Effect.flatMap((digest) =>
                 machine.permissions(path).pipe(
@@ -527,6 +581,7 @@ const observe = (
                     path: file.path,
                     digest: digest.value,
                     executable: permissions.executableByOwner,
+                    objectKind: "regular" as const,
                   })),
                 )
               ),
@@ -537,7 +592,7 @@ const observe = (
         const present = files.filter((file) => file !== undefined);
         return present.length === 0
           ? { state: "absent" } as const
-          : { state: "directory", files: present } as const;
+          : { state: "directory", objectKind: "directory", files: present } as const;
       }).pipe(
         Effect.catch((error) =>
           Effect.succeed({ state: "unverifiable", reason: String(error) } as const)

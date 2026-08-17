@@ -78,6 +78,18 @@ export interface FilePermissions {
   readonly executableByOwner: boolean;
 }
 
+/** The object at a path, observed without following its final component. */
+export type MachineObjectKind =
+  | "regular"
+  | "directory"
+  | "symlink"
+  | "reparse-point"
+  | "special";
+
+export interface MachineObject {
+  readonly kind: MachineObjectKind;
+}
+
 export interface SetPermissionsInput {
   readonly path: MachinePath;
   readonly mode: number;

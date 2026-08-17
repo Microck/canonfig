@@ -11,12 +11,11 @@ import {
   realpath,
   rename,
   rm,
-  stat,
   symlink,
   unlink,
   type FileHandle,
 } from "node:fs/promises";
-import { constants as filesystemConstants, createReadStream } from "node:fs";
+import { constants as filesystemConstants } from "node:fs";
 import { homedir } from "node:os";
 import {
   basename,
@@ -62,6 +61,7 @@ import type {
   LinuxMachineStateOptions,
   LoadCredentialInput,
   MachinePath,
+  MachineObject,
   NormalizePathInput,
   ProcessEnvironmentEntry,
   ProcessInvocation,
@@ -112,6 +112,103 @@ const promiseEffect = <Value>(
     try: run,
     catch: filesystemError(operation, path),
   });
+
+const objectKind = (
+  metadata: Awaited<ReturnType<typeof lstat>>,
+): MachineObject["kind"] => {
+  if (metadata.isSymbolicLink()) return "symlink";
+  if (metadata.isFile()) return "regular";
+  if (metadata.isDirectory()) return "directory";
+  return "special";
+};
+
+const sameFileIdentity = (
+  left: { readonly dev: number | bigint; readonly ino: number | bigint },
+  right: { readonly dev: number | bigint; readonly ino: number | bigint },
+): boolean => left.dev === right.dev && left.ino === right.ino;
+
+const assertStableRegularHandle = async (
+  path: string,
+  handle: FileHandle,
+  opened: Awaited<ReturnType<FileHandle["stat"]>>,
+): Promise<void> => {
+  if (!opened.isFile()) {
+    throw new Error(`path is not a regular file: ${path}`);
+  }
+  const visible = await lstat(path);
+  if (!visible.isFile() || !sameFileIdentity(opened, visible)) {
+    throw new Error(`regular file target changed during read: ${path}`);
+  }
+};
+
+const regularFileBytes = async (
+  path: string,
+  maximumBytes: number,
+): Promise<Buffer> => {
+  const handle = await open(
+    path,
+    filesystemConstants.O_RDONLY
+      | filesystemConstants.O_NOFOLLOW
+      | filesystemConstants.O_NONBLOCK,
+  );
+  try {
+    const metadata = await handle.stat();
+    await assertStableRegularHandle(path, handle, metadata);
+    if (metadata.size > maximumBytes) {
+      throw new FileSizeLimitError({ path, maximumBytes });
+    }
+    const chunks: Array<Buffer> = [];
+    let total = 0;
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(1, maximumBytes)));
+    while (true) {
+      const result = await handle.read(chunk, 0, chunk.byteLength, null);
+      if (result.bytesRead === 0) break;
+      const bytes = Buffer.from(chunk.subarray(0, result.bytesRead));
+      total += bytes.byteLength;
+      if (total > maximumBytes) {
+        throw new FileSizeLimitError({ path, maximumBytes });
+      }
+      chunks.push(bytes);
+    }
+    await assertStableRegularHandle(path, handle, metadata);
+    return Buffer.concat(chunks, total);
+  } finally {
+    await handle.close();
+  }
+};
+
+const regularFileDigest = async (
+  path: string,
+  maximumBytes: number,
+): Promise<string> => {
+  const handle = await open(
+    path,
+    filesystemConstants.O_RDONLY
+      | filesystemConstants.O_NOFOLLOW
+      | filesystemConstants.O_NONBLOCK,
+  );
+  try {
+    const metadata = await handle.stat();
+    await assertStableRegularHandle(path, handle, metadata);
+    const hash = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let total = 0;
+    while (true) {
+      const result = await handle.read(chunk, 0, chunk.byteLength, null);
+      if (result.bytesRead === 0) break;
+      const bytes = Buffer.from(chunk.subarray(0, result.bytesRead));
+      total += bytes.byteLength;
+      if (total > maximumBytes) {
+        throw new FileSizeLimitError({ path, maximumBytes });
+      }
+      hash.update(bytes);
+    }
+    await assertStableRegularHandle(path, handle, metadata);
+    return hash.digest("hex");
+  } finally {
+    await handle.close();
+  }
+};
 
 const checkLinuxPath = (
   path: MachinePath,
@@ -569,21 +666,13 @@ const readBounded = (
         maximumBytes: input.maximumBytes,
       });
     }
-    const metadata = yield* promiseEffect("inspect file size", path, () => stat(path));
-    if (metadata.size > input.maximumBytes) {
-      return yield* new FileSizeLimitError({
-        path,
-        maximumBytes: input.maximumBytes,
-      });
-    }
-    const content = yield* promiseEffect("read file", path, () => readFile(path));
-    if (content.byteLength > input.maximumBytes) {
-      return yield* new FileSizeLimitError({
-        path,
-        maximumBytes: input.maximumBytes,
-      });
-    }
-    return content;
+    return yield* Effect.tryPromise({
+      try: () => regularFileBytes(path, input.maximumBytes),
+      catch: (cause) =>
+        cause instanceof FileSizeLimitError
+          ? cause
+          : filesystemError("read file", path)(cause),
+    });
   });
 
 const digest = (
@@ -593,22 +682,7 @@ const digest = (
     const path = yield* checkLinuxPath(input.path);
     const maximumBytes = input.maximumBytes ?? Number.MAX_SAFE_INTEGER;
     const value = yield* Effect.tryPromise({
-      try: (signal) => new Promise<string>((resolveDigest, rejectDigest) => {
-        const hash = createHash("sha256");
-        const stream = createReadStream(path, { signal });
-        let bytes = 0;
-        stream.on("data", (chunk: string | Buffer) => {
-          const bytesRead = Buffer.from(chunk);
-          bytes += bytesRead.byteLength;
-          if (bytes > maximumBytes) {
-            stream.destroy(new FileSizeLimitError({ path, maximumBytes }));
-            return;
-          }
-          hash.update(bytesRead);
-        });
-        stream.once("error", rejectDigest);
-        stream.once("end", () => resolveDigest(hash.digest("hex")));
-      }),
+      try: () => regularFileDigest(path, maximumBytes),
       catch: (cause) =>
         cause instanceof FileSizeLimitError
           ? cause
@@ -1165,6 +1239,14 @@ export const linuxMachineStateLayer = (
         },
       );
 
+      const inspectPath = Effect.fn("MachineState.inspectPath")(
+        function*(machinePath: MachinePath): Effect.fn.Return<MachineObject, MachineStateError> {
+          const path = yield* checkLinuxPath(machinePath);
+          const metadata = yield* promiseEffect("inspect path", path, () => lstat(path));
+          return { kind: objectKind(metadata) };
+        },
+      );
+
       const setPermissions = Effect.fn("MachineState.setPermissions")(
         function*(input: SetPermissionsInput): Effect.fn.Return<void, MachineStateError> {
           const path = yield* checkLinuxPath(input.path);
@@ -1175,7 +1257,7 @@ export const linuxMachineStateLayer = (
       const permissions = Effect.fn("MachineState.permissions")(
         function*(machinePath: MachinePath): Effect.fn.Return<FilePermissions, MachineStateError> {
           const path = yield* checkLinuxPath(machinePath);
-          const metadata = yield* promiseEffect("read permissions", path, () => stat(path));
+          const metadata = yield* promiseEffect("read permissions", path, () => lstat(path));
           const mode = metadata.mode & 0o7777;
           return { mode, executableByOwner: (mode & 0o100) !== 0 };
         },
@@ -1340,6 +1422,7 @@ export const linuxMachineStateLayer = (
         mutateWithinRoot,
         replaceSymlink,
         readSymlink,
+        inspectPath,
         setPermissions,
         permissions,
         findExecutable,

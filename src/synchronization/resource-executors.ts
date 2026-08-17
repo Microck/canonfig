@@ -1098,6 +1098,13 @@ const verifyDigest = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: target });
+    const kind = yield* machine.inspectPath(path);
+    if (kind.kind !== "regular") {
+      return {
+        passed: false,
+        method: `sha256:non-${kind.kind}`,
+      };
+    }
     const observed = yield* machine.digestFile({ path });
     return {
       passed: observed.value === desiredDigest,
@@ -1164,6 +1171,14 @@ export const verifyResource = (
           path: context.resource.target,
         });
         const permissions = yield* machine.permissions(path);
+        const kind = yield* machine.inspectPath(path);
+        if (kind.kind !== "regular") {
+          return {
+            ...digest,
+            passed: false,
+            method: `${digest.method}+non-${kind.kind}`,
+          };
+        }
         return {
           ...digest,
           passed: permissions.executableByOwner === desired.executable,
@@ -1291,11 +1306,21 @@ const verifyDirectory = (
     const observations = yield* Effect.forEach(files, (file) =>
       Effect.gen(function*() {
       const path = yield* normalizeRelative(root, file.path);
-      const observed = yield* machine.digestFile({ path });
-      const permissions = yield* machine.permissions(path);
+      const kind = yield* machine.inspectPath(path);
+      if (kind.kind !== "regular") {
         return {
           expected: file.digest,
-          observed: observed.value,
+          observed: undefined,
+          executable: false,
+          expectedExecutable: "executable" in file && file.executable === true,
+        };
+      }
+      const observed = yield* machine.digestFile({ path });
+      const permissions = yield* machine.permissions(path);
+      const finalKind = yield* machine.inspectPath(path);
+        return {
+          expected: file.digest,
+          observed: finalKind.kind === "regular" ? observed.value : undefined,
           executable: permissions.executableByOwner,
           expectedExecutable: "executable" in file && file.executable === true,
         };
