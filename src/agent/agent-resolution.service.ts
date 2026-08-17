@@ -24,6 +24,9 @@ import type {
   ExecutableAuthorization,
 } from "../domain/synchronization.ts";
 import {
+  parseNpmPackageSpecification,
+} from "../domain/npm-package-spec.ts";
+import {
   AgentProcessError,
   AgentVerificationError,
   DeniedAgentCapabilityError,
@@ -291,14 +294,26 @@ const canonicalPath = async (value: string, base: string): Promise<string> => {
 };
 
 const optionValue = (argument: string): string | undefined => {
+  if (!argument.startsWith("-")) return undefined;
   const separator = argument.indexOf("=");
   return separator > 0 ? argument.slice(separator + 1) : undefined;
 };
 
-const argumentPath = (argument: string): string | undefined => {
+const argumentPath = (
+  argument: string,
+  npmPackageArgument = false,
+): string | undefined => {
   const value = optionValue(argument) ?? argument;
   if (value.length === 0 || value.startsWith("-")) return undefined;
   if (normalizeOrigin(value) !== undefined) return undefined;
+  if (npmPackageArgument) {
+    const specification = parseNpmPackageSpecification(value);
+    if (specification.kind === "remote" || specification.kind === "ambiguous") {
+      return undefined;
+    }
+    if (specification.kind === "local") return specification.path;
+    return undefined;
+  }
   const optionName = argument.includes("=")
     ? argument.slice(0, argument.indexOf("=")).replace(/^-+/u, "")
     : undefined;
@@ -316,8 +331,21 @@ const argumentPath = (argument: string): string | undefined => {
     : undefined;
 };
 
-const argumentOrigins = (argument: string): ReadonlyArray<string> =>
-  [...argument.matchAll(/https?:\/\/[^\s"'<>]+/giu)].map((match) => match[0]);
+const argumentOrigins = (
+  argument: string,
+  npmPackageArgument = false,
+): ReadonlyArray<string> => {
+  const origins = [...argument.matchAll(/https?:\/\/[^\s"'<>]+/giu)].map((match) => match[0]);
+  if (!npmPackageArgument) return origins;
+  if (argument.startsWith("-") && !argument.includes("=")) return origins;
+  const value = optionValue(argument) ?? argument;
+  const specification = parseNpmPackageSpecification(value);
+  if (specification.kind === "remote") return [...origins, specification.origin];
+  if (specification.kind === "ambiguous" && /(?:\/|:|@|\+)/u.test(value)) {
+    return [...origins, value];
+  }
+  return origins;
+};
 
 const ensureAllowedPath = (
   path: string,
@@ -348,7 +376,13 @@ const ensureAllowedPath = (
 
 const normalizeOrigin = (value: string): string | undefined => {
   try {
-    return new URL(value).origin;
+    const url = new URL(value);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:")
+      || url.username.length > 0
+      || url.password.length > 0
+    ) return undefined;
+    return url.origin;
   } catch {
     return undefined;
   }
@@ -610,11 +644,86 @@ const hasSeparateOptionValue = (
 
 const isUnboundedSourceDependency = (argument: string): boolean => {
   const value = optionValue(argument) ?? argument;
-  return value === "--"
-    || /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
-      .test(value)
-    || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|file:|link:|workspace:|https?:\/\/)/iu
+  const specification = parseNpmPackageSpecification(value);
+  return specification.kind === "ambiguous";
+};
+
+const isExplicitSourceDependency = (argument: string): boolean => {
+  const value = optionValue(argument) ?? argument;
+  return /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
+    .test(value)
+    || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
       .test(value);
+};
+
+const npmDependencyArgumentIndexes = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+): ReadonlySet<number> => {
+  const manager = packageManagerName(executable);
+  if (manager !== "npm" && manager !== "pnpm") return new Set();
+  const commandIndex = firstCommandIndex(
+    arguments_,
+    new Set([
+      "-C",
+      "--cache",
+      "--config-dir",
+      "--dir",
+      "--global-bin-dir",
+      "--global-dir",
+      "--prefix",
+      "--registry",
+      "--store-dir",
+      "--userconfig",
+      "--virtual-store-dir",
+      "--workspace-dir",
+    ]),
+  );
+  if (commandIndex === undefined) return new Set();
+  const command = arguments_[commandIndex]?.toLowerCase();
+  if (
+    command === undefined
+    || !new Set(["add", "i", "in", "ins", "inst", "insta", "instal", "install"]).has(command)
+  ) return new Set();
+  const optionValues = new Set([
+    "-C",
+    "--cache",
+    "--config-dir",
+    "--dir",
+    "--global-bin-dir",
+    "--global-dir",
+    "--prefix",
+    "--registry",
+    "--store-dir",
+    "--userconfig",
+    "--virtual-store-dir",
+    "--workspace-dir",
+  ]);
+  const indexes = new Set<number>();
+  for (let index = commandIndex + 1; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    if (argument.startsWith("-")) {
+      if (!argument.includes("=") && optionValues.has(argument)) index += 1;
+      continue;
+    }
+    indexes.add(index);
+  }
+  return indexes;
+};
+
+const hasInvalidRegistryOption = (
+  manager: string,
+  arguments_: ReadonlyArray<string>,
+): boolean => {
+  if (manager !== "npm" && manager !== "pnpm") return false;
+  return arguments_.some((argument, index) => {
+    const value = argument.startsWith("--registry=")
+      ? argument.slice("--registry=".length)
+      : argument === "--registry"
+      ? arguments_[index + 1]
+      : undefined;
+    return value !== undefined && normalizeOrigin(value) === undefined;
+  });
 };
 
 /**
@@ -653,7 +762,17 @@ const packageManagerPolicy = (
   if (!knownManagers.has(manager)) return undefined;
   const unambiguous = argumentsBeforeSeparator(arguments_);
   if (unambiguous === undefined) return { kind: "denied" };
-  if (unambiguous.some(isUnboundedSourceDependency)) {
+  const dependencyIndexes = npmDependencyArgumentIndexes(manager, unambiguous);
+  if (
+    hasInvalidRegistryOption(manager, unambiguous)
+    || (
+      manager === "npm" || manager === "pnpm"
+        ? [...dependencyIndexes].some((index) =>
+          isUnboundedSourceDependency(unambiguous[index] ?? "")
+        )
+        : unambiguous.some(isExplicitSourceDependency)
+    )
+  ) {
     return { kind: "denied" };
   }
 
@@ -1246,6 +1365,7 @@ const resolveAuthorizedAction = (
       harness,
       "executable-behavior",
     );
+    const npmArguments = npmDependencyArgumentIndexes(executable, authorizedArguments);
     const authorizedWorkingDirectory = action.workingDirectory
       ?? task.allowedPaths[0];
     if (authorizedWorkingDirectory === undefined) {
@@ -1268,8 +1388,9 @@ const resolveAuthorizedAction = (
         harness.allowedPaths,
       );
     }
-    for (const argument of authorizedArguments) {
-      const path = argumentPath(argument);
+    for (const [index, argument] of authorizedArguments.entries()) {
+      const isNpmDependency = npmArguments.has(index);
+      const path = argumentPath(argument, isNpmDependency);
       if (path !== undefined) {
         yield* ensureAllowedPath(
           path,
@@ -1278,7 +1399,7 @@ const resolveAuthorizedAction = (
           harness.allowedPaths,
         );
       }
-      for (const origin of argumentOrigins(argument)) {
+      for (const origin of argumentOrigins(argument, isNpmDependency)) {
         yield* ensureAllowedOrigin(
           origin,
           task.allowedOrigins,
@@ -1343,10 +1464,12 @@ const resolveAuthorizedVerification = (
       harness,
       "verification-executable-behavior",
     );
+    const npmArguments = npmDependencyArgumentIndexes(executable, authorizedArguments);
     yield* Effect.forEach(
-      authorizedArguments,
-      (argument) => {
-        const path = argumentPath(argument);
+      authorizedArguments.entries(),
+      ([index, argument]) => {
+        const isNpmDependency = npmArguments.has(index);
+        const path = argumentPath(argument, isNpmDependency);
         if (path !== undefined) {
           return ensureAllowedPath(
             path,
@@ -1356,7 +1479,7 @@ const resolveAuthorizedVerification = (
           );
         }
         return Effect.forEach(
-          argumentOrigins(argument),
+          argumentOrigins(argument, isNpmDependency),
           (origin) => ensureAllowedOrigin(
             origin,
             task.allowedOrigins,

@@ -40,6 +40,13 @@ import {
   setConfigPath,
 } from "./config-codec.ts";
 import { desiredResourceDigest } from "./resource-plans.ts";
+import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
+
+const isUnboundedNonNpmPackage = (value: string): boolean =>
+  /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
+    .test(value)
+  || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
+    .test(value);
 
 interface LegacyStoredFile {
   readonly path: string;
@@ -783,10 +790,11 @@ const installInvocation = (
       packageName === "--"
       || /^\s*-{1,2}\S*/u.test(packageName)
       || /\s/u.test(packageName)
-      || /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
-        .test(packageName)
-      || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|file:|link:|workspace:|https?:\/\/)/iu
-        .test(packageName)
+      || (
+        method === "npm"
+          ? parseNpmPackageSpecification(packageName).kind !== "registry"
+          : isUnboundedNonNpmPackage(packageName)
+      )
     ) {
       return yield* new InvalidExecutionPlanError({
         message: `ambiguous or source dependency ${packageName} requires a separately bounded execution plan`,

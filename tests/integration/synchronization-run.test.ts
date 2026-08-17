@@ -1424,6 +1424,18 @@ describe("synchronization apply run", () => {
       "@example/tool@1.2.3",
       "--ignore-scripts",
     ]],
+    ["npm", "npm", "alias@npm:real-tool", undefined, [
+      "install",
+      "--global",
+      "alias@npm:real-tool",
+      "--ignore-scripts",
+    ]],
+    ["npm", "npm", "@scope/alias@npm:@scope/real-tool", undefined, [
+      "install",
+      "--global",
+      "@scope/alias@npm:@scope/real-tool",
+      "--ignore-scripts",
+    ]],
     ["homebrew", "brew", "tool", "1.2.3", ["install", "tool@1.2.3"]],
     ["winget", "winget", "Example.Tool", "1.2.3", [
       "install",
@@ -1493,11 +1505,17 @@ describe("synchronization apply run", () => {
   it.each([
     ["git URL", "git+https://github.com/example/tool.git#v1.2.3"],
     ["GitHub shorthand", "github:example/tool"],
+    ["GitHub repository shorthand", "example/tool"],
+    ["GitLab shorthand", "gitlab:example/tool"],
+    ["Bitbucket shorthand", "bitbucket:example/tool"],
+    ["git SSH URL", "git+ssh://git@github.com/example/tool.git"],
+    ["hosted tarball", "https://github.com/example/tool/archive/v1.2.3.tgz"],
+    ["alias with remote", "alias@github:example/tool"],
+    ["scoped alias with remote", "@scope/alias@git+https://github.com/example/tool.git"],
+    ["credential-bearing remote", "https://user:pass@github.com/example/tool.tgz"],
     ["local file", "file:../tool"],
     ["linked package", "link:../tool"],
     ["workspace package", "workspace:*"],
-    ["npm alias", "alias@npm:real-tool"],
-    ["bare npm alias", "npm:real-tool"],
     ["leading option", "--ignore-scripts"],
     ["separator variant", "tool --ignore-scripts"],
   ])("rejects npm %s dependency forms before spawn", async (_name, packageName) => {

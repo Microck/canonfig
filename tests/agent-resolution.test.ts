@@ -774,12 +774,8 @@ describe("agent resolution", () => {
   it.each([
     ["npm run", "npm", ["run", "postinstall"]],
     ["npm exec alias", "npm", ["x", "denied-package"]],
-    ["npm git dependency", "npm", ["install", "git+https://github.com/example/tool.git#v1.2.3"]],
-    ["npm file dependency", "npm", ["install", "file:../tool"]],
-    ["npm link dependency", "npm", ["install", "link:../tool"]],
-    ["npm workspace dependency", "npm", ["install", "workspace:*"]],
-    ["npm package alias", "npm", ["install", "alias@npm:real-tool"]],
-    ["npm bare alias", "npm", ["install", "npm:real-tool"]],
+    ["npm credential-bearing dependency", "npm", ["install", "https://user:pass@github.com/example/tool.tgz"]],
+    ["npm unknown protocol dependency", "npm", ["install", "custom+ssh://example.com/tool"]],
     ["npm separate ignore-scripts value", "npm", ["install", "tool", "--ignore-scripts", "true"]],
     ["npm separator ambiguity", "npm", ["install", "tool", "--", "--ignore-scripts"]],
     ["npm separator package", "npm", ["install", "--", "tool"]],
@@ -818,6 +814,101 @@ describe("agent resolution", () => {
     expect(denied).toMatchObject({
       capability: "package-manager-scripts",
       value: manager,
+    });
+  });
+
+  it.each([
+    ["unscoped registry package", ["install", "tool"]],
+    ["scoped registry package", ["install", "@scope/tool@1.2.3"]],
+    ["npm alias", ["install", "alias@npm:real-tool"]],
+    ["scoped npm alias", ["install", "@scope/alias@npm:@scope/real-tool"]],
+    ["bare scoped npm alias", ["install", "npm:@scope/real-tool"]],
+    ["bounded file dependency", ["install", "file:./local-tool"]],
+    ["bounded link dependency", ["install", "link:./local-tool"]],
+    ["workspace dependency", ["install", "workspace:*"]],
+  ])("authorizes bounded npm %s without treating it as a remote origin", async (
+    _name,
+    arguments_,
+  ) => {
+    await mkdir(join(directory, "local-tool"));
+    const manager = join(directory, "npm");
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    await expect(Effect.runPromise(authorizeAction(
+      action({ executable: manager, arguments: arguments_ }),
+      task(directory, { allowedExecutables }),
+      harness(directory, allowedExecutables),
+    ))).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["GitHub shorthand", "user/repo", "https://github.com"],
+    ["github protocol", "github:user/repo", "https://github.com"],
+    ["GitLab protocol", "gitlab:user/repo", "https://gitlab.com"],
+    ["Bitbucket protocol", "bitbucket:user/repo", "https://bitbucket.org"],
+    ["git+ssh hosted URL", "git+ssh://git@github.com/user/repo.git", "https://github.com"],
+    ["git+https hosted URL", "git+https://github.com/user/repo.git", "https://github.com"],
+    ["cased encoded hosted URL", "git+https://GITHUB.COM/user%2Frepo.git", "https://github.com"],
+    ["non-default hosted port", "https://github.com:8443/user/repo.tgz", "https://github.com:8443"],
+    ["hosted tarball", "https://github.com/user/repo/archive/v1.2.3.tgz", "https://github.com"],
+    ["alias with remote", "alias@github:user/repo", "https://github.com"],
+    ["scoped alias with remote", "@scope/alias@git+https://github.com/user/repo.git", "https://github.com"],
+  ])("authorizes %s only when its canonical origin is allowed", async (
+    _name,
+    dependency,
+    origin,
+  ) => {
+    const manager = join(directory, "npm");
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const allowedBounds = {
+      allowedOrigins: [origin],
+    };
+    await expect(Effect.runPromise(authorizeAction(
+      action({ executable: manager, arguments: ["install", dependency] }),
+      task(directory, { allowedExecutables, ...allowedBounds }),
+      { ...harness(directory, allowedExecutables), ...allowedBounds },
+    ))).resolves.toBeUndefined();
+
+    await expect(Effect.runPromise(authorizeAction(
+      action({ executable: manager, arguments: ["install", dependency] }),
+      task(directory, {
+        allowedExecutables,
+        allowedOrigins: ["https://denied.example.test"],
+      }),
+      {
+        ...harness(directory, allowedExecutables),
+        allowedOrigins: ["https://denied.example.test"],
+      },
+    ).pipe(Effect.flip))).resolves.toMatchObject({
+      capability: "network-origin",
+    });
+  });
+
+  it.each([
+    ["non-hosted git+ssh", "git+ssh://git@example.com/user/repo.git"],
+    ["ambiguous protocol", "git+custom://example.com/user/repo"],
+    ["separator package", "install", "--", "user/repo"],
+    ["unknown option value", "install", "--registry", "not-a-url"],
+  ])("rejects ambiguous npm remote form %s", async (
+    _name,
+    ...dependencyArguments
+  ) => {
+    const manager = join(directory, "npm");
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const arguments_ = dependencyArguments[0] === "install"
+      ? dependencyArguments
+      : ["install", ...dependencyArguments];
+    await expect(Effect.runPromise(authorizeAction(
+      action({ executable: manager, arguments: arguments_ }),
+      task(directory, { allowedExecutables }),
+      harness(directory, allowedExecutables),
+    ).pipe(Effect.flip))).resolves.toMatchObject({
+      capability: "package-manager-scripts",
     });
   });
 

@@ -222,7 +222,8 @@ describe("profile discovery", () => {
     const agents = await fixture("AGENTS.md", [
       "```sh",
       "npm install git+https://github.com/example/tool.git#v1.2.3",
-      "npm install alias@npm:real-tool",
+      "npm install alias@github:example/real-tool",
+      "npm install @scope/alias@git+https://github.com/example/scoped-tool.git",
       "npm install -- --ignore-scripts",
       "```",
       "",

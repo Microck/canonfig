@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { AgentTaskId } from "../domain/brand.ts";
+import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
 import type { BuildPolicy } from "../domain/resource.ts";
 import type { AgentTask } from "../domain/synchronization.ts";
 
@@ -227,10 +228,23 @@ const packageUpstream = (metadata: DiscoveredPackageMetadata): string | undefine
 const isUnboundedPackageSpecification = (value: string): boolean =>
   value === "--"
   || /^\s*-{1,2}\S*/u.test(value)
+  || /\s/u.test(value)
+  || /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
+    .test(value)
+  || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
+    .test(value);
+
+const isUnboundedSourceReference = (value: string): boolean =>
+  value === "--"
+  || /^\s*-{1,2}\S*/u.test(value)
   || /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
     .test(value)
-  || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
+  || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/.+\.git(?:#.*)?$)/iu
     .test(value);
+
+const isUnboundedNpmSpecification = (value: string): boolean =>
+  isUnboundedPackageSpecification(value)
+  || parseNpmPackageSpecification(value).kind !== "registry";
 
 const recipeFromPackage = (
   metadata: DiscoveredPackageMetadata,
@@ -240,8 +254,8 @@ const recipeFromPackage = (
   if (
     metadata.ecosystem !== "source"
     && (
-      isUnboundedPackageSpecification(metadata.source)
-      || (metadata.ecosystem === "npm" && isUnboundedPackageSpecification(metadata.name))
+      isUnboundedSourceReference(metadata.source)
+      || (metadata.ecosystem === "npm" && isUnboundedNpmSpecification(metadata.name))
     )
   ) {
     return undefined;

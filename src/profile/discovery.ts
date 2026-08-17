@@ -6,6 +6,7 @@ import { Effect, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
 
 import { BuildPolicy as BuildPolicySchema } from "../domain/resource.ts";
+import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
 import { parseJsonc, type JsonValue } from "./profile-codec.ts";
 import {
   DiscoveryFilesystemError,
@@ -168,10 +169,7 @@ const isUnboundedPackageSpecification = (value: string): boolean =>
   value === "--"
   || /^\s*-{1,2}\S*/u.test(value)
   || /\s/u.test(value)
-  || /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
-    .test(value)
-  || /(?:^|@)(?:npm:|git\+|git:\/\/|github:|gitlab:|bitbucket:|file:|link:|workspace:|https?:\/\/)/iu
-    .test(value);
+  || parseNpmPackageSpecification(value).kind !== "registry";
 
 const valueAfter = (tokens: ReadonlyArray<string>, options: ReadonlyArray<string>): string | undefined => {
   for (const option of options) {
