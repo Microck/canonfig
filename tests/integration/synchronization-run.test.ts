@@ -30,8 +30,14 @@ import {
 } from "../../src/domain/brand.ts";
 import { FollowerIdentity } from "../../src/domain/identity.ts";
 import type { ProfileRevision, PublishedResource } from "../../src/domain/profile.ts";
-import type { AutomaticRecipeMethod } from "../../src/domain/resource.ts";
-import type { SynchronizationOutcome } from "../../src/domain/synchronization.ts";
+import type {
+  AutomaticRecipeMethod,
+  RecipeSource,
+} from "../../src/domain/resource.ts";
+import type {
+  ActionDetail,
+  SynchronizationOutcome,
+} from "../../src/domain/synchronization.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import type {
   RenderedSchedulerJob,
@@ -481,10 +487,12 @@ const installerInvocation = async (
   version?: string | undefined,
   onInvocation?: () => void,
   onLookup?: () => void,
+  source?: RecipeSource | undefined,
 ) => {
   const root = temporaryDirectory();
   const executableQueries: Array<string> = [];
   const invocations: Array<{ readonly executable: string; readonly arguments: ReadonlyArray<string> }> = [];
+  const environments: Array<ReadonlyArray<{ readonly name: string; readonly value: string }>> = [];
   const machine = decorateMachine(root, (service) => ({
     ...service,
     findExecutable: ({ name }) => {
@@ -501,6 +509,7 @@ const installerInvocation = async (
         executable: input.executable.absolute,
         arguments: input.arguments,
       });
+      environments.push(input.environment ?? []);
       return Effect.succeed({
         exitCode: 0,
         signal: null,
@@ -510,22 +519,26 @@ const installerInvocation = async (
     },
   }));
   const resourceId = decode(ResourceId)("tool");
-  const detail = version === undefined
-    ? {
+  let detail: Extract<ActionDetail, { readonly kind: "install-tool" }>;
+  if (version === undefined) {
+    detail = {
       kind: "install-tool" as const,
       toolId: "tool",
       // SAFETY: This helper deliberately injects hostile method strings to
       // verify the execution boundary rejects them before lookup or spawn.
       method: method as AutomaticRecipeMethod,
       package: packageName,
-    }
-    : {
+    };
+  } else {
+    detail = {
       kind: "install-tool" as const,
       toolId: "tool",
       method,
       package: packageName,
       version,
     };
+  }
+  if (source !== undefined) Object.assign(detail, { source });
   const context: ResourceExecutionContext = {
     run: decode(RunId)(`run-${method}`),
     action: {
@@ -559,7 +572,7 @@ const installerInvocation = async (
       yield* prepared.execute;
     }).pipe(Effect.provide(machine)),
   );
-  return { executableQueries, invocations };
+  return { executableQueries, invocations, environments };
 };
 
 describe("synchronization apply run", () => {
@@ -1689,13 +1702,6 @@ describe("synchronization apply run", () => {
       "tool==1.2.3",
       "--only-binary=:all:",
     ]],
-    ["cargo", "cargo", "tool", "1.2.3", [
-      "install",
-      "tool",
-      "--version",
-      "1.2.3",
-      "--locked",
-    ]],
     ["apt", "apt-get", "tool", "1.2.3", ["install", "-y", "tool=1.2.3"]],
   ] as const)(
     "executes versioned %s recipes with ecosystem-specific arguments",
@@ -1717,7 +1723,6 @@ describe("synchronization apply run", () => {
     ["homebrew", "brew", ["install", "tool"]],
     ["winget", "winget", ["install", "--id", "tool", "--silent"]],
     ["uv", "uv", ["tool", "install", "tool", "--only-binary=:all:"]],
-    ["cargo", "cargo", ["install", "tool"]],
     ["apt", "apt-get", ["install", "-y", "tool"]],
   ] as const)(
     "preserves unversioned %s installer behavior",
@@ -1728,6 +1733,52 @@ describe("synchronization apply run", () => {
       expect(result.invocations[0]?.arguments).toEqual(arguments_);
     },
   );
+
+  it("uses the reviewed npm artifact and pins source-less installs", async () => {
+    const artifact = "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz";
+    const reviewed = await installerInvocation(
+      "npm",
+      "tool",
+      "1.2.3",
+      undefined,
+      undefined,
+      artifact,
+    );
+    expect(reviewed.invocations[0]?.arguments).toEqual([
+      "install",
+      "--global",
+      artifact,
+      "--ignore-scripts",
+    ]);
+
+    const fallback = await installerInvocation("npm", "tool", "1.2.3");
+    expect(fallback.environments[0]).toContainEqual({
+      name: "NPM_CONFIG_REGISTRY",
+      value: "https://registry.npmjs.org/",
+    });
+    expect(fallback.invocations[0]?.arguments).toContain("tool@1.2.3");
+  });
+
+  it("rejects Cargo scripts-disabled recipes before lookup or spawn", async () => {
+    let lookedUp = false;
+    let spawned = false;
+    await expect(installerInvocation(
+      "cargo",
+      "tool",
+      "1.2.3",
+      () => {
+        spawned = true;
+      },
+      () => {
+        lookedUp = true;
+      },
+    )).rejects.toMatchObject({
+      _tag: "InvalidExecutionPlanError",
+      message: "cargo recipe tool requires Human Action Required because Cargo has no disable-scripts mode",
+    });
+    expect(lookedUp).toBe(false);
+    expect(spawned).toBe(false);
+  });
 
   it("rejects source recipes before executable lookup or spawn", async () => {
     let lookedUp = false;

@@ -478,6 +478,11 @@ describe("authenticated content-addressed transport", () => {
       revisionId: published.revision.id,
     }));
     expect(empty.resources).toEqual([]);
+    expect(empty.scheduleDefault).toEqual({
+      type: "daily",
+      at: "00:00",
+      timezone: "local",
+    });
   });
 
   it("rechecks current groups and revocation without revealing unauthorized blobs", async () => {

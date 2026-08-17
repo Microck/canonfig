@@ -224,6 +224,16 @@ describe("reviewed profile publication", () => {
       `profile-publication:${published.revision.digest}`,
     );
     expect(published.revision.resources[0]?.blobs[0]).toMatch(/^[a-f0-9]{64}$/u);
+    // SAFETY: publication canonicalBytes is validated JSON with this recipe shape.
+    const canonical = JSON.parse(published.revision.canonicalBytes) as {
+      readonly resources: ReadonlyArray<{
+        readonly spec: {
+          readonly recipes: ReadonlyArray<{ readonly source?: string | undefined }>;
+        };
+      }>;
+    };
+    expect(canonical.resources[0]?.spec.recipes[0]?.source)
+      .toBe("lock:fixture-tool:1.2.3");
     expect(signing.calls).toEqual({ signed: 1, verified: 1 });
     expect(JSON.stringify(published.revision)).not.toContain("PRIVATE KEY");
 

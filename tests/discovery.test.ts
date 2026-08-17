@@ -247,6 +247,7 @@ describe("profile discovery", () => {
           name: "locked-cli",
           version: "8.1.0",
           resolved: "https://registry.npmjs.org/locked-cli/-/locked-cli-8.1.0.tgz",
+          integrity: "sha512-c2FtcGxl",
           bin: { locked: "bin/locked.js" },
         },
       },
@@ -273,6 +274,7 @@ describe("profile discovery", () => {
           package: "locked-cli",
           version: "8.1.0",
           source: "https://registry.npmjs.org/locked-cli/-/locked-cli-8.1.0.tgz",
+          integrity: "sha512-c2FtcGxl",
         }),
       ],
     });
@@ -409,6 +411,7 @@ describe("profile discovery", () => {
     expect(result.tools.find((tool) => tool.id === "cargo-tool")?.recipes[0]).toMatchObject({
       method: "cargo",
       command: ["cargo", "install", "cargo-tool", "--version", "6.7.8", "--locked"],
+      buildPolicy: { mode: "scripts-disabled" },
     });
     expect(result.tools.find((tool) => tool.id === "source-tool")?.recipes[0]).toMatchObject({
       method: "source",

@@ -446,6 +446,7 @@ const explicitMetadata = (
     name,
     version: jsonString(object.version),
     source: source ?? `${sourcePath}#canonfig.tools`,
+    integrity: jsonString(object.integrity),
     upstream: jsonString(object.upstream),
     buildCommands,
     buildPolicy,
@@ -550,6 +551,7 @@ const scanPackageLock = (
         name,
         version,
         source: jsonString(packageObject.resolved) ?? `${context.sourcePath}#packages.${packagePath}`,
+        integrity: jsonString(packageObject.integrity),
       };
       records.push({
         sourcePath: context.sourcePath,

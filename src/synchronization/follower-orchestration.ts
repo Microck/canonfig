@@ -807,6 +807,7 @@ const persistableRevision = (
     blobs: resource.blobs,
     })),
   groups: revision.groups,
+  scheduleDefault: revision.scheduleDefault,
 });
 
 const pathWithinHarnessBounds = (

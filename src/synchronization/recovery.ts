@@ -208,6 +208,7 @@ const baseRevision = (revision: SynchronizationRecoveryInput["revision"]) => ({
     blobs: resource.blobs,
     })),
   groups: revision.groups,
+  scheduleDefault: revision.scheduleDefault,
 });
 
 const evidence = (verification: ResourceVerification): VerificationEvidence => {

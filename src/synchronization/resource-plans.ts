@@ -16,6 +16,7 @@ import type {
   ResourcePlanningContext,
   SkillDriftInput,
   SkillDriftState,
+  ToolRecipe,
 } from "./synchronization.types.ts";
 
 export interface ResourceActionDraft {
@@ -30,6 +31,7 @@ interface InstallToolActionDetail {
   method: AutomaticRecipeMethod;
   package: string;
   version?: string;
+  source?: ToolRecipe["source"];
   buildPolicy?: BuildPolicy;
 }
 
@@ -354,8 +356,8 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     .filter((candidate) => candidate.platform === context.platform)
     .sort((left, right) =>
       compareText(
-        `${left.method}\0${left.package}\0${left.version ?? ""}`,
-        `${right.method}\0${right.package}\0${right.version ?? ""}`,
+        `${left.method}\0${left.package}\0${left.version ?? ""}\0${JSON.stringify(left.source)}`,
+        `${right.method}\0${right.package}\0${right.version ?? ""}\0${JSON.stringify(right.source)}`,
       )
     )[0];
   if (recipe === undefined) {
@@ -372,6 +374,20 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
       },
     }];
   }
+  if (
+    recipe.method === "cargo"
+    && (recipe.buildPolicy?.mode ?? "scripts-disabled") === "scripts-disabled"
+  ) {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `Installing ${context.desired.toolId} with Cargo requires Human Action Required`,
+        instructions:
+          `Cargo may execute build.rs and procedural macros for ${recipe.package}, but Cargo has no disable-scripts mode. Review and apply this recipe with a separately bounded builder policy, then rerun synchronization.`,
+      },
+    }];
+  }
   const detail: InstallToolActionDetail = {
     kind: "install-tool",
     toolId: context.desired.toolId,
@@ -379,6 +395,7 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     package: recipe.package,
   };
   if (recipe.version !== undefined) detail.version = recipe.version;
+  if (recipe.source !== undefined) detail.source = recipe.source;
   if (recipe.buildPolicy !== undefined) detail.buildPolicy = recipe.buildPolicy;
   if (detail.buildPolicy?.mode === "required") {
     return [{

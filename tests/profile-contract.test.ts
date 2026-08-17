@@ -375,6 +375,26 @@ describe("installation recipe version boundaries", () => {
     })).toThrow();
   });
 
+  it("retains reviewed source metadata on automatic install actions", () => {
+    const decoded = Schema.decodeUnknownSync(ActionDetailSchema)({
+      kind: "install-tool",
+      toolId: "tool",
+      method: "npm",
+      package: "tool",
+      version: "1.2.3",
+      source: {
+        source: "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz",
+        integrity: "sha512-c2FtcGxl",
+      },
+    });
+    expect(decoded).toMatchObject({
+      source: {
+        source: "https://registry.npmjs.org/tool/-/tool-1.2.3.tgz",
+        integrity: "sha512-c2FtcGxl",
+      },
+    });
+  });
+
   it("accepts exact npm semver, including scoped prerelease and build metadata", () => {
     const decoded = Schema.decodeUnknownSync(ResourceSpecInputSchema)({
       kind: "tool",
@@ -394,6 +414,52 @@ describe("installation recipe version boundaries", () => {
         version: "1.2.3-alpha.1+build.7",
       }],
     });
+  });
+
+  it("retains typed reviewed npm artifact metadata at the profile boundary", () => {
+    const decoded = Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+      kind: "tool",
+      toolId: "tool",
+      recipes: [{
+        platform: "linux",
+        method: "npm",
+        package: "@scope/tool",
+        version: "1.2.3",
+        source: {
+          source: "https://registry.npmjs.org/@scope/tool/-/tool-1.2.3.tgz",
+          integrity: "sha512-c2FtcGxl",
+        },
+      }],
+      login: { required: false },
+    });
+    expect(decoded).toMatchObject({
+      recipes: [{
+        source: {
+          source: "https://registry.npmjs.org/@scope/tool/-/tool-1.2.3.tgz",
+          integrity: "sha512-c2FtcGxl",
+        },
+      }],
+    });
+  });
+
+  it.each([
+    "https://registry.npmjs.org/@scope/other/-/other-1.2.3.tgz",
+    "https://evil.example/@scope/tool/-/tool-1.2.3.tgz",
+    "https://registry.npmjs.org/@scope/tool/-/tool-1.2.3.tgz?redirect=evil",
+    "https://user:password@registry.npmjs.org/@scope/tool/-/tool-1.2.3.tgz",
+  ])("rejects an unapproved or mismatched reviewed npm source: %s", (source) => {
+    expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+      kind: "tool",
+      toolId: "tool",
+      recipes: [{
+        platform: "linux",
+        method: "npm",
+        package: "@scope/tool",
+        version: "1.2.3",
+        source,
+      }],
+      login: { required: false },
+    })).toThrow();
   });
 
   it.each([

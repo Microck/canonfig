@@ -569,6 +569,7 @@ describe("stable planning and bounded resolution", () => {
             method: "apt",
             package: "ripgrep",
             version: "14.1.0",
+            source: "package-lock.json",
           }],
           loginRequired: false,
         }],
@@ -582,6 +583,7 @@ describe("stable planning and bounded resolution", () => {
       method: "apt",
       package: "ripgrep",
       version: "14.1.0",
+      source: "package-lock.json",
     });
     expect(JSON.parse(versioned.encoded).actions[0].detail.version).toBe("14.1.0");
     expect(unversioned.actions[0]?.detail).toEqual({
@@ -617,6 +619,36 @@ describe("stable planning and bounded resolution", () => {
         detail: expect.objectContaining({
           kind: "human-action",
           reason: "Installing source-tool from source requires Human Action Required",
+        }),
+      }),
+    ]);
+    expect(plan.actions.some((action) => action.kind === "install-tool")).toBe(false);
+  });
+
+  it("routes Cargo scripts-disabled recipes to Human Action Required", () => {
+    const subject = resource("tool", "tool", "ensure");
+    const plan = runPlan(plannerInput(
+      [subject],
+      {
+        desired: [{
+          kind: "tool",
+          toolId: "cargo-tool",
+          recipes: [{
+            platform: "linux",
+            method: "cargo",
+            package: "cargo-tool",
+            version: "1.2.3",
+          }],
+          loginRequired: false,
+        }],
+      },
+    ));
+    expect(plan.actions).toEqual([
+      expect.objectContaining({
+        kind: "human-action",
+        detail: expect.objectContaining({
+          kind: "human-action",
+          reason: "Installing cargo-tool with Cargo requires Human Action Required",
         }),
       }),
     ]);

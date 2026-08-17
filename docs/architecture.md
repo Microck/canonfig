@@ -212,6 +212,16 @@ winget, uv, cargo, apt, and source. Unknown methods are rejected during
 authoring, planning, persisted-plan decoding, and execution; Canonfig does not
 coerce unrecognized aliases.
 
+Reviewed package recipes retain optional `source` and `integrity` metadata from
+discovery through the signed profile, transport, plan, and execution boundary.
+An HTTPS npm tarball source must be the canonical registry tarball for the
+declared package and exact version, and package-manager installs without an
+artifact source are pinned to `https://registry.npmjs.org`. Credentials,
+redirected or non-HTTPS sources, mutable Git forms, and package/source
+mismatches are rejected before an installer is looked up. When an SRI
+`integrity` value is present for an npm artifact, the artifact is fetched
+without following redirects and its digest is checked before installation.
+
 Every recipe also carries a reviewed `buildPolicy`. The backward-compatible
 default is `{ "mode": "scripts-disabled" }`; npm installs use
 `--ignore-scripts` and uv installs use `--only-binary=:all:`. A package that
@@ -225,6 +235,10 @@ and other source dependency specifications are likewise denied unless a
 separately bounded execution plan is reviewed and published. Reviewed source
 recipes remain safe immutable profile references, but the current executor
 never fetches or builds them and always routes them to Human Action Required.
+Cargo recipes are always Human Action Required under the default
+`scripts-disabled` policy because Cargo can execute `build.rs` and procedural
+macros without a disable-scripts mode. A future bounded builder policy must be
+introduced separately before Cargo can be automated.
 
 Registry-backed agent installs are pinned to the one HTTPS origin shared by
 the task and follower harness. npm-family, uv, and pip-compatible invocations

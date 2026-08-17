@@ -16,7 +16,7 @@ import type {
   PlannedAction,
   SynchronizationPlan,
 } from "../domain/synchronization.ts";
-import type { BuildPolicy, Platform, RecipeMethod } from "../domain/resource.ts";
+import type { BuildPolicy, Platform, RecipeMethod, RecipeSource } from "../domain/resource.ts";
 import type { AgentHarnessConfiguration } from "../agent/agent-resolution.types.ts";
 import type { AgentResolution } from "../agent/agent-resolution.service.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
@@ -79,6 +79,7 @@ export interface ToolRecipe {
   readonly method: RecipeMethod;
   readonly package: string;
   readonly version?: string | undefined;
+  readonly source?: RecipeSource | undefined;
   readonly buildPolicy?: BuildPolicy | undefined;
 }
 

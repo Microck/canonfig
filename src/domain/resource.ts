@@ -10,6 +10,7 @@ import {
 } from "./brand.ts";
 import {
   AutomaticRecipeMethod as AutomaticRecipeMethodSchema,
+  RecipeSourceMetadata as RecipeSourceMetadataSchema,
   RecipeMethod as RecipeMethodSchema,
   recipeValidationError,
 } from "./recipe-versions.ts";
@@ -111,6 +112,9 @@ export const BuildPolicy = Schema.Union([
 ]);
 export type BuildPolicy = Schema.Schema.Type<typeof BuildPolicy>;
 
+export type { RecipeSource } from "./recipe-versions.ts";
+export { RecipeSourceMetadataSchema as RecipeSourceMetadata };
+
 /**
  * A Profile Resource: one named item of desired configuration.
  * `spec` carries kind-specific fields decoded by `resourceSpecSchema`.
@@ -179,6 +183,10 @@ const ToolRecipeRefSchema = Schema.Struct({
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
   buildPolicy: Schema.optional(BuildPolicy),
+  source: Schema.optional(Schema.Union([
+    Schema.NonEmptyString,
+    RecipeSourceMetadataSchema,
+  ])),
 });
 
 export const ToolRecipeRef = ToolRecipeRefSchema.check(
@@ -302,6 +310,10 @@ const ToolRecipeSchema = Schema.Struct({
   method: RecipeMethod,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
+  source: Schema.optional(Schema.Union([
+    Schema.NonEmptyString,
+    RecipeSourceMetadataSchema,
+  ])),
 });
 export const ToolRecipe = ToolRecipeSchema.check(
   Schema.makeFilter((recipe) => {

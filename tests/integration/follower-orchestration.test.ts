@@ -651,6 +651,16 @@ describe("production follower orchestration", () => {
       reusedBlobs: 3,
       outcome: { outcome: "Converged" },
     });
+    const emptyViewConfiguration = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.getFollowerSynchronizationConfiguration()
+      ).pipe(Effect.provide(followerRepository)),
+    );
+    expect(emptyViewConfiguration?.scheduleDefault).toEqual({
+      type: "daily",
+      at: "00:00",
+      timezone: "local",
+    });
     expect(server.blobRequests()).toBe(4);
     const stableViews = await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>

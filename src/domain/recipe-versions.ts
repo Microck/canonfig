@@ -30,6 +30,19 @@ export const AutomaticRecipeMethod = Schema.Literals([
 ]);
 export type AutomaticRecipeMethod = Schema.Schema.Type<typeof AutomaticRecipeMethod>;
 
+/** Canonical source metadata retained for reviewed package recipes. */
+export const RecipeSourceMetadata = Schema.Struct({
+  source: Schema.NonEmptyString,
+  integrity: Schema.optional(Schema.NonEmptyString),
+});
+export type RecipeSourceMetadata = Schema.Schema.Type<typeof RecipeSourceMetadata>;
+export type RecipeSource = string | RecipeSourceMetadata;
+
+export interface RecipeSourceDetails {
+  readonly source?: string | undefined;
+  readonly integrity?: string | undefined;
+}
+
 /**
  * Recipe methods that can express a version as a single deterministic
  * package-manager argument. Source revisions use a separate safe-reference
@@ -95,6 +108,8 @@ export const recipeValidationError = (input: {
   readonly method: string;
   readonly package: string;
   readonly version?: string | undefined;
+  readonly source?: RecipeSource | undefined;
+  readonly integrity?: string | undefined;
 }): string | undefined => {
   const { method, package: packageName, version } = input;
   if (!Schema.is(RecipeMethod)(method)) {
@@ -112,6 +127,8 @@ export const recipeValidationError = (input: {
   if (method !== "source" && !isSafePackageArgument(packageName)) {
     return `package argument is unsafe: ${packageName}`;
   }
+  const sourceReason = recipeSourceValidationError(input);
+  if (sourceReason !== undefined) return sourceReason;
   if (version === undefined) return undefined;
   const pattern = versionPatternFor(method);
   if (
@@ -122,6 +139,103 @@ export const recipeValidationError = (input: {
     return `installer ${method} cannot honor requested version ${version}`;
   }
   return undefined;
+};
+
+const sourceValue = (
+  source: RecipeSource | undefined,
+): { readonly source: string; readonly integrity?: string | undefined } | undefined =>
+  source === undefined
+    ? undefined
+    : Schema.is(Schema.String)(source)
+    ? { source }
+    : source;
+
+const isSRI = (value: string): boolean =>
+  /^(?:sha256|sha384|sha512)-[A-Za-z0-9+/]+={0,2}$/u.test(value);
+
+const npmTarballPath = (packageName: string, version: string): string => {
+  const packagePart = packageName.startsWith("@")
+    ? packageName.slice(packageName.indexOf("/") + 1)
+    : packageName;
+  return `/${packageName}/-/${packagePart}-${version}.tgz`;
+};
+
+/**
+ * Validate the reviewed source without turning a lockfile locator into a
+ * package-manager argument. Non-URL locators remain useful evidence and are
+ * installed from the canonical registry; URL sources are only accepted for
+ * exact npm registry tarballs.
+ */
+export const recipeSourceValidationError = (input: {
+  readonly method: string;
+  readonly package: string;
+  readonly version?: string | undefined;
+  readonly source?: RecipeSource | undefined;
+  readonly integrity?: string | undefined;
+}): string | undefined => {
+  const metadata = sourceValue(input.source);
+  const integrity = metadata?.integrity ?? input.integrity;
+  if (input.integrity !== undefined && metadata?.integrity !== undefined) {
+    return "recipe source integrity is duplicated";
+  }
+  if (integrity !== undefined && !isSRI(integrity)) {
+    return "recipe source integrity must be a valid sha256, sha384, or sha512 SRI value";
+  }
+  if (metadata === undefined) return undefined;
+  let url: URL;
+  try {
+    url = new URL(metadata.source);
+  } catch {
+    // Lockfile paths and evidence locators are not install arguments.
+    return undefined;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    // Schemes such as lock:, package:, and file paths are evidence locators,
+    // not network sources.
+    if (/^(?:git\+|git:|ssh:|github:|gitlab:|bitbucket:|file:|link:|workspace:|npm:)/iu.test(metadata.source)) {
+      return "mutable Git or source dependency metadata is not an approved package artifact";
+    }
+    return undefined;
+  }
+  if (
+    url.protocol !== "https:"
+    || url.username.length > 0
+    || url.password.length > 0
+    || url.search.length > 0
+    || url.hash.length > 0
+    || url.port.length > 0 && url.port !== "443"
+  ) {
+    return "recipe source must be an exact HTTPS URL without credentials, redirects, query, or fragment";
+  }
+  if (input.method !== "npm" && input.method !== "source") {
+    return "recipe source URLs are only supported for npm registry artifacts or reviewed source recipes";
+  }
+  if (input.method === "npm") {
+    if (url.origin !== "https://registry.npmjs.org") {
+      return "npm recipe source must use the canonical npm registry origin";
+    }
+    let path: string;
+    try {
+      path = decodeURIComponent(url.pathname);
+    } catch {
+      return "npm recipe source has an invalid encoded path";
+    }
+    if (input.version === undefined || path !== npmTarballPath(input.package, input.version)) {
+      return "npm recipe source must match the exact registry tarball for package and version";
+    }
+  }
+  return undefined;
+};
+
+export const recipeSourceDetails = (
+  source: RecipeSource | undefined,
+  integrity?: string | undefined,
+): RecipeSourceDetails => {
+  const metadata = sourceValue(source);
+  return {
+    source: metadata?.source,
+    integrity: metadata?.integrity ?? integrity,
+  } satisfies RecipeSourceDetails;
 };
 
 export const isSafeRecipe = (input: {

@@ -160,13 +160,19 @@ const resourceForTool = (tool: DiscoveredTool): ProfileResourceInput => ({
           method: recipe.method,
           package: packageForRecipe(recipe),
           version: recipe.version,
+          source: recipe.integrity === undefined
+            ? recipe.source
+            : {
+              source: recipe.source,
+              integrity: recipe.integrity,
+            },
           buildPolicy: recipe.buildPolicy,
         }))
       )
       .sort((left, right) =>
         compareText(
-          `${left.platform}\0${left.method}\0${left.package}\0${left.version}`,
-          `${right.platform}\0${right.method}\0${right.package}\0${right.version}`,
+          `${left.platform}\0${left.method}\0${left.package}\0${left.version}\0${JSON.stringify(left.source)}`,
+          `${right.platform}\0${right.method}\0${right.package}\0${right.version}\0${JSON.stringify(right.source)}`,
         )
       ),
     login: { required: false },

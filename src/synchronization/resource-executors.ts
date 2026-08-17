@@ -1,4 +1,5 @@
 import { Effect, Schema } from "effect";
+import { createHash } from "node:crypto";
 import { isAbsolute, win32 } from "node:path";
 
 import { CredentialReference, type RunId } from "../domain/brand.ts";
@@ -8,7 +9,11 @@ import {
   type ResourceSpecInput,
   type VerificationInput,
 } from "../domain/profile.ts";
-import { AutomaticRecipeMethod, type BuildPolicy } from "../domain/resource.ts";
+import {
+  AutomaticRecipeMethod,
+  type BuildPolicy,
+  type RecipeSource,
+} from "../domain/resource.ts";
 import type { PlannedAction } from "../domain/synchronization.ts";
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
@@ -41,7 +46,10 @@ import {
 } from "./config-codec.ts";
 import { desiredResourceDigest } from "./resource-plans.ts";
 import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
-import { recipeValidationError } from "../domain/recipe-versions.ts";
+import {
+  recipeSourceDetails,
+  recipeValidationError,
+} from "../domain/recipe-versions.ts";
 
 const isUnboundedNonNpmPackage = (value: string): boolean =>
   /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
@@ -767,6 +775,7 @@ const installInvocation = (
   packageName: string,
   version?: string | undefined,
   buildPolicy: BuildPolicy = { mode: "scripts-disabled" },
+  source?: RecipeSource | undefined,
 ): Effect.Effect<
   void,
   MachineStateError | ActionExecutionError | InvalidExecutionPlanError,
@@ -787,6 +796,15 @@ const installInvocation = (
       return yield* new InvalidExecutionPlanError({
         message:
           `recipe ${method}/${packageName} requires a bounded build policy; the process executor cannot confine lifecycle descendants`,
+      });
+    }
+    if (
+      method === "cargo"
+      && buildPolicy.mode === "scripts-disabled"
+    ) {
+      return yield* new InvalidExecutionPlanError({
+        message:
+          `cargo recipe ${packageName} requires Human Action Required because Cargo has no disable-scripts mode`,
       });
     }
     if (
@@ -821,10 +839,39 @@ const installInvocation = (
         message: `ambiguous or source dependency ${packageName} requires a separately bounded execution plan`,
       });
     }
-    const recipeError = recipeValidationError({ method, package: packageName, version });
+    const recipeError = recipeValidationError({
+      method,
+      package: packageName,
+      version,
+      source,
+    });
     if (recipeError !== undefined) {
       return yield* new InvalidExecutionPlanError({
         message: recipeError,
+      });
+    }
+    const sourceDetailsValue = recipeSourceDetails(source);
+    const sourceUrl = method === "npm"
+      && sourceDetailsValue.source !== undefined
+      && sourceDetailsValue.source.startsWith("https://")
+      ? sourceDetailsValue.source
+      : undefined;
+    if (sourceUrl !== undefined && sourceDetailsValue.integrity !== undefined) {
+      yield* Effect.tryPromise({
+        try: async () => {
+          const response = await fetch(sourceUrl, { redirect: "error" });
+          if (!response.ok) throw new Error(`artifact request returned ${response.status}`);
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          const [algorithm, expected] = sourceDetailsValue.integrity!.split("-", 2);
+          if (algorithm === undefined || expected === undefined) {
+            throw new Error("artifact integrity metadata is malformed");
+          }
+          const actual = createHash(algorithm).update(bytes).digest("base64");
+          if (actual !== expected) throw new Error("artifact integrity mismatch");
+        },
+        catch: (cause) => new InvalidExecutionPlanError({
+          message: `reviewed package artifact could not be verified: ${String(cause)}`,
+        }),
       });
     }
     const machine = yield* MachineState;
@@ -834,18 +881,37 @@ const installInvocation = (
       ? "brew"
       : method;
     const executable = yield* machine.findExecutable({ name: executableName });
+    const packageSpecifier = method === "npm" && sourceUrl !== undefined
+      ? sourceUrl
+      : version === undefined
+      ? packageName
+      : `${packageName}@${version}`;
+    const packageEnvironment = method === "npm" || method === "pnpm" || method === "bun"
+      ? [
+        { name: "NPM_CONFIG_USERCONFIG", value: process.platform === "win32" ? "NUL" : "/dev/null" },
+        { name: "NPM_CONFIG_GLOBALCONFIG", value: process.platform === "win32" ? "NUL" : "/dev/null" },
+        { name: "NPM_CONFIG_LOCATION", value: "global" },
+        { name: "NPM_CONFIG_REGISTRY", value: "https://registry.npmjs.org/" },
+        ...(method === "pnpm"
+          ? [{ name: "PNPM_CONFIG_REGISTRY", value: "https://registry.npmjs.org/" }]
+          : []),
+        ...(method === "bun"
+          ? [{ name: "BUN_CONFIG_REGISTRY", value: "https://registry.npmjs.org/" }]
+          : []),
+      ]
+      : undefined;
     const arguments_ = method === "npm"
       ? [
         "install",
         "--global",
-        version === undefined ? packageName : `${packageName}@${version}`,
+        packageSpecifier,
         ...(buildPolicy.mode === "scripts-disabled" ? ["--ignore-scripts"] : []),
       ]
       : method === "pnpm" || method === "bun"
       ? [
         "add",
         "--global",
-        version === undefined ? packageName : `${packageName}@${version}`,
+        packageSpecifier,
         ...(buildPolicy.mode === "scripts-disabled" ? ["--ignore-scripts"] : []),
       ]
       : method === "brew" || method === "homebrew"
@@ -871,6 +937,7 @@ const installInvocation = (
       arguments: arguments_,
       timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
       maximumOutputBytes: context.limits.maximumProcessOutputBytes,
+      environment: packageEnvironment,
     });
     if (result.exitCode !== 0) {
       return yield* new ActionExecutionError({
@@ -906,6 +973,7 @@ export const prepareResourceAction = (
           detail.package,
           detail.version,
           detail.buildPolicy,
+          detail.source,
         ),
       });
     case "transfer-blob":

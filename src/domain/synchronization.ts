@@ -19,10 +19,11 @@ import {
 import {
   AutomaticRecipeMethod,
   BuildPolicy as BuildPolicySchema,
+  type RecipeSource,
   type BuildPolicy,
 } from "./resource.ts";
 
-import { recipeValidationError } from "./recipe-versions.ts";
+import { RecipeSourceMetadata, recipeValidationError } from "./recipe-versions.ts";
 /**
  * Synchronization domain types: plans, actions, outcomes, drift, agent tasks,
  * and human action records.
@@ -57,7 +58,7 @@ export type ActionDetail =
   | { readonly kind: "write-config"; readonly target: string; readonly keys: ReadonlyArray<string> }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
   | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string>; readonly schedule?: SyncSchedule | undefined }
-  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly buildPolicy?: BuildPolicy | undefined }
+  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined }
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
   | { readonly kind: "agent-task"; readonly taskId: AgentTaskId; readonly summary: string }
@@ -169,6 +170,10 @@ const InstallToolActionDetailSchema = Schema.Struct({
   method: AutomaticRecipeMethod,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
+  source: Schema.optional(Schema.Union([
+    Schema.NonEmptyString,
+    RecipeSourceMetadata,
+  ])),
   buildPolicy: Schema.optional(BuildPolicySchema),
 }).check(
   Schema.makeFilter((detail) => {

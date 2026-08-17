@@ -771,9 +771,7 @@ const makeEnrollment = Effect.gen(function*() {
       digest: decode(ContentDigest)(selected.revision.digest),
       publishedAt: selected.revision.publishedAt,
       resources,
-      scheduleDefault: resources.length === 0
-        ? undefined
-        : profile.scheduleDefault,
+      scheduleDefault: profile.scheduleDefault,
       signingKeyId: keys.material.source.keyId,
       signingPublicKey: keys.publicPem,
       sourceSignature: selected.revision.signature,
