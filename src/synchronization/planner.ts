@@ -6,7 +6,10 @@ import {
   BlobId,
   ResourceId,
 } from "../domain/brand.ts";
-import type { PublishedResource } from "../domain/profile.ts";
+import {
+  validateResourcePathConflicts,
+  type PublishedResource,
+} from "../domain/profile.ts";
 import { policyCompatibleWithKind } from "../domain/resource.ts";
 import type {
   ActionDetail,
@@ -21,7 +24,9 @@ import {
   MissingDesiredResourceError,
   MissingObservedResourceError,
   PlannerDependencyCycleError,
+  PlannerConflictingResourcePathError,
   PlannerInvalidRecipeError,
+  PlannerInvalidResourcePathError,
   PlannerMissingDependencyError,
   PlannerPolicyKindMismatchError,
   PlannerResourceKindMismatchError,
@@ -176,6 +181,7 @@ const orderResources = (
 const validateResourceInputs = (
   resources: ReadonlyArray<PublishedResource>,
   indexed: IndexedPlannerInput,
+  platform: SynchronizationPlannerInput["observedState"]["platform"],
 ): SynchronizationPlanningError | undefined => {
   for (const resource of resources) {
     if (!policyCompatibleWithKind(resource.kind, resource.policy)) {
@@ -210,6 +216,37 @@ const validateResourceInputs = (
     if (!indexed.observed.has(resource.id)) {
       return new MissingObservedResourceError({ resource: resource.id });
     }
+  }
+  const pathErrors = validateResourcePathConflicts(
+    resources.map((resource) => {
+      const desired = indexed.desired.get(resource.id);
+      const entries = desired?.kind === "directory" || desired?.kind === "skill"
+        ? desired.files.map((file) => file.path)
+        : [];
+      return {
+        id: resource.id,
+        kind: resource.kind,
+        target: resource.target,
+        entries,
+      };
+    }),
+    platform,
+  );
+  const pathError = pathErrors[0];
+  if (pathError?._tag === "InvalidTargetError") {
+    return new PlannerInvalidResourcePathError({
+      resource: pathError.id,
+      path: pathError.target,
+      reason: pathError.reason,
+    });
+  }
+  if (pathError?._tag === "ConflictingResourceTargetError") {
+    return new PlannerConflictingResourcePathError({
+      resource: pathError.id,
+      path: pathError.target,
+      conflictsWith: pathError.conflictsWith,
+      reason: pathError.reason,
+    });
   }
   return undefined;
 };
@@ -415,6 +452,7 @@ export const planSynchronization = (
     const validationError = validateResourceInputs(
       orderResult.resources,
       indexResult.indexed,
+      input.observedState.platform,
     );
     if (validationError !== undefined) return Effect.fail(validationError);
     const transferResult = planTransfers(

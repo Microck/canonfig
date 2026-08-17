@@ -325,6 +325,47 @@ describe("transfer and apply separation", () => {
     expect(plan.actions[1]?.before).toEqual([`transfer:${blobA}`]);
   });
 
+  it.each([
+    ["duplicate", ["a", "a"], "PlannerConflictingResourcePathError"],
+    ["file-parent", ["a", "a/b"], "PlannerConflictingResourcePathError"],
+    ["normalized-alias", ["a/./b"], "PlannerInvalidResourcePathError"],
+  ] as const)("rejects an intra-resource %s before creating actions", (
+    _name,
+    paths,
+    expectedTag,
+  ) => {
+    const subject = resource("tree", "directory", "mirror-owned", [], [blobA]);
+    const base = plannerInput([subject], {
+      desired: [{
+        kind: "directory",
+        files: paths.map((path) => ({ path, digest: digestA, executable: false })),
+      }],
+    });
+    const error = Effect.runSync(Effect.flip(planSynchronization(base)));
+    expect(error._tag).toBe(expectedTag);
+  });
+
+  it("uses the follower platform case rules before planning a mirror", () => {
+    const subject = resource("tree", "directory", "mirror-owned", [], [blobA]);
+    const desired = {
+      kind: "directory" as const,
+      files: [
+        { path: "Readme.md", digest: digestA, executable: false },
+        { path: "README.md", digest: digestB, executable: false },
+      ],
+    };
+    const linuxInput = plannerInput([subject], { desired: [desired] });
+    expect(runPlan(linuxInput).actions.map((action) => action.kind))
+      .toEqual(["transfer-blob", "mirror-directory"]);
+    const windowsInput = {
+      ...linuxInput,
+      observedState: { ...linuxInput.observedState, platform: "windows" as const },
+    };
+    const error = Effect.runSync(Effect.flip(planSynchronization(windowsInput)));
+    expect(error._tag).toBe("PlannerConflictingResourcePathError");
+    expect(error).toMatchObject({ resource: "tree", conflictsWith: "tree" });
+  });
+
   it("rejects missing metadata for a required blob", () => {
     const input = plannerInput([
       resource("file", "file", "replace", [], [digestC]),

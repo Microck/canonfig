@@ -392,6 +392,14 @@ export class ConflictingResourceTargetError extends Schema.TaggedError<Conflicti
   },
 ) {}
 
+/** A normalized filesystem claim used by profile and planner boundaries. */
+export interface ResourcePathResource {
+  readonly id: string;
+  readonly kind: ResourceKind;
+  readonly target: string;
+  readonly entries: ReadonlyArray<string>;
+}
+
 export class InvalidScheduleError extends Schema.TaggedError<InvalidScheduleError>()(
   "InvalidScheduleError",
   { id: Schema.String, reason: Schema.String },
@@ -455,6 +463,7 @@ export class ProfileContractError extends Error {
 
 export const validateMachineProfile = (
   profile: MachineProfile,
+  platform: Platform = "windows",
 ): ReadonlyArray<ProfileValidationError> => {
   const errors: Array<ProfileValidationError> = [];
   const groups = new Set<string>();
@@ -464,7 +473,7 @@ export const validateMachineProfile = (
     }
     groups.add(group.name);
   }
-  errors.push(...validateProfileResources(profile.resources, groups));
+  errors.push(...validateProfileResources(profile.resources, groups, platform));
   const scheduleError = validateScheduleDefault(profile.scheduleDefault);
   if (scheduleError !== null) errors.push(scheduleError);
   return errors;
@@ -474,6 +483,7 @@ export const validateMachineProfile = (
 export const validateProfileResources = (
   resources: ReadonlyArray<ProfileResourceInput>,
   declaredGroups?: ReadonlySet<string>,
+  platform: Platform = "windows",
 ): ReadonlyArray<ProfileValidationError> => {
   const errors: Array<ProfileValidationError> = [];
   const seen = new Set<string>();
@@ -509,8 +519,6 @@ export const validateProfileResources = (
     if (!policyAllowed(kind, policy)) {
       errors.push(new PolicyKindMismatchError({ id: resource.id, kind, policy }));
     }
-    const targetError = validateTarget(resource);
-    if (targetError !== null) errors.push(targetError);
     if (resource.spec.kind === "schedule") {
       const scheduleError = validateSchedule(resource);
       if (scheduleError !== null) errors.push(scheduleError);
@@ -525,7 +533,7 @@ export const validateProfileResources = (
       }));
     }
   }
-  errors.push(...validateResourceTargetConflicts(resources));
+  errors.push(...validateResourceTargetConflicts(resources, platform));
   const cycle = findDependencyCycle(resources);
   if (cycle !== null) errors.push(new DependencyCycleError({ cycle }));
   return errors;
@@ -630,31 +638,32 @@ const verificationAllowed = (
   }
 };
 
-const validateTarget = (resource: ProfileResourceInput): InvalidTargetError | null => {
-  const target = resource.target;
+const invalidTargetReason = (target: string): string | undefined => {
   if (target.trim().length === 0) {
-    return new InvalidTargetError({ id: resource.id, target, reason: "empty target" });
+    return "empty target";
   }
   if (target.includes("\0")) {
-    return new InvalidTargetError({ id: resource.id, target, reason: "null byte in target" });
+    return "null byte in target";
   }
   const pathSegments = target.replaceAll("\\", "/").split("/");
   if (pathSegments.some((segment) => segment === "..")) {
-    return new InvalidTargetError({ id: resource.id, target, reason: "parent traversal in target" });
+    return "parent traversal in target";
   }
   if (/[*?[\]]/u.test(target)) {
-    return new InvalidTargetError({ id: resource.id, target, reason: "glob in target" });
+    return "glob in target";
   }
-  return null;
+  return undefined;
 };
 
 interface ResourceTargetClaim {
-  readonly resource: ProfileResourceInput;
+  readonly resource: ResourcePathResource;
   readonly path: string;
   readonly namespace: "filesystem" | "schedule";
+  readonly rawPath: string;
+  readonly isRoot: boolean;
 }
 
-const normalizedTargetPath = (value: string): string => {
+const normalizedTargetPath = (value: string, platform: Platform = "windows"): string => {
   const slashSeparated = value.replaceAll("\\", "/");
   const drive = /^([A-Za-z]):(?=\/|$)/u.exec(slashSeparated);
   const prefix = drive === null
@@ -668,7 +677,7 @@ const normalizedTargetPath = (value: string): string => {
   const segments: Array<string> = [];
   for (const segment of body.split("/")) {
     if (segment === "" || segment === ".") continue;
-    segments.push(segment);
+    segments.push(segment.normalize("NFC"));
   }
   const normalized = segments.join("/");
   const normalizedValue = prefix === "/"
@@ -676,10 +685,13 @@ const normalizedTargetPath = (value: string): string => {
     : prefix.length > 0
     ? normalized.length === 0 ? `${prefix}/` : `${prefix}/${normalized}`
     : normalized.length === 0 ? "." : normalized;
-  return normalizedValue.toLowerCase();
+  return platform === "windows" ? normalizedValue.toLowerCase() : normalizedValue;
 };
 
-const invalidRelativeTargetReason = (path: string): string | undefined => {
+const invalidRelativeTargetReason = (
+  path: string,
+  platform: Platform,
+): string | undefined => {
   if (path.trim().length === 0) return "empty managed file path";
   if (path.includes("\0")) return "null byte in managed file path";
   if (
@@ -692,67 +704,133 @@ const invalidRelativeTargetReason = (path: string): string | undefined => {
   if (path.replaceAll("\\", "/").split("/").some((segment) => segment === "..")) {
     return "parent traversal in managed file path";
   }
+  if (path.includes("\\")) return "alternate path separator in managed file path";
+  const segments = path.split("/");
+  if (segments.some((segment) => segment.length === 0 || segment === ".")) {
+    return "managed file path is not canonical";
+  }
+  if (path.normalize("NFC") !== path) {
+    return "managed file path is not canonical";
+  }
+  if (platform === "windows") {
+    for (const segment of segments) {
+      if (/[<>:"|?*]/u.test(segment)) {
+        return "reserved character in managed file path";
+      }
+      if (segment.endsWith(".") || segment.endsWith(" ")) {
+        return "trailing dot or space in managed file path";
+      }
+      if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu.test(segment)) {
+        return "reserved Windows name in managed file path";
+      }
+    }
+  }
   if (/[*?[\]]/u.test(path)) return "glob in managed file path";
   return undefined;
 };
 
-const targetClaims = (
+interface CanonicalResourcePathClaim {
+  readonly resource: ResourcePathResource;
+  readonly rawPath: string;
+  readonly path: string;
+}
+
+interface CanonicalResourcePathClaimsResult {
+  readonly claims: ReadonlyArray<CanonicalResourcePathClaim>;
+  readonly errors: ReadonlyArray<InvalidTargetError>;
+}
+
+const resourceEntries = (
   resource: ProfileResourceInput,
-): ReadonlyArray<ResourceTargetClaim> => {
-  if (
-    resource.kind !== "file"
-    && resource.kind !== "directory"
-    && resource.kind !== "config"
-    && resource.kind !== "skill"
-    && resource.kind !== "schedule"
-  ) {
-    return [];
-  }
-  const claims: Array<ResourceTargetClaim> = [{
-    resource,
-    path: normalizedTargetPath(resource.target),
-    namespace: resource.kind === "schedule" ? "schedule" : "filesystem",
-  }];
-  if (resource.kind === "schedule") return claims;
-  if (resource.spec.kind === "directory" || resource.spec.kind === "skill") {
-    for (const file of resource.spec.files) {
-      const relative = file.path.replaceAll("\\", "/").replace(/^\/+/u, "");
-      claims.push({
-        resource,
-        path: normalizedTargetPath(`${resource.target}/${relative}`),
-        namespace: "filesystem",
-      });
-    }
-  }
-  return claims;
+): ReadonlyArray<string> => {
+  if (resource.spec.kind !== "directory" && resource.spec.kind !== "skill") return [];
+  return resource.spec.files.map((file) => file.path);
 };
 
-const validateResourceTargetConflicts = (
-  resources: ReadonlyArray<ProfileResourceInput>,
+const canonicalResourcePathClaims = (
+  resource: ResourcePathResource,
+  platform: Platform,
+): CanonicalResourcePathClaimsResult => {
+  const claims: Array<CanonicalResourcePathClaim> = [];
+  const errors: Array<InvalidTargetError> = [];
+  for (const rawPath of [...resource.entries].sort(compareText)) {
+    const reason = invalidRelativeTargetReason(rawPath, platform);
+    if (reason !== undefined) {
+      errors.push(new InvalidTargetError({
+        id: resource.id,
+        target: rawPath,
+        reason,
+      }));
+      continue;
+    }
+    claims.push({
+      resource,
+      rawPath,
+      path: normalizedTargetPath(`${resource.target}/${rawPath}`, platform),
+    });
+  }
+  return { claims, errors };
+};
+
+/**
+ * Validate filesystem claims at a profile or planner boundary. The resource
+ * target itself is the explicitly represented directory ancestry; every
+ * declared entry is otherwise a file or symlink leaf.
+ */
+export const validateResourcePathConflicts = (
+  resources: ReadonlyArray<ResourcePathResource>,
+  platform: Platform = "windows",
 ): ReadonlyArray<ProfileValidationError> => {
   const errors: Array<ProfileValidationError> = [];
   const orderedResources = [...resources].sort((left, right) =>
     compareText(left.id, right.id)
   );
+  const claimsByResource = new Map<string, ReadonlyArray<CanonicalResourcePathClaim>>();
   for (const resource of orderedResources) {
-    if (resource.spec.kind === "directory" || resource.spec.kind === "skill") {
-      for (const file of resource.spec.files) {
-        const reason = invalidRelativeTargetReason(file.path);
-        if (reason !== undefined) {
-          errors.push(new InvalidTargetError({
-            id: resource.id,
-            target: file.path,
-            reason,
-          }));
-        }
-      }
+    const targetReason = invalidTargetReason(resource.target);
+    if (targetReason !== undefined) {
+      errors.push(new InvalidTargetError({
+        id: resource.id,
+        target: resource.target,
+        reason: targetReason,
+      }));
     }
+    const result = canonicalResourcePathClaims(resource, platform);
+    errors.push(...result.errors);
+    claimsByResource.set(resource.id, result.claims);
   }
   const claims = orderedResources
-    .flatMap((resource) => targetClaims(resource))
+    .flatMap((resource) => {
+      if (
+        resource.kind !== "file"
+        && resource.kind !== "directory"
+        && resource.kind !== "config"
+        && resource.kind !== "skill"
+        && resource.kind !== "schedule"
+      ) return [];
+      const root: ResourceTargetClaim = {
+        resource,
+        path: normalizedTargetPath(resource.target, platform),
+        rawPath: resource.target,
+        namespace: resource.kind === "schedule" ? "schedule" : "filesystem",
+        isRoot: true,
+      };
+      if (resource.kind === "schedule") return [root];
+      return [
+        root,
+        ...(claimsByResource.get(resource.id) ?? []).map((claim) => ({
+          resource,
+          path: claim.path,
+          rawPath: claim.rawPath,
+          namespace: "filesystem" as const,
+          isRoot: false,
+        })),
+      ];
+    })
     .sort((left, right) =>
       compareText(left.resource.id, right.resource.id)
       || compareText(left.path, right.path)
+      || compareText(left.rawPath, right.rawPath)
     );
   const overlaps = (left: string, right: string): boolean =>
     left === right
@@ -763,10 +841,28 @@ const validateResourceTargetConflicts = (
     for (let otherIndex = index + 1; otherIndex < claims.length; otherIndex += 1) {
       const other = claims[otherIndex]!;
       if (
-        claim.resource.id === other.resource.id
-        || claim.namespace !== other.namespace
+        claim.namespace !== other.namespace
         || !overlaps(claim.path, other.path)
       ) {
+        continue;
+      }
+      if (claim.resource.id === other.resource.id) {
+        if (claim.isRoot || other.isRoot) continue;
+        if (claim.rawPath === other.rawPath) {
+          errors.push(new ConflictingResourceTargetError({
+            id: claim.resource.id,
+            target: claim.rawPath,
+            conflictsWith: other.resource.id,
+            reason: `managed path ${claim.path} is declared more than once`,
+          }));
+        } else if (claim.rawPath !== other.rawPath) {
+          errors.push(new ConflictingResourceTargetError({
+            id: claim.resource.id,
+            target: claim.rawPath,
+            conflictsWith: other.resource.id,
+            reason: `managed path ${claim.path} overlaps managed path ${other.path}`,
+          }));
+        }
         continue;
       }
       const duplicate = errors.some((error) =>
@@ -786,6 +882,24 @@ const validateResourceTargetConflicts = (
   }
   return errors;
 };
+
+const pathClaimsResource = (
+  resource: ProfileResourceInput,
+): ResourcePathResource => ({
+  id: resource.id,
+  kind: resource.kind,
+  target: resource.target,
+  entries: resourceEntries(resource),
+});
+
+const validateResourceTargetConflicts = (
+  resources: ReadonlyArray<ProfileResourceInput>,
+  platform: Platform,
+): ReadonlyArray<ProfileValidationError> =>
+  validateResourcePathConflicts(
+    resources.map(pathClaimsResource),
+    platform,
+  );
 
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/u;
 const dayNames = new Set(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);

@@ -165,6 +165,11 @@ Resource dependencies form a directed acyclic graph. Canonfig observes independe
 Publication rejects distinct resource IDs that claim the same normalized filesystem
 target or unsafe parent/child targets. Directory and skill file paths participate
 in that check, as do normalized aliases such as `./` and Windows separators.
+Within one directory or skill resource, the target itself is the explicitly
+represented directory ancestry; every declared file path must otherwise be a
+unique, canonical relative leaf with no file/descendant overlap. Validation
+uses the follower platform's path and case rules and rejects names that are
+reserved or ambiguous on that platform.
 Schedules use their own target namespace, so a schedule target is not confused
 with a filesystem path.
 

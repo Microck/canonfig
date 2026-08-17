@@ -223,6 +223,98 @@ describe("resource graph validation", () => {
     ]);
   });
 
+  it.each([
+    {
+      name: "duplicate entries",
+      platform: "windows" as const,
+      paths: ["a", "a"],
+      expected: ["ConflictingResourceTargetError"],
+    },
+    {
+      name: "file and descendant entries",
+      platform: "windows" as const,
+      paths: ["a", "a/b"],
+      expected: ["ConflictingResourceTargetError"],
+    },
+    {
+      name: "normalized aliases",
+      platform: "windows" as const,
+      paths: ["a/b", "a/./b"],
+      expected: ["InvalidTargetError"],
+    },
+    {
+      name: "alternate separators",
+      platform: "windows" as const,
+      paths: ["a\\b"],
+      expected: ["InvalidTargetError"],
+    },
+    {
+      name: "reserved Windows names",
+      platform: "windows" as const,
+      paths: ["CON.txt"],
+      expected: ["InvalidTargetError"],
+    },
+    {
+      name: "valid nested files",
+      platform: "windows" as const,
+      paths: ["nested/one.txt", "nested/deeper/two.txt"],
+      expected: [],
+    },
+  ])("validates intra-resource $name deterministically", ({
+    platform,
+    paths,
+    expected,
+  }) => {
+    const errors = validateProfileResources([{
+      id: "tree",
+      kind: "directory",
+      target: "~/.canonfig/tree",
+      spec: {
+        kind: "directory",
+        files: paths.map((path) => ({ path, content: path })),
+      },
+      verify: { method: "digest", digest: digestA },
+    }], undefined, platform);
+    expect(errors.map((error) => error._tag)).toEqual(expected);
+  });
+
+  it("applies case folding only on case-insensitive targets", () => {
+    const resources: Array<ProfileResourceInput> = [{
+      id: "tree",
+      kind: "directory",
+      target: "~/.canonfig/tree",
+      spec: {
+        kind: "directory",
+        files: [
+          { path: "Readme.md", content: "one" },
+          { path: "README.md", content: "two" },
+        ],
+      },
+      verify: { method: "digest", digest: digestA },
+    }];
+    expect(validateProfileResources(resources, undefined, "linux")).toEqual([]);
+    expect(validateProfileResources(resources, undefined, "windows")
+      .map((error) => error._tag)).toEqual(["ConflictingResourceTargetError"]);
+  });
+
+  it.each([
+    { kind: "file" as const, symlinkTo: undefined },
+    { kind: "file" as const, symlinkTo: "/outside/target" },
+  ])("rejects a $kind resource parent claim before a descendant", ({ symlinkTo }) => {
+    const parent = fileResource("parent", {
+      target: "~/.canonfig/tree",
+      spec: { kind: "file", content: "parent", symlinkTo },
+    });
+    const child = fileResource("child", {
+      target: "~/.canonfig/tree/nested/file.txt",
+    });
+    expect(validateProfileResources([parent, child])
+      .filter((error) => error._tag === "ConflictingResourceTargetError")
+      .map((error) => [error.id, error.conflictsWith])).toEqual([
+        ["child", "parent"],
+      ]);
+  });
+
   it("rejects invalid schedule times", () => {
     const bad = fileResource("s", {
       kind: "schedule",
