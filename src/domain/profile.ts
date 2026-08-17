@@ -104,6 +104,8 @@ export interface ProfileRevision {
   readonly publishedAt: string;
   readonly resources: ReadonlyArray<PublishedResource>;
   readonly groups: ReadonlyArray<ProfileGroup>;
+  /** Optional for revisions written before schedule defaults were transported. */
+  readonly scheduleDefault?: ScheduleDefault | undefined;
 }
 
 export interface PublishedResource {
@@ -307,6 +309,7 @@ export const ProfileRevisionSchema = Schema.Struct({
   publishedAt: Timestamp,
   resources: Schema.Array(PublishedResourceSchema),
   groups: Schema.Array(ProfileGroupSchema),
+  scheduleDefault: Schema.optional(ScheduleDefaultSchema),
 });
 
 export const DiscoveryEvidenceRecordSchema = Schema.Struct({

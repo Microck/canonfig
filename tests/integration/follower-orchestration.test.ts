@@ -36,6 +36,7 @@ import { startSourceServer } from "../../src/enrollment/source-server.ts";
 import type { SourceServerHandle } from "../../src/enrollment/enrollment.types.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
+import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
 import {
   canonicalJson,
   digestOf,
@@ -506,11 +507,44 @@ describe("production follower orchestration", () => {
     const synchronization = SynchronizationLive.pipe(
       Layer.provide(Layer.merge(followerRepository, followerMachine)),
     );
+    const profileScheduleCalls: Array<unknown> = [];
+    const profileScheduleManager = ScheduleManager.of({
+      install: () => Effect.die("unused"),
+      inspect: () => Effect.die("unused"),
+      update: (input) => Effect.sync(() => {
+        profileScheduleCalls.push(input?.schedule);
+        const schedule = input?.schedule ?? {
+          kind: "daily" as const,
+          localTime: "00:00",
+        };
+        return {
+          change: "updated" as const,
+          status: {
+            state: "current" as const,
+            platform: "linux" as const,
+            schedule,
+            definition: {
+              platform: "linux" as const,
+              mechanism: "systemd-user-timer" as const,
+              serviceName: "test",
+              service: "",
+              schedule: "",
+            },
+          },
+        };
+      }),
+      status: () => Effect.die("unused"),
+      remove: () => Effect.sync(() => {
+        profileScheduleCalls.push(undefined);
+        return { change: "removed" as const };
+      }),
+    });
     const application = Layer.mergeAll(
       followerRepository,
       followerMachine,
       synchronization,
       AgentResolutionLive,
+      Layer.succeed(ScheduleManager, profileScheduleManager),
     );
 
     const planOnly = await Effect.runPromise(
@@ -707,7 +741,7 @@ describe("production follower orchestration", () => {
           },
         },
       ],
-      scheduleDefault: { type: "daily", at: "00:00", timezone: "local" },
+      scheduleDefault: { type: "daily", at: "01:15", timezone: "local" },
     };
     const nextCanonicalBytes = canonicalJson(asJson(nextProfile));
     const nextDigest = sha256Hex(nextCanonicalBytes);
@@ -775,11 +809,7 @@ describe("production follower orchestration", () => {
       appliedBeforeOwnershipPlan.find((record) =>
         record.resource === "alpha-only-file"
       ),
-    ).toMatchObject({
-      kind: "file",
-      policy: "replace",
-      target: restrictedTarget,
-    });
+    ).toBeUndefined();
     expect(ownershipPlan.plan.actions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         resource: "managed-directory",
@@ -796,6 +826,20 @@ describe("production follower orchestration", () => {
       ),
     );
     expect(ownershipApplied).toMatchObject({ outcome: { outcome: "Converged" } });
+    expect(profileScheduleCalls.at(-1)).toEqual({
+      kind: "daily",
+      localTime: "01:15",
+    });
+    const updatedConfiguration = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.getFollowerSynchronizationConfiguration()
+      ).pipe(Effect.provide(followerRepository)),
+    );
+    expect(updatedConfiguration?.scheduleDefault).toEqual({
+      type: "daily",
+      at: "01:15",
+      timezone: "local",
+    });
     await expect(readFile(join(directoryTarget, "removed.txt"))).rejects.toMatchObject({
       code: "ENOENT",
     });

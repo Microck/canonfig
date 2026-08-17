@@ -133,6 +133,7 @@ const group = (name: string) => decode(GroupName)(name);
 const publishFixtureRevision = (
   setup: Fixture,
   includeCrossGroupDependent = false,
+  includeShared = true,
 ): Promise<{
   readonly revision: ProfileRevision;
   readonly blobs: ReadonlyArray<typeof BlobId.Type>;
@@ -178,22 +179,24 @@ const publishFixtureRevision = (
         { name: group("beta") },
       ],
       resources: [
-        {
-          id: decode(ResourceId)("shared"),
-          kind: "file",
-          policy: "replace",
-          target: "~/.shared",
-          dependsOn: [],
-          spec: specs[0],
-          verify: { method: "digest", digest: digestOf(asJson(specs[0])) },
-        },
+        ...(includeShared
+          ? [{
+            id: decode(ResourceId)("shared"),
+            kind: "file" as const,
+            policy: "replace" as const,
+            target: "~/.shared",
+            dependsOn: [],
+            spec: specs[0]!,
+            verify: { method: "digest" as const, digest: digestOf(asJson(specs[0])) },
+          }]
+          : []),
         {
           id: decode(ResourceId)("alpha-only"),
           kind: "file",
           policy: "replace",
           target: "~/.alpha",
           groups: [group("alpha")],
-          dependsOn: [decode(ResourceId)("shared")],
+          dependsOn: includeShared ? [decode(ResourceId)("shared")] : [],
           spec: specs[1],
           verify: { method: "digest", digest: digestOf(asJson(specs[1])) },
         },
@@ -203,7 +206,7 @@ const publishFixtureRevision = (
           policy: "replace",
           target: "~/.beta",
           groups: [group("beta")],
-          dependsOn: [decode(ResourceId)("shared")],
+          dependsOn: includeShared ? [decode(ResourceId)("shared")] : [],
           spec: specs[2],
           verify: { method: "digest", digest: digestOf(asJson(specs[2])) },
         },
@@ -445,6 +448,36 @@ describe("authenticated content-addressed transport", () => {
     expect(metadata.resources.some((resource) =>
       resource.id === "alpha-needs-beta"
     )).toBe(false);
+  });
+
+  it("keeps an empty authorized view selectable after access is removed", async () => {
+    const setup = fixture();
+    const published = await publishFixtureRevision(setup, false, false);
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const input = transportInput(server, enrolled);
+
+    const authorized = await runFollower(setup, getRevisionMetadata({
+      ...input,
+      revisionId: published.revision.id,
+    }));
+    expect(authorized.resources.map((resource) => resource.id)).toEqual([
+      "alpha-only",
+    ]);
+
+    await setup.runtime.runPromise(Effect.gen(function*() {
+      const enrollment = yield* Enrollment;
+      yield* enrollment.updateFollowerGroups(enrolled.follower.id, []);
+    }));
+    const listed = await runFollower(setup, listRevisions(input));
+    expect(listed.revisions.map((revision) => revision.id)).toEqual([
+      published.revision.id,
+    ]);
+    const empty = await runFollower(setup, getRevisionMetadata({
+      ...input,
+      revisionId: published.revision.id,
+    }));
+    expect(empty.resources).toEqual([]);
   });
 
   it("rechecks current groups and revocation without revealing unauthorized blobs", async () => {

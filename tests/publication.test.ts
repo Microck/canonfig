@@ -10,7 +10,10 @@ import {
   ProfileRevisionId,
   SourceSignature,
 } from "../src/domain/brand.ts";
-import type { ProfileRevision } from "../src/domain/profile.ts";
+import type {
+  ProfileResourceInput,
+  ProfileRevision,
+} from "../src/domain/profile.ts";
 import { scanDiscovery } from "../src/profile/discovery.ts";
 import {
   InvalidPublicationResourcesError,
@@ -411,6 +414,137 @@ describe("reviewed profile publication", () => {
     ]);
     expect(published.resources.some((resource) => resource.id === "rejected-skill"))
       .toBe(false);
+  });
+
+  it("carries every authored resource kind into the signed revision", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const authoredResources: ReadonlyArray<ProfileResourceInput> = [
+      {
+        id: "authored-file",
+        kind: "file",
+        target: "~/.canonfig/authored.txt",
+        spec: { kind: "file", content: "authored\n", executable: false },
+        verify: { method: "digest", digest: "a".repeat(64) },
+      },
+      {
+        id: "authored-directory",
+        kind: "directory",
+        target: "~/.canonfig/authored-directory",
+        spec: {
+          kind: "directory",
+          files: [{ path: "nested.txt", content: "nested\n" }],
+        },
+        verify: { method: "digest", digest: "b".repeat(64) },
+      },
+      {
+        id: "authored-config",
+        kind: "config",
+        target: "~/.canonfig/authored.json",
+        spec: {
+          kind: "config",
+          format: "json",
+          keys: [{ path: "authored.value", value: true }],
+        },
+        verify: { method: "digest", digest: "c".repeat(64) },
+      },
+      {
+        id: "authored-skill",
+        kind: "skill",
+        target: "skills/authored-skill",
+        spec: {
+          kind: "skill",
+          name: "authored-skill",
+          files: [{ path: "SKILL.md", content: "# authored\n" }],
+        },
+        verify: { method: "digest", digest: "d".repeat(64) },
+      },
+      {
+        id: "authored-tool",
+        kind: "tool",
+        target: "authored-tool",
+        spec: {
+          kind: "tool",
+          toolId: "authored-tool",
+          recipes: [{
+            platform: "linux",
+            method: "npm",
+            package: "authored-tool",
+            version: "1.0.0",
+          }],
+        },
+        verify: { method: "command", command: ["authored-tool", "--version"] },
+      },
+      {
+        id: "authored-credential",
+        kind: "credential",
+        target: "credentials/authored",
+        spec: { kind: "credential", reference: "secure-store://authored" },
+        verify: { method: "credential-present", reference: "secure-store://authored" },
+      },
+      {
+        id: "authored-schedule",
+        kind: "schedule",
+        target: "canonfig-sync",
+        spec: {
+          kind: "schedule",
+          calendar: { type: "daily", at: "04:30" },
+          timezone: "local",
+        },
+        verify: { method: "command", command: ["canonfig", "schedule", "status"] },
+      },
+    ];
+    const published = await runCatalog(
+      fixture.database,
+      makeSigner().signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        return yield* catalog.publish({
+          ...inputFor(discovery),
+          profile: {
+            ...inputFor(discovery).profile,
+            resources: authoredResources,
+            scheduleDefault: {
+              type: "daily",
+              at: "04:30",
+              timezone: "local",
+            },
+          },
+        });
+      }),
+    );
+
+    expect(published.resources.map((resource) => resource.id)).toEqual([
+      "authored-config",
+      "authored-credential",
+      "authored-directory",
+      "authored-file",
+      "authored-schedule",
+      "authored-skill",
+      "authored-tool",
+      "fixture-tool",
+    ]);
+    expect(published.scheduleDefault).toEqual({
+      type: "daily",
+      at: "04:30",
+      timezone: "local",
+    });
+    // SAFETY: publication canonicalBytes is validated JSON with these fields.
+    const canonical = JSON.parse(published.canonicalBytes) as {
+      readonly scheduleDefault: unknown;
+      readonly resources: ReadonlyArray<{ readonly id: string; readonly spec: { readonly kind: string } }>;
+    };
+    expect(canonical.scheduleDefault).toEqual(published.scheduleDefault);
+    expect(canonical.resources.map((resource) => resource.spec.kind)).toEqual([
+      "config",
+      "credential",
+      "directory",
+      "file",
+      "schedule",
+      "skill",
+      "tool",
+      "tool",
+    ]);
   });
 
   it("returns the original immutable revision for duplicate publication", async () => {

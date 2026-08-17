@@ -468,12 +468,14 @@ const followerCommandsLayer = (
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),
           Effect.provideService(AgentResolution, agentResolution),
+          Effect.provideService(ScheduleManager, schedules),
         )).pipe(Effect.flatMap(outcomePayload)),
       recover: () =>
         mapFailure(recoverFollower(statePath).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),
+          Effect.provideService(ScheduleManager, schedules),
         )).pipe(Effect.flatMap(outcomePayload)),
       status: (follower) =>
         follower === undefined

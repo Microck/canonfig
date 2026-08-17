@@ -39,6 +39,7 @@ import { MachineState } from "../machine/machine-state.service.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
   syncScheduleFromResourceSpec,
+  syncScheduleFromDefault,
 } from "../schedule/schedule-manager.types.ts";
 import {
   canonicalJson,
@@ -282,9 +283,6 @@ export const authorizationViewIdentity = (
     ),
   };
 };
-
-const sourceRevisionIdentity = (revision: string): string =>
-  revision.replace(/:view:[a-f0-9]{64}$/u, "");
 
 const desiredFor = (
   spec: ResourceSpecInput,
@@ -732,12 +730,6 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
       )
     ) {
       if (currentIds.has(applied.resource)) continue;
-      // A group change produces a different authorized view of the same
-      // source revision. It is not an ownership revocation, so retain the
-      // previously applied resource until a newer source revision omits it.
-      if (sourceRevisionIdentity(applied.revision) === fetched.metadata.id) {
-        continue;
-      }
       const removed = removedResourceState(applied);
       if (removed === undefined) continue;
       removedResources.push(applied.resource);
@@ -776,6 +768,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
         metadata.sourceSignature,
       ),
       publishedAt: metadata.publishedAt,
+      scheduleDefault: metadata.scheduleDefault,
       resources: [
         ...metadata.resources.map(({ verify: _, ...resource }) => resource),
         ...removedResources.map((resource) =>
@@ -964,6 +957,42 @@ const agentConfigurationFor = (
     },
   scheduled,
   signal,
+});
+
+const applyProfileScheduleDefault = Effect.fn(
+  "FollowerOrchestration.applyProfileScheduleDefault",
+)(function*(
+  configuration: FollowerSynchronizationConfiguration,
+  scheduleDefault: RevisionMetadata["scheduleDefault"],
+  scheduleManager: ScheduleManager["Service"] | undefined,
+) {
+  const repository = yield* StateRepository;
+  if (scheduleManager === undefined) {
+    // Persisting the authorized metadata is still useful when a caller
+    // supplies a scheduler layer later (and keeps this path testable).
+  } else if (scheduleDefault === undefined) {
+    const previous = configuration.scheduleDefault === undefined
+      ? undefined
+      : { schedule: syncScheduleFromDefault(configuration.scheduleDefault) };
+    // Native scheduler availability is independent of resource convergence.
+    // Keep the signed default durable and retry the native update on the next
+    // synchronization if this machine's scheduler is temporarily unavailable.
+    yield* scheduleManager.remove(previous).pipe(Effect.catch(() => Effect.void));
+  } else {
+    yield* scheduleManager.update({
+      schedule: syncScheduleFromDefault(scheduleDefault),
+    }).pipe(Effect.catch(() => Effect.void));
+  }
+  const state = yield* repository.loadState(configuration.follower.id);
+  if (state.sourceIdentity === undefined) return;
+  yield* repository.saveFollowerSynchronizationConfiguration({
+    sourceIdentity: state.sourceIdentity,
+    configuration: {
+      ...configuration,
+      scheduleDefault,
+      updatedAt: new Date().toISOString(),
+    },
+  });
 });
 
 export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTasks")(
@@ -1188,6 +1217,13 @@ export const synchronizeFollower = Effect.fn(
         configuration.scheduledInvocation.timeoutMilliseconds,
     },
   });
+  if (outcome.outcome === "Converged") {
+    yield* applyProfileScheduleDefault(
+      configuration,
+      fetched.metadata.scheduleDefault,
+      scheduleManager,
+    );
+  }
   return {
     mode,
     revision: selected.id,
@@ -1261,6 +1297,13 @@ export const recoverFollower = Effect.fn(
         configuration.scheduledInvocation.timeoutMilliseconds,
     },
   });
+  if (outcome.outcome === "Converged") {
+    yield* applyProfileScheduleDefault(
+      configuration,
+      fetched.metadata.scheduleDefault,
+      scheduleManager,
+    );
+  }
   return {
     revision: selected.id,
     downloadedBlobs: fetched.downloadedBlobs,

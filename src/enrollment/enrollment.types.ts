@@ -13,6 +13,7 @@ import {
 import { FollowerIdentity, SourceIdentity } from "../domain/identity.ts";
 import {
   PublishedResourceSchema,
+  ScheduleDefaultSchema,
   VerificationInputSchema,
 } from "../domain/profile.ts";
 
@@ -97,6 +98,7 @@ export interface RevisionMetadata {
   readonly digest: typeof ContentDigest.Type;
   readonly publishedAt: string;
   readonly resources: ReadonlyArray<typeof TransportPublishedResourceSchema.Type>;
+  readonly scheduleDefault?: typeof ScheduleDefaultSchema.Type | undefined;
   readonly metadataDigest: typeof ContentDigest.Type;
   readonly signingKeyId: string;
   readonly signingPublicKey: string;
@@ -198,6 +200,7 @@ export const RevisionMetadataSchema = Schema.Struct({
   digest: ContentDigest,
   publishedAt: Timestamp,
   resources: Schema.Array(TransportPublishedResourceSchema),
+  scheduleDefault: Schema.optional(ScheduleDefaultSchema),
   metadataDigest: ContentDigest,
   signingKeyId: Schema.NonEmptyString,
   signingPublicKey: Schema.NonEmptyString,

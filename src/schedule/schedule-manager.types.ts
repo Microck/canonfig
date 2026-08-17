@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import type { ResourceSpecInput } from "../domain/profile.ts";
+import type { ResourceSpecInput, ScheduleDefault } from "../domain/profile.ts";
 import type { MachinePlatform, RenderedSchedulerJob } from "../machine/machine-state.types.ts";
 
 export const scheduleWeekdays = [
@@ -94,6 +94,40 @@ export interface RemoveScheduleResult {
 export const defaultSyncSchedule: SyncSchedule = {
   kind: "daily",
   localTime: "00:00",
+};
+
+/** Convert the signed profile-level schedule contract to native scheduler input. */
+export const syncScheduleFromDefault = (
+  schedule: ScheduleDefault,
+): NormalizedSyncSchedule => {
+  const timezone = schedule.timezone === "local" ? undefined : schedule.timezone;
+  switch (schedule.type) {
+    case "daily":
+      return timezone === undefined
+        ? { kind: "daily", localTime: schedule.at }
+        : { kind: "daily", localTime: schedule.at, timezone };
+    case "weekly": {
+      const weekdays = schedule.days.map((value) => {
+        const weekday = `${value.slice(0, 1).toUpperCase()}${value.slice(1).toLowerCase()}`;
+        if (!isScheduleWeekday(weekday)) {
+          throw new Error(`unsupported schedule weekday: ${value}`);
+        }
+        return weekday;
+      });
+      const normalized = {
+        kind: "weekly" as const,
+        weekdays: [...new Set(weekdays)].sort(
+          (left, right) => weekdayIndex.get(left)! - weekdayIndex.get(right)!,
+        ),
+        localTime: schedule.at,
+      };
+      return timezone === undefined ? normalized : { ...normalized, timezone };
+    }
+    case "custom":
+      return timezone === undefined
+        ? { kind: "custom", expression: schedule.expression }
+        : { kind: "custom", expression: schedule.expression, timezone };
+  }
 };
 
 const weekdayIndex = new Map(

@@ -103,6 +103,7 @@ const revisionPayload = (
   publishedAt: revision.publishedAt,
   resources: revision.resources,
   groups: revision.groups,
+  scheduleDefault: revision.scheduleDefault,
   signingKeyId,
 });
 
@@ -121,6 +122,13 @@ const validateRevision = (
       );
       if (profile.id !== revision.profileId) {
         throw new Error("profile identity mismatch");
+      }
+      if (
+        revision.scheduleDefault !== undefined
+        && canonicalJson(asJson(revision.scheduleDefault))
+          !== canonicalJson(asJson(profile.scheduleDefault))
+      ) {
+        throw new Error("revision schedule default metadata mismatch");
       }
       const expectedResources = profile.resources.map((resource) => {
         const base = {
@@ -626,10 +634,7 @@ const makeEnrollment = Effect.gen(function*() {
               };
             });
           return { revision, resources };
-        })
-        .filter(({ revision, resources }) =>
-          revision.resources.length === 0 || resources.length > 0
-        );
+        });
     },
   );
 
@@ -690,6 +695,9 @@ const makeEnrollment = Effect.gen(function*() {
       digest: decode(ContentDigest)(selected.revision.digest),
       publishedAt: selected.revision.publishedAt,
       resources,
+      scheduleDefault: resources.length === 0
+        ? undefined
+        : profile.scheduleDefault,
       signingKeyId: keys.material.source.keyId,
       signingPublicKey: keys.publicPem,
       sourceSignature: selected.revision.signature,

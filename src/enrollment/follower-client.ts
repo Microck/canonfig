@@ -580,6 +580,7 @@ const verifyMetadata = (
         digest: metadata.digest,
         publishedAt: metadata.publishedAt,
         resources: metadata.resources,
+        scheduleDefault: metadata.scheduleDefault,
         signingKeyId: metadata.signingKeyId,
         signingPublicKey: metadata.signingPublicKey,
         sourceSignature: metadata.sourceSignature,

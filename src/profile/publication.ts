@@ -57,6 +57,12 @@ export interface PublicationProfileMetadata {
   readonly id: MachineProfile["id"];
   readonly name: string;
   readonly groups?: ReadonlyArray<ProfileGroup> | undefined;
+  /**
+   * Resources authored in the canonical profile are not discovery proposals.
+   * Keep them on the publication input so publication does not silently
+   * reduce a complete profile to discovered tools and skills.
+   */
+  readonly resources?: ReadonlyArray<ProfileResourceInput> | undefined;
   readonly scheduleDefault?: ScheduleDefault | undefined;
 }
 
@@ -226,9 +232,8 @@ const unresolvedReasons = (
     reasons.push(`agent-task:${task.id}`);
   }
   for (const resource of proposal.resources) {
-    // Skills are reviewable proposals rather than executable evidence. An
-    // unreviewed or rejected skill is intentionally omitted below instead of
-    // preventing unrelated reviewed tools from being published.
+    // Skills are reviewable discovery proposals and can be omitted without
+    // preventing unrelated reviewed tools from publishing.
     if (resource.kind === "skill") continue;
     if (resource.reviewStatus !== "accepted") {
       reasons.push(`resource-needs-review:${resource.kind}:${resource.id}`);
@@ -302,18 +307,34 @@ const validateProposal = (
 const machineProfileFor = (
   input: PublishProfileInput,
 ): MachineProfile => {
-  const acceptedSkills = input.proposal.skills
-    .filter((skill) => skill.reviewStatus === "accepted")
-    .map(resourceForSkill);
+  const discoveryStatus = new Map(
+    input.proposal.resources.map((resource) => [resource.id, resource.reviewStatus]),
+  );
+  const discoveryAccepted = (id: string, status: string): boolean =>
+    status === "accepted" && (discoveryStatus.get(id) ?? "accepted") === "accepted";
+  const acceptedDiscoveryResources = [
+    ...input.proposal.tools
+      .filter((tool) => discoveryAccepted(tool.id, tool.reviewStatus))
+      .map(resourceForTool),
+    ...input.proposal.skills
+      .filter((skill) => discoveryAccepted(skill.id, skill.reviewStatus))
+      .map(resourceForSkill),
+  ];
+  // An explicitly authored resource is authoritative when it shares an id
+  // with a discovered proposal. The map also makes the merge deterministic
+  // before normalizeMachineProfile applies its canonical id ordering.
+  const resources = new Map<string, ProfileResourceInput>(
+    acceptedDiscoveryResources.map((resource) => [resource.id, resource]),
+  );
+  for (const resource of input.profile.resources ?? []) {
+    resources.set(resource.id, resource);
+  }
   return normalizeMachineProfile({
     id: input.profile.id,
     version: 2,
     name: input.profile.name,
     groups: input.profile.groups ?? [],
-    resources: [
-      ...input.proposal.tools.map(resourceForTool),
-      ...acceptedSkills,
-    ],
+    resources: [...resources.values()],
     scheduleDefault: input.profile.scheduleDefault ?? {
       type: "daily",
       at: "00:00",
@@ -351,12 +372,19 @@ interface UnsignedRevision {
   readonly publishedAt: string;
   readonly resources: ReadonlyArray<PublishedResource>;
   readonly groups: ReadonlyArray<ProfileGroup>;
+  readonly scheduleDefault?: ScheduleDefault | undefined;
   readonly signingKeyId: string;
 }
 
 export const revisionSigningPayload = (
   revision: UnsignedRevision,
-): string => canonicalJson(asJson(revision));
+): string => {
+  // The profile's canonical bytes already authenticate scheduleDefault. Keep
+  // it out of this legacy payload shape so revisions written before schedule
+  // metadata transport remain signature-compatible.
+  const { scheduleDefault: _, ...signed } = revision;
+  return canonicalJson(asJson(signed));
+};
 
 export const makePublication = (
   signer: ProfileRevisionSigner,
@@ -419,6 +447,7 @@ export const makePublication = (
         publishedAt: input.publishedAt,
         resources: publishedResources(profile),
         groups: profile.groups,
+        scheduleDefault: profile.scheduleDefault,
         signingKeyId: signer.keyId,
       };
       const payload = revisionSigningPayload(unsigned);
@@ -439,6 +468,7 @@ export const makePublication = (
         publishedAt: unsigned.publishedAt,
         resources: unsigned.resources,
         groups: unsigned.groups,
+        scheduleDefault: unsigned.scheduleDefault,
       };
       yield* repository.publishRevision({ revision });
       return revision;

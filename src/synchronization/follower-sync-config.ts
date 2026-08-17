@@ -8,6 +8,7 @@ import {
   Timestamp,
 } from "../domain/brand.ts";
 import { AgentPolicy, FollowerIdentity } from "../domain/identity.ts";
+import { ScheduleDefaultSchema } from "../domain/profile.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 
 export const SupportedAgentHarness = Schema.Literals([
@@ -59,6 +60,8 @@ export const FollowerSynchronizationConfiguration = Schema.Struct({
   cacheDirectory: Schema.NonEmptyString,
   stateLocation: Schema.NonEmptyString,
   agentPolicy: AgentPolicy,
+  /** Last authorized profile-level default schedule, for durable status/recovery. */
+  scheduleDefault: Schema.optional(ScheduleDefaultSchema),
   agentHarness: Schema.optional(FollowerAgentHarnessConfiguration),
   localOverlay: Schema.optional(Schema.Array(Schema.Struct({
     resource: ResourceId,
