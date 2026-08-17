@@ -36,6 +36,22 @@ interface InstallToolActionDetail {
   buildPolicy?: BuildPolicy;
 }
 
+interface WriteFileActionDetail {
+  readonly kind: "write-file";
+  readonly target: string;
+  readonly digest: ContentDigest;
+  executable?: boolean;
+}
+
+interface DriftConflictActionDetail {
+  readonly kind: "drift-conflict";
+  readonly target: string;
+  readonly desiredDigest: ContentDigest;
+  readonly observedDigest: ContentDigest;
+  desiredExecutable?: boolean;
+  observedExecutable?: boolean;
+}
+
 const compareText = (left: string, right: string): number => {
   if (left < right) return -1;
   if (left > right) return 1;
@@ -93,14 +109,29 @@ const observedDigest = (
 export const detectSkillDrift = (input: SkillDriftInput): SkillDriftState => {
   const observed = input.observedDigest;
   const applied = input.lastAppliedDigest;
-  if (observed === input.desiredDigest) {
-    return applied === input.desiredDigest ? "unchanged" : "converged";
+  const observedMatchesDesired = observed === input.desiredDigest
+    && (
+      input.desiredExecutable === undefined
+      || input.observedExecutable === input.desiredExecutable
+    );
+  const observedMatchesApplied = observed === applied
+    && (
+      input.lastAppliedExecutable === undefined
+      || input.observedExecutable === input.lastAppliedExecutable
+    );
+  const desiredMatchesApplied = input.desiredDigest === applied
+    && (
+      input.desiredExecutable === undefined
+      || input.lastAppliedExecutable === input.desiredExecutable
+    );
+  if (observedMatchesDesired) {
+    return desiredMatchesApplied ? "unchanged" : "converged";
   }
   if (applied === undefined) {
     return observed === undefined ? "remote-only" : "conflicting";
   }
-  if (observed === applied) return "remote-only";
-  if (input.desiredDigest === applied) return "local-only";
+  if (observedMatchesApplied) return "remote-only";
+  if (desiredMatchesApplied) return "local-only";
   return "conflicting";
 };
 
@@ -109,17 +140,73 @@ const noOp = (): ResourceActionDraft => ({
   detail: { kind: "no-op" },
 });
 
+const observedMatchesDesired = (
+  desired: DesiredResource,
+  observed: ResourcePlanningContext["observed"],
+): boolean => {
+  if (observed.state === "absent" || observed.state === "unverifiable") return false;
+  switch (desired.kind) {
+    case "file":
+      return observed.state === "present"
+        && observed.digest === desired.digest
+        && observed.executable === desired.executable
+        && (
+          desired.symlinkTo === undefined
+            ? observed.symlinkTo === undefined
+            : observed.symlinkTo !== undefined
+        );
+    case "config":
+    case "schedule":
+      return observed.state === "present" && observed.digest === desired.digest;
+    case "directory":
+    case "skill":
+      return observed.state === "directory"
+        && filesDigest(observed.files) === desiredResourceDigest(desired);
+    case "tool":
+    case "credential":
+      return observed.state === "present";
+  }
+};
+
+const observedMatchesApplied = (
+  context: ResourcePlanningContext,
+): boolean => {
+  const applied = context.applied;
+  if (applied === undefined || context.observed.state === "absent") return true;
+  const currentDigest = observedDigest(context);
+  if (currentDigest !== applied.digest) return false;
+  if (
+    context.resource.kind === "file"
+    && context.observed.state === "present"
+    && applied.executable !== undefined
+    && context.observed.executable !== applied.executable
+  ) {
+    return false;
+  }
+  if (
+    context.resource.kind === "file"
+    && context.observed.state === "present"
+    && applied.symlinkTo === undefined
+    && context.observed.symlinkTo !== undefined
+  ) {
+    return false;
+  }
+  return true;
+};
+
 const writeFile = (
   context: ResourcePlanningContext,
   digest: ContentDigest,
-): ResourceActionDraft => ({
-  kind: "write-file",
-  detail: {
+  executable?: boolean | undefined,
+): ResourceActionDraft => {
+  const detail: WriteFileActionDetail = {
     kind: "write-file",
     target: context.resource.target,
     digest,
-  },
-});
+  };
+  if (executable !== undefined) detail.executable = executable;
+  return { kind: "write-file", detail };
+};
 
 const replaceDirectory = (
   context: ResourcePlanningContext,
@@ -159,15 +246,19 @@ const driftConflict = (
   context: ResourcePlanningContext,
   desiredDigest: ContentDigest,
   currentDigest: ContentDigest,
-): ResourceActionDraft => ({
-  kind: "drift-conflict",
-  detail: {
+  desiredExecutable?: boolean | undefined,
+  observedExecutable?: boolean | undefined,
+): ResourceActionDraft => {
+  const detail: DriftConflictActionDetail = {
     kind: "drift-conflict",
     target: context.resource.target,
     desiredDigest,
     observedDigest: currentDigest,
-  },
-});
+  };
+  if (desiredExecutable !== undefined) detail.desiredExecutable = desiredExecutable;
+  if (observedExecutable !== undefined) detail.observedExecutable = observedExecutable;
+  return { kind: "drift-conflict", detail };
+};
 
 const unresolvedAgentTask = (
   context: ResourcePlanningContext,
@@ -220,18 +311,26 @@ const planReplace = (context: ResourcePlanningContext): ReadonlyArray<ResourceAc
   if (desiredDigest === undefined) {
     return [unresolvedAgentTask(context, `Resolve ${context.resource.kind} ${context.resource.id}`)];
   }
-  const currentDigest = observedDigest(context);
-  if (currentDigest === desiredDigest) return [noOp()];
+  if (observedMatchesDesired(context.desired, context.observed)) return [noOp()];
   if (context.desired.kind === "directory" || context.desired.kind === "skill") {
     return [replaceDirectory(context, context.desired)];
   }
-  return [writeFile(context, desiredDigest)];
+  return [
+    writeFile(
+      context,
+      desiredDigest,
+      context.desired.kind === "file" ? context.desired.executable : undefined,
+    ),
+  ];
 };
 
 const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
   if (context.desired.kind !== "config") {
     const desiredDigest = desiredResourceDigest(context.desired);
-    if (desiredDigest !== undefined && observedDigest(context) === desiredDigest) return [noOp()];
+    if (
+      desiredDigest !== undefined
+      && observedMatchesDesired(context.desired, context.observed)
+    ) return [noOp()];
     return [{
       kind: "write-config",
       detail: {
@@ -253,7 +352,7 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
       },
     }];
   }
-  if (observedDigest(context) === context.desired.digest) return [noOp()];
+  if (observedMatchesDesired(context.desired, context.observed)) return [noOp()];
   return [{
     kind: "write-config",
     detail: {
@@ -324,6 +423,13 @@ const planReplaceIfUnmodified = (
     lastAppliedDigest: context.applied === undefined
       ? undefined
       : Schema.decodeUnknownSync(ContentDigestSchema)(context.applied.digest),
+    desiredExecutable: context.desired.kind === "file"
+      ? context.desired.executable
+      : undefined,
+    observedExecutable: context.observed.state === "present"
+      ? context.observed.executable
+      : undefined,
+    lastAppliedExecutable: context.applied?.executable,
   });
   switch (drift) {
     case "unchanged":
@@ -333,11 +439,31 @@ const planReplaceIfUnmodified = (
       if (context.desired.kind === "skill") {
         return [replaceDirectory(context, context.desired)];
       }
-      return [writeFile(context, desiredDigest)];
+      return [
+        writeFile(
+          context,
+          desiredDigest,
+          context.desired.kind === "file" ? context.desired.executable : undefined,
+        ),
+      ];
     case "local-only":
     case "conflicting":
-      if (currentDigest === undefined) return [writeFile(context, desiredDigest)];
-      return [driftConflict(context, desiredDigest, currentDigest)];
+      if (currentDigest === undefined) {
+        return [
+          writeFile(
+            context,
+            desiredDigest,
+            context.desired.kind === "file" ? context.desired.executable : undefined,
+          ),
+        ];
+      }
+      return [driftConflict(
+        context,
+        desiredDigest,
+        currentDigest,
+        context.desired.kind === "file" ? context.desired.executable : undefined,
+        context.observed.state === "present" ? context.observed.executable : undefined,
+      )];
   }
 };
 
@@ -473,8 +599,7 @@ const planRemovedResource = (
   ) {
     return [];
   }
-  const currentDigest = observedDigest(context);
-  if (context.observed.state !== "absent" && currentDigest !== applied.digest) return [];
+  if (!observedMatchesApplied(context)) return [];
   switch (context.resource.kind) {
     case "file":
       if (context.resource.policy !== "replace"

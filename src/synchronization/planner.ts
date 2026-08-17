@@ -10,6 +10,7 @@ import {
   validateResourcePathConflicts,
   type PublishedResource,
 } from "../domain/profile.ts";
+import type { VerificationInput } from "../domain/profile.ts";
 import { policyCompatibleWithKind } from "../domain/resource.ts";
 import type {
   ActionDetail,
@@ -30,6 +31,7 @@ import {
   PlannerMissingDependencyError,
   PlannerPolicyKindMismatchError,
   PlannerResourceKindMismatchError,
+  PlannerVerificationKindMismatchError,
   type SynchronizationPlanningError,
 } from "./synchronization.errors.ts";
 import { recipeValidationError } from "../domain/recipe-versions.ts";
@@ -61,6 +63,7 @@ const agentTaskId = (value: string) => Schema.decodeUnknownSync(AgentTaskId)(val
 interface IndexedPlannerInput {
   readonly resources: ReadonlyMap<string, PublishedResource>;
   readonly desired: ReadonlyMap<string, DesiredResource>;
+  readonly verification: ReadonlyMap<string, VerificationInput>;
   readonly observed: ReadonlyMap<string, ObservedResourceState>;
   readonly overlays: ReadonlyMap<string, ReadonlyArray<string>>;
   readonly applied: ReadonlyMap<string, AppliedResourceRecord>;
@@ -98,6 +101,11 @@ const indexInput = (input: SynchronizationPlannerInput): IndexResult => {
     input.revision.desired.map((entry) => [entry.resource, entry.desired] as const),
   );
   if (isDuplicateInputError(desired)) return { ok: false, error: desired };
+  const verification = indexUnique(
+    "revision.desired",
+    input.revision.desired.map((entry) => [entry.resource, entry.verification] as const),
+  );
+  if (isDuplicateInputError(verification)) return { ok: false, error: verification };
   const observed = indexUnique(
     "observedState.resources",
     input.observedState.resources.map((entry) => [entry.resource, entry.observed] as const),
@@ -120,13 +128,38 @@ const indexInput = (input: SynchronizationPlannerInput): IndexResult => {
   if (isDuplicateInputError(blobs)) return { ok: false, error: blobs };
   return {
     ok: true,
-    indexed: { resources, desired, observed, overlays, applied, blobs },
+    indexed: { resources, desired, verification, observed, overlays, applied, blobs },
   };
 };
 
 type ResourceOrderResult =
   | { readonly ok: true; readonly resources: ReadonlyArray<PublishedResource> }
   | { readonly ok: false; readonly error: SynchronizationPlanningError };
+
+const verificationCompatibleWithDesired = (
+  kind: PublishedResource["kind"],
+  desired: DesiredResource,
+  method: VerificationInput["method"],
+): boolean => {
+  if (kind === "file") {
+    if (desired.kind !== "file") return false;
+    return desired.symlinkTo === undefined
+      ? method === "digest"
+      : method === "symlink";
+  }
+  switch (kind) {
+    case "directory":
+    case "config":
+    case "skill":
+      return method === "digest" || method === "command";
+    case "tool":
+      return method === "executable-present" || method === "command";
+    case "credential":
+      return method === "credential-present" || method === "command";
+    case "schedule":
+      return method === "command";
+  }
+};
 
 const orderResources = (
   resources: ReadonlyMap<string, PublishedResource>,
@@ -198,6 +231,17 @@ const validateResourceInputs = (
         resource: resource.id,
         publishedKind: resource.kind,
         desiredKind: desired.kind,
+      });
+    }
+    const verification = indexed.verification.get(resource.id);
+    if (
+      verification === undefined
+      || !verificationCompatibleWithDesired(resource.kind, desired, verification.method)
+    ) {
+      return new PlannerVerificationKindMismatchError({
+        resource: resource.id,
+        kind: resource.kind,
+        method: verification?.method ?? "missing",
       });
     }
     if (desired.kind === "tool") {

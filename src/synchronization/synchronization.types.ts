@@ -141,6 +141,9 @@ export interface SkillDriftInput {
   readonly desiredDigest: ContentDigest;
   readonly observedDigest?: ContentDigest | undefined;
   readonly lastAppliedDigest?: ContentDigest | undefined;
+  readonly desiredExecutable?: boolean | undefined;
+  readonly observedExecutable?: boolean | undefined;
+  readonly lastAppliedExecutable?: boolean | undefined;
 }
 
 export interface PlannedResourceActions {

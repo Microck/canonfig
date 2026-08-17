@@ -54,7 +54,13 @@ export type PlannedActionKind =
 export type ActionDetail =
   | { readonly kind: "no-op" }
   | { readonly kind: "transfer-blob"; readonly blob: string; readonly bytes: number }
-  | { readonly kind: "write-file"; readonly target: string; readonly digest: string }
+  | {
+    readonly kind: "write-file";
+    readonly target: string;
+    readonly digest: string;
+    /** Normalized regular-file executable intent; absent for non-file writes. */
+    readonly executable?: boolean | undefined;
+  }
   | { readonly kind: "write-config"; readonly target: string; readonly keys: ReadonlyArray<string> }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
   | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string>; readonly schedule?: SyncSchedule | undefined }
@@ -62,7 +68,14 @@ export type ActionDetail =
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
   | { readonly kind: "agent-task"; readonly taskId: AgentTaskId; readonly summary: string }
-  | { readonly kind: "drift-conflict"; readonly target: string; readonly desiredDigest: string; readonly observedDigest: string };
+  | {
+    readonly kind: "drift-conflict";
+    readonly target: string;
+    readonly desiredDigest: string;
+    readonly observedDigest: string;
+    readonly desiredExecutable?: boolean | undefined;
+    readonly observedExecutable?: boolean | undefined;
+  };
 
 /** A full, deterministic Synchronization Plan for one follower against one revision. */
 export interface SynchronizationPlan {
@@ -120,6 +133,8 @@ export interface DriftConflict {
   readonly desiredDigest: string;
   readonly observedDigest: string;
   readonly lastAppliedDigest: string;
+  readonly desiredExecutable?: boolean | undefined;
+  readonly observedExecutable?: boolean | undefined;
 }
 
 /** Observed state of one resource target on the follower. */
@@ -195,6 +210,7 @@ export const ActionDetailSchema = Schema.Union([
     kind: Schema.Literal("write-file"),
     target: Schema.NonEmptyString,
     digest: ContentDigest,
+    executable: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     kind: Schema.Literal("write-config"),
@@ -234,6 +250,8 @@ export const ActionDetailSchema = Schema.Union([
     target: Schema.NonEmptyString,
     desiredDigest: ContentDigest,
     observedDigest: ContentDigest,
+    desiredExecutable: Schema.optional(Schema.Boolean),
+    observedExecutable: Schema.optional(Schema.Boolean),
   }),
 ]);
 
@@ -302,6 +320,8 @@ export const DriftConflictSchema = Schema.Struct({
   desiredDigest: ContentDigest,
   observedDigest: ContentDigest,
   lastAppliedDigest: ContentDigest,
+  desiredExecutable: Schema.optional(Schema.Boolean),
+  observedExecutable: Schema.optional(Schema.Boolean),
 });
 
 export const SynchronizationOutcomeSchema = Schema.Union([

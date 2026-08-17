@@ -158,6 +158,15 @@ Apply Policies mean:
 - `merge`: update declared keys through a format-specific codec while preserving the Local Overlay.
 - `replace-if-unmodified`: replace only when current content equals the Applied Resource Record or already equals desired content.
 - `ensure`: reach and verify a declared capability without removing unrelated software.
+
+Policy compatibility is kind-specific: files support only `replace` and
+`replace-if-unmodified`; directories support `mirror-owned` and `replace`;
+configs support `merge` and `replace`; skills support `replace-if-unmodified`
+and `replace`; tools, credentials, and schedules support only their listed
+kind-specific policies. A file's verification is also shape-specific:
+symlink files require `symlink` verification, while regular files (including
+executable files) require digest verification. The desired executable bit is
+part of file convergence even when the content digest is unchanged.
 - `require-local`: verify a local credential and return Human Action Required when it is absent.
 
 Resource dependencies form a directed acyclic graph. Canonfig observes independent resources with bounded concurrency and applies actions in dependency order. Mutating actions for one target are serialized.

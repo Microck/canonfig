@@ -1336,6 +1336,155 @@ describe("synchronization apply run", () => {
     expect(statSync(base.target).mode & 0o100).toBe(0o100);
   });
 
+  it.each([
+    { fromExecutable: false, toExecutable: true },
+    { fromExecutable: true, toExecutable: false },
+  ] as const)(
+    "converges same-byte file mode transition $fromExecutable to $toExecutable and is idempotent",
+    async ({ fromExecutable, toExecutable }) => {
+      const root = temporaryDirectory();
+      const base = fileFixture(
+        root,
+        `run-mode-${fromExecutable ? "x" : "-"}-${toExecutable ? "x" : "-"}`,
+      );
+      mkdirSync(dirname(base.target), { recursive: true });
+      writeFileSync(base.target, base.artifact.content);
+      chmodSync(base.target, fromExecutable ? 0o700 : 0o600);
+      const resource = base.revision.resources[0]!;
+      const desired: DesiredResource = {
+        kind: "file",
+        digest: base.artifact.digest,
+        executable: toExecutable,
+      };
+      const revision: PlanningProfileRevision = {
+        ...base.revision,
+        id: decode(ProfileRevisionId)(
+          `revision-mode-${fromExecutable ? "x" : "-"}-${toExecutable ? "x" : "-"}`,
+        ),
+        desired: [{
+          resource: resource.id,
+          desired,
+          verification: { method: "digest", digest: base.artifact.digest },
+        }],
+      };
+      const firstPlan = Effect.runSync(planSynchronization({
+        revision,
+        follower: follower.id,
+        observedState: {
+          platform: "linux",
+          resources: [{
+            resource: resource.id,
+            observed: {
+              state: "present",
+              digest: decode(ContentDigest)(base.artifact.digest),
+              executable: fromExecutable,
+            },
+          }],
+          availableBlobs: [],
+        },
+        localOverlay: [],
+        appliedResources: [],
+      }));
+      const first = await seedAndRun({
+        ...base,
+        revision,
+        input: { ...base.input, plan: firstPlan, revision },
+      });
+      expect(first.outcome).toBe("Converged");
+      expect((statSync(base.target).mode & 0o100) !== 0).toBe(toExecutable);
+
+      const applied = await Effect.runPromise(
+        Effect.flatMap(StateRepository, (repository) =>
+          repository.loadAppliedResources(follower.id)
+        ).pipe(Effect.provide(stateRepositoryLayer(base.database))),
+      );
+      expect(applied[0]?.executable).toBe(toExecutable);
+      const secondPlan = Effect.runSync(planSynchronization({
+        revision,
+        follower: follower.id,
+        observedState: {
+          platform: "linux",
+          resources: [{
+            resource: resource.id,
+            observed: {
+              state: "present",
+              digest: decode(ContentDigest)(base.artifact.digest),
+              executable: toExecutable,
+            },
+          }],
+          availableBlobs: [],
+        },
+        localOverlay: [],
+        appliedResources: applied,
+      }));
+      expect(secondPlan.actions.map((action) => action.kind)).toEqual(["no-op"]);
+      const second = await seedAndRun({
+        ...base,
+        revision,
+        input: {
+          ...base.input,
+          id: decode(RunId)(
+            `run-mode-second-${fromExecutable ? "x" : "-"}-${toExecutable ? "x" : "-"}`,
+          ),
+          plan: secondPlan,
+          revision,
+          appliedResources: applied,
+        },
+      });
+      expect(second.outcome).toBe("Converged");
+      expect(actionRows(base.database).at(-1)?.rollback_reference).toBeNull();
+    },
+  );
+
+  it("rejects a tampered file mode action before any partial apply", async () => {
+    const base = fileFixture(temporaryDirectory(), "run-mode-contract");
+    const resource = base.revision.resources[0]!;
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      desired: [{
+        resource: resource.id,
+        desired: {
+          kind: "file",
+          digest: base.artifact.digest,
+          executable: true,
+        },
+        verification: { method: "digest", digest: base.artifact.digest },
+      }],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{ resource: resource.id, observed: { state: "absent" } }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const action = plan.actions.find((candidate) => candidate.kind === "write-file");
+    expect(action?.detail.kind).toBe("write-file");
+    if (action?.detail.kind !== "write-file") return;
+    const tampered = reencodePlan({
+      ...plan,
+      actions: plan.actions.map((candidate) =>
+        candidate.id === action.id
+          ? {
+            ...candidate,
+            detail: { ...candidate.detail, executable: false },
+          }
+          : candidate
+      ),
+    });
+    const outcome = await seedAndRun({
+      ...base,
+      revision,
+      input: { ...base.input, plan: tampered, revision },
+    });
+    expect(outcome.outcome).toBe("Failed");
+    expect(await readFile(base.target).catch(() => undefined)).toBeUndefined();
+  });
+
   it("applies and verifies symlink file intent", async () => {
     const base = fileFixture(temporaryDirectory(), "run-symlink");
     const destination = join(base.root, "home", "destination.txt");

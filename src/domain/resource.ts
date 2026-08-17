@@ -54,7 +54,7 @@ export const defaultPolicyForKind = {
 
 /** Which policies are compatible with which kinds. `ensure` and `require-local` are kind-specific. */
 const compatiblePolicies = {
-  file: ["replace", "mirror-owned", "merge", "replace-if-unmodified"],
+  file: ["replace", "replace-if-unmodified"],
   directory: ["mirror-owned", "replace"],
   config: ["merge", "replace"],
   skill: ["replace-if-unmodified", "replace"],

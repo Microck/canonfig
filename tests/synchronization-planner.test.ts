@@ -81,6 +81,25 @@ const desiredForKind = (kind: ResourceKind): DesiredResource => {
   }
 };
 
+const verificationFor = (
+  desired: DesiredResource,
+) => {
+  switch (desired.kind) {
+    case "file":
+    case "config":
+      return { method: "digest" as const, digest: digestA };
+    case "directory":
+    case "skill":
+      return { method: "digest" as const, digest: digestA };
+    case "tool":
+      return { method: "executable-present" as const, executable: desired.toolId };
+    case "credential":
+      return { method: "credential-present" as const, reference: desired.reference };
+    case "schedule":
+      return { method: "command" as const, command: ["true"] };
+  }
+};
+
 const resource = (
   id: string,
   kind: ResourceKind,
@@ -139,6 +158,7 @@ const plannerInput = (
     desired: resources.map((entry, index) => ({
       resource: entry.id,
       desired: options.desired?.[index] ?? desiredForKind(entry.kind),
+      verification: verificationFor(options.desired?.[index] ?? desiredForKind(entry.kind)),
     })),
     blobs: [
       { id: blobA, bytes: 100 },
@@ -168,8 +188,6 @@ describe("resource and Apply Policy coverage", () => {
     readonly action: string;
   }> = [
     { kind: "file", policy: "replace", action: "write-file" },
-    { kind: "file", policy: "mirror-owned", action: "mirror-directory" },
-    { kind: "file", policy: "merge", action: "write-config" },
     { kind: "file", policy: "replace-if-unmodified", action: "write-file" },
     { kind: "directory", policy: "mirror-owned", action: "mirror-directory" },
     { kind: "directory", policy: "replace", action: "mirror-directory" },
@@ -191,12 +209,95 @@ describe("resource and Apply Policy coverage", () => {
     });
   }
 
+  it.each(["mirror-owned", "merge"] as const)(
+    "rejects unsupported file policy %s before planning",
+    (policy) => {
+      const error = Effect.runSync(Effect.flip(planSynchronization(
+        plannerInput([resource("file", "file", policy)]),
+      )));
+      expect(error._tag).toBe("PlannerPolicyKindMismatchError");
+    },
+  );
+
   it("produces an explicit no-op when desired state is already present", () => {
     const plan = runPlan(plannerInput(
       [resource("file", "file", "replace")],
       { observed: [{ state: "present", digest: digestA, executable: false }] },
     ));
     expect(plan.actions[0]?.detail).toEqual({ kind: "no-op" });
+  });
+
+  it.each([
+    {
+      name: "regular to executable",
+      desiredExecutable: true,
+      observedExecutable: false,
+      appliedExecutable: false,
+      action: "write-file",
+    },
+    {
+      name: "executable to regular",
+      desiredExecutable: false,
+      observedExecutable: true,
+      appliedExecutable: true,
+      action: "write-file",
+    },
+    {
+      name: "local executable drift",
+      desiredExecutable: false,
+      observedExecutable: true,
+      appliedExecutable: false,
+      action: "drift-conflict",
+    },
+    {
+      name: "matching executable intent",
+      desiredExecutable: true,
+      observedExecutable: true,
+      appliedExecutable: true,
+      action: "no-op",
+    },
+  ] as const)("plans same-byte executable mode state: $name", ({
+    desiredExecutable,
+    observedExecutable,
+    appliedExecutable,
+    action,
+  }) => {
+    const subject = resource("file", "file", "replace-if-unmodified");
+    const desired = {
+      kind: "file" as const,
+      digest: digestA,
+      executable: desiredExecutable,
+    };
+    const planned = runPlan(plannerInput([subject], {
+      desired: [desired],
+      observed: [{
+        state: "present",
+        digest: digestA,
+        executable: observedExecutable,
+      }],
+      applied: [{
+        resource: subject.id,
+        revision: "previous",
+        digest: digestA,
+        appliedAt: "2026-08-15T00:00:00Z",
+        kind: "file",
+        policy: "replace-if-unmodified",
+        target: subject.target,
+        executable: appliedExecutable,
+      }],
+    }));
+    expect(planned.actions[0]?.kind).toBe(action);
+    if (action === "write-file") {
+      expect(planned.actions[0]?.detail).toMatchObject({
+        executable: desiredExecutable,
+      });
+    }
+    if (action === "drift-conflict") {
+      expect(planned.actions[0]?.detail).toMatchObject({
+        desiredExecutable,
+        observedExecutable,
+      });
+    }
   });
 
   it("preserves non-conflicting Local Overlay keys and reports conflicts", () => {

@@ -235,6 +235,20 @@ export const VerificationInputSchema = Schema.Union([
   Schema.Struct({ method: Schema.Literal("symlink"), target: Schema.NonEmptyString }),
 ]);
 
+const verificationAllowedForSpec = (
+  kind: ResourceKind,
+  spec: ResourceSpecInput,
+  method: VerificationInput["method"],
+): boolean => {
+  if (spec.kind !== kind) return verificationAllowed(kind, method);
+  if (spec.kind === "file") {
+    return spec.symlinkTo === undefined
+      ? method === "digest"
+      : method === "symlink";
+  }
+  return verificationAllowed(kind, method);
+};
+
 export const ProfileResourceInputSchema = Schema.Struct({
   id: ResourceIdSchema,
   kind: ResourceKindSchema,
@@ -244,7 +258,18 @@ export const ProfileResourceInputSchema = Schema.Struct({
   dependsOn: Schema.optional(Schema.Array(ResourceIdSchema)),
   spec: ResourceSpecInputSchema,
   verify: VerificationInputSchema,
-});
+}).check(
+  Schema.makeFilter((resource) => {
+    const policy = resource.policy ?? defaultPolicyForKind[resource.kind];
+    if (!policyCompatibleWithKind(resource.kind, policy)) {
+      return {
+        path: ["policy"],
+        issue: `policy ${policy} is not compatible with resource kind ${resource.kind}`,
+      };
+    }
+    return undefined;
+  }),
+);
 
 export const ProfileGroupSchema = Schema.Struct({
   name: GroupName,
@@ -526,7 +551,7 @@ export const validateProfileResources = (
     }
     errors.push(...validateRecipes(resource));
     errors.push(...validateBuildPolicies(resource));
-    if (!verificationAllowed(resource.kind, resource.verify.method)) {
+    if (!verificationAllowedForSpec(resource.kind, resource.spec, resource.verify.method)) {
       errors.push(new VerificationKindMismatchError({
         id: resource.id,
         kind: resource.kind,

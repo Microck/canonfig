@@ -15,6 +15,7 @@ import {
   encodeMachineProfile,
   findDependencyCycle,
   ProfileContractError,
+  ProfileResourceInputSchema,
   ResourceSpecInputSchema,
   topologicalOrder,
   validateMachineProfile,
@@ -144,6 +145,70 @@ describe("resource graph validation", () => {
       expect(errors[0].kind).toBe("file");
       expect(errors[0].policy).toBe("ensure");
     }
+  });
+
+  it.each(["mirror-owned", "merge"] as const)(
+    "rejects unsupported file policy %s at the authoring schema boundary",
+    (policy) => {
+      expect(() => Schema.decodeUnknownSync(ProfileResourceInputSchema)({
+        ...fileResource("unsupported"),
+        policy,
+      })).toThrow();
+    },
+  );
+
+  it.each([
+    {
+      name: "regular file with symlink verification",
+      spec: { kind: "file" as const, content: "hello" },
+      verify: { method: "symlink" as const, target: "/tmp/target" },
+    },
+    {
+      name: "regular file with executable verification",
+      spec: { kind: "file" as const, content: "hello", executable: true },
+      verify: { method: "executable-present" as const, executable: "hello" },
+    },
+    {
+      name: "symlink file with digest verification",
+      spec: {
+        kind: "file" as const,
+        content: "",
+        symlinkTo: "/tmp/target",
+      },
+      verify: { method: "digest" as const, digest: digestA },
+    },
+    {
+      name: "symlink file with executable verification",
+      spec: {
+        kind: "file" as const,
+        content: "",
+        symlinkTo: "/tmp/target",
+      },
+      verify: { method: "executable-present" as const, executable: "target" },
+    },
+  ] as const)("rejects $name", ({ spec, verify }) => {
+    const errors = validateProfileResources([fileResource("invalid", { spec, verify })]);
+    expect(errors.map((error) => error._tag)).toEqual(["VerificationKindMismatchError"]);
+  });
+
+  it.each([
+    {
+      name: "regular",
+      spec: { kind: "file" as const, content: "hello", executable: false },
+      verify: { method: "digest" as const, digest: digestA },
+    },
+    {
+      name: "executable",
+      spec: { kind: "file" as const, content: "hello", executable: true },
+      verify: { method: "digest" as const, digest: digestA },
+    },
+    {
+      name: "symlink",
+      spec: { kind: "file" as const, content: "", symlinkTo: "/tmp/target" },
+      verify: { method: "symlink" as const, target: "/tmp/target" },
+    },
+  ] as const)("accepts valid $name file verification", ({ spec, verify }) => {
+    expect(validateProfileResources([fileResource("valid", { spec, verify })])).toEqual([]);
   });
 
   it("accepts default policies for every kind", () => {

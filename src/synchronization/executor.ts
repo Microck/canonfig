@@ -105,6 +105,29 @@ const validateLimits = (
   return Effect.void;
 };
 
+const verificationCompatibleWithDesired = (
+  kind: SynchronizationRunInput["revision"]["resources"][number]["kind"],
+  desired: SynchronizationRunInput["revision"]["desired"][number]["desired"],
+  method: SynchronizationRunInput["revision"]["desired"][number]["verification"]["method"],
+): boolean => {
+  if (kind === "file") {
+    return desired.kind === "file"
+      && (desired.symlinkTo === undefined ? method === "digest" : method === "symlink");
+  }
+  switch (kind) {
+    case "directory":
+    case "config":
+    case "skill":
+      return method === "digest" || method === "command";
+    case "tool":
+      return method === "executable-present" || method === "command";
+    case "credential":
+      return method === "credential-present" || method === "command";
+    case "schedule":
+      return method === "command";
+  }
+};
+
 export const executionContexts = (
   input: SynchronizationRunInput,
   limits: SynchronizationExecutionLimits,
@@ -166,6 +189,30 @@ export const executionContexts = (
       if (resource === undefined || desiredEntry === undefined) {
         return yield* new MissingExecutionResourceError({
           resource: action.resource,
+        });
+      }
+      if (
+        !verificationCompatibleWithDesired(
+          resource.kind,
+          desiredEntry.desired,
+          desiredEntry.verification.method,
+        )
+      ) {
+        return yield* new InvalidExecutionPlanError({
+          message:
+            `verification method ${desiredEntry.verification.method} is incompatible with ${resource.kind} resource ${resource.id}`,
+        });
+      }
+      if (
+        action.detail.kind === "write-file"
+        && (
+          desiredEntry.desired.kind === "file"
+            ? action.detail.executable !== desiredEntry.desired.executable
+            : action.detail.executable !== undefined
+        )
+      ) {
+        return yield* new InvalidExecutionPlanError({
+          message: `write-file executable intent does not match ${resource.id}`,
         });
       }
       seen.add(action.id);
@@ -305,6 +352,8 @@ export const driftResult = (
       desiredDigest: detail.desiredDigest,
       observedDigest: detail.observedDigest,
       lastAppliedDigest: previous?.digest ?? detail.desiredDigest,
+      desiredExecutable: detail.desiredExecutable,
+      observedExecutable: detail.observedExecutable,
     },
   };
 };
