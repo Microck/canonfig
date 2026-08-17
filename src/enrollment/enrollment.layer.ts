@@ -494,6 +494,26 @@ const makeEnrollment = Effect.gen(function*() {
       credentialReference,
       enrolledAt,
     });
+    const pendingEnrollments = yield* repository.listPendingEnrollments().pipe(
+      Effect.mapError(repositoryError("load pending enrollment")),
+    );
+    const pending = pendingEnrollments.find(
+      (entry) => entry.codeDigest === sha256(request.code),
+    );
+    if (pending !== undefined) {
+      if (pending.follower !== follower.id) {
+        return yield* new InvitationReplayError({
+          message: "the invitation was already used",
+        });
+      }
+      // A process may have returned the prepared response before the follower
+      // persisted its local configuration. Re-prepare the same one-time
+      // invitation instead of leaving a retry permanently blocked.
+      yield* repository.cancelPendingEnrollment({
+        credentialDigest: pending.credentialDigest,
+      }).pipe(Effect.mapError(repositoryError("replace pending enrollment")));
+      yield* machine.removeCredential(pending.credentialReference).pipe(Effect.ignore);
+    }
     yield* repository.consumeEnrollmentInvitation({
       codeDigest: sha256(request.code),
       nonceDigest: sha256(request.nonce),
@@ -513,12 +533,68 @@ const makeEnrollment = Effect.gen(function*() {
     ) {
       yield* machine.removeCredential(previousCredentialReference).pipe(Effect.ignore);
     }
+    const authorizedProfiles = yield* repository.listRevisions().pipe(
+      Effect.mapError(repositoryError("list authorized profiles")),
+      Effect.map((revisions) => revisions.map((revision) => ({
+        id: revision.id,
+        profileId: revision.profileId,
+        sequence: revision.sequence,
+        digest: decode(ContentDigest)(revision.digest),
+        publishedAt: revision.publishedAt,
+      }))),
+    );
     return {
       follower,
       credential,
       source: material.source,
       tlsFingerprint: material.tlsFingerprint,
+      authorizedProfiles,
     };
+  });
+
+  const finalizeFollower = Effect.fn("Enrollment.finalizeFollower")(function*(
+    credential: string,
+  ) {
+    const credentialDigest = sha256(credential);
+    const pending = yield* repository.listPendingEnrollments().pipe(
+      Effect.mapError(repositoryError("find pending enrollment")),
+    );
+    const pendingEnrollment = pending.find(
+      (entry) => entry.credentialDigest === credentialDigest,
+    );
+    if (pendingEnrollment === undefined) {
+      const stored = yield* repository.findFollowerCredential(credentialDigest).pipe(
+        Effect.mapError(repositoryError("finalize follower enrollment")),
+      );
+      if (stored === undefined || stored.follower.revoked) {
+        return yield* new InvalidFollowerCredentialError({
+          message: "the follower credential is invalid",
+        });
+      }
+      return;
+    }
+    yield* repository.finalizeEnrollment({
+      follower: pendingEnrollment.follower,
+      credentialDigest,
+      credentialReference: pendingEnrollment.credentialReference,
+    }).pipe(Effect.mapError(repositoryError("finalize follower enrollment")));
+  });
+
+  const cancelPendingEnrollment = Effect.fn(
+    "Enrollment.cancelPendingEnrollment",
+  )(function*(credential: string) {
+    yield* repository.cancelPendingEnrollment({
+      credentialDigest: sha256(credential),
+    }).pipe(Effect.mapError(repositoryError("cancel pending enrollment")));
+  });
+
+  const revokeAuthenticatedFollower = Effect.fn(
+    "Enrollment.revokeAuthenticatedFollower",
+  )(function*(credential: string) {
+    const authenticated = yield* authenticate(credential);
+    yield* repository.revokeFollower(authenticated.follower.id).pipe(
+      Effect.mapError(repositoryError("revoke follower")),
+    );
   });
 
   const authenticate = Effect.fn("Enrollment.authenticate")(function*(
@@ -793,6 +869,9 @@ const makeEnrollment = Effect.gen(function*() {
     source,
     createInvitation,
     enrollFollower,
+    finalizeFollower,
+    cancelPendingEnrollment,
+    revokeAuthenticatedFollower,
     authenticate,
     listAuthorizedRevisions,
     getAuthorizedRevision,

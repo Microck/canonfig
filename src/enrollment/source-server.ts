@@ -62,6 +62,7 @@ type SourceServerResponse =
   | AuthenticatedFollower
   | RevisionList
   | RevisionMetadata
+  | { readonly ok: true }
   | ErrorResponse;
 
 const sendJson = (
@@ -242,6 +243,42 @@ export const startSourceServer = (
               enrollment.enrollFollower(body),
             );
             sendJson(response, 201, enrolled);
+            return;
+          }
+          if (
+            request.method === "POST"
+            && request.url === "/v1/enrollment/finalize"
+          ) {
+            await runRequestEffect(
+              enrollment.finalizeFollower(
+                bearerCredential(request.headers.authorization),
+              ),
+            );
+            sendJson(response, 200, { ok: true });
+            return;
+          }
+          if (
+            request.method === "POST"
+            && request.url === "/v1/enrollment/cancel"
+          ) {
+            await runRequestEffect(
+              enrollment.cancelPendingEnrollment(
+                bearerCredential(request.headers.authorization),
+              ),
+            );
+            sendJson(response, 200, { ok: true });
+            return;
+          }
+          if (
+            request.method === "POST"
+            && request.url === "/v1/enrollment/revoke"
+          ) {
+            await runRequestEffect(
+              enrollment.revokeAuthenticatedFollower(
+                bearerCredential(request.headers.authorization),
+              ),
+            );
+            sendJson(response, 200, { ok: true });
             return;
           }
           if (

@@ -273,4 +273,18 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       END
     `;
   }),
+  "0010_transactional_enrollment_and_local_overlays": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS pending_enrollments (
+        follower_id TEXT PRIMARY KEY,
+        code_digest TEXT NOT NULL UNIQUE,
+        credential_digest TEXT NOT NULL UNIQUE,
+        credential_reference TEXT NOT NULL UNIQUE,
+        follower_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `;
+  }),
 });

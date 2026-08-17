@@ -51,6 +51,7 @@ export interface EnrollFollowerResponse {
   readonly credential: string;
   readonly source: typeof SourceIdentity.Type;
   readonly tlsFingerprint: typeof CertificateFingerprint.Type;
+  readonly authorizedProfiles?: ReadonlyArray<RevisionSummary> | undefined;
 }
 
 export interface AuthenticatedFollower {
@@ -143,6 +144,11 @@ export interface FetchedRevision {
 export interface FollowerEnrollmentInput {
   readonly invitation: EnrollmentInvitationGrant;
   readonly followerName: string;
+  /**
+   * Runtime enrollment sets this to false while it durably writes the local
+   * configuration. The source only exposes the identity after finalization.
+   */
+  readonly finalize?: boolean | undefined;
 }
 
 export interface FollowerEnrollment {
@@ -150,6 +156,7 @@ export interface FollowerEnrollment {
   readonly credentialReference: typeof CredentialReference.Type;
   readonly source: typeof SourceIdentity.Type;
   readonly tlsFingerprint: typeof CertificateFingerprint.Type;
+  readonly authorizedProfiles?: ReadonlyArray<RevisionSummary> | undefined;
 }
 
 export interface FollowerAuthenticationInput {
@@ -175,6 +182,13 @@ export const EnrollFollowerResponseSchema = Schema.Struct({
   credential: Schema.NonEmptyString,
   source: SourceIdentity,
   tlsFingerprint: CertificateFingerprint,
+  authorizedProfiles: Schema.optional(Schema.Array(Schema.Struct({
+    id: Schema.NonEmptyString,
+    profileId: Schema.NonEmptyString,
+    sequence: Schema.Natural,
+    digest: ContentDigest,
+    publishedAt: Timestamp,
+  }))),
 });
 
 export const AuthenticatedFollowerSchema = Schema.Struct({

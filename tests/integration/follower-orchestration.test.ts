@@ -905,12 +905,24 @@ describe("production follower orchestration", () => {
             ...baseFollowerConfiguration,
             localOverlay: [{
               resource: decode(ResourceId)("managed-config"),
+              target: configTarget,
               keys: ["canonical.value"],
             }],
           },
         })
       ).pipe(Effect.provide(followerRepository)),
     );
+    const restartedFollowerRepository = stateRepositoryLayer(followerDatabase);
+    const persistedOverlay = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.listLocalOverlays()
+      ).pipe(Effect.provide(restartedFollowerRepository)),
+    );
+    expect(persistedOverlay).toEqual([{
+      resource: decode(ResourceId)("managed-config"),
+      target: configTarget,
+      keys: ["canonical.value"],
+    }]);
     const overlayPlan = await Effect.runPromise(
       synchronizeFollower(followerDatabase, "plan").pipe(
         Effect.provide(application),

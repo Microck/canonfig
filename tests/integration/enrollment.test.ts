@@ -211,6 +211,67 @@ describe("loopback HTTPS enrollment", () => {
     expect(authenticated.follower).toEqual(enrolled.follower);
   });
 
+  it("fails closed across a source restart after prepare and permits a safe retry", async () => {
+    const setup = fixture();
+    const server = await start(setup);
+    const grant = await invitation(setup, server);
+    const prepared = await runFollower(
+      setup,
+      enrollFollower({
+        invitation: grant,
+        followerName: "Restart-safe Host",
+        finalize: false,
+      }),
+    );
+    const preparedCredential = await runFollower(
+      setup,
+      Effect.flatMap(MachineState, (machine) =>
+        machine.loadCredential({ reference: prepared.credentialReference })
+      ),
+    );
+    const beforeRestart = await runSource(
+      setup,
+      Effect.flip(Effect.flatMap(Enrollment, (enrollment) =>
+        enrollment.authenticate(Redacted.value(preparedCredential))
+      )),
+    );
+    expect(beforeRestart).toBeInstanceOf(InvalidFollowerCredentialError);
+
+    const port = Number(new URL(server.endpoint).port);
+    await server.close();
+    openServers.splice(openServers.indexOf(server), 1);
+    await setup.sourceRuntime.dispose();
+    sourceRuntimes.splice(sourceRuntimes.indexOf(setup.sourceRuntime), 1);
+    const restartedRuntime = ManagedRuntime.make(
+      sourceApplicationLayer(setup.sourceDatabase, setup.sourceMachine),
+    );
+    sourceRuntimes.push(restartedRuntime);
+    const restartedSetup: Fixture = { ...setup, sourceRuntime: restartedRuntime };
+    const restartedServer = await runSource(
+      restartedSetup,
+      Effect.gen(function*() {
+        const enrollment = yield* Enrollment;
+        yield* enrollment.initializeSource();
+        return yield* startSourceServer({ port });
+      }),
+    );
+    openServers.push(restartedServer);
+
+    const retried = await runFollower(
+      setup,
+      enrollFollower({ invitation: grant, followerName: "Restart-safe Host" }),
+    );
+    const authenticated = await runFollower(
+      setup,
+      authenticateFollower({
+        endpoint: restartedServer.endpoint,
+        tlsFingerprint: grant.tlsFingerprint,
+        credentialReference: retried.credentialReference,
+      }),
+    );
+    expect(authenticated.follower.id).toBe(prepared.follower.id);
+  });
+
   it("rejects expired invitations, replay, nonce mismatch, and duplicate identity misuse", async () => {
     const setup = fixture();
     const server = await start(setup);

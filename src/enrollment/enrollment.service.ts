@@ -25,6 +25,15 @@ export class Enrollment extends Context.Service<Enrollment, {
   readonly enrollFollower: (
     request: EnrollFollowerRequest,
   ) => Effect.Effect<EnrollFollowerResponse, EnrollmentError>;
+  readonly finalizeFollower: (
+    credential: string,
+  ) => Effect.Effect<void, EnrollmentError>;
+  readonly cancelPendingEnrollment: (
+    credential: string,
+  ) => Effect.Effect<void, EnrollmentError>;
+  readonly revokeAuthenticatedFollower: (
+    credential: string,
+  ) => Effect.Effect<void, EnrollmentError>;
   readonly authenticate: (
     credential: string,
   ) => Effect.Effect<AuthenticatedFollower, EnrollmentError>;

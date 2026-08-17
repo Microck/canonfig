@@ -113,6 +113,11 @@ export interface ObservedState {
  */
 export interface LocalOverlayEntry {
   readonly resource: ResourceId;
+  /**
+   * The normalized target observed when this overlay was created. Older
+   * configurations omit it and are upgraded when the overlay is edited.
+   */
+  readonly target?: string | undefined;
   readonly keys: ReadonlyArray<string>;
 }
 

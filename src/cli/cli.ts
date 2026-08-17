@@ -7,6 +7,7 @@ import {
   InvitationCode,
   ProfileId,
   ProfileRevisionId,
+  ResourceId,
   Timestamp,
 } from "../domain/brand.ts";
 import { AgentPolicy } from "../domain/identity.ts";
@@ -59,6 +60,9 @@ Follower:
   sync [--plan | --apply] [--no-input]
   recover [--no-input]
   status [--follower <id>]
+  overlay list
+  overlay set <resource-id> --target <path> --key <config.path> [--key <config.path>...]
+  overlay remove <resource-id>
   doctor [--no-input] [--timeout-ms <ms>]
 
 Profiles and policy:
@@ -117,6 +121,14 @@ export type CliCommand =
   }
   | { readonly _tag: "Recover"; readonly noInput: boolean }
   | { readonly _tag: "Status"; readonly follower?: typeof FollowerId.Type | undefined }
+  | { readonly _tag: "OverlayList" }
+  | {
+    readonly _tag: "OverlaySet";
+    readonly resource: typeof ResourceId.Type;
+    readonly target: string;
+    readonly keys: ReadonlyArray<string>;
+  }
+  | { readonly _tag: "OverlayRemove"; readonly resource: typeof ResourceId.Type }
   | {
     readonly _tag: "Doctor";
     readonly noInput: boolean;
@@ -488,6 +500,46 @@ const evaluateCommand = (
         ),
       }, format);
     }
+    if (area === "overlay") {
+      if (action === "list" && rest.length === 0) {
+        return command({ _tag: "OverlayList" }, format);
+      }
+      if (action === "remove" && rest.length === 1) {
+        return command({
+          _tag: "OverlayRemove",
+          resource: decodeOption(
+            Schema.decodeUnknownOption(ResourceId),
+            rest[0]!,
+            "resource id",
+          ),
+        }, format);
+      }
+      if (action === "set") {
+        const options = parseOptions(
+          rest,
+          new Set(["--target", "--key"]),
+          new Set(),
+        );
+        if (options.positionals.length !== 1) {
+          return invalid(
+            "Usage: canonfig overlay set <resource-id> --target <path> --key <config.path>",
+          );
+        }
+        const keys = options.values.get("--key") ?? [];
+        if (keys.length === 0) return invalid("overlay set requires at least one --key");
+        return command({
+          _tag: "OverlaySet",
+          resource: decodeOption(
+            Schema.decodeUnknownOption(ResourceId),
+            options.positionals[0]!,
+            "resource id",
+          ),
+          target: one(options, "--target", true)!,
+          keys,
+        }, format);
+      }
+      return invalid(`Unknown overlay command: ${action ?? ""}`);
+    }
     if (area === "doctor") {
       const options = parseOptions(
         arguments_.slice(1),
@@ -658,6 +710,9 @@ const commandName = (value: CliCommand): string => {
     case "Synchronize": return `sync.${value.mode}`;
     case "Recover": return "recover";
     case "Status": return "status";
+    case "OverlayList": return "overlay.list";
+    case "OverlaySet": return "overlay.set";
+    case "OverlayRemove": return "overlay.remove";
     case "Doctor": return "doctor";
     case "ProfileList": return "profile.list";
     case "ProfileShow": return "profile.show";
@@ -709,6 +764,14 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
       });
     case "Recover": return yield* follower.recover({ noInput: value.noInput });
     case "Status": return yield* follower.status(value.follower);
+    case "OverlayList": return yield* follower.listLocalOverlays();
+    case "OverlaySet":
+      return yield* follower.setLocalOverlay({
+        resource: value.resource,
+        target: value.target,
+        keys: value.keys,
+      });
+    case "OverlayRemove": return yield* follower.removeLocalOverlay(value.resource);
     case "Doctor":
       return yield* follower.doctor({
         noInput: value.noInput,

@@ -236,6 +236,83 @@ describe("StateRepository SQLite adapter", () => {
     expect(row.configuration_json).not.toContain("secret");
   });
 
+  it("persists Local Overlay ownership entries across repository restart", async () => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({
+      keyId: "ed25519:source-fingerprint",
+      publicKeyFingerprint: "source-fingerprint",
+    });
+    const configuredFollower = {
+      ...follower(),
+      credentialReference: decode(CredentialReference)("secure-store://canonfig/follower"),
+    };
+    const configuration = {
+      schemaVersion: 1 as const,
+      follower: configuredFollower,
+      selectedProfile: decode(ProfileId)("profile-1"),
+      source: {
+        endpoint: "https://127.0.0.1:17342",
+        tlsFingerprint: "tls-fingerprint",
+        signingFingerprint: sourceIdentity.publicKeyFingerprint,
+      },
+      credentialReference: configuredFollower.credentialReference,
+      cacheDirectory: join(dirname(path), "cache"),
+      stateLocation: path,
+      agentPolicy: "deterministic-only" as const,
+      scheduledInvocation: defaultScheduledInvocation,
+      updatedAt: "2026-08-15T12:00:00Z",
+    };
+    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity,
+        configuration,
+      })
+    ));
+    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      repository.saveLocalOverlay({
+        entry: {
+          resource: asResourceId("managed-config"),
+          target: "/home/follower/settings.json",
+          keys: ["local.theme"],
+        },
+        updatedAt: "2026-08-15T12:01:00Z",
+      })
+    ));
+    const afterRestart = await runWithRepository(
+      path,
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.listLocalOverlays()
+      ),
+    );
+    expect(afterRestart).toEqual([{
+      resource: asResourceId("managed-config"),
+      target: "/home/follower/settings.json",
+      keys: ["local.theme"],
+    }]);
+    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      repository.saveLocalOverlay({
+        entry: {
+          resource: asResourceId("managed-config"),
+          target: "/home/follower/settings.json",
+          keys: ["local.theme", "local.editor"],
+        },
+        updatedAt: "2026-08-15T12:02:00Z",
+      })
+    ));
+    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      repository.removeLocalOverlay({
+        resource: asResourceId("managed-config"),
+        updatedAt: "2026-08-15T12:03:00Z",
+      })
+    ));
+    expect(await runWithRepository(
+      path,
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.listLocalOverlays()
+      ),
+    )).toEqual([]);
+  });
+
   it("publishes immutable revisions idempotently and rejects changed content", async () => {
     const path = databasePath();
     const changed = revision("revision-1", 1, '{"profile":"changed"}');

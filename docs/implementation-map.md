@@ -344,6 +344,8 @@ C11 -> C12 -> C13
 **Work:**
 
 - Implement the command contract from `docs/architecture.md`.
+- Implement Local Overlay list, create/update, and remove operations with
+  authorized normalized resource targets and durable follower state.
 - Decode every argument and config value at the CLI boundary.
 - Render plans, drift, human actions, recovery state, and verification evidence clearly.
 - Keep stable JSON schemas and distinct exit codes for invalid input, drift, human action, operational failure, and interruption.

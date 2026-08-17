@@ -16,7 +16,13 @@ import { AgentResolutionLive } from "../agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../agent/agent-resolution.service.ts";
 import { EnrollmentLive } from "../enrollment/enrollment.layer.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
-import { enrollFollower } from "../enrollment/follower-client.ts";
+import {
+  cancelFollowerEnrollment,
+  enrollFollower,
+  getRevisionMetadata,
+  finalizeFollowerEnrollment,
+  listRevisions,
+} from "../enrollment/follower-client.ts";
 import { startSourceServer } from "../enrollment/source-server.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { linuxMachineStateLayer } from "../machine/linux.layer.ts";
@@ -41,11 +47,12 @@ import { Synchronization } from "../synchronization/synchronization.service.ts";
 import {
   defaultScheduledInvocation,
 } from "../synchronization/follower-sync-config.ts";
+import type { FollowerSynchronizationConfiguration } from
+  "../synchronization/follower-sync-config.ts";
 import {
   recoverFollower,
   synchronizeFollower,
 } from "../synchronization/follower-orchestration.ts";
-import { listRevisions } from "../enrollment/follower-client.ts";
 import {
   FollowerCommands,
   type FollowerCommandsService,
@@ -57,6 +64,7 @@ import {
   type SourceCommandsService,
 } from "../cli/source-commands.ts";
 import type { CliFailureCategory } from "../cli/exit-codes.ts";
+import type { LocalOverlayInput } from "../cli/follower-commands.ts";
 import {
   doctorFailureCategory,
   runDoctorProbes,
@@ -394,6 +402,103 @@ const followerCommandsLayer = (
       return Effect.succeed(payload(value));
     };
 
+    const authorizedOverlayResource = (
+      configuration: FollowerSynchronizationConfiguration,
+      resourceId: string,
+    ) =>
+      Effect.gen(function*() {
+        const revisions = yield* listRevisions({
+          endpoint: configuration.source.endpoint,
+          tlsFingerprint: configuration.source.tlsFingerprint,
+          sourceFingerprint: configuration.source.signingFingerprint,
+          credentialReference: configuration.credentialReference,
+          timeoutMilliseconds: configuration.scheduledInvocation.timeoutMilliseconds,
+        }).pipe(
+          Effect.provideService(MachineState, machine),
+          Effect.mapError(commandFailure),
+        );
+        const revision = revisions.revisions
+          .filter((candidate) => candidate.profileId === configuration.selectedProfile)
+          .sort((left, right) => right.sequence - left.sequence)[0];
+        if (revision === undefined) {
+          return yield* new CliCommandFailure({
+            category: "usage-or-configuration",
+            message: `selected profile ${configuration.selectedProfile} has no authorized revision`,
+          });
+        }
+        const metadata = yield* getRevisionMetadata({
+          endpoint: configuration.source.endpoint,
+          tlsFingerprint: configuration.source.tlsFingerprint,
+          sourceFingerprint: configuration.source.signingFingerprint,
+          credentialReference: configuration.credentialReference,
+          revisionId: revision.id,
+          timeoutMilliseconds: configuration.scheduledInvocation.timeoutMilliseconds,
+        }).pipe(
+          Effect.provideService(MachineState, machine),
+          Effect.mapError(commandFailure),
+        );
+        const resource = metadata.resources.find((candidate) =>
+          candidate.id === resourceId
+        );
+        if (resource === undefined) {
+          return yield* new CliCommandFailure({
+            category: "usage-or-configuration",
+            message: `resource ${resourceId} is not authorized in the selected profile`,
+          });
+        }
+        if (resource.kind !== "config" || resource.policy !== "merge") {
+          return yield* new CliCommandFailure({
+            category: "usage-or-configuration",
+            message: `resource ${resourceId} does not support Local Overlay ownership`,
+          });
+        }
+        return resource;
+      });
+
+    const normalizedOverlay = (
+      configuration: FollowerSynchronizationConfiguration,
+      input: LocalOverlayInput,
+    ) =>
+      Effect.gen(function*() {
+        const resource = yield* authorizedOverlayResource(configuration, input.resource);
+        const canonicalTarget = yield* machine.normalizePath({ path: resource.target }).pipe(
+          Effect.mapError(commandFailure),
+        );
+        const requestedTarget = yield* machine.normalizePath({ path: input.target }).pipe(
+          Effect.mapError(commandFailure),
+        );
+        if (
+          canonicalTarget.platform !== requestedTarget.platform
+          || canonicalTarget.absolute !== requestedTarget.absolute
+        ) {
+          return yield* new CliCommandFailure({
+            category: "usage-or-configuration",
+            message: `overlay target must match the authorized target for resource ${input.resource}`,
+          });
+        }
+        const keys = [...new Set(input.keys.map((key) => key.trim()))].sort();
+        if (
+          keys.length === 0
+          || keys.some((key) =>
+            key.length === 0
+            || key !== key.trim()
+            || key.includes("\0")
+            || key.split(".").some((segment) => segment.length === 0)
+            || /\p{Cc}/u.test(key)
+          )
+        ) {
+          return yield* new CliCommandFailure({
+            category: "usage-or-configuration",
+            message: "Local Overlay keys must be non-empty normalized config paths",
+          });
+        }
+        return {
+          resource: resource.id,
+          target: canonicalTarget.absolute,
+          keys,
+        };
+      });
+
     const service: FollowerCommandsService = {
       enroll: (input) =>
         input.selectedProfile === undefined
@@ -401,62 +506,176 @@ const followerCommandsLayer = (
             category: "usage-or-configuration",
             message: "follower enrollment requires an explicit --profile",
           }))
-          : mapFailure(enrollFollower(input).pipe(
-            Effect.provideService(MachineState, machine),
-          )).pipe(
-            Effect.flatMap((enrollment) => {
-              const follower = {
-                ...enrollment.follower,
-                credentialReference: enrollment.credentialReference,
-              };
-              return mapFailure(listRevisions({
+          : Effect.gen(function*() {
+            const selectedProfile = input.selectedProfile;
+            if (selectedProfile === undefined) {
+              return yield* new CliCommandFailure({
+                category: "usage-or-configuration",
+                message: "follower enrollment requires an explicit --profile",
+              });
+            }
+            const existing = yield* mapFailure(
+              repository.getFollowerSynchronizationConfiguration(),
+            );
+            if (existing?.enrollmentPending === true) {
+              const resumed = yield* finalizeFollowerEnrollment({
+                endpoint: existing.source.endpoint,
+                tlsFingerprint: existing.source.tlsFingerprint,
+                credentialReference: existing.credentialReference,
+              }).pipe(
+                Effect.provideService(MachineState, machine),
+                Effect.match({
+                  onSuccess: () => ({ ok: true as const }),
+                  onFailure: (error) => ({ ok: false as const, error }),
+                }),
+              );
+              if (!resumed.ok) {
+                const tag = resumed.error._tag ?? "";
+                if (tag !== "InvalidFollowerCredentialError") {
+                  return yield* mapFailure(Effect.fail(resumed.error));
+                }
+                // The source restarted after the prepare phase and discarded
+                // its ambiguous marker. Discard the local half as well; the
+                // invitation can now be safely retried.
+                yield* machine.removeCredential(existing.credentialReference).pipe(
+                  Effect.ignore,
+                );
+              } else {
+                const state = yield* mapFailure(
+                  repository.loadState(existing.follower.id),
+                );
+                if (state.sourceIdentity === undefined) {
+                  return yield* new CliCommandFailure({
+                    category: "usage-or-configuration",
+                    message: "follower source identity is not configured",
+                  });
+                }
+                yield* mapFailure(repository.saveFollowerSynchronizationConfiguration({
+                  sourceIdentity: state.sourceIdentity,
+                  configuration: {
+                    ...existing,
+                    enrollmentPending: undefined,
+                    updatedAt: new Date().toISOString(),
+                  },
+                }));
+                return payload({
+                  follower: existing.follower,
+                  selectedProfile: existing.selectedProfile,
+                  source: state.sourceIdentity,
+                  resumed: true,
+                });
+              }
+            }
+
+            const prepared = yield* mapFailure(enrollFollower({
+              ...input,
+              finalize: false,
+            }).pipe(Effect.provideService(MachineState, machine)));
+            const follower = {
+              ...prepared.follower,
+              credentialReference: prepared.credentialReference,
+            };
+            const authorizedProfiles = prepared.authorizedProfiles
+              ?? (yield* mapFailure(listRevisions({
                 endpoint: input.invitation.endpoint,
-                tlsFingerprint: enrollment.tlsFingerprint,
-                sourceFingerprint: enrollment.source.publicKeyFingerprint,
-                credentialReference: enrollment.credentialReference,
+                tlsFingerprint: prepared.tlsFingerprint,
+                sourceFingerprint: prepared.source.publicKeyFingerprint,
+                credentialReference: prepared.credentialReference,
                 timeoutMilliseconds:
                   defaultScheduledInvocation.timeoutMilliseconds,
-              }).pipe(Effect.provideService(MachineState, machine))).pipe(
-                Effect.flatMap((revisions) =>
-                  revisions.revisions.some((revision) =>
-                      revision.profileId === input.selectedProfile
-                    )
-                    ? mapFailure(
-                      repository.saveFollowerSynchronizationConfiguration({
-                        sourceIdentity: enrollment.source,
-                        configuration: {
-                          schemaVersion: 1,
-                          follower,
-                          selectedProfile: input.selectedProfile!,
-                          source: {
-                            endpoint: input.invitation.endpoint,
-                            tlsFingerprint: enrollment.tlsFingerprint,
-                            signingFingerprint:
-                              enrollment.source.publicKeyFingerprint,
-                          },
-                          credentialReference: enrollment.credentialReference,
-                          cacheDirectory: join(dirname(statePath), "cache"),
-                          stateLocation: statePath,
-                          agentPolicy: "deterministic-only",
-                          scheduledInvocation: defaultScheduledInvocation,
-                          updatedAt: new Date().toISOString(),
-                        },
-                      }),
-                    )
-                    : Effect.fail(new CliCommandFailure({
-                      category: "usage-or-configuration",
-                      message:
-                        `profile ${input.selectedProfile} has no authorized revision`,
-                    }))
-                ),
-                Effect.as(payload({
-                  follower,
-                  selectedProfile: input.selectedProfile,
-                  source: enrollment.source,
-                })),
+              }).pipe(Effect.provideService(MachineState, machine)))).revisions;
+            if (!authorizedProfiles.some((revision) =>
+              revision.profileId === selectedProfile
+            )) {
+              yield* cancelFollowerEnrollment({
+                endpoint: input.invitation.endpoint,
+                tlsFingerprint: prepared.tlsFingerprint,
+                credentialReference: prepared.credentialReference,
+              }).pipe(
+                Effect.provideService(MachineState, machine),
+                Effect.ignore,
               );
-            }),
-          ),
+              return yield* new CliCommandFailure({
+                category: "usage-or-configuration",
+                message:
+                  `profile ${selectedProfile} has no authorized revision`,
+              });
+            }
+            const source = prepared.source;
+            const configuration = {
+              schemaVersion: 1 as const,
+              follower,
+              selectedProfile,
+              source: {
+                endpoint: input.invitation.endpoint,
+                tlsFingerprint: prepared.tlsFingerprint,
+                signingFingerprint: prepared.source.publicKeyFingerprint,
+              },
+              credentialReference: prepared.credentialReference,
+              cacheDirectory: join(dirname(statePath), "cache"),
+              stateLocation: statePath,
+              agentPolicy: "deterministic-only" as const,
+              enrollmentPending: true as const,
+              scheduledInvocation: defaultScheduledInvocation,
+              updatedAt: new Date().toISOString(),
+            };
+            const stateIdentity = source;
+            const saved = yield* mapFailure(
+              repository.saveFollowerSynchronizationConfiguration({
+                sourceIdentity: stateIdentity,
+                configuration,
+              }),
+            ).pipe(
+              Effect.match({
+                onSuccess: () => ({ ok: true as const }),
+                onFailure: (error) => ({ ok: false as const, error }),
+              }),
+            );
+            if (!saved.ok) {
+              yield* cancelFollowerEnrollment({
+                endpoint: input.invitation.endpoint,
+                tlsFingerprint: prepared.tlsFingerprint,
+                credentialReference: prepared.credentialReference,
+              }).pipe(
+                Effect.provideService(MachineState, machine),
+                Effect.ignore,
+              );
+              return yield* saved.error;
+            }
+            const finalized = yield* finalizeFollowerEnrollment({
+              endpoint: input.invitation.endpoint,
+              tlsFingerprint: prepared.tlsFingerprint,
+              credentialReference: prepared.credentialReference,
+            }).pipe(
+              Effect.provideService(MachineState, machine),
+              Effect.match({
+                onSuccess: () => ({ ok: true as const }),
+                onFailure: (error) => ({ ok: false as const, error }),
+              }),
+            );
+            if (!finalized.ok) return yield* mapFailure(Effect.fail(finalized.error));
+            const cleared = yield* mapFailure(
+              repository.saveFollowerSynchronizationConfiguration({
+                sourceIdentity: source,
+                configuration: {
+                  ...configuration,
+                  enrollmentPending: undefined,
+                  updatedAt: new Date().toISOString(),
+                },
+              }),
+            ).pipe(
+              Effect.match({
+                onSuccess: () => ({ ok: true as const }),
+                onFailure: (error) => ({ ok: false as const, error }),
+              }),
+            );
+            if (!cleared.ok) return yield* cleared.error;
+            return payload({
+              follower,
+              selectedProfile,
+              source: prepared.source,
+            });
+          }),
       synchronize: (input) =>
         mapFailure(synchronizeFollower(
           statePath,
@@ -488,11 +707,80 @@ const followerCommandsLayer = (
                   category: "usage-or-configuration",
                   message: "follower synchronization configuration is not enrolled",
                 }))
-                : mapFailure(repository.loadState(configuration.follower.id))
+                : mapFailure(repository.loadState(configuration.follower.id)).pipe(
+                  Effect.map((state) => ({
+                    ...state,
+                    localOverlay: configuration.localOverlay ?? [],
+                  })),
+                )
             ),
             Effect.map(payload),
           )
-          : mapFailure(repository.loadState(follower)).pipe(Effect.map(payload)),
+          : mapFailure(repository.loadState(follower)).pipe(
+            Effect.flatMap((state) =>
+              mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+                Effect.map((configuration) => ({
+                  ...state,
+                  localOverlay: configuration?.follower.id === follower
+                    ? configuration.localOverlay ?? []
+                    : [],
+                })),
+              )
+            ),
+            Effect.map(payload),
+          ),
+      setLocalOverlay: (input) =>
+        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+          Effect.flatMap((configuration) =>
+            configuration === undefined
+              ? Effect.fail(new CliCommandFailure({
+                category: "usage-or-configuration",
+                message: "follower synchronization configuration is not enrolled",
+              }))
+              : normalizedOverlay(configuration, input).pipe(
+                Effect.flatMap((entry) =>
+                  mapFailure(repository.saveLocalOverlay({
+                    entry,
+                    updatedAt: new Date().toISOString(),
+                  })).pipe(Effect.as(entry))
+                ),
+                Effect.map((entry) => payload({ ...entry, saved: true })),
+              )
+          ),
+        ),
+      listLocalOverlays: () =>
+        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+          Effect.flatMap((configuration) =>
+            configuration === undefined
+              ? Effect.fail(new CliCommandFailure({
+                category: "usage-or-configuration",
+                message: "follower synchronization configuration is not enrolled",
+              }))
+              : mapFailure(repository.listLocalOverlays())
+          ),
+          Effect.map((overlays) => payload({
+            overlays: overlays.map((overlay) => ({
+              resource: overlay.resource,
+              target: overlay.target,
+              keys: overlay.keys,
+            })),
+          })),
+        ),
+      removeLocalOverlay: (resource) =>
+        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+          Effect.flatMap((configuration) =>
+            configuration === undefined
+              ? Effect.fail(new CliCommandFailure({
+                category: "usage-or-configuration",
+                message: "follower synchronization configuration is not enrolled",
+              }))
+              : mapFailure(repository.removeLocalOverlay({
+                resource,
+                updatedAt: new Date().toISOString(),
+              })),
+          ),
+          Effect.map(() => payload({ resource, removed: true })),
+        ),
       setAgentPolicy: (policy) =>
         mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
           Effect.flatMap((configuration) => {

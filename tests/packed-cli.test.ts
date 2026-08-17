@@ -352,6 +352,10 @@ describe("packed Canonfig executable", () => {
     expect(enrolled.status, enrolled.stderr).toBe(0);
     const follower = JSON.parse(enrolled.stdout).data.follower.id;
 
+    const overlays = invoke(followerHome, ["overlay", "list", "--json"]);
+    expect(overlays.status, overlays.stderr).toBe(0);
+    expect(JSON.parse(overlays.stdout).data).toEqual({ overlays: [] });
+
     const first = invoke(followerHome, ["sync", "--apply", "--json"]);
     expect(first.status, first.stderr).toBe(0);
     expect(JSON.parse(first.stdout).data).toMatchObject({

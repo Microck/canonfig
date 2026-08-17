@@ -116,6 +116,7 @@ The agent cannot directly change the published profile. Discovery or repair sugg
 - source and follower identities
 - published revision metadata and content references
 - follower enrollment and group membership
+- durable Local Overlay ownership entries
 - synchronization runs and their plans
 - per-action progress and verification evidence
 - Applied Resource Records
@@ -278,6 +279,14 @@ otherwise                 -> Follower Drift; preserve follower content
 
 Canonfig does not merge modified canonical skills in v2. The user can keep the follower copy, replace it with the source revision, or move the changes into a Local Overlay. This keeps the automatic rule deterministic.
 
+Local Overlays are follower-owned records for `config` resources using the
+`merge` policy. Each record stores the authorized resource ID, its normalized
+managed target, and normalized config key paths. Overlay commands must resolve
+the selected authorized revision and match its target exactly; they cannot
+introduce external paths, bypass group authorization, or change source-owned
+content. The records live in follower state and are loaded on every plan, so
+ownership decisions survive synchronization and process restart.
+
 ## Synchronization flow
 
 ```text
@@ -351,6 +360,9 @@ canonfig follower enroll <invite>
 canonfig sync [--plan | --apply]
 canonfig recover
 canonfig status [--json]
+canonfig overlay list
+canonfig overlay set <resource-id> --target <path> --key <config.path>
+canonfig overlay remove <resource-id>
 canonfig doctor
 canonfig schedule set <calendar>
 canonfig schedule remove

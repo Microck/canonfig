@@ -15,15 +15,20 @@ import type { ProfileRevision } from "../domain/profile.ts";
 import type { StateRepositoryError } from "./state-repository.errors.ts";
 import type {
   CompleteRunInput,
+  CancelPendingEnrollmentInput,
   ConsumeEnrollmentInvitationInput,
   CreateEnrollmentInvitationInput,
   EnrollmentSourceRecord,
   FollowerCredentialRecord,
+  FinalizeEnrollmentInput,
   JournalActionInput,
+  PendingEnrollmentRecord,
   PublishRevisionInput,
   RecordDriftInput,
   RecoveryState,
   RegisterFollowerInput,
+  RemoveLocalOverlayInput,
+  SaveLocalOverlayInput,
   StartRunInput,
   StateSnapshot,
   StoredEnrollmentInvitation,
@@ -31,6 +36,8 @@ import type {
 } from "./state-repository.types.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
+import type { LocalOverlayEntry } from
+  "../synchronization/synchronization.types.ts";
 
 export class StateRepository extends Context.Service<StateRepository, {
   readonly saveSourceIdentity: (
@@ -42,6 +49,14 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly saveFollowerSynchronizationConfiguration: (
     input: SaveFollowerSynchronizationConfigurationInput,
   ) => Effect.Effect<void, StateRepositoryError>;
+  readonly saveLocalOverlay: (
+    input: SaveLocalOverlayInput,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  readonly removeLocalOverlay: (
+    input: RemoveLocalOverlayInput,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  readonly listLocalOverlays: (
+  ) => Effect.Effect<ReadonlyArray<LocalOverlayEntry>, StateRepositoryError>;
   readonly getFollowerSynchronizationConfiguration: (
   ) => Effect.Effect<
     FollowerSynchronizationConfiguration | undefined,
@@ -61,6 +76,14 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly consumeEnrollmentInvitation: (
     input: ConsumeEnrollmentInvitationInput,
   ) => Effect.Effect<void, StateRepositoryError>;
+  readonly finalizeEnrollment: (
+    input: FinalizeEnrollmentInput,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  readonly cancelPendingEnrollment: (
+    input: CancelPendingEnrollmentInput,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  readonly listPendingEnrollments: (
+  ) => Effect.Effect<ReadonlyArray<PendingEnrollmentRecord>, StateRepositoryError>;
   readonly findFollowerCredential: (
     credentialDigest: ContentDigest,
   ) => Effect.Effect<FollowerCredentialRecord | undefined, StateRepositoryError>;

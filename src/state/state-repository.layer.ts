@@ -31,6 +31,7 @@ import {
 } from "../domain/synchronization.ts";
 import {
   FollowerSynchronizationConfiguration,
+  LocalOverlayEntrySchema,
 } from "../synchronization/follower-sync-config.ts";
 import { SyncScheduleSchema } from "../schedule/schedule-manager.types.ts";
 import {
@@ -50,23 +51,29 @@ import { StateRepository } from "./state-repository.service.ts";
 import { stateMigrations } from "./state-schema.ts";
 import type {
   ActionJournalRecord,
+  CancelPendingEnrollmentInput,
   CompleteRunInput,
   ConsumeEnrollmentInvitationInput,
   CreateEnrollmentInvitationInput,
   DriftRecord,
   EnrollmentSourceRecord,
+  FinalizeEnrollmentInput,
   FollowerCredentialRecord,
   JournalActionInput,
+  PendingEnrollmentRecord,
   PublishRevisionInput,
   RecordDriftInput,
   RecoveryState,
   RegisterFollowerInput,
+  RemoveLocalOverlayInput,
   SaveFollowerSynchronizationConfigurationInput,
+  SaveLocalOverlayInput,
   StartRunInput,
   StateSnapshot,
   StoredEnrollmentInvitation,
   VerificationEvidence,
 } from "./state-repository.types.ts";
+import type { LocalOverlayEntry } from "../synchronization/synchronization.types.ts";
 
 const CountRow = Schema.Struct({ count: Schema.Number });
 const RevisionJsonRow = Schema.Struct({ revision_json: Schema.String });
@@ -158,6 +165,13 @@ const FollowerCredentialRow = Schema.Struct({
 const FollowerSynchronizationConfigurationRow = Schema.Struct({
   configuration_json: Schema.String,
 });
+const PendingEnrollmentRow = Schema.Struct({
+  follower_id: FollowerId,
+  code_digest: ContentDigest,
+  credential_digest: ContentDigest,
+  credential_reference: CredentialReference,
+  follower_json: Schema.String,
+});
 
 const VerificationEvidenceSchema = Schema.Struct({
   status: Schema.Literals(["passed", "failed", "not-run"]),
@@ -240,6 +254,13 @@ const makeRepository = Effect.gen(function*() {
         message: String(error),
       })
     ),
+  );
+  // A pending enrollment has not issued an active follower credential. Any
+  // process restart makes its remote outcome ambiguous, so fail closed by
+  // discarding the pending marker; the invitation remains unconsumed and can
+  // be safely retried because no active follower identity was issued.
+  yield* sql`DELETE FROM pending_enrollments`.pipe(
+    Effect.mapError(sqlError("discard ambiguous pending enrollments")),
   );
 
   const saveSourceIdentity = Effect.fn("StateRepository.saveSourceIdentity")(
@@ -394,6 +415,84 @@ const makeRepository = Effect.gen(function*() {
       "1",
     );
   });
+
+  const saveLocalOverlay = Effect.fn("StateRepository.saveLocalOverlay")(
+    function*(input: SaveLocalOverlayInput): Effect.fn.Return<void, StateRepositoryError> {
+      const configuration = yield* getFollowerSynchronizationConfiguration();
+      if (configuration === undefined) {
+        return yield* new RepositoryDecodeError({
+          entity: "follower synchronization configuration",
+          id: "1",
+          message: "follower synchronization configuration is not enrolled",
+        });
+      }
+      const entry = yield* Schema.decodeUnknownEffect(LocalOverlayEntrySchema)(
+        input.entry,
+      ).pipe(Effect.mapError(decodeError("local overlay", input.entry.resource)));
+      const localOverlay = [
+        ...(configuration.localOverlay ?? []).filter((candidate) =>
+          candidate.resource !== entry.resource
+        ),
+        entry,
+      ].sort((left, right) => left.resource.localeCompare(right.resource));
+      const nextConfiguration = yield* Schema.decodeUnknownEffect(
+        FollowerSynchronizationConfiguration,
+      )({
+        ...configuration,
+        localOverlay,
+        updatedAt: input.updatedAt,
+      }).pipe(
+        Effect.mapError(
+          decodeError("follower synchronization configuration", entry.resource),
+        ),
+      );
+      yield* sql`
+        UPDATE follower_sync_configuration
+        SET configuration_json = ${JSON.stringify(nextConfiguration)},
+            updated_at = ${nextConfiguration.updatedAt}
+        WHERE singleton = 1
+      `.pipe(Effect.mapError(sqlError("save local overlay")));
+    },
+  );
+
+  const removeLocalOverlay = Effect.fn("StateRepository.removeLocalOverlay")(
+    function*(input: RemoveLocalOverlayInput): Effect.fn.Return<void, StateRepositoryError> {
+      const configuration = yield* getFollowerSynchronizationConfiguration();
+      if (configuration === undefined) {
+        return yield* new RepositoryDecodeError({
+          entity: "follower synchronization configuration",
+          id: "1",
+          message: "follower synchronization configuration is not enrolled",
+        });
+      }
+      const localOverlay = (configuration.localOverlay ?? [])
+        .filter((entry) => entry.resource !== input.resource);
+      const nextConfiguration = yield* Schema.decodeUnknownEffect(
+        FollowerSynchronizationConfiguration,
+      )({
+        ...configuration,
+        localOverlay,
+        updatedAt: input.updatedAt,
+      }).pipe(
+        Effect.mapError(
+          decodeError("follower synchronization configuration", input.resource),
+        ),
+      );
+      yield* sql`
+        UPDATE follower_sync_configuration
+        SET configuration_json = ${JSON.stringify(nextConfiguration)},
+            updated_at = ${nextConfiguration.updatedAt}
+        WHERE singleton = 1
+      `.pipe(Effect.mapError(sqlError("remove local overlay")));
+    },
+  );
+
+  const listLocalOverlays = Effect.fn("StateRepository.listLocalOverlays")(
+    function*(): Effect.fn.Return<ReadonlyArray<LocalOverlayEntry>, StateRepositoryError> {
+      const configuration = yield* getFollowerSynchronizationConfiguration();
+      return configuration?.localOverlay ?? [];
+    },
+  );
 
   const saveEnrollmentSource = Effect.fn("StateRepository.saveEnrollmentSource")(
     function*(source: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
@@ -612,6 +711,23 @@ const makeRepository = Effect.gen(function*() {
           message: "the invitation nonce is invalid",
         });
       }
+      const pendingRows = yield* sql`
+        SELECT count(*) AS count
+        FROM pending_enrollments
+        WHERE code_digest = ${input.codeDigest}
+      `;
+      const pendingCount = yield* decodeRows(
+        CountRow,
+        pendingRows,
+        "pending enrollment",
+        input.codeDigest,
+      );
+      if ((pendingCount[0]?.count ?? 0) !== 0) {
+        return yield* new EnrollmentStateConflictError({
+          reason: "invitation-used",
+          message: "the invitation is already pending finalization",
+        });
+      }
       const identityRows = yield* sql`
         SELECT revoked
         FROM followers
@@ -664,74 +780,22 @@ const makeRepository = Effect.gen(function*() {
           message: "the follower credential is already assigned",
         });
       }
-      if (existingIdentity === undefined) {
-        yield* sql`
-          INSERT INTO followers (
-            id,
-            name,
-            groups_json,
-            revoked,
-            credential_reference,
-            enrolled_at
-          ) VALUES (
-            ${input.follower.id},
-            ${input.follower.name},
-            ${encodeJson(requestedGroups)},
-            0,
-            ${input.credentialReference},
-            ${input.follower.enrolledAt}
-          )
-        `;
-        yield* sql`
-          INSERT INTO follower_credentials (
-            follower_id,
-            credential_digest,
-            credential_reference
-          ) VALUES (
-            ${input.follower.id},
-            ${input.credentialDigest},
-            ${input.credentialReference}
-          )
-        `;
-      } else {
-        yield* sql`
-          UPDATE followers
-          SET
-            name = ${input.follower.name},
-            groups_json = ${encodeJson(requestedGroups)},
-            revoked = 0,
-            credential_reference = ${input.credentialReference},
-            enrolled_at = ${input.follower.enrolledAt}
-          WHERE id = ${input.follower.id}
-        `;
-        yield* sql`
-          UPDATE follower_credentials
-          SET
-            credential_digest = ${input.credentialDigest},
-            credential_reference = ${input.credentialReference}
-          WHERE follower_id = ${input.follower.id}
-        `;
-        const credentialUpdated = yield* statusCount(
-          sql,
-          sql`
-            SELECT count(*) AS count
-            FROM follower_credentials
-            WHERE follower_id = ${input.follower.id}
-          `,
-          "follower credential",
-          input.follower.id,
-        );
-        if (credentialUpdated !== 1) {
-          return yield* new EnrollmentStateConflictError({
-            reason: "follower-identity-conflict",
-            message: "the revoked follower credential is unavailable",
-          });
-        }
-      }
       yield* sql`
-        UPDATE enrollment_invitations
-        SET used_at = ${input.consumedAt}
-        WHERE code_digest = ${input.codeDigest} AND used_at IS NULL
+        INSERT INTO pending_enrollments (
+          follower_id,
+          code_digest,
+          credential_digest,
+          credential_reference,
+          follower_json,
+          created_at
+        ) VALUES (
+          ${input.follower.id},
+          ${input.codeDigest},
+          ${input.credentialDigest},
+          ${input.credentialReference},
+          ${JSON.stringify(input.follower)},
+          ${input.consumedAt}
+        )
       `;
     });
     yield* sql.withTransaction(transaction).pipe(
@@ -744,6 +808,243 @@ const makeRepository = Effect.gen(function*() {
           ? error
           : sqlError("consume enrollment invitation")(error)
       ),
+    );
+  });
+
+  const finalizeEnrollment = Effect.fn("StateRepository.finalizeEnrollment")(
+    function*(input: FinalizeEnrollmentInput): Effect.fn.Return<void, StateRepositoryError> {
+      const transaction = Effect.gen(function*() {
+        const pendingRows = yield* sql`
+          SELECT
+            follower_id,
+            code_digest,
+            credential_digest,
+            credential_reference,
+            follower_json
+          FROM pending_enrollments
+          WHERE follower_id = ${input.follower}
+            AND credential_digest = ${input.credentialDigest}
+        `;
+        const pending = (yield* decodeRows(
+          PendingEnrollmentRow,
+          pendingRows,
+          "pending enrollment",
+          input.follower,
+        ))[0];
+        if (pending === undefined) {
+          const activeRows = yield* sql`
+            SELECT count(*) AS count
+            FROM followers
+            INNER JOIN follower_credentials
+              ON follower_credentials.follower_id = followers.id
+            WHERE followers.id = ${input.follower}
+              AND followers.revoked = 0
+              AND follower_credentials.credential_digest = ${input.credentialDigest}
+              AND follower_credentials.credential_reference = ${input.credentialReference}
+          `;
+          const active = yield* decodeRows(
+            CountRow,
+            activeRows,
+            "follower enrollment",
+            input.follower,
+          );
+          if ((active[0]?.count ?? 0) === 1) return;
+          return yield* new EnrollmentStateConflictError({
+            reason: "credential-conflict",
+            message: "the pending follower enrollment is unavailable",
+          });
+        }
+        if (pending.credential_reference !== input.credentialReference) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "credential-conflict",
+            message: "the follower credential reference does not match",
+          });
+        }
+        const follower = yield* parseJson(
+          FollowerIdentity,
+          pending.follower_json,
+          "pending follower identity",
+          input.follower,
+        );
+        const identityRows = yield* sql`
+          SELECT revoked
+          FROM followers
+          WHERE id = ${input.follower}
+        `;
+        const identities = yield* decodeRows(
+          Schema.Struct({ revoked: Schema.Number }),
+          identityRows,
+          "follower identity",
+          input.follower,
+        );
+        if (identities[0] !== undefined && identities[0].revoked !== 1) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "follower-identity-conflict",
+            message: "the follower identity is already enrolled",
+          });
+        }
+        const invitationRows = yield* sql`
+          SELECT used_at, expires_at
+          FROM enrollment_invitations
+          WHERE code_digest = ${pending.code_digest}
+        `;
+        const invitation = (yield* decodeRows(
+          Schema.Struct({
+            used_at: Schema.NullOr(Schema.String),
+            expires_at: Schema.String,
+          }),
+          invitationRows,
+          "enrollment invitation",
+          pending.code_digest,
+        ))[0];
+        if (invitation === undefined || invitation.used_at !== null) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "invitation-used",
+            message: "the enrollment invitation is no longer available",
+          });
+        }
+        if (Date.parse(invitation.expires_at) <= Date.now()) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "invitation-expired",
+            message: "the enrollment invitation has expired",
+          });
+        }
+        if (identities[0] === undefined) {
+          yield* sql`
+            INSERT INTO followers (
+              id,
+              name,
+              groups_json,
+              revoked,
+              credential_reference,
+              enrolled_at
+            ) VALUES (
+              ${follower.id},
+              ${follower.name},
+              ${encodeJson([...follower.groups])},
+              0,
+              ${input.credentialReference},
+              ${follower.enrolledAt}
+            )
+          `;
+          yield* sql`
+            INSERT INTO follower_credentials (
+              follower_id,
+              credential_digest,
+              credential_reference
+            ) VALUES (
+              ${follower.id},
+              ${input.credentialDigest},
+              ${input.credentialReference}
+            )
+          `;
+        } else {
+          yield* sql`
+            UPDATE followers
+            SET
+              name = ${follower.name},
+              groups_json = ${encodeJson([...follower.groups])},
+              revoked = 0,
+              credential_reference = ${input.credentialReference},
+              enrolled_at = ${follower.enrolledAt}
+            WHERE id = ${follower.id}
+          `;
+          yield* sql`
+            UPDATE follower_credentials
+            SET
+              credential_digest = ${input.credentialDigest},
+              credential_reference = ${input.credentialReference}
+            WHERE follower_id = ${follower.id}
+          `;
+          const credentialUpdated = yield* statusCount(
+            sql,
+            sql`
+              SELECT count(*) AS count
+              FROM follower_credentials
+              WHERE follower_id = ${follower.id}
+            `,
+            "follower credential",
+            follower.id,
+          );
+          if (credentialUpdated !== 1) {
+            return yield* new EnrollmentStateConflictError({
+              reason: "follower-identity-conflict",
+              message: "the revoked follower credential is unavailable",
+            });
+          }
+        }
+        yield* sql`
+          UPDATE enrollment_invitations
+          SET used_at = ${new Date().toISOString()}
+          WHERE code_digest = ${pending.code_digest} AND used_at IS NULL
+        `;
+        const changedRows = yield* sql`SELECT changes() AS count`;
+        const changed = yield* decodeRows(
+          CountRow,
+          changedRows,
+          "enrollment invitation",
+          pending.code_digest,
+        );
+        if ((changed[0]?.count ?? 0) !== 1) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "invitation-used",
+            message: "the enrollment invitation was consumed concurrently",
+          });
+        }
+        yield* sql`
+          DELETE FROM pending_enrollments
+          WHERE follower_id = ${pending.follower_id}
+            AND credential_digest = ${pending.credential_digest}
+        `;
+      });
+      yield* sql.withTransaction(transaction).pipe(
+        Effect.mapError((error) =>
+          error instanceof EnrollmentStateConflictError
+            ? error
+            : error instanceof RepositoryDecodeError
+            ? error
+            : error instanceof RepositorySqlError
+            ? error
+            : sqlError("finalize enrollment")(error)
+        ),
+      );
+    },
+  );
+
+  const cancelPendingEnrollment = Effect.fn(
+    "StateRepository.cancelPendingEnrollment",
+  )(function*(input: CancelPendingEnrollmentInput): Effect.fn.Return<void, StateRepositoryError> {
+    yield* sql`
+      DELETE FROM pending_enrollments
+      WHERE credential_digest = ${input.credentialDigest}
+    `.pipe(Effect.mapError(sqlError("cancel pending enrollment")));
+  });
+
+  const listPendingEnrollments = Effect.fn(
+    "StateRepository.listPendingEnrollments",
+  )(function*(): Effect.fn.Return<
+    ReadonlyArray<PendingEnrollmentRecord>,
+    StateRepositoryError
+  > {
+    const rows = yield* sql`
+      SELECT follower_id, code_digest, credential_digest, credential_reference, follower_json
+      FROM pending_enrollments
+      ORDER BY created_at, follower_id
+    `.pipe(Effect.mapError(sqlError("list pending enrollments")));
+    const decoded = yield* decodeRows(
+      PendingEnrollmentRow,
+      rows,
+      "pending enrollment",
+      "all",
+    );
+    return yield* Effect.forEach(decoded, (row) =>
+      parseJson(FollowerIdentity, row.follower_json, "pending follower identity", row.follower_id)
+        .pipe(Effect.as({
+          follower: row.follower_id,
+          codeDigest: row.code_digest,
+          credentialDigest: row.credential_digest,
+          credentialReference: row.credential_reference,
+        }))
     );
   });
 
@@ -1713,11 +2014,17 @@ const makeRepository = Effect.gen(function*() {
     registerFollower,
     saveFollowerSynchronizationConfiguration,
     getFollowerSynchronizationConfiguration,
+    saveLocalOverlay,
+    removeLocalOverlay,
+    listLocalOverlays,
     saveEnrollmentSource,
     getEnrollmentSource,
     createEnrollmentInvitation,
     findEnrollmentInvitation,
     consumeEnrollmentInvitation,
+    finalizeEnrollment,
+    cancelPendingEnrollment,
+    listPendingEnrollments,
     findFollowerCredential,
     getFollowerCredential,
     revokeFollower,

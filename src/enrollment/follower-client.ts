@@ -21,7 +21,11 @@ import { connect as tlsConnect } from "node:tls";
 
 import { Effect, Option, Redacted, Schema } from "effect";
 
-import { BlobId, CertificateFingerprint } from "../domain/brand.ts";
+import {
+  BlobId,
+  CertificateFingerprint,
+  CredentialReference,
+} from "../domain/brand.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {
   DuplicateFollowerIdentityError,
@@ -347,13 +351,103 @@ export const enrollFollower = (
         })
       ),
     );
+    const credential = Redacted.make(enrolled.credential);
+    if (input.finalize !== false) {
+      const finalized = yield* requestJson(
+        "POST",
+        endpoint,
+        "/v1/enrollment/finalize",
+        certificate,
+        undefined,
+        credential,
+      );
+      if (finalized.status !== 200) {
+        yield* machine.removeCredential(credentialReference).pipe(Effect.ignore);
+        return yield* wireError(finalized);
+      }
+    }
     return {
       follower: enrolled.follower,
       credentialReference,
       source: enrolled.source,
       tlsFingerprint: enrolled.tlsFingerprint,
+      authorizedProfiles: enrolled.authorizedProfiles,
     };
   });
+
+const mutateEnrollment = (
+  input: {
+    readonly endpoint: string;
+    readonly tlsFingerprint: typeof CertificateFingerprint.Type;
+    readonly credentialReference: typeof CredentialReference.Type;
+    readonly path:
+      | "/v1/enrollment/cancel"
+      | "/v1/enrollment/finalize"
+      | "/v1/enrollment/revoke";
+    readonly removeLocal: boolean;
+  },
+): Effect.Effect<void, EnrollmentError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const endpoint = yield* checkedEndpoint(input.endpoint);
+    const certificate = yield* inspectCertificate(endpoint);
+    if (certificate.fingerprint !== input.tlsFingerprint) {
+      return yield* new EnrollmentFingerprintMismatchError({
+        message: "the source TLS fingerprint does not match the pinned fingerprint",
+      });
+    }
+    const credential = yield* machine.loadCredential({
+      reference: input.credentialReference,
+    }).pipe(
+      Effect.mapError(() =>
+        new InvalidFollowerCredentialError({
+          message: "the follower credential is unavailable",
+        })
+      ),
+    );
+    const response = yield* requestJson(
+      "POST",
+      endpoint,
+      input.path,
+      certificate,
+      undefined,
+      credential,
+    ).pipe(
+      Effect.ensuring(
+        input.removeLocal
+          ? machine.removeCredential(input.credentialReference).pipe(Effect.ignore)
+          : Effect.void,
+      ),
+    );
+    if (response.status !== 200) return yield* wireError(response);
+  });
+
+export const cancelFollowerEnrollment = (
+  input: {
+    readonly endpoint: string;
+    readonly tlsFingerprint: typeof CertificateFingerprint.Type;
+    readonly credentialReference: typeof CredentialReference.Type;
+  },
+): Effect.Effect<void, EnrollmentError, MachineState> =>
+  mutateEnrollment({ ...input, path: "/v1/enrollment/cancel", removeLocal: true });
+
+export const finalizeFollowerEnrollment = (
+  input: {
+    readonly endpoint: string;
+    readonly tlsFingerprint: typeof CertificateFingerprint.Type;
+    readonly credentialReference: typeof CredentialReference.Type;
+  },
+): Effect.Effect<void, EnrollmentError, MachineState> =>
+  mutateEnrollment({ ...input, path: "/v1/enrollment/finalize", removeLocal: false });
+
+export const revokeFollowerEnrollment = (
+  input: {
+    readonly endpoint: string;
+    readonly tlsFingerprint: typeof CertificateFingerprint.Type;
+    readonly credentialReference: typeof CredentialReference.Type;
+  },
+): Effect.Effect<void, EnrollmentError, MachineState> =>
+  mutateEnrollment({ ...input, path: "/v1/enrollment/revoke", removeLocal: true });
 
 export const authenticateFollower = (
   input: FollowerAuthenticationInput,

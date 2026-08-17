@@ -1,7 +1,7 @@
 import { Context, type Effect } from "effect";
 
 import type { AgentPolicy } from "../domain/identity.ts";
-import type { FollowerId, ProfileId } from "../domain/brand.ts";
+import type { FollowerId, ProfileId, ResourceId } from "../domain/brand.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
 import type {
@@ -36,6 +36,12 @@ export interface ScheduleInput {
   readonly executable?: string | undefined;
 }
 
+export interface LocalOverlayInput {
+  readonly resource: ResourceId;
+  readonly target: string;
+  readonly keys: ReadonlyArray<string>;
+}
+
 export interface FollowerCommandsService {
   readonly enroll: (
     input: FollowerEnrollInput,
@@ -48,6 +54,13 @@ export interface FollowerCommandsService {
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly status: (
     follower?: FollowerId,
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly setLocalOverlay: (
+    input: LocalOverlayInput,
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly listLocalOverlays: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly removeLocalOverlay: (
+    resource: ResourceId,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly setAgentPolicy: (
     policy: AgentPolicy,

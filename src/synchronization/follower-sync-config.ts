@@ -47,6 +47,15 @@ export const FollowerAgentHarnessConfiguration = Schema.Struct({
 export type FollowerAgentHarnessConfiguration =
   typeof FollowerAgentHarnessConfiguration.Type;
 
+export const LocalOverlayEntrySchema = Schema.Struct({
+  resource: ResourceId,
+  /** Optional for schemaVersion 1 configurations written before targets were recorded. */
+  target: Schema.optional(Schema.NonEmptyString),
+  keys: Schema.Array(Schema.NonEmptyString),
+});
+
+export type LocalOverlayEntry = typeof LocalOverlayEntrySchema.Type;
+
 export const FollowerSynchronizationConfiguration = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   follower: FollowerIdentity,
@@ -60,13 +69,12 @@ export const FollowerSynchronizationConfiguration = Schema.Struct({
   cacheDirectory: Schema.NonEmptyString,
   stateLocation: Schema.NonEmptyString,
   agentPolicy: AgentPolicy,
+  /** Set only between source preparation and source finalization. */
+  enrollmentPending: Schema.optional(Schema.Literal(true)),
   /** Last authorized profile-level default schedule, for durable status/recovery. */
   scheduleDefault: Schema.optional(ScheduleDefaultSchema),
   agentHarness: Schema.optional(FollowerAgentHarnessConfiguration),
-  localOverlay: Schema.optional(Schema.Array(Schema.Struct({
-    resource: ResourceId,
-    keys: Schema.Array(Schema.NonEmptyString),
-  }))),
+  localOverlay: Schema.optional(Schema.Array(LocalOverlayEntrySchema)),
   scheduledInvocation: Schema.Struct({
     mode: Schema.Literal("apply"),
     noInput: Schema.Literal(true),
