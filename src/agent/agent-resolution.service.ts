@@ -446,6 +446,31 @@ const rebootCommandExecutables = new Set([
   "systemctl",
   "telinit",
 ]);
+const systemctlPowerStateVerbs = new Set([
+  "emergency",
+  "halt",
+  "kexec",
+  "poweroff",
+  "reboot",
+  "rescue",
+  "soft-reboot",
+]);
+const systemctlPowerStateTargets = new Set([
+  "ctrl-alt-del.target",
+  "emergency.target",
+  "halt.target",
+  "kexec.target",
+  "poweroff.target",
+  "reboot.target",
+  "rescue.target",
+  // systemd's SysV runlevel aliases for the power-state targets above.
+  "runlevel0.target",
+  "runlevel1.target",
+  "runlevel6.target",
+  "shutdown.target",
+  "sigpwr.target",
+]);
+const systemctlUnitOperations = new Set(["isolate", "restart", "start"]);
 const commandWrappers = new Set([
   "cmd",
   "doas",
@@ -2089,30 +2114,62 @@ const optionTakesValue = (argument: string): boolean => {
     "--host",
     "--machine",
     "--property",
+    "--root",
+    "--setenv",
+    "--state",
+    "--type",
+    "--job-mode",
   ]).has(option);
+};
+
+const wrapperOptionTakesValue = (argument: string): boolean =>
+  new Set([
+    "-a",
+    "-c",
+    "-d",
+    "-g",
+    "-r",
+    "-t",
+    "-u",
+    "--close-from",
+    "--command-timeout",
+    "--group",
+    "--other-user",
+    "--role",
+    "--type",
+    "--user",
+  ]).has(argument.split(/[=:]/u, 1)[0]!.toLowerCase());
+
+const commandArguments = (
+  arguments_: ReadonlyArray<string>,
+  takesValue: (argument: string) => boolean = optionTakesValue,
+): ReadonlyArray<{ readonly command: string; readonly index: number }> => {
+  const positional: Array<{ readonly command: string; readonly index: number }> = [];
+  let endOfOptions = false;
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    if (!endOfOptions && argument === "--") {
+      endOfOptions = true;
+      continue;
+    }
+    if (
+      !endOfOptions
+      && (argument.startsWith("-") || /^\/[^/\\]+$/u.test(argument))
+    ) {
+      const separateValue = !argument.includes("=")
+        && (!argument.startsWith("-") || argument.startsWith("--") || argument.length === 2);
+      if (separateValue && takesValue(argument)) index += 1;
+      continue;
+    }
+    positional.push({ command: normalizedCommand(argument), index });
+  }
+  return positional;
 };
 
 const commandArgument = (
   arguments_: ReadonlyArray<string>,
 ): { readonly command: string; readonly index: number } | undefined => {
-  for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index]!;
-    if (argument === "--") {
-      const command = arguments_[index + 1];
-      return command === undefined
-        ? undefined
-        : { command: normalizedCommand(command), index: index + 1 };
-    }
-    if (
-      argument.startsWith("-")
-      || /^\/[^/\\]+$/u.test(argument)
-    ) {
-      if (!argument.includes("=") && optionTakesValue(argument)) index += 1;
-      continue;
-    }
-    return { command: normalizedCommand(argument), index };
-  }
-  return undefined;
+  return commandArguments(arguments_, wrapperOptionTakesValue)[0];
 };
 
 const structuralRestartCapabilities = (
@@ -2120,7 +2177,7 @@ const structuralRestartCapabilities = (
   arguments_: ReadonlyArray<string>,
   depth = 0,
 ): ReadonlySet<"restart" | "reboot"> => {
-  if (depth > 2) return new Set();
+  if (depth > 8) return new Set();
   const command = normalizedCommand(executable);
   if (commandWrappers.has(command)) {
     if (command === "cmd") {
@@ -2154,17 +2211,23 @@ const structuralRestartCapabilities = (
   if (restartExecutables.has(command)) return new Set(["restart"]);
   if (!rebootCommandExecutables.has(command)) return new Set();
 
-  const positional = arguments_
-    .filter((argument) =>
-      argument !== "--"
-      && !argument.startsWith("-")
-      && !/^\/[^/\\]+$/u.test(argument)
-    )
-    .map(normalizedCommand);
+  const positional = commandArguments(arguments_);
   const subcommand = command === "service" || command === "rc-service"
-    ? positional.at(-1)
-    : commandArgument(arguments_)?.command;
+    ? positional.at(-1)?.command
+    : positional[0]?.command;
   if (subcommand === undefined) return new Set();
+  if (command === "systemctl") {
+    if (systemctlPowerStateVerbs.has(subcommand)) {
+      return new Set(["reboot"]);
+    }
+    if (
+      systemctlUnitOperations.has(subcommand)
+      && positional.slice(1).some((unit) => systemctlPowerStateTargets.has(unit.command))
+    ) {
+      return new Set(["reboot"]);
+    }
+    return subcommand === "restart" ? new Set(["restart"]) : new Set();
+  }
   if (subcommand === "reboot" || subcommand === "shutdown"
     || subcommand === "halt" || subcommand === "poweroff"
     || (command === "init" || command === "telinit")

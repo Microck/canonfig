@@ -216,6 +216,37 @@ describe("agent resolution", () => {
     ["unrelated restart argument", "echo", ["restart"], []],
     ["shutdown restart flag", "shutdown", ["/r"], ["reboot"]],
     ["systemctl reboot subcommand", "systemctl", ["reboot"], ["reboot"]],
+    ["systemctl power-state subcommands", "/usr/bin/SYSTEMCTL.EXE", [
+      "--user",
+      "KEXEC",
+    ], ["reboot"]],
+    ["systemctl isolate power-state target", "systemctl", [
+      "isolate",
+      "reboot.target",
+    ], ["reboot"]],
+    ["systemctl starts power-state target after options", "systemctl", [
+      "--host",
+      "machine",
+      "start",
+      "--no-block",
+      "poweroff.target",
+    ], ["reboot"]],
+    ["systemctl restarts rescue target", "systemctl", [
+      "restart",
+      "/etc/systemd/system/rescue.target",
+    ], ["reboot"]],
+    ["systemctl emergency target alias", "systemctl", [
+      "--",
+      "isolate",
+      "emergency.target",
+    ], ["reboot"]],
+    ["nested systemctl power-state command", "sudo", [
+      "--",
+      "/usr/bin/systemctl",
+      "--user",
+      "isolate",
+      "runlevel6.target",
+    ], ["reboot"]],
     ["service restart subcommand", "service", ["agent", "restart"], ["restart"]],
     ["sudo reboot wrapper", "sudo", ["-u", "root", "reboot"], ["reboot"]],
     ["cmd shutdown wrapper", "cmd", ["/c", "shutdown", "/r"], ["reboot"]],
@@ -227,6 +258,101 @@ describe("agent resolution", () => {
       expect([...derivedCapabilities(executable, arguments_)]
         .filter((capability) => capability === "reboot" || capability === "restart"))
         .toEqual(expected);
+    },
+  );
+
+  it.each([
+    ["reboot target service", ["restart", "reboot.service"]],
+    ["reboot-like service", ["start", "poweroff.service"]],
+    ["ordinary target", ["restart", "default.target"]],
+    ["status of power-state target", ["status", "reboot.target"]],
+    ["unrelated systemctl operation", ["enable", "reboot.target"]],
+    ["restart argument after separator", ["restart", "--", "reboot.service"]],
+  ] as const)(
+    "does not derive reboot for ordinary systemctl operation: %s",
+    (_name, arguments_) => {
+      expect(derivedCapabilities("/usr/bin/systemctl", arguments_).has("reboot"))
+        .toBe(false);
+    },
+  );
+
+  it.each([
+    ["isolate reboot target", ["isolate", "reboot.target"]],
+    ["start poweroff target", ["start", "poweroff.target"]],
+    ["restart emergency target", ["restart", "emergency.target"]],
+  ] as const)(
+    "allows and denies derived systemctl reboot capability: %s",
+    async (_name, arguments_) => {
+      const systemctl = join(directory, "systemctl");
+      await writeFile(systemctl, "#!/bin/sh\nexit 0\n");
+      await chmod(systemctl, 0o755);
+      const allowedExecutables = [systemctl, join(directory, "verify")];
+      const allowedTask = task(directory, {
+        allowedExecutables,
+        forbidden: [],
+      });
+      const allowedHarness = {
+        ...harness(directory, allowedExecutables),
+        allowedCapabilities: ["reboot"] as const,
+      };
+      await expect(Effect.runPromise(authorizeAction(
+        action({ executable: systemctl, arguments: arguments_ }),
+        allowedTask,
+        allowedHarness,
+      ))).resolves.toBeUndefined();
+
+      const denied = await Effect.runPromise(authorizeAction(
+        action({ executable: systemctl, arguments: arguments_ }),
+        task(directory, { allowedExecutables }),
+        harness(directory, allowedExecutables),
+      ).pipe(Effect.flip));
+      expect(denied).toMatchObject({ capability: "reboot" });
+    },
+  );
+
+  it.each([
+    ["isolate reboot target", ["isolate", "reboot.target"]],
+    ["start poweroff target", ["start", "poweroff.target"]],
+    ["restart emergency target", ["restart", "emergency.target"]],
+  ] as const)(
+    "does not spawn denied systemctl reboot operation: %s",
+    async (_name, arguments_) => {
+      const marker = join(directory, "systemctl-marker");
+      const systemctl = join(directory, "systemctl");
+      const harnessExecutable = join(directory, "agent-harness");
+      const verify = join(directory, "verify");
+      const allowedExecutables = [harnessExecutable, systemctl, verify];
+      const proposed = JSON.stringify(proposal(action({
+        executable: systemctl,
+        arguments: arguments_,
+      })));
+      await Promise.all([
+        writeFile(systemctl, `#!/bin/sh\nprintf spawned > '${marker}'\n`),
+        writeFile(harnessExecutable, `#!/bin/sh\ncat >/dev/null\nprintf '%s' '${proposed}'\n`),
+      ]);
+      await Promise.all([
+        chmod(systemctl, 0o755),
+        chmod(harnessExecutable, 0o755),
+      ]);
+      const error = await Effect.runPromise(Effect.gen(function*() {
+        const service = yield* AgentResolution;
+        return yield* service.resolve({
+          policy: "agent-apply",
+          task: task(directory, {
+            allowedExecutables,
+            verification: { command: [verify], expectContains: "verified" },
+          }),
+          harness: {
+            ...harness(directory, allowedExecutables),
+            executable: harnessExecutable,
+          },
+        });
+      }).pipe(
+        Effect.provide(AgentResolutionLive),
+        Effect.flip,
+      ));
+      expect(error).toMatchObject({ capability: "reboot" });
+      await expect(access(marker)).rejects.toThrow();
     },
   );
 
