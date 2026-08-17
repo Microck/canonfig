@@ -67,7 +67,12 @@ const desiredForKind = (kind: ResourceKind): DesiredResource => {
       return {
         kind,
         toolId: "ripgrep",
-        recipes: [{ platform: "linux", method: "apt", package: "ripgrep" }],
+        recipes: [{
+          platform: "linux",
+          method: "apt",
+          package: "ripgrep",
+          version: "14.1.0",
+        }],
         loginRequired: false,
       };
     case "credential":
@@ -245,6 +250,61 @@ describe("resource and Apply Policy coverage", () => {
       { desired: [desired] },
     ));
     expect(missing.actions.map((action) => action.kind)).toEqual(["mirror-directory"]);
+  });
+
+  it("plans absent directory members as additions without treating them as drift", () => {
+    const subject = resource("missing-member", "directory", "mirror-owned");
+    const desired: DesiredResource = {
+      kind: "directory",
+      files: [{ path: "new.txt", digest: digestA, executable: false }],
+    };
+    const plan = runPlan(plannerInput([subject], {
+      desired: [desired],
+      observed: [{
+        state: "directory",
+        files: [{ path: "new.txt", state: "absent" }],
+      }],
+    }));
+
+    expect(plan.actions[0]?.detail).toEqual({
+      kind: "mirror-directory",
+      target: subject.target,
+      adds: ["new.txt"],
+      removes: [],
+    });
+  });
+
+  it("does not remove an already-missing previously owned member", () => {
+    const subject = resource("missing-owned", "directory", "mirror-owned");
+    const previous = { path: "owned.txt", digest: digestA, executable: false };
+    const plan = runPlan(plannerInput([subject], {
+      desired: [{ kind: "directory", files: [] }],
+      observed: [{
+        state: "directory",
+        files: [{ path: "owned.txt", state: "absent" }],
+      }],
+      applied: [{
+        resource: subject.id,
+        revision: "revision-previous",
+        digest: digestA,
+        appliedAt: "2026-08-15T00:00:00Z",
+        ownedFiles: [previous],
+      }],
+    }));
+
+    expect(plan.actions.map((action) => action.kind)).toEqual(["no-op"]);
+  });
+
+  it("preserves an unverifiable directory observation as drift", () => {
+    const subject = resource("mixed-error", "directory", "mirror-owned");
+    const plan = runPlan(plannerInput([subject], {
+      observed: [{
+        state: "unverifiable",
+        reason: "permission denied: unreadable member",
+      }],
+    }));
+
+    expect(plan.actions.map((action) => action.kind)).toEqual(["drift-conflict"]);
   });
 
   it("plans a non-directory root as drift instead of applying a mirror", () => {
@@ -783,7 +843,7 @@ describe("stable planning and bounded resolution", () => {
     }]);
   });
 
-  it("carries optional recipe versions into canonical install actions", () => {
+  it("carries deterministic recipe versions into canonical install actions", () => {
     const subject = resource("tool", "tool", "ensure");
     const versioned = runPlan(plannerInput(
       [subject],
@@ -802,7 +862,21 @@ describe("stable planning and bounded resolution", () => {
         }],
       },
     ));
-    const unversioned = runPlan(plannerInput([subject]));
+    const unversioned = runPlan(plannerInput(
+      [subject],
+      {
+        desired: [{
+          kind: "tool",
+          toolId: "ripgrep",
+          recipes: [{
+            platform: "linux",
+            method: "apt",
+            package: "ripgrep",
+          }],
+          loginRequired: false,
+        }],
+      },
+    ));
 
     expect(versioned.actions[0]?.detail).toEqual({
       kind: "install-tool",
@@ -814,12 +888,11 @@ describe("stable planning and bounded resolution", () => {
     });
     expect(JSON.parse(versioned.encoded).actions[0].detail.version).toBe("14.1.0");
     expect(unversioned.actions[0]?.detail).toEqual({
-      kind: "install-tool",
-      toolId: "ripgrep",
-      method: "apt",
-      package: "ripgrep",
+      kind: "human-action",
+      reason: "Installing ripgrep requires a deterministic apt version",
+      instructions: "The reviewed apt recipe for ripgrep has no exact version. Add a deterministic version to the profile, or install the tool manually, then rerun synchronization.",
     });
-    expect(JSON.parse(unversioned.encoded).actions[0].detail).not.toHaveProperty("version");
+    expect(JSON.parse(unversioned.encoded).actions[0].detail.kind).toBe("human-action");
   });
 
   it("routes remote npm-family artifacts without integrity to Human Action Required", () => {

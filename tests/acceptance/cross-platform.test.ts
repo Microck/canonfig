@@ -340,9 +340,24 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     const hiddenFile = join(followerMachine.home, "hidden.txt");
     const skillContent = "# Acceptance skill\n";
     const platformRecipes = [
-      { platform: "linux" as const, method: "apt", package: "canonfig-acceptance" },
-      { platform: "macos" as const, method: "brew", package: "canonfig-acceptance" },
-      { platform: "windows" as const, method: "winget", package: "Canonfig.Acceptance" },
+      {
+        platform: "linux" as const,
+        method: "apt",
+        package: "canonfig-acceptance",
+        version: "1.0.0",
+      },
+      {
+        platform: "macos" as const,
+        method: "brew",
+        package: "canonfig-acceptance",
+        version: "1.0.0",
+      },
+      {
+        platform: "windows" as const,
+        method: "winget",
+        package: "Canonfig.Acceptance",
+        version: "1.0.0",
+      },
     ];
     const profile: MachineProfile = {
       id: decode(ProfileId)("acceptance-profile"),

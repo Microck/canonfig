@@ -384,7 +384,7 @@ describe("profile discovery", () => {
     });
     expect(result.tools.find((tool) => tool.id === "brew-tool")?.recipes[0]).toMatchObject({
       method: "homebrew",
-      command: ["brew", "install", "brew-tool"],
+      command: ["brew", "install", "brew-tool@2.0"],
     });
     expect(result.tools.find((tool) => tool.id === "example.wingettool")?.recipes[0]).toMatchObject({
       method: "winget",

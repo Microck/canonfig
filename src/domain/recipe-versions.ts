@@ -71,7 +71,7 @@ const isSafeScalar = (
   && !value.startsWith("+")
   && !unsafe.test(value);
 
-const isSafePackageArgument = (value: string): boolean =>
+export const isSafePackageArgument = (value: string): boolean =>
   isSafeScalar(value, unsafePackageArgument);
 
 const versionPatternFor = (
@@ -160,6 +160,39 @@ export const recipeValidationError = (input: {
     return `installer ${method} cannot honor requested version ${sourceVersion}`;
   }
   return undefined;
+};
+
+/** Whether an automatic recipe lacks a version that its installer can honor. */
+export const isMissingAutomaticRecipeVersion = (input: {
+  readonly method: string;
+  readonly package: string;
+  readonly version?: string | undefined;
+  readonly source?: RecipeSource | undefined;
+  readonly integrity?: string | undefined;
+}): boolean => {
+  if (!Schema.is(AutomaticRecipeMethod)(input.method)) return false;
+  if (input.version !== undefined) return false;
+  if (!isSafePackageArgument(input.package)) return false;
+  if (
+    (input.method === "npm" || input.method === "pnpm" || input.method === "bun")
+    && !isNpmRegistryPackageName(input.package)
+  ) {
+    return false;
+  }
+  const metadata = sourceValue(input.source);
+  const integrity = metadata?.integrity ?? input.integrity;
+  const remoteSource = metadata?.source.startsWith("http:") === true
+    || metadata?.source.startsWith("https:") === true;
+  const npmFamily = input.method === "npm"
+    || input.method === "pnpm"
+    || input.method === "bun";
+  if (remoteSource && !npmFamily) return false;
+  if (remoteSource && npmFamily && integrity !== undefined) return false;
+  return !(
+    npmFamily
+    && npmVersionFromTarballSource(input.package, metadata?.source ?? "") !== undefined
+    && integrity !== undefined
+  );
 };
 
 const sourceValue = (

@@ -213,13 +213,17 @@ Each tool entry contains:
 An Installation Recipe must be platform-specific and version-aware. Canonfig never assumes that a package has the same name or installation method across operating systems.
 
 Recipe versions are validated at authoring, planning, and execution boundaries
-with the grammar of the selected method. npm-family recipes (npm, pnpm, and
+with the grammar of the selected method. Every automatic package-manager
+recipe requires a deterministic version. npm-family recipes (npm, pnpm, and
 bun) require an exact registry package name and exact three-part semver,
 including only valid prerelease and build metadata; tags, ranges, aliases,
 URLs, Git/GitHub references, local/workspace/link forms, encoded separators,
 and option-like values are rejected. Homebrew, winget, uv, cargo, and apt use
-their corresponding safe version grammars. A method that cannot represent a
-requested version fails closed before its installer is spawned.
+their corresponding safe version grammars. An immutable reviewed artifact may
+carry its exact version in its canonical source metadata when the package
+manager supports that artifact form. A method that cannot represent a
+requested version fails closed before its installer is spawned; an unversioned
+recipe becomes Human Action Required and never reaches executable lookup.
 
 Recipe methods are closed to the supported set: npm, pnpm, bun, brew, homebrew,
 winget, uv, cargo, apt, and source. Unknown methods are rejected during

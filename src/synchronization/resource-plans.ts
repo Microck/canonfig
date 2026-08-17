@@ -9,7 +9,10 @@ import type { ActionDetail, PlannedActionKind } from "../domain/synchronization.
 import type { AutomaticRecipeMethod, BuildPolicy } from "../domain/resource.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { sha256Hex } from "../profile/profile-codec.ts";
-import { recipeSourceDetails } from "../domain/recipe-versions.ts";
+import {
+  isMissingAutomaticRecipeVersion,
+  recipeSourceDetails,
+} from "../domain/recipe-versions.ts";
 import { InvalidObservedStateError } from "./synchronization.errors.ts";
 import type {
   DesiredResource,
@@ -77,6 +80,31 @@ const filesDigest = (
   return sha256Hex(encoded);
 };
 
+const presentObservedFiles = (
+  files: ReadonlyArray<{
+    readonly path: string;
+    readonly state?: "absent" | undefined;
+    readonly digest?: string | undefined;
+    readonly executable?: boolean | undefined;
+  }>,
+): ReadonlyArray<{
+  readonly path: string;
+  readonly digest: string;
+  readonly executable?: boolean | undefined;
+}> =>
+  files.flatMap((file) =>
+    "state" in file || file.digest === undefined
+      ? []
+      : [{ path: file.path, digest: file.digest, executable: file.executable }]
+  );
+
+const fileSignature = (
+  file: {
+    readonly digest: string;
+    readonly executable?: boolean | undefined;
+  },
+): string => `${file.digest}\0${file.executable === true ? "x" : "-"}`;
+
 export const desiredResourceDigest = (desired: DesiredResource): ContentDigest | undefined => {
   switch (desired.kind) {
     case "file":
@@ -102,7 +130,7 @@ const observedDigest = (
     case "present":
       return Schema.decodeUnknownSync(ContentDigestSchema)(context.observed.digest);
     case "directory":
-      return filesDigest(context.observed.files);
+      return filesDigest(presentObservedFiles(context.observed.files));
   }
 };
 
@@ -169,7 +197,8 @@ const observedMatchesDesired = (
     case "skill":
       return observed.state === "directory"
         && (observed.objectKind === undefined || observed.objectKind === "directory")
-        && filesDigest(observed.files) === desiredResourceDigest(desired);
+        && observed.files.every((file) => !("state" in file))
+        && filesDigest(presentObservedFiles(observed.files)) === desiredResourceDigest(desired);
     case "tool":
     case "credential":
       return observed.state === "present";
@@ -181,6 +210,20 @@ const observedMatchesApplied = (
 ): boolean => {
   const applied = context.applied;
   if (applied === undefined || context.observed.state === "absent") return true;
+  if (
+    (context.resource.kind === "directory" || context.resource.kind === "skill")
+    && context.observed.state === "directory"
+    && applied.ownedFiles !== undefined
+  ) {
+    const ownedByPath = new Map(
+      applied.ownedFiles.map((file) => [file.path, fileSignature(file)] as const),
+    );
+    return context.observed.files.every((file) =>
+      "state" in file
+        || ownedByPath.get(file.path) === undefined
+        || ownedByPath.get(file.path) === fileSignature(file)
+    );
+  }
   const currentDigest = observedDigest(context);
   if (currentDigest !== applied.digest) return false;
   if (
@@ -229,7 +272,7 @@ const replaceDirectory = (
   desired: Extract<DesiredResource, { readonly kind: "directory" | "skill" }>,
 ): ResourceActionDraft => {
   const observedFiles = context.observed.state === "directory"
-    ? context.observed.files
+    ? presentObservedFiles(context.observed.files)
     : [];
   const observedByPath = new Map(
     observedFiles.map((file) => [
@@ -418,7 +461,7 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     ? context.desired.files
     : [{ path: context.resource.target, digest: desiredResourceDigest(context.desired) }];
   const observedFiles = context.observed.state === "directory"
-    ? context.observed.files
+    ? presentObservedFiles(context.observed.files)
     : [];
   const currentByPath = new Map(observedFiles.map((file) => [
     file.path,
@@ -579,6 +622,17 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     )[0];
   if (recipe === undefined) {
     return [unresolvedAgentTask(context, `Find an installation recipe for ${context.desired.toolId}`)];
+  }
+  if (isMissingAutomaticRecipeVersion(recipe)) {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `Installing ${context.desired.toolId} requires a deterministic ${recipe.method} version`,
+        instructions:
+          `The reviewed ${recipe.method} recipe for ${recipe.package} has no exact version. Add a deterministic version to the profile, or install the tool manually, then rerun synchronization.`,
+      },
+    }];
   }
   if (recipe.method === "source") {
     return [{

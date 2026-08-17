@@ -37,8 +37,8 @@
         "kind": "tool",
         "toolId": "ripgrep",
         "recipes": [
-          { "platform": "windows", "method": "winget", "package": "BurntSushi.ripgrep.MSVC" },
-          { "platform": "linux", "method": "apt", "package": "ripgrep" }
+          { "platform": "windows", "method": "winget", "package": "BurntSushi.ripgrep.MSVC", "version": "14.1.0" },
+          { "platform": "linux", "method": "apt", "package": "ripgrep", "version": "3.2.1" }
         ]
       },
       "verify": { "method": "executable-present", "executable": "rg" }

@@ -36,6 +36,7 @@ import type {
   RevisionMetadata,
 } from "../enrollment/enrollment.types.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import { MachineFilesystemError } from "../machine/machine-state.errors.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
   syncScheduleFromResourceSpec,
@@ -74,6 +75,10 @@ import type {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+const isNotFoundFilesystemError = (
+  error: MachineFilesystemError,
+): boolean => /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message);
 
 const configurationError = (
   reason: "missing" | "stale" | "invalid-profile" | "invalid-reference",
@@ -541,9 +546,9 @@ const observe = (
         const root = yield* machine.normalizePath({ path: decoded.resource.target });
         const rootKind = yield* machine.inspectPath(root).pipe(
           Effect.catchTag("MachineFilesystemError", (error) =>
-            Effect.succeed(error.message.includes("ENOENT")
-              ? undefined
-              : { kind: "special" } as const)
+            isNotFoundFilesystemError(error)
+              ? Effect.succeed(undefined)
+              : Effect.fail(error)
           ),
         );
         if (rootKind === undefined) return { state: "absent" } as const;
@@ -565,7 +570,16 @@ const observe = (
         const files = yield* Effect.forEach(candidates, (file) =>
           Effect.gen(function*() {
             const path = yield* machine.normalizePath({ path: file.path, base: root });
-            const kind = yield* machine.inspectPath(path);
+            const kind = yield* machine.inspectPath(path).pipe(
+              Effect.catchTag("MachineFilesystemError", (error) =>
+                isNotFoundFilesystemError(error)
+                  ? Effect.succeed(undefined)
+                  : Effect.fail(error)
+              ),
+            );
+            if (kind === undefined) {
+              return { path: file.path, state: "absent" } as const;
+            }
             if (kind.kind !== "regular") {
               return {
                 path: file.path,
@@ -585,12 +599,15 @@ const observe = (
                   })),
                 )
               ),
-              Effect.catch(() => Effect.succeed(undefined)),
+              Effect.catchTag("MachineFilesystemError", (error) =>
+                isNotFoundFilesystemError(error)
+                  ? Effect.succeed({ path: file.path, state: "absent" } as const)
+                  : Effect.fail(error)
+              ),
             );
           })
         );
-        const present = files.filter((file) => file !== undefined);
-        return { state: "directory", objectKind: "directory", files: present } as const;
+        return { state: "directory", objectKind: "directory", files } as const;
       }).pipe(
         Effect.catch((error) =>
           Effect.succeed({ state: "unverifiable", reason: String(error) } as const)

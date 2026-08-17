@@ -1999,17 +1999,32 @@ describe("synchronization apply run", () => {
   );
 
   it.each([
-    ["homebrew", "brew", ["install", "tool"]],
-    ["winget", "winget", ["install", "--id", "tool", "--silent"]],
-    ["uv", "uv", ["tool", "install", "tool", "--only-binary=:all:"]],
-    ["apt", "apt-get", ["install", "-y", "tool"]],
+    "homebrew",
+    "winget",
+    "uv",
+    "apt",
   ] as const)(
-    "preserves unversioned %s installer behavior",
-    async (method, executable, arguments_) => {
-      const result = await installerInvocation(method, "tool");
+    "rejects unversioned %s recipes before lookup or spawn",
+    async (method) => {
+      let lookups = 0;
+      let invocations = 0;
+      await expect(installerInvocation(
+        method,
+        "tool",
+        undefined,
+        () => {
+          invocations += 1;
+        },
+        () => {
+          lookups += 1;
+        },
+      )).rejects.toMatchObject({
+        _tag: "InvalidExecutionPlanError",
+        message: `automatic installer ${method} requires an exact version`,
+      });
 
-      expect(result.executableQueries).toEqual([executable]);
-      expect(result.invocations[0]?.arguments).toEqual(arguments_);
+      expect(lookups).toBe(0);
+      expect(invocations).toBe(0);
     },
   );
 
@@ -2488,7 +2503,12 @@ describe("synchronization apply run", () => {
     const desired: DesiredResource = {
       kind: "tool",
       toolId: "rg",
-      recipes: [{ platform: "linux", method: "apt", package: "ripgrep" }],
+      recipes: [{
+        platform: "linux",
+        method: "apt",
+        package: "ripgrep",
+        version: "14.1.0",
+      }],
       loginRequired: false,
     };
     const revision: PlanningProfileRevision = {

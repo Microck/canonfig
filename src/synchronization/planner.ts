@@ -35,7 +35,10 @@ import {
   PlannerVerificationKindMismatchError,
   type SynchronizationPlanningError,
 } from "./synchronization.errors.ts";
-import { recipeValidationError } from "../domain/recipe-versions.ts";
+import {
+  isMissingAutomaticRecipeVersion,
+  recipeValidationError,
+} from "../domain/recipe-versions.ts";
 import {
   planRemoved,
   planResource,
@@ -269,7 +272,7 @@ const validateResourceInputs = (
     if (desired.kind === "tool") {
       for (const recipe of desired.recipes) {
         const reason = recipeValidationError(recipe);
-        if (reason !== undefined) {
+        if (reason !== undefined && !isMissingAutomaticRecipeVersion(recipe)) {
           return new PlannerInvalidRecipeError({
             resource: resource.id,
             method: recipe.method,

@@ -23,7 +23,11 @@ import {
   type BuildPolicy,
 } from "./resource.ts";
 
-import { RecipeSourceMetadata, recipeValidationError } from "./recipe-versions.ts";
+import {
+  isMissingAutomaticRecipeVersion,
+  RecipeSourceMetadata,
+  recipeValidationError,
+} from "./recipe-versions.ts";
 /**
  * Synchronization domain types: plans, actions, outcomes, drift, agent tasks,
  * and human action records.
@@ -147,6 +151,18 @@ export const ObservedObjectKind = Schema.Literals([
 ]);
 export type ObservedObjectKind = Schema.Schema.Type<typeof ObservedObjectKind>;
 
+export type ObservedDirectoryFile =
+  | {
+    readonly path: string;
+    readonly state: "absent";
+  }
+  | {
+    readonly path: string;
+    readonly digest: string;
+    readonly executable?: boolean | undefined;
+    readonly objectKind?: ObservedObjectKind | undefined;
+  };
+
 export type ObservedResourceState =
   | { readonly state: "absent" }
   | {
@@ -163,12 +179,7 @@ export type ObservedResourceState =
   | {
     readonly state: "directory";
     readonly objectKind?: ObservedObjectKind | undefined;
-    readonly files: ReadonlyArray<{
-      readonly path: string;
-      readonly digest: string;
-      readonly executable?: boolean | undefined;
-      readonly objectKind?: ObservedObjectKind | undefined;
-    }>;
+    readonly files: ReadonlyArray<ObservedDirectoryFile>;
   }
   | { readonly state: "unverifiable"; readonly reason: string };
 
@@ -221,9 +232,12 @@ const InstallToolActionDetailSchema = Schema.Struct({
 }).check(
   Schema.makeFilter((detail) => {
     const reason = recipeValidationError(detail);
-    return reason === undefined
+    return reason === undefined && !isMissingAutomaticRecipeVersion(detail)
       ? undefined
-      : { path: ["version"], issue: reason };
+      : {
+        path: ["version"],
+        issue: reason ?? `automatic installer ${detail.method} requires an exact version`,
+      };
   }),
 );
 
@@ -388,12 +402,18 @@ export const ObservedResourceStateSchema = Schema.Union([
   Schema.Struct({
     state: Schema.Literal("directory"),
     objectKind: Schema.optional(ObservedObjectKind),
-    files: Schema.Array(Schema.Struct({
-      path: Schema.NonEmptyString,
-      digest: ContentDigest,
-      executable: Schema.optional(Schema.Boolean),
-      objectKind: Schema.optional(ObservedObjectKind),
-    })),
+    files: Schema.Array(Schema.Union([
+      Schema.Struct({
+        path: Schema.NonEmptyString,
+        state: Schema.Literal("absent"),
+      }),
+      Schema.Struct({
+        path: Schema.NonEmptyString,
+        digest: ContentDigest,
+        executable: Schema.optional(Schema.Boolean),
+        objectKind: Schema.optional(ObservedObjectKind),
+      }),
+    ])),
   }),
   Schema.Struct({
     state: Schema.Literal("unverifiable"),

@@ -751,7 +751,7 @@ describe("v2 profile fixtures", () => {
     expect(encodeMachineProfile(implicit)).toBe(encodeMachineProfile(explicit));
     expect(digestMachineProfile(implicit)).toBe(digestMachineProfile(explicit));
     expect(digestMachineProfile(implicit)).toBe(
-      "f684f5075a8557c96da8446a778b4f9fc9e9b79c18f24915e0c0c63a476c3d4e",
+      "a98186407a99282f110fec3ca368702078400c754b2a986415e53f3b6001f5c3",
     );
   });
 
@@ -849,12 +849,12 @@ describe("schema-backed synchronization contracts", () => {
     const decoded = fixtures.map(Schema.decodeUnknownSync(ActionDetailSchema));
     expect(decoded.map(actionDetailLabel)).toHaveLength(11);
     expect(decoded[5]).toMatchObject({ version: "14.1.0" });
-    expect(Schema.decodeUnknownSync(ActionDetailSchema)({
+    expect(() => Schema.decodeUnknownSync(ActionDetailSchema)({
       kind: "install-tool",
       toolId: "rg",
       method: "apt",
       package: "ripgrep",
-    })).not.toHaveProperty("version");
+    })).toThrow();
     expect(() => Schema.decodeUnknownSync(ActionDetailSchema)({
       kind: "install-tool",
       toolId: "tool",

@@ -136,18 +136,12 @@ const fixture = (
     : {
       kind: "tool",
       toolId: "rg",
-      recipes: [options.version === undefined
-        ? {
-          platform: "linux",
-          method: "apt",
-          package: "ripgrep",
-        }
-        : {
-          platform: "linux",
-          method: "apt",
-          package: "ripgrep",
-          version: options.version,
-        }],
+      recipes: [{
+        platform: "linux",
+        method: "apt",
+        package: "ripgrep",
+        version: options.version ?? "14.1.0",
+      }],
       loginRequired: false,
     };
   const revision: PlanningProfileRevision = {

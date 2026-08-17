@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { dirname, isAbsolute, join, win32 } from "node:path";
+import { dirname, isAbsolute, join, relative, win32 } from "node:path";
 
 import { CredentialReference, type RunId } from "../domain/brand.ts";
 import {
@@ -46,6 +46,7 @@ import {
 import { desiredResourceDigest } from "./resource-plans.ts";
 import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
 import {
+  isMissingAutomaticRecipeVersion,
   recipeSourceDetails,
   recipeValidationError,
   npmVersionFromTarballSource,
@@ -365,11 +366,129 @@ const normalizeRelative = (
     return yield* machine.normalizePath({ path: relative, base: target });
   });
 
+const sameMachinePath = (
+  left: MachinePath,
+  right: MachinePath,
+): boolean =>
+  left.platform === right.platform
+  && (
+    left.platform === "windows"
+      ? left.absolute.toLowerCase() === right.absolute.toLowerCase()
+      : left.absolute === right.absolute
+  );
+
+const machinePathKey = (path: MachinePath): string =>
+  `${path.platform}:${path.platform === "windows"
+    ? path.absolute.toLowerCase()
+    : path.absolute}`;
+
+const pathWithinMachineRoot = (
+  root: MachinePath,
+  path: MachinePath,
+): boolean => {
+  if (root.platform !== path.platform) return false;
+  const remainder = root.platform === "windows"
+    ? win32.relative(root.absolute.toLowerCase(), path.absolute.toLowerCase())
+    : relative(root.absolute, path.absolute);
+  return remainder === ""
+    || (
+      !remainder.startsWith("..")
+      && !win32.isAbsolute(remainder)
+      && !isAbsolute(remainder)
+    );
+};
+
+/**
+ * Return the exact deterministic rollback path set. Directory mutations need
+ * snapshots for every intermediate ancestor because a failed restart can
+ * otherwise leave newly-created nested directories behind. Keep this
+ * expansion shared by capture and recovery validation so the persisted
+ * material cannot be rejected or accepted under a different path contract.
+ */
+const rollbackPathSet = (
+  paths: ReadonlyArray<MachinePath>,
+  root?: MachinePath | undefined,
+): Effect.Effect<
+  ReadonlyArray<MachinePath>,
+  SynchronizationExecutionInputError | MachineStateError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const normalizedRoot = root === undefined
+      ? undefined
+      : yield* machine.normalizePath({ path: root.absolute });
+    const normalizedPaths = yield* Effect.forEach(
+      paths,
+      (path) => machine.normalizePath({ path: path.absolute }),
+    );
+    const pathsWithAncestors = new Map(
+      normalizedPaths.map((path) => [machinePathKey(path), path] as const),
+    );
+    if (normalizedRoot !== undefined) {
+      for (const path of normalizedPaths) {
+        if (!pathWithinMachineRoot(normalizedRoot, path)) {
+          return yield* new InvalidExecutionPlanError({
+            message: `rollback path is outside managed root ${normalizedRoot.absolute}: ${path.absolute}`,
+          });
+        }
+        if (sameMachinePath(path, normalizedRoot)) continue;
+        let ancestor = path.platform === "windows"
+          ? win32.dirname(path.absolute)
+          : dirname(path.absolute);
+        while (!sameMachinePath({ platform: normalizedRoot.platform, absolute: ancestor }, normalizedRoot)) {
+          const candidate: MachinePath = {
+            platform: normalizedRoot.platform,
+            absolute: ancestor,
+          };
+          if (!pathWithinMachineRoot(normalizedRoot, candidate)) {
+            return yield* new InvalidExecutionPlanError({
+              message: `rollback ancestor is outside managed root ${normalizedRoot.absolute}: ${ancestor}`,
+            });
+          }
+          const normalized = yield* machine.normalizePath({ path: ancestor });
+          if (!pathWithinMachineRoot(normalizedRoot, normalized)) {
+            return yield* new InvalidExecutionPlanError({
+              message: `rollback ancestor is outside managed root ${normalizedRoot.absolute}: ${normalized.absolute}`,
+            });
+          }
+          pathsWithAncestors.set(machinePathKey(normalized), normalized);
+          const parent = normalized.platform === "windows"
+            ? win32.dirname(normalized.absolute)
+            : dirname(normalized.absolute);
+          if (parent === normalized.absolute) {
+            return yield* new InvalidExecutionPlanError({
+              message: `rollback path ancestry did not reach managed root ${normalizedRoot.absolute}`,
+            });
+          }
+          ancestor = parent;
+        }
+      }
+    }
+    return [...pathsWithAncestors.values()].sort((left, right) =>
+      left.platform.localeCompare(right.platform)
+      || left.absolute.localeCompare(right.absolute)
+    );
+  });
+
+const restoreOrder = (
+  entries: ReadonlyArray<StoredFile>,
+): ReadonlyArray<StoredFile> =>
+  [...entries].sort((left, right) =>
+    right.path.split(/[\\/]/u).length - left.path.split(/[\\/]/u).length
+    || right.path.length - left.path.length
+    || left.path.localeCompare(right.path)
+  );
+
 const captureRollback = (
   context: ResourceExecutionContext,
   paths: ReadonlyArray<MachinePath>,
   root?: MachinePath | undefined,
-): Effect.Effect<RollbackMaterial, MachineStateError, MachineState> =>
+): Effect.Effect<
+  RollbackMaterial,
+  SynchronizationExecutionInputError | MachineStateError,
+  MachineState
+> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const directories = yield* machine.userDirectories();
@@ -382,28 +501,9 @@ const captureRollback = (
       path: `${sha256Hex(context.action.id)}.json`,
       base: rollbackDirectory,
     });
-    const pathsWithAncestors = new Map(
-      paths.map((path) => [path.absolute, path] as const),
-    );
-    if (root !== undefined) {
-      for (const path of paths) {
-        if (path.absolute === root.absolute) continue;
-        let ancestor = path.platform === "windows"
-          ? win32.dirname(path.absolute)
-          : dirname(path.absolute);
-        while (ancestor !== root.absolute) {
-          const normalized = yield* machine.normalizePath({ path: ancestor });
-          pathsWithAncestors.set(normalized.absolute, normalized);
-          const parent = normalized.platform === "windows"
-            ? win32.dirname(normalized.absolute)
-            : dirname(normalized.absolute);
-          if (parent === normalized.absolute) break;
-          ancestor = parent;
-        }
-      }
-    }
+    const pathsWithAncestors = yield* rollbackPathSet(paths, root);
     const stored = yield* Effect.forEach(
-      [...pathsWithAncestors.values()],
+      pathsWithAncestors,
       (path) => captureStoredFile(path, context.limits.maximumFileBytes),
     );
     yield* machine.atomicWrite({
@@ -422,7 +522,7 @@ const captureRollback = (
         || storedState(rootEntry) === "absent"
         || storedState(rootEntry) === "directory"
       ) {
-        for (const entry of stored) {
+        for (const entry of restoreOrder(stored)) {
           if (entry === rootEntry) continue;
           yield* restoreStoredFile(entry, root);
         }
@@ -457,15 +557,16 @@ const rollbackPaths = (
           [...new Set([...detail.adds, ...detail.removes])],
           (path) => normalizeRelative(root, path),
         );
-        return [root, ...descendants];
+        return yield* rollbackPathSet([root, ...descendants], root);
       }
       case "remove-resource": {
         if (context.resource.kind === "directory" || context.resource.kind === "skill") {
           const root = yield* targetPath(detail.target);
-          return yield* Effect.forEach(
+          const descendants = yield* Effect.forEach(
             detail.paths,
             (path) => normalizeRelative(root, path),
           );
+          return yield* rollbackPathSet([root, ...descendants], root);
         }
         if (context.resource.kind === "file" || context.resource.kind === "config") {
           return [yield* targetPath(detail.target)];
@@ -537,6 +638,10 @@ export const restoreRollbackReference = (
       });
     }
     const root = context.action.detail.kind === "mirror-directory"
+      || (
+        context.action.detail.kind === "remove-resource"
+        && (context.resource.kind === "directory" || context.resource.kind === "skill")
+      )
       ? yield* targetPath(context.action.detail.target)
       : undefined;
     const rootEntry = root === undefined
@@ -550,7 +655,7 @@ export const restoreRollbackReference = (
       || storedState(rootEntry) === "absent"
       || storedState(rootEntry) === "directory"
     ) {
-      for (const entry of stored) {
+      for (const entry of restoreOrder(stored)) {
         if (entry === rootEntry) continue;
         yield* restoreStoredFile(entry, root);
       }
@@ -840,7 +945,7 @@ const prepareRemoval = (
           detail.paths,
           (path) => normalizeRelative(root, path),
         );
-        const rollback = yield* captureRollback(context, paths, root);
+        const rollback = yield* captureRollback(context, [root, ...paths], root);
         const execute = Effect.gen(function*() {
           const machine = yield* MachineState;
           for (const path of paths) {
@@ -957,9 +1062,17 @@ const installInvocation = (
       version,
       source,
     });
-    if (recipeError !== undefined) {
+    if (
+      recipeError !== undefined
+      || isMissingAutomaticRecipeVersion({
+        method,
+        package: packageName,
+        version,
+        source,
+      })
+    ) {
       return yield* new InvalidExecutionPlanError({
-        message: recipeError,
+        message: recipeError ?? `automatic installer ${method} requires an exact version`,
       });
     }
     const npmFamily = method === "npm" || method === "pnpm" || method === "bun";

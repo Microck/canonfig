@@ -306,7 +306,7 @@ const recipeFromPackage = (
         source: metadata.source,
         integrity: metadata.integrity,
         buildPolicy,
-        command: ["brew", "install", metadata.name],
+        command: ["brew", "install", `${metadata.name}@${version}`],
       };
     case "winget":
       return {
