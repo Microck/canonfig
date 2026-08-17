@@ -245,6 +245,42 @@ describe("resource and Apply Policy coverage", () => {
       removes: ["removed.txt"],
     });
   });
+
+  it("evaluates mirror removal ownership and drift per file", () => {
+    const subject = resource("directory", "directory", "mirror-owned");
+    const desired = {
+      kind: "directory" as const,
+      files: [{ path: "kept.txt", digest: digestA, executable: false }],
+    };
+    const observed = [
+      { path: "kept.txt", digest: digestA, executable: false },
+      { path: "clean.txt", digest: digestB, executable: false },
+      { path: "modified.txt", digest: digestC, executable: false },
+      { path: "unowned.txt", digest: digestC, executable: false },
+    ];
+    const input = plannerInput([subject], {
+      desired: [desired],
+      observed: [{ state: "directory", files: observed }],
+      applied: [{
+        resource: subject.id,
+        revision: "revision-previous",
+        digest: digestA,
+        appliedAt: "2026-08-15T00:00:00Z",
+        ownedFiles: [
+          { path: "kept.txt", digest: digestA },
+          { path: "clean.txt", digest: digestB },
+          { path: "modified.txt", digest: digestB },
+        ],
+      }],
+    });
+
+    expect(runPlan(input).actions[0]?.detail).toEqual({
+      kind: "mirror-directory",
+      target: subject.target,
+      adds: [],
+      removes: ["clean.txt"],
+    });
+  });
 });
 
 describe("transfer and apply separation", () => {

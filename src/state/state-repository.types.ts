@@ -117,6 +117,12 @@ export interface JournalActionInput {
    */
   readonly appliedResource?: AppliedResourceRecord | undefined;
   readonly removedResource?: ResourceId | undefined;
+  /**
+   * The ownership baseline removed by a terminal removal action. The
+   * resource id alone is not enough to reconstruct a safe rollback or
+   * recovery context after the applied-resource row is deleted.
+   */
+  readonly removedResourceRecord?: AppliedResourceRecord | undefined;
 }
 
 export interface ActionJournalRecord {
@@ -127,6 +133,7 @@ export interface ActionJournalRecord {
   readonly attempt: number;
   readonly verification?: VerificationEvidence | undefined;
   readonly rollbackReference?: string | undefined;
+  readonly removedResource?: AppliedResourceRecord | undefined;
 }
 
 export interface CompleteRunInput {
@@ -162,6 +169,7 @@ export interface RecoveryState {
   readonly actions: ReadonlyArray<ActionJournalRecord>;
   readonly drift: ReadonlyArray<DriftRecord>;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+  readonly removedResources: ReadonlyArray<AppliedResourceRecord>;
 }
 
 export interface StateSnapshot {

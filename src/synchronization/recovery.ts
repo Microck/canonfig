@@ -382,11 +382,17 @@ export const recoverSynchronizationPlan = (
       );
     }
     const latest = yield* validateJournal(recovery, plan.actions);
+    const recoveryAppliedResources = [
+      ...new Map([
+        ...recovery.appliedResources,
+        ...recovery.removedResources,
+      ].map((record) => [record.resource, record] as const)).values(),
+    ];
     const input: SynchronizationRunInput = {
       id: recovery.run.id,
       plan,
       revision: recoveryInput.revision,
-      appliedResources: recovery.appliedResources,
+      appliedResources: recoveryAppliedResources,
       artifacts: recoveryInput.artifacts,
       knownSecrets: recoveryInput.knownSecrets,
       limits: recoveryInput.limits,
@@ -508,6 +514,7 @@ export const recoverSynchronizationPlan = (
         resource,
       ]));
       for (const resource of outcome.verified) {
+        if (removedResources.has(resource)) continue;
         const value = desired.get(resource);
         const digest = value === undefined
           ? undefined

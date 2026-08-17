@@ -446,6 +446,82 @@ describe("StateRepository SQLite adapter", () => {
     expect(recovery?.drift[0]?.conflict.observedDigest).toBe(digestB);
   });
 
+  it("retains removed ownership metadata in the recovery journal", async () => {
+    const path = databasePath();
+    const removed = {
+      resource: asResourceId("resource-action-1"),
+      revision: revision().id,
+      digest: digestA,
+      appliedAt: "2026-08-15T12:00:59Z",
+      kind: "file" as const,
+      policy: "replace" as const,
+      target: "~/.canonfig/removed",
+      executable: false,
+    };
+    const recovery = await runWithRepository(
+      path,
+      Effect.gen(function*() {
+        yield* seed();
+        const repository = yield* StateRepository;
+        yield* start(
+          repository,
+          "run-removed-resource",
+          follower().id,
+          revision().id,
+        );
+        const database = new DatabaseSync(path);
+        database.prepare(`
+          INSERT INTO applied_resources (
+            follower_id, resource_id, revision_id, digest, applied_at,
+            kind, policy, target, executable
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          follower().id,
+          removed.resource,
+          removed.revision,
+          removed.digest,
+          removed.appliedAt,
+          removed.kind,
+          removed.policy,
+          removed.target,
+          0,
+        );
+        database.close();
+        yield* repository.journalAction({
+          run: asRunId("run-removed-resource"),
+          action: asActionId("action-1"),
+          state: "succeeded",
+          recordedAt: "2026-08-15T12:01:01Z",
+          attempt: 1,
+          verification: {
+            status: "passed",
+            method: "owned-resource-removed",
+          },
+          removedResource: removed.resource,
+          removedResourceRecord: removed,
+        });
+        return yield* repository.loadRecovery(follower().id);
+      }),
+    );
+
+    expect(recovery?.appliedResources).toEqual([]);
+    expect(recovery?.removedResources).toEqual([removed]);
+    expect(recovery?.actions.at(-1)?.removedResource).toEqual(removed);
+    const database = new DatabaseSync(path, { readOnly: true });
+    // SAFETY: The SELECT projects exactly one nullable removed_resource_json column.
+    const row = database.prepare(`
+      SELECT removed_resource_json
+      FROM action_journal
+      WHERE run_id = ? AND action_id = ?
+      ORDER BY sequence DESC
+      LIMIT 1
+    `).get("run-removed-resource", "action-1") as {
+      removed_resource_json: string | null;
+    };
+    database.close();
+    expect(row.removed_resource_json).toContain("\"target\":\"~/.canonfig/removed\"");
+  });
+
   it("completes runs transactionally and exposes applied records to later recovery", async () => {
     const path = databasePath();
     const result = await runWithRepository(

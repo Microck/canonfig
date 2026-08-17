@@ -197,6 +197,31 @@ describe("resource graph validation", () => {
     expect(errors).toHaveLength(2);
   });
 
+  it("rejects normalized and parent-child resource target conflicts", () => {
+    const errors = validateProfileResources([
+      fileResource("file", { target: "~/.config/canonfig" }),
+      fileResource("alias", { target: "~/.config/./CANONFIG" }),
+      {
+        id: "directory",
+        kind: "directory",
+        target: "~/.config/skills",
+        spec: {
+          kind: "directory",
+          files: [{ path: "SKILL.md", content: "managed" }],
+        },
+        verify: { method: "digest", digest: digestA },
+      },
+      fileResource("child", { target: "~/.config/skills/SKILL.md" }),
+    ]);
+
+    expect(errors.filter((error) =>
+      error._tag === "ConflictingResourceTargetError"
+    ).map((error) => [error.id, error.conflictsWith])).toEqual([
+      ["alias", "file"],
+      ["child", "directory"],
+    ]);
+  });
+
   it("rejects invalid schedule times", () => {
     const bad = fileResource("s", {
       kind: "schedule",

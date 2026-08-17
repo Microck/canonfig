@@ -238,4 +238,12 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       ADD COLUMN symlink_target TEXT
     `;
   }),
+  "0008_action_journal_removed_resource": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      ALTER TABLE action_journal
+      ADD COLUMN removed_resource_json TEXT
+    `;
+  }),
 });

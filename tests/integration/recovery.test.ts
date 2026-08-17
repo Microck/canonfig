@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ActionId,
   AgentTaskId,
+  ContentDigest,
   ProfileId,
   ProfileRevisionId,
   ResourceId,
@@ -610,6 +611,132 @@ describe("synchronization crash recovery", () => {
 
     await recover(value, machine);
     expect(writes).toEqual(["previous", "canonical content"]);
+  });
+
+  it("does not resurrect a removed resource after restart recovery", async () => {
+    const value = fixture(temporaryDirectory());
+    const resource = value.revision.resources[0]!;
+    const removedRevision: PlanningProfileRevision = {
+      ...value.revision,
+      id: decode(ProfileRevisionId)("revision-recovery-removed"),
+      sequence: 2,
+      canonicalBytes: "{\"removed\":true}",
+      digest: decode(ContentDigest)(sha256Hex("{\"removed\":true}")),
+      resources: [resource],
+      removedResources: [resource.id],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision: removedRevision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{
+          resource: resource.id,
+          observed: {
+            state: "present",
+            digest: decode(ContentDigest)(value.artifact.digest),
+            executable: false,
+          },
+        }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [{
+        resource: resource.id,
+        revision: value.revision.id,
+        digest: decode(ContentDigest)(value.artifact.digest),
+        appliedAt: "2026-08-15T00:00:59Z",
+        kind: "file",
+        policy: "replace",
+        target: value.target,
+        executable: false,
+      }],
+    }));
+    mkdirSync(dirname(value.target), { recursive: true });
+    writeFileSync(value.target, value.artifact.content);
+
+    const outcome = await Effect.runPromise(
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        yield* repository.registerFollower({ follower });
+        yield* repository.publishRevision({ revision: value.revision });
+        yield* repository.publishRevision({
+          revision: { ...removedRevision, resources: [] },
+        });
+        const applied = {
+          resource: resource.id,
+          revision: value.revision.id,
+          digest: decode(ContentDigest)(value.artifact.digest),
+          appliedAt: "2026-08-15T00:00:59Z",
+          kind: "file" as const,
+          policy: "replace" as const,
+          target: value.target,
+          executable: false,
+        };
+        const database = new DatabaseSync(value.database);
+        database.prepare(`
+          INSERT INTO applied_resources (
+            follower_id, resource_id, revision_id, digest, applied_at,
+            kind, policy, target, executable
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          follower.id,
+          applied.resource,
+          applied.revision,
+          applied.digest,
+          applied.appliedAt,
+          applied.kind,
+          applied.policy,
+          applied.target,
+          0,
+        );
+        database.close();
+        yield* repository.startRun({
+          id: decode(RunId)("run-recovery"),
+          follower: follower.id,
+          revision: removedRevision.id,
+          plan,
+          startedAt: "2026-08-15T00:01:00Z",
+        });
+        yield* repository.journalAction({
+          run: decode(RunId)("run-recovery"),
+          action: plan.actions[0]!.id,
+          state: "running",
+          recordedAt: "2026-08-15T00:01:01Z",
+          attempt: 1,
+          rollbackReference: undefined,
+        });
+        rmSync(value.target);
+        yield* repository.journalAction({
+          run: decode(RunId)("run-recovery"),
+          action: plan.actions[0]!.id,
+          state: "succeeded",
+          recordedAt: "2026-08-15T00:01:02Z",
+          attempt: 1,
+          verification: {
+            status: "passed",
+            method: "owned-resource-removed",
+          },
+          removedResource: resource.id,
+          removedResourceRecord: applied,
+        });
+        const synchronization = yield* Synchronization;
+        return yield* synchronization.recover({
+          follower: follower.id,
+          revision: removedRevision,
+          artifacts: [value.artifact],
+        });
+      }).pipe(Effect.provide(applicationLayer(value))),
+    );
+
+    expect(outcome.outcome).toBe("Converged");
+    await expect(readFile(value.target)).rejects.toMatchObject({ code: "ENOENT" });
+    const loaded = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadAppliedResources(follower.id)
+      ).pipe(Effect.provide(stateRepositoryLayer(value.database))),
+    );
+    expect(loaded).toEqual([]);
   });
 
   it.each([

@@ -347,7 +347,7 @@ const seedAndRun = (
 const actionRows = (databasePath: string) => {
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const rows = database.prepare(`
-    SELECT state, verification_json, rollback_reference
+    SELECT state, verification_json, rollback_reference, removed_resource_json
     FROM action_journal
     ORDER BY sequence
   `).all();
@@ -750,11 +750,21 @@ describe("synchronization apply run", () => {
         id: decode(RunId)("run-remove-resource"),
         plan: removalPlan,
         revision: removedRevision,
+        appliedResources: applied,
       },
     });
     expect(removed.outcome).toBe("Converged");
     await expect(readFile(fixture.target)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(unowned, "utf8")).toBe("keep me\n");
+    const removalJournal = actionRows(fixture.database).find((row) =>
+      String(row.verification_json).includes("owned-resource-removed")
+    );
+    expect(String(removalJournal?.removed_resource_json)).toContain(
+      `"resource":"${fixture.revision.resources[0]!.id}"`,
+    );
+    expect(String(removalJournal?.removed_resource_json)).toContain(
+      `"target":"${fixture.revision.resources[0]!.target}"`,
+    );
 
     const remainingApplied = await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>

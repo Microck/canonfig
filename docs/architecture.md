@@ -161,6 +161,12 @@ Apply Policies mean:
 
 Resource dependencies form a directed acyclic graph. Canonfig observes independent resources with bounded concurrency and applies actions in dependency order. Mutating actions for one target are serialized.
 
+Publication rejects distinct resource IDs that claim the same normalized filesystem
+target or unsafe parent/child targets. Directory and skill file paths participate
+in that check, as do normalized aliases such as `./` and Windows separators.
+Schedules use their own target namespace, so a schedule target is not confused
+with a filesystem path.
+
 ## Tool discovery and installation
 
 Discovery scans configured agent instruction files, tool configuration, hooks, MCP definitions, executable references, and known package-manager metadata. Markdown prose alone is not executable evidence. Canonfig records the file, line, command shape, and resolved executable or package when available.
@@ -270,6 +276,11 @@ A run outcome is one of `Converged`, `HumanActionRequired`, `FollowerDrift`, `Fa
 ## Failure and recovery
 
 Before each mutation, Canonfig writes an action journal entry and any rollback material needed for owned files. File writes use a sibling temporary file, durability sync where supported, and atomic rename.
+
+When a removed resource is journaled, its prior ownership metadata remains in the
+durable journal even after the live Applied Resource Record is deleted. Recovery
+uses that metadata to reconstruct the removal context and never re-persists a
+resource that was successfully removed.
 
 Package installation, login, and arbitrary agent commands cannot promise full rollback. Canonfig records their evidence and reruns their idempotent verification during recovery. `canonfig recover` resumes the recorded plan when its Profile Revision is still available. Otherwise it explains why a new plan is required.
 

@@ -24,6 +24,7 @@ import {
   AppliedResourceRecordSchema,
   DriftConflictSchema,
   SynchronizationPlanSchema,
+  type AppliedResourceRecord,
   type DriftConflict,
   type SynchronizationOutcome,
   type SynchronizationPlan,
@@ -88,6 +89,7 @@ const ActionJournalRow = Schema.Struct({
   attempt: Schema.Number,
   verification_json: Schema.NullOr(Schema.String),
   rollback_reference: Schema.NullOr(Schema.String),
+  removed_resource_json: Schema.NullOr(Schema.String),
 });
 const DriftRow = Schema.Struct({
   sequence: Schema.Number,
@@ -211,6 +213,7 @@ type RepositoryJson =
   | SynchronizationOutcome
   | DriftConflict
   | VerificationEvidence
+  | AppliedResourceRecord
   | ReadonlyArray<string>;
 
 const encodeJson = <Value extends RepositoryJson>(value: Value): string =>
@@ -1241,7 +1244,8 @@ const makeRepository = Effect.gen(function*() {
             recorded_at,
             attempt,
             verification_json,
-            rollback_reference
+            rollback_reference,
+            removed_resource_json
           ) VALUES (
             ${input.run},
             ${input.action},
@@ -1250,14 +1254,19 @@ const makeRepository = Effect.gen(function*() {
             ${input.recordedAt},
             ${input.attempt},
             ${input.verification === undefined ? null : encodeJson(input.verification)},
-            ${input.rollbackReference ?? null}
+            ${input.rollbackReference ?? null},
+            ${input.removedResourceRecord === undefined
+              ? null
+              : encodeJson(input.removedResourceRecord)}
           )
         `;
-        if (input.removedResource !== undefined) {
+        const removedResource = input.removedResourceRecord?.resource
+          ?? input.removedResource;
+        if (removedResource !== undefined) {
           yield* sql`
             DELETE FROM applied_resources
             WHERE follower_id = ${run.follower_id}
-              AND resource_id = ${input.removedResource}
+              AND resource_id = ${removedResource}
           `;
         }
         if (input.appliedResource !== undefined) {
@@ -1498,7 +1507,8 @@ const makeRepository = Effect.gen(function*() {
           recorded_at,
           attempt,
           verification_json,
-          rollback_reference
+          rollback_reference,
+          removed_resource_json
         FROM action_journal
         WHERE run_id = ${row.id}
         ORDER BY sequence
@@ -1528,16 +1538,37 @@ const makeRepository = Effect.gen(function*() {
           attempt: event.attempt,
         };
         const rollbackReference = event.rollback_reference;
+        const removedResource = event.removed_resource_json === null
+          ? undefined
+          : yield* parseJson(
+            AppliedResourceRecordSchema,
+            event.removed_resource_json,
+            "removed resource ownership",
+            `${row.id}:${event.sequence}`,
+          );
+        const pushAction = (action: ActionJournalRecord): void => {
+          if (removedResource === undefined) {
+            actions.push(action);
+          } else {
+            actions.push({ ...action, removedResource });
+          }
+        };
         if (verification === undefined) {
           if (rollbackReference === null) {
-            actions.push(base);
+            pushAction(base);
           } else {
-            actions.push({ ...base, rollbackReference });
+            pushAction({
+              ...base,
+              rollbackReference,
+            });
           }
         } else if (rollbackReference === null) {
-          actions.push({ ...base, verification });
+          pushAction({
+            ...base,
+            verification,
+          });
         } else {
-          actions.push({
+          pushAction({
             ...base,
             verification,
             rollbackReference,
@@ -1573,6 +1604,14 @@ const makeRepository = Effect.gen(function*() {
       }
 
       const appliedResources = yield* loadAppliedResources(follower);
+      const removedResources = [
+        ...new Map(
+          actions
+            .flatMap((event) => event.removedResource === undefined
+              ? []
+              : [[event.removedResource.resource, event.removedResource] as const])
+        ).values(),
+      ].sort((left, right) => left.resource.localeCompare(right.resource));
 
       return {
         run: {
@@ -1585,6 +1624,7 @@ const makeRepository = Effect.gen(function*() {
         actions,
         drift,
         appliedResources,
+        removedResources,
       };
     },
   );

@@ -383,6 +383,16 @@ export class InvalidTargetError extends Schema.TaggedError<InvalidTargetError>()
   { id: Schema.String, target: Schema.String, reason: Schema.String },
 ) {}
 
+export class ConflictingResourceTargetError extends Schema.TaggedError<ConflictingResourceTargetError>()(
+  "ConflictingResourceTargetError",
+  {
+    id: Schema.String,
+    target: Schema.String,
+    conflictsWith: Schema.String,
+    reason: Schema.String,
+  },
+) {}
+
 export class InvalidScheduleError extends Schema.TaggedError<InvalidScheduleError>()(
   "InvalidScheduleError",
   { id: Schema.String, reason: Schema.String },
@@ -419,6 +429,7 @@ export type ProfileValidationError =
   | DependencyCycleError
   | PolicyKindMismatchError
   | InvalidTargetError
+  | ConflictingResourceTargetError
   | InvalidScheduleError
   | DuplicateGroupError
   | MissingGroupReferenceError
@@ -508,6 +519,7 @@ export const validateProfileResources = (
       }));
     }
   }
+  errors.push(...validateResourceTargetConflicts(resources));
   const cycle = findDependencyCycle(resources);
   if (cycle !== null) errors.push(new DependencyCycleError({ cycle }));
   return errors;
@@ -613,6 +625,145 @@ const validateTarget = (resource: ProfileResourceInput): InvalidTargetError | nu
     return new InvalidTargetError({ id: resource.id, target, reason: "glob in target" });
   }
   return null;
+};
+
+interface ResourceTargetClaim {
+  readonly resource: ProfileResourceInput;
+  readonly path: string;
+  readonly namespace: "filesystem" | "schedule";
+}
+
+const normalizedTargetPath = (value: string): string => {
+  const slashSeparated = value.replaceAll("\\", "/");
+  const drive = /^([A-Za-z]):(?=\/|$)/u.exec(slashSeparated);
+  const prefix = drive === null
+    ? slashSeparated.startsWith("/")
+      ? "/"
+      : ""
+    : `${drive[1]!.toLowerCase()}:`;
+  const body = drive === null
+    ? slashSeparated
+    : slashSeparated.slice(2);
+  const segments: Array<string> = [];
+  for (const segment of body.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    segments.push(segment);
+  }
+  const normalized = segments.join("/");
+  const normalizedValue = prefix === "/"
+    ? normalized.length === 0 ? "/" : `/${normalized}`
+    : prefix.length > 0
+    ? normalized.length === 0 ? `${prefix}/` : `${prefix}/${normalized}`
+    : normalized.length === 0 ? "." : normalized;
+  return normalizedValue.toLowerCase();
+};
+
+const invalidRelativeTargetReason = (path: string): string | undefined => {
+  if (path.trim().length === 0) return "empty managed file path";
+  if (path.includes("\0")) return "null byte in managed file path";
+  if (
+    path.startsWith("/")
+    || path.startsWith("\\")
+    || /^[A-Za-z]:/u.test(path)
+  ) {
+    return "managed file path must be relative to its resource target";
+  }
+  if (path.replaceAll("\\", "/").split("/").some((segment) => segment === "..")) {
+    return "parent traversal in managed file path";
+  }
+  if (/[*?[\]]/u.test(path)) return "glob in managed file path";
+  return undefined;
+};
+
+const targetClaims = (
+  resource: ProfileResourceInput,
+): ReadonlyArray<ResourceTargetClaim> => {
+  if (
+    resource.kind !== "file"
+    && resource.kind !== "directory"
+    && resource.kind !== "config"
+    && resource.kind !== "skill"
+    && resource.kind !== "schedule"
+  ) {
+    return [];
+  }
+  const claims: Array<ResourceTargetClaim> = [{
+    resource,
+    path: normalizedTargetPath(resource.target),
+    namespace: resource.kind === "schedule" ? "schedule" : "filesystem",
+  }];
+  if (resource.kind === "schedule") return claims;
+  if (resource.spec.kind === "directory" || resource.spec.kind === "skill") {
+    for (const file of resource.spec.files) {
+      const relative = file.path.replaceAll("\\", "/").replace(/^\/+/u, "");
+      claims.push({
+        resource,
+        path: normalizedTargetPath(`${resource.target}/${relative}`),
+        namespace: "filesystem",
+      });
+    }
+  }
+  return claims;
+};
+
+const validateResourceTargetConflicts = (
+  resources: ReadonlyArray<ProfileResourceInput>,
+): ReadonlyArray<ProfileValidationError> => {
+  const errors: Array<ProfileValidationError> = [];
+  const orderedResources = [...resources].sort((left, right) =>
+    compareText(left.id, right.id)
+  );
+  for (const resource of orderedResources) {
+    if (resource.spec.kind === "directory" || resource.spec.kind === "skill") {
+      for (const file of resource.spec.files) {
+        const reason = invalidRelativeTargetReason(file.path);
+        if (reason !== undefined) {
+          errors.push(new InvalidTargetError({
+            id: resource.id,
+            target: file.path,
+            reason,
+          }));
+        }
+      }
+    }
+  }
+  const claims = orderedResources
+    .flatMap((resource) => targetClaims(resource))
+    .sort((left, right) =>
+      compareText(left.resource.id, right.resource.id)
+      || compareText(left.path, right.path)
+    );
+  const overlaps = (left: string, right: string): boolean =>
+    left === right
+    || left.startsWith(`${right}/`)
+    || right.startsWith(`${left}/`);
+  for (let index = 0; index < claims.length; index += 1) {
+    const claim = claims[index]!;
+    for (let otherIndex = index + 1; otherIndex < claims.length; otherIndex += 1) {
+      const other = claims[otherIndex]!;
+      if (
+        claim.resource.id === other.resource.id
+        || claim.namespace !== other.namespace
+        || !overlaps(claim.path, other.path)
+      ) {
+        continue;
+      }
+      const duplicate = errors.some((error) =>
+        error._tag === "ConflictingResourceTargetError"
+        && error.id === claim.resource.id
+        && error.conflictsWith === other.resource.id
+      );
+      if (!duplicate) {
+        errors.push(new ConflictingResourceTargetError({
+          id: claim.resource.id,
+          target: claim.resource.target,
+          conflictsWith: other.resource.id,
+          reason: `target ${claim.path} overlaps target ${other.path}`,
+        }));
+      }
+    }
+  }
+  return errors;
 };
 
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/u;

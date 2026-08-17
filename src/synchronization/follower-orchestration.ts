@@ -1183,9 +1183,12 @@ export const recoverFollower = Effect.fn(
       configuration.scheduledInvocation.maximumMetadataBytes,
     maximumBlobBytes: configuration.scheduledInvocation.maximumBlobBytes,
   }).pipe(Effect.provideService(MachineState, machine));
-  const appliedResources = yield* repository.loadAppliedResources(
-    configuration.follower.id,
-  );
+  const appliedResources = [
+    ...new Map([
+      ...(yield* repository.loadAppliedResources(configuration.follower.id)),
+      ...recovery.removedResources,
+    ].map((record) => [record.resource, record] as const)).values(),
+  ];
   const hydrated = yield* hydrateRevision(
     fetched,
     appliedResources,

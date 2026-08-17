@@ -273,9 +273,12 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     `${file.digest}\0${file.executable === true ? "x" : "-"}`,
   ] as const));
   const desiredPaths = new Set(desiredFiles.map((file) => file.path));
-  const previousDigest = context.applied?.digest;
-  const currentDigest = observedDigest(context);
-  const removalsAreSafe = previousDigest !== undefined && currentDigest === previousDigest;
+  const ownedByPath = new Map(
+    (context.applied?.ownedFiles ?? []).map((file) => [
+      file.path,
+      `${file.digest}\0${file.executable === true ? "x" : "-"}`,
+    ] as const),
+  );
   const adds = desiredFiles
     .filter((file) =>
       file.digest !== undefined
@@ -286,7 +289,10 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     .sort(compareText);
   const removes = observedFiles
     .filter((file) => !desiredPaths.has(file.path))
-    .filter(() => removalsAreSafe)
+    .filter((file) =>
+      ownedByPath.get(file.path)
+        === `${file.digest}\0${file.executable === true ? "x" : "-"}`,
+    )
     .map((file) => file.path)
     .sort(compareText);
   if (adds.length === 0 && removes.length === 0) return [noOp()];
@@ -423,7 +429,7 @@ const planRemovedResource = (
     return [];
   }
   const currentDigest = observedDigest(context);
-  if (currentDigest !== applied.digest) return [];
+  if (context.observed.state !== "absent" && currentDigest !== applied.digest) return [];
   switch (context.resource.kind) {
     case "file":
       if (context.resource.policy !== "replace"
@@ -474,7 +480,6 @@ const planRemovedResource = (
           && context.resource.policy !== "replace"
           && context.resource.policy !== "replace-if-unmodified")
         || applied.ownedFiles === undefined
-        || applied.ownedFiles.length === 0
       ) {
         return [];
       }

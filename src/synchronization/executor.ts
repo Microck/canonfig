@@ -221,6 +221,7 @@ const journal = (
   attempt = 1,
   appliedResource?: AppliedResourceRecord | undefined,
   removedResource?: ResourceId | undefined,
+  removedResourceRecord?: AppliedResourceRecord | undefined,
 ) =>
   Effect.gen(function*() {
     const repository = yield* StateRepository;
@@ -238,6 +239,7 @@ const journal = (
       rollbackReference,
       appliedResource,
       removedResource,
+      removedResourceRecord,
     });
   });
 
@@ -378,6 +380,9 @@ export const executeSynchronizationAction = (
         return { kind: "verified" } satisfies ActionResult;
       }
       if (detail.kind === "remove-resource") {
+        const removedResourceRecord = input.appliedResources?.find((record) =>
+          record.resource === state.action.resource
+        );
         yield* journal(
           input.id,
           state.action.id,
@@ -387,6 +392,7 @@ export const executeSynchronizationAction = (
           attempt,
           undefined,
           state.action.resource,
+          removedResourceRecord,
         );
         return {
           kind: "verified",
