@@ -16,6 +16,20 @@ export const RecipeMethod = Schema.Literals([
 ]);
 export type RecipeMethod = Schema.Schema.Type<typeof RecipeMethod>;
 
+/** Recipe methods that the current deterministic process executor may run. */
+export const AutomaticRecipeMethod = Schema.Literals([
+  "npm",
+  "pnpm",
+  "bun",
+  "brew",
+  "homebrew",
+  "apt",
+  "winget",
+  "uv",
+  "cargo",
+]);
+export type AutomaticRecipeMethod = Schema.Schema.Type<typeof AutomaticRecipeMethod>;
+
 /**
  * Recipe methods that can express a version as a single deterministic
  * package-manager argument. Source revisions use a separate safe-reference
@@ -91,6 +105,9 @@ export const recipeValidationError = (input: {
     && !isNpmRegistryPackageName(packageName)
   ) {
     return `npm-family package must be an exact registry name: ${packageName}`;
+  }
+  if (method === "source" && version === undefined) {
+    return "source recipes require an immutable revision";
   }
   if (method !== "source" && !isSafePackageArgument(packageName)) {
     return `package argument is unsafe: ${packageName}`;

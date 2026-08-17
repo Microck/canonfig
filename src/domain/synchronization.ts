@@ -17,8 +17,8 @@ import {
   type SyncSchedule,
 } from "../schedule/schedule-manager.types.ts";
 import {
+  AutomaticRecipeMethod,
   BuildPolicy as BuildPolicySchema,
-  RecipeMethod,
   type BuildPolicy,
 } from "./resource.ts";
 
@@ -57,7 +57,7 @@ export type ActionDetail =
   | { readonly kind: "write-config"; readonly target: string; readonly keys: ReadonlyArray<string> }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
   | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string>; readonly schedule?: SyncSchedule | undefined }
-  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly buildPolicy?: BuildPolicy | undefined }
+  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly buildPolicy?: BuildPolicy | undefined }
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
   | { readonly kind: "agent-task"; readonly taskId: AgentTaskId; readonly summary: string }
@@ -166,7 +166,7 @@ export const PlannedActionKindSchema = Schema.Literals([
 const InstallToolActionDetailSchema = Schema.Struct({
   kind: Schema.Literal("install-tool"),
   toolId: Schema.NonEmptyString,
-  method: RecipeMethod,
+  method: AutomaticRecipeMethod,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
   buildPolicy: Schema.optional(BuildPolicySchema),

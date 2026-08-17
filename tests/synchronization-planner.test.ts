@@ -593,6 +593,36 @@ describe("stable planning and bounded resolution", () => {
     expect(JSON.parse(unversioned.encoded).actions[0].detail).not.toHaveProperty("version");
   });
 
+  it("routes reviewed source recipes to Human Action Required", () => {
+    const subject = resource("tool", "tool", "ensure");
+    const plan = runPlan(plannerInput(
+      [subject],
+      {
+        desired: [{
+          kind: "tool",
+          toolId: "source-tool",
+          recipes: [{
+            platform: "linux",
+            method: "source",
+            package: "https://github.com/example/source-tool",
+            version: "v7.0.0",
+          }],
+          loginRequired: false,
+        }],
+      },
+    ));
+    expect(plan.actions).toEqual([
+      expect.objectContaining({
+        kind: "human-action",
+        detail: expect.objectContaining({
+          kind: "human-action",
+          reason: "Installing source-tool from source requires Human Action Required",
+        }),
+      }),
+    ]);
+    expect(plan.actions.some((action) => action.kind === "install-tool")).toBe(false);
+  });
+
 
   it.each([
     ["npm", "@scope/tool", "latest"],

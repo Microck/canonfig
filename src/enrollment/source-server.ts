@@ -1,5 +1,6 @@
 import type { ServerResponse } from "node:http";
 import { createServer } from "node:https";
+import { isIP } from "node:net";
 import type { AddressInfo } from "node:net";
 
 import { Effect, Redacted, Schema } from "effect";
@@ -64,6 +65,30 @@ type SourceServerResponse =
   | RevisionMetadata
   | { readonly ok: true }
   | ErrorResponse;
+
+/**
+ * Convert only unambiguous loopback host spellings to the host passed to
+ * `listen`. DNS names, wildcard addresses, encoded values, and IPv6 zone
+ * identifiers are deliberately excluded from this boundary.
+ */
+export const canonicalLoopbackHostname = (
+  value: string,
+): string | undefined => {
+  if (value.length === 0 || value.trim() !== value) {
+    return undefined;
+  }
+  if (value.toLowerCase() === "localhost") return "127.0.0.1";
+  if (isIP(value) === 4 && value.startsWith("127.")) {
+    return value;
+  }
+  if (isIP(value) !== 6) return undefined;
+  try {
+    const canonical = new URL(`https://[${value}]`).hostname;
+    return canonical === "[::1]" ? "::1" : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 const sendJson = (
   response: ServerResponse,
@@ -212,7 +237,19 @@ export const startSourceServer = (
         })
       ),
     );
-    const hostname = input.hostname ?? "127.0.0.1";
+    const requestedHostname = input.hostname === undefined
+      ? "127.0.0.1"
+      : input.hostname;
+    const decodedHostname = Schema.decodeUnknownOption(Schema.String)(requestedHostname);
+    const hostname = decodedHostname._tag === "Some"
+      ? canonicalLoopbackHostname(decodedHostname.value)
+      : undefined;
+    if (hostname === undefined) {
+      return yield* new EnrollmentConfigurationError({
+        operation: "start enrollment server",
+        message: "the source server host must be an unambiguous loopback address",
+      });
+    }
     const maximumMetadataBytes = input.maximumMetadataBytes
       ?? defaultMaximumMetadataBytes;
     const maximumBlobBytes = input.maximumBlobBytes ?? defaultMaximumBlobBytes;

@@ -14,6 +14,7 @@ import {
 } from "../../src/domain/brand.ts";
 import {
   DuplicateFollowerIdentityError,
+  EnrollmentConfigurationError,
   EnrollmentFingerprintMismatchError,
   EnrollmentSourceMismatchError,
   InvitationExpiredError,
@@ -181,6 +182,39 @@ const malformedRequest = (
   });
 
 describe("loopback HTTPS enrollment", () => {
+  it("validates runtime server hosts independently of typed callers", async () => {
+    const setup = fixture();
+    const valid = await runSource(
+      setup,
+      Effect.gen(function*() {
+        const enrollment = yield* Enrollment;
+        yield* enrollment.initializeSource();
+        return yield* startSourceServer({ hostname: "LOCALHOST" });
+      }),
+    );
+    openServers.push(valid);
+    expect(valid.endpoint).toMatch(/^https:\/\/127\.0\.0\.1:\d+$/u);
+
+    for (const hostname of [
+      "0.0.0.0",
+      "::",
+      "example.com",
+      "127.0.0.1 ",
+      "::1%lo0",
+      "127.0.0.1%2e",
+    ]) {
+      const invalid = await runSource(
+        setup,
+        Effect.gen(function*() {
+          const enrollment = yield* Enrollment;
+          yield* enrollment.initializeSource();
+          return yield* startSourceServer({ hostname }).pipe(Effect.flip);
+        }),
+      );
+      expect(invalid).toBeInstanceOf(EnrollmentConfigurationError);
+    }
+  });
+
   it("enrolls a deterministic follower with pinned source identity and initial groups", async () => {
     const setup = fixture();
     const server = await start(setup);

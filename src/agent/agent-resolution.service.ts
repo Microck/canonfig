@@ -436,7 +436,23 @@ const ensureAllowedOrigin = (
 
 const elevationExecutables = new Set(["sudo", "doas", "pkexec", "runas"]);
 const loginExecutables = new Set(["login", "logon", "su"]);
-const rebootExecutables = new Set(["reboot", "shutdown"]);
+const rebootExecutables = new Set(["halt", "poweroff", "reboot", "shutdown"]);
+const restartExecutables = new Set(["restart", "restart-service"]);
+const rebootCommandExecutables = new Set([
+  "init",
+  "launchctl",
+  "rc-service",
+  "service",
+  "systemctl",
+  "telinit",
+]);
+const commandWrappers = new Set([
+  "cmd",
+  "doas",
+  "pkexec",
+  "runas",
+  "sudo",
+]);
 type PrivilegedCapability = "elevation" | "login" | "restart" | "reboot";
 
 type InterpreterKind = "node" | "python" | "posix-shell" | "powershell";
@@ -2116,12 +2132,119 @@ const interpreterScript = (
   return first;
 };
 
-const derivedCapabilities = (
+const normalizedCommand = (value: string): string =>
+  portableBasename(value)
+    .toLowerCase()
+    .replace(/\.(?:bat|cmd|com|exe|ps1)$/u, "");
+
+const optionTakesValue = (argument: string): boolean => {
+  const option = argument.split(/[=:]/u, 1)[0]!.toLowerCase();
+  return new Set([
+    "-d",
+    "-g",
+    "-h",
+    "-m",
+    "-p",
+    "-t",
+    "-u",
+    "--chdir",
+    "--directory",
+    "--group",
+    "--host",
+    "--machine",
+    "--property",
+  ]).has(option);
+};
+
+const commandArgument = (
+  arguments_: ReadonlyArray<string>,
+): { readonly command: string; readonly index: number } | undefined => {
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    if (argument === "--") {
+      const command = arguments_[index + 1];
+      return command === undefined
+        ? undefined
+        : { command: normalizedCommand(command), index: index + 1 };
+    }
+    if (
+      argument.startsWith("-")
+      || /^\/[^/\\]+$/u.test(argument)
+    ) {
+      if (!argument.includes("=") && optionTakesValue(argument)) index += 1;
+      continue;
+    }
+    return { command: normalizedCommand(argument), index };
+  }
+  return undefined;
+};
+
+const structuralRestartCapabilities = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+  depth = 0,
+): ReadonlySet<"restart" | "reboot"> => {
+  if (depth > 2) return new Set();
+  const command = normalizedCommand(executable);
+  if (commandWrappers.has(command)) {
+    if (command === "cmd") {
+      const switchIndex = arguments_.findIndex((argument) =>
+        /^\/(?:c|k|r)$/iu.test(argument)
+      );
+      if (switchIndex >= 0) {
+        const nested = commandArgument(arguments_.slice(switchIndex + 1));
+        return nested === undefined
+          ? new Set()
+          : structuralRestartCapabilities(
+            nested.command,
+            arguments_.slice(switchIndex + 2),
+            depth + 1,
+          );
+      }
+    }
+    const nested = commandArgument(arguments_);
+    return nested === undefined
+      ? new Set()
+      : structuralRestartCapabilities(
+        nested.command,
+        arguments_.slice(nested.index + 1),
+        depth + 1,
+      );
+  }
+  if (rebootExecutables.has(command)) return new Set(["reboot"]);
+  if (command === "restart-computer" || command === "stop-computer") {
+    return new Set(["reboot"]);
+  }
+  if (restartExecutables.has(command)) return new Set(["restart"]);
+  if (!rebootCommandExecutables.has(command)) return new Set();
+
+  const positional = arguments_
+    .filter((argument) =>
+      argument !== "--"
+      && !argument.startsWith("-")
+      && !/^\/[^/\\]+$/u.test(argument)
+    )
+    .map(normalizedCommand);
+  const subcommand = command === "service" || command === "rc-service"
+    ? positional.at(-1)
+    : commandArgument(arguments_)?.command;
+  if (subcommand === undefined) return new Set();
+  if (subcommand === "reboot" || subcommand === "shutdown"
+    || subcommand === "halt" || subcommand === "poweroff"
+    || (command === "init" || command === "telinit")
+      && ["0", "6"].includes(subcommand)) {
+    return new Set(["reboot"]);
+  }
+  if (subcommand === "restart") return new Set(["restart"]);
+  return new Set();
+};
+
+export const derivedCapabilities = (
   executable: string,
   arguments_: ReadonlyArray<string>,
 ): ReadonlySet<PrivilegedCapability> => {
   const capabilities = new Set<PrivilegedCapability>();
-  const command = portableBasename(executable).toLowerCase().replace(/\.(?:cmd|exe)$/u, "");
+  const command = normalizedCommand(executable);
   const tokens = arguments_.map((argument) => argument.toLowerCase());
   const commandTokens = [
     command,
@@ -2153,18 +2276,8 @@ const derivedCapabilities = (
   ) {
     capabilities.add("login");
   }
-  if (commandTokens.includes("restart") || tokens.includes("restart")) {
-    capabilities.add("restart");
-  }
-  if (
-    commandTokens.some((token) => rebootExecutables.has(token))
-    || tokens.some((argument) =>
-      argument === "reboot"
-      || (argument === "-r" && packageManagerName(executable) !== "pip")
-      || argument === "/r"
-    )
-  ) {
-    capabilities.add("reboot");
+  for (const capability of structuralRestartCapabilities(executable, arguments_)) {
+    capabilities.add(capability);
   }
   return capabilities;
 };

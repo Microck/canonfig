@@ -330,6 +330,51 @@ describe("resource graph validation", () => {
 });
 
 describe("installation recipe version boundaries", () => {
+  it("rejects unversioned source recipes at the authoring boundary", () => {
+    expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+      kind: "tool",
+      toolId: "source-tool",
+      recipes: [{
+        platform: "linux",
+        method: "source",
+        package: "https://github.com/example/source-tool",
+      }],
+      login: { required: false },
+    })).toThrow();
+  });
+
+  it("preserves an immutable source revision as a reviewed profile recipe", () => {
+    const decoded = Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+      kind: "tool",
+      toolId: "source-tool",
+      recipes: [{
+        platform: "linux",
+        method: "source",
+        package: "https://github.com/example/source-tool",
+        version: "v7.0.0",
+      }],
+      login: { required: false },
+    });
+    expect(decoded).toMatchObject({
+      kind: "tool",
+      recipes: [{
+        method: "source",
+        package: "https://github.com/example/source-tool",
+        version: "v7.0.0",
+      }],
+    });
+  });
+
+  it("rejects source recipes at the automatic action boundary", () => {
+    expect(() => Schema.decodeUnknownSync(ActionDetailSchema)({
+      kind: "install-tool",
+      toolId: "source-tool",
+      method: "source",
+      package: "https://github.com/example/source-tool",
+      version: "v7.0.0",
+    })).toThrow();
+  });
+
   it("accepts exact npm semver, including scoped prerelease and build metadata", () => {
     const decoded = Schema.decodeUnknownSync(ResourceSpecInputSchema)({
       kind: "tool",

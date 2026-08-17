@@ -46,7 +46,9 @@ distributions must include a reviewed build policy with bounded toolchain
 executables, paths, HTTPS origins, capabilities, and steps. The current
 executor escalates those recipes to Human Action Required because it cannot
 confine lifecycle descendants. Git and other source dependency specifications
-are not accepted without a separately bounded execution plan.
+are not accepted without a separately bounded execution plan. Reviewed source
+recipes are preserved as immutable references but always require Human Action
+Required; the current executor never fetches or builds source code.
 
 ## Install from the built package
 
@@ -231,8 +233,9 @@ failure (`7`).
 
 ## Shipped constraints
 
-- The source transport binds only to `127.0.0.1` or `::1`. Remote exposure,
-  public binding, and port-forwarding workflows are not part of the verified CLI
+- The source transport accepts only canonical loopback hosts, including
+  `localhost`, and binds to `127.0.0.1` or `::1`. Remote exposure, public
+  binding, and port-forwarding workflows are not part of the verified CLI
   contract.
 - `schedule set` accepts daily and weekly calendars. The profile contract can
   represent custom calendars, but the CLI does not accept cron or native

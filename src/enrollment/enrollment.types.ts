@@ -67,7 +67,12 @@ export interface SourceEnrollmentMaterial {
 }
 
 export interface StartSourceServerInput {
-  readonly hostname?: "127.0.0.1" | "::1" | undefined;
+  /**
+   * Runtime input is validated as an unambiguous loopback host by the server
+   * boundary. Keep this as a string so callers cannot mistake the type for
+   * the security check.
+   */
+  readonly hostname?: string | undefined;
   readonly port?: number | undefined;
   readonly maximumMetadataBytes?: number | undefined;
   readonly maximumBlobBytes?: number | undefined;

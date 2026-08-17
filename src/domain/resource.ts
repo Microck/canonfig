@@ -9,6 +9,7 @@ import {
   ToolId,
 } from "./brand.ts";
 import {
+  AutomaticRecipeMethod as AutomaticRecipeMethodSchema,
   RecipeMethod as RecipeMethodSchema,
   recipeValidationError,
 } from "./recipe-versions.ts";
@@ -70,6 +71,8 @@ export type Platform = Schema.Schema.Type<typeof Platform>;
 
 export const RecipeMethod = RecipeMethodSchema;
 export type RecipeMethod = Schema.Schema.Type<typeof RecipeMethod>;
+export const AutomaticRecipeMethod = AutomaticRecipeMethodSchema;
+export type AutomaticRecipeMethod = Schema.Schema.Type<typeof AutomaticRecipeMethod>;
 
 /**
  * A build policy is part of the reviewed recipe contract. The default keeps

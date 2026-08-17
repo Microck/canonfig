@@ -30,6 +30,7 @@ import {
 } from "../../src/domain/brand.ts";
 import { FollowerIdentity } from "../../src/domain/identity.ts";
 import type { ProfileRevision, PublishedResource } from "../../src/domain/profile.ts";
+import type { AutomaticRecipeMethod } from "../../src/domain/resource.ts";
 import type { SynchronizationOutcome } from "../../src/domain/synchronization.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import type {
@@ -513,7 +514,9 @@ const installerInvocation = async (
     ? {
       kind: "install-tool" as const,
       toolId: "tool",
-      method,
+      // SAFETY: This helper deliberately injects hostile method strings to
+      // verify the execution boundary rejects them before lookup or spawn.
+      method: method as AutomaticRecipeMethod,
       package: packageName,
     }
     : {
@@ -1716,7 +1719,6 @@ describe("synchronization apply run", () => {
     ["uv", "uv", ["tool", "install", "tool", "--only-binary=:all:"]],
     ["cargo", "cargo", ["install", "tool"]],
     ["apt", "apt-get", ["install", "-y", "tool"]],
-    ["source", "source", ["install", "tool"]],
   ] as const)(
     "preserves unversioned %s installer behavior",
     async (method, executable, arguments_) => {
@@ -1727,15 +1729,25 @@ describe("synchronization apply run", () => {
     },
   );
 
-  it("fails closed when an installer cannot honor a requested version", async () => {
+  it("rejects source recipes before executable lookup or spawn", async () => {
+    let lookedUp = false;
+    let spawned = false;
     await expect(installerInvocation(
       "source",
       "https://github.com/example/tool",
       "v1.2.3",
+      () => {
+        spawned = true;
+      },
+      () => {
+        lookedUp = true;
+      },
     )).rejects.toMatchObject({
       _tag: "InvalidExecutionPlanError",
-      message: "installer source cannot honor requested version v1.2.3",
+      message: "source recipe https://github.com/example/tool requires Human Action Required; no bounded source installer is available",
     });
+    expect(lookedUp).toBe(false);
+    expect(spawned).toBe(false);
   });
 
   it.each([

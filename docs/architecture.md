@@ -222,7 +222,9 @@ recipe/action contract and are validated at publication. The current process
 executor cannot confine lifecycle descendants, so required-build recipes stop
 with Human Action Required rather than silently enabling scripts. Git, local,
 and other source dependency specifications are likewise denied unless a
-separately bounded execution plan is reviewed and published.
+separately bounded execution plan is reviewed and published. Reviewed source
+recipes remain safe immutable profile references, but the current executor
+never fetches or builds them and always routes them to Human Action Required.
 
 Registry-backed agent installs are pinned to the one HTTPS origin shared by
 the task and follower harness. npm-family, uv, and pip-compatible invocations

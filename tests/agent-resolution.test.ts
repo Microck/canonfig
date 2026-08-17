@@ -32,6 +32,7 @@ import {
 } from "../src/agent/agent-resolution.layer.ts";
 import {
   AgentResolution,
+  derivedCapabilities,
   registryOriginForInvocation,
 } from "../src/agent/agent-resolution.service.ts";
 import {
@@ -209,6 +210,26 @@ describe("agent resolution", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it.each([
+    ["rm recursive flag", "rm", ["-r", "target"], []],
+    ["package manager requirement flag", "pip", ["install", "-r", "requirements.txt"], []],
+    ["unrelated restart argument", "echo", ["restart"], []],
+    ["shutdown restart flag", "shutdown", ["/r"], ["reboot"]],
+    ["systemctl reboot subcommand", "systemctl", ["reboot"], ["reboot"]],
+    ["service restart subcommand", "service", ["agent", "restart"], ["restart"]],
+    ["sudo reboot wrapper", "sudo", ["-u", "root", "reboot"], ["reboot"]],
+    ["cmd shutdown wrapper", "cmd", ["/c", "shutdown", "/r"], ["reboot"]],
+    ["Windows Restart-Computer", "Restart-Computer", [], ["reboot"]],
+    ["Windows Stop-Computer restart", "Stop-Computer", ["-Restart"], ["reboot"]],
+  ] as const)(
+    "derives reboot and restart capabilities structurally for %s",
+    (_name, executable, arguments_, expected) => {
+      expect([...derivedCapabilities(executable, arguments_)]
+        .filter((capability) => capability === "reboot" || capability === "restart"))
+        .toEqual(expected);
+    },
+  );
+
   it("encodes a versioned structured task without shell syntax", () => {
     const encoded = JSON.parse(new TextDecoder().decode(encodeAgentTask(task(directory))));
     expect(encoded).toMatchObject({
@@ -312,8 +333,6 @@ describe("agent resolution", () => {
     ["option-valued traversal", ["--output=../secret"], "path"],
     ["omitted elevation capability", ["--sudo"], "elevation"],
     ["omitted login capability", ["login"], "login"],
-    ["omitted restart capability", ["restart"], "restart"],
-    ["omitted reboot capability", ["reboot"], "reboot"],
   ])("derives and denies %s before execution", async (_name, arguments_, capability) => {
     const recording = new RecordingExecutor(proposal(action({ arguments: arguments_ })));
     const error = await Effect.runPromise(Effect.gen(function*() {

@@ -6,7 +6,7 @@ import {
   type ContentDigest,
 } from "../domain/brand.ts";
 import type { ActionDetail, PlannedActionKind } from "../domain/synchronization.ts";
-import type { BuildPolicy, RecipeMethod } from "../domain/resource.ts";
+import type { AutomaticRecipeMethod, BuildPolicy } from "../domain/resource.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { sha256Hex } from "../profile/profile-codec.ts";
 import { InvalidObservedStateError } from "./synchronization.errors.ts";
@@ -27,7 +27,7 @@ export interface ResourceActionDraft {
 interface InstallToolActionDetail {
   kind: "install-tool";
   toolId: string;
-  method: RecipeMethod;
+  method: AutomaticRecipeMethod;
   package: string;
   version?: string;
   buildPolicy?: BuildPolicy;
@@ -360,6 +360,17 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     )[0];
   if (recipe === undefined) {
     return [unresolvedAgentTask(context, `Find an installation recipe for ${context.desired.toolId}`)];
+  }
+  if (recipe.method === "source") {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `Installing ${context.desired.toolId} from source requires Human Action Required`,
+        instructions:
+          `Canonfig preserves the reviewed source recipe at revision ${recipe.version ?? "unknown"}, but it cannot automatically check out or build source code. Apply the bounded source build manually, then rerun synchronization.`,
+      },
+    }];
   }
   const detail: InstallToolActionDetail = {
     kind: "install-tool",
