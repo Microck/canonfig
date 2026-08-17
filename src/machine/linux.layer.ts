@@ -720,6 +720,42 @@ const schedulerExpression = (
   calendar: SchedulerCalendar,
 ): Effect.Effect<string, InvalidSchedulerJobError> => {
   const validTime = /^([01]\d|2[0-3]):[0-5]\d$/u;
+  const timezoneSuffix = (): Effect.Effect<string, InvalidSchedulerJobError> => {
+    if (calendar.timezone === undefined) return Effect.succeed("");
+    if (
+      calendar.timezone.trim() !== calendar.timezone
+      || calendar.timezone.length === 0
+      || /[\n\r\0]/u.test(calendar.timezone)
+    ) {
+      return Effect.fail(new InvalidSchedulerJobError({
+        field: "calendar.timezone",
+        message: "systemd calendar timezone must be a non-empty single-line name",
+      }));
+    }
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: calendar.timezone }).format();
+    } catch {
+      return Effect.fail(new InvalidSchedulerJobError({
+        field: "calendar.timezone",
+        message: `unsupported systemd calendar timezone: ${calendar.timezone}`,
+      }));
+    }
+    if (
+      calendar.kind === "systemd-on-calendar"
+      && (
+        calendar.expression.startsWith("@")
+        || /(?:^|\s)(?:UTC|GMT|[A-Za-z0-9._+-]+\/[A-Za-z0-9._+-]+)\s*$/u.test(
+          calendar.expression,
+        )
+      )
+    ) {
+      return Effect.fail(new InvalidSchedulerJobError({
+        field: "calendar.timezone",
+        message: "custom systemd expressions with shortcuts or an existing timezone cannot add a named timezone",
+      }));
+    }
+    return Effect.succeed(` ${calendar.timezone}`);
+  };
   if (calendar.kind === "systemd-on-calendar") {
     if (
       calendar.expression.trim().length === 0
@@ -730,7 +766,9 @@ const schedulerExpression = (
         message: "systemd calendar expression must be non-empty and single-line",
       }));
     }
-    return Effect.succeed(calendar.expression);
+    return timezoneSuffix().pipe(
+      Effect.map((timezone) => `${calendar.expression}${timezone}`),
+    );
   }
   if (!validTime.test(calendar.localTime)) {
     return Effect.fail(new InvalidSchedulerJobError({
@@ -738,9 +776,12 @@ const schedulerExpression = (
       message: "local time must use 24-hour HH:mm format",
     }));
   }
-  const prefix = calendar.kind === "daily" ? "*-*-*" : `${calendar.weekday} *-*-*`;
-  const timezone = calendar.timezone === undefined ? "" : ` ${calendar.timezone}`;
-  return Effect.succeed(`${prefix} ${calendar.localTime}:00${timezone}`);
+  const prefix = calendar.kind === "daily"
+    ? "*-*-*"
+    : `${calendar.weekdays.join(",")} *-*-*`;
+  return timezoneSuffix().pipe(
+    Effect.map((timezone) => `${prefix} ${calendar.localTime}:00${timezone}`),
+  );
 };
 
 const systemdQuote = (

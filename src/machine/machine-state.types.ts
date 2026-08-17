@@ -154,11 +154,17 @@ export type SchedulerCalendar =
   }
   | {
     readonly kind: "weekly";
-    readonly weekday: "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
+    readonly weekdays: ReadonlyArray<
+      "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"
+    >;
     readonly localTime: string;
     readonly timezone?: string | undefined;
   }
-  | { readonly kind: "systemd-on-calendar"; readonly expression: string };
+  | {
+    readonly kind: "systemd-on-calendar";
+    readonly expression: string;
+    readonly timezone?: string | undefined;
+  };
 
 export interface SchedulerJob {
   readonly name: string;

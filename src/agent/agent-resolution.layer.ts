@@ -9,6 +9,7 @@ import {
   registryOriginForInvocation,
   registryScopesForInvocation,
   redactAgentTask,
+  revalidatePipRequirementFiles,
   resolvedExecutableIdentity,
   resolveAuthorizedProposal,
   validateAgentTask,
@@ -157,10 +158,25 @@ const runResolution = (
 
     const executions: Array<CapturedProcess> = [];
     for (const action of proposal.actions) {
+      const workingDirectory = action.workingDirectory ?? input.task.allowedPaths[0];
+      if (workingDirectory === undefined) {
+        return yield* new DeniedAgentCapabilityError({
+          capability: "path",
+          value: "",
+        });
+      }
+      yield* revalidatePipRequirementFiles(
+        action.executable,
+        action.arguments,
+        workingDirectory,
+        input.task,
+        input.harness,
+        action.pipRequirementFiles ?? [],
+      );
       const rawProcess = yield* executor({
         executable: action.executable,
         arguments: action.arguments,
-        workingDirectory: action.workingDirectory ?? input.task.allowedPaths[0],
+        workingDirectory,
         environment: input.harness.environment,
         packageRegistryOrigin: registryOriginForInvocation(
           action.executable,
@@ -170,7 +186,7 @@ const runResolution = (
           action.executable,
           action.arguments,
         ),
-        pipRequirementFilesAuthorized: true,
+        pipRequirementFiles: action.pipRequirementFiles,
         timeoutMilliseconds: remainingTime(deadline),
         maximumInputBytes: 0,
         maximumOutputBytes: Math.max(0, input.task.outputLimitBytes - consumed),
@@ -196,6 +212,14 @@ const runResolution = (
 
     const [verificationExecutable = "", ...verificationArguments] =
       authorized.verificationCommand;
+    yield* revalidatePipRequirementFiles(
+      verificationExecutable,
+      verificationArguments,
+      input.task.allowedPaths[0] ?? process.cwd(),
+      input.task,
+      input.harness,
+      authorized.verificationPipRequirementFiles,
+    );
     const rawObserved = yield* executor({
       executable: verificationExecutable,
       arguments: verificationArguments,
@@ -209,7 +233,7 @@ const runResolution = (
         verificationExecutable,
         verificationArguments,
       ),
-      pipRequirementFilesAuthorized: true,
+      pipRequirementFiles: authorized.verificationPipRequirementFiles,
       timeoutMilliseconds: remainingTime(deadline),
       maximumInputBytes: 0,
       maximumOutputBytes: Math.max(0, input.task.outputLimitBytes - consumed),

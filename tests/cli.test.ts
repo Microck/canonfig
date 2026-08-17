@@ -185,7 +185,7 @@ describe("typed CLI command boundary", () => {
     const schedule = await execute([
       "schedule",
       "set",
-      "weekly:Fri@23:15",
+      "weekly:Fri,Mon,Fri@23:15",
       "--timezone",
       "Europe/Paris",
       "--executable",
@@ -194,7 +194,7 @@ describe("typed CLI command boundary", () => {
     expect(schedule.invocations[0]?.input).toEqual({
       schedule: {
         kind: "weekly",
-        weekday: "Fri",
+        weekdays: ["Mon", "Fri"],
         localTime: "23:15",
         timezone: "Europe/Paris",
       },

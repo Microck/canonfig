@@ -301,22 +301,24 @@ const parseSchedule = (
     };
     return timezone === undefined ? schedule : { ...schedule, timezone };
   }
-  const weekly = /^weekly:(?<day>Mon|Tue|Wed|Thu|Fri|Sat|Sun)@(?<time>(?:[01]\d|2[0-3]):[0-5]\d)$/u.exec(
+  const weekly = /^weekly:(?<days>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:,(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*)@(?<time>(?:[01]\d|2[0-3]):[0-5]\d)$/u.exec(
     calendar,
   );
-  const weekday = weekly?.groups?.day;
+  const days = weekly?.groups?.days?.split(",");
   const localTime = weekly?.groups?.time;
-  const decodedWeekday = weekday === undefined
-    ? undefined
-    : decodeOption(
+  const decodedWeekdays = days?.map((day) =>
+    decodeOption(
       Schema.decodeUnknownOption(Schema.Literals(scheduleWeekdays)),
-      weekday,
+      day,
       "schedule weekday",
-    );
-  if (decodedWeekday !== undefined && localTime !== undefined) {
+    )
+  );
+  if (decodedWeekdays !== undefined && localTime !== undefined) {
     const schedule: SyncSchedule = {
       kind: "weekly",
-      weekday: decodedWeekday,
+      weekdays: [...new Set(decodedWeekdays)].sort(
+        (left, right) => scheduleWeekdays.indexOf(left) - scheduleWeekdays.indexOf(right),
+      ),
       localTime,
     };
     return timezone === undefined ? schedule : { ...schedule, timezone };

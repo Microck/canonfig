@@ -16,7 +16,9 @@ import {
 import { ScheduleManager } from "./schedule-manager.service.ts";
 import {
   defaultSyncSchedule,
+  normalizeSyncSchedule,
   type ScheduleChange,
+  type NormalizedSyncSchedule,
   type ScheduleStatus,
   type SetScheduleInput,
   type SyncSchedule,
@@ -28,7 +30,8 @@ const validLocalTime = /^([01]\d|2[0-3]):[0-5]\d$/u;
 
 const validateSchedule = (
   schedule: SyncSchedule,
-): Effect.Effect<SyncSchedule, InvalidScheduleError> => {
+): Effect.Effect<NormalizedSyncSchedule, InvalidScheduleError> => {
+  schedule = normalizeSyncSchedule(schedule);
   if (schedule.kind === "custom") {
     if (
       schedule.expression.trim() !== schedule.expression
@@ -65,6 +68,12 @@ const validateSchedule = (
     return Effect.fail(new InvalidScheduleError({
       field: "localTime",
       message: "local time must use 24-hour HH:mm format",
+    }));
+  }
+  if (schedule.kind === "weekly" && schedule.weekdays.length === 0) {
+    return Effect.fail(new InvalidScheduleError({
+      field: "weekdays",
+      message: "weekly schedule must declare at least one weekday",
     }));
   }
   if (schedule.timezone === undefined) return Effect.succeed(schedule);

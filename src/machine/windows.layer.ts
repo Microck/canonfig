@@ -154,6 +154,16 @@ const validateSingleLine = (
 const powershellLiteral = (value: string): string =>
   `'${value.replaceAll("'", "''")}'`;
 
+const weekdayMasks = {
+  Sun: 1,
+  Mon: 2,
+  Tue: 4,
+  Wed: 8,
+  Thu: 16,
+  Fri: 32,
+  Sat: 64,
+} as const;
+
 const windowsCommandLineArgument = (value: string): string => {
   if (value.length > 0 && !/[\s"]/u.test(value)) return value;
   let output = "\"";
@@ -191,7 +201,7 @@ const taskCalendar = (
   }
   return Effect.succeed(calendar.kind === "daily"
     ? `New-ScheduledTaskTrigger -Daily -At ${powershellLiteral(calendar.localTime)}`
-    : `New-ScheduledTaskTrigger -Weekly -DaysOfWeek ${calendar.weekday} `
+    : `New-ScheduledTaskTrigger -Weekly -DaysOfWeek ${calendar.weekdays.join(",")} `
       + `-At ${powershellLiteral(calendar.localTime)}`);
 };
 
@@ -710,7 +720,7 @@ export const windowsMachineStateLayer = (
           const action = /-Execute '((?:''|[^'])*)' -Argument '((?:''|[^'])*)'/u
             .exec(expected.service);
           const daily = /-Daily -At '([0-2]\d:[0-5]\d)'/u.exec(expected.schedule);
-          const weekly = /-Weekly -DaysOfWeek (Mon|Tue|Wed|Thu|Fri|Sat|Sun) -At '([0-2]\d:[0-5]\d)'/u
+          const weekly = /-Weekly -DaysOfWeek ((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:,(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*) -At '([0-2]\d:[0-5]\d)'/u
             .exec(expected.schedule);
           const taskName = powershellLiteral(expected.serviceName);
           const script = [
@@ -753,15 +763,13 @@ export const windowsMachineStateLayer = (
               const expectedTime = daily?.[1] ?? weekly?.[2];
               const weekdayMask = weekly === null
                 ? undefined
-                : {
-                  Sun: 1,
-                  Mon: 2,
-                  Tue: 4,
-                  Wed: 8,
-                  Thu: 16,
-                  Fri: 32,
-                  Sat: 64,
-                }[weekly[1]];
+                : weekly[1]!.split(",").reduce((mask, weekday) => {
+                  if (!Object.hasOwn(weekdayMasks, weekday)) return mask;
+                  // SAFETY: Object.hasOwn above narrows this regex-captured weekday
+                  // to one of the seven literal Task Scheduler weekday keys.
+                  const normalizedWeekday = weekday as keyof typeof weekdayMasks;
+                  return mask + weekdayMasks[normalizedWeekday];
+                }, 0);
               const triggerMatches = expectedTime !== undefined
                 && actual.StartBoundary?.includes(`T${expectedTime}:00`) === true
                 && (daily !== null

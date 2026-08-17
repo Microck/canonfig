@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { lstat, open, realpath } from "node:fs/promises";
 
 import { Effect } from "effect";
 
@@ -13,9 +15,51 @@ import {
 import type {
   CapturedProcess,
   ControlledProcessInput,
+  PipRequirementFileAuthorization,
 } from "./agent-resolution.types.ts";
 
 const decoder = new TextDecoder();
+
+const sameRequirementIdentity = (
+  left: PipRequirementFileAuthorization["identity"],
+  right: PipRequirementFileAuthorization["identity"],
+): boolean =>
+  left.dev === right.dev
+  && left.ino === right.ino
+  && left.size === right.size;
+
+const pipRequirementFilesUnchanged = async (
+  files: ReadonlyArray<PipRequirementFileAuthorization>,
+): Promise<boolean> => {
+  for (const expected of files) {
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      const before = await lstat(expected.path);
+      if (!before.isFile() || !sameRequirementIdentity(before, expected.identity)) {
+        return false;
+      }
+      if (await realpath(expected.path) !== expected.canonicalPath) return false;
+      handle = await open(expected.path, "r");
+      const opened = await handle.stat();
+      if (!sameRequirementIdentity(opened, expected.identity)) return false;
+      const buffer = Buffer.alloc(expected.identity.size + 1);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
+      if (bytesRead !== expected.identity.size) return false;
+      const after = await lstat(expected.path);
+      if (!sameRequirementIdentity(after, expected.identity)) return false;
+      if (
+        createHash("sha256")
+          .update(buffer.subarray(0, bytesRead))
+          .digest("hex") !== expected.digest
+      ) return false;
+    } catch {
+      return false;
+    } finally {
+      if (handle !== undefined) await handle.close().catch(() => undefined);
+    }
+  }
+  return true;
+};
 
 export const redactText = (
   value: string,
@@ -411,7 +455,18 @@ export const executeControlledProcess = (
   if (
     packageManagerName(input.executable) === "pip"
       && hasPipRequirementFileOption(input.arguments)
-      && input.pipRequirementFilesAuthorized !== true
+      && input.pipRequirementFiles === undefined
+  ) {
+    return Effect.fail(new AgentProcessError({
+      executable: input.executable,
+      message: "pip requirement files are not authorized by the resolution boundary",
+    }));
+  }
+  if (
+    packageManagerName(input.executable) === "pip"
+      && hasPipRequirementFileOption(input.arguments)
+      && input.pipRequirementFiles !== undefined
+      && input.pipRequirementFiles.length === 0
   ) {
     return Effect.fail(new AgentProcessError({
       executable: input.executable,
@@ -436,7 +491,18 @@ export const executeControlledProcess = (
   }
 
   return Effect.tryPromise({
-    try: (effectSignal) => new Promise<CapturedProcess>((resolve, reject) => {
+    try: async (effectSignal) => {
+      if (
+        packageManagerName(input.executable) === "pip"
+        && input.pipRequirementFiles !== undefined
+        && !(await pipRequirementFilesUnchanged(input.pipRequirementFiles))
+      ) {
+        throw new AgentProcessError({
+          executable: input.executable,
+          message: "pip requirement or constraint input changed after authorization",
+        });
+      }
+      return new Promise<CapturedProcess>((resolve, reject) => {
       const output: Array<Buffer> = [];
       const errors: Array<Buffer> = [];
       let capturedBytes = 0;
@@ -548,7 +614,8 @@ export const executeControlledProcess = (
       });
       if (input.standardInput === undefined) child.stdin.end();
       else child.stdin.end(input.standardInput);
-    }),
+      });
+    },
     catch: (cause) => cause instanceof AgentInputLimitError
       || cause instanceof AgentExecutionCancelledError
       || cause instanceof AgentExecutionTimeoutError

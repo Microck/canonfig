@@ -1,21 +1,29 @@
 import type { SchedulerCalendar } from "../machine/machine-state.types.ts";
-import type { SyncSchedule } from "./schedule-manager.types.ts";
+import {
+  normalizeSyncSchedule,
+  type SyncSchedule,
+} from "./schedule-manager.types.ts";
 
-export const linuxCalendar = (schedule: SyncSchedule): SchedulerCalendar =>
-  schedule.kind === "daily"
-    ? {
+export const linuxCalendar = (input: SyncSchedule): SchedulerCalendar => {
+  const schedule = normalizeSyncSchedule(input);
+  if (schedule.kind === "daily") {
+    return {
       kind: "daily",
       localTime: schedule.localTime,
       timezone: schedule.timezone,
-    }
-    : schedule.kind === "weekly"
-    ? {
+    };
+  }
+  if (schedule.kind === "weekly") {
+    return {
       kind: "weekly",
-      weekday: schedule.weekday,
+      weekdays: schedule.weekdays,
       localTime: schedule.localTime,
       timezone: schedule.timezone,
-    }
-    : {
-      kind: "systemd-on-calendar",
-      expression: schedule.expression,
     };
+  }
+  return {
+    kind: "systemd-on-calendar",
+    expression: schedule.expression,
+    timezone: schedule.timezone,
+  };
+};

@@ -140,13 +140,18 @@ const launchdCalendar = (
     Fri: 5,
     Sat: 6,
   } as const;
-  const weekday = calendar.kind === "weekly"
-    ? `<key>Weekday</key><integer>${weekdays[calendar.weekday]}</integer>`
-    : "";
-  return Effect.succeed(
+  const intervals = calendar.kind === "daily"
+    ? [undefined]
+    : calendar.weekdays.map((weekday) => weekdays[weekday]);
+  const rendered = intervals.map((weekday) =>
     `<dict><key>Hour</key><integer>${Number(hour)}</integer>`
-      + `<key>Minute</key><integer>${Number(minute)}</integer>${weekday}</dict>`,
+      + `<key>Minute</key><integer>${Number(minute)}</integer>`
+      + (weekday === undefined ? "" : `<key>Weekday</key><integer>${weekday}</integer>`)
+      + "</dict>"
   );
+  return Effect.succeed(rendered.length === 1
+    ? rendered[0]!
+    : `<array>${rendered.join("")}</array>`);
 };
 
 const renderLaunchdJob = (

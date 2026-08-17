@@ -26,6 +26,14 @@ export const SyncScheduleSchema = Schema.Union([
   }),
   Schema.Struct({
     kind: Schema.Literal("weekly"),
+    weekdays: Schema.Array(Schema.Literals(scheduleWeekdays)),
+    localTime: Schema.NonEmptyString,
+    timezone: Schema.optional(Schema.NonEmptyString),
+  }),
+  // Accept v2 schedules written before multi-day weekly schedules were
+  // introduced. Normalization below converts this shape to `weekdays`.
+  Schema.Struct({
+    kind: Schema.Literal("weekly"),
     weekday: Schema.Literals(scheduleWeekdays),
     localTime: Schema.NonEmptyString,
     timezone: Schema.optional(Schema.NonEmptyString),
@@ -44,6 +52,13 @@ export type SyncSchedule =
     readonly timezone?: string | undefined;
   }
   | {
+    readonly kind: "weekly";
+    readonly weekdays: ReadonlyArray<ScheduleWeekday>;
+    readonly timezone?: string | undefined;
+    readonly localTime: string;
+  }
+  | {
+    /** Backward-compatible input shape; normalizeSyncSchedule removes it. */
     readonly kind: "weekly";
     readonly weekday: ScheduleWeekday;
     readonly localTime: string;
@@ -81,25 +96,65 @@ export const defaultSyncSchedule: SyncSchedule = {
   localTime: "00:00",
 };
 
+const weekdayIndex = new Map(
+  scheduleWeekdays.map((weekday, index) => [weekday, index] as const),
+);
+
+export const scheduleWeekdaysFor = (
+  schedule: Extract<SyncSchedule, { readonly kind: "weekly" }>,
+): ReadonlyArray<ScheduleWeekday> =>
+  "weekdays" in schedule
+    ? [...new Set(schedule.weekdays)].sort(
+      (left, right) => weekdayIndex.get(left)! - weekdayIndex.get(right)!,
+    )
+    : [schedule.weekday];
+
+export type NormalizedSyncSchedule = Exclude<SyncSchedule, {
+  readonly kind: "weekly";
+}> | {
+  readonly kind: "weekly";
+  readonly weekdays: ReadonlyArray<ScheduleWeekday>;
+  readonly localTime: string;
+  readonly timezone?: string | undefined;
+};
+
+export const normalizeSyncSchedule = (
+  schedule: SyncSchedule,
+): NormalizedSyncSchedule => {
+  if (schedule.kind !== "weekly") return schedule;
+  const normalized = {
+    kind: "weekly" as const,
+    weekdays: scheduleWeekdaysFor(schedule),
+    localTime: schedule.localTime,
+  };
+  return schedule.timezone === undefined
+    ? normalized
+    : { ...normalized, timezone: schedule.timezone };
+};
+
 export const syncScheduleFromResourceSpec = (
   spec: Extract<ResourceSpecInput, { readonly kind: "schedule" }>,
-): SyncSchedule => {
+): NormalizedSyncSchedule => {
   const timezone = spec.timezone === "local" ? undefined : spec.timezone;
   switch (spec.calendar.type) {
     case "daily":
       return { kind: "daily", localTime: spec.calendar.at, timezone };
     case "weekly": {
-      const value = spec.calendar.days[0] ?? "";
-      const weekday = `${value.slice(0, 1).toUpperCase()}${value.slice(1).toLowerCase()}`;
-      if (!isScheduleWeekday(weekday)) {
-        throw new Error(`unsupported schedule weekday: ${value}`);
-      }
-      return {
-        kind: "weekly",
-        weekday,
+      const weekdays = spec.calendar.days.map((value) => {
+        const weekday = `${value.slice(0, 1).toUpperCase()}${value.slice(1).toLowerCase()}`;
+        if (!isScheduleWeekday(weekday)) {
+          throw new Error(`unsupported schedule weekday: ${value}`);
+        }
+        return weekday;
+      });
+      const normalized = {
+        kind: "weekly" as const,
+        weekdays: [...new Set(weekdays)].sort(
+          (left, right) => weekdayIndex.get(left)! - weekdayIndex.get(right)!,
+        ),
         localTime: spec.calendar.at,
-        timezone,
       };
+      return timezone === undefined ? normalized : { ...normalized, timezone };
     }
     case "custom":
       return {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   constants,
 } from "node:fs";
@@ -41,6 +42,7 @@ import type {
   AgentResolutionInput,
   AgentResolutionOutcome,
   AgentHarnessConfiguration,
+  PipRequirementFileAuthorization,
   ProposedProcessAction,
   ReviewedProfileChangeProposal,
   SourceDiscoveryResolution,
@@ -1201,7 +1203,12 @@ const requirementFileIdentityEqual = (
   right: { readonly dev: number; readonly ino: number; readonly size: number },
 ): boolean => left.dev === right.dev && left.ino === right.ino && left.size === right.size;
 
-const readPipRequirementFile = async (path: string): Promise<string> => {
+const readPipRequirementFile = async (
+  path: string,
+): Promise<{
+  readonly content: string;
+  readonly authorization: PipRequirementFileAuthorization;
+}> => {
   const maximumBytes = 128 * 1024;
   const before = await lstat(path);
   if (!before.isFile() || before.size > maximumBytes) {
@@ -1223,7 +1230,20 @@ const readPipRequirementFile = async (path: string): Promise<string> => {
     const decoded = new TextDecoder("utf-8", { fatal: true }).decode(
       buffer.subarray(0, bytesRead),
     );
-    return decoded.startsWith("\uFEFF") ? decoded.slice(1) : decoded;
+    const content = decoded.startsWith("\uFEFF") ? decoded.slice(1) : decoded;
+    return {
+      content,
+      authorization: {
+        path,
+        canonicalPath: await realpath(path),
+        identity: {
+          dev: before.dev,
+          ino: before.ino,
+          size: before.size,
+        },
+        digest: createHash("sha256").update(buffer.subarray(0, bytesRead)).digest("hex"),
+      },
+    };
   } finally {
     await handle.close();
   }
@@ -1235,9 +1255,12 @@ const validatePipRequirementInputs = (
   workingDirectory: string,
   task: Pick<AuthorizationBounds, "allowedPaths" | "allowedOrigins">,
   harness: Pick<AuthorizationBounds, "allowedPaths" | "allowedOrigins">,
-): Effect.Effect<void, DeniedAgentCapabilityError> =>
+): Effect.Effect<
+  ReadonlyArray<PipRequirementFileAuthorization>,
+  DeniedAgentCapabilityError
+> =>
   Effect.gen(function*() {
-    if (packageManagerName(executable) !== "pip") return;
+    if (packageManagerName(executable) !== "pip") return [];
     const fileOptions: Array<{ readonly path: string }> = [];
     for (let index = 0; index < arguments_.length; index += 1) {
       const option = pipRequirementOption(arguments_[index]!);
@@ -1259,6 +1282,7 @@ const validatePipRequirementInputs = (
       });
     }
     const visited: Array<string> = [];
+    const authorizations: Array<PipRequirementFileAuthorization> = [];
     let fileCount = 0;
     let totalBytes = 0;
     const visit = (
@@ -1287,13 +1311,21 @@ const validatePipRequirementInputs = (
         }
         visited.push(canonical);
         fileCount += 1;
-        const content = yield* Effect.tryPromise({
+        const read = yield* Effect.tryPromise({
           try: () => readPipRequirementFile(file),
           catch: () => new DeniedAgentCapabilityError({
             capability: "package-manager-requirements",
             value: file,
           }),
         });
+        const content = read.content;
+        if (read.authorization.canonicalPath !== canonical) {
+          return yield* new DeniedAgentCapabilityError({
+            capability: "package-manager-requirements",
+            value: file,
+          });
+        }
+        authorizations.push(read.authorization);
         totalBytes += Buffer.byteLength(content, "utf8");
         if (totalBytes > 1024 * 1024) {
           return yield* new DeniedAgentCapabilityError({
@@ -1378,7 +1410,45 @@ const validatePipRequirementInputs = (
         visited.pop();
       });
     for (const entry of fileOptions) yield* visit(entry.path, 0);
+    return authorizations;
   });
+
+const samePipRequirementAuthorization = (
+  left: PipRequirementFileAuthorization,
+  right: PipRequirementFileAuthorization,
+): boolean =>
+  left.path === right.path
+  && left.canonicalPath === right.canonicalPath
+  && left.identity.dev === right.identity.dev
+  && left.identity.ino === right.identity.ino
+  && left.identity.size === right.identity.size
+  && left.digest === right.digest;
+
+export const revalidatePipRequirementFiles = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+  workingDirectory: string,
+  task: Pick<AuthorizationBounds, "allowedPaths" | "allowedOrigins">,
+  harness: Pick<AuthorizationBounds, "allowedPaths" | "allowedOrigins">,
+  expected: ReadonlyArray<PipRequirementFileAuthorization>,
+): Effect.Effect<void, DeniedAgentCapabilityError> =>
+  validatePipRequirementInputs(
+    executable,
+    arguments_,
+    workingDirectory,
+    task,
+    harness,
+  ).pipe(
+    Effect.flatMap((actual) =>
+      actual.length === expected.length
+        && actual.every((entry, index) => samePipRequirementAuthorization(entry, expected[index]!))
+        ? Effect.void
+        : Effect.fail(new DeniedAgentCapabilityError({
+          capability: "package-manager-requirements",
+          value: executable,
+        }))
+    ),
+  );
 
 const registryArguments = (
   manager: string,
@@ -2101,9 +2171,15 @@ const authorizeExecutableBehavior = (
   harness: AuthorizationBounds & AuthorizationEnvironment,
   deniedCapability: string,
   actionOrigins: ReadonlyArray<string> = [],
-): Effect.Effect<ReadonlyArray<string>, DeniedAgentCapabilityError> =>
+): Effect.Effect<
+  {
+    readonly arguments: ReadonlyArray<string>;
+    readonly pipRequirementFiles: ReadonlyArray<PipRequirementFileAuthorization>;
+  },
+  DeniedAgentCapabilityError
+> =>
   Effect.gen(function*() {
-    yield* validatePipRequirementInputs(
+    const pipRequirementFiles = yield* validatePipRequirementInputs(
       executable,
       arguments_,
       workingDirectory,
@@ -2155,7 +2231,9 @@ const authorizeExecutableBehavior = (
         value: executable,
       });
     }
-    if (invocation === undefined) return authorizedArguments;
+    if (invocation === undefined) {
+      return { arguments: authorizedArguments, pipRequirementFiles };
+    }
     const script = interpreterScript(invocation);
     if (script === undefined) {
       return yield* new DeniedAgentCapabilityError({
@@ -2175,7 +2253,7 @@ const authorizeExecutableBehavior = (
       task.allowedPaths,
       harness.allowedPaths,
     );
-    return authorizedArguments;
+    return { arguments: authorizedArguments, pipRequirementFiles };
   });
 
 const resolveAuthorizedAction = (
@@ -2226,7 +2304,7 @@ const resolveAuthorizedAction = (
         });
       }
     }
-    const authorizedArguments = yield* authorizeExecutableBehavior(
+    const authorizedInvocation = yield* authorizeExecutableBehavior(
       executable,
       action.arguments,
       workingDirectory,
@@ -2235,6 +2313,7 @@ const resolveAuthorizedAction = (
       "executable-behavior",
       action.origins,
     );
+    const authorizedArguments = authorizedInvocation.arguments;
     const npmArguments = npmDependencyArgumentIndexes(executable, authorizedArguments);
     const authorizedWorkingDirectory = action.workingDirectory
       ?? task.allowedPaths[0];
@@ -2284,7 +2363,17 @@ const resolveAuthorizedAction = (
         harness.allowedOrigins,
       );
     }
-    return { ...action, executable, arguments: authorizedArguments };
+    const resolvedAction = {
+      ...action,
+      executable,
+      arguments: authorizedArguments,
+    };
+    return authorizedInvocation.pipRequirementFiles.length === 0
+      ? resolvedAction
+      : {
+        ...resolvedAction,
+        pipRequirementFiles: authorizedInvocation.pipRequirementFiles,
+      };
   });
 
 export const authorizeAction = (
@@ -2297,7 +2386,13 @@ export const authorizeAction = (
 const resolveAuthorizedVerification = (
   task: AgentTask,
   harness: AuthorizationBounds & AuthorizationEnvironment,
-): Effect.Effect<ReadonlyArray<string>, DeniedAgentCapabilityError> =>
+): Effect.Effect<
+  {
+    readonly command: ReadonlyArray<string>;
+    readonly pipRequirementFiles: ReadonlyArray<PipRequirementFileAuthorization>;
+  },
+  DeniedAgentCapabilityError
+> =>
   Effect.gen(function*() {
     const requestedExecutable = task.verification.command[0] ?? "";
     const workingDirectory = task.allowedPaths[0] ?? process.cwd();
@@ -2326,7 +2421,7 @@ const resolveAuthorizedVerification = (
         value: requestedExecutable,
       });
     }
-    const authorizedArguments = yield* authorizeExecutableBehavior(
+    const authorizedInvocation = yield* authorizeExecutableBehavior(
       executable,
       task.verification.command.slice(1),
       workingDirectory,
@@ -2334,6 +2429,7 @@ const resolveAuthorizedVerification = (
       harness,
       "verification-executable-behavior",
     );
+    const authorizedArguments = authorizedInvocation.arguments;
     const npmArguments = npmDependencyArgumentIndexes(executable, authorizedArguments);
     yield* Effect.forEach(
       authorizedArguments.entries(),
@@ -2360,7 +2456,10 @@ const resolveAuthorizedVerification = (
       },
       { discard: true },
     );
-    return [executable, ...authorizedArguments];
+    return {
+      command: [executable, ...authorizedArguments],
+      pipRequirementFiles: authorizedInvocation.pipRequirementFiles,
+    };
   });
 
 export const resolveAuthorizedProposal = (
@@ -2371,6 +2470,7 @@ export const resolveAuthorizedProposal = (
   {
     readonly proposal: AgentActionProposal;
     readonly verificationCommand: ReadonlyArray<string>;
+    readonly verificationPipRequirementFiles: ReadonlyArray<PipRequirementFileAuthorization>;
   },
   DeniedAgentCapabilityError
 > =>
@@ -2379,10 +2479,11 @@ export const resolveAuthorizedProposal = (
       proposal.actions,
       (action) => resolveAuthorizedAction(action, task, harness),
     );
-    const verificationCommand = yield* resolveAuthorizedVerification(task, harness);
+    const verification = yield* resolveAuthorizedVerification(task, harness);
     return {
       proposal: { ...proposal, actions },
-      verificationCommand,
+      verificationCommand: verification.command,
+      verificationPipRequirementFiles: verification.pipRequirementFiles,
     };
   });
 

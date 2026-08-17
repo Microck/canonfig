@@ -116,7 +116,7 @@ export const scheduleManagerContract = (
         layer,
         statusFor(adapter.executable, {
           kind: "weekly",
-          weekday: "Sun",
+          weekdays: ["Fri", "Mon", "Fri"],
           localTime: "23:45",
         }),
       );
@@ -139,23 +139,47 @@ export const scheduleManagerContract = (
           await fixture(adapter.platform, "timezone"),
         );
         expect(definition.schedule).toContain("America/New_York");
-        return;
+      } else {
+        const error = await runWith(
+          layer,
+          Effect.gen(function*() {
+            const manager = yield* ScheduleManager;
+            return yield* Effect.flip(manager.status({
+              executable: adapter.executable,
+              schedule,
+            }));
+          }),
+        );
+        expect(error).toBeInstanceOf(ScheduleHumanActionRequiredError);
+        expect(`${JSON.stringify(error, undefined, 2)}\n`).toBe(
+          await fixture(adapter.platform, "timezone"),
+        );
       }
 
-      const error = await runWith(
-        layer,
-        Effect.gen(function*() {
-          const manager = yield* ScheduleManager;
-          return yield* Effect.flip(manager.status({
-            executable: adapter.executable,
-            schedule,
-          }));
-        }),
-      );
-      expect(error).toBeInstanceOf(ScheduleHumanActionRequiredError);
-      expect(`${JSON.stringify(error, undefined, 2)}\n`).toBe(
-        await fixture(adapter.platform, "timezone"),
-      );
+      const custom = {
+        kind: "custom",
+        expression: "*-*-* 02:15:00",
+        timezone: "Europe/Paris",
+      } as const;
+      if (adapter.supportsNamedTimezone) {
+        const definition = await runWith(layer, statusFor(adapter.executable, custom));
+        expect(goldenValue(definition)).toBe(
+          await fixture(adapter.platform, "custom-timezone"),
+        );
+        expect(definition.schedule).toContain("Europe/Paris");
+      } else {
+        const error = await runWith(
+          layer,
+          Effect.gen(function*() {
+            const manager = yield* ScheduleManager;
+            return yield* Effect.flip(manager.status({
+              executable: adapter.executable,
+              schedule: custom,
+            }));
+          }),
+        );
+        expect(error).toBeInstanceOf(ScheduleHumanActionRequiredError);
+      }
     });
 
     it("uses the exact noninteractive sync argv with native quoting", async () => {

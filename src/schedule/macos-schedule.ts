@@ -2,11 +2,15 @@ import { Effect } from "effect";
 
 import type { SchedulerCalendar } from "../machine/machine-state.types.ts";
 import { ScheduleHumanActionRequiredError } from "./schedule-manager.errors.ts";
-import type { SyncSchedule } from "./schedule-manager.types.ts";
+import {
+  normalizeSyncSchedule,
+  type SyncSchedule,
+} from "./schedule-manager.types.ts";
 
 export const macosCalendar = (
   schedule: SyncSchedule,
 ): Effect.Effect<SchedulerCalendar, ScheduleHumanActionRequiredError> => {
+  schedule = normalizeSyncSchedule(schedule);
   if (schedule.kind === "custom") {
     return Effect.fail(new ScheduleHumanActionRequiredError({
       action: "use a daily or weekly schedule on macOS",
@@ -25,7 +29,7 @@ export const macosCalendar = (
     ? { kind: "daily", localTime: schedule.localTime }
     : {
       kind: "weekly",
-      weekday: schedule.weekday,
+      weekdays: schedule.weekdays,
       localTime: schedule.localTime,
     });
 };

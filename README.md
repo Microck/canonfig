@@ -196,7 +196,7 @@ canonfig agent harness codex --executable /opt/codex --allow-path /home/operator
 Manage schedules and recovery:
 
 ```bash
-canonfig schedule set weekly:Mon@12:30 --timezone Europe/Paris
+canonfig schedule set weekly:Mon,Wed,Fri@12:30 --timezone Europe/Paris
 canonfig schedule remove
 canonfig recover --no-input --json
 ```

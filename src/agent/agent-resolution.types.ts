@@ -50,6 +50,24 @@ export interface ProposedProcessAction {
   readonly capabilities: ReadonlyArray<
     "elevation" | "login" | "restart" | "reboot"
   >;
+  /**
+   * Filled only after bounded pip requirement/constraint authorization.
+   * The executor rechecks these exact file identities and digests immediately
+   * before spawning the package manager.
+   */
+  readonly pipRequirementFiles?: ReadonlyArray<PipRequirementFileAuthorization>
+    | undefined;
+}
+
+export interface PipRequirementFileAuthorization {
+  readonly path: string;
+  readonly canonicalPath: string;
+  readonly identity: {
+    readonly dev: number;
+    readonly ino: number;
+    readonly size: number;
+  };
+  readonly digest: string;
 }
 
 export interface AgentActionProposal {
@@ -120,7 +138,8 @@ export interface ControlledProcessInput {
    * Set only by AgentResolution after bounded requirement-file authorization.
    * The low-level executor otherwise rejects pip include files fail-closed.
    */
-  readonly pipRequirementFilesAuthorized?: boolean | undefined;
+  readonly pipRequirementFiles?: ReadonlyArray<PipRequirementFileAuthorization>
+    | undefined;
   readonly standardInput?: Uint8Array | undefined;
   readonly timeoutMilliseconds: number;
   readonly maximumInputBytes: number;

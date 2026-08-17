@@ -1,8 +1,12 @@
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
+import { describe, expect, it } from "vitest";
+
+import type { ResourceSpecInput } from "../src/domain/profile.ts";
 import { macosMachineStateLayer } from "../src/machine/macos.layer.ts";
 import type { SchedulerBackend } from "../src/machine/machine-state.types.ts";
 import { windowsMachineStateLayer } from "../src/machine/windows.layer.ts";
 import { scheduleManagerContract } from "./contract/schedule-manager.contract.ts";
+import { syncScheduleFromResourceSpec } from "../src/schedule/schedule-manager.types.ts";
 
 const linuxEnvironment = [
   { name: "HOME", value: "/home/follower" },
@@ -53,4 +57,25 @@ scheduleManagerContract("Windows", {
       environment: windowsEnvironment,
       schedulerBackend: scheduler,
     }),
+});
+
+describe("schedule normalization", () => {
+  it("preserves, deduplicates, and orders every weekly day", () => {
+    const spec = {
+      kind: "schedule",
+      calendar: {
+        type: "weekly",
+        days: ["fri", "mon", "fri", "wed"],
+        at: "09:15",
+      },
+      timezone: "UTC",
+    } satisfies Extract<ResourceSpecInput, { readonly kind: "schedule" }>;
+
+    expect(syncScheduleFromResourceSpec(spec)).toEqual({
+      kind: "weekly",
+      weekdays: ["Mon", "Wed", "Fri"],
+      localTime: "09:15",
+      timezone: "UTC",
+    });
+  });
 });

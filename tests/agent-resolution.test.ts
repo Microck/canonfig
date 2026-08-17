@@ -938,7 +938,7 @@ describe("agent resolution", () => {
       executable: manager,
       arguments: ["install", "-r", rootRequirements],
     })));
-    await Effect.runPromise(Effect.gen(function*() {
+    const result = await Effect.runPromise(Effect.gen(function*() {
       const service = yield* AgentResolution;
       return yield* service.resolve({
         policy: "agent-apply",
@@ -946,6 +946,9 @@ describe("agent resolution", () => {
         harness: harness(directory, allowedExecutables),
       });
     }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+    expect(result.outcome).toBe("applied");
+    if (result.outcome !== "applied") return;
+    expect(result.proposal.actions[0]?.pipRequirementFiles).toHaveLength(4);
     expect(recording.invocations[1]?.arguments).toEqual([
       "install",
       "-r",
@@ -954,6 +957,87 @@ describe("agent resolution", () => {
       "--isolated",
       "--index-url=https://packages.example.test",
     ]);
+  });
+
+  it("fails closed when an earlier action rewrites a pip requirement before the next spawn", async () => {
+    const requirements = join(directory, "requirements.txt");
+    const rewriter = join(directory, "rewriter");
+    const pip = join(directory, "pip");
+    await Promise.all([
+      writeFile(requirements, "safe-package\n"),
+      writeFile(rewriter, "#!/bin/sh\nexit 0\n"),
+      writeFile(pip, "#!/bin/sh\nprintf downloaded > pip-downloaded\n"),
+    ]);
+    await Promise.all([chmod(rewriter, 0o755), chmod(pip, 0o755)]);
+    const allowedExecutables = [
+      rewriter,
+      pip,
+      join(directory, "verify"),
+      process.execPath,
+    ];
+    const actions: AgentActionProposal = {
+      summary: "rewrite then install",
+      actions: [
+        action({ executable: rewriter }),
+        action({
+        executable: pip,
+        arguments: ["install", "-r", requirements],
+        workingDirectory: directory,
+        }),
+      ],
+    };
+    const invocations: Array<ControlledProcessInput> = [];
+    const executor: ControlledExecutor = (input) => {
+      invocations.push(input);
+      if (invocations.length === 1) {
+        return Effect.succeed({
+          executable: input.executable,
+          arguments: input.arguments,
+          exitCode: 0,
+          signal: null,
+          stdout: JSON.stringify(actions),
+          stderr: "",
+        });
+      }
+      if (invocations.length === 2) {
+        return Effect.promise(() =>
+          writeFile(requirements, "evil-package\n").then(() => ({
+            executable: input.executable,
+            arguments: input.arguments,
+            exitCode: 0,
+            signal: null,
+            stdout: "rewritten",
+            stderr: "",
+          }))
+        );
+      }
+      return Effect.succeed({
+        executable: input.executable,
+        arguments: input.arguments,
+        exitCode: 0,
+        signal: null,
+        stdout: "downloaded",
+        stderr: "",
+      });
+    };
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, {
+          allowedExecutables,
+          verification: { command: [join(directory, "verify")] },
+        }),
+        harness: harness(directory, allowedExecutables),
+      });
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(executor)),
+      Effect.flip,
+    ));
+
+    expect(error).toMatchObject({ capability: "package-manager-requirements" });
+    expect(invocations).toHaveLength(2);
+    await expect(access(join(directory, "pip-downloaded"))).rejects.toThrow();
   });
 
   it.each([
