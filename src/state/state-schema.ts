@@ -287,4 +287,39 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       )
     `;
   }),
+  "0011_profile_revision_blob_index": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS profile_revision_blobs (
+        blob_id TEXT NOT NULL,
+        revision_id TEXT NOT NULL REFERENCES profile_revisions(id) ON DELETE CASCADE,
+        resource_id TEXT NOT NULL,
+        PRIMARY KEY (blob_id, revision_id, resource_id)
+      )
+    `;
+
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS profile_revision_blobs_by_blob
+      ON profile_revision_blobs(blob_id, revision_id, resource_id)
+    `;
+
+    // Backfill the derived lookup for databases that already contain
+    // immutable revisions. The signed revision remains the source of truth;
+    // this table only narrows the set of candidates that must be verified.
+    yield* sql`
+      INSERT OR IGNORE INTO profile_revision_blobs (blob_id, revision_id, resource_id)
+      SELECT
+        blob.value,
+        profile_revisions.id,
+        json_extract(resource.value, '$.id')
+      FROM profile_revisions
+      CROSS JOIN json_each(
+        json_extract(profile_revisions.revision_json, '$.resources')
+      ) AS resource
+      CROSS JOIN json_each(
+        json_extract(resource.value, '$.blobs')
+      ) AS blob
+    `;
+  }),
 });

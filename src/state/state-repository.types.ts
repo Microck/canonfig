@@ -25,6 +25,12 @@ export interface PublishRevisionInput {
   readonly revision: ProfileRevision;
 }
 
+export interface RevisionBlobCandidate {
+  readonly blob: ContentDigest;
+  readonly revision: ProfileRevisionId;
+  readonly resource: ResourceId;
+}
+
 export interface RegisterFollowerInput {
   readonly follower: FollowerIdentity;
 }

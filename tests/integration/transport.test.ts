@@ -1,6 +1,7 @@
 import {
   createPrivateKey,
   createPublicKey,
+  generateKeyPairSync,
   sign,
   verify,
 } from "node:crypto";
@@ -15,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   BlobId,
+  CertificateFingerprint,
   GroupName,
   ProfileId,
   ProfileRevisionId,
@@ -54,6 +56,7 @@ import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
   digestOf,
+  sha256BytesHex,
   sha256Hex,
   type JsonValue,
 } from "../../src/profile/profile-codec.ts";
@@ -134,6 +137,7 @@ const publishFixtureRevision = (
   setup: Fixture,
   includeCrossGroupDependent = false,
   includeShared = true,
+  revisionSequence = 1,
 ): Promise<{
   readonly revision: ProfileRevision;
   readonly blobs: ReadonlyArray<typeof BlobId.Type>;
@@ -156,17 +160,17 @@ const publishFixtureRevision = (
       },
       {
         kind: "file" as const,
-        content: "alpha\n",
+        content: `alpha-${revisionSequence}\n`,
         executable: false,
       },
       {
         kind: "file" as const,
-        content: "beta\n",
+        content: `beta-${revisionSequence}\n`,
         executable: false,
       },
       {
         kind: "file" as const,
-        content: "cross-group\n",
+        content: `cross-group-${revisionSequence}\n`,
         executable: false,
       },
     ];
@@ -251,7 +255,7 @@ const publishFixtureRevision = (
     const unsigned = {
       id,
       profileId: profile.id,
-      sequence: 1,
+      sequence: revisionSequence,
       canonicalBytes,
       digest,
       publishedAt: "2026-08-15T12:00:00Z",
@@ -277,7 +281,7 @@ const publishFixtureRevision = (
     const revision: ProfileRevision = {
       id,
       profileId: profile.id,
-      sequence: 1,
+      sequence: revisionSequence,
       canonicalBytes,
       digest,
       signature,
@@ -429,6 +433,117 @@ describe("authenticated content-addressed transport", () => {
     expect(converged.downloadedBlobs).toBe(0);
     expect(converged.reusedBlobs).toBe(2);
     expect(server.blobRequests()).toBe(3);
+  });
+
+  it("uses the persisted blob index across historical revisions and invalidates cached validation", async () => {
+    const setup = fixture();
+    const history: Array<Awaited<ReturnType<typeof publishFixtureRevision>>> = [];
+    for (let sequence = 1; sequence <= 64; sequence += 1) {
+      history.push(await publishFixtureRevision(setup, false, true, sequence));
+    }
+    const latest = history.at(-1)!;
+    const database = new DatabaseSync(setup.database);
+    const indexedCandidates = database.prepare(
+      "SELECT count(*) AS count FROM profile_revision_blobs WHERE blob_id = ?",
+    ).get(latest.blobs[1]!);
+    database.close();
+    expect(indexedCandidates).toMatchObject({ count: 1 });
+
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const input = transportInput(server, enrolled);
+    const first = await runFollower(setup, retrieveBlob({
+      ...input,
+      blobId: latest.blobs[1]!,
+    }));
+    const second = await runFollower(setup, retrieveBlob({
+      ...input,
+      blobId: latest.blobs[1]!,
+    }));
+    expect(Buffer.from(first)).toEqual(Buffer.from(second));
+
+    const missing = await Effect.runPromise(Effect.flip(
+      retrieveBlob({
+        ...input,
+        blobId: decode(BlobId)("e".repeat(64)),
+      }).pipe(Effect.provide(setup.followerMachine)),
+    ));
+    expect(missing).toBeInstanceOf(TransportResourceNotFoundError);
+
+    const tamperedDatabase = new DatabaseSync(setup.database);
+    tamperedDatabase.exec("DROP TRIGGER profile_revisions_immutable_update");
+    const stored = decode(Schema.Struct({ revision_json: Schema.String }))(
+      tamperedDatabase.prepare(
+        "SELECT revision_json FROM profile_revisions WHERE id = ?",
+      ).get(latest.revision.id),
+    );
+    const tampered = JSON.parse(stored.revision_json);
+    tampered.signature = `ed25519:${"A".repeat(86)}`;
+    tamperedDatabase.prepare(
+      "UPDATE profile_revisions SET signature = ?, revision_json = ? WHERE id = ?",
+    ).run(tampered.signature, JSON.stringify(tampered), latest.revision.id);
+    tamperedDatabase.close();
+
+    const invalidated = await Effect.runPromise(Effect.flip(
+      retrieveBlob({
+        ...input,
+        blobId: latest.blobs[1]!,
+      }).pipe(Effect.provide(setup.followerMachine)),
+    ));
+    expect(invalidated).toBeInstanceOf(TransportIntegrityError);
+  });
+
+  it("invalidates signing-key and authorization caches after source key rotation", async () => {
+    const setup = fixture();
+    const published = await publishFixtureRevision(setup);
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const input = transportInput(server, enrolled);
+    await runFollower(setup, retrieveBlob({
+      ...input,
+      blobId: published.blobs[1]!,
+    }));
+
+    await setup.runtime.runPromise(Effect.gen(function*() {
+      const enrollment = yield* Enrollment;
+      const machine = yield* MachineState;
+      const repository = yield* StateRepository;
+      const current = yield* enrollment.source();
+      const generated = generateKeyPairSync("ed25519");
+      const privateKey = generated.privateKey.export({
+        type: "pkcs8",
+        format: "pem",
+      }).toString();
+      const publicKeyDer = generated.publicKey.export({
+        type: "spki",
+        format: "der",
+      });
+      const fingerprint = decode(CertificateFingerprint)(
+        sha256BytesHex(publicKeyDer),
+      );
+      const signingKeyReference = yield* machine.storeCredential({
+        name: "canonfig-rotated-source-signing-key",
+        value: Redacted.make(privateKey),
+      });
+      yield* repository.saveEnrollmentSource({
+        identity: {
+          keyId: `ed25519:${fingerprint}`,
+          publicKeyFingerprint: fingerprint,
+        },
+        signingKeyReference,
+        tlsKeyReference: current.tlsKeyReference,
+        tlsCertificateReference: current.tlsCertificateReference,
+        tlsFingerprint: current.tlsFingerprint,
+      });
+    }));
+
+    const rotated = await Effect.runPromise(Effect.flip(
+      retrieveBlob({
+        ...input,
+        blobId: published.blobs[1]!,
+      }).pipe(Effect.provide(setup.followerMachine)),
+    ));
+    expect(rotated).toBeInstanceOf(TransportIntegrityError);
   });
 
   it("omits dependents whose cross-group dependency is unavailable", async () => {

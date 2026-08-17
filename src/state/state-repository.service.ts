@@ -31,6 +31,7 @@ import type {
   SaveLocalOverlayInput,
   StartRunInput,
   StateSnapshot,
+  RevisionBlobCandidate,
   StoredEnrollmentInvitation,
   SaveFollowerSynchronizationConfigurationInput,
 } from "./state-repository.types.ts";
@@ -111,6 +112,9 @@ export class StateRepository extends Context.Service<StateRepository, {
   ) => Effect.Effect<ProfileRevision | undefined, StateRepositoryError>;
   readonly listRevisions: (
   ) => Effect.Effect<ReadonlyArray<ProfileRevision>, StateRepositoryError>;
+  readonly listRevisionBlobCandidates: (
+    blob: ContentDigest,
+  ) => Effect.Effect<ReadonlyArray<RevisionBlobCandidate>, StateRepositoryError>;
   readonly loadAppliedResources: (
     follower: FollowerId,
   ) => Effect.Effect<ReadonlyArray<AppliedResourceRecord>, StateRepositoryError>;

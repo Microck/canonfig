@@ -5,6 +5,7 @@ import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import {
   ActionId,
+  BlobId,
   CertificateFingerprint,
   ContentDigest,
   CredentialReference,
@@ -65,6 +66,7 @@ import type {
   RecordDriftInput,
   RecoveryState,
   RegisterFollowerInput,
+  RevisionBlobCandidate,
   RemoveLocalOverlayInput,
   SaveFollowerSynchronizationConfigurationInput,
   SaveLocalOverlayInput,
@@ -77,6 +79,11 @@ import type { LocalOverlayEntry } from "../synchronization/synchronization.types
 
 const CountRow = Schema.Struct({ count: Schema.Number });
 const RevisionJsonRow = Schema.Struct({ revision_json: Schema.String });
+const RevisionBlobCandidateRow = Schema.Struct({
+  blob_id: ContentDigest,
+  revision_id: ProfileRevisionId,
+  resource_id: ResourceId,
+});
 const RunStatusRow = Schema.Struct({
   follower_id: Schema.String,
   status: Schema.String,
@@ -1216,6 +1223,21 @@ const makeRepository = Effect.gen(function*() {
             ${encoded}
           )
         `;
+        for (const resource of revision.resources) {
+          for (const blob of resource.blobs) {
+            yield* sql`
+              INSERT OR IGNORE INTO profile_revision_blobs (
+                blob_id,
+                revision_id,
+                resource_id
+              ) VALUES (
+                ${Schema.decodeUnknownSync(BlobId)(blob)},
+                ${revision.id},
+                ${resource.id}
+              )
+            `;
+          }
+        }
       });
       yield* sql.withTransaction(transaction).pipe(
         Effect.catchTag("SqlError", (error) =>
@@ -1329,6 +1351,33 @@ const makeRepository = Effect.gen(function*() {
       return revisions;
     },
   );
+
+  const listRevisionBlobCandidates = Effect.fn(
+    "StateRepository.listRevisionBlobCandidates",
+  )(function*(
+    blob: typeof ContentDigest.Type,
+  ): Effect.fn.Return<ReadonlyArray<RevisionBlobCandidate>, StateRepositoryError> {
+    const rows = yield* sql`
+      SELECT
+        profile_revision_blobs.blob_id,
+        profile_revision_blobs.revision_id,
+        profile_revision_blobs.resource_id
+      FROM profile_revision_blobs
+      WHERE profile_revision_blobs.blob_id = ${blob}
+      ORDER BY profile_revision_blobs.revision_id, profile_revision_blobs.resource_id
+    `.pipe(Effect.mapError(sqlError("list profile revision blob candidates")));
+    const decoded = yield* decodeRows(
+      RevisionBlobCandidateRow,
+      rows,
+      "profile revision blob candidates",
+      blob,
+    );
+    return decoded.map((row) => ({
+      blob: row.blob_id,
+      revision: row.revision_id,
+      resource: row.resource_id,
+    }));
+  });
 
   const loadAppliedResources = Effect.fn(
     "StateRepository.loadAppliedResources",
@@ -2034,6 +2083,7 @@ const makeRepository = Effect.gen(function*() {
     findRevision,
     getLatestRevision,
     listRevisions,
+    listRevisionBlobCandidates,
     loadAppliedResources,
     startRun,
     journalAction,
