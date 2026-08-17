@@ -5,6 +5,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   symlink,
   writeFile,
@@ -20,6 +21,7 @@ import {
   AgentExecutionTimeoutError,
   AgentInputLimitError,
   AgentOutputLimitError,
+  AgentProcessError,
   DeniedAgentCapabilityError,
   InvalidAgentTaskError,
 } from "../src/agent/agent-resolution.errors.ts";
@@ -768,6 +770,14 @@ describe("agent resolution", () => {
     expect(recording.invocations[1]?.arguments).toEqual([
       ...arguments_,
       ...disableFlags,
+      ...(managerName === "uv" ? ["--no-config"] : []),
+      ...(
+        managerName === "uv"
+          ? [
+            `${arguments_[0] === "pip" ? "--index-url" : "--default-index"}=https://packages.example.test`,
+          ]
+          : ["--registry=https://packages.example.test"]
+      ),
     ]);
   });
 
@@ -842,6 +852,155 @@ describe("agent resolution", () => {
     ))).resolves.toBeUndefined();
   });
 
+  it("selects one reviewed registry and overrides hostile package-manager config", async () => {
+    const marker = join(directory, "registry-observation.json");
+    const manager = join(directory, "npm");
+    const verify = join(directory, "verify");
+    const harnessScript = join(directory, "package-harness.mjs");
+    await Promise.all([
+      writeFile(
+        manager,
+        `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+  registry: process.env.NPM_CONFIG_REGISTRY,
+  scoped: process.env["npm_config_@scope:registry"],
+  args: process.argv.slice(2),
+}));
+process.exit(
+  process.argv.includes("--registry=https://packages.example.test")
+    && process.argv.includes("--@scope:registry=https://packages.example.test")
+    ? 0
+    : 1
+);
+`,
+      ),
+      writeFile(verify, "#!/bin/sh\nprintf verified\n"),
+      writeFile(
+        harnessScript,
+        `process.stdout.write(${JSON.stringify(JSON.stringify(proposal(action({
+          executable: manager,
+          arguments: ["install", "@scope/tool"],
+        }))))});\n`,
+      ),
+    ]);
+    await Promise.all([chmod(manager, 0o755), chmod(verify, 0o755)]);
+    const allowedExecutables = [manager, verify];
+    const result = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, {
+          allowedExecutables,
+          verification: { command: [verify], expectContains: "verified" },
+        }),
+        harness: {
+          ...harness(directory, allowedExecutables),
+          executable: process.execPath,
+          arguments: [harnessScript],
+          environment: [
+            { name: "PATH", value: directory },
+            { name: "NPM_CONFIG_REGISTRY", value: "https://evil.example.test" },
+            { name: "npm_config_@scope:registry", value: "https://evil.example.test" },
+            { name: "NPM_CONFIG_USERCONFIG", value: join(directory, ".npmrc") },
+          ],
+        },
+      });
+    }).pipe(Effect.provide(AgentResolutionLive)));
+    expect(result.outcome).toBe("applied");
+    // SAFETY: The fixture writes exactly these JSON fields before resolving.
+    const observed = JSON.parse(await readFile(marker, "utf8")) as {
+      registry: string;
+      scoped: string;
+      args: string[];
+    };
+    expect(observed.registry).toBe("https://packages.example.test");
+    expect(observed.scoped).toBe("https://packages.example.test");
+    expect(observed.args).toContain("--registry=https://packages.example.test");
+    expect(observed.args).toContain("--@scope:registry=https://packages.example.test");
+  });
+
+  it.each([
+    ["no unambiguous allowed registry", ["install", "tool"], ["https://one.example.test", "https://two.example.test"]],
+    ["disallowed explicit registry", ["install", "tool", "--registry=https://evil.example.test"], ["https://packages.example.test"]],
+    ["disallowed scoped registry", ["install", "@scope/tool", "--@scope:registry=https://evil.example.test"], ["https://packages.example.test"]],
+    ["arbitrary config file", ["install", "tool", "--userconfig=/tmp/evil.npmrc"], ["https://packages.example.test"]],
+  ])("fails closed for %s", async (
+    _name,
+    arguments_,
+    allowedOrigins,
+  ) => {
+    const manager = join(directory, "npm");
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const denied = await Effect.runPromise(authorizeAction(
+      action({ executable: manager, arguments: arguments_ }),
+      task(directory, { allowedExecutables, allowedOrigins }),
+      {
+        ...harness(directory, allowedExecutables),
+        allowedOrigins,
+      },
+    ).pipe(Effect.flip));
+    expect(denied).toMatchObject({
+      capability: _name === "arbitrary config file"
+        ? "package-manager-config"
+        : "network-origin",
+    });
+  });
+
+  it("accepts an explicitly allowed registry and canonicalizes its option", async () => {
+    const manager = join(directory, "npm");
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const result = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-propose",
+        task: task(directory, { allowedExecutables }),
+        harness: harness(directory, allowedExecutables),
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(
+      (input) => Effect.succeed({
+        executable: input.executable,
+        arguments: input.arguments,
+        exitCode: 0,
+        signal: null,
+        stdout: JSON.stringify(proposal(action({
+          executable: manager,
+          arguments: ["install", "tool", "--registry=https://packages.example.test"],
+        }))),
+        stderr: "",
+      }),
+    ))));
+    expect(result.outcome).toBe("proposed");
+    if (result.outcome !== "proposed") return;
+    expect(result.proposal.actions[0]?.arguments).toEqual([
+      "install",
+      "tool",
+      "--ignore-scripts",
+      "--registry=https://packages.example.test",
+    ]);
+  });
+
+  it("redacts credentials from rejected registry options", async () => {
+    const manager = join(directory, "npm");
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const denied = await Effect.runPromise(authorizeAction(
+      action({
+        executable: manager,
+        arguments: ["install", "tool", "--registry=https://user:password@evil.example.test"],
+      }),
+      task(directory, { allowedExecutables }),
+      harness(directory, allowedExecutables),
+    ).pipe(Effect.flip));
+    expect(denied.value).toBe("[REDACTED]");
+    expect(denied.value).not.toContain("password");
+  });
+
   it.each([
     ["GitHub shorthand", "user/repo", "https://github.com"],
     ["github protocol", "github:user/repo", "https://github.com"],
@@ -908,7 +1067,9 @@ describe("agent resolution", () => {
       task(directory, { allowedExecutables }),
       harness(directory, allowedExecutables),
     ).pipe(Effect.flip))).resolves.toMatchObject({
-      capability: "package-manager-scripts",
+      capability: _name === "unknown option value"
+        ? "network-origin"
+        : "package-manager-scripts",
     });
   });
 
@@ -1203,6 +1364,31 @@ describe("agent resolution", () => {
 });
 
 describe("real controlled subprocess", () => {
+  it("refuses a package operation without an authorized registry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-registry-"));
+    try {
+      const manager = join(root, "npm");
+      await writeFile(manager, "#!/bin/sh\nprintf spawned > hostile-download\n");
+      await chmod(manager, 0o755);
+      const error = await Effect.runPromise(executeControlledProcess({
+        executable: manager,
+        arguments: ["install", "tool"],
+        workingDirectory: root,
+        environment: [
+          { name: "NPM_CONFIG_REGISTRY", value: "https://evil.example.test" },
+        ],
+        timeoutMilliseconds: 2_000,
+        maximumInputBytes: 0,
+        maximumOutputBytes: 1_000,
+        secrets: [],
+      }).pipe(Effect.flip));
+      expect(error).toBeInstanceOf(AgentProcessError);
+      await expect(access(join(root, "hostile-download"))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("enforces input byte limits", async () => {
     const error = await Effect.runPromise(executeControlledProcess({
       executable: process.execPath,

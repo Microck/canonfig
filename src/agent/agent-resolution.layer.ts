@@ -6,6 +6,8 @@ import {
   decodeAgentProposal,
   nonzeroProcessError,
   profileChangeProposalFromResolution,
+  registryOriginForInvocation,
+  registryScopesForInvocation,
   redactAgentTask,
   resolvedExecutableIdentity,
   resolveAuthorizedProposal,
@@ -160,6 +162,14 @@ const runResolution = (
         arguments: action.arguments,
         workingDirectory: action.workingDirectory ?? input.task.allowedPaths[0],
         environment: input.harness.environment,
+        packageRegistryOrigin: registryOriginForInvocation(
+          action.executable,
+          action.arguments,
+        ),
+        packageRegistryScopes: registryScopesForInvocation(
+          action.executable,
+          action.arguments,
+        ),
         timeoutMilliseconds: remainingTime(deadline),
         maximumInputBytes: 0,
         maximumOutputBytes: Math.max(0, input.task.outputLimitBytes - consumed),
@@ -190,6 +200,14 @@ const runResolution = (
       arguments: verificationArguments,
       workingDirectory: input.task.allowedPaths[0],
       environment: input.harness.environment,
+      packageRegistryOrigin: registryOriginForInvocation(
+        verificationExecutable,
+        verificationArguments,
+      ),
+      packageRegistryScopes: registryScopesForInvocation(
+        verificationExecutable,
+        verificationArguments,
+      ),
       timeoutMilliseconds: remainingTime(deadline),
       maximumInputBytes: 0,
       maximumOutputBytes: Math.max(0, input.task.outputLimitBytes - consumed),

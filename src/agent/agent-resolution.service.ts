@@ -609,7 +609,13 @@ const firstCommandIndex = (
     const argument = arguments_[index]!;
     if (!argument.startsWith("-") || argument === "-") return index;
     const option = argument.split("=", 1)[0]!;
-    if (!argument.includes("=") && optionsWithValues.has(option)) {
+    if (
+      !argument.includes("=")
+      && (
+        optionsWithValues.has(option)
+        || /^--@[^:]+:registry$/iu.test(option)
+      )
+    ) {
       index += 1;
       if (index >= arguments_.length) return undefined;
     }
@@ -641,6 +647,269 @@ const hasSeparateOptionValue = (
 ): boolean => arguments_.some((argument, index) =>
   argument === option && arguments_[index + 1] !== undefined
 );
+
+interface RegistryOption {
+  readonly index: number;
+  readonly value: string | undefined;
+  readonly consumesNext: boolean;
+}
+
+const registryOptions = (
+  manager: string,
+  arguments_: ReadonlyArray<string>,
+): ReadonlyArray<RegistryOption> => {
+  const options = new Set(
+    manager === "uv"
+      ? ["--default-index", "--index-url", "--extra-index-url", "--index"]
+      : ["--registry"],
+  );
+  const result: Array<RegistryOption> = [];
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    const separator = argument.indexOf("=");
+    const name = (separator > 0 ? argument.slice(0, separator) : argument)
+      .toLowerCase();
+    const scoped = manager !== "uv"
+      && /^--@[^:]+:registry$/u.test(name);
+    if (!options.has(name) && !scoped) continue;
+    const inline = separator > 0 ? argument.slice(separator + 1) : undefined;
+    const separate = inline === undefined && arguments_[index + 1] !== undefined;
+    result.push({
+      index,
+      value: inline ?? (separate ? arguments_[index + 1] : undefined),
+      consumesNext: separate,
+    });
+    if (separate) index += 1;
+  }
+  return result;
+};
+
+const untrustedPackageConfigOption = (
+  manager: string,
+  argument: string,
+): boolean => {
+  const name = argument.split("=", 1)[0]!.toLowerCase();
+  if (manager === "npm" || manager === "pnpm") {
+    return new Set([
+      "--config",
+      "--config-dir",
+      "--globalconfig",
+      "--global-config",
+      "--userconfig",
+      "--user-config",
+    ]).has(name);
+  }
+  if (manager === "bun") return name === "--config";
+  if (manager === "uv") return name === "--config-file";
+  if (manager === "yarn") {
+    return name === "--use-yarnrc" || name === "--rc-file";
+  }
+  return false;
+};
+
+const registryOperation = (
+  manager: string,
+  arguments_: ReadonlyArray<string>,
+): boolean => {
+  const unambiguous = argumentsBeforeSeparator(arguments_);
+  if (unambiguous === undefined) return false;
+  const commandOptions = manager === "uv"
+    ? new Set(["--cache-dir", "--config-file", "--default-index", "--directory", "--extra-index-url", "--index", "--index-url", "--project"])
+    : manager === "bun"
+    ? new Set(["--config", "--cwd", "--filter", "--registry"])
+    : new Set([
+      "-C",
+      "--cache",
+      "--config-dir",
+      "--dir",
+      "--global-bin-dir",
+      "--global-dir",
+      "--prefix",
+      "--registry",
+      "--store-dir",
+      "--userconfig",
+      "--virtual-store-dir",
+      "--workspace-dir",
+    ]);
+  const commandIndex = firstCommandIndex(unambiguous, commandOptions);
+  const command = commandIndex === undefined
+    ? undefined
+    : unambiguous[commandIndex]?.toLowerCase();
+  if (manager === "npm" || manager === "pnpm" || manager === "yarn") {
+    return command !== undefined && new Set([
+      "add",
+      "i",
+      "in",
+      "ins",
+      "inst",
+      "insta",
+      "instal",
+      "install",
+      "ci",
+      "info",
+      "list",
+      "ls",
+      "outdated",
+      "prefix",
+      "root",
+      "search",
+      "view",
+      "why",
+    ]).has(command);
+  }
+  if (manager === "bun") {
+    return command !== undefined && new Set(["add", "i", "install", "update"]).has(command);
+  }
+  if (manager === "uv") {
+    return command === "tool" && unambiguous[commandIndex! + 1]?.toLowerCase() === "install"
+      || command === "pip" && unambiguous[commandIndex! + 1]?.toLowerCase() === "install";
+  }
+  return false;
+};
+
+const packageScopes = (value: string): ReadonlyArray<string> =>
+  [...new Set(
+    [...value.matchAll(/@[A-Za-z0-9._~-]+\//gu)]
+      .map((match) => match[0]!.slice(0, -1)),
+  )].sort();
+
+export const registryScopesForInvocation = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  const manager = packageManagerName(executable);
+  if (manager !== "npm" && manager !== "pnpm") return [];
+  const indexes = npmDependencyArgumentIndexes(manager, arguments_);
+  return [...new Set(
+    [...indexes]
+      .flatMap((index) => packageScopes(arguments_[index] ?? "")),
+  )].sort();
+};
+
+const canonicalRegistryOrigin = (value: string): string | undefined => {
+  const origin = normalizeOrigin(value);
+  if (origin === undefined) return undefined;
+  try {
+    return new URL(value).protocol === "https:" ? origin : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+export const registryOriginForInvocation = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+): string | undefined => {
+  const manager = packageManagerName(executable);
+  const operation = registryOperation(manager, arguments_);
+  if (!operation) return undefined;
+  const option = registryOptions(manager, arguments_)[0];
+  return option?.value === undefined
+    ? undefined
+    : canonicalRegistryOrigin(option.value);
+};
+
+const safeRegistryValue = (value: string): string => {
+  try {
+    const url = new URL(value);
+    return url.username.length > 0 || url.password.length > 0
+      ? "[REDACTED]"
+      : value;
+  } catch {
+    return value.includes("@") ? "[REDACTED]" : value;
+  }
+};
+
+const canonicalAllowedRegistry = (
+  taskOrigins: ReadonlyArray<string>,
+  harnessOrigins: ReadonlyArray<string>,
+  actionOrigins: ReadonlyArray<string>,
+): string | undefined => {
+  const task = new Set(
+    taskOrigins
+      .map(canonicalRegistryOrigin)
+      .filter((origin): origin is string => origin !== undefined),
+  );
+  const harness = new Set(
+    harnessOrigins
+      .map(canonicalRegistryOrigin)
+      .filter((origin): origin is string => origin !== undefined),
+  );
+  const shared = [...task].filter((origin) => harness.has(origin));
+  const reviewed = actionOrigins
+    .map(canonicalRegistryOrigin)
+    .filter((origin): origin is string => origin !== undefined)
+    .filter((origin) => shared.includes(origin));
+  const candidates = reviewed.length > 0 ? [...new Set(reviewed)] : shared;
+  return candidates.length === 1 ? candidates[0] : undefined;
+};
+
+const registryArguments = (
+  manager: string,
+  arguments_: ReadonlyArray<string>,
+  registry: string,
+): ReadonlyArray<string> => {
+  const options = registryOptions(manager, arguments_);
+  const removed = new Set<number>();
+  for (const option of options) {
+    removed.add(option.index);
+    if (option.consumesNext) removed.add(option.index + 1);
+  }
+  const withoutOptions = arguments_.filter((_argument, index) => !removed.has(index));
+  if (manager === "uv") {
+    const command = withoutOptions.findIndex((argument) =>
+      argument === "tool" || argument === "pip"
+    );
+    const flag = command >= 0 && withoutOptions[command] === "pip"
+      ? "--index-url"
+      : "--default-index";
+    return [...withoutOptions, `${flag}=${registry}`];
+  }
+  const scopes = manager === "npm" || manager === "pnpm"
+    ? registryScopesForInvocation(manager, withoutOptions)
+    : [];
+  return [
+    ...withoutOptions,
+    `--registry=${registry}`,
+    ...scopes.map((scope) => `--${scope}:registry=${registry}`),
+  ];
+};
+
+const authorizeRegistryInvocation = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+  taskOrigins: ReadonlyArray<string>,
+  harnessOrigins: ReadonlyArray<string>,
+  actionOrigins: ReadonlyArray<string> = [],
+): Effect.Effect<ReadonlyArray<string>, DeniedAgentCapabilityError> => {
+  const manager = packageManagerName(executable);
+  if (!registryOperation(manager, arguments_)) return Effect.succeed(arguments_);
+  if (arguments_.some((argument) => untrustedPackageConfigOption(manager, argument))) {
+    return Effect.fail(new DeniedAgentCapabilityError({
+      capability: "package-manager-config",
+      value: executable,
+    }));
+  }
+  const registry = canonicalAllowedRegistry(taskOrigins, harnessOrigins, actionOrigins);
+  if (registry === undefined) {
+    return Effect.fail(new DeniedAgentCapabilityError({
+      capability: "network-origin",
+      value: executable,
+    }));
+  }
+  const options = registryOptions(manager, arguments_);
+  for (const option of options) {
+    if (option.value === undefined || canonicalRegistryOrigin(option.value) !== registry) {
+      return Effect.fail(new DeniedAgentCapabilityError({
+        capability: "network-origin",
+        value: option.value === undefined
+          ? executable
+          : safeRegistryValue(option.value),
+      }));
+    }
+  }
+  return Effect.succeed(registryArguments(manager, arguments_, registry));
+};
 
 const isUnboundedSourceDependency = (argument: string): boolean => {
   const value = optionValue(argument) ?? argument;
@@ -683,7 +952,26 @@ const npmDependencyArgumentIndexes = (
   const command = arguments_[commandIndex]?.toLowerCase();
   if (
     command === undefined
-    || !new Set(["add", "i", "in", "ins", "inst", "insta", "instal", "install"]).has(command)
+    || !new Set([
+      "add",
+      "ci",
+      "i",
+      "in",
+      "ins",
+      "inst",
+      "insta",
+      "instal",
+      "install",
+      "info",
+      "list",
+      "ls",
+      "outdated",
+      "prefix",
+      "root",
+      "search",
+      "view",
+      "why",
+    ]).has(command)
   ) return new Set();
   const optionValues = new Set([
     "-C",
@@ -703,27 +991,18 @@ const npmDependencyArgumentIndexes = (
   for (let index = commandIndex + 1; index < arguments_.length; index += 1) {
     const argument = arguments_[index]!;
     if (argument.startsWith("-")) {
-      if (!argument.includes("=") && optionValues.has(argument)) index += 1;
+      if (
+        !argument.includes("=")
+        && (
+          optionValues.has(argument)
+          || /^--@[^:]+:registry$/iu.test(argument)
+        )
+      ) index += 1;
       continue;
     }
     indexes.add(index);
   }
   return indexes;
-};
-
-const hasInvalidRegistryOption = (
-  manager: string,
-  arguments_: ReadonlyArray<string>,
-): boolean => {
-  if (manager !== "npm" && manager !== "pnpm") return false;
-  return arguments_.some((argument, index) => {
-    const value = argument.startsWith("--registry=")
-      ? argument.slice("--registry=".length)
-      : argument === "--registry"
-      ? arguments_[index + 1]
-      : undefined;
-    return value !== undefined && normalizeOrigin(value) === undefined;
-  });
 };
 
 /**
@@ -764,14 +1043,11 @@ const packageManagerPolicy = (
   if (unambiguous === undefined) return { kind: "denied" };
   const dependencyIndexes = npmDependencyArgumentIndexes(manager, unambiguous);
   if (
-    hasInvalidRegistryOption(manager, unambiguous)
-    || (
-      manager === "npm" || manager === "pnpm"
-        ? [...dependencyIndexes].some((index) =>
-          isUnboundedSourceDependency(unambiguous[index] ?? "")
-        )
-        : unambiguous.some(isExplicitSourceDependency)
-    )
+    manager === "npm" || manager === "pnpm"
+      ? [...dependencyIndexes].some((index) =>
+        isUnboundedSourceDependency(unambiguous[index] ?? "")
+      )
+      : unambiguous.some(isExplicitSourceDependency)
   ) {
     return { kind: "denied" };
   }
@@ -885,7 +1161,7 @@ const packageManagerPolicy = (
   if (manager === "bun") {
     const commandIndex = firstCommandIndex(
       unambiguous,
-      new Set(["--cwd", "--config", "--filter"]),
+      new Set(["--cwd", "--config", "--filter", "--registry"]),
     );
     const command = commandIndex === undefined
       ? undefined
@@ -992,7 +1268,16 @@ const packageManagerPolicy = (
   // install/sync. Only binary-only installs avoid that execution surface.
   const commandIndex = firstCommandIndex(
     unambiguous,
-    new Set(["--cache-dir", "--config-file", "--directory", "--project"]),
+    new Set([
+      "--cache-dir",
+      "--config-file",
+      "--default-index",
+      "--directory",
+      "--extra-index-url",
+      "--index",
+      "--index-url",
+      "--project",
+    ]),
   );
   const command = commandIndex === undefined
     ? undefined
@@ -1017,11 +1302,22 @@ const packageManagerPolicy = (
       return { kind: "denied" };
     }
     const canonical = "--only-binary=:all:";
+    if (
+      hasDisabledOption(unambiguous, "--no-config")
+      || hasSeparateOptionValue(unambiguous, "--no-config")
+    ) {
+      return { kind: "denied" };
+    }
     return {
       kind: "scripts-disabled",
-      arguments: unambiguous.includes(canonical)
-        ? arguments_
-        : [...arguments_, canonical],
+      arguments: [
+        ...(
+          unambiguous.includes(canonical)
+            ? arguments_
+            : [...arguments_, canonical]
+        ),
+        ...(hasEnabledOption(unambiguous, "--no-config") ? [] : ["--no-config"]),
+      ],
     };
   }
   if (command === "pip") {
@@ -1045,9 +1341,14 @@ const packageManagerPolicy = (
       const canonical = "--only-binary=:all:";
       return {
         kind: "scripts-disabled",
-        arguments: unambiguous.includes(canonical)
-          ? arguments_
-          : [...arguments_, canonical],
+        arguments: [
+          ...(
+            unambiguous.includes(canonical)
+              ? arguments_
+              : [...arguments_, canonical]
+          ),
+          ...(hasEnabledOption(unambiguous, "--no-config") ? [] : ["--no-config"]),
+        ],
       };
     }
   }
@@ -1246,11 +1547,19 @@ const authorizeExecutableBehavior = (
   task: AgentTask,
   harness: AuthorizationBounds & AuthorizationEnvironment,
   deniedCapability: string,
+  actionOrigins: ReadonlyArray<string> = [],
 ): Effect.Effect<ReadonlyArray<string>, DeniedAgentCapabilityError> =>
   Effect.gen(function*() {
-    const authorizedArguments = yield* authorizePackageManagerInvocation(
+    const scriptAuthorizedArguments = yield* authorizePackageManagerInvocation(
       executable,
       arguments_,
+    );
+    const authorizedArguments = yield* authorizeRegistryInvocation(
+      executable,
+      scriptAuthorizedArguments,
+      task.allowedOrigins,
+      harness.allowedOrigins,
+      actionOrigins,
     );
     if (isNestedCommandLauncher(executable)) {
       // The descendant command of a launcher is not derivable from argv, so
@@ -1364,6 +1673,7 @@ const resolveAuthorizedAction = (
       task,
       harness,
       "executable-behavior",
+      action.origins,
     );
     const npmArguments = npmDependencyArgumentIndexes(executable, authorizedArguments);
     const authorizedWorkingDirectory = action.workingDirectory

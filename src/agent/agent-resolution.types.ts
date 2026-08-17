@@ -112,6 +112,10 @@ export interface ControlledProcessInput {
     readonly name: string;
     readonly value: string;
   }> | undefined;
+  readonly environmentUnset?: ReadonlyArray<string> | undefined;
+  readonly environmentUnsetPrefixes?: ReadonlyArray<string> | undefined;
+  readonly packageRegistryOrigin?: string | undefined;
+  readonly packageRegistryScopes?: ReadonlyArray<string> | undefined;
   readonly standardInput?: Uint8Array | undefined;
   readonly timeoutMilliseconds: number;
   readonly maximumInputBytes: number;
