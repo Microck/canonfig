@@ -231,6 +231,44 @@ describe("agent resolution", () => {
       "--no-block",
       "poweroff.target",
     ], ["reboot"]],
+    ["systemctl starts target with option value named reboot", "systemctl", [
+      "--host",
+      "reboot",
+      "start",
+      "halt.target",
+    ], ["reboot"]],
+    ["systemctl enables power-state target now", "systemctl", [
+      "enable",
+      "--now",
+      "reboot.target",
+    ], ["reboot"]],
+    ["systemctl presets power-state target now", "systemctl", [
+      "--user",
+      "preset",
+      "/usr/lib/systemd/system/poweroff.target",
+      "--now",
+    ], ["reboot"]],
+    ["systemctl try-restarts power-state target", "systemctl", [
+      "try-restart",
+      "--job-mode=replace",
+      "rescue.target",
+    ], ["reboot"]],
+    ["systemctl reloads or restarts power-state target", "systemctl", [
+      "-Hreboot",
+      "reload-or-restart",
+      "--no-block",
+      "emergency.target",
+    ], ["reboot"]],
+    ["systemctl recognizes power-state target aliases", "systemctl", [
+      "start",
+      "runlevel0.target",
+      "runlevel1.target",
+      "runlevel6.target",
+      "shutdown.target",
+      "sigpwr.target",
+      "ctrl-alt-del.target",
+      "soft-reboot.target",
+    ], ["reboot"]],
     ["systemctl restarts rescue target", "systemctl", [
       "restart",
       "/etc/systemd/system/rescue.target",
@@ -246,6 +284,16 @@ describe("agent resolution", () => {
       "--user",
       "isolate",
       "runlevel6.target",
+    ], ["reboot"]],
+    ["nested systemctl enable-now command", "sudo", [
+      "-u",
+      "root",
+      "/usr/bin/systemctl",
+      "--host",
+      "reboot",
+      "enable",
+      "--now",
+      "reboot.target",
     ], ["reboot"]],
     ["service restart subcommand", "service", ["agent", "restart"], ["restart"]],
     ["sudo reboot wrapper", "sudo", ["-u", "root", "reboot"], ["reboot"]],
@@ -264,10 +312,24 @@ describe("agent resolution", () => {
   it.each([
     ["reboot target service", ["restart", "reboot.service"]],
     ["reboot-like service", ["start", "poweroff.service"]],
+    ["service with reboot substring", ["start", "my-reboot.target.service"]],
+    ["bare reboot service name", ["start", "reboot"]],
     ["ordinary target", ["restart", "default.target"]],
     ["status of power-state target", ["status", "reboot.target"]],
+    ["is-enabled of power-state target", ["is-enabled", "reboot.target"]],
+    ["cat of power-state target", ["cat", "poweroff.target"]],
+    ["show of power-state target", ["show", "halt.target"]],
+    ["disable now of power-state target", ["disable", "--now", "reboot.target"]],
+    ["mask of power-state target", ["mask", "emergency.target"]],
     ["unrelated systemctl operation", ["enable", "reboot.target"]],
+    ["enable without now", ["enable", "poweroff.target"]],
+    ["preset without now", ["preset", "reboot.target"]],
     ["restart argument after separator", ["restart", "--", "reboot.service"]],
+    ["option value hides power-state-looking target", [
+      "--machine=reboot.target",
+      "status",
+      "default.target",
+    ]],
   ] as const)(
     "does not derive reboot for ordinary systemctl operation: %s",
     (_name, arguments_) => {
@@ -277,9 +339,52 @@ describe("agent resolution", () => {
   );
 
   it.each([
+    ["unknown long option", ["--unknown", "reboot", "status", "default.target"]],
+    ["unknown short option", ["-x", "reboot.target", "status", "default.target"]],
+    ["missing option value", ["--host"]],
+    ["invalid value on flag", ["--now=reboot", "status", "default.target"]],
+  ] as const)(
+    "fails closed for malformed systemctl grammar: %s",
+    (_name, arguments_) => {
+      const capabilities = derivedCapabilities("systemctl", arguments_);
+      expect(capabilities.has("reboot")).toBe(true);
+      expect(capabilities.has("restart")).toBe(true);
+    },
+  );
+
+  it("denies malformed systemctl grammar even when capabilities are allowed", async () => {
+    const systemctl = join(directory, "systemctl");
+    const allowedExecutables = [systemctl, join(directory, "verify")];
+    await writeFile(systemctl, "#!/bin/sh\nexit 0\n");
+    await chmod(systemctl, 0o755);
+    await expect(Effect.runPromise(authorizeAction(
+      action({
+        executable: systemctl,
+        arguments: ["--unknown", "reboot", "status", "default.target"],
+      }),
+      task(directory, { allowedExecutables, forbidden: [] }),
+      {
+        ...harness(directory, allowedExecutables),
+        allowedCapabilities: ["reboot", "restart"],
+      },
+    ).pipe(Effect.flip))).resolves.toMatchObject({
+      capability: "systemctl-grammar",
+    });
+  });
+
+  it.each([
     ["isolate reboot target", ["isolate", "reboot.target"]],
     ["start poweroff target", ["start", "poweroff.target"]],
     ["restart emergency target", ["restart", "emergency.target"]],
+    ["try-restart kexec target", ["try-restart", "kexec.target"]],
+    ["reload-or-restart rescue target", ["reload-or-restart", "rescue.target"]],
+    ["try-reload-or-restart halt target", [
+      "try-reload-or-restart",
+      "--no-block",
+      "halt.target",
+    ]],
+    ["enable now reboot target", ["enable", "--now", "reboot.target"]],
+    ["preset now poweroff target", ["preset", "poweroff.target", "--now"]],
   ] as const)(
     "allows and denies derived systemctl reboot capability: %s",
     async (_name, arguments_) => {
@@ -314,6 +419,15 @@ describe("agent resolution", () => {
     ["isolate reboot target", ["isolate", "reboot.target"]],
     ["start poweroff target", ["start", "poweroff.target"]],
     ["restart emergency target", ["restart", "emergency.target"]],
+    ["try-restart kexec target", ["try-restart", "kexec.target"]],
+    ["reload-or-restart rescue target", ["reload-or-restart", "rescue.target"]],
+    ["try-reload-or-restart halt target", [
+      "try-reload-or-restart",
+      "--no-block",
+      "halt.target",
+    ]],
+    ["enable now reboot target", ["enable", "--now", "reboot.target"]],
+    ["preset now poweroff target", ["preset", "poweroff.target", "--now"]],
   ] as const)(
     "does not spawn denied systemctl reboot operation: %s",
     async (_name, arguments_) => {

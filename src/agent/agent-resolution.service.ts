@@ -463,6 +463,7 @@ const systemctlPowerStateTargets = new Set([
   "poweroff.target",
   "reboot.target",
   "rescue.target",
+  "soft-reboot.target",
   // systemd's SysV runlevel aliases for the power-state targets above.
   "runlevel0.target",
   "runlevel1.target",
@@ -470,7 +471,15 @@ const systemctlPowerStateTargets = new Set([
   "shutdown.target",
   "sigpwr.target",
 ]);
-const systemctlUnitOperations = new Set(["isolate", "restart", "start"]);
+const systemctlUnitOperations = new Set([
+  "isolate",
+  "reload-or-restart",
+  "restart",
+  "start",
+  "try-reload-or-restart",
+  "try-restart",
+]);
+const systemctlEnableOperations = new Set(["enable", "preset"]);
 const commandWrappers = new Set([
   "cmd",
   "doas",
@@ -2098,29 +2107,84 @@ const normalizedCommand = (value: string): string =>
     .toLowerCase()
     .replace(/\.(?:bat|cmd|com|exe|ps1)$/u, "");
 
-const optionTakesValue = (argument: string): boolean => {
-  const option = argument.split(/[=:]/u, 1)[0]!.toLowerCase();
-  return new Set([
-    "-d",
-    "-g",
-    "-h",
-    "-m",
-    "-p",
-    "-t",
-    "-u",
-    "--chdir",
-    "--directory",
-    "--group",
-    "--host",
-    "--machine",
-    "--property",
-    "--root",
-    "--setenv",
-    "--state",
-    "--type",
-    "--job-mode",
-  ]).has(option);
+type OptionArity = 0 | 1;
+
+const systemctlGlobalOptionArity = new Map<string, OptionArity>([
+  ["--all", 0],
+  ["--boot-loader-entry", 1],
+  ["--boot-loader-menu", 1],
+  ["--check-inhibitors", 1],
+  ["--dry-run", 0],
+  ["--failed", 0],
+  ["--firmware-setup", 0],
+  ["--force", 0],
+  ["--global", 0],
+  ["--help", 0],
+  ["--host", 1],
+  ["--job-mode", 1],
+  ["--kill-who", 1],
+  ["--legend", 1],
+  ["--machine", 1],
+  ["--marked", 0],
+  ["--mkdir", 0],
+  ["--no-ask-password", 0],
+  ["--no-block", 0],
+  ["--no-pager", 0],
+  ["--no-reload", 0],
+  ["--no-wall", 0],
+  ["--now", 0],
+  ["--output", 1],
+  ["--plain", 0],
+  ["--preset-mode", 1],
+  ["--property", 1],
+  ["--quiet", 0],
+  ["--read-only", 0],
+  ["--recursive", 0],
+  ["--reverse", 0],
+  ["--root", 1],
+  ["--runtime", 0],
+  ["--show-transaction", 0],
+  ["--show-types", 0],
+  ["--signal", 1],
+  ["--state", 1],
+  ["--system", 0],
+  ["--timestamp", 1],
+  ["--type", 1],
+  ["--user", 0],
+  ["--value", 0],
+  ["--version", 0],
+  ["--wait", 0],
+  ["--what", 1],
+  ["--with-dependencies", 0],
+  ["-H", 1],
+  ["-M", 1],
+  ["-P", 1],
+  ["-T", 0],
+  ["-a", 0],
+  ["-f", 0],
+  ["-h", 0],
+  ["-i", 0],
+  ["-l", 0],
+  ["-n", 1],
+  ["-o", 1],
+  ["-p", 1],
+  ["-q", 0],
+  ["-r", 0],
+  ["-s", 1],
+  ["-t", 1],
+]);
+
+// systemctl accepts the same options before and after a command. Keeping the
+// option grammar explicit means an option value such as "reboot" can never
+// become a guessed command or unit.
+const systemctlOptionArity = systemctlGlobalOptionArity;
+
+const normalizedSystemctlTarget = (value: string): string => {
+  return normalizedCommand(value);
 };
+
+const isSystemctlPowerStateTarget = (value: string): boolean =>
+  systemctlPowerStateTargets.has(normalizedSystemctlTarget(value));
 
 const wrapperOptionTakesValue = (argument: string): boolean =>
   new Set([
@@ -2140,9 +2204,110 @@ const wrapperOptionTakesValue = (argument: string): boolean =>
     "--user",
   ]).has(argument.split(/[=:]/u, 1)[0]!.toLowerCase());
 
+const genericOptionTakesValue = (argument: string): boolean =>
+  new Set([
+    "-d",
+    "-g",
+    "-h",
+    "-m",
+    "-p",
+    "-t",
+    "-u",
+    "--chdir",
+    "--directory",
+    "--group",
+    "--host",
+    "--machine",
+    "--property",
+    "--root",
+    "--setenv",
+    "--state",
+    "--type",
+    "--job-mode",
+  ]).has(argument.split(/[=:]/u, 1)[0]!.toLowerCase());
+
+interface ParsedSystemctlArguments {
+  readonly valid: boolean;
+  readonly positionals: ReadonlyArray<{ readonly command: string; readonly index: number }>;
+  readonly options: ReadonlySet<string>;
+}
+
+const invalidSystemctlArguments = (): ParsedSystemctlArguments => ({
+  valid: false,
+  positionals: [],
+  options: new Set(),
+});
+
+const parseSystemctlArguments = (
+  arguments_: ReadonlyArray<string>,
+): ParsedSystemctlArguments => {
+  const positionals: Array<{ readonly command: string; readonly index: number }> = [];
+  const options = new Set<string>();
+  let endOfOptions = false;
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    if (endOfOptions) {
+      positionals.push({ command: normalizedCommand(argument), index });
+      continue;
+    }
+    if (argument === "--") {
+      endOfOptions = true;
+      continue;
+    }
+    if (!argument.startsWith("-") || argument === "-") {
+      positionals.push({ command: normalizedCommand(argument), index });
+      continue;
+    }
+
+    if (argument.startsWith("--")) {
+      const match = /^([^=]+)(?:=(.*))?$/u.exec(argument);
+      const option = match?.[1]?.toLowerCase();
+      const arity = option === undefined
+        ? undefined
+        : systemctlOptionArity.get(option);
+      if (option === undefined || arity === undefined) {
+        return invalidSystemctlArguments();
+      }
+      const inlineValue = match?.[2];
+      if (arity === 1 && inlineValue === undefined) {
+        if (arguments_[index + 1] === undefined) return invalidSystemctlArguments();
+        index += 1;
+      } else if (arity === 0 && inlineValue !== undefined) {
+        return invalidSystemctlArguments();
+      }
+      options.add(option);
+      continue;
+    }
+
+    const shortOptions = argument.slice(1);
+    for (let shortIndex = 0; shortIndex < shortOptions.length; shortIndex += 1) {
+      const option = `-${shortOptions[shortIndex]!}`;
+      const arity = systemctlOptionArity.get(option);
+      if (arity === undefined) return invalidSystemctlArguments();
+      if (arity === 1) {
+        const remainder = shortOptions.slice(shortIndex + 1);
+        if (remainder.length === 0) {
+          if (arguments_[index + 1] === undefined) return invalidSystemctlArguments();
+          index += 1;
+        }
+        shortIndex = shortOptions.length;
+      }
+      options.add(option);
+    }
+  }
+  return { valid: true, positionals, options };
+};
+
+const systemctlArgumentsValid = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+): boolean =>
+  normalizedCommand(executable) !== "systemctl"
+  || parseSystemctlArguments(arguments_).valid;
+
 const commandArguments = (
   arguments_: ReadonlyArray<string>,
-  takesValue: (argument: string) => boolean = optionTakesValue,
+  takesValue: (argument: string) => boolean = genericOptionTakesValue,
 ): ReadonlyArray<{ readonly command: string; readonly index: number }> => {
   const positional: Array<{ readonly command: string; readonly index: number }> = [];
   let endOfOptions = false;
@@ -2211,23 +2376,40 @@ const structuralRestartCapabilities = (
   if (restartExecutables.has(command)) return new Set(["restart"]);
   if (!rebootCommandExecutables.has(command)) return new Set();
 
-  const positional = commandArguments(arguments_);
-  const subcommand = command === "service" || command === "rc-service"
-    ? positional.at(-1)?.command
-    : positional[0]?.command;
-  if (subcommand === undefined) return new Set();
   if (command === "systemctl") {
+    const parsed = parseSystemctlArguments(arguments_);
+    if (!parsed.valid || parsed.positionals.length === 0) {
+      // An unrecognized option makes the command grammar ambiguous. Treat it
+      // as unsafe rather than allowing an option value to hide a power action.
+      return parsed.valid ? new Set() : new Set(["restart", "reboot"]);
+    }
+    const subcommand = parsed.positionals[0]!.command;
     if (systemctlPowerStateVerbs.has(subcommand)) {
       return new Set(["reboot"]);
     }
     if (
       systemctlUnitOperations.has(subcommand)
-      && positional.slice(1).some((unit) => systemctlPowerStateTargets.has(unit.command))
+      && parsed.positionals.slice(1).some((unit) =>
+        isSystemctlPowerStateTarget(arguments_[unit.index]!))
+    ) {
+      return new Set(["reboot"]);
+    }
+    if (
+      systemctlEnableOperations.has(subcommand)
+      && parsed.options.has("--now")
+      && parsed.positionals.slice(1).some((unit) =>
+        isSystemctlPowerStateTarget(arguments_[unit.index]!))
     ) {
       return new Set(["reboot"]);
     }
     return subcommand === "restart" ? new Set(["restart"]) : new Set();
   }
+
+  const positional = commandArguments(arguments_);
+  const subcommand = command === "service" || command === "rc-service"
+    ? positional.at(-1)?.command
+    : positional[0]?.command;
+  if (subcommand === undefined) return new Set();
   if (subcommand === "reboot" || subcommand === "shutdown"
     || subcommand === "halt" || subcommand === "poweroff"
     || (command === "init" || command === "telinit")
@@ -2427,6 +2609,12 @@ const resolveAuthorizedAction = (
       return yield* new DeniedAgentCapabilityError({
         capability: "executable",
         value: action.executable,
+      });
+    }
+    if (!systemctlArgumentsValid(executable, action.arguments)) {
+      return yield* new DeniedAgentCapabilityError({
+        capability: "systemctl-grammar",
+        value: executable,
       });
     }
     const capabilities = new Set([
