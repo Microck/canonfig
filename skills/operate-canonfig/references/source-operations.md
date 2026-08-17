@@ -23,12 +23,20 @@ Publish only the reviewed proposal:
 
 ```bash
 canonfig source publish --proposal package.json --profile workstation --name Workstation --reviewer operator
+canonfig source publish --profile-file ~/.canonfig/source/profile.jsonc --proposal package.json --reviewer operator
 canonfig profile list
 canonfig profile show revision-one
 ```
 
-`profile show` takes a Profile Revision ID. Publication signs an immutable,
-content-addressed revision; it does not mutate an existing revision.
+The `--profile-file` form decodes the production JSONC profile schema and is
+authoritative for profile metadata, resources, policies, dependencies, and the
+schedule default. Accepted discovery resources are merged only when they do
+not share an authored id; discovery review decisions remain enforced.
+Duplicate ids, overlapping targets, malformed fields, and unknown fields are
+rejected before signing. `profile show` takes a Profile Revision ID.
+Publication signs an immutable, content-addressed revision; it does not mutate
+an existing revision. Credentials are secure-store references only; never put
+credential values in a profile file or command argument.
 
 ## Invitations and groups
 

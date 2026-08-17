@@ -24,6 +24,10 @@ import {
   listRevisions,
 } from "../enrollment/follower-client.ts";
 import { startSourceServer } from "../enrollment/source-server.ts";
+import {
+  decodeMachineProfileJsonc,
+  type MachineProfile,
+} from "../domain/profile.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { linuxMachineStateLayer } from "../machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../machine/macos.layer.ts";
@@ -32,7 +36,10 @@ import { ProfileCatalog } from "../profile/profile-catalog.service.ts";
 import {
   PublicationSigningError,
 } from "../profile/profile-catalog.errors.ts";
-import { scanDiscovery } from "../profile/discovery.ts";
+import {
+  scanDiscovery,
+  type DiscoveryScanResult,
+} from "../profile/discovery.ts";
 import {
   acceptPublicationProposal,
   makePublication,
@@ -137,6 +144,36 @@ const commandFailure = (error: TaggedRuntimeError): CliCommandFailure =>
     message: error instanceof Error ? error.message : String(error),
   });
 
+const emptyDiscoveryProposal: DiscoveryScanResult = {
+  resources: [],
+  tools: [],
+  skills: [],
+  evidence: [],
+  agentTasks: [],
+  scannedPaths: [],
+};
+
+const readAuthoredProfile = (
+  path: string,
+): Effect.Effect<MachineProfile, CliCommandFailure> =>
+  Effect.tryPromise({
+    try: () => readFile(path, "utf8"),
+    catch: () => new CliCommandFailure({
+      category: "usage-or-configuration",
+      message: "authored profile file could not be read",
+    }),
+  }).pipe(
+    Effect.flatMap((text) =>
+      Effect.try({
+        try: () => decodeMachineProfileJsonc(text),
+        catch: () => new CliCommandFailure({
+          category: "usage-or-configuration",
+          message: "authored profile file is malformed or invalid",
+        }),
+      })
+    ),
+  );
+
 const mapFailure = <Success, Failure extends TaggedRuntimeError, Requirements>(
   effect: Effect.Effect<Success, Failure, Requirements>,
 ): Effect.Effect<Success, CliCommandFailure, Requirements> =>
@@ -159,13 +196,56 @@ const sourceCommandsLayer: Layer.Layer<
       scan: (input) => mapFailure(profiles.scan(input)).pipe(Effect.map(payload)),
       publish: (input) =>
         Effect.gen(function*() {
-          const proposal = yield* mapFailure(profiles.scan({
-            files: [{ path: input.proposalPath }],
-          }));
+          const authored = input.profilePath === undefined
+            ? undefined
+            : yield* readAuthoredProfile(input.profilePath);
+          const proposal = input.proposalPath === undefined
+            ? emptyDiscoveryProposal
+            : yield* mapFailure(profiles.scan({
+              files: [{ path: input.proposalPath }],
+            }));
+          if (authored === undefined && (input.profile === undefined || input.name === undefined)) {
+            return yield* new CliCommandFailure({
+              category: "usage-or-configuration",
+              message: "source publish requires profile metadata or an authored profile file",
+            });
+          }
+          if (
+            authored !== undefined
+            && input.profile !== undefined
+            && input.profile !== authored.id
+          ) {
+            return yield* new CliCommandFailure({
+              category: "usage-or-configuration",
+              message: "authored profile id conflicts with --profile",
+            });
+          }
+          if (
+            authored !== undefined
+            && input.name !== undefined
+            && input.name !== authored.name
+          ) {
+            return yield* new CliCommandFailure({
+              category: "usage-or-configuration",
+              message: "authored profile name conflicts with --name",
+            });
+          }
+          const profile = authored === undefined
+            ? {
+              id: input.profile!,
+              name: input.name!,
+            }
+            : {
+              id: authored.id,
+              name: authored.name,
+              groups: authored.groups,
+              resources: authored.resources,
+              scheduleDefault: authored.scheduleDefault,
+            };
           const now = new Date().toISOString();
           const revision = yield* mapFailure(profiles.publish({
             proposal,
-            profile: { id: input.profile, name: input.name },
+            profile,
             review: acceptPublicationProposal(proposal, input.reviewer, now),
             publishedAt: now,
           }));

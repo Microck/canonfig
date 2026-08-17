@@ -51,6 +51,7 @@ Source:
   source init
   source scan --file <path> [--file <path>...]
   source publish --proposal <path> --profile <id> --name <name> --reviewer <name>
+  source publish --profile-file <profile.jsonc> [--proposal <path>] --reviewer <name>
   source serve [--host <127.0.0.1|::1>] [--port <port>]
   source invite --endpoint <https-url> [--expires <duration>] [--group <name>...]
   source revoke <follower-id>
@@ -91,9 +92,10 @@ export type CliCommand =
   | { readonly _tag: "SourceScan"; readonly files: ReadonlyArray<{ readonly path: string }> }
   | {
     readonly _tag: "SourcePublish";
-    readonly proposalPath: string;
-    readonly profile: typeof ProfileId.Type;
-    readonly name: string;
+    readonly proposalPath?: string | undefined;
+    readonly profile?: typeof ProfileId.Type | undefined;
+    readonly name?: string | undefined;
+    readonly profilePath?: string | undefined;
     readonly reviewer: string;
   }
   | {
@@ -356,15 +358,28 @@ const evaluateCommand = (
       if (action === "publish") {
         const options = parseOptions(
           rest,
-          new Set(["--proposal", "--profile", "--name", "--reviewer"]),
+          new Set(["--proposal", "--profile", "--name", "--profile-file", "--reviewer"]),
           new Set(),
         );
         if (options.positionals.length > 0) return invalid("source publish accepts only named options");
+        const proposalPath = one(options, "--proposal");
+        const profilePath = one(options, "--profile-file");
+        const profileValue = one(options, "--profile");
+        const name = one(options, "--name");
+        if (proposalPath === undefined && profilePath === undefined) {
+          return invalid("source publish requires --proposal or --profile-file");
+        }
+        if (profilePath === undefined && (profileValue === undefined || name === undefined)) {
+          return invalid("source publish requires --profile and --name without --profile-file");
+        }
         return command({
           _tag: "SourcePublish",
-          proposalPath: one(options, "--proposal", true)!,
-          profile: decodeOption(Schema.decodeUnknownOption(ProfileId), one(options, "--profile", true)!, "profile id"),
-          name: one(options, "--name", true)!,
+          proposalPath,
+          profile: profileValue === undefined
+            ? undefined
+            : decodeOption(Schema.decodeUnknownOption(ProfileId), profileValue, "profile id"),
+          name,
+          profilePath,
           reviewer: one(options, "--reviewer", true)!,
         }, format);
       }
@@ -740,6 +755,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         proposalPath: value.proposalPath,
         profile: value.profile,
         name: value.name,
+        profilePath: value.profilePath,
         reviewer: value.reviewer,
       });
     case "SourceServe":

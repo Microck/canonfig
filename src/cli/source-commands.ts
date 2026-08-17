@@ -33,9 +33,14 @@ export interface SourceScanInput {
 }
 
 export interface SourcePublishInput {
-  readonly proposalPath: string;
-  readonly profile: ProfileId;
-  readonly name: string;
+  readonly proposalPath?: string | undefined;
+  /**
+   * Legacy metadata inputs remain supported when publishing discovery-only
+   * proposals. An authored profile file is authoritative for these fields.
+   */
+  readonly profile?: ProfileId | undefined;
+  readonly name?: string | undefined;
+  readonly profilePath?: string | undefined;
   readonly reviewer: string;
 }
 

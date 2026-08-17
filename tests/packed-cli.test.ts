@@ -25,11 +25,13 @@ const installRoot = resolve(packedRoot, "install");
 const fixtureBin = resolve(packedRoot, "bin");
 const sourceHome = resolve(packedRoot, "source-home");
 const followerHome = resolve(packedRoot, "follower-home");
+const authoredFollowerHome = resolve(packedRoot, "authored-follower-home");
 const tamperedFollowerHome = resolve(packedRoot, "tampered-follower-home");
 let executable = "";
 let sourceProcess: ChildProcessWithoutNullStreams | undefined;
 let sourceEndpoint = "";
 let packedRevision = "";
+let authoredRevision = "";
 const PackResult = Schema.Array(Schema.Struct({ filename: Schema.String }));
 
 interface PackedInvocation {
@@ -137,6 +139,7 @@ beforeAll(async () => {
   mkdirSync(fixtureBin, { recursive: true });
   mkdirSync(sourceHome, { recursive: true });
   mkdirSync(followerHome, { recursive: true });
+  mkdirSync(authoredFollowerHome, { recursive: true });
   mkdirSync(tamperedFollowerHome, { recursive: true });
   const secretTool = resolve(fixtureBin, "secret-tool");
   writeFileSync(secretTool, `#!/bin/sh
@@ -231,6 +234,107 @@ esac
   ]);
   expect(published.status, published.stderr).toBe(0);
   packedRevision = JSON.parse(published.stdout).data.id;
+  const authoredProfilePath = resolve(sourceHome, "profile.jsonc");
+  writeFileSync(authoredProfilePath, `{
+    // Every resource kind is represented in this signed profile.
+    "id": "packed-authored",
+    "version": 2,
+    "name": "Packed authored profile",
+    "groups": [{ "name": "base" }],
+    "scheduleDefault": { "type": "daily", "at": "04:30", "timezone": "UTC" },
+    "resources": [
+      {
+        "id": "authored-file",
+        "kind": "file",
+        "target": "~/.canonfig-packed/authored.txt",
+        "groups": ["base"],
+        "spec": { "kind": "file", "content": "authored\\n" },
+        "verify": { "method": "digest", "digest": "${"a".repeat(64)}" }
+      },
+      {
+        "id": "authored-directory",
+        "kind": "directory",
+        "target": "~/.canonfig-packed/authored-directory",
+        "dependsOn": ["authored-file"],
+        "spec": {
+          "kind": "directory",
+          "files": [{ "path": "nested.txt", "content": "nested\\n" }]
+        },
+        "verify": { "method": "digest", "digest": "${"b".repeat(64)}" }
+      },
+      {
+        "id": "authored-config",
+        "kind": "config",
+        "target": "~/.canonfig-packed/authored.json",
+        "spec": {
+          "kind": "config",
+          "format": "json",
+          "keys": [{ "path": "authored.value", "value": true }]
+        },
+        "verify": { "method": "digest", "digest": "${"c".repeat(64)}" }
+      },
+      {
+        "id": "authored-credential",
+        "kind": "credential",
+        "target": "~/.canonfig-packed/credentials/authored",
+        "spec": { "kind": "credential", "reference": "secure-store://packed-authored" },
+        "verify": {
+          "method": "credential-present",
+          "reference": "secure-store://packed-authored"
+        }
+      },
+      {
+        "id": "authored-schedule",
+        "kind": "schedule",
+        "target": "packed-authored-schedule",
+        "spec": {
+          "kind": "schedule",
+          "calendar": { "type": "daily", "at": "04:30" },
+          "timezone": "UTC"
+        },
+        "verify": { "method": "command", "command": ["canonfig", "schedule", "status"] }
+      },
+      {
+        "id": "authored-skill",
+        "kind": "skill",
+        "target": "~/.canonfig-packed/skills/authored",
+        "spec": {
+          "kind": "skill",
+          "name": "authored",
+          "files": [{ "path": "SKILL.md", "content": "# Authored\\n" }]
+        },
+        "verify": { "method": "digest", "digest": "${"d".repeat(64)}" }
+      },
+      {
+        "id": "authored-tool",
+        "kind": "tool",
+        "target": "~/.canonfig-packed/bin/authored-tool",
+        "spec": {
+          "kind": "tool",
+          "toolId": "authored-tool",
+          "recipes": [{
+            "platform": "linux",
+            "method": "npm",
+            "package": "authored-tool",
+            "version": "1.0.0"
+          }]
+        },
+        "verify": { "method": "executable-present", "executable": "authored-tool" }
+      }
+    ]
+  }
+`);
+  const authored = invoke(sourceHome, [
+    "source",
+    "publish",
+    "--profile-file",
+    authoredProfilePath,
+    "--reviewer",
+    "packed-test",
+    "--json",
+  ]);
+  expect(authored.status, authored.stderr).toBe(0);
+  authoredRevision = JSON.parse(authored.stdout).data.id;
   const port = await unusedPort();
   const source = await startPackedSource(port);
   sourceEndpoint = source.endpoint;
@@ -278,6 +382,137 @@ describe("packed Canonfig executable", () => {
     expect(result.status).toBe(2);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("--plan and --apply are mutually exclusive");
+  });
+
+  it("publishes authored JSONC resources into a signed immutable revision", () => {
+    const shown = invoke(sourceHome, [
+      "profile",
+      "show",
+      authoredRevision,
+      "--json",
+    ]);
+    expect(shown.status, shown.stderr).toBe(0);
+    expect(shown.stderr).toBe("");
+    const envelope = JSON.parse(shown.stdout);
+    expect(envelope.data).toMatchObject({
+      id: authoredRevision,
+      profileId: "packed-authored",
+      signature: expect.stringMatching(/^ed25519:/u),
+      scheduleDefault: { type: "daily", at: "04:30", timezone: "UTC" },
+    });
+    expect(envelope.data.resources.map((resource: { id: string }) => resource.id))
+      .toEqual([
+        "authored-config",
+        "authored-credential",
+        "authored-directory",
+        "authored-file",
+        "authored-schedule",
+        "authored-skill",
+        "authored-tool",
+      ]);
+    expect(JSON.stringify(envelope)).not.toContain("credentialValue");
+    expect(JSON.stringify(envelope)).not.toContain("packed-authored-secret");
+  });
+
+  it("rejects malformed, duplicate, conflicting, and secret-bearing profile input without leakage", () => {
+    const cases = [
+      ["malformed", `{"id": "bad", "name": `],
+      ["duplicate", `{
+        "id": "bad-duplicate",
+        "name": "Bad duplicate",
+        "resources": [
+          {
+            "id": "same",
+            "kind": "file",
+            "target": "~/.canonfig-packed/a",
+            "spec": { "kind": "file", "content": "a" },
+            "verify": { "method": "digest", "digest": "${"a".repeat(64)}" }
+          },
+          {
+            "id": "same",
+            "kind": "file",
+            "target": "~/.canonfig-packed/b",
+            "spec": { "kind": "file", "content": "b" },
+            "verify": { "method": "digest", "digest": "${"b".repeat(64)}" }
+          }
+        ]
+      }`],
+      ["conflicting", `{
+        "id": "bad-conflict",
+        "name": "Bad conflict",
+        "resources": [
+          {
+            "id": "one",
+            "kind": "file",
+            "target": "~/.canonfig-packed/conflict",
+            "spec": { "kind": "file", "content": "a" },
+            "verify": { "method": "digest", "digest": "${"a".repeat(64)}" }
+          },
+          {
+            "id": "two",
+            "kind": "file",
+            "target": "~/.canonfig-packed/./conflict",
+            "spec": { "kind": "file", "content": "b" },
+            "verify": { "method": "digest", "digest": "${"b".repeat(64)}" }
+          }
+        ]
+      }`],
+      ["secret", `{
+        "id": "bad-secret",
+        "name": "Bad secret",
+        "credentialValue": "packed-profile-secret-must-not-leak"
+      }`],
+    ] as const;
+    for (const [name, text] of cases) {
+      const path = resolve(sourceHome, `${name}.jsonc`);
+      writeFileSync(path, text);
+      const result = invoke(sourceHome, [
+        "source",
+        "publish",
+        "--profile-file",
+        path,
+        "--reviewer",
+        "packed-test",
+        "--json",
+      ]);
+      expect(result.status).toBe(2);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain("packed-profile-secret-must-not-leak");
+      expect(result.stderr).toContain("authored profile file");
+    }
+  });
+
+  it("exposes the authored revision through signed follower transport", () => {
+    const invitationResult = invoke(sourceHome, [
+      "source",
+      "invite",
+      "--endpoint",
+      sourceEndpoint,
+      "--expires",
+      "5m",
+      "--json",
+    ]);
+    expect(invitationResult.status, invitationResult.stderr).toBe(0);
+    const enrolled = invoke(authoredFollowerHome, [
+      "follower",
+      "enroll",
+      JSON.parse(invitationResult.stdout).data.invite,
+      "--name",
+      "packed-authored-follower",
+      "--profile",
+      "packed-authored",
+      "--json",
+    ]);
+    expect(enrolled.status, enrolled.stderr).toBe(0);
+    const plan = invoke(authoredFollowerHome, [
+      "sync",
+      "--plan",
+      "--json",
+    ]);
+    expect(plan.status, plan.stderr).toBe(0);
+    expect(JSON.parse(plan.stdout).data).toMatchObject({
+      revision: authoredRevision,
+    });
   });
 
   it("runs doctor with bounded noninteractive probes and redaction", () => {

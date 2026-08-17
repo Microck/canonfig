@@ -132,6 +132,14 @@ describe("typed CLI command boundary", () => {
       "--reviewer",
       "operator",
     ], "source.publish"],
+    [[
+      "source",
+      "publish",
+      "--profile-file",
+      "profile.jsonc",
+      "--reviewer",
+      "operator",
+    ], "source.publish"],
     [["source", "serve"], "source.serve"],
     [[
       "source",
@@ -256,6 +264,24 @@ describe("typed CLI command boundary", () => {
       executableAuthorizations: [{ executable: "npm", behavior: "leaf" }],
       allowedOrigins: ["https://registry.npmjs.org"],
       allowedCapabilities: ["restart"],
+    });
+  });
+
+  it("carries authored profile input separately from discovery review input", async () => {
+    const result = await execute([
+      "source",
+      "publish",
+      "--proposal",
+      "proposal.json",
+      "--profile-file",
+      "profile.jsonc",
+      "--reviewer",
+      "operator",
+    ]);
+    expect(result.invocations[0]?.input).toEqual({
+      proposalPath: "proposal.json",
+      profilePath: "profile.jsonc",
+      reviewer: "operator",
     });
   });
 

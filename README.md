@@ -92,10 +92,16 @@ intentionally:
 ```bash
 canonfig source scan --file AGENTS.md --file package.json
 canonfig source publish --proposal package.json --profile workstation --name Workstation --reviewer operator
+canonfig source publish --profile-file ~/.canonfig/source/profile.jsonc --proposal package.json --reviewer operator
 canonfig profile list
 ```
 
-Discovery and agent output are proposals. They never publish silently.
+The JSONC `--profile-file` form is authoritative for the profile id, name,
+groups, resources, policies, dependencies, and schedule default. Accepted
+discovery proposals are merged for resource ids not authored in that file;
+unreviewed discovery remains blocked, and duplicate or conflicting resource
+targets fail closed. Credentials are references only and are never copied from
+the Source Machine.
 
 ### 2. Serve and invite
 
