@@ -1057,11 +1057,38 @@ const pipRequirementOptionName = (
   argument: string,
 ): boolean => argument.startsWith("-");
 
-const pipRequirementFileReference = (value: string): boolean =>
-  value.length > 0
-  && value !== "-"
-  && !value.startsWith("//")
-  && !/^[A-Za-z][A-Za-z0-9+.-]*:(?![\\/])/u.test(value);
+/**
+ * pip accepts URLs and VCS/direct references for requirement files. Treating
+ * one of those as a filesystem path before authorization would let the
+ * lexical shadow path pass the path allowlist while pip fetched the original
+ * remote reference. Requirement includes therefore use a deliberately
+ * narrower grammar than general command paths.
+ */
+type PipRequirementFileReferenceKind = "local" | "remote";
+
+const classifyPipRequirementFileReference = (
+  value: string,
+): PipRequirementFileReferenceKind => {
+  if (
+    value.length === 0
+    || value === "-"
+    || value.trim() !== value
+    || value.includes("\u0000")
+    || value.startsWith("-")
+    || value.startsWith("~")
+    || value.startsWith("//")
+    || value.startsWith("\\")
+    || value.includes("@")
+    || /%[0-9A-Fa-f]{2}/u.test(value)
+  ) return "remote";
+  // A drive-rooted Windows path is local syntax; every other scheme-like
+  // colon, including drive-relative paths, is remote/ambiguous syntax.
+  if (/^[A-Za-z]:[\\/](?![\\/])/u.test(value)) {
+    return value.slice(2).includes(":") ? "remote" : "local";
+  }
+  if (value.includes(":")) return "remote";
+  return "local";
+};
 
 const pipRequirementTokens = (line: string): ReadonlyArray<string> | undefined => {
   const tokens: Array<string> = [];
@@ -1249,27 +1276,33 @@ const readPipRequirementFile = async (
   }
 };
 
+interface PipRequirementAuthorization {
+  readonly arguments: ReadonlyArray<string>;
+  readonly files: ReadonlyArray<PipRequirementFileAuthorization>;
+}
+
 const validatePipRequirementInputs = (
   executable: string,
   arguments_: ReadonlyArray<string>,
   workingDirectory: string,
   task: Pick<AuthorizationBounds, "allowedPaths" | "allowedOrigins">,
   harness: Pick<AuthorizationBounds, "allowedPaths" | "allowedOrigins">,
-): Effect.Effect<
-  ReadonlyArray<PipRequirementFileAuthorization>,
-  DeniedAgentCapabilityError
-> =>
+): Effect.Effect<PipRequirementAuthorization, DeniedAgentCapabilityError> =>
   Effect.gen(function*() {
-    if (packageManagerName(executable) !== "pip") return [];
+    if (packageManagerName(executable) !== "pip") {
+      return { arguments: arguments_, files: [] };
+    }
+    const normalizedArguments = [...arguments_];
     const fileOptions: Array<{ readonly path: string }> = [];
     for (let index = 0; index < arguments_.length; index += 1) {
-      const option = pipRequirementOption(arguments_[index]!);
+      const optionIndex = index;
+      const option = pipRequirementOption(arguments_[optionIndex]!);
       if (option?.kind !== "include") continue;
-      const value = option.value ?? arguments_[index + 1];
+      const value = option.value ?? arguments_[optionIndex + 1];
       if (option.value === undefined) index += 1;
       if (
         value === undefined
-          || !pipRequirementFileReference(value)
+          || classifyPipRequirementFileReference(value) !== "local"
           || normalizeOrigin(value) !== undefined
       ) {
         return yield* new DeniedAgentCapabilityError({
@@ -1277,8 +1310,18 @@ const validatePipRequirementInputs = (
           value: executable,
         });
       }
+      const normalized = lexicalPath(value, workingDirectory);
+      if (option.value !== undefined) {
+        const separator = arguments_[optionIndex]!.indexOf("=");
+        const prefix = separator > 0
+          ? arguments_[optionIndex]!.slice(0, separator + 1)
+          : arguments_[optionIndex]!.slice(0, 2);
+        normalizedArguments[optionIndex] = `${prefix}${normalized}`;
+      } else {
+        normalizedArguments[optionIndex + 1] = normalized;
+      }
       fileOptions.push({
-        path: lexicalPath(value, workingDirectory),
+        path: normalized,
       });
     }
     const visited: Array<string> = [];
@@ -1365,7 +1408,7 @@ const validatePipRequirementInputs = (
                 value: file,
               });
             }
-            if (!pipRequirementFileReference(include)) {
+            if (classifyPipRequirementFileReference(include) !== "local") {
               return yield* new DeniedAgentCapabilityError({
                 capability: "package-manager-requirements",
                 value: file,
@@ -1410,7 +1453,7 @@ const validatePipRequirementInputs = (
         visited.pop();
       });
     for (const entry of fileOptions) yield* visit(entry.path, 0);
-    return authorizations;
+    return { arguments: normalizedArguments, files: authorizations };
   });
 
 const samePipRequirementAuthorization = (
@@ -1440,8 +1483,9 @@ export const revalidatePipRequirementFiles = (
     harness,
   ).pipe(
     Effect.flatMap((actual) =>
-      actual.length === expected.length
-        && actual.every((entry, index) => samePipRequirementAuthorization(entry, expected[index]!))
+      actual.files.length === expected.length
+        && actual.files.every((entry, index) =>
+          samePipRequirementAuthorization(entry, expected[index]!))
         ? Effect.void
         : Effect.fail(new DeniedAgentCapabilityError({
           capability: "package-manager-requirements",
@@ -2179,7 +2223,7 @@ const authorizeExecutableBehavior = (
   DeniedAgentCapabilityError
 > =>
   Effect.gen(function*() {
-    const pipRequirementFiles = yield* validatePipRequirementInputs(
+    const pipRequirementAuthorization = yield* validatePipRequirementInputs(
       executable,
       arguments_,
       workingDirectory,
@@ -2188,7 +2232,7 @@ const authorizeExecutableBehavior = (
     );
     const scriptAuthorizedArguments = yield* authorizePackageManagerInvocation(
       executable,
-      arguments_,
+      pipRequirementAuthorization.arguments,
     );
     const authorizedArguments = yield* authorizeRegistryInvocation(
       executable,
@@ -2232,7 +2276,10 @@ const authorizeExecutableBehavior = (
       });
     }
     if (invocation === undefined) {
-      return { arguments: authorizedArguments, pipRequirementFiles };
+      return {
+        arguments: authorizedArguments,
+        pipRequirementFiles: pipRequirementAuthorization.files,
+      };
     }
     const script = interpreterScript(invocation);
     if (script === undefined) {
@@ -2253,7 +2300,10 @@ const authorizeExecutableBehavior = (
       task.allowedPaths,
       harness.allowedPaths,
     );
-    return { arguments: authorizedArguments, pipRequirementFiles };
+    return {
+      arguments: authorizedArguments,
+      pipRequirementFiles: pipRequirementAuthorization.files,
+    };
   });
 
 const resolveAuthorizedAction = (

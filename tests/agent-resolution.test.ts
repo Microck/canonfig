@@ -959,6 +959,92 @@ describe("agent resolution", () => {
     ]);
   });
 
+  it.each([
+    ["short separate requirement", ["-r", "requirements.txt"], "-r"],
+    ["long separate requirement", ["--requirement", "requirements.txt"], "--requirement"],
+    ["short equals requirement", ["-r=requirements.txt"], "-r=requirements.txt"],
+    ["long equals requirement", ["--requirement=requirements.txt"], "--requirement=requirements.txt"],
+    ["short attached requirement", ["-rrequirements.txt"], "-r"],
+    ["short separate constraint", ["-c", "constraints.txt"], "-c"],
+    ["long equals constraint", ["--constraint=constraints.txt"], "--constraint=constraints.txt"],
+  ] as const)(
+    "normalizes local pip %s to the authorized argv identity",
+    async (_name, includeArguments, expectedOption) => {
+      const manager = join(directory, "pip");
+      const requirements = join(directory, "requirements.txt");
+      const constraints = join(directory, "constraints.txt");
+      const reference = includeArguments.some((argument) =>
+        argument === "-c" || argument.startsWith("-c=") || argument.startsWith("--constraint"))
+        ? constraints
+        : requirements;
+      await Promise.all([
+        writeFile(manager, "#!/bin/sh\nexit 0\n"),
+        writeFile(requirements, "requests\n"),
+        writeFile(constraints, "requests<3\n"),
+      ]);
+      await chmod(manager, 0o755);
+      const allowedExecutables = [manager, join(directory, "verify")];
+      const recording = new RecordingExecutor(proposal(action({
+        executable: manager,
+        arguments: ["install", ...includeArguments],
+        workingDirectory: directory,
+      })));
+      await Effect.runPromise(Effect.gen(function*() {
+        const service = yield* AgentResolution;
+        return yield* service.resolve({
+          policy: "agent-apply",
+          task: task(directory, { allowedExecutables }),
+          harness: harness(directory, allowedExecutables),
+        });
+      }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+      const expectedReference = includeArguments.length === 1
+        ? expectedOption.includes("=")
+          ? `${expectedOption.slice(0, expectedOption.indexOf("=") + 1)}${reference}`
+          : `${expectedOption}${reference}`
+        : reference;
+      expect(recording.invocations[1]?.arguments).toEqual([
+        "install",
+        ...(includeArguments.length === 1
+          ? [expectedReference]
+          : [expectedOption, expectedReference]),
+        "--only-binary=:all:",
+        "--isolated",
+        "--index-url=https://packages.example.test",
+      ]);
+    },
+  );
+
+  it("recursively normalizes local requirement continuations before execution", async () => {
+    const manager = join(directory, "pip");
+    const requirements = join(directory, "requirements.txt");
+    const nested = join(directory, "nested.txt");
+    const constraints = join(directory, "constraints.txt");
+    await Promise.all([
+      writeFile(manager, "#!/bin/sh\nexit 0\n"),
+      writeFile(requirements, "-r \\\nnested.txt\n"),
+      writeFile(nested, "-c \\\nconstraints.txt\n"),
+      writeFile(constraints, "requests<3\n"),
+    ]);
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const recording = new RecordingExecutor(proposal(action({
+      executable: manager,
+      arguments: ["install", "-r", "requirements.txt"],
+      workingDirectory: directory,
+    })));
+    await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, { allowedExecutables }),
+        harness: harness(directory, allowedExecutables),
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+    expect(recording.invocations[1]?.arguments[0]).toBe("install");
+    expect(recording.invocations[1]?.arguments[1]).toBe("-r");
+    expect(recording.invocations[1]?.arguments[2]).toBe(requirements);
+  });
+
   it("fails closed when an earlier action rewrites a pip requirement before the next spawn", async () => {
     const requirements = join(directory, "requirements.txt");
     const rewriter = join(directory, "rewriter");
@@ -1065,6 +1151,78 @@ describe("agent resolution", () => {
     expect(error).toMatchObject({ capability });
     await expect(access(join(directory, "pip-marker"))).rejects.toThrow();
   });
+
+  it.each([
+    ["https URL", ["-r", "https://evil.example.test/requirements.txt"], "package-manager-requirements"],
+    ["http URL", ["--requirement=http://evil.example.test/requirements.txt"], "package-manager-requirements"],
+    ["file URL", ["-c", "file:///tmp/constraints.txt"], "package-manager-requirements"],
+    ["git VCS URL", ["-r", "git+https://github.com/example/requirements.git"], "package-manager-requirements"],
+    ["scheme-relative URL", ["-c=//evil.example.test/constraints.txt"], "package-manager-requirements"],
+    ["UNC path", ["-r", "\\\\evil.example.test\\share\\requirements.txt"], "package-manager-requirements"],
+    ["encoded separator", ["-r", "nested%2Frequirements.txt"], "package-manager-requirements"],
+    ["encoded scheme", ["-c", "https%3A%2F%2Fevil.example.test/constraints.txt"], "package-manager-requirements"],
+    ["drive-relative URL-like path", ["-r", "C:requirements.txt"], "package-manager-requirements"],
+    ["drive-rooted path", ["-c", "C:\\requirements.txt"], "path"],
+  ] as const)(
+    "denies direct remote-like pip include %s before execution",
+    async (_name, includeArguments, capability) => {
+      const manager = join(directory, "pip");
+      const requirements = join(directory, "requirements.txt");
+      await Promise.all([
+        writeFile(manager, "#!/bin/sh\nprintf spawned > pip-marker\n"),
+        writeFile(requirements, "safe-package\n"),
+      ]);
+      await chmod(manager, 0o755);
+      const allowedExecutables = [manager, join(directory, "verify")];
+      const error = await Effect.runPromise(authorizeAction(
+        action({
+          executable: manager,
+          arguments: ["install", ...includeArguments],
+          workingDirectory: directory,
+        }),
+        task(directory, { allowedExecutables }),
+        harness(directory, allowedExecutables),
+      ).pipe(Effect.flip));
+      expect(error).toMatchObject({ capability });
+      await expect(access(join(directory, "pip-marker"))).rejects.toThrow();
+    },
+  );
+
+  it.each([
+    ["https URL", "-r https://evil.example.test/requirements.txt\n", "package-manager-requirements"],
+    ["http URL", "-c http://evil.example.test/constraints.txt\n", "package-manager-requirements"],
+    ["file URL", "-r file:///tmp/requirements.txt\n", "package-manager-requirements"],
+    ["git VCS URL", "-c git+https://github.com/example/constraints.git\n", "package-manager-requirements"],
+    ["scheme-relative URL", "-r //evil.example.test/requirements.txt\n", "package-manager-requirements"],
+    ["UNC path", "-c '\\\\evil.example.test\\share\\constraints.txt'\n", "package-manager-requirements"],
+    ["encoded separator", "-r nested%2Frequirements.txt\n", "package-manager-requirements"],
+    ["encoded scheme", "-c https%3A%2F%2Fevil.example.test/constraints.txt\n", "package-manager-requirements"],
+    ["drive-relative URL-like path", "-r C:requirements.txt\n", "package-manager-requirements"],
+    ["drive-rooted path", "-c 'C:\\requirements.txt'\n", "path"],
+  ] as const)(
+    "denies nested remote-like pip include %s before execution",
+    async (_name, content, capability) => {
+      const manager = join(directory, "pip");
+      const requirements = join(directory, "requirements.txt");
+      await Promise.all([
+        writeFile(manager, "#!/bin/sh\nprintf spawned > pip-marker\n"),
+        writeFile(requirements, content),
+      ]);
+      await chmod(manager, 0o755);
+      const allowedExecutables = [manager, join(directory, "verify")];
+      const error = await Effect.runPromise(authorizeAction(
+        action({
+          executable: manager,
+          arguments: ["install", "-r", requirements],
+          workingDirectory: directory,
+        }),
+        task(directory, { allowedExecutables }),
+        harness(directory, allowedExecutables),
+      ).pipe(Effect.flip));
+      expect(error).toMatchObject({ capability });
+      await expect(access(join(directory, "pip-marker"))).rejects.toThrow();
+    },
+  );
 
   it.each([
     ["nested cycle", "-r cycle-b.txt\n", "-r requirements.txt\n"],
