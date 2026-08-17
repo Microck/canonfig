@@ -204,6 +204,15 @@ with Human Action Required rather than silently enabling scripts. Git, local,
 and other source dependency specifications are likewise denied unless a
 separately bounded execution plan is reviewed and published.
 
+Registry-backed agent installs are pinned to the one HTTPS origin shared by
+the task and follower harness. npm-family, uv, and pip-compatible invocations
+replace explicit index or registry options with that canonical origin, while
+rejecting conflicting extra indexes or find-links, trusted hosts, proxy or
+certificate overrides, config-setting options, separator forms, and inherited
+package manager configuration or credential environment. uv and pip also disable
+configuration discovery; the controlled executor repeats the origin and
+environment boundary immediately before spawn.
+
 When no recipe is unambiguous, Canonfig creates an Agent Task containing the upstream URL and discovery evidence. The Configuration Agent may propose a recipe. The controlled executor applies it only under the configured agent policy, and verification must pass before the tool converges.
 
 ## Agent execution policy

@@ -586,13 +586,17 @@ type PackageManagerPolicy =
   | { readonly kind: "non-executing" }
   | { readonly kind: "denied" };
 
-const packageManagerName = (value: string): string =>
-  portableBasename(value)
+const packageManagerName = (value: string): string => {
+  const name = portableBasename(value)
     .toLowerCase()
     .replace(/\.(?:cmd|exe|bat|com|ps1)$/u, "")
     .replace(/^(npm)-cli\.js$/u, "$1")
     .replace(/^(pnpm)\.(?:cjs|js)$/u, "$1")
     .replace(/^(yarn)\.js$/u, "$1");
+  return /^pip(?:3(?:\.\d+(?:\.\d+)*)?|-3(?:\.\d+(?:\.\d+)*)?)?$/u.test(name)
+    ? "pip"
+    : name;
+};
 
 const argumentsBeforeSeparator = (
   arguments_: ReadonlyArray<string>,
@@ -608,7 +612,7 @@ const firstCommandIndex = (
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index]!;
     if (!argument.startsWith("-") || argument === "-") return index;
-    const option = argument.split("=", 1)[0]!;
+    const option = argument.split("=", 1)[0]!.toLowerCase();
     if (
       !argument.includes("=")
       && (
@@ -628,25 +632,51 @@ const hasEnabledOption = (
   option: string,
 ): boolean =>
   arguments_.some((argument) =>
-    argument === option || argument === `${option}=true`
+    argument.split("=", 1)[0]!.toLowerCase() === option.toLowerCase()
+      && (
+        !argument.includes("=")
+        || argument.slice(argument.indexOf("=") + 1).toLowerCase() === "true"
+      )
   );
 
 const hasDisabledOption = (
   arguments_: ReadonlyArray<string>,
   option: string,
-): boolean => arguments_.some((argument) =>
-  (
-    argument.startsWith(`${option}=`)
-    && argument !== `${option}=true`
-  )
-);
+): boolean => arguments_.some((argument) => {
+  const separator = argument.indexOf("=");
+  return separator > 0
+    && argument.slice(0, separator).toLowerCase() === option.toLowerCase()
+    && argument.slice(separator + 1).toLowerCase() !== "true";
+});
 
 const hasSeparateOptionValue = (
   arguments_: ReadonlyArray<string>,
   option: string,
 ): boolean => arguments_.some((argument, index) =>
-  argument === option && arguments_[index + 1] !== undefined
+  argument.toLowerCase() === option.toLowerCase()
+    && arguments_[index + 1] !== undefined
 );
+
+const hasOnlyBinaryAll = (
+  arguments_: ReadonlyArray<string>,
+): boolean => arguments_.some((argument, index) => {
+  const separator = argument.indexOf("=");
+  const name = (separator > 0 ? argument.slice(0, separator) : argument).toLowerCase();
+  if (name !== "--only-binary") return false;
+  const value = separator > 0 ? argument.slice(separator + 1) : arguments_[index + 1];
+  return value?.toLowerCase() === ":all:";
+});
+
+const hasNonCanonicalBinaryOption = (
+  arguments_: ReadonlyArray<string>,
+): boolean => arguments_.some((argument, index) => {
+  const separator = argument.indexOf("=");
+  const name = (separator > 0 ? argument.slice(0, separator) : argument).toLowerCase();
+  if (name === "--no-binary") return true;
+  if (name !== "--only-binary") return false;
+  const value = separator > 0 ? argument.slice(separator + 1) : arguments_[index + 1];
+  return value?.toLowerCase() !== ":all:";
+});
 
 interface RegistryOption {
   readonly index: number;
@@ -661,6 +691,14 @@ const registryOptions = (
   const options = new Set(
     manager === "uv"
       ? ["--default-index", "--index-url", "--extra-index-url", "--index"]
+      : manager === "pip"
+      ? [
+        "-i",
+        "--index-url",
+        "--extra-index-url",
+        "-f",
+        "--find-links",
+      ]
       : ["--registry"],
   );
   const result: Array<RegistryOption> = [];
@@ -701,6 +739,16 @@ const untrustedPackageConfigOption = (
   }
   if (manager === "bun") return name === "--config";
   if (manager === "uv") return name === "--config-file";
+  if (manager === "pip") {
+    return new Set([
+      "--cert",
+      "--client-cert",
+      "--config-settings",
+      "--config-setting",
+      "--proxy",
+      "--trusted-host",
+    ]).has(name);
+  }
   if (manager === "yarn") {
     return name === "--use-yarnrc" || name === "--rc-file";
   }
@@ -715,6 +763,26 @@ const registryOperation = (
   if (unambiguous === undefined) return false;
   const commandOptions = manager === "uv"
     ? new Set(["--cache-dir", "--config-file", "--default-index", "--directory", "--extra-index-url", "--index", "--index-url", "--project"])
+    : manager === "pip"
+    ? new Set([
+      "--cache-dir",
+      "--cert",
+      "--client-cert",
+      "--config-settings",
+      "--config-setting",
+      "--constraint",
+      "--extra-index-url",
+      "--find-links",
+      "-f",
+      "-i",
+      "--index-url",
+      "--isolated",
+      "--no-binary",
+      "--only-binary",
+      "--proxy",
+      "--requirement",
+      "--trusted-host",
+    ])
     : manager === "bun"
     ? new Set(["--config", "--cwd", "--filter", "--registry"])
     : new Set([
@@ -760,11 +828,63 @@ const registryOperation = (
   if (manager === "bun") {
     return command !== undefined && new Set(["add", "i", "install", "update"]).has(command);
   }
+  if (manager === "pip") {
+    return command !== undefined && command === "install";
+  }
   if (manager === "uv") {
     return command === "tool" && unambiguous[commandIndex! + 1]?.toLowerCase() === "install"
       || command === "pip" && unambiguous[commandIndex! + 1]?.toLowerCase() === "install";
   }
   return false;
+};
+
+const packageManagerOptionValues = (manager: string): ReadonlySet<string> =>
+  manager === "uv"
+    ? new Set([
+      "--cache-dir",
+      "--config-file",
+      "--default-index",
+      "--directory",
+      "--extra-index-url",
+      "--index",
+      "--index-url",
+      "--project",
+    ])
+    : manager === "pip"
+    ? new Set([
+      "--cache-dir",
+      "--cert",
+      "--client-cert",
+      "--config-setting",
+      "--config-settings",
+      "--constraint",
+      "--extra-index-url",
+      "--find-links",
+      "--index-url",
+      "--proxy",
+      "--requirement",
+      "--trusted-host",
+      "-f",
+      "-i",
+    ])
+    : new Set();
+
+const nonOptionPackageManagerArguments = (
+  manager: string,
+  arguments_: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  const values = packageManagerOptionValues(manager);
+  const result: Array<string> = [];
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    if (!argument.startsWith("-")) {
+      result.push(argument);
+      continue;
+    }
+    const name = argument.split("=", 1)[0]!.toLowerCase();
+    if (!argument.includes("=") && values.has(name)) index += 1;
+  }
+  return result;
 };
 
 const packageScopes = (value: string): ReadonlyArray<string> =>
@@ -858,12 +978,15 @@ const registryArguments = (
   const withoutOptions = arguments_.filter((_argument, index) => !removed.has(index));
   if (manager === "uv") {
     const command = withoutOptions.findIndex((argument) =>
-      argument === "tool" || argument === "pip"
+      argument.toLowerCase() === "tool" || argument.toLowerCase() === "pip"
     );
-    const flag = command >= 0 && withoutOptions[command] === "pip"
+    const flag = command >= 0 && withoutOptions[command]!.toLowerCase() === "pip"
       ? "--index-url"
       : "--default-index";
     return [...withoutOptions, `${flag}=${registry}`];
+  }
+  if (manager === "pip") {
+    return [...withoutOptions, `--index-url=${registry}`];
   }
   const scopes = manager === "npm" || manager === "pnpm"
     ? registryScopesForInvocation(manager, withoutOptions)
@@ -1042,12 +1165,15 @@ const packageManagerPolicy = (
   const unambiguous = argumentsBeforeSeparator(arguments_);
   if (unambiguous === undefined) return { kind: "denied" };
   const dependencyIndexes = npmDependencyArgumentIndexes(manager, unambiguous);
+  const sourceArguments = manager === "uv" || manager === "pip"
+    ? nonOptionPackageManagerArguments(manager, unambiguous)
+    : unambiguous;
   if (
     manager === "npm" || manager === "pnpm"
       ? [...dependencyIndexes].some((index) =>
         isUnboundedSourceDependency(unambiguous[index] ?? "")
       )
-      : unambiguous.some(isExplicitSourceDependency)
+      : sourceArguments.some(isExplicitSourceDependency)
   ) {
     return { kind: "denied" };
   }
@@ -1197,7 +1323,19 @@ const packageManagerPolicy = (
   if (manager === "pip") {
     const commandIndex = firstCommandIndex(
       unambiguous,
-      new Set(["--cache-dir", "--config-settings", "--proxy", "--requirement"]),
+      new Set([
+        "--cache-dir",
+        "--config-settings",
+        "--extra-index-url",
+        "--find-links",
+        "--index-url",
+        "--isolated",
+        "--proxy",
+        "--requirement",
+        "--trusted-host",
+        "-f",
+        "-i",
+      ]),
     );
     const command = commandIndex === undefined
       ? undefined
@@ -1209,24 +1347,16 @@ const packageManagerPolicy = (
       return { kind: "non-executing" };
     }
     if (command === "install") {
-      if (
-        unambiguous.some((argument) =>
-          argument.startsWith("--no-binary")
-          || (
-            argument.startsWith("--only-binary=")
-            && argument !== "--only-binary=:all:"
-          )
-        )
-        || hasSeparateOptionValue(unambiguous, "--only-binary")
-      ) {
+      if (hasNonCanonicalBinaryOption(unambiguous)) {
         return { kind: "denied" };
       }
       const canonical = "--only-binary=:all:";
       return {
         kind: "scripts-disabled",
-        arguments: unambiguous.includes(canonical)
-          ? arguments_
-          : [...arguments_, canonical],
+        arguments: [
+          ...(hasOnlyBinaryAll(unambiguous) ? arguments_ : [...arguments_, canonical]),
+          ...(hasEnabledOption(unambiguous, "--isolated") ? [] : ["--isolated"]),
+        ],
       };
     }
     return { kind: "denied" };
@@ -1289,16 +1419,7 @@ const packageManagerPolicy = (
     command === "tool"
     && unambiguous[commandIndex! + 1]?.toLowerCase() === "install"
   ) {
-    if (
-      unambiguous.some((argument) =>
-        argument.startsWith("--no-binary")
-        || (
-          argument.startsWith("--only-binary=")
-          && argument !== "--only-binary=:all:"
-        )
-      )
-      || hasSeparateOptionValue(unambiguous, "--only-binary")
-    ) {
+    if (hasNonCanonicalBinaryOption(unambiguous)) {
       return { kind: "denied" };
     }
     const canonical = "--only-binary=:all:";
@@ -1312,7 +1433,7 @@ const packageManagerPolicy = (
       kind: "scripts-disabled",
       arguments: [
         ...(
-          unambiguous.includes(canonical)
+          hasOnlyBinaryAll(unambiguous)
             ? arguments_
             : [...arguments_, canonical]
         ),
@@ -1326,24 +1447,21 @@ const packageManagerPolicy = (
       return { kind: "non-executing" };
     }
     if (subcommand === "install") {
-      if (
-        unambiguous.some((argument) =>
-          argument.startsWith("--no-binary")
-          || (
-            argument.startsWith("--only-binary=")
-            && argument !== "--only-binary=:all:"
-          )
-        )
-        || hasSeparateOptionValue(unambiguous, "--only-binary")
-      ) {
+      if (hasNonCanonicalBinaryOption(unambiguous)) {
         return { kind: "denied" };
       }
       const canonical = "--only-binary=:all:";
+      if (
+        hasDisabledOption(unambiguous, "--no-config")
+        || hasSeparateOptionValue(unambiguous, "--no-config")
+      ) {
+        return { kind: "denied" };
+      }
       return {
         kind: "scripts-disabled",
         arguments: [
           ...(
-            unambiguous.includes(canonical)
+            hasOnlyBinaryAll(unambiguous)
               ? arguments_
               : [...arguments_, canonical]
           ),

@@ -29,8 +29,8 @@ export const redactText = (
   return redacted;
 };
 
-const packageManagerName = (value: string): string =>
-  value
+const packageManagerName = (value: string): string => {
+  const name = value
     .replaceAll("\\", "/")
     .split("/")
     .at(-1)
@@ -40,13 +40,32 @@ const packageManagerName = (value: string): string =>
     .replace(/^(?:pnpm)\.(?:cjs|js)$/u, "pnpm")
     .replace(/^(?:yarn)\.js$/u, "yarn")
     ?? "";
+  return /^pip(?:3(?:\.\d+(?:\.\d+)*)?|-3(?:\.\d+(?:\.\d+)*)?)?$/u.test(name)
+    ? "pip"
+    : name;
+};
 
 const isRegistryPackageManager = (manager: string): boolean =>
   manager === "npm"
   || manager === "pnpm"
   || manager === "yarn"
   || manager === "bun"
+  || manager === "pip"
   || manager === "uv";
+
+const canonicalRegistryOrigin = (value: string): string | undefined => {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:"
+      || url.username.length > 0
+      || url.password.length > 0
+    ) return undefined;
+    return url.origin;
+  } catch {
+    return undefined;
+  }
+};
 
 const packageOperationRequiresRegistry = (
   executable: string,
@@ -64,6 +83,23 @@ const packageOperationRequiresRegistry = (
       "--index",
       "--index-url",
       "--project",
+    ])
+    : manager === "pip"
+    ? new Set([
+      "--cache-dir",
+      "--cert",
+      "--client-cert",
+      "--config-settings",
+      "--config-setting",
+      "--constraint",
+      "--extra-index-url",
+      "--find-links",
+      "-f",
+      "-i",
+      "--index-url",
+      "--proxy",
+      "--requirement",
+      "--trusted-host",
     ])
     : manager === "bun"
     ? new Set(["--config", "--cwd", "--filter", "--registry"])
@@ -91,7 +127,10 @@ const packageOperationRequiresRegistry = (
       commandIndex = index;
       break;
     }
-    if (!argument.includes("=") && optionsWithValues.has(argument)) index += 1;
+    if (
+      !argument.includes("=")
+      && optionsWithValues.has(argument.split("=", 1)[0]!.toLowerCase())
+    ) index += 1;
   }
   if (manager === "uv") {
     return (
@@ -99,6 +138,7 @@ const packageOperationRequiresRegistry = (
       && arguments_[commandIndex + 1]?.toLowerCase() === "install"
     );
   }
+  if (manager === "pip") return command === "install";
   if (manager === "bun") {
     return command !== undefined && ["add", "i", "install", "update"].includes(command);
   }
@@ -124,6 +164,58 @@ const packageOperationRequiresRegistry = (
   ].includes(command);
 };
 
+const packageRegistryInvocationIsSafe = (
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+  packageRegistryOrigin: string,
+): boolean => {
+  const manager = packageManagerName(executable);
+  const registry = canonicalRegistryOrigin(packageRegistryOrigin);
+  if (registry === undefined) return false;
+  if (arguments_.includes("--")) return false;
+  const indexOptions = manager === "uv"
+    ? new Set(["--default-index", "--index-url", "--extra-index-url", "--index"])
+    : manager === "pip"
+    ? new Set(["-i", "--index-url", "--extra-index-url", "-f", "--find-links"])
+    : new Set<string>();
+  const unsafeOptions = manager === "uv"
+    ? new Set(["--config-file"])
+    : manager === "pip"
+    ? new Set([
+      "--cert",
+      "--client-cert",
+      "--config-setting",
+      "--config-settings",
+      "--proxy",
+      "--trusted-host",
+    ])
+    : new Set<string>();
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    const separator = argument.indexOf("=");
+    const name = (separator > 0 ? argument.slice(0, separator) : argument)
+      .toLowerCase();
+    if (unsafeOptions.has(name)) return false;
+    if (
+      (manager === "uv" && name === "--no-config")
+      || (manager === "pip" && name === "--isolated")
+    ) {
+      if (separator > 0 && argument.slice(separator + 1).toLowerCase() !== "true") {
+        return false;
+      }
+    }
+    if (!indexOptions.has(name)) continue;
+    const value = separator > 0
+      ? argument.slice(separator + 1)
+      : arguments_[index + 1];
+    if (separator === -1) index += 1;
+    if (value === undefined || canonicalRegistryOrigin(value) !== registry) {
+      return false;
+    }
+  }
+  return true;
+};
+
 const protectedPackageEnvironment = (name: string): boolean => {
   const lower = name.toLowerCase();
   return lower.startsWith("npm_config_")
@@ -134,8 +226,14 @@ const protectedPackageEnvironment = (name: string): boolean => {
     || lower.startsWith("pip_")
     || lower === "http_proxy"
     || lower === "https_proxy"
+    || lower === "ftp_proxy"
     || lower === "all_proxy"
     || lower === "no_proxy"
+    || lower === "netrc"
+    || lower === "requests_ca_bundle"
+    || lower === "curl_ca_bundle"
+    || lower === "ssl_cert_file"
+    || lower === "ssl_cert_dir"
     || lower === "node_tls_reject_unauthorized"
     || lower === "node_extra_ca_certs";
 };
@@ -161,6 +259,9 @@ const packageManagerConfigurationEnvironment = (
       { name: "PIP_CONFIG_FILE", value: emptyConfiguration },
     ];
   }
+  if (manager === "pip") {
+    return [{ name: "PIP_CONFIG_FILE", value: emptyConfiguration }];
+  }
   if (manager === "yarn") {
     return [{ name: "YARN_RC_FILENAME", value: emptyConfiguration }];
   }
@@ -175,38 +276,43 @@ export const sanitizedPackageManagerEnvironment = (
 ): ReadonlyArray<{ readonly name: string; readonly value: string }> => {
   const manager = packageManagerName(executable);
   if (!isRegistryPackageManager(manager)) return environment;
+  const registry = packageRegistryOrigin === undefined
+    ? undefined
+    : canonicalRegistryOrigin(packageRegistryOrigin);
   return [
     ...environment.filter((entry) => !protectedPackageEnvironment(entry.name)),
     ...packageManagerConfigurationEnvironment(executable),
-    ...(packageRegistryOrigin === undefined
+    ...(registry === undefined
       ? []
       : manager === "npm" || manager === "pnpm"
       ? [
-        { name: "NPM_CONFIG_REGISTRY", value: packageRegistryOrigin },
+        { name: "NPM_CONFIG_REGISTRY", value: registry },
         ...(manager === "pnpm"
-          ? [{ name: "PNPM_CONFIG_REGISTRY", value: packageRegistryOrigin }]
+          ? [{ name: "PNPM_CONFIG_REGISTRY", value: registry }]
           : []),
         ...packageRegistryScopes.map((scope) => ({
           name: `npm_config_${scope}:registry`,
-          value: packageRegistryOrigin,
+          value: registry,
         })),
         ...(manager === "pnpm"
           ? packageRegistryScopes.map((scope) => ({
             name: `pnpm_config_${scope}:registry`,
-            value: packageRegistryOrigin,
+            value: registry,
           }))
           : []),
       ]
       : manager === "bun"
-      ? [{ name: "BUN_CONFIG_REGISTRY", value: packageRegistryOrigin }]
+      ? [{ name: "BUN_CONFIG_REGISTRY", value: registry }]
       : manager === "uv"
       ? [
-        { name: "UV_DEFAULT_INDEX", value: packageRegistryOrigin },
-        { name: "UV_INDEX_URL", value: packageRegistryOrigin },
-        { name: "PIP_INDEX_URL", value: packageRegistryOrigin },
+        { name: "UV_DEFAULT_INDEX", value: registry },
+        { name: "UV_INDEX_URL", value: registry },
+        { name: "PIP_INDEX_URL", value: registry },
       ]
+      : manager === "pip"
+      ? [{ name: "PIP_INDEX_URL", value: registry }]
       : manager === "yarn"
-      ? [{ name: "YARN_NPM_REGISTRY_SERVER", value: packageRegistryOrigin }]
+      ? [{ name: "YARN_NPM_REGISTRY_SERVER", value: registry }]
       : []),
   ];
 };
@@ -248,8 +354,24 @@ export const executeControlledProcess = (
   }
   if (input.signal?.aborted === true) return Effect.fail(cancelled(input));
   if (
+    isRegistryPackageManager(packageManagerName(input.executable))
+    && input.arguments.includes("--")
+  ) {
+    return Effect.fail(new AgentProcessError({
+      executable: input.executable,
+      message: "package-manager separator form is not authorized",
+    }));
+  }
+  if (
     packageOperationRequiresRegistry(input.executable, input.arguments)
-    && input.packageRegistryOrigin === undefined
+    && (
+      input.packageRegistryOrigin === undefined
+      || !packageRegistryInvocationIsSafe(
+        input.executable,
+        input.arguments,
+        input.packageRegistryOrigin,
+      )
+    )
   ) {
     return Effect.fail(new AgentProcessError({
       executable: input.executable,

@@ -782,6 +782,177 @@ describe("agent resolution", () => {
   });
 
   it.each([
+    ["pip", "pip", ["install", "tool"], [
+      "--only-binary=:all:",
+      "--isolated",
+      "--index-url=https://packages.example.test",
+    ]],
+    ["pip3 alias", "pip3", ["install", "tool==1.2.3"], [
+      "--only-binary=:all:",
+      "--isolated",
+      "--index-url=https://packages.example.test",
+    ]],
+    ["pip versioned alias", "pip3.12", ["install", "tool"], [
+      "--only-binary=:all:",
+      "--isolated",
+      "--index-url=https://packages.example.test",
+    ]],
+  ] as const)(
+    "pins the reviewed origin and disables config for %s",
+    async (_name, managerName, arguments_, suffix) => {
+      const manager = join(directory, managerName);
+      await writeFile(manager, "#!/bin/sh\nexit 0\n");
+      await chmod(manager, 0o755);
+      const verify = join(directory, "verify");
+      const allowedExecutables = [manager, verify];
+      const recording = new RecordingExecutor(proposal(action({
+        executable: manager,
+        arguments: arguments_,
+      })));
+      await Effect.runPromise(Effect.gen(function*() {
+        const service = yield* AgentResolution;
+        return yield* service.resolve({
+          policy: "agent-apply",
+          task: task(directory, { allowedExecutables }),
+          harness: harness(directory, allowedExecutables),
+        });
+      }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+      expect(recording.invocations[1]?.arguments).toEqual([...arguments_, ...suffix]);
+    },
+  );
+
+  it("normalizes allowed pip index aliases and isolates a uv project", async () => {
+    const manager = join(directory, "uv");
+    const verify = join(directory, "verify");
+    await Promise.all([
+      writeFile(manager, "#!/bin/sh\nexit 0\n"),
+      writeFile(verify, "#!/bin/sh\nprintf verified\n"),
+    ]);
+    await chmod(manager, 0o755);
+    await chmod(verify, 0o755);
+    const allowedExecutables = [manager, verify];
+    const recording = new RecordingExecutor(proposal(action({
+      executable: manager,
+      arguments: [
+        "--project",
+        directory,
+        "pip",
+        "install",
+        "tool",
+        "--index",
+        "https://PACKAGES.EXAMPLE.TEST:443/",
+      ],
+    })));
+    await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, {
+          allowedExecutables,
+          allowedOrigins: ["https://Packages.Example.Test:443"],
+        }),
+        harness: {
+          ...harness(directory, allowedExecutables),
+          allowedOrigins: ["https://Packages.Example.Test:443"],
+        },
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+    expect(recording.invocations[1]?.arguments).toEqual([
+      "--project",
+      directory,
+      "pip",
+      "install",
+      "tool",
+      "--only-binary=:all:",
+      "--no-config",
+      "--index-url=https://packages.example.test",
+    ]);
+  });
+
+  it("accepts an explicitly allowed pip short index and removes expansion options", async () => {
+    const manager = join(directory, "pip3.12");
+    const verify = join(directory, "verify");
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await writeFile(verify, "#!/bin/sh\nprintf verified\n");
+    await chmod(manager, 0o755);
+    await chmod(verify, 0o755);
+    const allowedExecutables = [manager, verify];
+    const recording = new RecordingExecutor(proposal(action({
+      executable: manager,
+      arguments: [
+        "install",
+        "tool",
+        "-i",
+        "https://PACKAGES.EXAMPLE.TEST:443/",
+        "--extra-index-url=https://packages.example.test",
+      ],
+    })));
+    await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, { allowedExecutables }),
+        harness: harness(directory, allowedExecutables),
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+    expect(recording.invocations[1]?.arguments).toEqual([
+      "install",
+      "tool",
+      "--only-binary=:all:",
+      "--isolated",
+      "--index-url=https://packages.example.test",
+    ]);
+  });
+
+  it("redacts credentials from rejected pip index options", async () => {
+    const manager = join(directory, "pip");
+    await writeFile(manager, "#!/bin/sh\nexit 0\n");
+    await chmod(manager, 0o755);
+    const allowedExecutables = [manager, join(directory, "verify")];
+    const denied = await Effect.runPromise(authorizeAction(
+      action({
+        executable: manager,
+        arguments: ["install", "tool", "-i", "https://user:password@evil.example.test/"],
+      }),
+      task(directory, { allowedExecutables }),
+      harness(directory, allowedExecutables),
+    ).pipe(Effect.flip));
+    expect(denied).toMatchObject({
+      capability: "network-origin",
+      value: "[REDACTED]",
+    });
+  });
+
+  it.each([
+    ["extra index", ["install", "tool", "--extra-index-url=https://evil.example.test"]],
+    ["find links", ["install", "tool", "-f", "https://evil.example.test"]],
+    ["trusted host", ["install", "tool", "--trusted-host=evil.example.test"]],
+    ["config setting", ["install", "tool", "--config-settings", "setup_args=--global-option=evil"]],
+    ["proxy", ["install", "tool", "--proxy=https://evil.example.test"]],
+  ] as const)(
+    "rejects hostile pip registry/config option: %s",
+    async (_name, arguments_) => {
+      const manager = join(directory, "pip3.12");
+      await writeFile(manager, "#!/bin/sh\nprintf spawned > hostile-pip-marker\n");
+      await chmod(manager, 0o755);
+      const allowedExecutables = [manager, join(directory, "verify")];
+      const denied = await Effect.runPromise(authorizeAction(
+        action({ executable: manager, arguments: arguments_ }),
+        task(directory, { allowedExecutables }),
+        harness(directory, allowedExecutables),
+      ).pipe(Effect.flip));
+      expect(denied).toMatchObject({
+        capability: _name === "trusted host"
+          || _name === "config setting"
+          || _name === "proxy"
+          ? "package-manager-config"
+          : "network-origin",
+      });
+      await expect(access(join(directory, "hostile-pip-marker"))).rejects.toThrow();
+    },
+  );
+
+  it.each([
     ["npm run", "npm", ["run", "postinstall"]],
     ["npm exec alias", "npm", ["x", "denied-package"]],
     ["npm credential-bearing dependency", "npm", ["install", "https://user:pass@github.com/example/tool.tgz"]],
@@ -1384,6 +1555,93 @@ describe("real controlled subprocess", () => {
       }).pipe(Effect.flip));
       expect(error).toBeInstanceOf(AgentProcessError);
       await expect(access(join(root, "hostile-download"))).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pins pip aliases and clears hostile pip/uv environment", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-pip-registry-"));
+    try {
+      const marker = join(root, "pip-environment.json");
+      const manager = join(root, "pip3.12");
+      await writeFile(
+        manager,
+        `#!${process.execPath}
+const { writeFileSync } = require("node:fs");
+writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+  index: process.env.PIP_INDEX_URL,
+  extra: process.env.PIP_EXTRA_INDEX_URL,
+  config: process.env.PIP_CONFIG_FILE,
+  proxy: process.env.HTTPS_PROXY,
+  args: process.argv.slice(2),
+}));
+`,
+      );
+      await chmod(manager, 0o755);
+      const result = await Effect.runPromise(executeControlledProcess({
+        executable: manager,
+        arguments: [
+          "install",
+          "tool",
+          "--index-url=https://packages.example.test",
+        ],
+        workingDirectory: root,
+        environment: [
+          { name: "PIP_INDEX_URL", value: "https://evil.example.test" },
+          { name: "PIP_EXTRA_INDEX_URL", value: "https://evil.example.test" },
+          { name: "PIP_CONFIG_FILE", value: join(root, "evil-pip.conf") },
+          { name: "UV_INDEX_URL", value: "https://evil.example.test" },
+          { name: "HTTPS_PROXY", value: "https://user:password@evil.example.test" },
+        ],
+        packageRegistryOrigin: "https://PACKAGES.EXAMPLE.TEST:443/",
+        timeoutMilliseconds: 2_000,
+        maximumInputBytes: 0,
+        maximumOutputBytes: 10_000,
+        secrets: ["password"],
+      }));
+      expect(result.exitCode).toBe(0);
+      // SAFETY: The fixture writes exactly these JSON fields before exiting.
+      const observed = JSON.parse(await readFile(marker, "utf8")) as {
+        index: string;
+        extra?: string;
+        config: string;
+        proxy?: string;
+        args: string[];
+      };
+      expect(observed.index).toBe("https://packages.example.test");
+      expect(observed.extra).toBeUndefined();
+      expect(observed.config).toBe(process.platform === "win32" ? "NUL" : "/dev/null");
+      expect(observed.proxy).toBeUndefined();
+      expect(observed.args).toContain("--index-url=https://packages.example.test");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an extra pip index before spawning", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-pip-extra-index-"));
+    try {
+      const manager = join(root, "pip");
+      await writeFile(manager, "#!/bin/sh\nprintf spawned > hostile-pip-download\n");
+      await chmod(manager, 0o755);
+      const error = await Effect.runPromise(executeControlledProcess({
+        executable: manager,
+        arguments: [
+          "install",
+          "tool",
+          "--extra-index-url",
+          "https://evil.example.test",
+        ],
+        workingDirectory: root,
+        packageRegistryOrigin: "https://packages.example.test",
+        timeoutMilliseconds: 2_000,
+        maximumInputBytes: 0,
+        maximumOutputBytes: 1_000,
+        secrets: [],
+      }).pipe(Effect.flip));
+      expect(error).toBeInstanceOf(AgentProcessError);
+      await expect(access(join(root, "hostile-pip-download"))).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
