@@ -15,6 +15,7 @@ import {
   ToolRecipeRef,
   policyCompatibleWithKind,
   type Platform,
+  type RecipeMethod,
   type ResourceKind,
   type ApplyPolicy,
 } from "./resource.ts";
@@ -81,7 +82,7 @@ export type ResourceSpecInput =
   | { readonly kind: "directory"; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined }> }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: string | number | boolean | ReadonlyArray<string> }> }
   | { readonly kind: "skill"; readonly name: string; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined }> }
-  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: string; readonly package: string; readonly version?: string | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined }
+  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string }
   | { readonly kind: "schedule"; readonly calendar: { readonly type: "daily"; readonly at: string } | { readonly type: "weekly"; readonly days: ReadonlyArray<string>; readonly at: string } | { readonly type: "custom"; readonly expression: string }; readonly timezone: string };
 

@@ -201,6 +201,11 @@ and option-like values are rejected. Homebrew, winget, uv, cargo, and apt use
 their corresponding safe version grammars. A method that cannot represent a
 requested version fails closed before its installer is spawned.
 
+Recipe methods are closed to the supported set: npm, pnpm, bun, brew, homebrew,
+winget, uv, cargo, apt, and source. Unknown methods are rejected during
+authoring, planning, persisted-plan decoding, and execution; Canonfig does not
+coerce unrecognized aliases.
+
 Every recipe also carries a reviewed `buildPolicy`. The backward-compatible
 default is `{ "mode": "scripts-disabled" }`; npm installs use
 `--ignore-scripts` and uv installs use `--only-binary=:all:`. A package that

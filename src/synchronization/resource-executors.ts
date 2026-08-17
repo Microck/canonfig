@@ -8,7 +8,7 @@ import {
   type ResourceSpecInput,
   type VerificationInput,
 } from "../domain/profile.ts";
-import type { BuildPolicy } from "../domain/resource.ts";
+import { RecipeMethod, type BuildPolicy } from "../domain/resource.ts";
 import type { PlannedAction } from "../domain/synchronization.ts";
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
@@ -773,6 +773,11 @@ const installInvocation = (
   MachineState
 > =>
   Effect.gen(function*() {
+    if (!Schema.is(RecipeMethod)(method)) {
+      return yield* new InvalidExecutionPlanError({
+        message: `unknown installer method ${method}`,
+      });
+    }
     if (buildPolicy.mode === "required") {
       return yield* new InvalidExecutionPlanError({
         message:

@@ -260,6 +260,54 @@ describe("installation recipe version boundaries", () => {
   });
 
   it.each([
+    ["npm", "@scope/tool", "latest"],
+    ["pnpm", "@scope/tool", "^1.2.3"],
+    ["bun", "@scope/tool", "1.2"],
+    ["brew", "tool", "1.2/3"],
+    ["homebrew", "tool", "1.2/3"],
+    ["winget", "Example.Tool", "1.2/3"],
+    ["uv", "tool", "1.2/3"],
+    ["cargo", "tool", "latest"],
+    ["apt", "tool", "1.2/3"],
+    ["source", "tool", "../bad"],
+  ] as const)(
+    "rejects malformed %s recipe versions at schema boundary",
+    (method, packageName, version) => {
+      expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+        kind: "tool",
+        toolId: "tool",
+        recipes: [{
+          platform: "linux",
+          method,
+          package: packageName,
+          version,
+        }],
+        login: { required: false },
+      })).toThrow();
+    },
+  );
+
+  it.each([undefined, "1.2.3"] as const)(
+    "rejects unknown %s recipe methods at the authoring schema boundary",
+    (version) => {
+      const recipe = {
+        platform: "linux",
+        method: "unknown-installer",
+        package: "tool",
+      };
+      const candidate = version === undefined
+        ? recipe
+        : Object.assign(recipe, { version });
+      expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+        kind: "tool",
+        toolId: "tool",
+        recipes: [candidate],
+        login: { required: false },
+      })).toThrow();
+    },
+  );
+
+  it.each([
     ["dist-tag", "@scope/tool", "latest"],
     ["range", "@scope/tool", "^1.2.3"],
     ["URL", "@scope/tool", "https://registry.npmjs.org/tool.tgz"],
@@ -285,6 +333,49 @@ describe("installation recipe version boundaries", () => {
       login: { required: false },
     })).toThrow();
   });
+
+  it.each([undefined, "1.2.3"] as const)(
+    "rejects unknown %s install action methods at the action schema boundary",
+    (version) => {
+      const detail = {
+        kind: "install-tool",
+        toolId: "tool",
+        method: "unknown-installer",
+        package: "tool",
+      };
+      const candidate = version === undefined
+        ? detail
+        : Object.assign(detail, { version });
+      expect(() => Schema.decodeUnknownSync(ActionDetailSchema)(candidate)).toThrow();
+    },
+  );
+
+  it.each([undefined, "1.2.3"] as const)(
+    "rejects unknown %s install action methods at the persisted-plan boundary",
+    (version) => {
+      const detail = {
+        kind: "install-tool",
+        toolId: "tool",
+        method: "unknown-installer",
+        package: "tool",
+      };
+      const candidate = version === undefined
+        ? detail
+        : Object.assign(detail, { version });
+      expect(() => Schema.decodeUnknownSync(SynchronizationPlanSchema)({
+        revision: "revision-1",
+        follower: "follower-1",
+        encoded: "",
+        actions: [{
+          id: "a",
+          resource: "resource",
+          kind: "install-tool",
+          detail: candidate,
+          before: [],
+        }],
+      })).toThrow();
+    },
+  );
 
   it("reports invalid typed recipes at the profile validation boundary", () => {
     const errors = validateProfileResources([{

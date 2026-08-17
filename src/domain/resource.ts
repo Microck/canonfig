@@ -8,7 +8,10 @@ import {
   ResourceId,
   ToolId,
 } from "./brand.ts";
-import { recipeValidationError } from "./recipe-versions.ts";
+import {
+  RecipeMethod as RecipeMethodSchema,
+  recipeValidationError,
+} from "./recipe-versions.ts";
 
 /**
  * Profile Resource kinds and Apply Policies from the architecture contract.
@@ -64,6 +67,9 @@ export const policyCompatibleWithKind = (kind: ResourceKind, policy: ApplyPolicy
 /** Platform selector for installation recipes and path mapping. */
 export const Platform = Schema.Literals(["linux", "macos", "windows"]);
 export type Platform = Schema.Schema.Type<typeof Platform>;
+
+export const RecipeMethod = RecipeMethodSchema;
+export type RecipeMethod = Schema.Schema.Type<typeof RecipeMethod>;
 
 /**
  * A build policy is part of the reviewed recipe contract. The default keeps
@@ -166,7 +172,7 @@ export type SkillResourceSpec = Schema.Schema.Type<typeof SkillResourceSpec>;
 
 const ToolRecipeRefSchema = Schema.Struct({
   platform: Platform,
-  method: Schema.NonEmptyString,
+  method: RecipeMethod,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
   buildPolicy: Schema.optional(BuildPolicy),
@@ -287,19 +293,6 @@ export const InvocationEvidence = Schema.Struct({
   packageManager: Schema.optional(Schema.NonEmptyString),
 });
 export type InvocationEvidence = Schema.Schema.Type<typeof InvocationEvidence>;
-
-export const RecipeMethod = Schema.Literals([
-  "npm",
-  "pnpm",
-  "bun",
-  "brew",
-  "apt",
-  "winget",
-  "uv",
-  "cargo",
-  "source",
-]);
-export type RecipeMethod = Schema.Schema.Type<typeof RecipeMethod>;
 
 const ToolRecipeSchema = Schema.Struct({
   platform: Platform,

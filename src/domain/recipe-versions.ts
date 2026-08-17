@@ -1,21 +1,27 @@
+import { Schema } from "effect";
+
 import { isNpmRegistryPackageName } from "./npm-package-spec.ts";
+
+export const RecipeMethod = Schema.Literals([
+  "npm",
+  "pnpm",
+  "bun",
+  "brew",
+  "homebrew",
+  "apt",
+  "winget",
+  "uv",
+  "cargo",
+  "source",
+]);
+export type RecipeMethod = Schema.Schema.Type<typeof RecipeMethod>;
 
 /**
  * Recipe methods that can express a version as a single deterministic
  * package-manager argument. Source revisions use a separate safe-reference
  * grammar because the current executor cannot check out or build them.
  */
-export type VersionedRecipeMethod =
-  | "npm"
-  | "pnpm"
-  | "bun"
-  | "brew"
-  | "homebrew"
-  | "winget"
-  | "uv"
-  | "cargo"
-  | "apt"
-  | "source";
+export type VersionedRecipeMethod = RecipeMethod;
 
 const npmVersion = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const homebrewVersion = /^[0-9A-Za-z][0-9A-Za-z.+_~+-]*$/u;
@@ -77,6 +83,9 @@ export const recipeValidationError = (input: {
   readonly version?: string | undefined;
 }): string | undefined => {
   const { method, package: packageName, version } = input;
+  if (!Schema.is(RecipeMethod)(method)) {
+    return `unknown installer method ${method}`;
+  }
   if (
     (method === "npm" || method === "pnpm" || method === "bun")
     && !isNpmRegistryPackageName(packageName)

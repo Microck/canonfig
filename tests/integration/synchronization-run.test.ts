@@ -384,6 +384,7 @@ const installerInvocation = async (
   packageName: string,
   version?: string | undefined,
   onInvocation?: () => void,
+  onLookup?: () => void,
 ) => {
   const root = temporaryDirectory();
   const executableQueries: Array<string> = [];
@@ -391,6 +392,7 @@ const installerInvocation = async (
   const machine = decorateMachine(root, (service) => ({
     ...service,
     findExecutable: ({ name }) => {
+      onLookup?.();
       executableQueries.push(name);
       return Effect.succeed({
         name,
@@ -1519,6 +1521,63 @@ describe("synchronization apply run", () => {
       message: "installer source cannot honor requested version v1.2.3",
     });
   });
+
+  it.each([
+    ["npm", "@scope/tool", "latest"],
+    ["pnpm", "@scope/tool", "^1.2.3"],
+    ["bun", "@scope/tool", "1.2"],
+    ["brew", "tool", "1.2/3"],
+    ["homebrew", "tool", "1.2/3"],
+    ["winget", "Example.Tool", "1.2/3"],
+    ["uv", "tool", "1.2/3"],
+    ["cargo", "tool", "latest"],
+    ["apt", "tool", "1.2/3"],
+    ["source", "tool", "../bad"],
+  ] as const)(
+    "rejects malformed %s versions before lookup or spawn",
+    async (method, packageName, version) => {
+      let lookedUp = false;
+      let spawned = false;
+      await expect(installerInvocation(
+        method,
+        packageName,
+        version,
+        () => {
+          spawned = true;
+        },
+        () => {
+          lookedUp = true;
+        },
+      )).rejects.toMatchObject({
+        _tag: "InvalidExecutionPlanError",
+      });
+      expect(lookedUp).toBe(false);
+      expect(spawned).toBe(false);
+    },
+  );
+
+  it.each([undefined, "1.2.3"] as const)(
+    "rejects unknown %s methods before lookup or spawn",
+    async (version) => {
+      let lookedUp = false;
+      let spawned = false;
+      await expect(installerInvocation(
+        "unknown-installer",
+        "tool",
+        version,
+        () => {
+          spawned = true;
+        },
+        () => {
+          lookedUp = true;
+        },
+      )).rejects.toMatchObject({
+        _tag: "InvalidExecutionPlanError",
+      });
+      expect(lookedUp).toBe(false);
+      expect(spawned).toBe(false);
+    },
+  );
 
   it.each([
     ["git URL", "git+https://github.com/example/tool.git#v1.2.3"],

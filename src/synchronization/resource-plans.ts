@@ -6,7 +6,7 @@ import {
   type ContentDigest,
 } from "../domain/brand.ts";
 import type { ActionDetail, PlannedActionKind } from "../domain/synchronization.ts";
-import type { BuildPolicy } from "../domain/resource.ts";
+import type { BuildPolicy, RecipeMethod } from "../domain/resource.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { sha256Hex } from "../profile/profile-codec.ts";
 import { InvalidObservedStateError } from "./synchronization.errors.ts";
@@ -27,7 +27,7 @@ export interface ResourceActionDraft {
 interface InstallToolActionDetail {
   kind: "install-tool";
   toolId: string;
-  method: string;
+  method: RecipeMethod;
   package: string;
   version?: string;
   buildPolicy?: BuildPolicy;

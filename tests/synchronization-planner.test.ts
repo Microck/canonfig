@@ -10,7 +10,11 @@ import {
   ResourceId,
 } from "../src/domain/brand.ts";
 import type { ProfileRevision, PublishedResource } from "../src/domain/profile.ts";
-import type { ApplyPolicy, ResourceKind } from "../src/domain/resource.ts";
+import type {
+  ApplyPolicy,
+  RecipeMethod,
+  ResourceKind,
+} from "../src/domain/resource.ts";
 import type {
   AppliedResourceRecord,
   ObservedResourceState,
@@ -548,6 +552,73 @@ describe("stable planning and bounded resolution", () => {
     expect(JSON.parse(unversioned.encoded).actions[0].detail).not.toHaveProperty("version");
   });
 
+
+  it.each([
+    ["npm", "@scope/tool", "latest"],
+    ["pnpm", "@scope/tool", "^1.2.3"],
+    ["bun", "@scope/tool", "1.2"],
+    ["brew", "tool", "1.2/3"],
+    ["homebrew", "tool", "1.2/3"],
+    ["winget", "Example.Tool", "1.2/3"],
+    ["uv", "tool", "1.2/3"],
+    ["cargo", "tool", "latest"],
+    ["apt", "tool", "1.2/3"],
+    ["source", "tool", "../bad"],
+  ] as const)(
+    "rejects malformed %s recipe versions before creating an install action",
+    (method, packageName, version) => {
+      const subject = resource("tool", "tool", "ensure");
+      const error = Effect.runSync(Effect.flip(planSynchronization(plannerInput(
+        [subject],
+        {
+          desired: [{
+            kind: "tool",
+            toolId: "tool",
+            recipes: [{
+              platform: "linux",
+              method,
+              package: packageName,
+              version,
+            }],
+            loginRequired: false,
+          }],
+        },
+      ))));
+      expect(error._tag).toBe("PlannerInvalidRecipeError");
+    },
+  );
+
+  it.each([undefined, "1.2.3"] as const)(
+    "rejects unknown %s recipe methods before creating an install action",
+    (version) => {
+      const subject = resource("tool", "tool", "ensure");
+      const recipe = {
+        platform: "linux",
+        method: "apt" satisfies RecipeMethod,
+        package: "tool",
+      };
+      // SAFETY: Deliberately mutates a valid recipe to verify hostile planner
+      // input is rejected at runtime.
+      Object.assign(recipe, {
+        method: "unknown-installer",
+      });
+      const candidate = version === undefined
+        ? recipe
+        : Object.assign(recipe, { version });
+      const error = Effect.runSync(Effect.flip(planSynchronization(plannerInput(
+        [subject],
+        {
+          desired: [{
+            kind: "tool",
+            toolId: "tool",
+            recipes: [candidate],
+            loginRequired: false,
+          }],
+        },
+      ))));
+      expect(error._tag).toBe("PlannerInvalidRecipeError");
+    },
+  );
 
   it.each([
     ["dist-tag", "@scope/tool", "latest"],
