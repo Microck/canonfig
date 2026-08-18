@@ -242,7 +242,12 @@ esac
       "--pack-destination",
       packedRoot,
     ],
-    { cwd: projectRoot, encoding: "utf8", timeout: 120_000 },
+    {
+      cwd: projectRoot,
+      encoding: "utf8",
+      timeout: 120_000,
+      shell: process.platform === "win32",
+    },
   );
   expect(packed.status, packed.stderr).toBe(0);
   const packedResult = Schema.decodeUnknownSync(PackResult)(
@@ -262,7 +267,12 @@ esac
       "--no-fund",
       tarball,
     ],
-    { cwd: installRoot, encoding: "utf8", timeout: 120_000 },
+    {
+      cwd: installRoot,
+      encoding: "utf8",
+      timeout: 120_000,
+      shell: process.platform === "win32",
+    },
   );
   expect(installed.status, installed.stderr).toBe(0);
   executable = process.execPath;
