@@ -160,6 +160,7 @@ const resourceForTool = (tool: DiscoveredTool): ProfileResourceInput => ({
           method: recipe.method,
           package: packageForRecipe(recipe),
           version: recipe.version,
+          indexPolicy: recipe.indexPolicy,
           source: recipe.integrity === undefined
             ? recipe.source
             : {

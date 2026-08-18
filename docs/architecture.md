@@ -271,14 +271,23 @@ Cargo recipes are always Human Action Required under the default
 macros without a disable-scripts mode. A future bounded builder policy must be
 introduced separately before Cargo can be automated.
 
-Registry-backed agent installs are pinned to the one HTTPS origin shared by
-the task and follower harness. npm-family, uv, and pip-compatible invocations
-replace explicit index or registry options with that canonical origin, while
-rejecting conflicting extra indexes or find-links, trusted hosts, proxy or
-certificate overrides, config-setting options, separator forms, and inherited
-package manager configuration or credential environment. uv and pip also disable
-configuration discovery; the controlled executor repeats the origin and
-environment boundary immediately before spawn.
+Registry-backed agent installs are pinned to reviewed HTTPS origins shared by
+the task and follower harness. npm-family invocations replace explicit registry
+options with the canonical npm origin, while deterministic uv invocations use
+the reviewed full simple-index policy described below. These paths reject
+conflicting extra indexes or find-links, trusted hosts, proxy or certificate
+overrides, config-setting options, separator forms, and inherited package
+manager configuration or credential environment. The controlled executor
+repeats the origin and environment boundary immediately before spawn.
+
+Deterministic uv recipes carry an optional reviewed `indexPolicy` with a full
+credential-free HTTPS simple-index URL plus reviewer and review timestamp. A
+missing policy uses the fixed `https://pypi.org/simple` index. The complete
+private path is retained when explicitly reviewed; origins are never substituted
+for a reviewed simple-index path. Index URLs reject credentials, fragments,
+non-HTTPS schemes, and non-simple paths before executable lookup. The uv action
+always supplies `--no-config`, the approved full `--default-index`, an exact
+version, and `--only-binary=:all:` under the default build policy.
 
 When no recipe is unambiguous, Canonfig creates an Agent Task containing the upstream URL and discovery evidence. The Configuration Agent may propose a recipe. The controlled executor applies it only under the configured agent policy, and verification must pass before the tool converges.
 

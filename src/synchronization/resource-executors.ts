@@ -11,6 +11,7 @@ import {
 import {
   AutomaticRecipeMethod,
   type BuildPolicy,
+  type RecipeIndexPolicy,
   type RecipeSource,
 } from "../domain/resource.ts";
 import type { PlannedAction } from "../domain/synchronization.ts";
@@ -49,6 +50,8 @@ import {
   isMissingAutomaticRecipeVersion,
   recipeSourceDetails,
   recipeValidationError,
+  canonicalRecipeIndexUrl,
+  defaultPythonIndex,
   npmVersionFromTarballSource,
 } from "../domain/recipe-versions.ts";
 import {
@@ -993,6 +996,7 @@ const installInvocation = (
   version?: string | undefined,
   buildPolicy: BuildPolicy = { mode: "scripts-disabled" },
   source?: RecipeSource | undefined,
+  indexPolicy?: RecipeIndexPolicy | undefined,
 ): Effect.Effect<
   void,
   MachineStateError | ActionExecutionError | InvalidExecutionPlanError,
@@ -1061,6 +1065,7 @@ const installInvocation = (
       package: packageName,
       version,
       source,
+      indexPolicy,
     });
     if (
       recipeError !== undefined
@@ -1073,6 +1078,14 @@ const installInvocation = (
     ) {
       return yield* new InvalidExecutionPlanError({
         message: recipeError ?? `automatic installer ${method} requires an exact version`,
+      });
+    }
+    const pythonIndex = method === "uv"
+      ? canonicalRecipeIndexUrl(indexPolicy?.url ?? defaultPythonIndex)
+      : undefined;
+    if (method === "uv" && pythonIndex === undefined) {
+      return yield* new InvalidExecutionPlanError({
+        message: `uv recipe ${packageName} has an invalid reviewed Python index policy`,
       });
     }
     const npmFamily = method === "npm" || method === "pnpm" || method === "bun";
@@ -1186,7 +1199,15 @@ const installInvocation = (
       : effectiveVersion === undefined
       ? packageName
       : `${packageName}@${effectiveVersion}`;
-    const packageEnvironment = method === "npm" || method === "pnpm" || method === "bun"
+    const packageEnvironment = method === "uv"
+      ? [
+        { name: "UV_CONFIG_FILE", value: process.platform === "win32" ? "NUL" : "/dev/null" },
+        { name: "PIP_CONFIG_FILE", value: process.platform === "win32" ? "NUL" : "/dev/null" },
+        { name: "UV_DEFAULT_INDEX", value: pythonIndex! },
+        { name: "UV_INDEX_URL", value: pythonIndex! },
+        { name: "PIP_INDEX_URL", value: pythonIndex! },
+      ]
+      : method === "npm" || method === "pnpm" || method === "bun"
       ? [
         { name: "NPM_CONFIG_USERCONFIG", value: process.platform === "win32" ? "NUL" : "/dev/null" },
         { name: "NPM_CONFIG_GLOBALCONFIG", value: process.platform === "win32" ? "NUL" : "/dev/null" },
@@ -1239,6 +1260,8 @@ const installInvocation = (
         "install",
         version === undefined ? packageName : `${packageName}==${version}`,
         ...(buildPolicy.mode === "scripts-disabled" ? ["--only-binary=:all:"] : []),
+        "--no-config",
+        `--default-index=${pythonIndex!}`,
       ]
       : method === "apt"
       ? ["install", "-y", version === undefined ? packageName : `${packageName}=${version}`]
@@ -1251,7 +1274,26 @@ const installInvocation = (
       timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
       maximumOutputBytes: context.limits.maximumProcessOutputBytes,
       environment: packageEnvironment,
-      environmentUnsetPrefixes: npmFamily
+      environmentUnset: method === "uv"
+        ? [
+          "HTTP_PROXY",
+          "HTTPS_PROXY",
+          "FTP_PROXY",
+          "ALL_PROXY",
+          "NO_PROXY",
+          "NETRC",
+          "CURL_CA_BUNDLE",
+          "REQUESTS_CA_BUNDLE",
+          "SSL_CERT_FILE",
+          "SSL_CERT_DIR",
+          "PYTHONHTTPSVERIFY",
+          "PYTHON_KEYRING_BACKEND",
+          "KEYRING_BACKEND",
+        ]
+        : undefined,
+      environmentUnsetPrefixes: method === "uv"
+        ? ["UV_", "PIP_"]
+        : npmFamily
         ? ["NPM_CONFIG_", "PNPM_CONFIG_", "BUN_CONFIG_"]
         : undefined,
     });
@@ -1290,6 +1332,7 @@ export const prepareResourceAction = (
           detail.version,
           detail.buildPolicy,
           detail.source,
+          detail.indexPolicy,
         ),
       });
     case "transfer-blob":

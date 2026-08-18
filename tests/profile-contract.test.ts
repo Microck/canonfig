@@ -396,6 +396,57 @@ describe("resource graph validation", () => {
 });
 
 describe("installation recipe version boundaries", () => {
+  it("accepts a reviewed full uv simple-index path", () => {
+    const decoded = Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+      kind: "tool",
+      toolId: "uv-tool",
+      recipes: [{
+        platform: "linux",
+        method: "uv",
+        package: "uv-tool",
+        version: "1.2.3",
+        indexPolicy: {
+          url: "https://PACKAGES.EXAMPLE.TEST:443/repository/simple/?channel=stable",
+          reviewedBy: "security-reviewer",
+          reviewedAt: "2026-08-18T00:00:00Z",
+        },
+      }],
+      login: { required: false },
+    });
+    expect(decoded).toMatchObject({
+      recipes: [{
+        indexPolicy: {
+          url: "https://PACKAGES.EXAMPLE.TEST:443/repository/simple/?channel=stable",
+          reviewedBy: "security-reviewer",
+        },
+      }],
+    });
+  });
+
+  it.each([
+    "http://packages.example.test/repository/simple",
+    "https://packages.example.test/repository/simple#fragment",
+    "https://user:password@packages.example.test/repository/simple",
+    "https://packages.example.test/repository/packages",
+  ])("rejects unsafe uv index policy %s", (url) => {
+    expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+      kind: "tool",
+      toolId: "uv-tool",
+      recipes: [{
+        platform: "linux",
+        method: "uv",
+        package: "uv-tool",
+        version: "1.2.3",
+        indexPolicy: {
+          url,
+          reviewedBy: "security-reviewer",
+          reviewedAt: "2026-08-18T00:00:00Z",
+        },
+      }],
+      login: { required: false },
+    })).toThrow();
+  });
+
   it("rejects unversioned source recipes at the authoring boundary", () => {
     expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
       kind: "tool",

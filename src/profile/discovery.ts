@@ -5,7 +5,10 @@ import { basename, delimiter, extname, join, resolve } from "node:path";
 import { Effect, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
 
-import { BuildPolicy as BuildPolicySchema } from "../domain/resource.ts";
+import {
+  BuildPolicy as BuildPolicySchema,
+  RecipeIndexPolicy,
+} from "../domain/resource.ts";
 import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
 import { parseJsonc, type JsonValue } from "./profile-codec.ts";
 import {
@@ -437,6 +440,9 @@ const explicitMetadata = (
   const buildPolicy = Schema.is(BuildPolicySchema)(object.buildPolicy)
     ? object.buildPolicy
     : undefined;
+  const indexPolicy = Schema.is(RecipeIndexPolicy)(object.indexPolicy)
+    ? object.indexPolicy
+    : undefined;
   // SAFETY: ecosystem has been checked against every PackageEcosystem literal.
   const checkedEcosystem = Schema.decodeUnknownSync(
     Schema.Literals(["npm", "homebrew", "winget", "uv", "cargo", "source"]),
@@ -447,6 +453,7 @@ const explicitMetadata = (
     version: jsonString(object.version),
     source: source ?? `${sourcePath}#canonfig.tools`,
     integrity: jsonString(object.integrity),
+    indexPolicy,
     upstream: jsonString(object.upstream),
     buildCommands,
     buildPolicy,

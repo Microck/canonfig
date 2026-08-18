@@ -11,6 +11,7 @@ import {
 import {
   AutomaticRecipeMethod as AutomaticRecipeMethodSchema,
   RecipeSourceMetadata as RecipeSourceMetadataSchema,
+  RecipeIndexPolicy as RecipeIndexPolicySchema,
   RecipeMethod as RecipeMethodSchema,
   recipeValidationError,
 } from "./recipe-versions.ts";
@@ -114,6 +115,8 @@ export type BuildPolicy = Schema.Schema.Type<typeof BuildPolicy>;
 
 export type { RecipeSource } from "./recipe-versions.ts";
 export { RecipeSourceMetadataSchema as RecipeSourceMetadata };
+export const RecipeIndexPolicy = RecipeIndexPolicySchema;
+export type RecipeIndexPolicy = Schema.Schema.Type<typeof RecipeIndexPolicySchema>;
 
 /**
  * A Profile Resource: one named item of desired configuration.
@@ -182,6 +185,7 @@ const ToolRecipeRefSchema = Schema.Struct({
   method: RecipeMethod,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
+  indexPolicy: Schema.optional(RecipeIndexPolicySchema),
   buildPolicy: Schema.optional(BuildPolicy),
   source: Schema.optional(Schema.Union([
     Schema.NonEmptyString,

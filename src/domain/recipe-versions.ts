@@ -38,6 +38,54 @@ export const RecipeSourceMetadata = Schema.Struct({
 export type RecipeSourceMetadata = Schema.Schema.Type<typeof RecipeSourceMetadata>;
 export type RecipeSource = string | RecipeSourceMetadata;
 
+/**
+ * A reviewed Python package index. The full URL is retained because private
+ * repositories commonly scope their simple API below an origin.
+ */
+export const RecipeIndexPolicy = Schema.Struct({
+  url: Schema.NonEmptyString,
+  reviewedBy: Schema.NonEmptyString,
+  reviewedAt: Schema.NonEmptyString,
+});
+export type RecipeIndexPolicy = Schema.Schema.Type<typeof RecipeIndexPolicy>;
+
+export const defaultPythonIndex = "https://pypi.org/simple";
+
+const hasUnsafeIndexUrlCharacter = (value: string): boolean =>
+  [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 0x20
+      || (code >= 0x7f && code <= 0x9f)
+      || "\"'<>".includes(character);
+  });
+
+/** Canonicalize a reviewed full simple-index URL without widening its scope. */
+export const canonicalRecipeIndexUrl = (
+  value: string,
+): string | undefined => {
+  if (
+    value.trim() !== value
+    || value.includes("#")
+    || value.includes("\\")
+    || hasUnsafeIndexUrlCharacter(value)
+  ) return undefined;
+  try {
+    const parsed = new URL(value);
+    if (
+      parsed.protocol !== "https:"
+      || parsed.username.length > 0
+      || parsed.password.length > 0
+      || parsed.hash.length > 0
+      || parsed.pathname === "/"
+      || !/(?:^|\/)simple\/?$/u.test(parsed.pathname)
+    ) return undefined;
+    parsed.pathname = parsed.pathname.replace(/\/$/u, "");
+    return parsed.href;
+  } catch {
+    return undefined;
+  }
+};
+
 export interface RecipeSourceDetails {
   readonly source?: string | undefined;
   readonly integrity?: string | undefined;
@@ -110,6 +158,7 @@ export const recipeValidationError = (input: {
   readonly version?: string | undefined;
   readonly source?: RecipeSource | undefined;
   readonly integrity?: string | undefined;
+  readonly indexPolicy?: RecipeIndexPolicy | undefined;
 }): string | undefined => {
   const { method, package: packageName, version } = input;
   if (!Schema.is(RecipeMethod)(method)) {
@@ -126,6 +175,18 @@ export const recipeValidationError = (input: {
   }
   if (method !== "source" && !isSafePackageArgument(packageName)) {
     return `package argument is unsafe: ${packageName}`;
+  }
+  if (input.indexPolicy !== undefined) {
+    if (method !== "uv") {
+      return "recipe index policy is only supported for uv recipes";
+    }
+    const { url, reviewedBy, reviewedAt } = input.indexPolicy;
+    if (reviewedBy.trim().length === 0 || !Number.isFinite(Date.parse(reviewedAt))) {
+      return "recipe index policy requires a reviewer and valid review timestamp";
+    }
+    if (canonicalRecipeIndexUrl(url) === undefined) {
+      return "recipe index policy must be a credential-free HTTPS simple-index URL";
+    }
   }
   const metadata = sourceValue(input.source);
   const integrity = metadata?.integrity ?? input.integrity;

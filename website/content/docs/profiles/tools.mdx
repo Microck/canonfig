@@ -73,6 +73,13 @@ Discovery can resolve deterministic metadata for npm, Homebrew, winget, uv,
 cargo, and source recipes when evidence is sufficient. A source recipe must
 include its upstream repository and bounded build commands.
 
+For uv recipes, `indexPolicy` may explicitly review a full credential-free
+HTTPS simple-index URL with `reviewedBy` and `reviewedAt`. Private simple-index
+subpaths remain intact. Without that policy, Canonfig uses the fixed
+`https://pypi.org/simple` index. Deterministic uv actions use `--no-config`,
+the full approved `--default-index`, exact package versions, and
+`--only-binary=:all:` under the default build policy.
+
 ## Login requirements
 
 A recipe may declare that login is required and provide non-secret instructions.

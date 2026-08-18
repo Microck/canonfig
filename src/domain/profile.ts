@@ -16,11 +16,15 @@ import {
   policyCompatibleWithKind,
   type Platform,
   type RecipeMethod,
+  type RecipeIndexPolicy,
   type RecipeSource,
   type ResourceKind,
   type ApplyPolicy,
 } from "./resource.ts";
-import { recipeValidationError } from "./recipe-versions.ts";
+import {
+  canonicalRecipeIndexUrl,
+  recipeValidationError,
+} from "./recipe-versions.ts";
 import {
   BlobId,
   ContentDigest as ContentDigestSchema,
@@ -84,7 +88,7 @@ export type ResourceSpecInput =
   | { readonly kind: "directory"; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined }> }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: string | number | boolean | ReadonlyArray<string> }> }
   | { readonly kind: "skill"; readonly name: string; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined }> }
-  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined }
+  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string }
   | { readonly kind: "schedule"; readonly calendar: { readonly type: "daily"; readonly at: string } | { readonly type: "weekly"; readonly days: ReadonlyArray<string>; readonly at: string } | { readonly type: "custom"; readonly expression: string }; readonly timezone: string };
 
@@ -1146,13 +1150,25 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
         toolId: spec.toolId,
         recipes: [...spec.recipes].sort((left, right) =>
           compareText(
-            `${left.platform}\0${left.method}\0${left.package}\0${left.version ?? ""}\0${JSON.stringify(left.source)}`,
-            `${right.platform}\0${right.method}\0${right.package}\0${right.version ?? ""}\0${JSON.stringify(right.source)}`,
+            `${left.platform}\0${left.method}\0${left.package}\0${left.version ?? ""}\0${JSON.stringify(left.indexPolicy)}\0${JSON.stringify(left.source)}`,
+            `${right.platform}\0${right.method}\0${right.package}\0${right.version ?? ""}\0${JSON.stringify(right.indexPolicy)}\0${JSON.stringify(right.source)}`,
           )
-        ).map((recipe) => ({
-          ...recipe,
-          buildPolicy: recipe.buildPolicy ?? { mode: "scripts-disabled" as const },
-        })),
+        ).map((recipe) => {
+          const indexPolicy = recipe.indexPolicy === undefined
+            ? undefined
+            : {
+              ...recipe.indexPolicy,
+              url: canonicalRecipeIndexUrl(recipe.indexPolicy.url) ?? recipe.indexPolicy.url,
+            };
+          const { indexPolicy: _indexPolicy, ...recipeWithoutIndex } = recipe;
+          const base = {
+            ...recipeWithoutIndex,
+            buildPolicy: recipe.buildPolicy ?? { mode: "scripts-disabled" as const },
+          };
+          return indexPolicy === undefined
+            ? base
+            : { ...base, indexPolicy };
+        }),
         login: spec.login ?? { required: false },
       };
     case "credential":

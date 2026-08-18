@@ -35,6 +35,7 @@ interface InstallToolActionDetail {
   method: AutomaticRecipeMethod;
   package: string;
   version?: string;
+  indexPolicy?: ToolRecipe["indexPolicy"];
   source?: ToolRecipe["source"];
   buildPolicy?: BuildPolicy;
 }
@@ -682,6 +683,7 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     package: recipe.package,
   };
   if (recipe.version !== undefined) detail.version = recipe.version;
+  if (recipe.indexPolicy !== undefined) detail.indexPolicy = recipe.indexPolicy;
   if (recipe.source !== undefined) detail.source = recipe.source;
   if (recipe.buildPolicy !== undefined) detail.buildPolicy = recipe.buildPolicy;
   if (detail.buildPolicy?.mode === "required") {

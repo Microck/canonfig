@@ -204,6 +204,8 @@ describe("profile discovery", () => {
           "install",
           "binary-tool==1.0.0",
           "--only-binary=:all:",
+          "--no-config",
+          "--default-index=https://pypi.org/simple",
         ],
       });
     expect(result.tools.find((tool) => tool.id === "sdist-tool")?.recipes[0])
@@ -214,7 +216,14 @@ describe("profile discovery", () => {
           reviewedBy: "fixture-reviewer",
           steps: [{ executable: "python", arguments: ["-m", "build"] }],
         },
-        command: ["uv", "tool", "install", "sdist-tool==2.0.0"],
+        command: [
+          "uv",
+          "tool",
+          "install",
+          "sdist-tool==2.0.0",
+          "--no-config",
+          "--default-index=https://pypi.org/simple",
+        ],
       });
   });
 
@@ -406,6 +415,8 @@ describe("profile discovery", () => {
         "install",
         "uv-tool==5.0.0",
         "--only-binary=:all:",
+        "--no-config",
+        "--default-index=https://pypi.org/simple",
       ],
     });
     expect(result.tools.find((tool) => tool.id === "cargo-tool")?.recipes[0]).toMatchObject({

@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readlinkSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -34,6 +35,7 @@ import { FollowerIdentity } from "../../src/domain/identity.ts";
 import type { ProfileRevision, PublishedResource } from "../../src/domain/profile.ts";
 import type {
   AutomaticRecipeMethod,
+  RecipeIndexPolicy,
   RecipeSource,
 } from "../../src/domain/resource.ts";
 import type {
@@ -694,6 +696,7 @@ const installerInvocation = async (
   onLookup?: () => void,
   source?: RecipeSource | undefined,
   npmArtifactTransport?: ((root: string) => NpmArtifactTransport) | undefined,
+  indexPolicy?: RecipeIndexPolicy | undefined,
 ) => {
   const root = temporaryDirectory();
   const executableQueries: Array<string> = [];
@@ -745,6 +748,7 @@ const installerInvocation = async (
     };
   }
   if (source !== undefined) Object.assign(detail, { source });
+  if (indexPolicy !== undefined) Object.assign(detail, { indexPolicy });
   const context: ResourceExecutionContext = {
     run: decode(RunId)(`run-${method}`),
     action: {
@@ -782,7 +786,214 @@ const installerInvocation = async (
   return { executableQueries, invocations, environments };
 };
 
+const realUvInstallerContext = (
+  root: string,
+  packageName: string,
+  indexPolicy?: RecipeIndexPolicy | undefined,
+): ResourceExecutionContext => {
+  const resourceId = decode(ResourceId)("uv-tool");
+  const baseDetail = {
+    kind: "install-tool" as const,
+    toolId: "uv-tool",
+    method: "uv" as const,
+    package: packageName,
+    version: "1.2.3",
+  };
+  const detail = indexPolicy === undefined
+    ? baseDetail
+    : { ...baseDetail, indexPolicy };
+  return {
+    run: decode(RunId)("run-uv-real"),
+    action: {
+      id: decode(ActionId)("action:uv-tool:0:install-uv"),
+      resource: resourceId,
+      kind: "install-tool",
+      detail,
+      before: [],
+    },
+    resource: {
+      id: resourceId,
+      kind: "tool",
+      policy: "ensure",
+      target: join(root, "home", "uv-tool"),
+      dependsOn: [],
+      blobs: [],
+    },
+    desired: {
+      kind: "tool",
+      toolId: "uv-tool",
+      recipes: [],
+      loginRequired: false,
+    },
+    verification: { method: "executable-present", executable: "uv-tool" },
+    artifacts: new Map(),
+    limits: defaultSynchronizationExecutionLimits,
+  };
+};
+
 describe("synchronization apply run", () => {
+  it.each([
+    [
+      "reviewed private index",
+      {
+        url: "https://PACKAGES.EXAMPLE.TEST:443/repository/simple/?channel=stable",
+        reviewedBy: "security-reviewer",
+        reviewedAt: "2026-08-18T00:00:00Z",
+      },
+      "https://packages.example.test/repository/simple?channel=stable",
+    ],
+    ["fixed PyPI fallback", undefined, "https://pypi.org/simple"],
+  ] as const)(
+    "runs the deterministic uv installer in an isolated child environment: %s",
+    async (_name, indexPolicy, expectedIndex) => {
+      const root = temporaryDirectory();
+      const bin = join(root, "bin");
+      const marker = join(root, "uv-child.json");
+      const hostileUvConfig = join(root, "evil-uv.toml");
+      const hostilePipConfig = join(root, "evil-pip.conf");
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(hostileUvConfig, "extra-index-url = 'https://evil.example.test/simple'\n");
+      writeFileSync(hostilePipConfig, "extra-index-url=https://evil.example.test/simple\n");
+      writeFileSync(
+        join(bin, "uv"),
+        `#!${process.execPath}
+const { readFileSync, writeFileSync } = require("node:fs");
+const keys = [
+  "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL",
+  "UV_EXTRA_INDEX_URL", "UV_INDEX", "UV_FIND_LINKS", "UV_TRUSTED_HOST",
+  "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "PIP_TRUSTED_HOST",
+  "UV_CONFIG_FILE", "PIP_CONFIG_FILE", "UV_HTTP_PROXY", "PIP_PROXY",
+  "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY", "NETRC",
+  "KEYRING_BACKEND", "PIP_KEYRING_PROVIDER", "PIP_CERT", "PIP_CLIENT_CERT"
+];
+const values = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+const configBytes = readFileSync(process.env.UV_CONFIG_FILE, "utf8");
+writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+  args: process.argv.slice(2),
+  values,
+  configBytes
+}));
+if (process.argv.slice(2).some((value) =>
+  /(?:extra-index|find-links|trusted-host|--index(?:=|$))/iu.test(value)
+)) process.exit(42);
+`,
+      );
+      chmodSync(join(bin, "uv"), 0o755);
+      const machine = linuxMachineStateLayer({
+        environment: [
+          { name: "HOME", value: join(root, "home") },
+          { name: "PATH", value: bin },
+          { name: "UV_DEFAULT_INDEX", value: "https://evil.example.test/simple" },
+          { name: "UV_INDEX_URL", value: "https://evil.example.test/simple" },
+          { name: "UV_EXTRA_INDEX_URL", value: "https://evil.example.test/simple" },
+          { name: "UV_INDEX", value: "evil=https://evil.example.test/simple" },
+          { name: "UV_FIND_LINKS", value: "https://evil.example.test/wheels" },
+          { name: "UV_TRUSTED_HOST", value: "evil.example.test" },
+          { name: "UV_CONFIG_FILE", value: hostileUvConfig },
+          { name: "PIP_INDEX_URL", value: "https://evil.example.test/simple" },
+          { name: "PIP_EXTRA_INDEX_URL", value: "https://evil.example.test/simple" },
+          { name: "PIP_FIND_LINKS", value: "https://evil.example.test/wheels" },
+          { name: "PIP_TRUSTED_HOST", value: "evil.example.test" },
+          { name: "PIP_CONFIG_FILE", value: hostilePipConfig },
+          { name: "PIP_PROXY", value: "http://evil.example.test" },
+          { name: "PIP_CERT", value: join(root, "evil.pem") },
+          { name: "PIP_CLIENT_CERT", value: join(root, "evil-client.pem") },
+          { name: "PIP_KEYRING_PROVIDER", value: "subprocess" },
+          { name: "UV_HTTP_PROXY", value: "http://evil.example.test" },
+          { name: "HTTP_PROXY", value: "http://evil.example.test" },
+          { name: "https_proxy", value: "http://evil.example.test" },
+          { name: "FTP_PROXY", value: "http://evil.example.test" },
+          { name: "ALL_PROXY", value: "http://evil.example.test" },
+          { name: "NO_PROXY", value: "packages.example.test" },
+          { name: "NETRC", value: join(root, "evil.netrc") },
+          { name: "KEYRING_BACKEND", value: "evil.backend" },
+        ],
+      });
+      const context = realUvInstallerContext(root, "uv-tool", indexPolicy ?? undefined);
+      const prepared = await Effect.runPromise(
+        prepareResourceAction(context).pipe(Effect.provide(machine)),
+      );
+      await Effect.runPromise(prepared.execute.pipe(Effect.provide(machine)));
+
+      // SAFETY: The child fixture writes exactly this JSON object shape.
+      const observed = JSON.parse(readFileSync(marker, "utf8")) as {
+        readonly args: ReadonlyArray<string>;
+        readonly values: Readonly<Record<string, string | undefined>>;
+        readonly configBytes: string;
+      };
+      expect(observed.args).toEqual([
+        "tool",
+        "install",
+        "uv-tool==1.2.3",
+        "--only-binary=:all:",
+        "--no-config",
+        `--default-index=${expectedIndex}`,
+      ]);
+      expect(observed.values.UV_DEFAULT_INDEX).toBe(expectedIndex);
+      expect(observed.values.UV_INDEX_URL).toBe(expectedIndex);
+      expect(observed.values.PIP_INDEX_URL).toBe(expectedIndex);
+      for (const key of [
+        "UV_EXTRA_INDEX_URL",
+        "UV_INDEX",
+        "UV_FIND_LINKS",
+        "UV_TRUSTED_HOST",
+        "PIP_EXTRA_INDEX_URL",
+        "PIP_FIND_LINKS",
+        "PIP_TRUSTED_HOST",
+        "UV_HTTP_PROXY",
+        "PIP_PROXY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "FTP_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "NETRC",
+        "KEYRING_BACKEND",
+        "PIP_KEYRING_PROVIDER",
+        "PIP_CERT",
+        "PIP_CLIENT_CERT",
+      ]) {
+        expect(observed.values[key]).toBeUndefined();
+      }
+      expect(observed.values.UV_CONFIG_FILE).toBe("/dev/null");
+      expect(observed.values.PIP_CONFIG_FILE).toBe("/dev/null");
+      expect(observed.configBytes).toBe("");
+    },
+  );
+
+  it.each([
+    "http://packages.example.test/repository/simple",
+    "https://packages.example.test/repository/simple#fragment",
+    "https://user:password@packages.example.test/repository/simple",
+    "https://packages.example.test/repository/packages",
+    "https://packages.example.test/simple/extra",
+  ])("rejects an unreviewed or unsafe uv index before lookup or spawn: %s", async (url) => {
+    let lookedUp = false;
+    let spawned = false;
+    await expect(installerInvocation(
+      "uv",
+      "tool",
+      "1.2.3",
+      () => {
+        spawned = true;
+      },
+      () => {
+        lookedUp = true;
+      },
+      undefined,
+      undefined,
+      {
+        url,
+        reviewedBy: "security-reviewer",
+        reviewedAt: "2026-08-18T00:00:00Z",
+      },
+    )).rejects.toMatchObject({
+      _tag: "InvalidExecutionPlanError",
+    });
+    expect(lookedUp).toBe(false);
+    expect(spawned).toBe(false);
+  });
+
   it("fails and journals a profile schedule mutation instead of converging", async () => {
     const fixture = fileFixture(temporaryDirectory(), "schedule-failure");
     const controls = {
@@ -2375,6 +2586,8 @@ describe("synchronization apply run", () => {
       "install",
       "tool==1.2.3",
       "--only-binary=:all:",
+      "--no-config",
+      "--default-index=https://pypi.org/simple",
     ]],
     ["apt", "apt-get", "tool", "1.2.3", ["install", "-y", "tool=1.2.3"]],
   ] as const)(

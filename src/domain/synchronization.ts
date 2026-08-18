@@ -19,6 +19,7 @@ import {
 import {
   AutomaticRecipeMethod,
   BuildPolicy as BuildPolicySchema,
+  RecipeIndexPolicy,
   type RecipeSource,
   type BuildPolicy,
 } from "./resource.ts";
@@ -75,7 +76,7 @@ export type ActionDetail =
     readonly schedule: SyncSchedule;
     readonly previousSchedule?: SyncSchedule | undefined;
   }
-  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined }
+  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined }
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
   | { readonly kind: "agent-task"; readonly taskId: AgentTaskId; readonly summary: string }
@@ -232,6 +233,7 @@ const InstallToolActionDetailSchema = Schema.Struct({
   method: AutomaticRecipeMethod,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
+  indexPolicy: Schema.optional(RecipeIndexPolicy),
   source: Schema.optional(Schema.Union([
     Schema.NonEmptyString,
     RecipeSourceMetadata,
