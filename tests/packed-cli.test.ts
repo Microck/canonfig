@@ -611,7 +611,8 @@ describe("packed Canonfig executable", () => {
         CANONFIG_SOURCE_CREDENTIAL_REFERENCE: secret,
       },
     );
-    expect(result.status).toBe(5);
+    const doctorExitCode = process.platform === "win32" ? 7 : 5;
+    expect(result.status).toBe(doctorExitCode);
     expect(result.stdout).toBe("");
     expect(result.stderr).not.toContain(secret);
     const envelope = JSON.parse(result.stderr);
@@ -619,7 +620,7 @@ describe("packed Canonfig executable", () => {
       schema: "canonfig.cli/v1",
       command: "doctor",
       status: "error",
-      exitCode: 5,
+      exitCode: doctorExitCode,
       data: {
         schema: "canonfig.doctor/v1",
         noInput: true,
