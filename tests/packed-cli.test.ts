@@ -677,7 +677,7 @@ describe("packed Canonfig executable", () => {
     expect(JSON.parse(overlays.stdout).data).toEqual({ overlays: [] });
 
     const first = invoke(followerHome, ["sync", "--apply", "--json"]);
-    if (process.platform === "linux") {
+    if (process.platform !== "darwin") {
       expect(first.status).toBe(7);
       expect(first.stdout).toBe("");
       expect(JSON.parse(first.stderr)).toMatchObject({
