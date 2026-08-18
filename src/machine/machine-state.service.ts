@@ -27,6 +27,7 @@ import type {
   SchedulerInspection,
   SchedulerJob,
   SetPermissionsInput,
+  SchedulerSnapshot,
   StoreCredentialInput,
   SymlinkInput,
   UserDirectories,
@@ -106,5 +107,12 @@ export class MachineState extends Context.Service<MachineState, {
   ) => Effect.Effect<void, MachineStateError>;
   readonly removeSchedulerJob: (
     definition: RenderedSchedulerJob,
+  ) => Effect.Effect<void, MachineStateError>;
+  readonly snapshotSchedulerJob: (
+    expected: RenderedSchedulerJob,
+  ) => Effect.Effect<SchedulerSnapshot, MachineStateError>;
+  readonly restoreSchedulerJob: (
+    expected: RenderedSchedulerJob,
+    snapshot: SchedulerSnapshot,
   ) => Effect.Effect<void, MachineStateError>;
 }>()("canonfig/machine/MachineState") {}

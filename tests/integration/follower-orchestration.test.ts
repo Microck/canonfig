@@ -37,7 +37,10 @@ import type { SourceServerHandle } from "../../src/enrollment/enrollment.types.t
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
-import type { SyncSchedule } from "../../src/schedule/schedule-manager.types.ts";
+import {
+  SyncScheduleSchema,
+  type SyncSchedule,
+} from "../../src/schedule/schedule-manager.types.ts";
 import {
   canonicalJson,
   digestOf,
@@ -560,6 +563,31 @@ describe("production follower orchestration", () => {
             schedule: "",
           },
         };
+      }),
+      snapshot: () => Effect.sync(() => profileSchedule === undefined
+        ? {
+          state: "absent" as const,
+          platform: "linux" as const,
+          mechanism: "systemd-user-timer" as const,
+          serviceName: "test",
+        }
+        : {
+          state: "present" as const,
+          platform: "linux" as const,
+          mechanism: "systemd-user-timer" as const,
+          serviceName: "test",
+          enabled: true,
+          servicePresent: true,
+          schedulePresent: true,
+          service: "",
+          schedule: JSON.stringify(profileSchedule),
+        }),
+      restore: (_input, snapshot) => Effect.sync(() => {
+        profileSchedule = snapshot.state === "absent"
+          ? undefined
+          : Schema.decodeUnknownSync(SyncScheduleSchema)(
+            JSON.parse(snapshot.schedule ?? "{}"),
+          );
       }),
       remove: () => Effect.sync(() => {
         profileScheduleCalls.push(undefined);

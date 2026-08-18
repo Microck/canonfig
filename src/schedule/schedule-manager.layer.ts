@@ -19,6 +19,7 @@ import {
   normalizeSyncSchedule,
   type ScheduleChange,
   type NormalizedSyncSchedule,
+  type ScheduleSnapshot,
   type ScheduleStatus,
   type SetScheduleInput,
   type SyncSchedule,
@@ -122,6 +123,11 @@ const stateOf = (
   return enabled ? "current" : "disabled";
 };
 
+const snapshotsEqual = (
+  left: ScheduleSnapshot,
+  right: ScheduleSnapshot,
+): boolean => JSON.stringify(left) === JSON.stringify(right);
+
 export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineState> =
   Layer.effect(
     ScheduleManager,
@@ -169,6 +175,45 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
             schedule: desired.schedule,
             definition: desired.definition,
           };
+        },
+      );
+
+      const snapshot = Effect.fn("ScheduleManager.snapshot")(
+        function*(input: SetScheduleInput = {}): Effect.fn.Return<
+          ScheduleSnapshot,
+          ScheduleManagerError
+        > {
+          const desired = yield* definition(input);
+          return yield* machine.snapshotSchedulerJob(desired.definition);
+        },
+      );
+
+      const restore = Effect.fn("ScheduleManager.restore")(
+        function*(
+          input: SetScheduleInput | undefined,
+          prior: ScheduleSnapshot,
+        ): Effect.fn.Return<void, ScheduleManagerError> {
+          const desired = yield* definition(input ?? {});
+          if (
+            prior.platform !== desired.definition.platform
+            || prior.mechanism !== desired.definition.mechanism
+            || prior.serviceName !== desired.definition.serviceName
+          ) {
+            return yield* new ScheduleVerificationError({
+              operation: "restore",
+              state: "invalid-snapshot",
+              message: "native scheduler snapshot does not belong to this schedule",
+            });
+          }
+          yield* machine.restoreSchedulerJob(desired.definition, prior);
+          const after = yield* machine.snapshotSchedulerJob(desired.definition);
+          if (!snapshotsEqual(after, prior)) {
+            return yield* new ScheduleVerificationError({
+              operation: "restore",
+              state: after.state,
+              message: "native scheduler did not restore its exact prior state",
+            });
+          }
         },
       );
 
@@ -236,6 +281,8 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
       return ScheduleManager.of({
         install: upsert,
         inspect,
+        snapshot,
+        restore,
         update: upsert,
         status: inspect,
         remove,

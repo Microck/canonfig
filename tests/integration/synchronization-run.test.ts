@@ -45,6 +45,7 @@ import type {
   RenderedSchedulerJob,
   SchedulerBackend,
   SchedulerInspection,
+  SchedulerSnapshot,
 } from "../../src/machine/machine-state.types.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
@@ -58,7 +59,10 @@ import { StateRepository } from "../../src/state/state-repository.service.ts";
 import { scheduleManagerLayer } from "../../src/schedule/schedule-manager.layer.ts";
 import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
 import { ScheduleVerificationError } from "../../src/schedule/schedule-manager.errors.ts";
-import type { SyncSchedule } from "../../src/schedule/schedule-manager.types.ts";
+import {
+  SyncScheduleSchema,
+  type SyncSchedule,
+} from "../../src/schedule/schedule-manager.types.ts";
 import { planSynchronization } from "../../src/synchronization/planner.ts";
 import {
   defaultSynchronizationExecutionLimits,
@@ -123,6 +127,28 @@ class RecordingScheduler implements SchedulerBackend {
         && this.definition.schedule === expected.schedule,
     }));
 
+  readonly snapshot = (
+    expected: RenderedSchedulerJob,
+  ): Effect.Effect<SchedulerSnapshot> =>
+    Effect.sync(() => this.definition === undefined
+      ? {
+        state: "absent" as const,
+        platform: expected.platform,
+        mechanism: expected.mechanism,
+        serviceName: expected.serviceName,
+      }
+      : {
+        state: "present" as const,
+        platform: expected.platform,
+        mechanism: expected.mechanism,
+        serviceName: expected.serviceName,
+        enabled: true,
+        servicePresent: true,
+        schedulePresent: true,
+        service: this.definition.service,
+        schedule: this.definition.schedule,
+      });
+
   readonly install = (
     definition: RenderedSchedulerJob,
   ): Effect.Effect<void> =>
@@ -135,6 +161,22 @@ class RecordingScheduler implements SchedulerBackend {
     Effect.sync(() => {
       this.definition = undefined;
       this.removals += 1;
+    });
+
+  readonly restore = (
+    expected: RenderedSchedulerJob,
+    snapshot: SchedulerSnapshot,
+  ): Effect.Effect<void> =>
+    Effect.sync(() => {
+      if (snapshot.state === "absent") {
+        this.definition = undefined;
+        return;
+      }
+      this.definition = {
+        ...expected,
+        service: snapshot.service ?? "",
+        schedule: snapshot.schedule ?? "",
+      };
     });
 }
 
@@ -490,6 +532,7 @@ const reencodePlan = (
 const scheduleDefaultRunInput = (
   fixture: Fixture,
   run: string,
+  operation: "upsert" | "remove" = "upsert",
 ): SynchronizationRunInput => {
   const schedule = { kind: "daily" as const, localTime: "03:30" };
   const previousSchedule = { kind: "daily" as const, localTime: "02:15" };
@@ -499,7 +542,7 @@ const scheduleDefaultRunInput = (
     kind: "schedule-default" as const,
     detail: {
       kind: "schedule-default" as const,
-      operation: "upsert" as const,
+      operation,
       schedule,
       previousSchedule,
     },
@@ -528,9 +571,12 @@ const scheduleDefaultRunInput = (
 const scheduleManagerFor = (controls: {
   failUpdate: boolean;
   blockUpdate: boolean;
+  failRemove?: boolean;
+  failAfterMutation?: boolean;
+  initial?: SyncSchedule | undefined;
   started?: (() => void) | undefined;
 }): ScheduleManager["Service"] => {
-  let current: SyncSchedule | undefined;
+  let current: SyncSchedule | undefined = controls.initial;
   let blockedOnce = false;
   const status = (schedule: SyncSchedule) => ({
     state: current === undefined
@@ -556,6 +602,7 @@ const scheduleManagerFor = (controls: {
       return Effect.never;
     }
     if (controls.failUpdate) {
+      if (controls.failAfterMutation) current = schedule;
       return Effect.fail(new ScheduleVerificationError({
         operation: "update",
         state: "failed",
@@ -577,7 +624,40 @@ const scheduleManagerFor = (controls: {
     status: (input) => Effect.succeed(status(
       input?.schedule ?? { kind: "daily", localTime: "00:00" },
     )),
+    snapshot: () => Effect.succeed(current === undefined
+      ? {
+        state: "absent" as const,
+        platform: "linux" as const,
+        mechanism: "systemd-user-timer" as const,
+        serviceName: "test",
+      }
+      : {
+        state: "present" as const,
+        platform: "linux" as const,
+        mechanism: "systemd-user-timer" as const,
+        serviceName: "test",
+        enabled: true,
+        servicePresent: true,
+        schedulePresent: true,
+        service: "",
+        schedule: JSON.stringify(current),
+      }),
+    restore: (_input, snapshot) => Effect.sync(() => {
+      current = snapshot.state === "absent"
+        ? undefined
+        : Schema.decodeUnknownSync(SyncScheduleSchema)(
+          JSON.parse(snapshot.schedule ?? "{}"),
+        );
+    }),
     remove: () => {
+      if (controls.failRemove) {
+        if (controls.failAfterMutation) current = undefined;
+        return Effect.fail(new ScheduleVerificationError({
+          operation: "remove",
+          state: "failed",
+          message: "injected schedule remove failure",
+        }));
+      }
       current = undefined;
       return Effect.succeed({ change: "removed" as const });
     },
@@ -704,7 +784,11 @@ const installerInvocation = async (
 describe("synchronization apply run", () => {
   it("fails and journals a profile schedule mutation instead of converging", async () => {
     const fixture = fileFixture(temporaryDirectory(), "schedule-failure");
-    const controls = { failUpdate: true, blockUpdate: false };
+    const controls = {
+      failUpdate: true,
+      failAfterMutation: true,
+      blockUpdate: false,
+    };
     const manager = scheduleManagerFor(controls);
     const state = stateRepositoryLayer(fixture.database);
     const machine = machineLayer(fixture.root);
@@ -746,13 +830,108 @@ describe("synchronization apply run", () => {
     ).get("schedule-failure") as { status: string };
     database.close();
     expect(row.status).toBe("Failed");
+    await expect(
+      Effect.runPromise(manager.snapshot({
+        schedule: { kind: "daily", localTime: "03:30" },
+      })),
+    ).resolves.toMatchObject({ state: "absent" });
+  });
+
+  it("restores a pre-existing native schedule after an update failure", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "schedule-preexisting-update");
+    const previous = { kind: "daily" as const, localTime: "02:15" };
+    const manager = scheduleManagerFor({
+      failUpdate: true,
+      failAfterMutation: true,
+      blockUpdate: false,
+      initial: previous,
+    });
+    const state = stateRepositoryLayer(fixture.database);
+    const machine = machineLayer(fixture.root);
+    const synchronization = SynchronizationLive.pipe(
+      Layer.provide(Layer.merge(state, machine)),
+    );
+    const layer = Layer.mergeAll(
+      state,
+      machine,
+      synchronization,
+      Layer.succeed(ScheduleManager, manager),
+    );
+
+    await Effect.runPromise(
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        yield* repository.registerFollower({ follower });
+        yield* repository.publishRevision({ revision: fixture.revision });
+        const service = yield* Synchronization;
+        return yield* service.run(scheduleDefaultRunInput(
+          fixture,
+          "schedule-preexisting-update",
+        ));
+      }).pipe(Effect.provide(layer)),
+    );
+
+    const restored = await Effect.runPromise(manager.snapshot({
+      schedule: { kind: "daily", localTime: "03:30" },
+    }));
+    expect(restored.state).toBe("present");
+    expect(JSON.parse(restored.schedule ?? "{}")).toEqual(previous);
+  });
+
+  it("restores a pre-existing native schedule after a remove failure", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "schedule-preexisting-remove");
+    const previous = { kind: "daily" as const, localTime: "02:15" };
+    const manager = scheduleManagerFor({
+      failUpdate: false,
+      failRemove: true,
+      failAfterMutation: true,
+      blockUpdate: false,
+      initial: previous,
+    });
+    const state = stateRepositoryLayer(fixture.database);
+    const machine = machineLayer(fixture.root);
+    const synchronization = SynchronizationLive.pipe(
+      Layer.provide(Layer.merge(state, machine)),
+    );
+    const layer = Layer.mergeAll(
+      state,
+      machine,
+      synchronization,
+      Layer.succeed(ScheduleManager, manager),
+    );
+
+    await Effect.runPromise(
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        yield* repository.registerFollower({ follower });
+        yield* repository.publishRevision({ revision: fixture.revision });
+        const service = yield* Synchronization;
+        return yield* service.run(scheduleDefaultRunInput(
+          fixture,
+          "schedule-preexisting-remove",
+          "remove",
+        ));
+      }).pipe(Effect.provide(layer)),
+    );
+
+    const restored = await Effect.runPromise(manager.snapshot({
+      schedule: { kind: "daily", localTime: "03:30" },
+    }));
+    expect(restored.state).toBe("present");
+    expect(JSON.parse(restored.schedule ?? "{}")).toEqual(previous);
   });
 
   it("journals an interrupted schedule mutation and recovers it after restart", async () => {
     const fixture = fileFixture(temporaryDirectory(), "schedule-restart");
+    let notifyStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
     const controls = {
       failUpdate: false,
-      blockUpdate: false,
+      blockUpdate: true,
+      initial: { kind: "daily" as const, localTime: "02:15" },
+      started: () => notifyStarted?.(),
     };
     const manager = scheduleManagerFor(controls);
     const state = stateRepositoryLayer(fixture.database);
@@ -771,25 +950,19 @@ describe("synchronization apply run", () => {
         const repository = yield* StateRepository;
         yield* repository.registerFollower({ follower });
         yield* repository.publishRevision({ revision: fixture.revision });
-        yield* repository.startRun({
-          id: decode(RunId)("schedule-restart"),
-          follower: follower.id,
-          revision: fixture.revision.id,
-          plan: scheduleDefaultRunInput(fixture, "schedule-restart").plan,
-          startedAt: "2026-08-16T00:00:00Z",
-        });
-        yield* repository.completeRun({
-          run: decode(RunId)("schedule-restart"),
-          completedAt: "2026-08-16T00:00:01Z",
-          outcome: {
-            outcome: "Interrupted",
-            run: decode(RunId)("schedule-restart"),
-            completedActions: [],
-          },
-          appliedResources: [],
-        });
       }).pipe(Effect.provide(layer)),
     );
+
+    const interrupted = Effect.gen(function*() {
+      const service = yield* Synchronization;
+      return yield* service.run(scheduleDefaultRunInput(
+        fixture,
+        "schedule-restart",
+      ));
+    }).pipe(Effect.provide(layer));
+    const fiber = Effect.runFork(interrupted);
+    await started;
+    await Effect.runPromise(Fiber.interrupt(fiber));
 
     const interruptedDatabase = new DatabaseSync(fixture.database, { readOnly: true });
     // SAFETY: this SELECT reads the status row for the run created above.
@@ -800,6 +973,8 @@ describe("synchronization apply run", () => {
     expect(interruptedRow.status).toBe("Interrupted");
     expect(actionRows(fixture.database).map((row) => row.state)).toEqual([
       "pending",
+      "running",
+      "failed",
     ]);
 
     const recovered = await Effect.runPromise(
@@ -820,8 +995,15 @@ describe("synchronization apply run", () => {
     expect(actionRows(fixture.database).map((row) => row.state)).toEqual([
       "pending",
       "running",
+      "failed",
+      "running",
       "succeeded",
     ]);
+    await expect(
+      Effect.runPromise(manager.snapshot({
+        schedule: { kind: "daily", localTime: "03:30" },
+      })),
+    ).resolves.toMatchObject({ state: "present", schedule: expect.any(String) });
   });
 
   it("journals agent-apply before mutation and recovers an interrupted task", async () => {

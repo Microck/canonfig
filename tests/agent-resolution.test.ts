@@ -261,6 +261,45 @@ describe("agent resolution", () => {
       "poweroff.target",
       "--now",
     ], ["reboot"]],
+    ["systemctl accepts negative decimal kill-value", "systemctl", [
+      "reenable",
+      "--kill-value",
+      "-1",
+      "poweroff.target",
+      "--now",
+    ], ["reboot"]],
+    ["systemctl accepts equals negative decimal kill-value", "systemctl", [
+      "reenable",
+      "--kill-value=-1",
+      "poweroff.target",
+      "--now",
+    ], ["reboot"]],
+    ["systemctl accepts separate negative hexadecimal kill-value", "systemctl", [
+      "reenable",
+      "--kill-value",
+      "-0x1",
+      "poweroff.target",
+      "--now",
+    ], ["reboot"]],
+    ["systemctl accepts negative hexadecimal kill-value", "systemctl", [
+      "reenable",
+      "--kill-value=-0x1",
+      "poweroff.target",
+      "--now",
+    ], ["reboot"]],
+    ["systemctl accepts signal-style negative kill-value", "systemctl", [
+      "reenable",
+      "--kill-value",
+      "-INT",
+      "poweroff.target",
+      "--now",
+    ], ["reboot"]],
+    ["systemctl accepts equals signal-style negative kill-value", "systemctl", [
+      "reenable",
+      "--kill-value=-INT",
+      "poweroff.target",
+      "--now",
+    ], ["reboot"]],
     ["systemctl reenables power-state target with equals kill-value", "systemctl", [
       "reenable",
       "--kill-value=INT",
@@ -398,6 +437,12 @@ describe("agent resolution", () => {
       "--machine=reboot.target",
       "status",
       "default.target",
+    ]],
+    ["known option-shaped kill-value does not become an activation flag", [
+      "reenable",
+      "--kill-value",
+      "--now",
+      "poweroff.target",
     ]],
   ] as const)(
     "does not derive reboot for ordinary systemctl operation: %s",

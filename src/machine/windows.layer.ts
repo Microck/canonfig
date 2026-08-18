@@ -45,6 +45,7 @@ import type {
   SchedulerBackend,
   SchedulerCalendar,
   SchedulerJob,
+  SchedulerSnapshot,
   SafeRootMutationInput,
 } from "./machine-state.types.ts";
 
@@ -789,6 +790,53 @@ export const windowsMachineStateLayer = (
             }),
           );
         },
+        snapshot: (expected) => {
+          const taskName = powershellLiteral(expected.serviceName);
+          const script = [
+            `$Task = Get-ScheduledTask -TaskName ${taskName} -ErrorAction SilentlyContinue`,
+            "if ($null -eq $Task) { [Console]::Out.Write('missing') } else {",
+            "  $Xml = Export-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath",
+            "  [ordered]@{ Enabled = $Task.Settings.Enabled; Xml = $Xml } | ConvertTo-Json -Compress",
+            "}",
+          ].join("\r\n");
+          return runSchedulerScript(script).pipe(
+            Effect.flatMap((result): Effect.Effect<SchedulerSnapshot, MachineStateError> => {
+              const output = Buffer.from(result.standardOutput).toString("utf8");
+              if (result.exitCode !== 0 || output === "missing") {
+                return Effect.succeed({
+                  state: "absent",
+                  platform: expected.platform,
+                  mechanism: expected.mechanism,
+                  serviceName: expected.serviceName,
+                } satisfies SchedulerSnapshot);
+              }
+              try {
+                const actual = Schema.decodeUnknownSync(Schema.Struct({
+                  Enabled: Schema.optional(Schema.Boolean),
+                  Xml: Schema.optional(Schema.String),
+                }))(JSON.parse(output));
+                if (actual.Xml === undefined || actual.Enabled === undefined) {
+                  throw new Error("Task Scheduler export was incomplete");
+                }
+                return Effect.succeed({
+                  state: "present",
+                  platform: expected.platform,
+                  mechanism: expected.mechanism,
+                  serviceName: expected.serviceName,
+                  enabled: actual.Enabled,
+                  servicePresent: false,
+                  schedulePresent: false,
+                  native: Buffer.from(actual.Xml, "utf8").toString("base64"),
+                } satisfies SchedulerSnapshot);
+              } catch (error) {
+                return Effect.fail(new HumanActionRequiredError({
+                  action: "capture the Canonfig scheduled task",
+                  recovery: `Task Scheduler export was invalid: ${String(error)}`,
+                }));
+              }
+            }),
+          );
+        },
         install: (definition) =>
           runSchedulerScript(`${definition.service}\r\n${definition.schedule}`).pipe(
             Effect.flatMap((result) =>
@@ -817,6 +865,33 @@ export const windowsMachineStateLayer = (
                 }))
             ),
           ),
+        restore: (expected, snapshot) => {
+          const taskName = powershellLiteral(expected.serviceName);
+          return Effect.gen(function*() {
+            yield* runSchedulerScript(
+              `Unregister-ScheduledTask -TaskName ${taskName} -Confirm:$false -ErrorAction SilentlyContinue`,
+            ).pipe(Effect.ignore);
+            if (snapshot.state === "absent") return;
+            if (snapshot.native === undefined) {
+              return yield* new HumanActionRequiredError({
+                action: "restore the Canonfig scheduled task",
+                recovery: "The captured Task Scheduler export was incomplete; inspect the task manually.",
+              });
+            }
+            const script = [
+              `$Xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${snapshot.native}'))`,
+              `Register-ScheduledTask -TaskName ${taskName} -Xml $Xml -Force`,
+            ].join("\r\n");
+            const result = yield* runSchedulerScript(script);
+            if (result.exitCode !== 0) {
+              return yield* new HumanActionRequiredError({
+                action: "restore the Canonfig scheduled task",
+                recovery:
+                  "Sign in interactively and ensure per-user Task Scheduler access is available, then retry.",
+              });
+            }
+          });
+        },
       };
       const scheduler = options.schedulerBackend ?? nativeScheduler;
 
@@ -1115,8 +1190,10 @@ export const windowsMachineStateLayer = (
         },
         renderSchedulerJob: renderTaskSchedulerJob,
         inspectSchedulerJob: scheduler.inspect,
+        snapshotSchedulerJob: scheduler.snapshot,
         installSchedulerJob: scheduler.install,
         removeSchedulerJob: scheduler.remove,
+        restoreSchedulerJob: scheduler.restore,
       });
     }).pipe(Effect.provide(base)),
   );

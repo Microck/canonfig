@@ -2279,7 +2279,6 @@ const parseSystemctlArguments = (
         const separateValue = arguments_[index + 1];
         if (
           separateValue === undefined
-          || separateValue.startsWith("-")
         ) {
           return invalidSystemctlArguments();
         }

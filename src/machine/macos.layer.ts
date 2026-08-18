@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { access, lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 
@@ -30,6 +30,7 @@ import type {
   SchedulerBackend,
   SchedulerCalendar,
   SchedulerJob,
+  SchedulerSnapshot,
 } from "./machine-state.types.ts";
 
 export interface MacosMachineStateOptions {
@@ -292,6 +293,57 @@ export const macosMachineStateLayer = (
             };
           });
         },
+        snapshot: (expected) => {
+          const path = join(launchAgents, expected.serviceName);
+          return Effect.gen(function*() {
+            const stored = yield* Effect.tryPromise({
+              try: () =>
+                readFile(path, "utf8").catch((cause: NodeJS.ErrnoException) =>
+                  cause.code === "ENOENT" ? undefined : Promise.reject(cause)
+                ),
+              catch: (cause) =>
+                new MachineFilesystemError({
+                  operation: "snapshot launchd user agent",
+                  path,
+                  message: cause instanceof Error ? cause.message : String(cause),
+                }),
+            });
+            if (stored === undefined) {
+              return {
+                state: "absent",
+                platform: expected.platform,
+                mechanism: expected.mechanism,
+                serviceName: expected.serviceName,
+              } satisfies SchedulerSnapshot;
+            }
+            const metadata = yield* Effect.tryPromise({
+              try: () => lstat(path),
+              catch: (cause) =>
+                new MachineFilesystemError({
+                  operation: "snapshot launchd user agent",
+                  path,
+                  message: cause instanceof Error ? cause.message : String(cause),
+                }),
+            });
+            const label = expected.serviceName.slice(0, -".plist".length);
+            const active = yield* runLaunchctl(["print", `${launchDomain}/${label}`]).pipe(
+              Effect.map((result) => result.exitCode === 0),
+            );
+            return {
+              state: "present",
+              platform: expected.platform,
+              mechanism: expected.mechanism,
+              serviceName: expected.serviceName,
+              enabled: active,
+              servicePresent: true,
+              schedulePresent: true,
+              service: stored,
+              schedule: stored,
+              serviceMode: metadata.mode & 0o777,
+              scheduleMode: metadata.mode & 0o777,
+            } satisfies SchedulerSnapshot;
+          });
+        },
         install: (definition) => {
           const path = join(launchAgents, definition.serviceName);
           return Effect.gen(function*() {
@@ -318,6 +370,43 @@ export const macosMachineStateLayer = (
             yield* machine.removeFile({
               path: linuxPath({ platform: "macos", absolute: path }),
             });
+          });
+        },
+        restore: (expected, snapshot) => {
+          const path = join(launchAgents, expected.serviceName);
+          return Effect.gen(function*() {
+            yield* runLaunchctl(["bootout", launchDomain, path]).pipe(Effect.ignore);
+            if (snapshot.state === "absent") {
+              yield* machine.removeFile({
+                path: linuxPath({ platform: "macos", absolute: path }),
+              });
+              return;
+            }
+            if (
+              !snapshot.servicePresent
+              || !snapshot.schedulePresent
+              || snapshot.service === undefined
+            ) {
+              return yield* new HumanActionRequiredError({
+                action: "restore the Canonfig launchd agent",
+                recovery: "The captured launchd plist was incomplete; inspect the user agent manually.",
+              });
+            }
+            yield* machine.atomicWrite({
+              path: linuxPath({ platform: "macos", absolute: path }),
+              content: new TextEncoder().encode(snapshot.service),
+              mode: snapshot.serviceMode ?? 0o600,
+            });
+            if (snapshot.enabled) {
+              const result = yield* runLaunchctl(["bootstrap", launchDomain, path]);
+              if (result.exitCode !== 0) {
+                return yield* new HumanActionRequiredError({
+                  action: "load the restored Canonfig launchd agent",
+                  recovery:
+                    "Sign in to the macOS graphical user session and ensure launchd user agents are available, then retry.",
+                });
+              }
+            }
           });
         },
       };
@@ -524,8 +613,10 @@ export const macosMachineStateLayer = (
         },
         renderSchedulerJob: renderLaunchdJob,
         inspectSchedulerJob: scheduler.inspect,
+        snapshotSchedulerJob: scheduler.snapshot,
         installSchedulerJob: scheduler.install,
         removeSchedulerJob: scheduler.remove,
+        restoreSchedulerJob: scheduler.restore,
       });
     }).pipe(Effect.provide(base)),
   );

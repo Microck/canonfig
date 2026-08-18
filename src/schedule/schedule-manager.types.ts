@@ -1,7 +1,11 @@
 import { Schema } from "effect";
 
 import type { ResourceSpecInput, ScheduleDefault } from "../domain/profile.ts";
-import type { MachinePlatform, RenderedSchedulerJob } from "../machine/machine-state.types.ts";
+import type {
+  MachinePlatform,
+  RenderedSchedulerJob,
+  SchedulerSnapshot,
+} from "../machine/machine-state.types.ts";
 
 export const scheduleWeekdays = [
   "Mon",
@@ -81,6 +85,8 @@ export interface ScheduleStatus {
   readonly schedule: SyncSchedule;
   readonly definition: RenderedSchedulerJob;
 }
+
+export type ScheduleSnapshot = SchedulerSnapshot;
 
 export interface ScheduleChange {
   readonly change: "installed" | "unchanged" | "updated";

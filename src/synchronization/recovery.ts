@@ -33,6 +33,7 @@ import {
   executionContexts,
   executionLimits,
   executeSynchronizationAction,
+  restoreScheduleRollbackReference,
   type ActionResult,
   type SynchronizationExecutionResult,
 } from "./executor.ts";
@@ -418,6 +419,34 @@ export const recoverSynchronizationPlan = (
         // A native scheduler mutation is an external side effect. Re-run the
         // idempotent action on recovery, including after a previously
         // journaled success, so a restart cannot trust stale scheduler state.
+        if (last.state === "running" || last.state === "failed") {
+          const rollbackReference = [...recovery.actions].reverse().find((event) =>
+            event.action === state.action.id && event.rollbackReference !== undefined
+          )?.rollbackReference;
+          if (rollbackReference !== undefined) {
+            const manager = Option.getOrUndefined(
+              yield* Effect.serviceOption(ScheduleManager),
+            );
+            if (manager === undefined) {
+              return yield* integrityError(
+                recovery,
+                `cannot restore schedule action ${state.action.id}: native scheduler is unavailable`,
+              );
+            }
+            yield* restoreScheduleRollbackReference(
+              state.context,
+              rollbackReference,
+              manager,
+            ).pipe(
+              Effect.mapError((error) =>
+                integrityError(
+                  recovery,
+                  `cannot restore schedule action ${state.action.id}: ${String(error)}`,
+                )
+              ),
+            );
+          }
+        }
         result = yield* executeSynchronizationAction(input, state, attempt);
       } else if (last.state === "skipped") {
         result = preservedOutcome(input, state.action);

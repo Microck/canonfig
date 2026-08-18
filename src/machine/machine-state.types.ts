@@ -206,15 +206,52 @@ export interface SchedulerInspection {
   readonly matches: boolean;
 }
 
+/**
+ * Exact native scheduler material captured before a managed mutation.
+ *
+ * `servicePresent` and `schedulePresent` distinguish a partial native
+ * installation from an absent job. Platform adapters may additionally store
+ * opaque native state when rendered service/schedule strings are insufficient
+ * to restore the job.
+ */
+export type SchedulerSnapshot =
+  | {
+    readonly state: "absent";
+    readonly platform: MachinePlatform;
+    readonly mechanism: RenderedSchedulerJob["mechanism"];
+    readonly serviceName: string;
+  }
+  | {
+    readonly state: "present";
+    readonly platform: MachinePlatform;
+    readonly mechanism: RenderedSchedulerJob["mechanism"];
+    readonly serviceName: string;
+    readonly enabled: boolean;
+    readonly servicePresent: boolean;
+    readonly schedulePresent: boolean;
+    readonly service?: string | undefined;
+    readonly schedule?: string | undefined;
+    readonly serviceMode?: number | undefined;
+    readonly scheduleMode?: number | undefined;
+    readonly native?: string | undefined;
+  };
+
 export interface SchedulerBackend {
   readonly inspect: (
     expected: RenderedSchedulerJob,
   ) => Effect.Effect<SchedulerInspection, MachineStateError>;
+  readonly snapshot: (
+    expected: RenderedSchedulerJob,
+  ) => Effect.Effect<SchedulerSnapshot, MachineStateError>;
   readonly install: (
     definition: RenderedSchedulerJob,
   ) => Effect.Effect<void, MachineStateError>;
   readonly remove: (
     definition: RenderedSchedulerJob,
+  ) => Effect.Effect<void, MachineStateError>;
+  readonly restore: (
+    expected: RenderedSchedulerJob,
+    snapshot: SchedulerSnapshot,
   ) => Effect.Effect<void, MachineStateError>;
 }
 

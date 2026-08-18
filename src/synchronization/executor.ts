@@ -17,6 +17,7 @@ import type {
 } from "../domain/synchronization.ts";
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import type { SchedulerSnapshot } from "../machine/machine-state.types.ts";
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import { desiredResourceDigest } from "./resource-plans.ts";
 import {
@@ -27,6 +28,7 @@ import {
 } from "./resource-executors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
+import type { ScheduleManagerError } from "../schedule/schedule-manager.errors.ts";
 import type { StateRepositoryError } from "../state/state-repository.errors.ts";
 import type { VerificationEvidence } from "../state/state-repository.types.ts";
 import {
@@ -82,6 +84,138 @@ const profileScheduleDesired = (
   schedule,
 });
 
+const SchedulerSnapshotSchema = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("absent"),
+    platform: Schema.Literals(["linux", "macos", "windows"]),
+    mechanism: Schema.Literals([
+      "systemd-user-timer",
+      "launchd-user-agent",
+      "task-scheduler",
+    ]),
+    serviceName: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    state: Schema.Literal("present"),
+    platform: Schema.Literals(["linux", "macos", "windows"]),
+    mechanism: Schema.Literals([
+      "systemd-user-timer",
+      "launchd-user-agent",
+      "task-scheduler",
+    ]),
+    serviceName: Schema.NonEmptyString,
+    enabled: Schema.Boolean,
+    servicePresent: Schema.Boolean,
+    schedulePresent: Schema.Boolean,
+    service: Schema.optional(Schema.String),
+    schedule: Schema.optional(Schema.String),
+    serviceMode: Schema.optional(Schema.Int),
+    scheduleMode: Schema.optional(Schema.Int),
+    native: Schema.optional(Schema.String),
+  }),
+]);
+
+const scheduleRollbackReference = (
+  context: ActionState["context"],
+): Effect.Effect<
+  string,
+  SynchronizationExecutionInputError | MachineStateError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const directories = yield* machine.userDirectories();
+    const directory = yield* machine.normalizePath({
+      path: `canonfig/rollback/${context.run}`,
+      base: directories.cache,
+    });
+    yield* machine.ensureDirectory({ path: directory });
+    return (yield* machine.normalizePath({
+      path: `${sha256Hex(context.action.id)}.schedule.json`,
+      base: directory,
+    })).absolute;
+  });
+
+const captureScheduleRollback = (
+  context: ActionState["context"],
+  scheduleManager: ScheduleManager["Service"],
+): Effect.Effect<
+  {
+    readonly reference: string;
+    readonly snapshot: SchedulerSnapshot;
+    readonly restore: Effect.Effect<void, ScheduleManagerError | MachineStateError, MachineState>;
+  },
+  SynchronizationExecutionInputError | MachineStateError | ScheduleManagerError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const reference = yield* scheduleRollbackReference(context);
+    const snapshot = yield* scheduleManager.snapshot({
+      schedule: context.action.detail.kind === "schedule-default"
+        ? context.action.detail.schedule
+        : undefined,
+    });
+    const machine = yield* MachineState;
+    yield* machine.atomicWrite({
+      path: yield* machine.normalizePath({ path: reference }),
+      content: new TextEncoder().encode(JSON.stringify(snapshot)),
+    });
+    return {
+      reference,
+      snapshot,
+      restore: scheduleManager.restore(
+        {
+          schedule: context.action.detail.kind === "schedule-default"
+            ? context.action.detail.schedule
+            : undefined,
+        },
+        snapshot,
+      ),
+    };
+  });
+
+export const restoreScheduleRollbackReference = (
+  context: ActionState["context"],
+  reference: string,
+  scheduleManager: ScheduleManager["Service"],
+): Effect.Effect<
+  void,
+  SynchronizationExecutionInputError | MachineStateError | ScheduleManagerError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const expected = yield* scheduleRollbackReference(context);
+    const machine = yield* MachineState;
+    const actual = yield* machine.normalizePath({ path: reference });
+    if (actual.absolute !== expected) {
+      return yield* new InvalidExecutionPlanError({
+        message: `schedule rollback reference does not belong to action ${context.action.id}`,
+      });
+    }
+    const bytes = yield* machine.readFile({
+      path: actual,
+      maximumBytes: 16 * 1024 * 1024,
+    });
+    const snapshot = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(SchedulerSnapshotSchema),
+    )(new TextDecoder().decode(bytes)).pipe(
+      Effect.mapError((error) =>
+        new InvalidExecutionPlanError({
+          message: `invalid schedule rollback material for action ${context.action.id}: ${String(error)}`,
+        })
+      ),
+    );
+    if (context.action.detail.kind !== "schedule-default") {
+      return yield* new InvalidExecutionPlanError({
+        message: `schedule rollback reference targets a non-schedule action ${context.action.id}`,
+      });
+    }
+    yield* scheduleManager.restore(
+      { schedule: context.action.detail.schedule },
+      snapshot,
+    );
+  });
+
 const now = (): Effect.Effect<string> =>
   Effect.map(Clock.currentTimeMillis, (milliseconds) =>
     new Date(milliseconds).toISOString()
@@ -91,6 +225,7 @@ const redact = (
   value:
     | Error
     | MachineStateError
+    | ScheduleManagerError
     | StateRepositoryError
     | SynchronizationExecutionInputError,
   secrets: ReadonlyArray<string>,
@@ -438,21 +573,22 @@ const executeScheduleDefaultAction = (
       } satisfies ActionResult;
     }
 
-    const rollback = detail.operation === "upsert"
-      ? detail.previousSchedule === undefined
-        ? scheduleManager.remove({ schedule: detail.schedule }).pipe(Effect.asVoid)
-        : scheduleManager.update({ schedule: detail.previousSchedule }).pipe(Effect.asVoid)
-      : detail.previousSchedule === undefined
-        ? Effect.void
-        : scheduleManager.install({ schedule: detail.previousSchedule }).pipe(Effect.asVoid);
+    let rollback: Effect.Effect<void, unknown, MachineState> = Effect.void;
+    let rollbackReference: string | undefined;
 
     const work = Effect.gen(function*() {
+      const captured = yield* captureScheduleRollback(
+        state.context,
+        scheduleManager,
+      );
+      rollback = captured.restore;
+      rollbackReference = captured.reference;
       yield* journal(
         input.id,
         state.action.id,
         "running",
         undefined,
-        undefined,
+        rollbackReference,
         attempt,
       );
       if (detail.operation === "remove") {
@@ -472,7 +608,7 @@ const executeScheduleDefaultAction = (
             state.action.id,
             "failed",
             verification,
-            undefined,
+            rollbackReference,
             attempt,
           );
           return {
@@ -492,7 +628,7 @@ const executeScheduleDefaultAction = (
         state.action.id,
         "succeeded",
         verification,
-        undefined,
+        rollbackReference,
         attempt,
       );
       return { kind: "verified" } satisfies ActionResult;
@@ -507,7 +643,7 @@ const executeScheduleDefaultAction = (
             state.action.id,
             "failed",
             { status: "not-run", method: "interrupted" },
-            undefined,
+            rollbackReference,
             attempt,
           )),
           Effect.ignore,
@@ -521,7 +657,7 @@ const executeScheduleDefaultAction = (
             state.action.id,
             "failed",
             { status: "not-run", method: "action-failed" },
-            undefined,
+            rollbackReference,
             attempt,
           )),
           Effect.ignore,

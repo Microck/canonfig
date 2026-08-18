@@ -57,6 +57,7 @@ import type {
   RenderedSchedulerJob,
   SchedulerBackend,
   SchedulerInspection,
+  SchedulerSnapshot,
 } from "../../src/machine/machine-state.types.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import {
@@ -138,6 +139,28 @@ class RecordingScheduler implements SchedulerBackend {
         && this.definition.schedule === expected.schedule,
     });
 
+  readonly snapshot = (
+    expected: RenderedSchedulerJob,
+  ): Effect.Effect<SchedulerSnapshot> =>
+    Effect.succeed(this.definition === undefined
+      ? {
+        state: "absent" as const,
+        platform: expected.platform,
+        mechanism: expected.mechanism,
+        serviceName: expected.serviceName,
+      }
+      : {
+        state: "present" as const,
+        platform: expected.platform,
+        mechanism: expected.mechanism,
+        serviceName: expected.serviceName,
+        enabled: true,
+        servicePresent: true,
+        schedulePresent: true,
+        service: this.definition.service,
+        schedule: this.definition.schedule,
+      });
+
   readonly install = (
     definition: RenderedSchedulerJob,
   ): Effect.Effect<void> =>
@@ -149,6 +172,22 @@ class RecordingScheduler implements SchedulerBackend {
   readonly remove = (): Effect.Effect<void> =>
     Effect.sync(() => {
       this.definition = undefined;
+    });
+
+  readonly restore = (
+    expected: RenderedSchedulerJob,
+    snapshot: SchedulerSnapshot,
+  ): Effect.Effect<void> =>
+    Effect.sync(() => {
+      if (snapshot.state === "absent") {
+        this.definition = undefined;
+        return;
+      }
+      this.definition = {
+        ...expected,
+        service: snapshot.service ?? "",
+        schedule: snapshot.schedule ?? "",
+      };
     });
 }
 

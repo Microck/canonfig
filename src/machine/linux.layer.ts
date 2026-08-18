@@ -75,6 +75,7 @@ import type {
   SchedulerBackend,
   SchedulerCalendar,
   SchedulerJob,
+  SchedulerSnapshot,
   SetPermissionsInput,
   StoreCredentialInput,
   SymlinkInput,
@@ -979,6 +980,27 @@ const systemdBackend = (
           }))
       ),
     );
+  const readUnit = (
+    path: string,
+  ): Effect.Effect<
+    { readonly content: string; readonly mode: number } | undefined,
+    MachineStateError
+  > =>
+    Effect.tryPromise({
+      try: async () => {
+        try {
+          const [content, metadata] = await Promise.all([
+            readFile(path, "utf8"),
+            lstat(path),
+          ]);
+          return { content, mode: metadata.mode & 0o777 };
+        } catch (cause) {
+          if (errorCode(cause) === "ENOENT") return undefined;
+          throw cause;
+        }
+      },
+      catch: filesystemError("snapshot systemd user schedule", path),
+    });
   return {
     inspect: (expected) =>
       Effect.gen(function*() {
@@ -1012,6 +1034,38 @@ const systemdBackend = (
         );
         return { ...installed, enabled };
       }),
+    snapshot: (expected) =>
+      Effect.gen(function*() {
+        const path = paths(expected);
+        const service = yield* readUnit(path.service);
+        const timer = yield* readUnit(path.timer);
+        if (service === undefined && timer === undefined) {
+          return {
+            state: "absent",
+            platform: expected.platform,
+            mechanism: expected.mechanism,
+            serviceName: expected.serviceName,
+          } satisfies SchedulerSnapshot;
+        }
+        const enabled = timer === undefined
+          ? false
+          : yield* runSystemctl(["is-enabled", path.timerName]).pipe(
+            Effect.map((result) => result.exitCode === 0),
+          );
+        return {
+          state: "present",
+          platform: expected.platform,
+          mechanism: expected.mechanism,
+          serviceName: expected.serviceName,
+          enabled,
+          servicePresent: service !== undefined,
+          schedulePresent: timer !== undefined,
+          service: service?.content,
+          schedule: timer?.content,
+          serviceMode: service?.mode,
+          scheduleMode: timer?.mode,
+        } satisfies SchedulerSnapshot;
+      }),
     install: (definition) =>
       Effect.gen(function*() {
         const path = paths(definition);
@@ -1032,6 +1086,58 @@ const systemdBackend = (
         yield* promiseEffect("remove systemd timer", path.timer, () =>
           rm(path.timer, { force: true }));
         yield* requireSuccess(["daemon-reload"], "reload the systemd user manager");
+      }),
+    restore: (expected, snapshot) =>
+      Effect.gen(function*() {
+        const path = paths(expected);
+        yield* runSystemctl(["disable", "--now", path.timerName]).pipe(Effect.ignore);
+        if (snapshot.state === "absent") {
+          yield* promiseEffect("remove systemd service", path.service, () =>
+            rm(path.service, { force: true }));
+          yield* promiseEffect("remove systemd timer", path.timer, () =>
+            rm(path.timer, { force: true }));
+          yield* requireSuccess(["daemon-reload"], "reload the systemd user manager");
+          return;
+        }
+        if (snapshot.servicePresent) {
+          if (snapshot.service === undefined) {
+            return yield* new HumanActionRequiredError({
+              action: "restore the Canonfig systemd service",
+              recovery: "The captured systemd service contents were incomplete; inspect the user unit manually.",
+            });
+          }
+          yield* atomicWriteFile(
+            path.service,
+            new TextEncoder().encode(snapshot.service),
+            snapshot.serviceMode ?? defaultFileMode,
+          );
+        } else {
+          yield* promiseEffect("remove systemd service", path.service, () =>
+            rm(path.service, { force: true }));
+        }
+        if (snapshot.schedulePresent) {
+          if (snapshot.schedule === undefined) {
+            return yield* new HumanActionRequiredError({
+              action: "restore the Canonfig systemd timer",
+              recovery: "The captured systemd timer contents were incomplete; inspect the user unit manually.",
+            });
+          }
+          yield* atomicWriteFile(
+            path.timer,
+            new TextEncoder().encode(snapshot.schedule),
+            snapshot.scheduleMode ?? defaultFileMode,
+          );
+        } else {
+          yield* promiseEffect("remove systemd timer", path.timer, () =>
+            rm(path.timer, { force: true }));
+        }
+        yield* requireSuccess(["daemon-reload"], "reload the systemd user manager");
+        if (snapshot.schedulePresent && snapshot.enabled) {
+          yield* requireSuccess(
+            ["enable", "--now", path.timerName],
+            "enable the restored Canonfig systemd user timer",
+          );
+        }
       }),
   };
 };
@@ -1447,8 +1553,10 @@ export const linuxMachineStateLayer = (
         removeCredential,
         renderSchedulerJob: Effect.fn("MachineState.renderSchedulerJob")(renderSystemdJob),
         inspectSchedulerJob: Effect.fn("MachineState.inspectSchedulerJob")(scheduler.inspect),
+        snapshotSchedulerJob: Effect.fn("MachineState.snapshotSchedulerJob")(scheduler.snapshot),
         installSchedulerJob: Effect.fn("MachineState.installSchedulerJob")(scheduler.install),
         removeSchedulerJob: Effect.fn("MachineState.removeSchedulerJob")(scheduler.remove),
+        restoreSchedulerJob: Effect.fn("MachineState.restoreSchedulerJob")(scheduler.restore),
       });
     },
   );

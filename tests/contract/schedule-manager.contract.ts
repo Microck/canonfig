@@ -9,6 +9,7 @@ import type {
   RenderedSchedulerJob,
   SchedulerBackend,
   SchedulerInspection,
+  SchedulerSnapshot,
 } from "../../src/machine/machine-state.types.ts";
 import {
   InvalidScheduleError,
@@ -41,6 +42,28 @@ class RecordingScheduler implements SchedulerBackend {
         && this.definition.schedule === expected.schedule,
     }));
 
+  readonly snapshot = (
+    expected: RenderedSchedulerJob,
+  ): Effect.Effect<SchedulerSnapshot> =>
+    Effect.sync(() => this.definition === undefined
+      ? {
+        state: "absent" as const,
+        platform: expected.platform,
+        mechanism: expected.mechanism,
+        serviceName: expected.serviceName,
+      }
+      : {
+        state: "present" as const,
+        platform: expected.platform,
+        mechanism: expected.mechanism,
+        serviceName: expected.serviceName,
+        enabled: this.enabled,
+        servicePresent: true,
+        schedulePresent: true,
+        service: this.definition.service,
+        schedule: this.definition.schedule,
+      });
+
   readonly install = (
     definition: RenderedSchedulerJob,
   ): Effect.Effect<void> =>
@@ -55,6 +78,24 @@ class RecordingScheduler implements SchedulerBackend {
       this.definition = undefined;
       this.enabled = false;
       this.removals += 1;
+    });
+
+  readonly restore = (
+    expected: RenderedSchedulerJob,
+    snapshot: SchedulerSnapshot,
+  ): Effect.Effect<void> =>
+    Effect.sync(() => {
+      if (snapshot.state === "absent") {
+        this.definition = undefined;
+        this.enabled = false;
+        return;
+      }
+      this.definition = {
+        ...expected,
+        service: snapshot.service ?? "",
+        schedule: snapshot.schedule ?? "",
+      };
+      this.enabled = snapshot.enabled;
     });
 
   drift(): void {
@@ -301,6 +342,70 @@ export const scheduleManagerContract = (
       expect(removed.change).toBe("removed");
       expect(removedAgain.change).toBe("unchanged");
       expect(scheduler.removals).toBe(1);
+    });
+
+    it("captures and restores present and absent native state exactly", async () => {
+      const scheduler = new RecordingScheduler();
+      const layer = managerLayer(adapter, scheduler);
+      const input = {
+        executable: adapter.executable,
+        schedule: { kind: "daily", localTime: "01:15" } as const,
+      };
+      const prior = await runWith(
+        layer,
+        Effect.gen(function*() {
+          const manager = yield* ScheduleManager;
+          yield* manager.install(input);
+          return yield* manager.snapshot(input);
+        }),
+      );
+      expect(prior.state).toBe("present");
+
+      await runWith(
+        layer,
+        Effect.gen(function*() {
+          const manager = yield* ScheduleManager;
+          yield* manager.update({
+            ...input,
+            schedule: { kind: "daily", localTime: "02:30" },
+          });
+          yield* manager.restore(input, prior);
+        }),
+      );
+      const restored = await runWith(
+        layer,
+        Effect.gen(function*() {
+          const manager = yield* ScheduleManager;
+          return yield* manager.snapshot(input);
+        }),
+      );
+      expect(restored).toEqual(prior);
+
+      const absent = await runWith(
+        layer,
+        Effect.gen(function*() {
+          const manager = yield* ScheduleManager;
+          yield* manager.remove(input);
+          return yield* manager.snapshot(input);
+        }),
+      );
+      expect(absent.state).toBe("absent");
+      await runWith(
+        layer,
+        Effect.gen(function*() {
+          const manager = yield* ScheduleManager;
+          yield* manager.restore(input, absent);
+        }),
+      );
+      await expect(
+        runWith(
+          layer,
+          Effect.gen(function*() {
+            const manager = yield* ScheduleManager;
+            return yield* manager.snapshot(input);
+          }),
+        ),
+      ).resolves.toEqual(absent);
     });
 
     it("rejects malformed times and timezone names", async () => {
