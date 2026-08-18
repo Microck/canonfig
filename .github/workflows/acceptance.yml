@@ -45,6 +45,9 @@ jobs:
       - name: Package npm artifact
         run: npm pack --ignore-scripts
 
+      - name: Run packed CLI E2E
+        run: npx vitest run tests/packed-cli.test.ts
+
       - name: Run native platform contract
         run: npx vitest run ${{ matrix.native_test }}
 
