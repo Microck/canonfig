@@ -105,6 +105,7 @@ const SchedulerSnapshotSchema = Schema.Union([
     ]),
     serviceName: Schema.NonEmptyString,
     enabled: Schema.Boolean,
+    active: Schema.optional(Schema.Boolean),
     servicePresent: Schema.Boolean,
     schedulePresent: Schema.Boolean,
     service: Schema.optional(Schema.String),
@@ -245,6 +246,50 @@ export const executionLimits = (
   ...defaultSynchronizationExecutionLimits,
   ...input.limits,
 });
+
+/**
+ * Remove only the rollback files derived from this immutable run/action set.
+ * The exact paths make cleanup idempotent and prevent a terminal run from
+ * touching another run's material. Cleanup is intentionally separate from
+ * repository completion so a cleanup failure cannot erase the primary
+ * terminal outcome.
+ */
+export const cleanupRollbackSnapshots = (
+  run: SynchronizationRunInput["id"],
+  actions: ReadonlyArray<ActionId>,
+): Effect.Effect<void, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const directories = yield* machine.userDirectories();
+    const directory = yield* machine.normalizePath({
+      path: `canonfig/rollback/${run}`,
+      base: directories.cache,
+    });
+    const references = [...new Set(actions)].flatMap((action) => [
+      `${sha256Hex(action)}.json`,
+      `${sha256Hex(action)}.schedule.json`,
+    ]);
+    for (const reference of references) {
+      const path = yield* machine.normalizePath({
+        path: reference,
+        base: directory,
+      });
+      yield* machine.removeFile({ path }).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
+            ? Effect.void
+            : Effect.fail(error)
+        ),
+      );
+    }
+    yield* machine.removeEmptyDirectory({ path: directory }).pipe(
+      Effect.catchTag("MachineFilesystemError", (error) =>
+        /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
+          ? Effect.void
+          : Effect.fail(error)
+      ),
+    );
+  });
 
 const validateLimits = (
   limits: SynchronizationExecutionLimits,

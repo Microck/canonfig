@@ -1214,7 +1214,22 @@ operation="\${2:-}"
 marker="$HOME/.canonfig-packed-systemd-enabled"
 case "$operation" in
   daemon-reload) exit 0 ;;
-  is-enabled) test -f "$marker" ;;
+  is-enabled)
+    if test -f "$marker"; then
+      printf 'enabled\n'
+      exit 0
+    fi
+    printf 'disabled\n'
+    exit 1
+    ;;
+  is-active)
+    if test -f "$marker"; then
+      printf 'active\n'
+      exit 0
+    fi
+    printf 'inactive\n'
+    exit 3
+    ;;
   enable) touch "$marker" ;;
   disable) rm -f "$marker" ;;
   *) exit 0 ;;

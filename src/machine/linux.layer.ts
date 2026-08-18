@@ -980,6 +980,30 @@ const systemdBackend = (
           }))
       ),
     );
+  const queryTimerState = (
+    timerName: string,
+    operation: "is-enabled" | "is-active",
+  ): Effect.Effect<boolean, MachineStateError> =>
+    runSystemctl([operation, timerName]).pipe(
+      Effect.flatMap((result) => {
+        const value = Buffer.from(result.standardOutput)
+          .toString("utf8")
+          .trim()
+          .toLowerCase();
+        const positive = operation === "is-enabled" ? "enabled" : "active";
+        const negative = operation === "is-enabled" ? "disabled" : "inactive";
+        if (value === positive && result.exitCode === 0) return Effect.succeed(true);
+        // systemctl uses a non-zero exit status for these normal negative
+        // states. Accept only the explicit semantic state, never an arbitrary
+        // query failure or permission error.
+        if (value === negative) return Effect.succeed(false);
+        return Effect.fail(new HumanActionRequiredError({
+          action: `inspect the systemd user timer (${operation})`,
+          recovery:
+            "The systemd user manager returned an indeterminate scheduler state; ensure it is running and retry.",
+        }));
+      }),
+    );
   const readUnit = (
     path: string,
   ): Effect.Effect<
@@ -1029,9 +1053,7 @@ const systemdBackend = (
         if (!installed.installed) {
           return { installed: false, enabled: false, matches: false };
         }
-        const enabled = yield* runSystemctl(["is-enabled", path.timerName]).pipe(
-          Effect.map((result) => result.exitCode === 0),
-        );
+        const enabled = yield* queryTimerState(path.timerName, "is-enabled");
         return { ...installed, enabled };
       }),
     snapshot: (expected) =>
@@ -1049,15 +1071,17 @@ const systemdBackend = (
         }
         const enabled = timer === undefined
           ? false
-          : yield* runSystemctl(["is-enabled", path.timerName]).pipe(
-            Effect.map((result) => result.exitCode === 0),
-          );
+          : yield* queryTimerState(path.timerName, "is-enabled");
+        const active = timer === undefined
+          ? false
+          : yield* queryTimerState(path.timerName, "is-active");
         return {
           state: "present",
           platform: expected.platform,
           mechanism: expected.mechanism,
           serviceName: expected.serviceName,
           enabled,
+          active,
           servicePresent: service !== undefined,
           schedulePresent: timer !== undefined,
           service: service?.content,
@@ -1132,12 +1156,20 @@ const systemdBackend = (
             rm(path.timer, { force: true }));
         }
         yield* requireSuccess(["daemon-reload"], "reload the systemd user manager");
-        if (snapshot.schedulePresent && snapshot.enabled) {
-          yield* requireSuccess(
-            ["enable", "--now", path.timerName],
-            "enable the restored Canonfig systemd user timer",
-          );
-        }
+        if (!snapshot.schedulePresent) return;
+        yield* requireSuccess(
+          [snapshot.enabled ? "enable" : "disable", path.timerName],
+          snapshot.enabled
+            ? "enable the restored Canonfig systemd user timer"
+            : "disable the restored Canonfig systemd user timer",
+        );
+        const active = snapshot.active ?? snapshot.enabled;
+        yield* requireSuccess(
+          [active ? "start" : "stop", path.timerName],
+          active
+            ? "start the restored Canonfig systemd user timer"
+            : "stop the restored Canonfig systemd user timer",
+        );
       }),
   };
 };

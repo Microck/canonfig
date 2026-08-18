@@ -80,6 +80,12 @@ export interface CapturedProcess {
   readonly arguments: ReadonlyArray<string>;
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
+  /**
+   * Counted from the raw stdout/stderr bytes before any secret redaction.
+   * This metadata is safe to persist; raw process output is never retained
+   * outside the bounded capture buffers.
+   */
+  readonly outputBytes: number;
   readonly stdout: string;
   readonly stderr: string;
 }

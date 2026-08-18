@@ -335,6 +335,7 @@ export const macosMachineStateLayer = (
               mechanism: expected.mechanism,
               serviceName: expected.serviceName,
               enabled: active,
+              active,
               servicePresent: true,
               schedulePresent: true,
               service: stored,

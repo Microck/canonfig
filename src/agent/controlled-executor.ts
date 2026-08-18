@@ -252,7 +252,13 @@ const packageRegistryInvocationIsSafe = (
   if (registry === undefined) return false;
   if (arguments_.includes("--")) return false;
   const indexOptions = manager === "uv"
-    ? new Set(["--default-index", "--index-url", "--extra-index-url", "--index"])
+    ? new Set([
+      "--default-index",
+      "--index-url",
+      "--extra-index-url",
+      "--find-links",
+      "--index",
+    ])
     : manager === "pip"
     ? new Set(["-i", "--index-url", "--extra-index-url", "-f", "--find-links"])
     : new Set<string>();
@@ -274,6 +280,10 @@ const packageRegistryInvocationIsSafe = (
     const name = (separator > 0 ? argument.slice(0, separator) : argument)
       .toLowerCase();
     if (unsafeOptions.has(name)) return false;
+    if (
+      manager === "uv"
+      && ["--extra-index-url", "--find-links", "--index"].includes(name)
+    ) return false;
     if (
       (manager === "uv" && name === "--no-config")
       || (manager === "pip" && name === "--isolated")
@@ -608,6 +618,7 @@ export const executeControlledProcess = (
           arguments: input.arguments,
           exitCode,
           signal,
+          outputBytes: capturedBytes,
           stdout: redactText(decoder.decode(Buffer.concat(output)), input.secrets),
           stderr: redactText(decoder.decode(Buffer.concat(errors)), input.secrets),
         });

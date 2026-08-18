@@ -764,7 +764,13 @@ const registryOptions = (
 ): ReadonlyArray<RegistryOption> => {
   const options = new Set(
     manager === "uv"
-      ? ["--default-index", "--index-url", "--extra-index-url", "--index"]
+      ? [
+        "--default-index",
+        "--index-url",
+        "--extra-index-url",
+        "--find-links",
+        "--index",
+      ]
       : manager === "pip"
       ? [
         "-i",
@@ -836,7 +842,17 @@ const registryOperation = (
   const unambiguous = argumentsBeforeSeparator(arguments_);
   if (unambiguous === undefined) return false;
   const commandOptions = manager === "uv"
-    ? new Set(["--cache-dir", "--config-file", "--default-index", "--directory", "--extra-index-url", "--index", "--index-url", "--project"])
+    ? new Set([
+      "--cache-dir",
+      "--config-file",
+      "--default-index",
+      "--directory",
+      "--extra-index-url",
+      "--find-links",
+      "--index",
+      "--index-url",
+      "--project",
+    ])
     : manager === "pip"
     ? new Set([
       "--cache-dir",
@@ -922,6 +938,7 @@ const packageManagerOptionValues = (manager: string): ReadonlySet<string> =>
       "--default-index",
       "--directory",
       "--extra-index-url",
+      "--find-links",
       "--index",
       "--index-url",
       "--project",
@@ -1593,6 +1610,19 @@ const authorizeRegistryInvocation = (
       value: executable,
     }));
   }
+  if (
+    manager === "uv"
+    && arguments_.some((argument) =>
+      ["--extra-index-url", "--find-links", "--index"].includes(
+        argument.split("=", 1)[0]!.toLowerCase(),
+      )
+    )
+  ) {
+    return Effect.fail(new DeniedAgentCapabilityError({
+      capability: "network-origin",
+      value: executable,
+    }));
+  }
   const registry = canonicalAllowedRegistry(taskOrigins, harnessOrigins, actionOrigins);
   if (registry === undefined) {
     return Effect.fail(new DeniedAgentCapabilityError({
@@ -2003,6 +2033,7 @@ const packageManagerPolicy = (
       "--default-index",
       "--directory",
       "--extra-index-url",
+      "--find-links",
       "--index",
       "--index-url",
       "--project",

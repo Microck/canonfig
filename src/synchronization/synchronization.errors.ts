@@ -160,6 +160,15 @@ export class RecoveryIntegrityError extends Schema.TaggedError<RecoveryIntegrity
   },
 ) {}
 
+export class RollbackCleanupError extends Schema.TaggedError<RollbackCleanupError>()(
+  "RollbackCleanupError",
+  {
+    run: Schema.String,
+    outcome: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
 export type SynchronizationPlanningError =
   | DuplicatePlannerInputError
   | MissingDesiredResourceError
@@ -182,6 +191,7 @@ export type SynchronizationExecutionInputError =
   | MissingArtifactError
   | InvalidArtifactError
   | ActionExecutionError
+  | RollbackCleanupError
   | ScheduleManagerError;
 
 export type SynchronizationRecoveryError =

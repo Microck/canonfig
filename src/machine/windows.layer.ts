@@ -44,6 +44,7 @@ import type {
   RemoveEmptyDirectoryInput,
   SchedulerBackend,
   SchedulerCalendar,
+  SchedulerInspection,
   SchedulerJob,
   SchedulerSnapshot,
   SafeRootMutationInput,
@@ -741,10 +742,17 @@ export const windowsMachineStateLayer = (
             "}",
           ].join("\r\n");
           return runSchedulerScript(script).pipe(
-            Effect.map((result) => {
+            Effect.flatMap((result): Effect.Effect<SchedulerInspection, MachineStateError> => {
               const output = Buffer.from(result.standardOutput).toString("utf8");
-              if (result.exitCode !== 0 || output === "missing") {
-                return { installed: false, enabled: false, matches: false };
+              if (result.exitCode === 0 && output.trim() === "missing") {
+                return Effect.succeed({ installed: false, enabled: false, matches: false });
+              }
+              if (result.exitCode !== 0) {
+                return Effect.fail(new HumanActionRequiredError({
+                  action: "inspect the Canonfig scheduled task",
+                  recovery:
+                    "Task Scheduler inspection failed; ensure per-user Task Scheduler access is available and retry.",
+                }));
               }
               let actual: {
                 readonly Description?: string | undefined;
@@ -758,7 +766,11 @@ export const windowsMachineStateLayer = (
               try {
                 actual = JSON.parse(output);
               } catch {
-                return { installed: true, enabled: false, matches: false };
+                return Effect.fail(new HumanActionRequiredError({
+                  action: "inspect the Canonfig scheduled task",
+                  recovery:
+                    "Task Scheduler inspection returned invalid data; ensure per-user Task Scheduler access is available and retry.",
+                }));
               }
               const expectedExecutable = action?.[1]?.replaceAll("''", "'");
               const expectedArguments = action?.[2]?.replaceAll("''", "'");
@@ -778,7 +790,7 @@ export const windowsMachineStateLayer = (
                   ? actual.TriggerType?.includes("Daily") === true
                   : actual.TriggerType?.includes("Weekly") === true
                     && actual.DaysOfWeek === weekdayMask);
-              return {
+              return Effect.succeed({
                 installed: true,
                 enabled: actual.Enabled === true,
                 matches: fingerprint !== undefined
@@ -786,7 +798,7 @@ export const windowsMachineStateLayer = (
                   && actual.Execute === expectedExecutable
                   && actual.Arguments === expectedArguments
                   && triggerMatches,
-              };
+              });
             }),
           );
         },
@@ -802,13 +814,20 @@ export const windowsMachineStateLayer = (
           return runSchedulerScript(script).pipe(
             Effect.flatMap((result): Effect.Effect<SchedulerSnapshot, MachineStateError> => {
               const output = Buffer.from(result.standardOutput).toString("utf8");
-              if (result.exitCode !== 0 || output === "missing") {
+              if (result.exitCode === 0 && output.trim() === "missing") {
                 return Effect.succeed({
                   state: "absent",
                   platform: expected.platform,
                   mechanism: expected.mechanism,
                   serviceName: expected.serviceName,
                 } satisfies SchedulerSnapshot);
+              }
+              if (result.exitCode !== 0) {
+                return Effect.fail(new HumanActionRequiredError({
+                  action: "capture the Canonfig scheduled task",
+                  recovery:
+                    "Task Scheduler inspection failed; ensure per-user Task Scheduler access is available and retry.",
+                }));
               }
               try {
                 const actual = Schema.decodeUnknownSync(Schema.Struct({
@@ -824,6 +843,7 @@ export const windowsMachineStateLayer = (
                   mechanism: expected.mechanism,
                   serviceName: expected.serviceName,
                   enabled: actual.Enabled,
+                  active: actual.Enabled,
                   servicePresent: false,
                   schedulePresent: false,
                   native: Buffer.from(actual.Xml, "utf8").toString("base64"),

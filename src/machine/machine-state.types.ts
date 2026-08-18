@@ -227,6 +227,7 @@ export type SchedulerSnapshot =
     readonly mechanism: RenderedSchedulerJob["mechanism"];
     readonly serviceName: string;
     readonly enabled: boolean;
+    readonly active?: boolean | undefined;
     readonly servicePresent: boolean;
     readonly schedulePresent: boolean;
     readonly service?: string | undefined;

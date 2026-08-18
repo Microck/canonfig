@@ -166,6 +166,7 @@ class RecordingExecutor {
       arguments: input.arguments,
       exitCode: 0,
       signal: null,
+      outputBytes: Buffer.byteLength(output),
       stdout: output,
       stderr: "",
     });
@@ -1241,7 +1242,7 @@ describe("agent resolution", () => {
     },
   );
 
-  it("normalizes allowed pip index aliases and isolates a uv project", async () => {
+  it("rejects conflicting uv index aliases before execution", async () => {
     const manager = join(directory, "uv");
     const verify = join(directory, "verify");
     await Promise.all([
@@ -1263,7 +1264,7 @@ describe("agent resolution", () => {
         "https://PACKAGES.EXAMPLE.TEST:443/",
       ],
     })));
-    await Effect.runPromise(Effect.gen(function*() {
+    const error = await Effect.runPromise(Effect.gen(function*() {
       const service = yield* AgentResolution;
       return yield* service.resolve({
         policy: "agent-apply",
@@ -1276,17 +1277,14 @@ describe("agent resolution", () => {
           allowedOrigins: ["https://Packages.Example.Test:443"],
         },
       });
-    }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
-    expect(recording.invocations[1]?.arguments).toEqual([
-      "--project",
-      directory,
-      "pip",
-      "install",
-      "tool",
-      "--only-binary=:all:",
-      "--no-config",
-      "--index-url=https://packages.example.test",
-    ]);
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(recording.execute)),
+      Effect.flip,
+    ));
+    expect(error).toMatchObject({
+      capability: "network-origin",
+    });
+    expect(recording.invocations).toHaveLength(1);
   });
 
   it("accepts an explicitly allowed pip short index and removes expansion options", async () => {
@@ -1498,6 +1496,7 @@ describe("agent resolution", () => {
           arguments: input.arguments,
           exitCode: 0,
           signal: null,
+          outputBytes: Buffer.byteLength(JSON.stringify(actions)),
           stdout: JSON.stringify(actions),
           stderr: "",
         });
@@ -1509,6 +1508,7 @@ describe("agent resolution", () => {
             arguments: input.arguments,
             exitCode: 0,
             signal: null,
+            outputBytes: Buffer.byteLength("rewritten"),
             stdout: "rewritten",
             stderr: "",
           }))
@@ -1519,6 +1519,7 @@ describe("agent resolution", () => {
         arguments: input.arguments,
         exitCode: 0,
         signal: null,
+        outputBytes: Buffer.byteLength("downloaded"),
         stdout: "downloaded",
         stderr: "",
       });
@@ -1934,6 +1935,10 @@ process.exit(
         arguments: input.arguments,
         exitCode: 0,
         signal: null,
+        outputBytes: Buffer.byteLength(JSON.stringify(proposal(action({
+          executable: manager,
+          arguments: ["install", "tool", "--registry=https://packages.example.test"],
+        })))),
         stdout: JSON.stringify(proposal(action({
           executable: manager,
           arguments: ["install", "tool", "--registry=https://packages.example.test"],
@@ -2277,6 +2282,7 @@ process.exit(
         arguments: input.arguments,
         exitCode: count === 3 ? 1 : 0,
         signal: null,
+        outputBytes: Buffer.byteLength(stdout),
         stdout,
         stderr: "",
       };
@@ -2312,6 +2318,46 @@ process.exit(
     expect(result.task.observedEvidence).toEqual(["token=[REDACTED]"]);
     expect(result.proposal.summary).toBe("resolved with [REDACTED]");
     expect(result.harness.stdout).not.toContain(secret);
+  });
+
+  it("enforces the aggregate raw byte budget across multiple actions", async () => {
+    const secret = "long-secret-".repeat(8);
+    const actions = [
+      action(),
+      action(),
+    ];
+    let count = 0;
+    const executor: ControlledExecutor = (input) => {
+      count += 1;
+      const stdout = count === 1
+        ? JSON.stringify({ summary: "two bounded actions", actions })
+        : count === 4
+        ? "verified"
+        : secret;
+      return Effect.succeed({
+        executable: input.executable,
+        arguments: input.arguments,
+        exitCode: 0,
+        signal: null,
+        outputBytes: Buffer.byteLength(stdout),
+        stdout: stdout.replaceAll(secret, "[REDACTED]"),
+        stderr: "",
+      });
+    };
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, { outputLimitBytes: 400 }),
+        harness: harness(directory),
+        secrets: [secret],
+      });
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(executor)),
+      Effect.flip,
+    ));
+    expect(error).toBeInstanceOf(AgentOutputLimitError);
+    expect(count).toBe(3);
   });
 
   it("creates only a pending reviewed profile proposal from discovery", async () => {
@@ -2422,6 +2468,118 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       expect(observed.config).toBe(process.platform === "win32" ? "NUL" : "/dev/null");
       expect(observed.proxy).toBeUndefined();
       expect(observed.args).toContain("--index-url=https://packages.example.test");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pins uv to the reviewed full index and clears hostile config", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-uv-registry-"));
+    try {
+      const marker = join(root, "uv-environment.json");
+      const manager = join(root, "uv");
+      await writeFile(
+        manager,
+        `#!${process.execPath}
+const { writeFileSync } = require("node:fs");
+writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
+  defaultIndex: process.env.UV_DEFAULT_INDEX,
+  index: process.env.UV_INDEX_URL,
+  pipIndex: process.env.PIP_INDEX_URL,
+  config: process.env.UV_CONFIG_FILE,
+  pipConfig: process.env.PIP_CONFIG_FILE,
+  extra: process.env.UV_EXTRA_INDEX_URL,
+  pipExtra: process.env.PIP_EXTRA_INDEX_URL,
+  proxy: process.env.UV_HTTP_PROXY,
+  httpsProxy: process.env.HTTPS_PROXY,
+  args: process.argv.slice(2),
+}));
+`,
+      );
+      await chmod(manager, 0o755);
+      const index = "https://packages.example.test/repository/simple?channel=stable";
+      const result = await Effect.runPromise(executeControlledProcess({
+        executable: manager,
+        arguments: [
+          "tool",
+          "install",
+          "tool==1.2.3",
+          "--only-binary=:all:",
+          "--no-config",
+          `--default-index=${index}`,
+        ],
+        workingDirectory: root,
+        environment: [
+          { name: "UV_DEFAULT_INDEX", value: "https://evil.example.test" },
+          { name: "UV_INDEX_URL", value: "https://evil.example.test" },
+          { name: "UV_EXTRA_INDEX_URL", value: "https://evil.example.test" },
+          { name: "UV_CONFIG_FILE", value: join(root, "evil-uv.toml") },
+          { name: "PIP_INDEX_URL", value: "https://evil.example.test" },
+          { name: "PIP_EXTRA_INDEX_URL", value: "https://evil.example.test" },
+          { name: "PIP_CONFIG_FILE", value: join(root, "evil-pip.conf") },
+          { name: "UV_HTTP_PROXY", value: "http://evil.example.test" },
+          { name: "HTTPS_PROXY", value: "http://evil.example.test" },
+        ],
+        packageRegistryOrigin: index,
+        timeoutMilliseconds: 2_000,
+        maximumInputBytes: 0,
+        maximumOutputBytes: 10_000,
+        secrets: [],
+      }));
+      expect(result.exitCode).toBe(0);
+      // SAFETY: The fixture writes this exact object shape before exiting.
+      const observed = JSON.parse(await readFile(marker, "utf8")) as {
+        defaultIndex: string;
+        index: string;
+        pipIndex: string;
+        config: string;
+        pipConfig: string;
+        extra?: string;
+        pipExtra?: string;
+        proxy?: string;
+        httpsProxy?: string;
+        args: string[];
+      };
+      expect(observed.defaultIndex).toBe(index);
+      expect(observed.index).toBe(index);
+      expect(observed.pipIndex).toBe(index);
+      expect(observed.config).toBe(process.platform === "win32" ? "NUL" : "/dev/null");
+      expect(observed.pipConfig).toBe(process.platform === "win32" ? "NUL" : "/dev/null");
+      expect(observed.extra).toBeUndefined();
+      expect(observed.pipExtra).toBeUndefined();
+      expect(observed.proxy).toBeUndefined();
+      expect(observed.httpsProxy).toBeUndefined();
+      expect(observed.args).toContain(`--default-index=${index}`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["extra index", ["tool", "install", "tool==1.2.3", "--extra-index-url", "https://packages.example.test"]],
+    ["find links", ["tool", "install", "tool==1.2.3", "--find-links", "https://packages.example.test"]],
+    ["named index", ["tool", "install", "tool==1.2.3", "--index", "evil=https://packages.example.test"]],
+  ] as const)("rejects hostile uv registry option before spawning: %s", async (_name, arguments_) => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-uv-option-"));
+    try {
+      const marker = join(root, "spawned");
+      const manager = join(root, "uv");
+      await writeFile(manager, `#!${process.execPath}
+require("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned");
+`);
+      await chmod(manager, 0o755);
+      const error = await Effect.runPromise(executeControlledProcess({
+        executable: manager,
+        arguments: [...arguments_],
+        workingDirectory: root,
+        packageRegistryOrigin: "https://packages.example.test",
+        timeoutMilliseconds: 2_000,
+        maximumInputBytes: 0,
+        maximumOutputBytes: 1_000,
+        secrets: [],
+      }).pipe(Effect.flip));
+      expect(error).toBeInstanceOf(AgentProcessError);
+      await expect(access(marker)).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

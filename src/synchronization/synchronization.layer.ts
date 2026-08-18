@@ -1,14 +1,15 @@
-import { Clock, Effect, Layer } from "effect";
-import { Option } from "effect";
+import { Clock, Effect, Layer, Option } from "effect";
 import { AgentResolution } from "../agent/agent-resolution.service.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import {
+  cleanupRollbackSnapshots,
   executeSynchronizationPlan,
   executionFollower,
   executionRevision,
 } from "./executor.ts";
 import { recoverSynchronizationPlan } from "./recovery.ts";
+import { RollbackCleanupError } from "./synchronization.errors.ts";
 import { Synchronization } from "./synchronization.service.ts";
 
 const makeSynchronization = Effect.gen(function*() {
@@ -61,12 +62,23 @@ const makeSynchronization = Effect.gen(function*() {
           appliedResources: result.appliedResources,
           removedResources: result.removedResources,
         });
+        if (result.outcome.outcome !== "Interrupted") {
+          yield* cleanupRollbackSnapshots(input.id, input.plan.actions.map((action) => action.id)).pipe(
+            Effect.provideService(MachineState, machine),
+            Effect.mapError((error) => new RollbackCleanupError({
+              run: input.id,
+              outcome: result.outcome.outcome,
+              message: String(error),
+            })),
+          );
+        }
         return result.outcome;
       }).pipe(
         Effect.onInterrupt(() => Effect.void),
       ),
     recover: (input) =>
       Effect.gen(function*() {
+        const recovery = yield* repository.loadRecovery(input.follower);
         const result = yield* recoverSynchronizationPlan({
           ...input,
           agentResolution: input.agentResolution ?? agentResolution,
@@ -81,6 +93,19 @@ const makeSynchronization = Effect.gen(function*() {
           appliedResources: result.appliedResources,
           removedResources: result.removedResources,
         });
+        if (result.outcome.outcome !== "Interrupted") {
+          yield* cleanupRollbackSnapshots(
+            result.outcome.run,
+            recovery?.run.plan.actions.map((action) => action.id) ?? [],
+          ).pipe(
+            Effect.provideService(MachineState, machine),
+            Effect.mapError((error) => new RollbackCleanupError({
+              run: result.outcome.run,
+              outcome: result.outcome.outcome,
+              message: String(error),
+            })),
+          );
+        }
         return result.outcome;
       }).pipe(
         Effect.onInterrupt(() =>

@@ -64,6 +64,7 @@ import {
   type SyncSchedule,
 } from "../../src/schedule/schedule-manager.types.ts";
 import { planSynchronization } from "../../src/synchronization/planner.ts";
+import { RollbackCleanupError } from "../../src/synchronization/synchronization.errors.ts";
 import {
   defaultSynchronizationExecutionLimits,
 } from "../../src/synchronization/executor.ts";
@@ -2266,24 +2267,50 @@ describe("synchronization apply run", () => {
     expect(rows[2]?.verification_json).not.toBeNull();
   });
 
-  it("retains rollback material for owned files", async () => {
+  it("cleans rollback material after a terminal run", async () => {
     const fixture = fileFixture(temporaryDirectory(), "run-rollback-material");
     mkdirSync(dirname(fixture.target), { recursive: true });
     await writeFile(fixture.target, "previous");
-    const previousMode = statSync(fixture.target).mode & 0o7777;
     await seedAndRun(fixture);
 
     const reference = actionRows(fixture.database)[2]?.rollback_reference;
     expect(reference).toBeTypeOf("string");
-    expect(JSON.parse(await readFile(String(reference), "utf8"))).toEqual([{
-      path: fixture.target,
-      state: "regular",
-      content: Buffer.from("previous").toString("base64"),
-      mode: previousMode,
-    }]);
+    await expect(readFile(String(reference), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(access(dirname(String(reference)))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
-  it("snapshots absent, executable, and symlink states", async () => {
+  it("preserves the committed terminal outcome when rollback cleanup fails", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-rollback-cleanup-failure");
+    mkdirSync(dirname(fixture.target), { recursive: true });
+    await writeFile(fixture.target, "previous");
+    const machine = decorateMachine(fixture.root, (service) => ({
+      ...service,
+      removeFile: (input) =>
+        input.path.absolute.includes("/canonfig/rollback/")
+          ? Effect.fail({
+            _tag: "MachineFilesystemError",
+            operation: "test rollback cleanup",
+            path: input.path.absolute,
+            message: "cleanup denied",
+          })
+          : service.removeFile(input),
+    }));
+
+    await expect(seedAndRun(fixture, machine)).rejects.toBeInstanceOf(RollbackCleanupError);
+    const database = new DatabaseSync(fixture.database, { readOnly: true });
+    // SAFETY: The query selects the one scalar status column for this run.
+    const row = database.prepare(
+      "SELECT status FROM synchronization_runs WHERE id = ?",
+    ).get("run-rollback-cleanup-failure") as { status?: string } | undefined;
+    database.close();
+    expect(row?.status).toBe("Converged");
+  });
+
+  it("cleans rollback snapshots for absent, executable, and symlink states", async () => {
     const absent = fileFixture(temporaryDirectory(), "run-rollback-absent");
     const executable = fileFixture(temporaryDirectory(), "run-rollback-executable");
     mkdirSync(dirname(executable.target), { recursive: true });
@@ -2295,24 +2322,16 @@ describe("synchronization apply run", () => {
     writeFileSync(symlinkTarget, "target");
     symlinkSync(symlinkTarget, symlink.target);
 
-    for (const [value, expected] of [
-      [absent, { path: absent.target, state: "absent" }],
-      [executable, {
-        path: executable.target,
-        state: "regular",
-        content: Buffer.from("script").toString("base64"),
-        mode: 0o700,
-      }],
-      [symlink, {
-        path: symlink.target,
-        state: "symlink",
-        target: symlinkTarget,
-      }],
-    ] as const) {
+    for (const value of [absent, executable, symlink]) {
       await seedAndRun(value);
       const reference = actionRows(value.database)[2]?.rollback_reference;
       expect(reference).toBeTypeOf("string");
-      expect(JSON.parse(await readFile(String(reference), "utf8"))).toEqual([expected]);
+      await expect(readFile(String(reference), "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(access(dirname(String(reference)))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     }
   });
 

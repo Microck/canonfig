@@ -47,9 +47,6 @@ export type ControlledExecutor = (
   input: ControlledProcessInput,
 ) => Effect.Effect<CapturedProcess, AgentResolutionError>;
 
-const byteLength = (process: CapturedProcess): number =>
-  Buffer.byteLength(process.stdout) + Buffer.byteLength(process.stderr);
-
 const redactCaptured = (
   process: CapturedProcess,
   secrets: ReadonlyArray<string>,
@@ -132,7 +129,11 @@ const runResolution = (
         harness.stderr,
       );
     }
-    let consumed = byteLength(harness);
+    // `outputBytes` is measured by the executor while the raw chunks are
+    // still available. Never derive this budget from redacted strings:
+    // replacing a long secret with "[REDACTED]" would otherwise let a
+    // multi-action run exceed its aggregate limit.
+    let consumed = rawHarness.outputBytes;
     yield* ensureOutputBudget(
       harness.executable,
       input.task.outputLimitBytes,
@@ -189,12 +190,15 @@ const runResolution = (
         pipRequirementFiles: action.pipRequirementFiles,
         timeoutMilliseconds: remainingTime(deadline),
         maximumInputBytes: 0,
-        maximumOutputBytes: Math.max(0, input.task.outputLimitBytes - consumed),
+        maximumOutputBytes: Math.min(
+          input.task.outputLimitBytes,
+          Math.max(0, input.task.outputLimitBytes - consumed),
+        ),
         secrets,
         signal: input.signal,
       });
       const process = redactCaptured(rawProcess, secrets);
-      consumed += byteLength(process);
+      consumed += rawProcess.outputBytes;
       yield* ensureOutputBudget(
         process.executable,
         input.task.outputLimitBytes,
@@ -236,12 +240,15 @@ const runResolution = (
       pipRequirementFiles: authorized.verificationPipRequirementFiles,
       timeoutMilliseconds: remainingTime(deadline),
       maximumInputBytes: 0,
-      maximumOutputBytes: Math.max(0, input.task.outputLimitBytes - consumed),
+        maximumOutputBytes: Math.min(
+          input.task.outputLimitBytes,
+          Math.max(0, input.task.outputLimitBytes - consumed),
+        ),
       secrets,
       signal: input.signal,
     });
     const observed = redactCaptured(rawObserved, secrets);
-    consumed += byteLength(observed);
+    consumed += rawObserved.outputBytes;
     yield* ensureOutputBudget(
       observed.executable,
       input.task.outputLimitBytes,
