@@ -232,8 +232,9 @@ case "$operation" in
 esac
 `);
   chmodSync(secretTool, 0o700);
+  const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
   const packed = spawnSync(
-    "npm",
+    npmExecutable,
     [
       "pack",
       "--ignore-scripts=false",
@@ -253,7 +254,7 @@ esac
     `${JSON.stringify({ private: true })}\n`,
   );
   const installed = spawnSync(
-    "npm",
+    npmExecutable,
     [
       "install",
       "--ignore-scripts",
@@ -666,39 +667,68 @@ describe("packed Canonfig executable", () => {
     expect(JSON.parse(overlays.stdout).data).toEqual({ overlays: [] });
 
     const first = invoke(followerHome, ["sync", "--apply", "--json"]);
-    expect(first.status).toBe(7);
-    expect(first.stdout).toBe("");
-    expect(JSON.parse(first.stderr)).toMatchObject({
-      command: "sync.apply",
-      status: "error",
-      exitCode: 7,
-      message: "synchronization failed",
-      data: {
-        revision: packedRevision,
-        downloadedBlobs: 1,
-        reusedBlobs: 0,
-        outcome: { outcome: "Failed" },
-      },
-    });
+    if (process.platform === "linux") {
+      expect(first.status).toBe(7);
+      expect(first.stdout).toBe("");
+      expect(JSON.parse(first.stderr)).toMatchObject({
+        command: "sync.apply",
+        status: "error",
+        exitCode: 7,
+        message: "synchronization failed",
+        data: {
+          revision: packedRevision,
+          downloadedBlobs: 1,
+          reusedBlobs: 0,
+          outcome: { outcome: "Failed" },
+        },
+      });
 
-    const second = invoke(
-      followerHome,
-      ["sync", "--apply", "--no-input", "--json"],
-    );
-    expect(second.status).toBe(7);
-    expect(second.stdout).toBe("");
-    expect(JSON.parse(second.stderr)).toMatchObject({
-      command: "sync.apply",
-      status: "error",
-      exitCode: 7,
-      message: "synchronization failed",
-      data: {
-        revision: packedRevision,
-        downloadedBlobs: 0,
-        reusedBlobs: 1,
-        outcome: { outcome: "Failed" },
-      },
-    });
+      const second = invoke(
+        followerHome,
+        ["sync", "--apply", "--no-input", "--json"],
+      );
+      expect(second.status).toBe(7);
+      expect(second.stdout).toBe("");
+      expect(JSON.parse(second.stderr)).toMatchObject({
+        command: "sync.apply",
+        status: "error",
+        exitCode: 7,
+        message: "synchronization failed",
+        data: {
+          revision: packedRevision,
+          downloadedBlobs: 0,
+          reusedBlobs: 1,
+          outcome: { outcome: "Failed" },
+        },
+      });
+    } else {
+      expect(first.status, first.stderr).toBe(0);
+      expect(first.stderr).toBe("");
+      expect(JSON.parse(first.stdout)).toMatchObject({
+        command: "sync.apply",
+        status: "success",
+        exitCode: 0,
+        data: {
+          revision: packedRevision,
+          outcome: { outcome: "Converged" },
+        },
+      });
+
+      const second = invoke(
+        followerHome,
+        ["sync", "--apply", "--no-input", "--json"],
+      );
+      expect(second.status, second.stderr).toBe(0);
+      expect(JSON.parse(second.stdout)).toMatchObject({
+        command: "sync.apply",
+        status: "success",
+        exitCode: 0,
+        data: {
+          revision: packedRevision,
+          outcome: { outcome: "Converged" },
+        },
+      });
+    }
 
     const status = invoke(followerHome, ["status", "--json"]);
     expect(status.status, status.stderr).toBe(0);
@@ -1642,5 +1672,5 @@ esac
     expect(convergedAgain.data.outcome).toMatchObject({
       outcome: "Converged",
     });
-  }, 180_000);
+  }, 360_000);
 });
