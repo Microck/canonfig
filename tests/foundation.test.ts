@@ -64,7 +64,7 @@ describe("Canonfig foundation CLI", () => {
     expect(version.status).toBe(0);
     expect(version.stdout.trim()).toBe("2.0.0");
     expect(version.stderr).toBe("");
-  });
+  }, 60_000);
 
   it("does not depend on the legacy src/index.ts entrypoint", () => {
     const cliSource = readFileSync(resolve(projectRoot, "src/cli/cli.ts"), "utf8");

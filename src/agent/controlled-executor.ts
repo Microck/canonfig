@@ -156,6 +156,8 @@ const packageOperationRequiresRegistry = (
       "--default-index",
       "--directory",
       "--extra-index-url",
+      "-f",
+      "--find-links",
       "--index",
       "--index-url",
       "--project",
@@ -242,6 +244,13 @@ const packageOperationRequiresRegistry = (
   ].includes(command);
 };
 
+const isUvFindLinksOption = (argument: string): boolean => {
+  const lower = argument.toLowerCase();
+  return lower === "--find-links"
+    || lower.startsWith("--find-links=")
+    || (lower.startsWith("-f") && !lower.startsWith("--"));
+};
+
 const packageRegistryInvocationIsSafe = (
   executable: string,
   arguments_: ReadonlyArray<string>,
@@ -256,6 +265,7 @@ const packageRegistryInvocationIsSafe = (
       "--default-index",
       "--index-url",
       "--extra-index-url",
+      "-f",
       "--find-links",
       "--index",
     ])
@@ -282,7 +292,10 @@ const packageRegistryInvocationIsSafe = (
     if (unsafeOptions.has(name)) return false;
     if (
       manager === "uv"
-      && ["--extra-index-url", "--find-links", "--index"].includes(name)
+      && (
+        isUvFindLinksOption(argument)
+        || ["--extra-index-url", "--index"].includes(name)
+      )
     ) return false;
     if (
       (manager === "uv" && name === "--no-config")

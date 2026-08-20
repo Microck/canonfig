@@ -198,15 +198,14 @@ const executableCandidates = (
     ? (environmentValue(environment, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";")
     : [""];
   const path = environmentValue(environment, "PATH") ?? "";
-  return path.split(delimiter).flatMap((directory) =>
-    extensions.map((extension) =>
-      resolve(
-        workingDirectory,
-        directory.length === 0 ? "." : directory,
-        `${value}${extension}`,
-      )
+  return path.split(delimiter)
+    .filter((directory) =>
+      directory.length > 0
+      && (isAbsolute(directory) || win32.isAbsolute(directory))
     )
-  );
+    .flatMap((directory) =>
+      extensions.map((extension) => resolve(directory, `${value}${extension}`))
+    );
 };
 
 export const resolvedExecutableIdentity = async (
@@ -758,6 +757,13 @@ interface RegistryOption {
   readonly consumesNext: boolean;
 }
 
+const isUvFindLinksOption = (argument: string): boolean => {
+  const lower = argument.toLowerCase();
+  return lower === "--find-links"
+    || lower.startsWith("--find-links=")
+    || (lower.startsWith("-f") && !lower.startsWith("--"));
+};
+
 const registryOptions = (
   manager: string,
   arguments_: ReadonlyArray<string>,
@@ -768,6 +774,7 @@ const registryOptions = (
         "--default-index",
         "--index-url",
         "--extra-index-url",
+        "-f",
         "--find-links",
         "--index",
       ]
@@ -848,6 +855,7 @@ const registryOperation = (
       "--default-index",
       "--directory",
       "--extra-index-url",
+      "-f",
       "--find-links",
       "--index",
       "--index-url",
@@ -938,6 +946,7 @@ const packageManagerOptionValues = (manager: string): ReadonlySet<string> =>
       "--default-index",
       "--directory",
       "--extra-index-url",
+      "-f",
       "--find-links",
       "--index",
       "--index-url",
@@ -1613,7 +1622,8 @@ const authorizeRegistryInvocation = (
   if (
     manager === "uv"
     && arguments_.some((argument) =>
-      ["--extra-index-url", "--find-links", "--index"].includes(
+      isUvFindLinksOption(argument)
+      || ["--extra-index-url", "--index"].includes(
         argument.split("=", 1)[0]!.toLowerCase(),
       )
     )
@@ -2033,6 +2043,7 @@ const packageManagerPolicy = (
       "--default-index",
       "--directory",
       "--extra-index-url",
+      "-f",
       "--find-links",
       "--index",
       "--index-url",

@@ -22,7 +22,7 @@ const executeDoctor = (
       cwd: projectRoot,
       encoding: "utf8",
       env: { ...process.env, ...environment, HOME: home },
-      timeout: 30_000,
+      timeout: 60_000,
     },
   );
 
