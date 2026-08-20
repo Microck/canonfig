@@ -55,6 +55,21 @@ import {
 
 const taskId = Schema.decodeUnknownSync(AgentTaskId)("agent:test");
 
+const waitForProcessExit = async (processId: number): Promise<void> => {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(processId, 0);
+    } catch {
+      return;
+    }
+    await new Promise<void>((resolveWait) => {
+      setTimeout(resolveWait, 10);
+    });
+  }
+  throw new Error(`subprocess ${String(processId)} remained alive`);
+};
+
 const executableBehavior = (executable: string) =>
   /^(?:node|nodejs|python\d*(?:\.\d+)*|pypy\d*(?:\.\d+)*|py|(?:ba|da|fi|k|z)?sh|pwsh|powershell)$/u
     .test(basename(executable).replace(/\.(?:cmd|exe)$/u, "").toLowerCase())
@@ -407,6 +422,7 @@ describe("agent resolution", () => {
     ["service with reboot substring", ["start", "my-reboot.target.service"]],
     ["bare reboot service name", ["start", "reboot"]],
     ["ordinary target", ["restart", "default.target"]],
+    ["documented no-warn flag", ["--no-warn", "status", "default.target"]],
     ["status of power-state target", ["status", "reboot.target"]],
     ["is-enabled of power-state target", ["is-enabled", "reboot.target"]],
     ["cat of power-state target", ["cat", "poweroff.target"]],
@@ -1378,6 +1394,12 @@ describe("agent resolution", () => {
       ["-qnr/path/requirements.txt"],
       "package-manager-requirements",
       ["pip", "install", "tool==1.2.3"],
+    ],
+    [
+      "global color before clustered requirement",
+      ["-nqr/path/requirements.txt"],
+      "package-manager-requirements",
+      ["--color", "auto", "pip", "install", "tool==1.2.3"],
     ],
   ] as const)("rejects unsafe uv input before executing the proposal: %s", async (
     _name,
@@ -2749,6 +2771,10 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
     ["inline trusted host alias", ["tool", "install", "tool==1.2.3", "--trusted-host=packages.example.test"]],
     ["clustered no-cache quiet requirement", ["pip", "install", "tool==1.2.3", "-nqr/path/requirements.txt"]],
     ["clustered quiet no-cache requirement", ["pip", "install", "tool==1.2.3", "-qnr/path/requirements.txt"]],
+    [
+      "global color before clustered requirement",
+      ["--color", "auto", "pip", "install", "tool==1.2.3", "-nqr/path/requirements.txt"],
+    ],
   ] as const)("rejects hostile uv registry option before spawning: %s", async (_name, arguments_) => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-uv-option-"));
     try {
@@ -2924,6 +2950,41 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       secrets: [],
     }).pipe(Effect.flip));
     expect(error).toBeInstanceOf(AgentExecutionTimeoutError);
+  });
+
+  it("terminates descendant processes at timeout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-agent-process-tree-"));
+    const marker = join(root, "descendant.pid");
+    let descendantProcessId: number | undefined;
+    try {
+      const script = [
+        "const { spawn } = require('node:child_process');",
+        "const { writeFileSync } = require('node:fs');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "writeFileSync(process.argv[1], String(child.pid));",
+        "setInterval(() => {}, 1000);",
+      ].join("");
+      const error = await Effect.runPromise(executeControlledProcess({
+        executable: process.execPath,
+        arguments: ["-e", script, marker],
+        timeoutMilliseconds: 500,
+        maximumInputBytes: 0,
+        maximumOutputBytes: 1_000,
+        secrets: [],
+      }).pipe(Effect.flip));
+      expect(error).toBeInstanceOf(AgentExecutionTimeoutError);
+      descendantProcessId = Number(await readFile(marker, "utf8"));
+      await waitForProcessExit(descendantProcessId);
+    } finally {
+      if (descendantProcessId !== undefined) {
+        try {
+          process.kill(descendantProcessId, "SIGKILL");
+        } catch {
+          // The bounded process tree was already terminated.
+        }
+      }
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("enforces cancellation", async () => {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { lstat, open, realpath } from "node:fs/promises";
+import { win32 } from "node:path";
 
 import { Effect } from "effect";
 
@@ -19,6 +20,50 @@ import type {
 } from "./agent-resolution.types.ts";
 
 const decoder = new TextDecoder();
+
+type SpawnedChild = ReturnType<typeof spawn>;
+
+const terminateProcessTree = (child: SpawnedChild): Promise<void> => {
+  const processId = child.pid;
+  if (processId === undefined) {
+    child.kill("SIGKILL");
+    return Promise.resolve();
+  }
+  if (process.platform === "win32") {
+    return new Promise<void>((resolveTermination) => {
+      let finished = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        if (timer !== undefined) clearTimeout(timer);
+        child.kill("SIGKILL");
+        resolveTermination();
+      };
+      const killer = spawn(
+        win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+        ["/pid", String(processId), "/t", "/f"],
+        {
+          shell: false,
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      );
+      killer.once("error", finish);
+      killer.once("close", finish);
+      timer = setTimeout(() => {
+        killer.kill();
+        finish();
+      }, 5_000);
+    });
+  }
+  try {
+    process.kill(-processId, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+  return Promise.resolve();
+};
 
 const sameRequirementIdentity = (
   left: PipRequirementFileAuthorization["identity"],
@@ -150,18 +195,7 @@ const packageOperationRequiresRegistry = (
   const manager = packageManagerName(executable);
   if (!isRegistryPackageManager(manager)) return false;
   const optionsWithValues = manager === "uv"
-    ? new Set([
-      "--cache-dir",
-      "--config-file",
-      "--default-index",
-      "--directory",
-      "--extra-index-url",
-      "-f",
-      "--find-links",
-      "--index",
-      "--index-url",
-      "--project",
-    ])
+    ? uvCommandOptionsWithValues
     : manager === "pip"
     ? new Set([
       "--cache-dir",
@@ -268,21 +302,23 @@ const uvRequirementFileOptions = new Set([
 
 type UvInstallCommand = "pip" | "tool" | undefined;
 
+const uvCommandOptionsWithValues = new Set([
+  "--cache-dir",
+  "--color",
+  "--config-file",
+  "--default-index",
+  "--directory",
+  "--extra-index-url",
+  "--find-links",
+  "--index",
+  "--index-url",
+  "--project",
+  "-f",
+]);
+
 const uvInstallCommand = (
   arguments_: ReadonlyArray<string>,
 ): UvInstallCommand => {
-  const optionsWithValues = new Set([
-    "--cache-dir",
-    "--config-file",
-    "--default-index",
-    "--directory",
-    "--extra-index-url",
-    "--find-links",
-    "--index",
-    "--index-url",
-    "--project",
-    "-f",
-  ]);
   let command: string | undefined;
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index]!;
@@ -292,7 +328,7 @@ const uvInstallCommand = (
     }
     if (
       !argument.includes("=")
-      && optionsWithValues.has(argument.split("=", 1)[0]!.toLowerCase())
+      && uvCommandOptionsWithValues.has(argument.split("=", 1)[0]!.toLowerCase())
     ) index += 1;
   }
   return command === "pip" || command === "tool" ? command : undefined;
@@ -656,8 +692,10 @@ export const executeControlledProcess = (
       let limitExceeded = false;
       let timedOut = false;
       let wasCancelled = false;
+      let termination: Promise<void> | undefined;
       const child = spawn(input.executable, [...input.arguments], {
         cwd: input.workingDirectory,
+        detached: process.platform !== "win32",
         env: (() => {
           const manager = packageManagerName(input.executable);
           const packageManager = isRegistryPackageManager(manager);
@@ -696,7 +734,7 @@ export const executeControlledProcess = (
         reject(cause);
       };
       const terminate = (): void => {
-        if (!child.killed) child.kill("SIGKILL");
+        termination ??= terminateProcessTree(child);
       };
       const capture = (target: Array<Buffer>) => (chunk: Buffer): void => {
         capturedBytes += chunk.byteLength;
@@ -726,38 +764,42 @@ export const executeControlledProcess = (
       effectSignal.addEventListener("abort", abort, { once: true });
       input.signal?.addEventListener("abort", abort, { once: true });
       child.once("close", (exitCode, signal) => {
-        clearTimeout(timer);
-        effectSignal.removeEventListener("abort", abort);
-        input.signal?.removeEventListener("abort", abort);
-        if (settled) return;
-        if (wasCancelled) {
-          finishWith(cancelled(input));
-          return;
-        }
-        if (timedOut) {
-          finishWith(new AgentExecutionTimeoutError({
+        const complete = (): void => {
+          clearTimeout(timer);
+          effectSignal.removeEventListener("abort", abort);
+          input.signal?.removeEventListener("abort", abort);
+          if (settled) return;
+          if (wasCancelled) {
+            finishWith(cancelled(input));
+            return;
+          }
+          if (timedOut) {
+            finishWith(new AgentExecutionTimeoutError({
+              executable: input.executable,
+              timeoutMilliseconds: input.timeoutMilliseconds,
+            }));
+            return;
+          }
+          if (limitExceeded) {
+            finishWith(new AgentOutputLimitError({
+              executable: input.executable,
+              maximumBytes: input.maximumOutputBytes,
+            }));
+            return;
+          }
+          settled = true;
+          resolve({
             executable: input.executable,
-            timeoutMilliseconds: input.timeoutMilliseconds,
-          }));
-          return;
-        }
-        if (limitExceeded) {
-          finishWith(new AgentOutputLimitError({
-            executable: input.executable,
-            maximumBytes: input.maximumOutputBytes,
-          }));
-          return;
-        }
-        settled = true;
-        resolve({
-          executable: input.executable,
-          arguments: input.arguments,
-          exitCode,
-          signal,
-          outputBytes: capturedBytes,
-          stdout: redactText(decoder.decode(Buffer.concat(output)), input.secrets),
-          stderr: redactText(decoder.decode(Buffer.concat(errors)), input.secrets),
-        });
+            arguments: input.arguments,
+            exitCode,
+            signal,
+            outputBytes: capturedBytes,
+            stdout: redactText(decoder.decode(Buffer.concat(output)), input.secrets),
+            stderr: redactText(decoder.decode(Buffer.concat(errors)), input.secrets),
+          });
+        };
+        if (termination === undefined) complete();
+        else void termination.then(complete);
       });
       if (input.standardInput === undefined) child.stdin.end();
       else child.stdin.end(input.standardInput);

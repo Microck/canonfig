@@ -25,6 +25,7 @@ import type {
   MachinePath,
   NormalizePathInput,
   ProcessEnvironmentEntry,
+  ProcessResult,
   RenderedSchedulerJob,
   RemoveEmptyDirectoryInput,
   SchedulerBackend,
@@ -40,6 +41,10 @@ export interface MacosMachineStateOptions {
   readonly schedulerBackend?: SchedulerBackend | undefined;
   /** Test seam invoked after the managed root is opened but before traversal. */
   readonly beforeSafeRootMutation?: (() => Promise<void>) | undefined;
+  /** Test seam for launchd command results. */
+  readonly launchctlRunner?: ((
+    arguments_: ReadonlyArray<string>,
+  ) => Effect.Effect<ProcessResult, MachineStateError>) | undefined;
 }
 
 const decode = Schema.decodeUnknownSync;
@@ -256,13 +261,30 @@ export const macosMachineStateLayer = (
       const launchAgents = join(home, "Library", "LaunchAgents");
       const launchctl = "/bin/launchctl";
       const launchDomain = `gui/${process.getuid?.() ?? 0}`;
-      const runLaunchctl = (arguments_: ReadonlyArray<string>) =>
-        machine.runProcess({
-          executable: { platform: "linux", absolute: launchctl },
-          arguments: arguments_,
-          timeoutMilliseconds: 10_000,
-          maximumOutputBytes: 1024 * 1024,
-        });
+      const runLaunchctl = options.launchctlRunner
+        ?? ((arguments_: ReadonlyArray<string>) =>
+          machine.runProcess({
+            executable: { platform: "linux", absolute: launchctl },
+            arguments: arguments_,
+            timeoutMilliseconds: 10_000,
+            maximumOutputBytes: 1024 * 1024,
+          }));
+      const queryLaunchctlActive = (
+        label: string,
+        action: string,
+        recovery: string,
+      ): Effect.Effect<boolean, MachineStateError> =>
+        runLaunchctl(["print", `${launchDomain}/${label}`]).pipe(
+          Effect.flatMap((result) => {
+            if (result.exitCode === 0) return Effect.succeed(true);
+            const output = Buffer.concat([
+              Buffer.from(result.standardOutput),
+              Buffer.from(result.standardError),
+            ]).toString("utf8");
+            if (/could not find service/iu.test(output)) return Effect.succeed(false);
+            return Effect.fail(new HumanActionRequiredError({ action, recovery }));
+          }),
+        );
       const nativeScheduler: SchedulerBackend = {
         inspect: (expected) => {
           const path = join(launchAgents, expected.serviceName);
@@ -283,8 +305,10 @@ export const macosMachineStateLayer = (
               return { installed: false, enabled: false, matches: false };
             }
             const label = expected.serviceName.slice(0, -".plist".length);
-            const active = yield* runLaunchctl(["print", `${launchDomain}/${label}`]).pipe(
-              Effect.map((result) => result.exitCode === 0),
+            const active = yield* queryLaunchctlActive(
+              label,
+              "inspect the Canonfig launchd agent",
+              "launchd inspection failed; sign in to the macOS graphical user session and retry.",
             );
             return {
               installed: true,
@@ -326,8 +350,10 @@ export const macosMachineStateLayer = (
                 }),
             });
             const label = expected.serviceName.slice(0, -".plist".length);
-            const active = yield* runLaunchctl(["print", `${launchDomain}/${label}`]).pipe(
-              Effect.map((result) => result.exitCode === 0),
+            const active = yield* queryLaunchctlActive(
+              label,
+              "capture the Canonfig launchd agent",
+              "launchd snapshot inspection failed; sign in to the macOS graphical user session and retry.",
             );
             return {
               state: "present",

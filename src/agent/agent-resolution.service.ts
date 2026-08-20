@@ -781,21 +781,24 @@ const uvRequirementFileOptions = new Set([
 
 type UvInstallCommand = "pip" | "tool" | undefined;
 
+const uvCommandOptionsWithValues = new Set([
+  "--cache-dir",
+  "--color",
+  "--config-file",
+  "--default-index",
+  "--directory",
+  "--extra-index-url",
+  "--find-links",
+  "--index",
+  "--index-url",
+  "--project",
+  "-f",
+]);
+
 const uvInstallCommand = (
   arguments_: ReadonlyArray<string>,
 ): UvInstallCommand => {
-  const commandIndex = firstCommandIndex(arguments_, new Set([
-    "--cache-dir",
-    "--config-file",
-    "--default-index",
-    "--directory",
-    "--extra-index-url",
-    "--find-links",
-    "--index",
-    "--index-url",
-    "--project",
-    "-f",
-  ]));
+  const commandIndex = firstCommandIndex(arguments_, uvCommandOptionsWithValues);
   const command = commandIndex === undefined
     ? undefined
     : arguments_[commandIndex]?.toLowerCase();
@@ -940,18 +943,7 @@ const registryOperation = (
   const unambiguous = argumentsBeforeSeparator(arguments_);
   if (unambiguous === undefined) return false;
   const commandOptions = manager === "uv"
-    ? new Set([
-      "--cache-dir",
-      "--config-file",
-      "--default-index",
-      "--directory",
-      "--extra-index-url",
-      "-f",
-      "--find-links",
-      "--index",
-      "--index-url",
-      "--project",
-    ])
+    ? uvCommandOptionsWithValues
     : manager === "pip"
     ? new Set([
       "--cache-dir",
@@ -1031,18 +1023,7 @@ const registryOperation = (
 
 const packageManagerOptionValues = (manager: string): ReadonlySet<string> =>
   manager === "uv"
-    ? new Set([
-      "--cache-dir",
-      "--config-file",
-      "--default-index",
-      "--directory",
-      "--extra-index-url",
-      "-f",
-      "--find-links",
-      "--index",
-      "--index-url",
-      "--project",
-    ])
+    ? uvCommandOptionsWithValues
     : manager === "pip"
     ? new Set([
       "--cache-dir",
@@ -2146,18 +2127,7 @@ const packageManagerPolicy = (
   // install/sync. Only binary-only installs avoid that execution surface.
   const commandIndex = firstCommandIndex(
     unambiguous,
-    new Set([
-      "--cache-dir",
-      "--config-file",
-      "--default-index",
-      "--directory",
-      "--extra-index-url",
-      "-f",
-      "--find-links",
-      "--index",
-      "--index-url",
-      "--project",
-    ]),
+    uvCommandOptionsWithValues,
   );
   const command = commandIndex === undefined
     ? undefined
@@ -2285,6 +2255,7 @@ const systemctlGlobalOptionArity = new Map<string, OptionArity>([
   ["--no-legend", 0],
   ["--no-pager", 0],
   ["--no-reload", 0],
+  ["--no-warn", 0],
   ["--no-wall", 0],
   ["--now", 0],
   ["--output", 1],
