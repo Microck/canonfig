@@ -1,0 +1,1171 @@
+import { Clock, Effect, Option, Schema } from "effect";
+
+import {
+  ContentDigest,
+  FollowerId,
+  ProfileRevisionId,
+  ResourceId,
+  type ActionId,
+} from "../domain/brand.ts";
+import type { PublishedResource } from "../domain/profile.ts";
+import type {
+  AppliedResourceRecord,
+  DriftConflict,
+  HumanAction,
+  PlannedAction,
+  SynchronizationOutcome,
+} from "../domain/synchronization.ts";
+import type { MachineStateError } from "../machine/machine-state.errors.ts";
+import { MachineState } from "../machine/machine-state.service.ts";
+import type { SchedulerSnapshot } from "../machine/machine-state.types.ts";
+import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
+import { desiredResourceDigest } from "./resource-plans.ts";
+import {
+  prepareResourceAction,
+  verifyResource,
+  type PreparedResourceAction,
+  type ResourceExecutionContext,
+} from "./resource-executors.ts";
+import { StateRepository } from "../state/state-repository.service.ts";
+import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
+import type { ScheduleManagerError } from "../schedule/schedule-manager.errors.ts";
+import type { StateRepositoryError } from "../state/state-repository.errors.ts";
+import type { VerificationEvidence } from "../state/state-repository.types.ts";
+import {
+  InvalidExecutionPlanError,
+  MissingExecutionResourceError,
+  type SynchronizationExecutionInputError,
+} from "./synchronization.errors.ts";
+import type {
+  SynchronizationExecutionLimits,
+  SynchronizationRunInput,
+} from "./synchronization.types.ts";
+
+export const defaultSynchronizationExecutionLimits: SynchronizationExecutionLimits = {
+  maximumFileBytes: 16 * 1024 * 1024,
+  processTimeoutMilliseconds: 10 * 60 * 1000,
+  maximumProcessOutputBytes: 1024 * 1024,
+  verificationConcurrency: 4,
+};
+
+export interface SynchronizationExecutionResult {
+  readonly outcome: SynchronizationOutcome;
+  readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+  readonly removedResources: ReadonlyArray<ResourceId>;
+}
+
+export interface ActionState {
+  readonly action: PlannedAction;
+  readonly context: ResourceExecutionContext;
+}
+
+const profileScheduleResourceId = Schema.decodeUnknownSync(ResourceId)(
+  "canonfig.schedule-default",
+);
+
+const profileScheduleResource: PublishedResource = {
+  id: profileScheduleResourceId,
+  kind: "schedule",
+  policy: "replace",
+  target: "canonfig.schedule-default",
+  dependsOn: [],
+  blobs: [],
+};
+
+const profileScheduleDesired = (
+  schedule: Extract<PlannedAction["detail"], { readonly kind: "schedule-default" }>["schedule"],
+) => ({
+  kind: "schedule" as const,
+  digest: Schema.decodeUnknownSync(ContentDigest)(
+    sha256Hex(canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(
+      JSON.parse(JSON.stringify(schedule)),
+    ))),
+  ),
+  schedule,
+});
+
+const SchedulerSnapshotSchema = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("absent"),
+    platform: Schema.Literals(["linux", "macos", "windows"]),
+    mechanism: Schema.Literals([
+      "systemd-user-timer",
+      "launchd-user-agent",
+      "task-scheduler",
+    ]),
+    serviceName: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    state: Schema.Literal("present"),
+    platform: Schema.Literals(["linux", "macos", "windows"]),
+    mechanism: Schema.Literals([
+      "systemd-user-timer",
+      "launchd-user-agent",
+      "task-scheduler",
+    ]),
+    serviceName: Schema.NonEmptyString,
+    enabled: Schema.Boolean,
+    active: Schema.optional(Schema.Boolean),
+    servicePresent: Schema.Boolean,
+    schedulePresent: Schema.Boolean,
+    service: Schema.optional(Schema.String),
+    schedule: Schema.optional(Schema.String),
+    serviceMode: Schema.optional(Schema.Int),
+    scheduleMode: Schema.optional(Schema.Int),
+    native: Schema.optional(Schema.String),
+  }),
+]);
+
+const scheduleRollbackReference = (
+  context: ActionState["context"],
+): Effect.Effect<
+  string,
+  SynchronizationExecutionInputError | MachineStateError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const directories = yield* machine.userDirectories();
+    const directory = yield* machine.normalizePath({
+      path: `canonfig/rollback/${context.run}`,
+      base: directories.cache,
+    });
+    yield* machine.ensureDirectory({ path: directory });
+    return (yield* machine.normalizePath({
+      path: `${sha256Hex(context.action.id)}.schedule.json`,
+      base: directory,
+    })).absolute;
+  });
+
+const captureScheduleRollback = (
+  context: ActionState["context"],
+  scheduleManager: ScheduleManager["Service"],
+): Effect.Effect<
+  {
+    readonly reference: string;
+    readonly snapshot: SchedulerSnapshot;
+    readonly restore: Effect.Effect<void, ScheduleManagerError | MachineStateError, MachineState>;
+  },
+  SynchronizationExecutionInputError | MachineStateError | ScheduleManagerError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const reference = yield* scheduleRollbackReference(context);
+    const snapshot = yield* scheduleManager.snapshot({
+      schedule: context.action.detail.kind === "schedule-default"
+        ? context.action.detail.schedule
+        : undefined,
+    });
+    const machine = yield* MachineState;
+    yield* machine.atomicWrite({
+      path: yield* machine.normalizePath({ path: reference }),
+      content: new TextEncoder().encode(JSON.stringify(snapshot)),
+    });
+    return {
+      reference,
+      snapshot,
+      restore: scheduleManager.restore(
+        {
+          schedule: context.action.detail.kind === "schedule-default"
+            ? context.action.detail.schedule
+            : undefined,
+        },
+        snapshot,
+      ),
+    };
+  });
+
+export const restoreScheduleRollbackReference = (
+  context: ActionState["context"],
+  reference: string,
+  scheduleManager: ScheduleManager["Service"],
+): Effect.Effect<
+  void,
+  SynchronizationExecutionInputError | MachineStateError | ScheduleManagerError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const expected = yield* scheduleRollbackReference(context);
+    const machine = yield* MachineState;
+    const actual = yield* machine.normalizePath({ path: reference });
+    if (actual.absolute !== expected) {
+      return yield* new InvalidExecutionPlanError({
+        message: `schedule rollback reference does not belong to action ${context.action.id}`,
+      });
+    }
+    const bytes = yield* machine.readFile({
+      path: actual,
+      maximumBytes: 16 * 1024 * 1024,
+    });
+    const snapshot = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(SchedulerSnapshotSchema),
+    )(new TextDecoder().decode(bytes)).pipe(
+      Effect.mapError((error) =>
+        new InvalidExecutionPlanError({
+          message: `invalid schedule rollback material for action ${context.action.id}: ${String(error)}`,
+        })
+      ),
+    );
+    if (context.action.detail.kind !== "schedule-default") {
+      return yield* new InvalidExecutionPlanError({
+        message: `schedule rollback reference targets a non-schedule action ${context.action.id}`,
+      });
+    }
+    yield* scheduleManager.restore(
+      { schedule: context.action.detail.schedule },
+      snapshot,
+    );
+  });
+
+const now = (): Effect.Effect<string> =>
+  Effect.map(Clock.currentTimeMillis, (milliseconds) =>
+    new Date(milliseconds).toISOString()
+  );
+
+const redact = (
+  value:
+    | Error
+    | MachineStateError
+    | ScheduleManagerError
+    | StateRepositoryError
+    | SynchronizationExecutionInputError,
+  secrets: ReadonlyArray<string>,
+): string => {
+  let message = value instanceof Error
+    ? value.message || value.constructor.name
+    : String(value);
+  for (const secret of secrets) {
+    if (secret.length > 0) message = message.replaceAll(secret, "[REDACTED]");
+  }
+  return message.slice(0, 2048);
+};
+
+export const executionLimits = (
+  input: SynchronizationRunInput,
+): SynchronizationExecutionLimits => ({
+  ...defaultSynchronizationExecutionLimits,
+  ...input.limits,
+});
+
+/**
+ * Remove only the rollback files derived from this immutable run/action set.
+ * The exact paths make cleanup idempotent and prevent a terminal run from
+ * touching another run's material. Cleanup is intentionally separate from
+ * repository completion so a cleanup failure cannot erase the primary
+ * terminal outcome.
+ */
+export const cleanupRollbackSnapshots = (
+  run: SynchronizationRunInput["id"],
+  actions: ReadonlyArray<ActionId>,
+): Effect.Effect<void, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const directories = yield* machine.userDirectories();
+    const directory = yield* machine.normalizePath({
+      path: `canonfig/rollback/${run}`,
+      base: directories.cache,
+    });
+    const references = [...new Set(actions)].flatMap((action) => [
+      `${sha256Hex(action)}.json`,
+      `${sha256Hex(action)}.schedule.json`,
+    ]);
+    for (const reference of references) {
+      const path = yield* machine.normalizePath({
+        path: reference,
+        base: directory,
+      });
+      yield* machine.removeFile({ path }).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
+            ? Effect.void
+            : Effect.fail(error)
+        ),
+      );
+    }
+    yield* machine.removeEmptyDirectory({ path: directory }).pipe(
+      Effect.catchTag("MachineFilesystemError", (error) =>
+        /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
+          ? Effect.void
+          : Effect.fail(error)
+      ),
+    );
+  });
+
+const validateLimits = (
+  limits: SynchronizationExecutionLimits,
+): Effect.Effect<void, InvalidExecutionPlanError> => {
+  if (
+    !Number.isSafeInteger(limits.maximumFileBytes)
+    || limits.maximumFileBytes <= 0
+    || !Number.isSafeInteger(limits.processTimeoutMilliseconds)
+    || limits.processTimeoutMilliseconds <= 0
+    || !Number.isSafeInteger(limits.maximumProcessOutputBytes)
+    || limits.maximumProcessOutputBytes < 0
+    || !Number.isSafeInteger(limits.verificationConcurrency)
+    || limits.verificationConcurrency <= 0
+  ) {
+    return Effect.fail(new InvalidExecutionPlanError({
+      message: "execution limits must be positive safe integers",
+    }));
+  }
+  return Effect.void;
+};
+
+const verificationCompatibleWithDesired = (
+  kind: SynchronizationRunInput["revision"]["resources"][number]["kind"],
+  desired: SynchronizationRunInput["revision"]["desired"][number]["desired"],
+  method: SynchronizationRunInput["revision"]["desired"][number]["verification"]["method"],
+): boolean => {
+  if (kind === "file") {
+    return desired.kind === "file"
+      && (desired.symlinkTo === undefined ? method === "digest" : method === "symlink");
+  }
+  switch (kind) {
+    case "directory":
+    case "config":
+    case "skill":
+      return method === "digest" || method === "command";
+    case "tool":
+      return method === "executable-present" || method === "command";
+    case "credential":
+      return method === "credential-present" || method === "command";
+    case "schedule":
+      return method === "command";
+  }
+};
+
+export const executionContexts = (
+  input: SynchronizationRunInput,
+  limits: SynchronizationExecutionLimits,
+): Effect.Effect<ReadonlyArray<ActionState>, SynchronizationExecutionInputError> =>
+  Effect.gen(function*() {
+    yield* validateLimits(limits);
+    const encodedBody = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(
+      JSON.parse(JSON.stringify({
+        revision: input.plan.revision,
+        follower: input.plan.follower,
+        requiredBlobs: input.plan.requiredBlobs,
+        actions: input.plan.actions,
+        agentTasks: input.plan.agentTasks,
+      })),
+    ));
+    if (
+      input.plan.revision !== input.revision.id
+      || input.plan.follower.length === 0
+      || input.plan.digest !== sha256Hex(input.plan.encoded)
+      || input.plan.encoded !== encodedBody
+    ) {
+      return yield* new InvalidExecutionPlanError({
+        message: "plan identity or digest does not match its hydrated content",
+      });
+    }
+    const resources = new Map(input.revision.resources.map((resource) => [
+      resource.id,
+      resource,
+    ]));
+    const desired = new Map(input.revision.desired.map((entry) => [
+      entry.resource,
+      entry,
+    ]));
+    const artifacts = new Map(input.artifacts.map((entry) => [
+      entry.digest,
+      entry,
+    ]));
+    const seen = new Set<string>();
+    const completed = new Set<string>();
+    const ordered: Array<ActionState> = [];
+    const remaining = [...input.plan.actions];
+    while (remaining.length > 0) {
+      const index = remaining.findIndex((action) =>
+        action.before.every((dependency) => completed.has(dependency))
+      );
+      if (index < 0) {
+        return yield* new InvalidExecutionPlanError({
+          message: "plan actions are cyclic or reference an unknown prerequisite",
+        });
+      }
+      const action = remaining.splice(index, 1)[0]!;
+      if (seen.has(action.id) || action.kind !== action.detail.kind) {
+        return yield* new InvalidExecutionPlanError({
+          message: `invalid or duplicate action ${action.id}`,
+        });
+      }
+      if (action.detail.kind === "schedule-default") {
+        if (action.resource !== profileScheduleResourceId) {
+          return yield* new InvalidExecutionPlanError({
+            message: `profile schedule action ${action.id} has an invalid resource`,
+          });
+        }
+        seen.add(action.id);
+        completed.add(action.id);
+        ordered.push({
+          action,
+          context: {
+            run: input.id,
+            action,
+            resource: profileScheduleResource,
+            desired: profileScheduleDesired(action.detail.schedule),
+            verification: { method: "command", command: [] },
+            artifacts,
+            limits,
+            previousSchedule: action.detail.previousSchedule,
+          },
+        });
+        continue;
+      }
+      const resource = resources.get(action.resource);
+      const desiredEntry = desired.get(action.resource);
+      if (resource === undefined || desiredEntry === undefined) {
+        return yield* new MissingExecutionResourceError({
+          resource: action.resource,
+        });
+      }
+      if (
+        !verificationCompatibleWithDesired(
+          resource.kind,
+          desiredEntry.desired,
+          desiredEntry.verification.method,
+        )
+      ) {
+        return yield* new InvalidExecutionPlanError({
+          message:
+            `verification method ${desiredEntry.verification.method} is incompatible with ${resource.kind} resource ${resource.id}`,
+        });
+      }
+      if (
+        action.detail.kind === "write-file"
+        && (
+          desiredEntry.desired.kind === "file"
+            ? action.detail.executable !== desiredEntry.desired.executable
+            : action.detail.executable !== undefined
+        )
+      ) {
+        return yield* new InvalidExecutionPlanError({
+          message: `write-file executable intent does not match ${resource.id}`,
+        });
+      }
+      seen.add(action.id);
+      completed.add(action.id);
+      ordered.push({
+        action,
+        context: {
+          run: input.id,
+          action,
+          resource,
+          desired: desiredEntry.desired,
+          verification: desiredEntry.verification,
+          artifacts,
+          limits,
+          previousSchedule: input.appliedResources?.find((record) =>
+            record.resource === action.resource
+          )?.schedule,
+        },
+      });
+    }
+    return ordered;
+  });
+
+const verificationEvidence = (
+  result: {
+    readonly passed: boolean;
+    readonly method: string;
+    readonly observedDigest?: string | undefined;
+    readonly exitCode?: number | undefined;
+  },
+): VerificationEvidence => {
+  const base = {
+    status: result.passed ? "passed" as const : "failed" as const,
+    method: result.method,
+  };
+  const withDigest = result.observedDigest === undefined
+    ? base
+    : {
+      ...base,
+      observedDigest: Schema.decodeUnknownSync(ContentDigest)(result.observedDigest),
+    };
+  return result.exitCode === undefined
+    ? withDigest
+    : { ...withDigest, exitCode: result.exitCode };
+};
+
+const journal = (
+  run: SynchronizationRunInput["id"],
+  action: ActionId,
+  state: "running" | "succeeded" | "failed" | "skipped",
+  verification?: VerificationEvidence | undefined,
+  rollbackReference?: string | undefined,
+  attempt = 1,
+  appliedResource?: AppliedResourceRecord | undefined,
+  removedResource?: ResourceId | undefined,
+  removedResourceRecord?: AppliedResourceRecord | undefined,
+) =>
+  Effect.gen(function*() {
+    const repository = yield* StateRepository;
+    const recordedAt = yield* now();
+    const base = {
+      run,
+      action,
+      state,
+      recordedAt,
+      attempt,
+    };
+    yield* repository.journalAction({
+      ...base,
+      verification,
+      rollbackReference,
+      appliedResource,
+      removedResource,
+      removedResourceRecord,
+    });
+  });
+
+const rollbackPrepared = (
+  prepared: PreparedResourceAction | undefined,
+) => prepared?.rollback ?? Effect.void;
+
+const appliedResourceFor = (
+  input: SynchronizationRunInput,
+  state: ActionState,
+  appliedAt: string,
+): AppliedResourceRecord | undefined => {
+  const desired = state.context.desired;
+  const digest = desiredResourceDigest(desired);
+  if (digest === undefined) return undefined;
+  return {
+    resource: state.action.resource,
+    revision: input.revision.id,
+    digest,
+    appliedAt,
+    kind: state.context.resource.kind,
+    policy: state.context.resource.policy,
+    target: state.context.resource.target,
+    executable: desired.kind === "file" ? desired.executable : undefined,
+    symlinkTo: desired.kind === "file" ? desired.symlinkTo : undefined,
+    ownedFiles: desired.kind === "directory" || desired.kind === "skill"
+      ? desired.files.map((file) => ({
+        path: file.path,
+        digest: file.digest,
+        executable: file.executable,
+      }))
+      : undefined,
+    ownedKeys: desired.kind === "config" ? desired.keys : undefined,
+    configFormat: desired.kind === "config" ? desired.format : undefined,
+    schedule: desired.kind === "schedule" ? desired.schedule : undefined,
+  };
+};
+
+export interface ActionResult {
+  readonly kind: "verified" | "human" | "drift" | "failed";
+  readonly resource?: ResourceId | undefined;
+  readonly human?: HumanAction | undefined;
+  readonly drift?: DriftConflict | undefined;
+  readonly reason?: string | undefined;
+}
+
+export const driftResult = (
+  input: SynchronizationRunInput,
+  state: ActionState,
+): ActionResult => {
+  const detail = state.action.detail;
+  if (detail.kind !== "drift-conflict") {
+    return { kind: "failed", reason: "invalid drift action" };
+  }
+  const previous = input.appliedResources?.find((record) =>
+    record.resource === state.action.resource
+  );
+  return {
+    kind: "drift",
+    drift: {
+      resource: state.action.resource,
+      target: detail.target,
+      desiredDigest: detail.desiredDigest,
+      observedDigest: detail.observedDigest,
+      lastAppliedDigest: previous?.digest ?? detail.desiredDigest,
+      desiredExecutable: detail.desiredExecutable,
+      observedExecutable: detail.observedExecutable,
+    },
+  };
+};
+
+const executeScheduleDefaultAction = (
+  input: SynchronizationRunInput,
+  state: ActionState,
+  attempt: number,
+): Effect.Effect<ActionResult, never, StateRepository | MachineState> =>
+  Effect.gen(function*() {
+    const detail = state.action.detail;
+    if (detail.kind !== "schedule-default") {
+      return {
+        kind: "failed",
+        reason: `invalid profile schedule action ${state.action.id}`,
+      } satisfies ActionResult;
+    }
+    const scheduleManager = Option.getOrUndefined(
+      yield* Effect.serviceOption(ScheduleManager),
+    );
+    if (scheduleManager === undefined) {
+      yield* journal(
+        input.id,
+        state.action.id,
+        "failed",
+        { status: "not-run", method: "native-scheduler-unavailable" },
+        undefined,
+        attempt,
+      ).pipe(Effect.ignore);
+      return {
+        kind: "failed",
+        reason: "native scheduler is unavailable for the profile schedule default",
+      } satisfies ActionResult;
+    }
+
+    let rollback: Effect.Effect<void, unknown, MachineState> = Effect.void;
+    let rollbackReference: string | undefined;
+
+    const work = Effect.gen(function*() {
+      const captured = yield* captureScheduleRollback(
+        state.context,
+        scheduleManager,
+      );
+      rollback = captured.restore;
+      rollbackReference = captured.reference;
+      yield* journal(
+        input.id,
+        state.action.id,
+        "running",
+        undefined,
+        rollbackReference,
+        attempt,
+      );
+      if (detail.operation === "remove") {
+        yield* scheduleManager.remove({ schedule: detail.schedule });
+      } else {
+        const change = yield* scheduleManager.update({ schedule: detail.schedule });
+        const verification = {
+          status: change.status.state === "current"
+            ? "passed" as const
+            : "failed" as const,
+          method: `native-scheduler:${change.status.platform}`,
+        };
+        if (verification.status === "failed") {
+          yield* rollback.pipe(Effect.ignore);
+          yield* journal(
+            input.id,
+            state.action.id,
+            "failed",
+            verification,
+            rollbackReference,
+            attempt,
+          );
+          return {
+            kind: "failed",
+            reason: "native scheduler did not verify the profile schedule default",
+          } satisfies ActionResult;
+        }
+      }
+      const verification = {
+        status: "passed" as const,
+        method: detail.operation === "remove"
+          ? "native-scheduler:removed"
+          : "native-scheduler:current",
+      };
+      yield* journal(
+        input.id,
+        state.action.id,
+        "succeeded",
+        verification,
+        rollbackReference,
+        attempt,
+      );
+      return { kind: "verified" } satisfies ActionResult;
+    });
+
+    return yield* work.pipe(
+      Effect.onInterrupt(() =>
+        rollback.pipe(
+          Effect.catch(() => Effect.void),
+          Effect.andThen(journal(
+            input.id,
+            state.action.id,
+            "failed",
+            { status: "not-run", method: "interrupted" },
+            rollbackReference,
+            attempt,
+          )),
+          Effect.ignore,
+        )
+      ),
+      Effect.catch((error) =>
+        rollback.pipe(
+          Effect.catch(() => Effect.void),
+          Effect.andThen(journal(
+            input.id,
+            state.action.id,
+            "failed",
+            { status: "not-run", method: "action-failed" },
+            rollbackReference,
+            attempt,
+          )),
+          Effect.ignore,
+          Effect.andThen(Effect.succeed({
+            kind: "failed",
+            reason:
+              `native scheduler mutation failed for profile schedule default: ${redact(
+                error,
+                input.knownSecrets ?? [],
+              )}`,
+          } satisfies ActionResult)),
+        )
+      ),
+    );
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.succeed({
+        kind: "failed",
+        reason: redact(error, input.knownSecrets ?? []),
+      } satisfies ActionResult)
+    ),
+  );
+
+const agentActionResult = (
+  input: SynchronizationRunInput,
+  state: ActionState,
+  attempt = 1,
+): Effect.Effect<ActionResult, never, StateRepository | MachineState> =>
+  Effect.gen(function*() {
+    const detail = state.action.detail;
+    if (detail.kind !== "agent-task") {
+      return { kind: "failed", reason: "invalid agent action" } satisfies ActionResult;
+    }
+    const task = input.plan.agentTasks.find((candidate) =>
+      candidate.id === detail.taskId
+    );
+    const agent = input.agent;
+    const resolution = input.agentResolution;
+    if (
+      task === undefined
+      || agent?.policy !== "agent-apply"
+      || agent.harness === undefined
+      || resolution === undefined
+    ) {
+      yield* journal(
+        input.id,
+        state.action.id,
+        "skipped",
+        undefined,
+        undefined,
+        attempt,
+      );
+      return {
+        kind: "human",
+        human: {
+          reason: `Bounded agent task requires an apply-authorized harness: ${detail.summary}`,
+          instructions:
+            "Configure an agent-apply harness, or resolve the task manually, then rerun synchronization.",
+          resource: state.action.resource,
+        },
+      } satisfies ActionResult;
+    }
+
+    yield* journal(
+      input.id,
+      state.action.id,
+      "running",
+      undefined,
+      undefined,
+      attempt,
+    );
+    const outcome = yield* resolution.resolve({
+      policy: agent.policy,
+      task,
+      harness: agent.harness,
+      scheduled: agent.scheduled,
+      signal: agent.signal,
+    });
+    if (outcome.outcome !== "applied") {
+      yield* journal(
+        input.id,
+        state.action.id,
+        "skipped",
+        undefined,
+        undefined,
+        attempt,
+      );
+      return {
+        kind: "human",
+        human: {
+          reason: `Agent did not apply the requested task: ${detail.summary}`,
+          instructions:
+            "Review the agent proposal or complete the task manually, then rerun synchronization.",
+          resource: state.action.resource,
+        },
+      } satisfies ActionResult;
+    }
+
+    const scheduleManager = state.context.resource.kind === "schedule"
+      ? Option.getOrUndefined(yield* Effect.serviceOption(ScheduleManager))
+      : undefined;
+    const verification = yield* verifyResource(state.context, scheduleManager);
+    const evidence = verificationEvidence(verification);
+    if (!verification.passed) {
+      yield* journal(
+        input.id,
+        state.action.id,
+        "failed",
+        evidence,
+        undefined,
+        attempt,
+      );
+      return {
+        kind: "failed",
+        reason: `verification failed for agent task ${state.action.resource}`,
+      } satisfies ActionResult;
+    }
+    yield* journal(
+      input.id,
+      state.action.id,
+      "succeeded",
+      evidence,
+      undefined,
+      attempt,
+    );
+    return {
+      kind: "verified",
+      resource: state.action.resource,
+    } satisfies ActionResult;
+  }).pipe(
+    Effect.onInterrupt(() =>
+      journal(
+        input.id,
+        state.action.id,
+        "failed",
+        { status: "not-run", method: "interrupted" },
+        undefined,
+        attempt,
+      ).pipe(Effect.ignore)
+    ),
+    Effect.catch((error) =>
+      journal(
+        input.id,
+        state.action.id,
+        "failed",
+        { status: "not-run", method: "action-failed" },
+        undefined,
+        attempt,
+      ).pipe(
+        Effect.ignore,
+        Effect.andThen(Effect.succeed({
+          kind: "failed",
+          reason: redact(error, input.knownSecrets ?? []),
+        } satisfies ActionResult)),
+      )
+    ),
+  );
+
+export const executeSynchronizationAction = (
+  input: SynchronizationRunInput,
+  state: ActionState,
+  attempt = 1,
+): Effect.Effect<ActionResult, never, StateRepository | MachineState> =>
+  Effect.gen(function*() {
+    const detail = state.action.detail;
+    if (detail.kind === "human-action") {
+      yield* journal(input.id, state.action.id, "skipped", undefined, undefined, attempt);
+      return {
+        kind: "human",
+        human: {
+          reason: detail.reason,
+          instructions: detail.instructions,
+          resource: state.action.resource,
+        },
+      } satisfies ActionResult;
+    }
+    if (detail.kind === "agent-task") {
+      return yield* agentActionResult(input, state, attempt);
+    }
+    if (detail.kind === "schedule-default") {
+      return yield* executeScheduleDefaultAction(input, state, attempt);
+    }
+    if (detail.kind === "drift-conflict") {
+      const result = driftResult(input, state);
+      if (result.drift !== undefined) {
+        const repository = yield* StateRepository;
+        yield* repository.recordDrift({
+          run: input.id,
+          conflict: result.drift,
+          recordedAt: yield* now(),
+        });
+      }
+      yield* journal(input.id, state.action.id, "skipped", undefined, undefined, attempt);
+      return result;
+    }
+
+    let prepared: PreparedResourceAction | undefined;
+    const scheduleManager = state.context.resource.kind === "schedule"
+      ? Option.getOrUndefined(yield* Effect.serviceOption(ScheduleManager))
+      : undefined;
+    const work = Effect.gen(function*() {
+      prepared = yield* prepareResourceAction(state.context, scheduleManager);
+      yield* journal(
+        input.id,
+        state.action.id,
+        "running",
+        undefined,
+        prepared.rollbackReference,
+        attempt,
+      );
+      yield* prepared.execute;
+      if (detail.kind === "transfer-blob") {
+        yield* journal(
+          input.id,
+          state.action.id,
+          "succeeded",
+          { status: "passed", method: "sha256-and-size" },
+          prepared.rollbackReference,
+          attempt,
+        );
+        return { kind: "verified" } satisfies ActionResult;
+      }
+      if (detail.kind === "remove-resource") {
+        const removedResourceRecord = input.appliedResources?.find((record) =>
+          record.resource === state.action.resource
+        );
+        yield* journal(
+          input.id,
+          state.action.id,
+          "succeeded",
+          { status: "passed", method: "owned-resource-removed" },
+          prepared.rollbackReference,
+          attempt,
+          undefined,
+          state.action.resource,
+          removedResourceRecord,
+        );
+        return {
+          kind: "verified",
+          resource: state.action.resource,
+        } satisfies ActionResult;
+      }
+      const verification = yield* verifyResource(state.context, scheduleManager);
+      const evidence = verificationEvidence(verification);
+      if (!verification.passed) {
+        yield* rollbackPrepared(prepared);
+        yield* journal(
+          input.id,
+          state.action.id,
+          "failed",
+          evidence,
+          prepared.rollbackReference,
+          attempt,
+        );
+        return {
+          kind: "failed",
+          reason: `verification failed for resource ${state.action.resource}`,
+        } satisfies ActionResult;
+      }
+      const appliedResource = appliedResourceFor(input, state, yield* now());
+      yield* journal(
+        input.id,
+        state.action.id,
+        "succeeded",
+        evidence,
+        prepared.rollbackReference,
+        attempt,
+        appliedResource,
+      );
+      return {
+        kind: "verified",
+        resource: state.action.resource,
+      } satisfies ActionResult;
+    }).pipe(
+      Effect.onInterrupt(() =>
+        rollbackPrepared(prepared).pipe(
+          Effect.andThen(journal(
+            input.id,
+            state.action.id,
+            "failed",
+            { status: "not-run", method: "interrupted" },
+            prepared?.rollbackReference,
+            attempt,
+          )),
+          Effect.ignore,
+        )
+      ),
+    );
+    return yield* work.pipe(
+      Effect.catch((error) =>
+        rollbackPrepared(prepared).pipe(
+          Effect.andThen(journal(
+            input.id,
+            state.action.id,
+            "failed",
+            { status: "not-run", method: "action-failed" },
+            prepared?.rollbackReference,
+            attempt,
+          )),
+          Effect.as({
+            kind: "failed",
+            reason: redact(error, input.knownSecrets ?? []),
+          } satisfies ActionResult),
+          Effect.catch((journalError) =>
+            Effect.succeed({
+              kind: "failed",
+              reason: redact(journalError, input.knownSecrets ?? []),
+            } satisfies ActionResult)
+          ),
+        )
+      ),
+    );
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.succeed({
+        kind: "failed",
+        reason: redact(error, input.knownSecrets ?? []),
+      } satisfies ActionResult)
+    ),
+  );
+
+const completeSkipped = (
+  input: SynchronizationRunInput,
+  states: ReadonlyArray<ActionState>,
+): Effect.Effect<void, never, StateRepository> =>
+  Effect.forEach(
+    states,
+    (state) => journal(input.id, state.action.id, "skipped").pipe(Effect.ignore),
+    { discard: true },
+  );
+
+/** Execute one already-recorded plan. The caller owns startRun ordering. */
+export const executeSynchronizationPlan = (
+  input: SynchronizationRunInput,
+): Effect.Effect<
+  SynchronizationExecutionResult,
+  SynchronizationExecutionInputError,
+  StateRepository | MachineState
+> =>
+  Effect.gen(function*() {
+    const states = yield* executionContexts(input, executionLimits(input));
+    const completedActions: Array<ActionId> = [];
+    const verified = new Set<ResourceId>();
+    const applied: Array<AppliedResourceRecord> = [];
+    const human: Array<HumanAction> = [];
+    const drift: Array<DriftConflict> = [];
+    const removedResources = new Set<ResourceId>();
+    let failedReason: string | undefined;
+
+    const runActions = Effect.gen(function*() {
+      for (let index = 0; index < states.length; index += 1) {
+        const state = states[index]!;
+        const result = yield* executeSynchronizationAction(input, state);
+        completedActions.push(state.action.id);
+        if (result.resource !== undefined) verified.add(result.resource);
+        if (
+          result.resource !== undefined
+          && input.revision.removedResources?.includes(result.resource) === true
+        ) {
+          removedResources.add(result.resource);
+        }
+        if (result.human !== undefined) human.push(result.human);
+        if (result.drift !== undefined) drift.push(result.drift);
+        if (result.reason !== undefined) failedReason = result.reason;
+        if (result.kind !== "verified") {
+          yield* completeSkipped(input, states.slice(index + 1));
+          break;
+        }
+      }
+    }).pipe(
+      Effect.onInterrupt(() =>
+        Effect.gen(function*() {
+          const repository = yield* StateRepository;
+          const outcome: SynchronizationOutcome = {
+            outcome: "Interrupted",
+            run: input.id,
+            completedActions,
+          };
+          yield* repository.completeRun({
+            run: input.id,
+            completedAt: yield* now(),
+            outcome,
+            appliedResources: [],
+            removedResources: [],
+          });
+        }).pipe(Effect.ignore)
+      ),
+    );
+    yield* runActions;
+
+    const outcome: SynchronizationOutcome = failedReason !== undefined
+      ? { outcome: "Failed", run: input.id, reason: failedReason }
+      : drift.length > 0
+      ? { outcome: "FollowerDrift", run: input.id, conflicts: drift }
+      : human.length > 0
+      ? { outcome: "HumanActionRequired", run: input.id, actions: human }
+      : {
+        outcome: "Converged",
+        run: input.id,
+        verified: [...verified].sort(),
+      };
+
+    if (outcome.outcome === "Converged") {
+      const appliedAt = yield* now();
+      const desiredByResource = new Map(input.revision.desired.map((entry) => [
+        entry.resource,
+        entry.desired,
+      ]));
+      const resourceById = new Map(input.revision.resources.map((resource) => [
+        resource.id,
+        resource,
+      ]));
+      for (const resource of outcome.verified) {
+        if (removedResources.has(resource)) continue;
+        const desired = desiredByResource.get(resource);
+        const digest = desired === undefined ? undefined : desiredResourceDigest(desired);
+        if (digest !== undefined) {
+          const ownedFiles = desired?.kind === "directory" || desired?.kind === "skill"
+            ? desired.files.map((file) => ({
+              path: file.path,
+              digest: file.digest,
+              executable: file.executable,
+            }))
+            : undefined;
+          applied.push({
+            resource,
+            revision: input.revision.id,
+            digest,
+            appliedAt,
+            kind: resourceById.get(resource)?.kind,
+            policy: resourceById.get(resource)?.policy,
+            target: resourceById.get(resource)?.target,
+            executable: desired?.kind === "file" ? desired.executable : undefined,
+            symlinkTo: desired?.kind === "file" ? desired.symlinkTo : undefined,
+            ownedFiles,
+            ownedKeys: desired?.kind === "config" ? desired.keys : undefined,
+            configFormat: desired?.kind === "config" ? desired.format : undefined,
+            schedule: desired?.kind === "schedule"
+              ? desired.schedule
+              : undefined,
+          });
+        }
+      }
+    }
+    return {
+      outcome,
+      appliedResources: applied,
+      removedResources: outcome.outcome === "Converged"
+        ? [...removedResources].sort()
+        : [],
+    };
+  });
+
+export const executionFollower = (input: SynchronizationRunInput) =>
+  Schema.decodeUnknownEffect(FollowerId)(input.plan.follower).pipe(
+    Effect.mapError((error) =>
+      new InvalidExecutionPlanError({ message: String(error) })
+    ),
+  );
+
+export const executionRevision = (input: SynchronizationRunInput) =>
+  Schema.decodeUnknownEffect(ProfileRevisionId)(input.plan.revision).pipe(
+    Effect.mapError((error) =>
+      new InvalidExecutionPlanError({ message: String(error) })
+    ),
+  );

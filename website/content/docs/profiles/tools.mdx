@@ -1,0 +1,101 @@
+---
+title: Tool discovery and Installation Recipes
+description: Author evidence-backed, platform-specific tool recipes with independent verification.
+---
+
+A tool Profile Resource uses the `ensure` Apply Policy. Canonfig first selects a
+deterministic **Installation Recipe** for the follower platform. Only ambiguous
+work can become an Agent Task.
+
+## Discovery evidence
+
+Canonfig can discover tool evidence from:
+
+- executable shell blocks in agent instruction Markdown;
+- hooks and MCP configuration;
+- JSON, JSONC, TOML, shell, Brewfile, winget, and package metadata;
+- resolved executables on `PATH`;
+- explicit `canonfig.tools` package metadata.
+
+Each accepted tool needs an upstream URL and at least one verification method.
+Inline Markdown prose receives `needs-review`; it is never treated as an install
+command.
+
+## Recipe shape
+
+A tool resource can carry independent platform recipes:
+
+```jsonc
+{
+  "id": "ripgrep",
+  "kind": "tool",
+  "target": "rg",
+  "spec": {
+    "kind": "tool",
+    "toolId": "ripgrep",
+    "recipes": [
+      {
+        "platform": "linux",
+        "method": "apt",
+        "package": "ripgrep",
+        "version": "declared-version"
+      },
+      {
+        "platform": "macos",
+        "method": "brew",
+        "package": "ripgrep",
+        "version": "declared-version"
+      },
+      {
+        "platform": "windows",
+        "method": "winget",
+        "package": "BurntSushi.ripgrep.MSVC",
+        "version": "declared-version"
+      }
+    ],
+    "login": { "required": false }
+  },
+  "verify": {
+    "method": "command",
+    "command": ["rg", "--version"],
+    "expectContains": "declared-version"
+  }
+}
+```
+
+The package name and installation method are platform facts, not portable
+aliases. Do not infer a Windows package ID from an npm package name or copy a
+Homebrew formula into a Linux recipe.
+
+## Supported discovery methods
+
+Discovery can resolve deterministic metadata for npm, Homebrew, winget, uv,
+cargo, and source recipes when evidence is sufficient. A source recipe must
+include its upstream repository and bounded build commands.
+
+For uv recipes, `indexPolicy` may explicitly review a full credential-free
+HTTPS simple-index URL with `reviewedBy` and `reviewedAt`. Private simple-index
+subpaths remain intact. Without that policy, Canonfig uses the fixed
+`https://pypi.org/simple` index. Deterministic uv actions use `--no-config`,
+the full approved `--default-index`, exact package versions, and
+`--only-binary=:all:` under the default build policy.
+
+## Login requirements
+
+A recipe may declare that login is required and provide non-secret instructions.
+Login is never considered deterministic proof and credentials are never copied
+from the Source Machine. If no usable local credential exists, synchronization
+records Human Action Required.
+
+<Callout title="Never put credentials in a recipe" type="error">
+  Recipe arguments, environment examples, verification output, and profile
+  content must not contain tokens, passwords, private keys, cookies, or complete
+  invitation payloads. Use a credential reference and local secure storage.
+</Callout>
+
+## Ambiguous recipes
+
+When evidence cannot select one safe recipe, discovery creates a bounded Agent
+Task with the upstream URL and evidence. A Configuration Agent may propose a
+recipe, but it cannot publish that proposal. Under agent apply, the controlled
+executor still enforces the task bounds and runs verification afterward.

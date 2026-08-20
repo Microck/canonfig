@@ -1,0 +1,80 @@
+---
+title: Cross-platform behavior
+description: Understand equivalent Linux, macOS, and Windows contracts without assuming identical paths or tools.
+---
+
+Linux, macOS, and Windows are first-class Follower Machine platforms. They share
+domain outcomes and conformance contracts, not raw paths or command output.
+
+## Platform seams
+
+| Capability | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| Scheduler | systemd user timer | launchd user agent | Task Scheduler |
+| Secure credential provider | Secret Service | Keychain | Credential Manager |
+| Common package recipe | apt, npm, uv, cargo, source | Homebrew, npm, uv, cargo, source | winget, npm, uv, cargo, source |
+| User path syntax | POSIX | POSIX | Windows |
+
+`MachineState` converts platform operations into domain values. Synchronization
+does not compare raw OS-specific output or pretend paths are interchangeable
+strings.
+
+## Paths and targets
+
+Profile targets reject parent traversal, null bytes, and globs. Use explicit
+platform mapping where a target differs; do not publish a Source Machine's
+absolute path as though it were portable.
+
+Agent harness path allowlists are local to the follower. Configure Windows paths
+on Windows and POSIX paths on Linux or macOS.
+
+## Filesystem behavior
+
+Atomic file replacement uses a sibling temporary file, durability
+synchronization where supported, and rename. Symlink, permission, cancellation,
+timeout, and output-limit behavior is implemented by each real platform adapter
+and returns typed errors when unavailable.
+
+<Callout title="Equivalent does not mean identical" type="info">
+  A resource can have the same desired capability on all platforms while using
+  different package names, scheduler definitions, credential providers, path
+  separators, and verification evidence.
+</Callout>
+
+## Installation Recipes
+
+Keep platform recipe records independent. A tool can use apt on Linux, Homebrew
+on macOS, and winget on Windows. npm, uv, cargo, and source recipes can span
+platforms only when their own evidence supports that claim.
+
+Never choose a recipe solely because its package name resembles a package on
+another platform.
+
+## Schedules
+
+The calendar remains a local-time domain value. The adapter renders it for the
+native scheduler. Inspect the installed result rather than copying a systemd
+definition to another platform:
+
+```bash
+canonfig schedule set daily@00:00 --timezone Europe/Paris
+canonfig schedule status
+```
+
+## Noninteractive operation
+
+All native jobs use the same canonical apply command:
+
+```text
+canonfig sync --apply --no-input
+```
+
+No platform may wait for a prompt during a scheduled run. Missing secure storage,
+login, elevation, or another human-only capability becomes Human Action Required
+with platform-specific instructions.
+
+## Source endpoint limitation
+
+The shipped source server accepts loopback hosts only on every platform. Remote
+exposure, port forwarding, or a public listener is outside the verified C11 CLI
+contract.

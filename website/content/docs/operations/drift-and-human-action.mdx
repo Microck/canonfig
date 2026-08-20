@@ -1,0 +1,82 @@
+---
+title: Drift, conflicts, and Human Action Required
+description: Interpret non-converged outcomes without overwriting follower-owned work.
+---
+
+**Follower Drift** and **Human Action Required** are deliberate outcomes, not
+generic sync failures. Both preserve the reason Canonfig did not proceed.
+
+## Skill drift
+
+For every managed skill file, Canonfig compares three digests:
+
+```text
+observed == desired       → no change
+observed == last applied  → safe to update or remove
+otherwise                 → Follower Drift; preserve follower content
+```
+
+Canonfig does not automatically merge a modified canonical skill in v2. It
+records the target plus desired, observed, and last-applied digests, then leaves
+the follower content untouched.
+
+The operator can decide to keep the follower copy, restore the source revision,
+or move follower-owned changes into a Local Overlay. That decision is not
+delegated to an unattended agent.
+
+## Other conflicts
+
+`mirror-owned` removes a file only when Canonfig previously owned it and it
+remains unmodified. `merge` preserves undeclared local keys. Resource
+dependencies and target serialization prevent independent actions from racing
+on the same target.
+
+Inspect the current plan before changing anything:
+
+```bash
+canonfig sync --plan
+```
+
+Inspect recorded follower state:
+
+```bash
+canonfig status
+```
+
+## Human Action Required
+
+Canonfig records **Human Action Required** when a person must complete a step
+before the desired state can be verified. Common reasons include:
+
+- a login that cannot be completed noninteractively;
+- unavailable secure credential storage;
+- an agent policy that forbids the required capability;
+- an ambiguous action under `deterministic-only`;
+- required elevation, restart, or reboot not authorized by the task.
+
+Each record includes a reason, exact instructions, and the affected Profile
+Resource when applicable.
+
+<Callout title="Do not bypass the boundary" type="error">
+  Do not put a token on the command line, disable certificate pinning, broaden
+  an allowlist to an entire home directory, or switch to agent apply merely to
+  clear an outcome. Complete the recorded human step, then rerun planning.
+</Callout>
+
+## Continue after the human step
+
+After completing the instructions, check diagnostics and build a new plan:
+
+```bash
+canonfig doctor --no-input
+canonfig sync --plan
+```
+
+Apply only after the new Observed State and actions match the intended result:
+
+```bash
+canonfig sync --apply
+```
+
+The new run verifies the real machine state. It does not accept the previous
+human action as proof.

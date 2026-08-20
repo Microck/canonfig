@@ -1,0 +1,92 @@
+{
+  // Forward-conformance fixture for the v2 authoring boundary.
+  "id": "workstation",
+  "version": 2,
+  "name": "Workstation",
+  "groups": [
+    { "name": "work", "description": "Work machines" },
+    { "name": "base" },
+  ],
+  "resources": [
+    {
+      "id": "weekly-sync",
+      "kind": "schedule",
+      "target": "~/.canonfig/schedule",
+      "groups": ["work", "base"],
+      "dependsOn": ["rg"],
+      "spec": {
+        "kind": "schedule",
+        "calendar": { "type": "weekly", "days": ["fri", "mon", "fri"], "at": "09:30" },
+        "timezone": "UTC"
+      },
+      "verify": { "method": "command", "command": ["canonfig", "schedule", "status"] }
+    },
+    {
+      "id": "token",
+      "kind": "credential",
+      "target": "~/.canonfig/credentials/github",
+      "spec": { "kind": "credential", "reference": "github-token" },
+      "verify": { "method": "credential-present", "reference": "github-token" }
+    },
+    {
+      "id": "rg",
+      "kind": "tool",
+      "target": "~/.local/bin/rg",
+      "dependsOn": ["token"],
+      "spec": {
+        "kind": "tool",
+        "toolId": "ripgrep",
+        "recipes": [
+          { "platform": "windows", "method": "winget", "package": "BurntSushi.ripgrep.MSVC", "version": "14.1.0" },
+          { "platform": "linux", "method": "apt", "package": "ripgrep", "version": "3.2.1" }
+        ]
+      },
+      "verify": { "method": "executable-present", "executable": "rg" }
+    },
+    {
+      "id": "agent-config",
+      "kind": "config",
+      "target": "~/.codex/config.toml",
+      "spec": {
+        "kind": "config",
+        "format": "toml",
+        "keys": [
+          { "path": "model.reasoning", "value": "high" },
+          { "path": "model.name", "value": "gpt" }
+        ]
+      },
+      "verify": { "method": "digest", "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+    },
+    {
+      "id": "instructions",
+      "kind": "file",
+      "target": "~/.codex/AGENTS.md",
+      "spec": { "kind": "file", "content": "# Instructions\n" },
+      "verify": { "method": "digest", "digest": "13e04580c3f98fb192e91fc9e31e8ef1824c82e228978be1c1ad94476f0cccdf" }
+    },
+    {
+      "id": "prompts",
+      "kind": "directory",
+      "target": "~/.codex/prompts",
+      "spec": {
+        "kind": "directory",
+        "files": [
+          { "path": "z.md", "content": "z" },
+          { "path": "a.md", "content": "a", "executable": false }
+        ]
+      },
+      "verify": { "method": "digest", "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }
+    },
+    {
+      "id": "review-skill",
+      "kind": "skill",
+      "target": "~/.codex/skills/review",
+      "spec": {
+        "kind": "skill",
+        "name": "review",
+        "files": [{ "path": "SKILL.md", "content": "# Review\n" }]
+      },
+      "verify": { "method": "digest", "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+    },
+  ],
+}

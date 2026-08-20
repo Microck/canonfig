@@ -1,0 +1,76 @@
+---
+title: Synchronization schedules
+description: Install and inspect native daily or weekly follower synchronization.
+---
+
+Canonfig uses the operating system's user scheduler. There is no resident
+Follower Machine daemon and no second synchronization implementation. Every
+native job invokes:
+
+```text
+canonfig sync --apply --no-input
+```
+
+## Default schedule
+
+The default is daily at `00:00` in the follower's local timezone. Install it
+explicitly:
+
+```bash
+canonfig schedule set daily@00:00
+```
+
+Set a named IANA timezone:
+
+```bash
+canonfig schedule set daily@00:00 --timezone Europe/Paris
+```
+
+Set a weekly schedule:
+
+```bash
+canonfig schedule set weekly:Mon@12:30 --timezone Europe/Paris
+```
+
+The CLI accepts weekday abbreviations `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`,
+and `Sun`, with a 24-hour `HH:mm` time.
+
+If scheduler execution needs an explicit Canonfig path:
+
+```bash
+canonfig schedule set daily@00:00 --executable /opt/canonfig
+```
+
+<Callout title="Custom expressions" type="info">
+  The Machine Profile contract can represent a custom calendar expression, but
+  the shipped `schedule set` CLI accepts only `daily@HH:mm` and
+  `weekly:Day@HH:mm`. Do not pass cron or platform-native expressions to this
+  command.
+</Callout>
+
+## Inspect or remove
+
+```bash
+canonfig schedule status
+canonfig schedule remove
+```
+
+Status is one of `not-installed`, `current`, `drifted`, or `disabled`. Setting
+the same schedule is idempotent. Removing a schedule that is already absent is
+also an unchanged result.
+
+## Platform mechanisms
+
+| Platform | User-level mechanism |
+| --- | --- |
+| Linux | systemd user timer |
+| macOS | launchd user agent |
+| Windows | Task Scheduler |
+
+The platform adapter renders native definitions and quotes the executable
+without a shell. If the scheduler is unavailable or its definition cannot be
+verified, Canonfig reports the typed operation instead of claiming the schedule
+is current.
+
+Scheduled runs never prompt. Review agent policy and Human Action Required
+records before relying on unattended convergence.

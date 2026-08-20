@@ -1,0 +1,79 @@
+---
+title: Enrollment, trust, groups, and revocation
+description: Give each Follower Machine a pinned, independently revocable identity.
+---
+
+Enrollment is the only trust-bootstrap step. A Source Machine creates a
+short-lived, single-use invitation. The Follower Machine validates the pinned
+source TLS fingerprint, enrolls over HTTPS, and receives its own credential.
+
+## Enroll a follower
+
+Set `INVITE` to the complete base64url invitation returned by the Source Machine,
+without writing it to shell history or a tracked file. Then run:
+
+```bash
+canonfig follower enroll "$INVITE" --name laptop --profile workstation
+```
+
+`--name` labels this Follower Identity. `--profile` selects a published Machine
+Profile. The source records the independently revocable identity and Follower
+Group assignments carried by the invitation.
+
+<Callout title="Invitation handling" type="warning">
+  An invitation is one-time enrollment material. Do not place it in
+  documentation, issue trackers, repositories, shared scripts, or screenshots.
+  Create a new invitation if it expires or is exposed.
+</Callout>
+
+## Pinned trust
+
+Enrollment stores three separate facts locally:
+
+1. the source HTTPS endpoint;
+2. the source TLS fingerprint;
+3. the source signing fingerprint.
+
+Later synchronization rejects an unexpected TLS certificate, invalid source
+signature, digest mismatch, replayed invitation, or revoked credential. A
+Follower Machine does not silently reset a pin.
+
+## Select a profile
+
+List published choices on the Source Machine:
+
+```bash
+canonfig profile list
+```
+
+Select a profile on the enrolled Follower Machine:
+
+```bash
+canonfig profile select workstation
+```
+
+Selection changes which Machine Profile the follower requests. It does not
+publish or edit any profile.
+
+## Follower Groups
+
+A **Follower Group** is a named set of Follower Machines that receive resources
+in addition to the base Machine Profile. The Source Machine places group names
+in an invitation. During fetch, the source filters revision resources to those
+allowed for the enrolled identity.
+
+Group names must be declared in the Machine Profile before resources can refer
+to them. Group membership is source-owned; followers cannot add themselves.
+
+## Revocation
+
+On the Source Machine:
+
+```bash
+canonfig source revoke follower-one
+```
+
+Revocation affects only that Follower Identity. Other followers continue using
+their own credentials. The revoked follower receives the authentication or
+revocation exit category on subsequent source operations and must be explicitly
+re-enrolled with a new invitation if access should return.

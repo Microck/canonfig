@@ -1,0 +1,31 @@
+import { defineProject } from "vitest/config";
+
+export default defineProject({
+  test: {
+    include: [
+      "tests/agent-resolution.test.ts",
+      "tests/cli.test.ts",
+      "tests/doctor.test.ts",
+      "tests/foundation.test.ts",
+      "tests/packed-cli.test.ts",
+      "tests/profile-contract.test.ts",
+      "tests/discovery.test.ts",
+      "tests/publication.test.ts",
+      "tests/state-repository.test.ts",
+      "tests/machine-state-linux.test.ts",
+      "tests/machine-state-macos.test.ts",
+      "tests/machine-state-windows.test.ts",
+      "tests/schedule-manager.test.ts",
+      "tests/skills.test.ts",
+      "tests/synchronization-planner.test.ts",
+      "tests/contract/**/*.test.ts",
+      "tests/integration/**/*.test.ts",
+      "tests/acceptance/**/*.test.ts",
+    ],
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
+    pool: "forks",
+    fileParallelism: true,
+    maxWorkers: 4,
+  },
+});

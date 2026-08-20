@@ -1,0 +1,5 @@
+{
+  "_tag": "ScheduleHumanActionRequiredError",
+  "action": "use the Windows follower timezone for scheduled sync",
+  "recovery": "Task Scheduler calendar triggers follow the Windows user timezone and cannot preserve a named IANA timezone across DST. Remove the explicit timezone or change the follower timezone."
+}

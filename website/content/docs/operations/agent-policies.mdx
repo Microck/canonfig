@@ -1,0 +1,88 @@
+---
+title: Agent policies and harness bounds
+description: Configure when a Configuration Agent may propose or apply work and which capabilities it can use.
+---
+
+Deterministic Canonfig actions always run before an Agent Task is considered. An
+enrolled follower starts with `deterministic-only`; changing policy is an
+explicit local action.
+
+## Policies
+
+| Policy | Agent behavior | Apply behavior |
+| --- | --- | --- |
+| `deterministic-only` | Does not invoke a harness | Unresolved work becomes a visible human action |
+| `agent-propose` | Runs the configured harness and records a validated proposal | Does not execute proposal actions |
+| `agent-apply` | Runs the harness and validates its proposal | Executes only allowed actions, then independently verifies |
+
+Inspect the current policy:
+
+```bash
+canonfig agent policy
+```
+
+Set a policy:
+
+```bash
+canonfig agent policy agent-propose
+```
+
+Use `deterministic-only` for environments where no agent process may run. Use
+`agent-apply` only after reviewing both the Agent Task bounds and local harness
+configuration.
+
+## Configure a harness
+
+Canonfig supports `codex`, `claude`, and `gemini` harness adapters. Every
+configuration names the executable and allowlists. This example authorizes only
+one path, executable family, exact HTTPS origin, and restart capability:
+
+```bash
+canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-leaf-executable npm --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
+```
+
+Inspect the active harness:
+
+```bash
+canonfig agent harness
+```
+
+Each `--allow-origin` value must be an exact HTTPS origin with no path.
+`--allow-leaf-executable` authorizes only a direct leaf operation. Script
+interpreters are intentionally unsupported because path allowlists cannot
+constrain their descendants.
+Launchers that run nested commands — `xargs`, `find -exec`, `awk`, `perl`,
+`make`, `npx`, elevation wrappers, and similar — are rejected at configuration
+time and always require Human Action Required. Inline programs and
+unclassified executables fail closed the same way.
+`--maximum-input-bytes` is positive and cannot exceed 1 MiB. Repeat
+`--allow-path`, `--allow-leaf-executable`, `--allow-origin`, or
+`--allow-capability` to add entries.
+
+<Callout title="An allowlist does not expand the task" type="warning">
+  Agent execution must satisfy both the local harness allowlist and the current
+  Agent Task. A harness capability does not authorize a task that forbids that
+  capability.
+</Callout>
+
+## Agent Task bounds
+
+Every task declares:
+
+- desired outcome and observed evidence;
+- allowed filesystem roots, executables, and network origins;
+- whether elevation, login, restart, and reboot are forbidden;
+- wall-clock, input, and output limits;
+- the independent verification command and expected observation.
+
+The controlled executor uses direct process invocation without a shell. It
+captures exit status, stdout, stderr, and changed paths, and redacts configured
+secrets before persistence. A timeout, output overrun, denied capability,
+non-zero action, or failed verification prevents Convergence.
+
+## Scheduled behavior
+
+Native schedules invoke Canonfig with `--no-input`. Scheduled runs never wait
+for approval. `deterministic-only` records human action for unresolved work;
+`agent-propose` can record a proposal but does not apply it; `agent-apply`
+executes only pre-authorized, bounded actions.

@@ -1,0 +1,5 @@
+{
+  "_tag": "ScheduleHumanActionRequiredError",
+  "action": "use the macOS follower timezone for scheduled sync",
+  "recovery": "launchd calendar intervals follow the macOS user timezone and cannot bind a named timezone. Remove the explicit timezone or change the follower timezone."
+}

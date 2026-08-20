@@ -1,5 +1,8 @@
 node_modules/
 dist/
+website/.next/
+website/.source/
+*.tsbuildinfo
 .residue/
 *.tgz
 .DS_Store

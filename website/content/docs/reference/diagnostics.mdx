@@ -1,0 +1,88 @@
+---
+title: Diagnostics
+description: Run bounded health probes and map failures to the correct recovery path.
+---
+
+`doctor` runs seven isolated, bounded probes. One timeout or failure does not
+prevent the other probes from reporting.
+
+```bash
+canonfig doctor --no-input --timeout-ms 5000
+```
+
+Use JSON when another tool will inspect the report:
+
+```bash
+canonfig doctor --no-input --timeout-ms 5000 --json
+```
+
+The report schema is `canonfig.doctor/v1`. Its overall status is `healthy`,
+`degraded`, or `unhealthy`.
+
+## Probes
+
+| Probe | What it checks |
+| --- | --- |
+| `runtime` | Node version, Canonfig version, platform, and architecture |
+| `state` | SQLite header, current migrations, readability, and writability |
+| `credentials` | Secure noninteractive, explicit local-file, or unavailable capability |
+| `source` | Configuration, reachability, TLS pin, and follower authentication |
+| `scheduler` | Native job state and rendered mechanism |
+| `package-managers` | Availability of npm, pnpm, or yarn |
+| `agent-adapter` | Policy, supported adapter, and executable availability |
+
+`warning` and `skipped` produce a degraded report. `fail` produces an unhealthy
+report and maps to a CLI failure category.
+
+## Diagnose by symptom
+
+### Authentication or revocation
+
+Check whether the Source Machine revoked the Follower Identity, whether the
+local credential reference still resolves, and whether the stored TLS pin
+matches the source. Do not reset trust automatically.
+
+### Transport
+
+Confirm the loopback source process is running on the enrolled endpoint and that
+the timeout is long enough for the probe. A reachable endpoint must still pass
+TLS pinning and authentication.
+
+### Scheduler
+
+Inspect native scheduler state:
+
+```bash
+canonfig schedule status
+```
+
+A state of `drifted` or `disabled` is visible; setting the intended calendar can
+update the native definition.
+
+### Agent adapter
+
+Inspect local policy and harness separately:
+
+```bash
+canonfig agent policy
+canonfig agent harness
+```
+
+`deterministic-only` needs no adapter. Agent proposal or apply needs a supported,
+available executable.
+
+### Synchronization state
+
+```bash
+canonfig status
+canonfig sync --plan
+```
+
+Status explains enrolled identity and recorded run state. A fresh plan rechecks
+Observed State; it does not erase previous action evidence.
+
+<Callout title="Preserve evidence" type="warning">
+  Do not delete the SQLite database, cache, or action journal as a first
+  diagnostic step. Those records distinguish interrupted work, drift, and
+  verification failure.
+</Callout>

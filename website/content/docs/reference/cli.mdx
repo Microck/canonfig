@@ -1,0 +1,109 @@
+---
+title: CLI reference
+description: The shipped Canonfig 2.0 command surface, global output options, and exit semantics.
+---
+
+Canonfig requires Node.js 24 or newer. Commands render human-readable output by
+default. Add the global `--json` option to receive a stable
+`canonfig.cli/v1` envelope.
+
+## Global options
+
+```text
+canonfig --help
+canonfig --version
+```
+
+`-h` and `-V` are the short forms. `--json` can appear anywhere in a command.
+There is no compatibility alias for the Canonfig v2 executable or commands.
+
+## Source Machine
+
+```text
+canonfig source init
+canonfig source scan --file AGENTS.md --file package.json
+canonfig source publish --proposal package.json --profile workstation --name Workstation --reviewer operator
+canonfig source serve --host 127.0.0.1 --port 17342
+canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers
+canonfig source revoke follower-one
+```
+
+`source serve` defaults to `127.0.0.1:17342` and accepts only `127.0.0.1` or
+`::1`. Invitation duration uses a positive integer plus `ms`, `s`, `m`, or `h`
+and cannot exceed 24 hours. Repeat `--group` to add Follower Groups.
+
+## Follower enrollment and synchronization
+
+```text
+canonfig follower enroll "$INVITE" --name laptop --profile workstation
+canonfig sync --plan
+canonfig sync --apply
+canonfig sync --apply --no-input
+canonfig recover --no-input
+canonfig status
+canonfig status --follower follower-one
+canonfig doctor --no-input --timeout-ms 5000
+```
+
+`--plan` and `--apply` are mutually exclusive. With neither, `sync` plans.
+`recover` accepts only `--no-input`. Doctor timeout must be positive and no more
+than 300000 milliseconds.
+
+## Profiles and agent policy
+
+```text
+canonfig profile list
+canonfig profile show revision-one
+canonfig profile select workstation
+canonfig agent policy
+canonfig agent policy deterministic-only
+canonfig agent policy agent-propose
+canonfig agent policy agent-apply
+canonfig agent harness
+canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-leaf-executable npm --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
+```
+
+Harness kinds are `codex`, `claude`, and `gemini`. Capabilities are `elevation`,
+`login`, `restart`, and `reboot`. Allow origins must be exact HTTPS origins.
+
+## Scheduling
+
+```text
+canonfig schedule set daily@00:00
+canonfig schedule set weekly:Mon@12:30 --timezone Europe/Paris
+canonfig schedule set daily@00:00 --executable /opt/canonfig
+canonfig schedule status
+canonfig schedule remove
+```
+
+The schedule CLI accepts daily and weekly calendars only.
+
+## JSON envelope
+
+```json
+{
+  "schema": "canonfig.cli/v1",
+  "command": "status",
+  "status": "success",
+  "exitCode": 0,
+  "message": "status completed",
+  "data": {}
+}
+```
+
+Secret-like fields are recursively redacted before human or JSON rendering.
+Structured failures are written to standard error; structured successes are
+written to standard output.
+
+## Exit codes
+
+| Code | Meaning |
+| ---: | --- |
+| `0` | Success |
+| `1` | Internal failure |
+| `2` | Usage or configuration |
+| `3` | Human Action Required |
+| `4` | Conflict or Follower Drift |
+| `5` | Authentication or revocation |
+| `6` | Transport |
+| `7` | Verification or apply failure |
