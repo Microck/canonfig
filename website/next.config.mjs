@@ -4,8 +4,9 @@ const withMDX = createMDX();
 
 /** @type {import("next").NextConfig} */
 const config = {
-  output: "standalone",
   reactStrictMode: true,
 };
+
+if (process.env.VERCEL === undefined) config.output = "standalone";
 
 export default withMDX(config);
