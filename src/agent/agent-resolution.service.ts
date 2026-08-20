@@ -768,6 +768,31 @@ const isUvFindLinksOption = (argument: string): boolean => {
     );
 };
 
+const uvRequirementFileOptions = new Set([
+  "--build-constraints",
+  "--constraint",
+  "--constraints",
+  "--excludes",
+  "--overrides",
+  "--requirement",
+  "--requirements",
+  "--with-requirements",
+]);
+
+const isUvRequirementFileOption = (argument: string): boolean => {
+  const lower = argument.toLowerCase();
+  const name = lower.split("=", 1)[0]!;
+  return uvRequirementFileOptions.has(name)
+    || (
+      lower.startsWith("-")
+      && !lower.startsWith("--")
+      && /^-[qv]*[bcr]/u.test(lower)
+    );
+};
+
+const isUvInsecureHostOption = (argument: string): boolean =>
+  argument.split("=", 1)[0]!.toLowerCase() === "--allow-insecure-host";
+
 const registryOptions = (
   manager: string,
   arguments_: ReadonlyArray<string>,
@@ -1616,6 +1641,24 @@ const authorizeRegistryInvocation = (
   actionOrigins: ReadonlyArray<string> = [],
 ): Effect.Effect<ReadonlyArray<string>, DeniedAgentCapabilityError> => {
   const manager = packageManagerName(executable);
+  if (
+    manager === "uv"
+    && arguments_.some(isUvRequirementFileOption)
+  ) {
+    return Effect.fail(new DeniedAgentCapabilityError({
+      capability: "package-manager-requirements",
+      value: executable,
+    }));
+  }
+  if (
+    manager === "uv"
+    && arguments_.some(isUvInsecureHostOption)
+  ) {
+    return Effect.fail(new DeniedAgentCapabilityError({
+      capability: "network-origin",
+      value: executable,
+    }));
+  }
   if (!registryOperation(manager, arguments_)) return Effect.succeed(arguments_);
   if (arguments_.some((argument) => untrustedPackageConfigOption(manager, argument))) {
     return Effect.fail(new DeniedAgentCapabilityError({

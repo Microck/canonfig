@@ -255,6 +255,31 @@ const isUvFindLinksOption = (argument: string): boolean => {
     );
 };
 
+const uvRequirementFileOptions = new Set([
+  "--build-constraints",
+  "--constraint",
+  "--constraints",
+  "--excludes",
+  "--overrides",
+  "--requirement",
+  "--requirements",
+  "--with-requirements",
+]);
+
+const isUvRequirementFileOption = (argument: string): boolean => {
+  const lower = argument.toLowerCase();
+  const name = lower.split("=", 1)[0]!;
+  return uvRequirementFileOptions.has(name)
+    || (
+      lower.startsWith("-")
+      && !lower.startsWith("--")
+      && /^-[qv]*[bcr]/u.test(lower)
+    );
+};
+
+const isUvInsecureHostOption = (argument: string): boolean =>
+  argument.split("=", 1)[0]!.toLowerCase() === "--allow-insecure-host";
+
 const packageRegistryInvocationIsSafe = (
   executable: string,
   arguments_: ReadonlyArray<string>,
@@ -294,6 +319,13 @@ const packageRegistryInvocationIsSafe = (
     const name = (separator > 0 ? argument.slice(0, separator) : argument)
       .toLowerCase();
     if (unsafeOptions.has(name)) return false;
+    if (
+      manager === "uv"
+      && (
+        isUvRequirementFileOption(argument)
+        || isUvInsecureHostOption(argument)
+      )
+    ) return false;
     if (
       manager === "uv"
       && (
@@ -477,6 +509,24 @@ export const executeControlledProcess = (
     return Effect.fail(new AgentProcessError({
       executable: input.executable,
       message: "package-manager separator form is not authorized",
+    }));
+  }
+  if (
+    packageManagerName(input.executable) === "uv"
+    && input.arguments.some(isUvRequirementFileOption)
+  ) {
+    return Effect.fail(new AgentProcessError({
+      executable: input.executable,
+      message: "uv requirement, constraint, or override files are not authorized",
+    }));
+  }
+  if (
+    packageManagerName(input.executable) === "uv"
+    && input.arguments.some(isUvInsecureHostOption)
+  ) {
+    return Effect.fail(new AgentProcessError({
+      executable: input.executable,
+      message: "uv insecure-host overrides are not authorized",
     }));
   }
   if (

