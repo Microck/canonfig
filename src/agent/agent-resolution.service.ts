@@ -779,15 +779,70 @@ const uvRequirementFileOptions = new Set([
   "--with-requirements",
 ]);
 
-const isUvRequirementFileOption = (argument: string): boolean => {
-  const lower = argument.toLowerCase();
-  const name = lower.split("=", 1)[0]!;
+type UvInstallCommand = "pip" | "tool" | undefined;
+
+const uvInstallCommand = (
+  arguments_: ReadonlyArray<string>,
+): UvInstallCommand => {
+  const commandIndex = firstCommandIndex(arguments_, new Set([
+    "--cache-dir",
+    "--config-file",
+    "--default-index",
+    "--directory",
+    "--extra-index-url",
+    "--find-links",
+    "--index",
+    "--index-url",
+    "--project",
+    "-f",
+  ]));
+  const command = commandIndex === undefined
+    ? undefined
+    : arguments_[commandIndex]?.toLowerCase();
+  return command === "pip" || command === "tool" ? command : undefined;
+};
+
+const hasUvRequirementFileShortOption = (
+  argument: string,
+  command: UvInstallCommand,
+): boolean => {
+  if (!argument.startsWith("-") || argument.startsWith("--")) return false;
+  const optionsWithoutValues = new Set([
+    "h",
+    "n",
+    "q",
+    "U",
+    "v",
+    ...(command === "tool" ? ["e"] : []),
+  ]);
+  const requirementOptions = new Set([
+    "b",
+    "c",
+    ...(command === "pip" ? ["r"] : []),
+  ]);
+  for (const option of argument.slice(1)) {
+    if (requirementOptions.has(option)) return true;
+    if (!optionsWithoutValues.has(option)) return false;
+  }
+  return false;
+};
+
+const isUvRequirementFileOption = (
+  argument: string,
+  command: UvInstallCommand,
+): boolean => {
+  const name = argument.split("=", 1)[0]!.toLowerCase();
   return uvRequirementFileOptions.has(name)
-    || (
-      lower.startsWith("-")
-      && !lower.startsWith("--")
-      && /^-[qv]*[bcr]/u.test(lower)
-    );
+    || hasUvRequirementFileShortOption(argument, command);
+};
+
+const hasUvRequirementFileOption = (
+  arguments_: ReadonlyArray<string>,
+): boolean => {
+  const command = uvInstallCommand(arguments_);
+  return arguments_.some((argument) =>
+    isUvRequirementFileOption(argument, command)
+  );
 };
 
 const uvInsecureHostOptions = new Set([
@@ -1650,7 +1705,7 @@ const authorizeRegistryInvocation = (
   const manager = packageManagerName(executable);
   if (
     manager === "uv"
-    && arguments_.some(isUvRequirementFileOption)
+    && hasUvRequirementFileOption(arguments_)
   ) {
     return Effect.fail(new DeniedAgentCapabilityError({
       capability: "package-manager-requirements",

@@ -1260,6 +1260,17 @@ describe("agent resolution", () => {
       "--isolated",
       "--index-url=https://packages.example.test",
     ]],
+    ["uv uppercase config setting", "uv", [
+      "tool",
+      "install",
+      "tool==1.2.3",
+      "-C",
+      "build.mode=release",
+    ], [
+      "--only-binary=:all:",
+      "--no-config",
+      "--default-index=https://packages.example.test",
+    ]],
   ] as const)(
     "pins the reviewed origin and disables config for %s",
     async (_name, managerName, arguments_, suffix) => {
@@ -1356,10 +1367,23 @@ describe("agent resolution", () => {
       ["--trusted-host=packages.example.test"],
       "network-origin",
     ],
+    [
+      "clustered no-cache quiet requirement",
+      ["-nqr/path/requirements.txt"],
+      "package-manager-requirements",
+      ["pip", "install", "tool==1.2.3"],
+    ],
+    [
+      "clustered quiet no-cache requirement",
+      ["-qnr/path/requirements.txt"],
+      "package-manager-requirements",
+      ["pip", "install", "tool==1.2.3"],
+    ],
   ] as const)("rejects unsafe uv input before executing the proposal: %s", async (
     _name,
     unsafeArguments,
     capability,
+    commandArguments = ["tool", "install", "tool==1.2.3"],
   ) => {
     const manager = join(directory, "uv");
     const verify = join(directory, "verify");
@@ -1376,9 +1400,7 @@ describe("agent resolution", () => {
     const recording = new RecordingExecutor(proposal(action({
       executable: manager,
       arguments: [
-        "tool",
-        "install",
-        "tool==1.2.3",
+        ...commandArguments,
         ...unsafeArguments,
       ],
       workingDirectory: directory,
@@ -2725,6 +2747,8 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
     ["inline insecure host", ["tool", "install", "tool==1.2.3", "--allow-insecure-host=packages.example.test"]],
     ["separate trusted host alias", ["tool", "install", "tool==1.2.3", "--trusted-host", "packages.example.test"]],
     ["inline trusted host alias", ["tool", "install", "tool==1.2.3", "--trusted-host=packages.example.test"]],
+    ["clustered no-cache quiet requirement", ["pip", "install", "tool==1.2.3", "-nqr/path/requirements.txt"]],
+    ["clustered quiet no-cache requirement", ["pip", "install", "tool==1.2.3", "-qnr/path/requirements.txt"]],
   ] as const)("rejects hostile uv registry option before spawning: %s", async (_name, arguments_) => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-uv-option-"));
     try {
@@ -2746,6 +2770,41 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned");
       }).pipe(Effect.flip));
       expect(error).toBeInstanceOf(AgentProcessError);
       await expect(access(marker)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows uv uppercase config settings through the final boundary", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-uv-config-setting-"));
+    try {
+      const marker = join(root, "spawned");
+      const manager = join(root, "uv");
+      await writeFile(manager, `#!${process.execPath}
+require("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned");
+`);
+      await chmod(manager, 0o755);
+      const result = await Effect.runPromise(executeControlledProcess({
+        executable: manager,
+        arguments: [
+          "tool",
+          "install",
+          "tool==1.2.3",
+          "-C",
+          "build.mode=release",
+          "--only-binary=:all:",
+          "--no-config",
+          "--default-index=https://packages.example.test",
+        ],
+        workingDirectory: root,
+        packageRegistryOrigin: "https://packages.example.test",
+        timeoutMilliseconds: 2_000,
+        maximumInputBytes: 0,
+        maximumOutputBytes: 1_000,
+        secrets: [],
+      }));
+      expect(result.exitCode).toBe(0);
+      await expect(access(marker)).resolves.toBeUndefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
