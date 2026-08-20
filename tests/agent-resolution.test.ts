@@ -1346,6 +1346,16 @@ describe("agent resolution", () => {
       ["--allow-insecure-host=packages.example.test"],
       "network-origin",
     ],
+    [
+      "separate trusted host alias",
+      ["--trusted-host", "packages.example.test"],
+      "network-origin",
+    ],
+    [
+      "inline trusted host alias",
+      ["--trusted-host=packages.example.test"],
+      "network-origin",
+    ],
   ] as const)("rejects unsafe uv input before executing the proposal: %s", async (
     _name,
     unsafeArguments,
@@ -2713,6 +2723,8 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
     ["inline requirement file", ["tool", "install", "tool==1.2.3", "--with-requirements=requirements.txt"]],
     ["separate insecure host", ["tool", "install", "tool==1.2.3", "--allow-insecure-host", "packages.example.test"]],
     ["inline insecure host", ["tool", "install", "tool==1.2.3", "--allow-insecure-host=packages.example.test"]],
+    ["separate trusted host alias", ["tool", "install", "tool==1.2.3", "--trusted-host", "packages.example.test"]],
+    ["inline trusted host alias", ["tool", "install", "tool==1.2.3", "--trusted-host=packages.example.test"]],
   ] as const)("rejects hostile uv registry option before spawning: %s", async (_name, arguments_) => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-uv-option-"));
     try {

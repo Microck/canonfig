@@ -277,8 +277,15 @@ const isUvRequirementFileOption = (argument: string): boolean => {
     );
 };
 
+const uvInsecureHostOptions = new Set([
+  "--allow-insecure-host",
+  "--trusted-host",
+]);
+
 const isUvInsecureHostOption = (argument: string): boolean =>
-  argument.split("=", 1)[0]!.toLowerCase() === "--allow-insecure-host";
+  uvInsecureHostOptions.has(
+    argument.split("=", 1)[0]!.toLowerCase(),
+  );
 
 const packageRegistryInvocationIsSafe = (
   executable: string,
