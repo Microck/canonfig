@@ -279,13 +279,14 @@ esac
   packedEntry = resolve(
     installRoot,
     "node_modules",
+    "@microck",
     "canonfig",
     "dist",
     "runtime",
     "main.js",
   );
   expect(readFileSync(
-    resolve(installRoot, "node_modules/canonfig/package.json"),
+    resolve(installRoot, "node_modules/@microck/canonfig/package.json"),
     "utf8",
   )).toContain('"canonfig": "dist/runtime/main.js"');
 

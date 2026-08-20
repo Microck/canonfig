@@ -43,7 +43,7 @@ describe("Canonfig foundation CLI", () => {
     const packageManifest = readFileSync(resolve(projectRoot, "package.json"), "utf8");
     expect(programName).toBe("canonfig");
     expect(programDisplayName).toBe("Canonfig");
-    expect(packageManifest).toContain('"name": "canonfig"');
+    expect(packageManifest).toContain('"name": "@microck/canonfig"');
     expect(packageManifest).toContain('"canonfig": "dist/runtime/main.js"');
   });
 

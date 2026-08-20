@@ -50,32 +50,17 @@ are not accepted without a separately bounded execution plan. Reviewed source
 recipes are preserved as immutable references but always require Human Action
 Required; the current executor never fetches or builds source code.
 
-## Install from the built package
+## Install
 
-Build and pack the repository:
-
-```bash
-npm ci
-npm run build:cli
-npm pack
-```
-
-Install the resulting local tarball. On Linux or macOS:
+Install the exact public package version on Linux, macOS, or Windows:
 
 ```bash
-npm install --global ./canonfig-2.0.0.tgz
+npm install --global @microck/canonfig@2.0.0
 canonfig --version
 ```
 
-On Windows PowerShell:
-
-```powershell
-npm install --global .\canonfig-2.0.0.tgz
-canonfig --version
-```
-
-Use the exact artifact produced by `npm pack`; do not substitute an unverified
-same-named registry package.
+The npm package is scoped as `@microck/canonfig`; the installed executable
+remains `canonfig`.
 
 ## Quickstart
 

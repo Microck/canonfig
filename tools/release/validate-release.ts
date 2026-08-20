@@ -154,7 +154,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const metadata = Schema.decodeUnknownSync(PackageMetadata)(
     JSON.parse(readFileSync(metadataPath, "utf8")),
   );
-  if (metadata.name !== "canonfig" || metadata.version !== "2.0.0") {
+  if (metadata.name !== "@microck/canonfig" || metadata.version !== "2.0.0") {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
@@ -190,7 +190,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
 const validatePackageContents = (
   artifact: typeof PackedArtifact.Type,
 ): void => {
-  if (artifact.name !== "canonfig" || artifact.version !== "2.0.0") {
+  if (artifact.name !== "@microck/canonfig" || artifact.version !== "2.0.0") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
   if (artifact.size > 200_000 || artifact.unpackedSize > 1_000_000) {
@@ -268,7 +268,7 @@ const validateBinary = (executable: string): void => {
 
   const doctor = invokeExecutable(
     executable,
-    ["doctor", "--json", "--no-input", "--timeout-ms", "100"],
+    ["doctor", "--json", "--no-input", "--timeout-ms", "1000"],
   );
   if (
     (doctor.status !== 0 && doctor.status !== 5)
