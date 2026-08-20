@@ -761,7 +761,11 @@ const isUvFindLinksOption = (argument: string): boolean => {
   const lower = argument.toLowerCase();
   return lower === "--find-links"
     || lower.startsWith("--find-links=")
-    || (lower.startsWith("-f") && !lower.startsWith("--"));
+    || (
+      lower.startsWith("-")
+      && !lower.startsWith("--")
+      && lower.slice(1).includes("f")
+    );
 };
 
 const registryOptions = (

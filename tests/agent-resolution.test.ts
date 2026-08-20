@@ -1287,6 +1287,8 @@ describe("agent resolution", () => {
   it.each([
     ["separate", ["-f", "https://evil.example.test"]],
     ["attached", ["-f=https://evil.example.test"]],
+    ["clustered verbose", ["-vf/tmp/unreviewed-wheels"]],
+    ["clustered quiet", ["-qf/path"]],
   ] as const)("rejects uv short find-links before executing the proposal: %s", async (
     _name,
     findLinks,
@@ -2641,6 +2643,8 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
     ["find links", ["tool", "install", "tool==1.2.3", "--find-links", "https://packages.example.test"]],
     ["short find links", ["tool", "install", "tool==1.2.3", "-f", "https://packages.example.test"]],
     ["attached short find links", ["tool", "install", "tool==1.2.3", "-f=https://packages.example.test"]],
+    ["clustered verbose find links", ["tool", "install", "tool==1.2.3", "-vf/tmp/unreviewed-wheels"]],
+    ["clustered quiet find links", ["tool", "install", "tool==1.2.3", "-qf/path"]],
     ["named index", ["tool", "install", "tool==1.2.3", "--index", "evil=https://packages.example.test"]],
   ] as const)("rejects hostile uv registry option before spawning: %s", async (_name, arguments_) => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-uv-option-"));
