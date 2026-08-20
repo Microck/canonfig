@@ -6,26 +6,18 @@
 - Confirm Secret Service is available for secure noninteractive credentials.
 - Confirm a systemd user session is available before installing a schedule.
 
-## Install the built package
+## Install the package
 
-From the repository, build and pack:
-
-```bash
-npm ci
-npm run build:cli
-npm pack
-```
-
-Install the resulting local tarball for the current Node installation:
+Install the exact public package version for the current Node installation:
 
 ```bash
-npm install --global ./canonfig-2.0.0.tgz
+npm install --global @microck/canonfig@2.0.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```
 
-Use the exact tarball produced by `npm pack`. Do not fetch a same-named package
-from a registry as a substitute.
+The npm package is scoped as `@microck/canonfig`; the installed executable
+remains `canonfig`.
 
 ## Role and schedule
 

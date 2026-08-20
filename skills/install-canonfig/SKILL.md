@@ -1,6 +1,6 @@
 ---
 name: install-canonfig
-description: Install Canonfig 2 from a built npm package and initialize a Source Machine or securely enroll a Linux, macOS, or Windows Follower Machine. Use for Canonfig prerequisites, package installation, first-time source setup, follower invitations and pinned trust, native schedule setup, installation verification, or installation troubleshooting.
+description: Install Canonfig 2 from its scoped npm package and initialize a Source Machine or securely enroll a Linux, macOS, or Windows Follower Machine. Use for Canonfig prerequisites, package installation, first-time source setup, follower invitations and pinned trust, native schedule setup, installation verification, or installation troubleshooting.
 ---
 
 # Install Canonfig
@@ -17,8 +17,8 @@ security or human-action boundary.
    - macOS: [references/macos.md](references/macos.md)
    - Windows: [references/windows.md](references/windows.md)
 3. Confirm Node.js 24 or newer and npm are available.
-4. Install the built package artifact. Use the repository's `npm pack` output;
-   do not substitute an unverified registry package.
+4. Install the exact `@microck/canonfig@2.0.0` package version. The installed
+   executable remains `canonfig`.
 5. Run `canonfig --version` and bounded diagnostics.
 6. Initialize a Source Machine **or** enroll a Follower Machine. Never initialize
    both roles in the same state directory.

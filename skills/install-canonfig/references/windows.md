@@ -6,26 +6,18 @@
 - Confirm Credential Manager is available to the user that will run Canonfig.
 - Confirm per-user Task Scheduler access before installing a schedule.
 
-## Install the built package
+## Install the package
 
-From PowerShell in the repository, build and pack:
-
-```powershell
-npm ci
-npm run build:cli
-npm pack
-```
-
-Install the resulting local tarball:
+Install the exact public package version:
 
 ```powershell
-npm install --global .\canonfig-2.0.0.tgz
+npm install --global @microck/canonfig@2.0.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```
 
-Use the exact tarball produced by `npm pack`. Do not replace it with an
-unverified registry download.
+The npm package is scoped as `@microck/canonfig`; the installed executable
+remains `canonfig`.
 
 ## Role and schedule
 
