@@ -10,7 +10,7 @@ const maps: Record<TargetId, Record<Capability, string[]>> = {
   "factory-droid": { read: ["Read"], write: ["Edit", "Create", "ApplyPatch"], search: ["Grep", "Glob", "LS"], shell: ["Execute"], web: ["FetchUrl", "WebSearch"], mcp: ["mcp__.*"], subagent: ["Task"], test: ["Execute"], git: ["Execute"] },
   cursor: { read: ["Read"], write: ["Edit", "Write"], search: ["Grep", "Glob"], shell: ["Shell"], web: ["WebFetch", "WebSearch"], mcp: ["MCP"], subagent: ["Agent"], test: ["Shell"], git: ["Shell"] },
   devin: { read: ["read"], write: ["edit", "write"], search: ["grep", "glob"], shell: ["exec"], web: ["web"], mcp: ["mcp"], subagent: ["subagent"], test: ["exec"], git: ["exec"] },
-  opencode: { read: ["read"], write: ["edit", "write"], search: ["grep", "glob"], shell: ["bash"], web: ["webfetch"], mcp: ["mcp"], subagent: ["task"], test: ["bash"], git: ["bash"] },
+  opencode: { read: ["read"], write: ["edit", "write"], search: ["grep", "glob"], shell: ["bash"], web: ["webfetch"], mcp: [], subagent: ["task"], test: ["bash"], git: ["bash"] },
   "grok-build": { read: ["Read"], write: ["Edit", "Write"], search: ["Grep", "Glob"], shell: ["Bash"], web: ["WebFetch", "WebSearch"], mcp: ["mcp__.*"], subagent: ["Agent"], test: ["Bash"], git: ["Bash"] },
   antigravity: { read: ["view_file"], write: ["write_to_file", "replace_file_content", "multi_replace_file_content"], search: ["grep_search", "find_by_name", "list_dir"], shell: ["run_command"], web: ["browser_*", "search_web"], mcp: ["mcp_*"], subagent: ["task"], test: ["run_command"], git: ["run_command"] },
   "copilot-cli": { read: ["Read"], write: ["Edit", "Write"], search: ["Grep", "Glob"], shell: ["Bash"], web: ["WebFetch", "WebSearch"], mcp: ["mcp__*"], subagent: ["Task"], test: ["Bash"], git: ["Bash"] },
