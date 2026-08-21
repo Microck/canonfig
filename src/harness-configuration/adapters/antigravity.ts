@@ -44,9 +44,9 @@ export const antigravityAdapter: HarnessAdapter = {
       artifacts.push({ kind: "replace", path: `.agents/rules/${rule.id}.md`, owner: "antigravity", content: ruleMarkdown(rule, content, { trigger: rule.paths.length ? "glob" : "always" }) });
     }
 
-    const occupiedSkillPaths = new Set(
-      (await skillArtifacts(context, ".agents/skills", "common")).map((artifact) => artifact.path),
-    );
+    const commonSkills = await skillArtifacts(context, ".agents/skills", "common");
+    artifacts.push(...commonSkills);
+    const occupiedSkillPaths = new Set(commonSkills.map((artifact) => artifact.path));
     const translatedSkills = [
       ...await agentSkillArtifacts(context, ".agents/skills", "antigravity"),
       ...await commandSkillArtifacts(context, ".agents/skills", "antigravity"),
