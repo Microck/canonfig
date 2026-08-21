@@ -1,6 +1,6 @@
 import path from "node:path";
 import { BUILTIN_ADAPTERS } from "../adapters/index.ts";
-import { commonArtifacts } from "../adapters/shared.ts";
+import { commonArtifacts, enabledMcpServerEntries } from "../adapters/shared.ts";
 import { configuredTargets, findRepositoryRoot, loadConfig, targetOptions } from "./config.ts";
 import { CanonfigError } from "./errors.ts";
 import { createPlan } from "./planner.ts";
@@ -74,6 +74,25 @@ function compatibilityDiagnostics(
   });
 }
 
+function commonMcpProjectionDiagnostics(context: BuildContext): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  for (const [name, server] of enabledMcpServerEntries(context)) {
+    const omitted: string[] = [];
+    if (server.timeoutMs !== undefined) omitted.push("timeoutMs");
+    if (server.enabledTools?.length) omitted.push("enabledTools");
+    if (server.disabledTools?.length) omitted.push("disabledTools");
+    if (omitted.length > 0) {
+      diagnostics.push({
+        level: "warning",
+        code: "MCP_OPTION_UNSUPPORTED",
+        path: ".mcp.json",
+        message: `.mcp.json cannot represent ${omitted.join(", ")} for MCP server ${name}; those options were omitted.`,
+      });
+    }
+  }
+  return diagnostics;
+}
+
 export class AdapterRegistry {
   readonly #adapters = new Map<TargetId, HarnessAdapter>();
 
@@ -129,7 +148,10 @@ export class HarnessConfigurationCompiler {
       target: targets[0]!,
       targetOptions: {},
     };
-    if (options.includeCommon !== false) artifacts.push(...await commonArtifacts(commonContext));
+    if (options.includeCommon !== false) {
+      artifacts.push(...await commonArtifacts(commonContext));
+      diagnostics.push(...commonMcpProjectionDiagnostics(commonContext));
+    }
 
     const features = usedFeatures(loaded.config);
     for (const target of targets) {
