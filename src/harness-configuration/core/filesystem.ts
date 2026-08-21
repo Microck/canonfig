@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { CanonfigError } from "./errors.ts";
 
+let temporarySequence = 0;
+
 function relativeInside(root: string, candidate: string): { root: string; relative: string } {
   const resolvedRoot = path.resolve(root);
   const resolvedCandidate = path.resolve(candidate);
@@ -17,6 +19,23 @@ async function lstatOptional(filePath: string): Promise<Awaited<ReturnType<typeo
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
+  }
+}
+
+async function openExclusiveTemporary(
+  filePath: string,
+  mode?: number,
+): Promise<{ temporary: string; handle: Awaited<ReturnType<typeof fs.open>> }> {
+  for (;;) {
+    const temporary = path.join(
+      path.dirname(filePath),
+      `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${temporarySequence++}.tmp`,
+    );
+    try {
+      return { temporary, handle: await fs.open(temporary, "wx", mode) };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
   }
 }
 
@@ -95,23 +114,27 @@ export async function atomicWrite(
 ): Promise<void> {
   if (root === undefined) await fs.mkdir(path.dirname(filePath), { recursive: true });
   else await ensureDirectoryNoFollow(root, path.dirname(filePath));
-  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  let temporary: string | undefined;
   try {
     if (root !== undefined) await assertNoSymlinkPathComponents(root, path.dirname(filePath));
-    const handle = await fs.open(temporary, "wx", mode);
+    const opened = await openExclusiveTemporary(filePath, mode);
+    temporary = opened.temporary;
     try {
-      await handle.writeFile(content);
-      if (mode !== undefined) await handle.chmod(mode);
+      await opened.handle.writeFile(content);
+      if (mode !== undefined) await opened.handle.chmod(mode);
     } finally {
-      await handle.close();
+      await opened.handle.close();
     }
     if (root !== undefined) await assertNoSymlinkPathComponents(root, path.dirname(filePath));
     await fs.rename(temporary, filePath);
+    temporary = undefined;
   } catch (error) {
-    try {
-      if (root !== undefined) await assertNoSymlinkPathComponents(root, path.dirname(filePath));
-      await fs.rm(temporary, { force: true });
-    } catch { /* Preserve the original write error. */ }
+    if (temporary !== undefined) {
+      try {
+        if (root !== undefined) await assertNoSymlinkPathComponents(root, path.dirname(filePath));
+        await fs.rm(temporary, { force: true });
+      } catch { /* Preserve the original write error. */ }
+    }
     throw error;
   }
 }
