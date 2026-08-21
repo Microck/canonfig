@@ -18,6 +18,7 @@
     "src/cli/**/*.ts",
     "src/domain/**/*.ts",
     "src/enrollment/**/*.ts",
+    "src/harness-configuration/**/*.ts",
     "src/machine/**/*.ts",
     "src/profile/**/*.ts",
     "src/runtime/**/*.ts",

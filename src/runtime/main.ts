@@ -4,6 +4,10 @@ import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
 
 import { evaluateCli, runCli, type CliIo } from "../cli/cli.ts";
+import {
+  isHarnessConfigurationCommand,
+  runHarnessConfigurationCli,
+} from "../harness-configuration/cli.ts";
 
 const warningListeners = process.listeners("warning");
 process.removeAllListeners("warning");
@@ -24,30 +28,39 @@ const nodeCliIo: CliIo = {
 };
 
 const arguments_ = process.argv.slice(2);
-const outcome = evaluateCli(arguments_);
 
-if (outcome._tag === "Command") {
+if (isHarnessConfigurationCommand(arguments_)) {
   NodeRuntime.runMain(
-    Effect.promise(() => import("./layers.ts")).pipe(
-      Effect.flatMap(({ runtimeLayer }) =>
-        runCli(arguments_, nodeCliIo).pipe(
-          Effect.andThen(
-            outcome.command._tag === "SourceServe"
-              ? Effect.never
-              : Effect.void,
-          ),
-          Effect.provide(runtimeLayer()),
-        )
-      ),
+    Effect.promise(() =>
+      runHarnessConfigurationCli(arguments_.slice(1), nodeCliIo)
     ),
   );
 } else {
-  NodeRuntime.runMain(Effect.sync(() => {
-    if (outcome._tag === "Help" || outcome._tag === "Version") {
-      nodeCliIo.writeStdout(`${outcome.text}\n`);
-    } else {
-      nodeCliIo.writeStderr(`${outcome.message}\n`);
-    }
-    nodeCliIo.setExitCode(outcome.exitCode);
-  }));
+  const outcome = evaluateCli(arguments_);
+
+  if (outcome._tag === "Command") {
+    NodeRuntime.runMain(
+      Effect.promise(() => import("./layers.ts")).pipe(
+        Effect.flatMap(({ runtimeLayer }) =>
+          runCli(arguments_, nodeCliIo).pipe(
+            Effect.andThen(
+              outcome.command._tag === "SourceServe"
+                ? Effect.never
+                : Effect.void,
+            ),
+            Effect.provide(runtimeLayer()),
+          )
+        ),
+      ),
+    );
+  } else {
+    NodeRuntime.runMain(Effect.sync(() => {
+      if (outcome._tag === "Help" || outcome._tag === "Version") {
+        nodeCliIo.writeStdout(`${outcome.text}\n`);
+      } else {
+        nodeCliIo.writeStderr(`${outcome.message}\n`);
+      }
+      nodeCliIo.setExitCode(outcome.exitCode);
+    }));
+  }
 }
