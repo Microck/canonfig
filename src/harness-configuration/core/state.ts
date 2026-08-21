@@ -3,6 +3,7 @@ import path from "node:path";
 import { CANONFIG_DIR, STATE_FILENAME } from "./config.ts";
 import type { CanonfigState } from "./types.ts";
 import { CanonfigError } from "./errors.ts";
+import { assertNoSymlinkPathComponents, atomicWrite } from "./filesystem.ts";
 
 export const HARNESS_CONFIGURATION_VERSION = "1";
 
@@ -29,17 +30,10 @@ export async function loadState(root: string): Promise<CanonfigState> {
 export async function writeState(root: string, state: CanonfigState): Promise<void> {
   const statePath = path.join(root, CANONFIG_DIR, STATE_FILENAME);
   if (Object.keys(state.artifacts).length === 0) {
+    await assertNoSymlinkPathComponents(root, path.dirname(statePath));
     try { await fs.unlink(statePath); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     return;
   }
-  await fs.mkdir(path.dirname(statePath), { recursive: true });
-  const temporary = `${statePath}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    await fs.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-    await fs.rename(temporary, statePath);
-  } catch (error) {
-    try { await fs.rm(temporary, { force: true }); } catch { /* Preserve the original state write error. */ }
-    throw error;
-  }
+  await atomicWrite(statePath, `${JSON.stringify(state, null, 2)}\n`, 0o600, root);
 }
