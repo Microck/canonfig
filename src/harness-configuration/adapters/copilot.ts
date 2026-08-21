@@ -38,7 +38,9 @@ export const copilotAdapter: HarnessAdapter = {
     const artifacts: DesiredArtifact[] = [];
     const diagnostics: Diagnostic[] = standardMcpProjectionDiagnostics(context, "copilot-cli");
 
-    artifacts.push(...await skillArtifacts(context, ".github/skills", "copilot-cli"));
+    const commonSkills = await skillArtifacts(context, ".github/skills", "copilot-cli");
+    artifacts.push(...commonSkills);
+    const occupiedSkillPaths = new Set(commonSkills.map((artifact) => artifact.path));
     if (enabledHooks(context).length > 0) {
       const compiled = copilotHooks(context);
       diagnostics.push(...compiled.diagnostics);
@@ -77,7 +79,20 @@ export const copilotAdapter: HarnessAdapter = {
         }, content),
       });
     }
-    artifacts.push(...await commandSkillArtifacts(context, ".github/skills", "copilot-cli"));
+    for (const artifact of await commandSkillArtifacts(context, ".github/skills", "copilot-cli")) {
+      if (occupiedSkillPaths.has(artifact.path)) {
+        diagnostics.push({
+          level: "error",
+          code: "TRANSLATED_SKILL_COLLISION",
+          target: "copilot-cli",
+          path: artifact.path,
+          message: `Copilot command output collides with a canonical skill at ${artifact.path}; rename the skill or command.`,
+        });
+        continue;
+      }
+      occupiedSkillPaths.add(artifact.path);
+      artifacts.push(artifact);
+    }
 
     return { artifacts, diagnostics };
   },
