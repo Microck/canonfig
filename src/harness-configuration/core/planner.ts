@@ -12,7 +12,13 @@ import type {
   TargetId,
 } from "./types.ts";
 import { assertRealPathInside, assertSafeRelativePath, resolveInside } from "./path.ts";
-import { readOptionalFile, atomicWrite, removeFileAndEmptyParents } from "./filesystem.ts";
+import {
+  assertNoSymlinkPathComponents,
+  atomicWrite,
+  ensureDirectoryNoFollow,
+  readOptionalFile,
+  removeFileAndEmptyParents,
+} from "./filesystem.ts";
 import { loadState, writeState, HARNESS_CONFIGURATION_VERSION } from "./state.ts";
 import { renderArtifacts } from "./render.ts";
 import { sha256 } from "./hash.ts";
@@ -241,11 +247,14 @@ async function restoreSnapshots(root: string, snapshots: readonly FileSnapshot[]
       if (snapshot.kind === "missing") {
         await removeFileAndEmptyParents(absolute, root);
       } else if (snapshot.kind === "symlink") {
-        await fs.mkdir(path.dirname(absolute), { recursive: true });
+        const parent = path.dirname(absolute);
+        await ensureDirectoryNoFollow(root, parent);
+        await assertNoSymlinkPathComponents(root, parent);
         await fs.rm(absolute, { force: true });
+        await assertNoSymlinkPathComponents(root, parent);
         await fs.symlink(snapshot.linkTarget, absolute);
       } else {
-        await atomicWrite(absolute, snapshot.content, snapshot.mode);
+        await atomicWrite(absolute, snapshot.content, snapshot.mode, root);
       }
     } catch (error) {
       failures.push({ path: snapshot.path, error });
@@ -284,7 +293,7 @@ export async function applyPlan(plan: Plan): Promise<void> {
         }
         const content = entry.content ?? entry.after;
         if (content === undefined) throw new CanonfigError("PLAN_INVALID", `Missing output content for ${entry.path}`);
-        await atomicWrite(absolute, content, entry.mode);
+        await atomicWrite(absolute, content, entry.mode, plan.root);
       } else {
         await removeFileAndEmptyParents(absolute, plan.root);
       }
