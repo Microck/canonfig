@@ -4,20 +4,20 @@ import {
   agentSkillArtifacts,
   commandDocuments,
   commandMarkdown,
+  enabledHooks,
+  hasEnabledMcpServers,
   piMcpMap,
   ruleDocuments,
   ruleMarkdown,
   skillArtifacts,
 } from "./shared.ts";
-import { piPluginSource } from "../templates/runtime.ts";
+import { PI_PLUGIN_EVENT_MAP, piPluginSource } from "../templates/runtime.ts";
 
-const PI_PLUGIN_EVENTS = new Set([
-  "before_tool", "after_tool", "session_start", "session_end", "before_agent", "before_compact", "stop",
-]);
+const PI_PLUGIN_EVENTS = new Set(Object.keys(PI_PLUGIN_EVENT_MAP));
 
 function mcpPackageOption(options: Record<string, unknown>): string | false {
   if (options.mcpPackage === false) return false;
-  if (typeof options.mcpPackage === "string" && options.mcpPackage.trim()) return options.mcpPackage;
+  if (typeof options.mcpPackage === "string" && options.mcpPackage.trim()) return options.mcpPackage.trim();
   return "npm:pi-mcp-extension";
 }
 
@@ -51,7 +51,7 @@ export const piAdapter: HarnessAdapter = {
 
     artifacts.push(...await skillArtifacts(context, ".pi/skills", "pi"));
 
-    if (Object.keys(context.config.mcp.servers).length > 0) {
+    if (hasEnabledMcpServers(context)) {
       artifacts.push({
         kind: "json",
         path: ".pi/mcp.json",
@@ -82,22 +82,24 @@ export const piAdapter: HarnessAdapter = {
       }
     }
 
-    if (context.config.hooks.length > 0) {
-      for (const hook of context.config.hooks) {
-        if (hook.enabled && !PI_PLUGIN_EVENTS.has(hook.event)) {
-          diagnostics.push({
-            level: "warning",
-            code: "HOOK_EVENT_UNSUPPORTED",
-            target: "pi",
-            message: `Pi's generated extension cannot map hook event ${hook.event}; it was skipped.`,
-          });
-        }
+    const hooks = enabledHooks(context);
+    const supportedHooks = hooks.filter((hook) => PI_PLUGIN_EVENTS.has(hook.event));
+    for (const hook of hooks) {
+      if (!PI_PLUGIN_EVENTS.has(hook.event)) {
+        diagnostics.push({
+          level: "warning",
+          code: "HOOK_EVENT_UNSUPPORTED",
+          target: "pi",
+          message: `Pi's generated extension cannot map hook event ${hook.event}; it was skipped.`,
+        });
       }
+    }
+    if (supportedHooks.length > 0) {
       artifacts.push({
         kind: "replace",
         path: ".pi/extensions/canonfig.ts",
         owner: "pi",
-        content: piPluginSource("pi", context.config.hooks),
+        content: piPluginSource("pi", supportedHooks),
       });
     }
 

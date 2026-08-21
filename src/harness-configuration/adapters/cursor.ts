@@ -1,4 +1,4 @@
-import type { DesiredArtifact, HarnessAdapter } from "../core/types.ts";
+import type { DesiredArtifact, Diagnostic, HarnessAdapter } from "../core/types.ts";
 import { descriptor } from "./descriptor.ts";
 import {
   agentDocuments,
@@ -6,9 +6,12 @@ import {
   commandDocuments,
   commandMarkdown,
   cursorHooks,
+  enabledHooks,
+  hasEnabledMcpServers,
   jsonMcpArtifact,
   ruleDocuments,
   skillArtifacts,
+  standardMcpProjectionDiagnostics,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
 import { markdownWithFrontmatter } from "../core/frontmatter.ts";
@@ -37,21 +40,26 @@ export const cursorAdapter: HarnessAdapter = {
   ),
   async build(context) {
     const artifacts: DesiredArtifact[] = [];
-    const diagnostics = [];
+    const diagnostics: Diagnostic[] = [];
 
     artifacts.push(...await skillArtifacts(context, ".cursor/skills", "cursor"));
-    if (Object.keys(context.config.mcp.servers).length > 0) artifacts.push(jsonMcpArtifact(".cursor/mcp.json", "cursor", context));
+    if (hasEnabledMcpServers(context)) {
+      diagnostics.push(...standardMcpProjectionDiagnostics(context, "cursor"));
+      artifacts.push(jsonMcpArtifact(".cursor/mcp.json", "cursor", context));
+    }
 
-    if (context.config.hooks.length > 0) {
+    if (enabledHooks(context).length > 0) {
       const compiled = cursorHooks(context);
       diagnostics.push(...compiled.diagnostics);
-      artifacts.push({
-        kind: "json",
-        path: ".cursor/hooks.json",
-        owner: "cursor",
-        rootDefaults: { version: 1 },
-        operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
-      });
+      if (Object.keys(compiled.hooks).length > 0) {
+        artifacts.push({
+          kind: "json",
+          path: ".cursor/hooks.json",
+          owner: "cursor",
+          rootDefaults: { version: 1 },
+          operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
+        });
+      }
     }
 
     for (const { rule, content } of await ruleDocuments(context)) {

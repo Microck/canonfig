@@ -4,11 +4,11 @@ import {
   agentDocuments,
   commandDocuments,
   commandMarkdown,
+  enabledHooks,
   openCodeMcpMap,
-  ruleDocuments,
   skillArtifacts,
 } from "./shared.ts";
-import { nativeTools } from "./tools.ts";
+import { nativeTools, nativeToolsForCapabilities } from "./tools.ts";
 import { markdownWithFrontmatter } from "../core/frontmatter.ts";
 import { openCodePluginSource } from "../templates/runtime.ts";
 
@@ -25,7 +25,7 @@ export const opencodeAdapter: HarnessAdapter = {
     ],
     {
       instructions: "portable",
-      rules: "native",
+      rules: "portable",
       skills: "native",
       mcp: "native",
       hooks: "shim",
@@ -40,53 +40,43 @@ export const opencodeAdapter: HarnessAdapter = {
 
     artifacts.push(...await skillArtifacts(context, ".opencode/skills", "opencode"));
 
-    const configOperations: DesiredArtifact[] = [];
-    const jsonOperations: Array<
-      | { kind: "managed-map"; path: string[]; entries: Record<string, unknown>; collision: "error" }
-      | { kind: "managed-array"; path: string[]; values: unknown[] }
-    > = [];
     if (Object.keys(context.config.mcp.servers).length > 0) {
-      jsonOperations.push({ kind: "managed-map", path: ["mcp"], entries: openCodeMcpMap(context), collision: "error" });
-    }
-    if (context.config.instructions.rules.length > 0) {
-      jsonOperations.push({
-        kind: "managed-array",
-        path: ["instructions"],
-        values: context.config.instructions.rules.map((rule) => `.canonfig/${rule.file}`),
-      });
-    }
-    if (jsonOperations.length > 0) {
-      configOperations.push({
+      artifacts.push({
         kind: "json",
         path: "opencode.json",
         owner: "opencode",
         rootDefaults: { $schema: "https://opencode.ai/config.json" },
-        operations: jsonOperations,
+        operations: [{ kind: "managed-map", path: ["mcp"], entries: openCodeMcpMap(context), collision: "error" }],
       });
     }
-    artifacts.push(...configOperations);
 
-    if (context.config.hooks.length > 0) {
-      for (const hook of context.config.hooks) {
-        if (hook.enabled && hook.event !== "before_tool" && hook.event !== "after_tool") {
-          diagnostics.push({
-            level: "warning",
-            code: "HOOK_EVENT_UNSUPPORTED",
-            target: "opencode",
-            message: `OpenCode's generated plugin cannot map hook event ${hook.event}; it was skipped.`,
-          });
-        }
+    const hooks = enabledHooks(context);
+    const supportedHooks = hooks.filter((hook) => hook.event === "before_tool" || hook.event === "after_tool");
+    for (const hook of hooks) {
+      if (hook.event !== "before_tool" && hook.event !== "after_tool") {
+        diagnostics.push({
+          level: "warning",
+          code: "HOOK_EVENT_UNSUPPORTED",
+          target: "opencode",
+          message: `OpenCode's generated plugin cannot map hook event ${hook.event}; it was skipped.`,
+        });
       }
+    }
+    if (supportedHooks.length > 0) {
       artifacts.push({
         kind: "replace",
         path: ".opencode/plugins/canonfig.ts",
         owner: "opencode",
-        content: openCodePluginSource(context.config.hooks),
+        content: openCodePluginSource(supportedHooks),
       });
     }
 
+    const readOnlyTools = new Set(nativeToolsForCapabilities("opencode", ["read", "search"]));
     for (const { agent, content } of await agentDocuments(context)) {
-      const permissions = Object.fromEntries(nativeTools("opencode", agent).map((tool) => [tool, agent.writable ? "allow" : tool === "read" || tool === "grep" || tool === "glob" ? "allow" : "ask"]));
+      const permissions = Object.fromEntries(nativeTools("opencode", agent).map((tool) => [
+        tool,
+        agent.writable || readOnlyTools.has(tool) ? "allow" : "deny",
+      ]));
       artifacts.push({
         kind: "replace",
         path: `.opencode/agents/${agent.id}.md`,
@@ -101,9 +91,6 @@ export const opencodeAdapter: HarnessAdapter = {
     }
     for (const { command, content } of await commandDocuments(context)) {
       artifacts.push({ kind: "replace", path: `.opencode/commands/${command.id}.md`, owner: "opencode", content: commandMarkdown(command, content) });
-    }
-    for (const { rule, content } of await ruleDocuments(context)) {
-      artifacts.push({ kind: "replace", path: `.opencode/rules/${rule.id}.md`, owner: "opencode", content });
     }
 
     return { artifacts, diagnostics };

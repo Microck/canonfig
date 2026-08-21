@@ -5,17 +5,18 @@ import {
   agentMarkdown,
   commandDocuments,
   commandMarkdown,
+  enabledHooks,
+  hasEnabledMcpServers,
   jsonMcpArtifact,
   ruleDocuments,
   ruleMarkdown,
   skillArtifacts,
+  standardMcpProjectionDiagnostics,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
-import { piPluginSource } from "../templates/runtime.ts";
+import { PI_PLUGIN_EVENT_MAP, piPluginSource } from "../templates/runtime.ts";
 
-const OMP_PLUGIN_EVENTS = new Set([
-  "before_tool", "after_tool", "session_start", "session_end", "before_agent", "before_compact", "stop",
-]);
+const OMP_PLUGIN_EVENTS = new Set(Object.keys(PI_PLUGIN_EVENT_MAP));
 
 export const ompAdapter: HarnessAdapter = {
   descriptor: descriptor(
@@ -43,26 +44,29 @@ export const ompAdapter: HarnessAdapter = {
     const diagnostics: Diagnostic[] = [];
 
     artifacts.push(...await skillArtifacts(context, ".omp/skills", "oh-my-pi"));
-    if (Object.keys(context.config.mcp.servers).length > 0) {
+    if (hasEnabledMcpServers(context)) {
+      diagnostics.push(...standardMcpProjectionDiagnostics(context, "oh-my-pi"));
       artifacts.push(jsonMcpArtifact(".omp/mcp.json", "oh-my-pi", context));
     }
 
-    if (context.config.hooks.length > 0) {
-      for (const hook of context.config.hooks) {
-        if (hook.enabled && !OMP_PLUGIN_EVENTS.has(hook.event)) {
-          diagnostics.push({
-            level: "warning",
-            code: "HOOK_EVENT_UNSUPPORTED",
-            target: "oh-my-pi",
-            message: `Oh My Pi's generated extension cannot map hook event ${hook.event}; it was skipped.`,
-          });
-        }
+    const hooks = enabledHooks(context);
+    const supportedHooks = hooks.filter((hook) => OMP_PLUGIN_EVENTS.has(hook.event));
+    for (const hook of hooks) {
+      if (!OMP_PLUGIN_EVENTS.has(hook.event)) {
+        diagnostics.push({
+          level: "warning",
+          code: "HOOK_EVENT_UNSUPPORTED",
+          target: "oh-my-pi",
+          message: `Oh My Pi's generated extension cannot map hook event ${hook.event}; it was skipped.`,
+        });
       }
+    }
+    if (supportedHooks.length > 0) {
       artifacts.push({
         kind: "replace",
         path: ".omp/extensions/canonfig.ts",
         owner: "oh-my-pi",
-        content: piPluginSource("oh-my-pi", context.config.hooks),
+        content: piPluginSource("oh-my-pi", supportedHooks),
       });
     }
 

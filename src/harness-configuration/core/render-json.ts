@@ -116,11 +116,15 @@ export function applyJsonArtifact(
       continue;
     }
     if (operation.kind === "managed-map") {
+      const map = getAtPath(document, operation.path);
+      if (map !== undefined && !isRecord(map) && !force) {
+        conflicts.push(`JSON path ${operation.path.join(".")} is not an object and is not owned by Canonfig.`);
+        continue;
+      }
+      const object = isRecord(map) ? map : {};
       const originals: JsonManagedMapCleanup["originals"] = {};
       const applied: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(operation.entries)) {
-        const map = getAtPath(document, operation.path);
-        const object = isRecord(map) ? map : {};
         const existed = Object.prototype.hasOwnProperty.call(object, key);
         const current = object[key];
         originals[key] = existed
@@ -152,6 +156,10 @@ export function applyJsonArtifact(
     }
     if (operation.kind === "managed-array") {
       const found = getAtPath(document, operation.path);
+      if (found !== undefined && !Array.isArray(found) && !force) {
+        conflicts.push(`JSON path ${operation.path.join(".")} is not an array and is not owned by Canonfig.`);
+        continue;
+      }
       const values = Array.isArray(found) ? [...found] : [];
       const added: unknown[] = [];
       for (const value of operation.values) {
@@ -190,6 +198,10 @@ export function applyJsonArtifact(
     }
 
     const existingValue = getAtPath(document, operation.path);
+    if (existingValue !== undefined && !isRecord(existingValue) && !force) {
+      conflicts.push(`JSON path ${operation.path.join(".")} is not an object and is not owned by Canonfig.`);
+      continue;
+    }
     const existing = isRecord(existingValue) ? existingValue : {};
     const next: Record<string, unknown> = {};
     for (const [event, entries] of Object.entries(existing)) {

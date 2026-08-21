@@ -1,11 +1,13 @@
-import type { DesiredArtifact, HarnessAdapter } from "../core/types.ts";
+import type { DesiredArtifact, Diagnostic, HarnessAdapter } from "../core/types.ts";
 import { descriptor } from "./descriptor.ts";
 import {
   agentDocuments,
   commandSkillArtifacts,
   copilotHooks,
+  enabledHooks,
   ruleDocuments,
   skillArtifacts,
+  standardMcpProjectionDiagnostics,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
 import { markdownWithFrontmatter } from "../core/frontmatter.ts";
@@ -34,19 +36,21 @@ export const copilotAdapter: HarnessAdapter = {
   ),
   async build(context) {
     const artifacts: DesiredArtifact[] = [];
-    const diagnostics = [];
+    const diagnostics: Diagnostic[] = standardMcpProjectionDiagnostics(context, "copilot-cli");
 
     artifacts.push(...await skillArtifacts(context, ".github/skills", "copilot-cli"));
-    if (context.config.hooks.length > 0) {
+    if (enabledHooks(context).length > 0) {
       const compiled = copilotHooks(context);
       diagnostics.push(...compiled.diagnostics);
-      artifacts.push({
-        kind: "json",
-        path: ".github/hooks/canonfig.json",
-        owner: "copilot-cli",
-        rootDefaults: { version: 1 },
-        operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
-      });
+      if (Object.keys(compiled.hooks).length > 0) {
+        artifacts.push({
+          kind: "json",
+          path: ".github/hooks/canonfig.json",
+          owner: "copilot-cli",
+          rootDefaults: { version: 1 },
+          operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
+        });
+      }
     }
 
     for (const { rule, content } of await ruleDocuments(context)) {

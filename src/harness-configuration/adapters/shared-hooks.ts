@@ -5,6 +5,14 @@ export function hookCommand(target: TargetId, hook: Hook): string {
   return `node \".canonfig/.runtime/hook-runner.mjs\" --hook ${hook.id} --target ${target} --event ${hook.event}`;
 }
 
+export function enabledHooks(context: BuildContext): Hook[] {
+  return context.config.hooks.filter((hook) => hook.enabled);
+}
+
+function timeoutSeconds(timeoutMs: number): number {
+  return Math.max(1, Math.ceil(timeoutMs / 1000));
+}
+
 export const CLAUDE_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
   session_start: "SessionStart",
   session_end: "SessionEnd",
@@ -20,13 +28,49 @@ export const CLAUDE_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
   subagent_stop: "SubagentStop",
 };
 
+export const CODEX_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
+  session_start: "SessionStart",
+  session_end: "SessionEnd",
+  prompt_submit: "UserPromptSubmit",
+  before_tool: "PreToolUse",
+  after_tool: "PostToolUse",
+  before_compact: "PreCompact",
+  after_compact: "PostCompact",
+  stop: "Stop",
+  subagent_start: "SubagentStart",
+  subagent_stop: "SubagentStop",
+};
+
+export const DEVIN_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
+  session_start: "SessionStart",
+  session_end: "SessionEnd",
+  prompt_submit: "UserPromptSubmit",
+  before_tool: "PreToolUse",
+  after_tool: "PostToolUse",
+  after_compact: "PostCompaction",
+  stop: "Stop",
+};
+
+export const GROK_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
+  session_start: "SessionStart",
+  session_end: "SessionEnd",
+  prompt_submit: "UserPromptSubmit",
+  before_tool: "PreToolUse",
+  after_tool: "PostToolUse",
+  before_compact: "PreCompact",
+  after_compact: "PostCompact",
+  stop: "Stop",
+  subagent_start: "SubagentStart",
+  subagent_stop: "SubagentStop",
+};
+
 export function claudeStyleHooks(
   context: BuildContext,
   eventMap: Partial<Record<Hook["event"], string>> = CLAUDE_EVENT_MAP,
 ): { hooks: Record<string, unknown[]>; diagnostics: Diagnostic[] } {
   const hooks: Record<string, unknown[]> = {};
   const diagnostics: Diagnostic[] = [];
-  for (const hook of context.config.hooks.filter((candidate) => candidate.enabled)) {
+  for (const hook of enabledHooks(context)) {
     const nativeEvent = eventMap[hook.event];
     if (!nativeEvent) {
       diagnostics.push({
@@ -42,7 +86,7 @@ export function claudeStyleHooks(
       hooks: [{
         type: "command",
         command: hookCommand(context.target, hook),
-        timeout: Math.ceil(hook.timeoutMs / 1000),
+        timeout: timeoutSeconds(hook.timeoutMs),
       }],
     };
     (hooks[nativeEvent] ??= []).push(entry);
@@ -64,7 +108,7 @@ export function cursorHooks(context: BuildContext): { hooks: Record<string, unkn
   };
   const hooks: Record<string, unknown[]> = {};
   const diagnostics: Diagnostic[] = [];
-  for (const hook of context.config.hooks.filter((candidate) => candidate.enabled)) {
+  for (const hook of enabledHooks(context)) {
     const event = eventMap[hook.event];
     if (!event) {
       diagnostics.push({
@@ -91,11 +135,13 @@ export function copilotHooks(context: BuildContext): { hooks: Record<string, unk
     before_tool: "preToolUse",
     after_tool: "postToolUse",
     stop: "agentStop",
+    subagent_start: "subagentStart",
     subagent_stop: "subagentStop",
+    before_compact: "preCompact",
   };
   const hooks: Record<string, unknown[]> = {};
   const diagnostics: Diagnostic[] = [];
-  for (const hook of context.config.hooks.filter((candidate) => candidate.enabled)) {
+  for (const hook of enabledHooks(context)) {
     const event = eventMap[hook.event];
     if (!event) {
       diagnostics.push({
@@ -112,7 +158,7 @@ export function copilotHooks(context: BuildContext): { hooks: Record<string, unk
       bash: command,
       powershell: command,
       cwd: ".",
-      timeoutSec: Math.ceil(hook.timeoutMs / 1000),
+      timeoutSec: timeoutSeconds(hook.timeoutMs),
       ...(event === "preToolUse" || event === "postToolUse" ? { matcher: ".*" } : {}),
     });
   }
@@ -129,7 +175,7 @@ export function antigravityHooks(context: BuildContext): { entries: Record<strin
   };
   const entries: Record<string, unknown> = {};
   const diagnostics: Diagnostic[] = [];
-  for (const hook of context.config.hooks.filter((candidate) => candidate.enabled)) {
+  for (const hook of enabledHooks(context)) {
     const event = eventMap[hook.event];
     if (!event) {
       diagnostics.push({
@@ -143,7 +189,7 @@ export function antigravityHooks(context: BuildContext): { entries: Record<strin
     const handler = {
       type: "command",
       command: hookCommand("antigravity", hook),
-      timeout: Math.ceil(hook.timeoutMs / 1000),
+      timeout: timeoutSeconds(hook.timeoutMs),
     };
     entries[`canonfig-${hook.id}`] = {
       enabled: true,

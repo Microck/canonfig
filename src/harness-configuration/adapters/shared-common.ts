@@ -1,7 +1,8 @@
 import type { BuildContext, DesiredArtifact } from "../core/types.ts";
 import { hookRegistryJson, hookRunnerSource } from "../templates/runtime.ts";
 import { readCanonfigText, skillArtifacts } from "./shared-documents.ts";
-import { standardMcpMap } from "./shared-mcp.ts";
+import { enabledHooks } from "./shared-hooks.ts";
+import { hasEnabledMcpServers, standardMcpMap } from "./shared-mcp.ts";
 
 export async function commonArtifacts(context: BuildContext): Promise<DesiredArtifact[]> {
   const rootInstructions = await readCanonfigText(context, context.config.instructions.root);
@@ -37,7 +38,7 @@ export async function commonArtifacts(context: BuildContext): Promise<DesiredArt
   ];
 
   artifacts.push(...await skillArtifacts(context, ".agents/skills", "common"));
-  if (Object.keys(context.config.mcp.servers).length > 0) {
+  if (hasEnabledMcpServers(context)) {
     artifacts.push({
       kind: "json",
       path: ".mcp.json",
@@ -50,7 +51,8 @@ export async function commonArtifacts(context: BuildContext): Promise<DesiredArt
       }],
     });
   }
-  if (context.config.hooks.length > 0) {
+  const hooks = enabledHooks(context);
+  if (hooks.length > 0) {
     artifacts.push(
       {
         kind: "replace",
@@ -63,7 +65,7 @@ export async function commonArtifacts(context: BuildContext): Promise<DesiredArt
         kind: "replace",
         path: ".canonfig/.runtime/hooks.json",
         owner: "common",
-        content: hookRegistryJson(context.config.hooks),
+        content: hookRegistryJson(hooks),
       },
     );
   }

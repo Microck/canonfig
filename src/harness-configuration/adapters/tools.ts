@@ -1,9 +1,9 @@
-import type { Agent } from "../core/schema.ts";
+import type { Agent, Capability } from "../core/schema.ts";
 import type { TargetId } from "../core/types.ts";
 
-const maps: Record<TargetId, Record<Agent["tools"][number], string[]>> = {
+const maps: Record<TargetId, Record<Capability, string[]>> = {
   codex: { read: ["read_file"], write: ["apply_patch"], search: ["grep", "glob"], shell: ["shell"], web: ["web_search"], mcp: ["mcp"], subagent: ["spawn_agent"], test: ["shell"], git: ["shell"] },
-  "claude-code": { read: ["Read"], write: ["Edit", "Write"], search: ["Grep", "Glob"], shell: ["Bash"], web: ["WebFetch", "WebSearch"], mcp: ["mcp__*"], subagent: ["Task"], test: ["Bash"], git: ["Bash"] },
+  "claude-code": { read: ["Read"], write: ["Edit", "Write"], search: ["Grep", "Glob"], shell: ["Bash"], web: ["WebFetch", "WebSearch"], mcp: [], subagent: ["Task"], test: ["Bash"], git: ["Bash"] },
   amp: { read: ["read"], write: ["edit", "write"], search: ["grep", "glob"], shell: ["Bash"], web: ["web"], mcp: ["mcp"], subagent: ["agent"], test: ["Bash"], git: ["Bash"] },
   "oh-my-pi": { read: ["read"], write: ["edit", "write"], search: ["search", "find"], shell: ["bash"], web: ["web_search"], mcp: ["mcp"], subagent: ["task"], test: ["bash"], git: ["bash"] },
   pi: { read: ["read"], write: ["edit", "write"], search: ["grep", "find"], shell: ["bash"], web: ["web"], mcp: ["mcp"], subagent: ["task"], test: ["bash"], git: ["bash"] },
@@ -16,6 +16,10 @@ const maps: Record<TargetId, Record<Agent["tools"][number], string[]>> = {
   "copilot-cli": { read: ["Read"], write: ["Edit", "Write"], search: ["Grep", "Glob"], shell: ["Bash"], web: ["WebFetch", "WebSearch"], mcp: ["mcp__*"], subagent: ["Task"], test: ["Bash"], git: ["Bash"] },
 };
 
+export function nativeToolsForCapabilities(target: TargetId, capabilities: readonly Capability[]): string[] {
+  return [...new Set(capabilities.flatMap((capability) => maps[target][capability]))];
+}
+
 export function nativeTools(target: TargetId, agent: Agent): string[] {
-  return [...new Set(agent.tools.flatMap((capability) => maps[target][capability]))];
+  return nativeToolsForCapabilities(target, agent.tools);
 }

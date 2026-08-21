@@ -1,10 +1,12 @@
-import type { HarnessAdapter, DesiredArtifact } from "../core/types.ts";
+import type { DesiredArtifact, Diagnostic, HarnessAdapter } from "../core/types.ts";
 import { descriptor } from "./descriptor.ts";
 import {
   agentSkillArtifacts,
   antigravityHooks,
   antigravityMcpMap,
   commandSkillArtifacts,
+  enabledHooks,
+  hasEnabledMcpServers,
   ruleDocuments,
   ruleMarkdown,
 } from "./shared.ts";
@@ -20,20 +22,22 @@ export const antigravityAdapter: HarnessAdapter = {
   ),
   async build(context) {
     const artifacts: DesiredArtifact[] = [];
-    const diagnostics = [];
-    if (Object.keys(context.config.mcp.servers).length) {
+    const diagnostics: Diagnostic[] = [];
+    if (hasEnabledMcpServers(context)) {
       artifacts.push({
         kind: "json", path: ".agents/mcp_config.json", owner: "antigravity",
         operations: [{ kind: "managed-map", path: ["mcpServers"], entries: antigravityMcpMap(context), collision: "error" }],
       });
     }
-    if (context.config.hooks.length) {
+    if (enabledHooks(context).length > 0) {
       const compiled = antigravityHooks(context);
       diagnostics.push(...compiled.diagnostics);
-      artifacts.push({
-        kind: "json", path: ".agents/hooks.json", owner: "antigravity",
-        operations: [{ kind: "managed-map", path: [], entries: compiled.entries, collision: "error" }],
-      });
+      if (Object.keys(compiled.entries).length > 0) {
+        artifacts.push({
+          kind: "json", path: ".agents/hooks.json", owner: "antigravity",
+          operations: [{ kind: "managed-map", path: [], entries: compiled.entries, collision: "error" }],
+        });
+      }
     }
     for (const { rule, content } of await ruleDocuments(context)) {
       artifacts.push({ kind: "replace", path: `.agents/rules/${rule.id}.md`, owner: "antigravity", content: ruleMarkdown(rule, content, { trigger: rule.paths.length ? "glob" : "always" }) });

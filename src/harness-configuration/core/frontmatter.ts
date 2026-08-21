@@ -18,12 +18,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function parseMarkdownDocument(source: string): MarkdownDocument {
   const normalized = source.replaceAll("\r\n", "\n");
   if (!normalized.startsWith("---\n")) return { data: {}, content: normalized.trim() };
-  const end = normalized.indexOf("\n---\n", 4);
-  if (end < 0) throw new Error("Unterminated YAML frontmatter block.");
-  const rawData = normalized.slice(4, end);
-  const parsed = YAML.parse(rawData) as unknown;
+  const body = normalized.slice(4);
+  const match = /^---[ \t]*(?:\n|$)/mu.exec(body);
+  if (!match) throw new Error("Unterminated YAML frontmatter block.");
+  const rawData = body.slice(0, match.index);
+  const parsed = rawData.trim() === "" ? {} : (YAML.parse(rawData) as unknown);
   if (!isRecord(parsed)) throw new Error("YAML frontmatter must be an object.");
-  return { data: parsed, content: normalized.slice(end + 5).trim() };
+  return { data: parsed, content: body.slice(match.index + match[0].length).trim() };
 }
 
 export function parseSkill(source: string): { data: SkillFrontmatter; content: string } {

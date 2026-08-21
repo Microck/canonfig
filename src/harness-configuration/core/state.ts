@@ -35,6 +35,11 @@ export async function writeState(root: string, state: CanonfigState): Promise<vo
   }
   await fs.mkdir(path.dirname(statePath), { recursive: true });
   const temporary = `${statePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  await fs.rename(temporary, statePath);
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    await fs.rename(temporary, statePath);
+  } catch (error) {
+    try { await fs.rm(temporary, { force: true }); } catch { /* Preserve the original state write error. */ }
+    throw error;
+  }
 }

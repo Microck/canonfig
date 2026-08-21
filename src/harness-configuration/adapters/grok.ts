@@ -1,4 +1,4 @@
-import type { HarnessAdapter, DesiredArtifact } from "../core/types.ts";
+import type { DesiredArtifact, Diagnostic, HarnessAdapter } from "../core/types.ts";
 import { descriptor } from "./descriptor.ts";
 import {
   agentDocuments,
@@ -6,6 +6,8 @@ import {
   claudeStyleHooks,
   commandDocuments,
   commandMarkdown,
+  enabledHooks,
+  GROK_EVENT_MAP,
   grokMcpToml,
   ruleDocuments,
   skillArtifacts,
@@ -23,19 +25,21 @@ export const grokAdapter: HarnessAdapter = {
   ),
   async build(context) {
     const artifacts: DesiredArtifact[] = [];
-    const diagnostics = [];
+    const diagnostics: Diagnostic[] = [];
     artifacts.push(...await skillArtifacts(context, ".grok/skills", "grok-build"));
 
     const mcp = grokMcpToml(context);
     if (mcp) artifacts.push({ kind: "toml", path: ".grok/config.toml", owner: "grok-build", blocks: [{ marker: "mcp-servers", content: mcp }] });
 
-    if (context.config.hooks.length) {
-      const compiled = claudeStyleHooks(context);
+    if (enabledHooks(context).length > 0) {
+      const compiled = claudeStyleHooks(context, GROK_EVENT_MAP);
       diagnostics.push(...compiled.diagnostics);
-      artifacts.push({
-        kind: "json", path: ".grok/hooks/canonfig.json", owner: "grok-build", rootDefaults: { version: 1 },
-        operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
-      });
+      if (Object.keys(compiled.hooks).length > 0) {
+        artifacts.push({
+          kind: "json", path: ".grok/hooks/canonfig.json", owner: "grok-build", rootDefaults: { version: 1 },
+          operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
+        });
+      }
     }
 
     for (const { agent, content } of await agentDocuments(context)) {
@@ -45,6 +49,16 @@ export const grokAdapter: HarnessAdapter = {
       artifacts.push({ kind: "replace", path: `.grok/commands/${command.id}.md`, owner: "grok-build", content: commandMarkdown(command, content) });
     }
     for (const { rule, content } of await ruleDocuments(context)) {
+      if (rule.paths.length > 0) {
+        diagnostics.push({
+          level: "warning",
+          code: "RULE_SCOPE_LOST",
+          target: "grok-build",
+          path: `.canonfig/${rule.file}`,
+          message: `Grok project rules cannot preserve Canonfig's path scope for ${rule.id}; the native rule file was skipped and the scoped AGENTS.md bridge remains authoritative.`,
+        });
+        continue;
+      }
       artifacts.push({ kind: "replace", path: `.grok/rules/${rule.id}.md`, owner: "grok-build", content });
     }
     return { artifacts, diagnostics };

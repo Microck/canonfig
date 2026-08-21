@@ -82,8 +82,8 @@ export function unapplyPrevious(
     cleanup.kind.startsWith("json-")
   );
   let jsonDocument: Record<string, unknown> | undefined;
-  if (jsonCleanups.length > 0 && !(output instanceof Uint8Array)) {
-    jsonDocument = parseJsonDocument(output ?? "{}", conflicts);
+  if (jsonCleanups.length > 0 && typeof output === "string" && output.trim() !== "") {
+    jsonDocument = parseJsonDocument(output, conflicts);
   }
 
   for (const cleanup of previous.cleanup) {
@@ -120,6 +120,6 @@ export function unapplyPrevious(
     }
   }
 
-  if (jsonDocument !== undefined) output = serializeJsonDocument(jsonDocument);
+  if (jsonDocument !== undefined && typeof output === "string") output = serializeJsonDocument(jsonDocument);
   return output;
 }

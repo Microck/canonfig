@@ -3,16 +3,18 @@ import { descriptor } from "./descriptor.ts";
 import {
   agentDocuments,
   commandSkillArtifacts,
+  enabledHooks,
+  hasEnabledMcpServers,
   ruleDocuments,
   ruleMarkdown,
+  skillArtifacts,
   standardMcpMap,
+  standardMcpProjectionDiagnostics,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
-import { ampPluginSource } from "../templates/runtime.ts";
+import { AMP_PLUGIN_EVENT_MAP, ampPluginSource } from "../templates/runtime.ts";
 
-const AMP_PLUGIN_EVENTS = new Set([
-  "before_tool", "after_tool", "session_start", "before_agent", "after_agent",
-]);
+const AMP_PLUGIN_EVENTS = new Set(Object.keys(AMP_PLUGIN_EVENT_MAP));
 
 export const ampAdapter: HarnessAdapter = {
   descriptor: descriptor(
@@ -43,7 +45,8 @@ export const ampAdapter: HarnessAdapter = {
     const artifacts: DesiredArtifact[] = [];
     const diagnostics: Diagnostic[] = [];
 
-    if (Object.keys(context.config.mcp.servers).length > 0) {
+    if (hasEnabledMcpServers(context)) {
+      diagnostics.push(...standardMcpProjectionDiagnostics(context, "amp", false));
       artifacts.push({
         kind: "json",
         path: ".amp/settings.json",
@@ -58,23 +61,25 @@ export const ampAdapter: HarnessAdapter = {
     }
 
     const agents = await agentDocuments(context);
-    if (context.config.hooks.length > 0 || agents.length > 0) {
-      for (const hook of context.config.hooks) {
-        if (hook.enabled && !AMP_PLUGIN_EVENTS.has(hook.event)) {
-          diagnostics.push({
-            level: "warning",
-            code: "HOOK_EVENT_UNSUPPORTED",
-            target: "amp",
-            message: `Amp's generated plugin cannot map hook event ${hook.event}; it was skipped.`,
-          });
-        }
+    const hooks = enabledHooks(context);
+    const supportedHooks = hooks.filter((hook) => AMP_PLUGIN_EVENTS.has(hook.event));
+    for (const hook of hooks) {
+      if (!AMP_PLUGIN_EVENTS.has(hook.event)) {
+        diagnostics.push({
+          level: "warning",
+          code: "HOOK_EVENT_UNSUPPORTED",
+          target: "amp",
+          message: `Amp's generated plugin cannot map hook event ${hook.event}; it was skipped.`,
+        });
       }
+    }
+    if (supportedHooks.length > 0 || agents.length > 0) {
       artifacts.push({
         kind: "replace",
         path: ".amp/plugins/canonfig.ts",
         owner: "amp",
         content: ampPluginSource(
-          context.config.hooks,
+          supportedHooks,
           agents.map(({ agent, content }) => ({ agent, content, tools: nativeTools("amp", agent) })),
         ),
       });
@@ -89,7 +94,22 @@ export const ampAdapter: HarnessAdapter = {
       });
     }
 
-    artifacts.push(...await commandSkillArtifacts(context, ".agents/skills", "amp"));
+    const commonSkillPaths = new Set(
+      (await skillArtifacts(context, ".agents/skills", "common")).map((artifact) => artifact.path),
+    );
+    for (const artifact of await commandSkillArtifacts(context, ".agents/skills", "amp")) {
+      if (commonSkillPaths.has(artifact.path)) {
+        diagnostics.push({
+          level: "error",
+          code: "TRANSLATED_SKILL_COLLISION",
+          target: "amp",
+          path: artifact.path,
+          message: `Amp command output collides with a canonical skill at ${artifact.path}; rename the skill or command.`,
+        });
+      } else {
+        artifacts.push(artifact);
+      }
+    }
     return { artifacts, diagnostics };
   },
 };

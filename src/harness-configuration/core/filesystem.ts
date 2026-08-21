@@ -30,9 +30,14 @@ export async function walkFiles(root: string): Promise<string[]> {
 export async function atomicWrite(filePath: string, content: string | Uint8Array, mode?: number): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
-  await fs.writeFile(temporary, content, mode === undefined ? undefined : { mode });
-  if (mode !== undefined) await fs.chmod(temporary, mode);
-  await fs.rename(temporary, filePath);
+  try {
+    await fs.writeFile(temporary, content, mode === undefined ? undefined : { mode });
+    if (mode !== undefined) await fs.chmod(temporary, mode);
+    await fs.rename(temporary, filePath);
+  } catch (error) {
+    try { await fs.rm(temporary, { force: true }); } catch { /* Preserve the original write error. */ }
+    throw error;
+  }
 }
 
 export async function removeFileAndEmptyParents(filePath: string, stopAt: string): Promise<void> {

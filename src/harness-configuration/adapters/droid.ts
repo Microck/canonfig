@@ -1,4 +1,4 @@
-import type { HarnessAdapter, DesiredArtifact } from "../core/types.ts";
+import type { DesiredArtifact, Diagnostic, HarnessAdapter } from "../core/types.ts";
 import { descriptor } from "./descriptor.ts";
 import {
   agentDocuments,
@@ -6,8 +6,11 @@ import {
   claudeStyleHooks,
   commandDocuments,
   commandMarkdown,
+  enabledHooks,
+  hasEnabledMcpServers,
   jsonMcpArtifact,
   skillArtifacts,
+  standardMcpProjectionDiagnostics,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
 
@@ -21,16 +24,21 @@ export const droidAdapter: HarnessAdapter = {
   ),
   async build(context) {
     const artifacts: DesiredArtifact[] = [];
-    const diagnostics = [];
+    const diagnostics: Diagnostic[] = [];
     artifacts.push(...await skillArtifacts(context, ".factory/skills", "factory-droid"));
-    if (Object.keys(context.config.mcp.servers).length) artifacts.push(jsonMcpArtifact(".factory/mcp.json", "factory-droid", context));
-    if (context.config.hooks.length) {
+    if (hasEnabledMcpServers(context)) {
+      diagnostics.push(...standardMcpProjectionDiagnostics(context, "factory-droid"));
+      artifacts.push(jsonMcpArtifact(".factory/mcp.json", "factory-droid", context));
+    }
+    if (enabledHooks(context).length > 0) {
       const compiled = claudeStyleHooks(context);
       diagnostics.push(...compiled.diagnostics);
-      artifacts.push({
-        kind: "json", path: ".factory/hooks.json", owner: "factory-droid",
-        operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
-      });
+      if (Object.keys(compiled.hooks).length > 0) {
+        artifacts.push({
+          kind: "json", path: ".factory/hooks.json", owner: "factory-droid",
+          operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
+        });
+      }
     }
     for (const { agent, content } of await agentDocuments(context)) {
       artifacts.push({ kind: "replace", path: `.factory/droids/${agent.id}.md`, owner: "factory-droid", content: agentMarkdown(agent, content, nativeTools("factory-droid", agent)) });

@@ -194,25 +194,54 @@ export async function createPlan(
   return { root, targets, entries: entries.sort((a, b) => a.path.localeCompare(b.path)), diagnostics, nextState };
 }
 
-interface FileSnapshot {
+interface MissingFileSnapshot {
   path: string;
-  content: Uint8Array | undefined;
-  mode: number | undefined;
+  kind: "missing";
 }
+
+interface RegularFileSnapshot {
+  path: string;
+  kind: "file";
+  content: Uint8Array;
+  mode: number;
+}
+
+interface SymlinkSnapshot {
+  path: string;
+  kind: "symlink";
+  linkTarget: string;
+}
+
+type FileSnapshot = MissingFileSnapshot | RegularFileSnapshot | SymlinkSnapshot;
 
 async function snapshotFile(root: string, relativePath: string): Promise<FileSnapshot> {
   const absolute = resolveInside(root, relativePath);
-  const content = await readOptionalFile(absolute);
-  if (content === undefined) return { path: relativePath, content: undefined, mode: undefined };
-  const stats = await fs.stat(absolute);
-  return { path: relativePath, content, mode: stats.mode & 0o777 };
+  try {
+    const stats = await fs.lstat(absolute);
+    if (stats.isSymbolicLink()) {
+      return { path: relativePath, kind: "symlink", linkTarget: await fs.readlink(absolute) };
+    }
+    return {
+      path: relativePath,
+      kind: "file",
+      content: await fs.readFile(absolute),
+      mode: stats.mode & 0o777,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { path: relativePath, kind: "missing" };
+    throw error;
+  }
 }
 
 async function restoreSnapshots(root: string, snapshots: readonly FileSnapshot[]): Promise<void> {
   for (const snapshot of [...snapshots].reverse()) {
     const absolute = resolveInside(root, snapshot.path);
-    if (snapshot.content === undefined) {
+    if (snapshot.kind === "missing") {
       await removeFileAndEmptyParents(absolute, root);
+    } else if (snapshot.kind === "symlink") {
+      await fs.mkdir(path.dirname(absolute), { recursive: true });
+      await fs.rm(absolute, { force: true });
+      await fs.symlink(snapshot.linkTarget, absolute);
     } else {
       await atomicWrite(absolute, snapshot.content, snapshot.mode);
     }

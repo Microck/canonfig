@@ -202,7 +202,7 @@ export function findTomlSection(
     if (!target.test(lines[index] ?? "")) continue;
     let end = lines.length;
     for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
-      if (/^\s*\[\[?.+\]\]?\]\s*(?:#.*)?$/u.test(lines[cursor] ?? "")) {
+      if (/^\s*\[\[?.+?\]\]?\s*(?:#.*)?$/u.test(lines[cursor] ?? "")) {
         end = cursor;
         break;
       }

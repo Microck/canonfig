@@ -1,4 +1,4 @@
-import type { HarnessAdapter, DesiredArtifact } from "../core/types.ts";
+import type { DesiredArtifact, Diagnostic, HarnessAdapter } from "../core/types.ts";
 import { descriptor } from "./descriptor.ts";
 import {
   agentDocuments,
@@ -6,9 +6,12 @@ import {
   claudeStyleHooks,
   commandDocuments,
   commandMarkdown,
+  enabledHooks,
+  enabledMcpServerEntries,
   ruleDocuments,
   ruleMarkdown,
   skillArtifacts,
+  standardMcpProjectionDiagnostics,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
 
@@ -26,22 +29,33 @@ export const claudeAdapter: HarnessAdapter = {
       kind: "managed-text", path: "CLAUDE.md", owner: "claude-code", marker: "instructions-import",
       comments: "html", placement: "start", content: "@AGENTS.md",
     }];
-    const diagnostics = [];
+    const diagnostics: Diagnostic[] = standardMcpProjectionDiagnostics(context, "claude-code");
 
     artifacts.push(...await skillArtifacts(context, ".claude/skills", "claude-code"));
     for (const { rule, content } of await ruleDocuments(context)) {
       artifacts.push({ kind: "replace", path: `.claude/rules/${rule.id}.md`, owner: "claude-code", content: ruleMarkdown(rule, content, rule.paths.length ? { paths: rule.paths } : {}) });
     }
-    if (context.config.hooks.length) {
+    if (enabledHooks(context).length > 0) {
       const compiled = claudeStyleHooks(context);
       diagnostics.push(...compiled.diagnostics);
-      artifacts.push({
-        kind: "json", path: ".claude/settings.json", owner: "claude-code",
-        operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
-      });
+      if (Object.keys(compiled.hooks).length > 0) {
+        artifacts.push({
+          kind: "json", path: ".claude/settings.json", owner: "claude-code",
+          operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
+        });
+      }
     }
     for (const { agent, content } of await agentDocuments(context)) {
-      artifacts.push({ kind: "replace", path: `.claude/agents/${agent.id}.md`, owner: "claude-code", content: agentMarkdown(agent, content, nativeTools("claude-code", agent)) });
+      const tools = nativeTools("claude-code", agent);
+      if (agent.tools.includes("mcp")) {
+        tools.push(...enabledMcpServerEntries(context).map(([name]) => `mcp__${name}`));
+      }
+      artifacts.push({
+        kind: "replace",
+        path: `.claude/agents/${agent.id}.md`,
+        owner: "claude-code",
+        content: agentMarkdown(agent, content, [...new Set(tools)]),
+      });
     }
     for (const { command, content } of await commandDocuments(context)) {
       artifacts.push({ kind: "replace", path: `.claude/commands/${command.id}.md`, owner: "claude-code", content: commandMarkdown(command, content) });

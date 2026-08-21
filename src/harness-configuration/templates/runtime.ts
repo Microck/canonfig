@@ -7,6 +7,24 @@ export interface AgentDocument {
   tools?: string[];
 }
 
+export const AMP_PLUGIN_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
+  before_tool: "tool.call",
+  after_tool: "tool.result",
+  session_start: "session.start",
+  before_agent: "agent.start",
+  after_agent: "agent.end",
+};
+
+export const PI_PLUGIN_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
+  before_tool: "tool_call",
+  after_tool: "tool_result",
+  session_start: "session_start",
+  session_end: "session_shutdown",
+  before_agent: "before_agent_start",
+  before_compact: "session_before_compact",
+  stop: "agent_end",
+};
+
 export function hookRegistryJson(hooks: Hook[]): string {
   return `${JSON.stringify({ version: 1, hooks }, null, 2)}\n`;
 }
@@ -20,16 +38,20 @@ import { spawnSync } from "node:child_process";
 
 const runtimeDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(runtimeDir, "../..");
-const registry = JSON.parse(fs.readFileSync(path.join(runtimeDir, "hooks.json"), "utf8"));
+let registry;
+try { registry = JSON.parse(fs.readFileSync(path.join(runtimeDir, "hooks.json"), "utf8")); }
+catch { process.exit(0); }
+const hooks = Array.isArray(registry?.hooks) ? registry.hooks : [];
 const args = process.argv.slice(2);
 const arg = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
 const hookId = arg("--hook");
 const target = arg("--target") || "unknown";
 const event = arg("--event") || "unknown";
-const hook = registry.hooks.find((candidate) => candidate.id === hookId && candidate.enabled !== false);
+const hook = hooks.find((candidate) => candidate.id === hookId && candidate.enabled !== false);
 if (!hook) process.exit(0);
 
-const rawText = fs.readFileSync(0, "utf8");
+let rawText = "";
+try { rawText = fs.readFileSync(0, "utf8"); } catch { rawText = ""; }
 let raw;
 try { raw = rawText.trim() ? JSON.parse(rawText) : {}; } catch { raw = { raw: rawText }; }
 const toolName = String(raw.tool_name ?? raw.toolName ?? raw.tool ?? raw.name ?? raw.input?.tool ?? raw.input?.toolName ?? "");
@@ -88,9 +110,9 @@ const result = spawnSync(command, commandArgs, {
 
 let output;
 try { output = result.stdout?.trim() ? JSON.parse(result.stdout) : undefined; } catch { output = undefined; }
-const reason = String(output?.reason ?? result.stderr?.trim() ?? \`Canonfig hook \${hook.id} failed\`);
+const reason = String(output?.reason ?? result.stderr?.trim() ?? result.error?.message ?? \`Canonfig hook \${hook.id} failed\`);
 const denied = result.status === 2 || output?.decision === "deny" || output?.permission === "deny" || output?.block === true;
-const failed = result.error || (result.status !== null && result.status !== 0 && result.status !== 2);
+const failed = result.error || result.status === null || (result.status !== 0 && result.status !== 2);
 if (denied || (failed && hook.onFailure === "block")) {
   console.error(reason);
   process.exit(2);
@@ -107,7 +129,7 @@ function pluginPreamble(target: TargetId): string {
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 
 function findRoot() {
   let current = path.dirname(fileURLToPath(import.meta.url));
@@ -119,18 +141,26 @@ function findRoot() {
   }
 }
 const root = findRoot();
-function runCanonfig(hookId, event, payload) {
-  const runner = path.join(root, ".canonfig", ".runtime", "hook-runner.mjs");
-  const result = spawnSync(process.execPath, [runner, "--hook", hookId, "--target", "${target}", "--event", event], {
-    cwd: root,
-    input: JSON.stringify(payload ?? {}),
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
+function runCanonfig(hookId, event, payload, timeoutMs) {
+  return new Promise((resolve) => {
+    const runner = path.join(root, ".canonfig", ".runtime", "hook-runner.mjs");
+    const child = execFile(
+      process.execPath,
+      [runner, "--hook", hookId, "--target", "${target}", "--event", event],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: Math.max(1, timeoutMs + 1000),
+        maxBuffer: 16 * 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        const reason = String(stderr || stdout || error?.message || "Blocked by Canonfig hook").trim();
+        resolve({ blocked: error !== null, reason });
+      },
+    );
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(JSON.stringify(payload ?? {}));
   });
-  return {
-    blocked: result.status === 2,
-    reason: (result.stderr || result.stdout || "Blocked by Canonfig hook").trim(),
-  };
 }
 `;
 }
@@ -138,17 +168,12 @@ function runCanonfig(hookId, event, payload) {
 export function ampPluginSource(hooks: Hook[], agents: AgentDocument[] = []): string {
   const enabled = hooks.filter((hook) => hook.enabled);
   const registrations = enabled.map((hook) => {
-    const event = hook.event === "before_tool" ? "tool.call"
-      : hook.event === "after_tool" ? "tool.result"
-      : hook.event === "session_start" ? "session.start"
-      : hook.event === "before_agent" ? "agent.start"
-      : hook.event === "after_agent" ? "agent.end"
-      : undefined;
+    const event = AMP_PLUGIN_EVENT_MAP[hook.event];
     if (!event) return "";
     const rejection = event === "tool.call"
       ? "if (result.blocked) return { action: \"reject-and-continue\", message: result.reason };"
       : "if (result.blocked) throw new Error(result.reason);";
-    return `  amp.on(${JSON.stringify(event)}, async (payload) => { const result = runCanonfig(${JSON.stringify(hook.id)}, ${JSON.stringify(hook.event)}, payload); ${rejection} });`;
+    return `  amp.on(${JSON.stringify(event)}, async (payload) => { const result = await runCanonfig(${JSON.stringify(hook.id)}, ${JSON.stringify(hook.event)}, payload, ${hook.timeoutMs}); ${rejection} });`;
   }).filter(Boolean);
 
   const agentRegistrations = agents.flatMap(({ agent, content, tools }) => {
@@ -182,22 +207,13 @@ export function ampPluginSource(hooks: Hook[], agents: AgentDocument[] = []): st
 }
 
 export function piPluginSource(target: "pi" | "oh-my-pi", hooks: Hook[]): string {
-  const eventMap: Partial<Record<Hook["event"], string>> = {
-    before_tool: "tool_call",
-    after_tool: "tool_result",
-    session_start: "session_start",
-    session_end: "session_shutdown",
-    before_agent: "before_agent_start",
-    before_compact: "session_before_compact",
-    stop: "agent_end",
-  };
   const registrations = hooks.filter((hook) => hook.enabled).map((hook) => {
-    const event = eventMap[hook.event];
+    const event = PI_PLUGIN_EVENT_MAP[hook.event];
     if (!event) return "";
     const result = hook.event === "before_tool"
       ? "if (result.blocked) return { block: true, reason: result.reason };"
       : "if (result.blocked) throw new Error(result.reason);";
-    return `  pi.on(${JSON.stringify(event)}, async (payload) => { const result = runCanonfig(${JSON.stringify(hook.id)}, ${JSON.stringify(hook.event)}, payload); ${result} });`;
+    return `  pi.on(${JSON.stringify(event)}, async (payload) => { const result = await runCanonfig(${JSON.stringify(hook.id)}, ${JSON.stringify(hook.event)}, payload, ${hook.timeoutMs}); ${result} });`;
   }).filter(Boolean).join("\n");
   const packageName = target === "pi" ? "@earendil-works/pi-coding-agent" : "@oh-my-pi/pi-coding-agent";
   return `${pluginPreamble(target)}\nimport type { ExtensionAPI } from ${JSON.stringify(packageName)};\n\nexport default function canonfig(pi: ExtensionAPI) {\n${registrations}\n}\n`;
@@ -206,7 +222,7 @@ export function piPluginSource(target: "pi" | "oh-my-pi", hooks: Hook[]): string
 export function openCodePluginSource(hooks: Hook[]): string {
   const before = hooks.filter((hook) => hook.enabled && hook.event === "before_tool");
   const after = hooks.filter((hook) => hook.enabled && hook.event === "after_tool");
-  const beforeBody = before.map((hook) => `      { const result = runCanonfig(${JSON.stringify(hook.id)}, "before_tool", { ...input, ...output }); if (result.blocked) throw new Error(result.reason); }`).join("\n");
-  const afterBody = after.map((hook) => `      { const result = runCanonfig(${JSON.stringify(hook.id)}, "after_tool", { ...input, ...output }); if (result.blocked) throw new Error(result.reason); }`).join("\n");
+  const beforeBody = before.map((hook) => `      { const result = await runCanonfig(${JSON.stringify(hook.id)}, "before_tool", { ...input, ...output }, ${hook.timeoutMs}); if (result.blocked) throw new Error(result.reason); }`).join("\n");
+  const afterBody = after.map((hook) => `      { const result = await runCanonfig(${JSON.stringify(hook.id)}, "after_tool", { ...input, ...output }, ${hook.timeoutMs}); if (result.blocked) throw new Error(result.reason); }`).join("\n");
   return `${pluginPreamble("opencode")}\nexport const CanonfigPlugin = async () => ({\n  "tool.execute.before": async (input, output) => {\n${beforeBody}\n  },\n  "tool.execute.after": async (input, output) => {\n${afterBody}\n  },\n});\n`;
 }

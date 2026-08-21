@@ -4,7 +4,14 @@ import { CanonfigError } from "./errors.ts";
 export function toPosix(value: string): string { return value.replaceAll("\\", "/").split(path.sep).join("/"); }
 export function assertSafeRelativePath(value: string): string {
   const normalized = path.posix.normalize(toPosix(value));
-  if (normalized === "." || normalized.startsWith("../") || normalized.includes("/../") || path.posix.isAbsolute(normalized)) {
+  if (
+    normalized === "."
+    || normalized === ".."
+    || normalized.startsWith("../")
+    || normalized.includes("/../")
+    || path.posix.isAbsolute(normalized)
+    || /^[A-Za-z]:\//u.test(normalized)
+  ) {
     throw new CanonfigError("UNSAFE_PATH", `Unsafe repository-relative path: ${value}`);
   }
   return normalized;

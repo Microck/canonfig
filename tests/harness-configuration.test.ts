@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -12,12 +12,27 @@ import {
   applyPlan,
   createPlan,
 } from "../src/harness-configuration/core/planner.ts";
+import { parseMarkdownDocument } from "../src/harness-configuration/core/frontmatter.ts";
+import { applyJsonArtifact } from "../src/harness-configuration/core/render-json.ts";
+import { unapplyPrevious } from "../src/harness-configuration/core/render-cleanup.ts";
+import { findTomlSection } from "../src/harness-configuration/core/render-utils.ts";
+import { scaffoldProject } from "../src/harness-configuration/core/scaffold.ts";
 import {
   TARGET_IDS,
+  type ArtifactState,
+  type Plan,
   type TargetId,
 } from "../src/harness-configuration/core/types.ts";
 
 const temporaryRoots: string[] = [];
+
+const temporaryRoot = async (prefix = "canonfig-harness-"): Promise<string> => {
+  const root = await import("node:fs/promises").then(({ mkdtemp }) =>
+    mkdtemp(path.join(tmpdir(), prefix))
+  );
+  temporaryRoots.push(root);
+  return root;
+};
 
 const write = async (
   root: string,
@@ -32,10 +47,7 @@ const write = async (
 const fixture = async (
   targets: ReadonlyArray<TargetId> = TARGET_IDS,
 ): Promise<string> => {
-  const root = await import("node:fs/promises").then(({ mkdtemp }) =>
-    mkdtemp(path.join(tmpdir(), "canonfig-harness-"))
-  );
-  temporaryRoots.push(root);
+  const root = await temporaryRoot();
   const config = {
     version: 1,
     project: { name: "fixture" },
@@ -210,5 +222,113 @@ describe("harness configuration compiler", () => {
       .map((adapter) => adapter.descriptor.id)
       .sort();
     expect(registered).toEqual([...TARGET_IDS].sort());
+  });
+
+  it.skipIf(process.platform === "win32")("restores symlink identity when apply rolls back", async () => {
+    const root = await temporaryRoot();
+    await write(root, "target.txt", "original\n");
+    await symlink("target.txt", path.join(root, "link.txt"));
+
+    const plan: Plan = {
+      root,
+      targets: ["codex"],
+      diagnostics: [],
+      entries: [
+        { path: "link.txt", owner: "common", action: "update", after: "changed\n", content: "changed\n" },
+        { path: "later.txt", owner: "common", action: "create" },
+      ],
+      nextState: {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        canonfigVersion: "1",
+        artifacts: {},
+      },
+    };
+
+    await expect(applyPlan(plan)).rejects.toThrow("Missing output content");
+    expect((await lstat(path.join(root, "link.txt"))).isSymbolicLink()).toBe(true);
+    await expect(readlink(path.join(root, "link.txt"))).resolves.toBe("target.txt");
+    await expect(readFile(path.join(root, "target.txt"), "utf8")).resolves.toBe("original\n");
+  });
+
+  it("accepts empty frontmatter and a closing fence at EOF", () => {
+    expect(parseMarkdownDocument("---\n---")).toEqual({ data: {}, content: "" });
+    expect(parseMarkdownDocument("---\nname: test\n---")).toEqual({ data: { name: "test" }, content: "" });
+  });
+
+  it("stops TOML sections at the next single-bracket table", () => {
+    expect(findTomlSection(["[one]", "value = 1", "[two]", "value = 2"], "one"))
+      .toEqual({ header: 0, end: 2 });
+  });
+
+  it("conflicts instead of replacing wrong-type managed JSON containers", () => {
+    const mapConflicts: string[] = [];
+    const mapped = applyJsonArtifact(
+      '{"mcpServers":[]}\n',
+      {
+        kind: "json",
+        path: ".mcp.json",
+        owner: "common",
+        operations: [{ kind: "managed-map", path: ["mcpServers"], entries: { local: {} } }],
+      },
+      false,
+      mapConflicts,
+    );
+    expect(mapConflicts).toHaveLength(1);
+    expect(JSON.parse(mapped.text)).toEqual({ mcpServers: [] });
+
+    const arrayConflicts: string[] = [];
+    const arrayed = applyJsonArtifact(
+      '{"packages":{}}\n',
+      {
+        kind: "json",
+        path: "settings.json",
+        owner: "common",
+        operations: [{ kind: "managed-array", path: ["packages"], values: ["pkg"] }],
+      },
+      false,
+      arrayConflicts,
+    );
+    expect(arrayConflicts).toHaveLength(1);
+    expect(JSON.parse(arrayed.text)).toEqual({ packages: {} });
+  });
+
+  it("does not recreate absent or empty JSON during cleanup", () => {
+    const previous: ArtifactState = {
+      owner: "common",
+      hash: "unused",
+      existedBefore: true,
+      cleanup: [{
+        kind: "json-managed-map",
+        path: ["mcpServers"],
+        entries: { local: {} },
+        originals: { local: { existed: false } },
+      }],
+    };
+    const missingConflicts: string[] = [];
+    expect(unapplyPrevious(undefined, previous, false, missingConflicts)).toBeUndefined();
+    expect(missingConflicts).toEqual([]);
+
+    const emptyConflicts: string[] = [];
+    expect(unapplyPrevious("", previous, false, emptyConflicts)).toBe("");
+    expect(emptyConflicts).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects scaffold writes through symlink escapes", async () => {
+    const root = await temporaryRoot("canonfig-scaffold-root-");
+    const outside = await temporaryRoot("canonfig-scaffold-outside-");
+    await symlink(outside, path.join(root, ".canonfig"), "dir");
+
+    await expect(scaffoldProject(root, { force: true })).rejects.toMatchObject({ code: "SYMLINK_ESCAPE" });
+    await expect(readFile(path.join(outside, "harness.yaml"), "utf8")).rejects.toThrow();
+
+    await rm(path.join(root, ".canonfig"));
+    await mkdir(path.join(root, ".canonfig"), { recursive: true });
+    const outsideTarget = path.join(outside, "existing.yaml");
+    await writeFile(outsideTarget, "keep\n", "utf8");
+    await symlink(outsideTarget, path.join(root, ".canonfig", "harness.yaml"));
+
+    await expect(scaffoldProject(root, { force: true })).rejects.toMatchObject({ code: "SYMLINK_ESCAPE" });
+    await expect(readFile(outsideTarget, "utf8")).resolves.toBe("keep\n");
   });
 });
