@@ -5,6 +5,7 @@ import {
   commandDocuments,
   commandMarkdown,
   enabledHooks,
+  enabledMcpServerEntries,
   openCodeMcpMap,
   skillArtifacts,
 } from "./shared.ts";
@@ -72,11 +73,15 @@ export const opencodeAdapter: HarnessAdapter = {
     }
 
     const readOnlyTools = new Set(nativeToolsForCapabilities("opencode", ["read", "search"]));
+    const mcpServerNames = enabledMcpServerEntries(context).map(([name]) => name);
     for (const { agent, content } of await agentDocuments(context)) {
-      const permissions = Object.fromEntries(nativeTools("opencode", agent).map((tool) => [
+      const permissions: Record<string, string> = Object.fromEntries(nativeTools("opencode", agent).map((tool) => [
         tool,
         agent.writable || readOnlyTools.has(tool) ? "allow" : "deny",
       ]));
+      for (const serverName of mcpServerNames) {
+        permissions[`${serverName}_*`] = agent.tools.includes("mcp") ? "allow" : "deny";
+      }
       artifacts.push({
         kind: "replace",
         path: `.opencode/agents/${agent.id}.md`,
