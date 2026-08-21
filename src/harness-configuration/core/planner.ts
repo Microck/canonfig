@@ -234,17 +234,27 @@ async function snapshotFile(root: string, relativePath: string): Promise<FileSna
 }
 
 async function restoreSnapshots(root: string, snapshots: readonly FileSnapshot[]): Promise<void> {
+  const failures: Array<{ path: string; error: unknown }> = [];
   for (const snapshot of [...snapshots].reverse()) {
     const absolute = resolveInside(root, snapshot.path);
-    if (snapshot.kind === "missing") {
-      await removeFileAndEmptyParents(absolute, root);
-    } else if (snapshot.kind === "symlink") {
-      await fs.mkdir(path.dirname(absolute), { recursive: true });
-      await fs.rm(absolute, { force: true });
-      await fs.symlink(snapshot.linkTarget, absolute);
-    } else {
-      await atomicWrite(absolute, snapshot.content, snapshot.mode);
+    try {
+      if (snapshot.kind === "missing") {
+        await removeFileAndEmptyParents(absolute, root);
+      } else if (snapshot.kind === "symlink") {
+        await fs.mkdir(path.dirname(absolute), { recursive: true });
+        await fs.rm(absolute, { force: true });
+        await fs.symlink(snapshot.linkTarget, absolute);
+      } else {
+        await atomicWrite(absolute, snapshot.content, snapshot.mode);
+      }
+    } catch (error) {
+      failures.push({ path: snapshot.path, error });
     }
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      `Failed to restore ${failures.length} snapshot(s): ${failures.map(({ path: filePath, error }) => `${filePath}: ${String(error)}`).join("; ")}`,
+    );
   }
 }
 
