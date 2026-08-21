@@ -9,6 +9,7 @@ import {
   hasEnabledMcpServers,
   ruleDocuments,
   ruleMarkdown,
+  skillArtifacts,
 } from "./shared.ts";
 
 export const antigravityAdapter: HarnessAdapter = {
@@ -42,8 +43,28 @@ export const antigravityAdapter: HarnessAdapter = {
     for (const { rule, content } of await ruleDocuments(context)) {
       artifacts.push({ kind: "replace", path: `.agents/rules/${rule.id}.md`, owner: "antigravity", content: ruleMarkdown(rule, content, { trigger: rule.paths.length ? "glob" : "always" }) });
     }
-    artifacts.push(...await agentSkillArtifacts(context, ".agents/skills", "antigravity"));
-    artifacts.push(...await commandSkillArtifacts(context, ".agents/skills", "antigravity"));
+
+    const occupiedSkillPaths = new Set(
+      (await skillArtifacts(context, ".agents/skills", "common")).map((artifact) => artifact.path),
+    );
+    const translatedSkills = [
+      ...await agentSkillArtifacts(context, ".agents/skills", "antigravity"),
+      ...await commandSkillArtifacts(context, ".agents/skills", "antigravity"),
+    ];
+    for (const artifact of translatedSkills) {
+      if (occupiedSkillPaths.has(artifact.path)) {
+        diagnostics.push({
+          level: "error",
+          code: "TRANSLATED_SKILL_COLLISION",
+          target: "antigravity",
+          path: artifact.path,
+          message: `Antigravity translated skill output collides at ${artifact.path}; rename the canonical skill, agent, or command.`,
+        });
+        continue;
+      }
+      occupiedSkillPaths.add(artifact.path);
+      artifacts.push(artifact);
+    }
     return { artifacts, diagnostics };
   },
 };
