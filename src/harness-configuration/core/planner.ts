@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { Buffer } from "node:buffer";
 import type {
@@ -193,6 +194,31 @@ export async function createPlan(
   return { root, targets, entries: entries.sort((a, b) => a.path.localeCompare(b.path)), diagnostics, nextState };
 }
 
+interface FileSnapshot {
+  path: string;
+  content: Uint8Array | undefined;
+  mode: number | undefined;
+}
+
+async function snapshotFile(root: string, relativePath: string): Promise<FileSnapshot> {
+  const absolute = resolveInside(root, relativePath);
+  const content = await readOptionalFile(absolute);
+  if (content === undefined) return { path: relativePath, content: undefined, mode: undefined };
+  const stats = await fs.stat(absolute);
+  return { path: relativePath, content, mode: stats.mode & 0o777 };
+}
+
+async function restoreSnapshots(root: string, snapshots: readonly FileSnapshot[]): Promise<void> {
+  for (const snapshot of [...snapshots].reverse()) {
+    const absolute = resolveInside(root, snapshot.path);
+    if (snapshot.content === undefined) {
+      await removeFileAndEmptyParents(absolute, root);
+    } else {
+      await atomicWrite(absolute, snapshot.content, snapshot.mode);
+    }
+  }
+}
+
 export async function applyPlan(plan: Plan): Promise<void> {
   const conflicts = plan.entries.filter((entry) => entry.action === "conflict");
   const errors = plan.diagnostics.filter((diagnostic) => diagnostic.level === "error");
@@ -200,19 +226,41 @@ export async function applyPlan(plan: Plan): Promise<void> {
     throw new CanonfigError("PLAN_CONFLICT", `Plan has ${conflicts.length} conflict(s) and ${errors.length} error diagnostic(s).`);
   }
 
-  for (const entry of plan.entries) {
+  const mutableEntries = plan.entries.filter((entry) =>
+    entry.action === "create" || entry.action === "update" || entry.action === "delete"
+  );
+  const snapshots: FileSnapshot[] = [];
+  for (const entry of mutableEntries) {
     const absolute = resolveInside(plan.root, entry.path);
     await assertRealPathInside(plan.root, absolute);
-    if (entry.action === "create" || entry.action === "update") {
-      if (entry.after === undefined && !entry.binary) {
-        throw new CanonfigError("PLAN_INVALID", `Missing output content for ${entry.path}`);
-      }
-      const content = entry.content ?? entry.after;
-      if (content === undefined) throw new CanonfigError("PLAN_INVALID", `Missing output content for ${entry.path}`);
-      await atomicWrite(absolute, content, entry.mode);
-    } else if (entry.action === "delete") {
-      await removeFileAndEmptyParents(absolute, plan.root);
-    }
+    snapshots.push(await snapshotFile(plan.root, entry.path));
   }
-  await writeState(plan.root, plan.nextState);
+
+  try {
+    for (const entry of mutableEntries) {
+      const absolute = resolveInside(plan.root, entry.path);
+      if (entry.action === "create" || entry.action === "update") {
+        if (entry.after === undefined && !entry.binary) {
+          throw new CanonfigError("PLAN_INVALID", `Missing output content for ${entry.path}`);
+        }
+        const content = entry.content ?? entry.after;
+        if (content === undefined) throw new CanonfigError("PLAN_INVALID", `Missing output content for ${entry.path}`);
+        await atomicWrite(absolute, content, entry.mode);
+      } else {
+        await removeFileAndEmptyParents(absolute, plan.root);
+      }
+    }
+    await writeState(plan.root, plan.nextState);
+  } catch (error) {
+    try {
+      await restoreSnapshots(plan.root, snapshots);
+    } catch (rollbackError) {
+      throw new CanonfigError(
+        "APPLY_ROLLBACK_FAILED",
+        `Harness apply failed and rollback also failed: ${String(rollbackError)}`,
+        error,
+      );
+    }
+    throw error;
+  }
 }
