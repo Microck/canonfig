@@ -87,9 +87,23 @@ export function applyJsonArtifact(
 ): { text: string; cleanup: CleanupInstruction[] } {
   const document = parseJsonDocument(input.trim() === "" ? "{}" : input, conflicts);
   const cleanup: CleanupInstruction[] = [];
+  const appliedRootDefaults: Record<string, unknown> = {};
+  const rootDefaultOriginals: JsonManagedMapCleanup["originals"] = {};
 
   for (const [key, value] of Object.entries(artifact.rootDefaults ?? {})) {
-    if (document[key] === undefined) document[key] = value;
+    if (document[key] === undefined) {
+      rootDefaultOriginals[key] = { existed: false };
+      document[key] = value;
+      appliedRootDefaults[key] = value;
+    }
+  }
+  if (Object.keys(appliedRootDefaults).length > 0) {
+    cleanup.push({
+      kind: "json-managed-map",
+      path: [],
+      entries: appliedRootDefaults,
+      originals: rootDefaultOriginals,
+    });
   }
 
   for (const operation of artifact.operations) {
