@@ -76,7 +76,11 @@ export function restoreJsonCleanup(
     else if (Array.isArray(filtered) && filtered.length > 0) next[event] = filtered;
     else if (original?.existed === true) next[event] = original.value;
   }
-  setAtPath(document, cleanup.path, next);
+  if (cleanup.pathExisted === false && Object.keys(next).length === 0) {
+    setAtPath(document, cleanup.path, undefined);
+  } else {
+    setAtPath(document, cleanup.path, next);
+  }
 }
 
 export function applyJsonArtifact(
@@ -224,6 +228,7 @@ export function applyJsonArtifact(
       marker: operation.marker,
       events: Object.keys(operation.hooks),
       originals,
+      pathExisted: existingValue !== undefined,
     });
   }
   return { text: serializeJsonDocument(document), cleanup };
