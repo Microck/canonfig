@@ -45,6 +45,7 @@ export const antigravityAdapter: HarnessAdapter = {
     }
 
     const commonSkills = await skillArtifacts(context, ".agents/skills", "common");
+    artifacts.push(...commonSkills);
     const occupiedSkillPaths = new Set(commonSkills.map((artifact) => artifact.path));
     const translatedSkills = [
       ...await agentSkillArtifacts(context, ".agents/skills", "antigravity"),
