@@ -351,7 +351,6 @@ try {
 
   const repositoryRoots = [
     "CONTEXT.md",
-    "GOAL.md",
     "README.md",
     "package.json",
     "package-lock.json",

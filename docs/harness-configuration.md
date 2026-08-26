@@ -59,12 +59,34 @@ entry or externally edited generated file.
 | `grok-build` | Grok Build CLI |
 | `antigravity` | Google Antigravity CLI |
 | `copilot-cli` | GitHub Copilot CLI |
+| `kimi` | Kimi Code CLI |
+| `kilo` | Kilo Code CLI |
+| `hermes` | Hermes Agent |
+| `qwen` | Qwen Code |
 
 Each adapter declares a verification date, documentation references, executable
 probes, feature support levels, and target-specific notes. Adapter code is pure:
 it converts the canonical model into desired artifacts and diagnostics. A
 shared planner owns collision detection, external-edit detection, path safety,
 atomic writes, cleanup, and idempotence.
+
+### Kimi, Kilo, Hermes, and Qwen mappings
+
+- Kimi uses `.kimi-code/mcp.json` and `.kimi-code/agents/`. It already scans
+  `.agents/skills`, so canonical skills remain shared. Canonical commands become
+  prefixed Agent Skills. Hooks and permanent permissions remain profile-scoped
+  in Kimi's user `config.toml` and are reported as lossy project mappings.
+- Kilo shares an OpenCode-family compiler with OpenCode. The adapter emits
+  `kilo.json` plus `.kilo/skills`, `.kilo/plugins`, `.kilo/agents`, and
+  `.kilo/commands`, using Kilo's schema and target identity.
+- Hermes natively consumes project `AGENTS.md` and `.hermes.md`, but skills,
+  MCP servers, hooks, and permanent permissions live under the active
+  `HERMES_HOME`. Canonfig therefore emits a project-context bridge and reports
+  profile-scoped features instead of writing outside the repository.
+- Qwen uses `.qwen/settings.json` for MCP and hooks, `.qwen/skills` for Agent
+  Skills, `.qwen/agents` for subagents, and `.qwen/commands` for project slash
+  commands. Streamable HTTP MCP servers map to `httpUrl`; legacy SSE keeps
+  `url`.
 
 ## Safety and ownership
 

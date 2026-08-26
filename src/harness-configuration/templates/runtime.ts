@@ -219,10 +219,10 @@ export function piPluginSource(target: "pi" | "oh-my-pi", hooks: Hook[]): string
   return `${pluginPreamble(target)}\nimport type { ExtensionAPI } from ${JSON.stringify(packageName)};\n\nexport default function canonfig(pi: ExtensionAPI) {\n${registrations}\n}\n`;
 }
 
-export function openCodePluginSource(hooks: Hook[]): string {
+export function openCodePluginSource(target: "opencode" | "kilo", hooks: Hook[]): string {
   const before = hooks.filter((hook) => hook.enabled && hook.event === "before_tool");
   const after = hooks.filter((hook) => hook.enabled && hook.event === "after_tool");
   const beforeBody = before.map((hook) => `      { const result = await runCanonfig(${JSON.stringify(hook.id)}, "before_tool", { ...input, ...output }, ${hook.timeoutMs}); if (result.blocked) throw new Error(result.reason); }`).join("\n");
   const afterBody = after.map((hook) => `      { const result = await runCanonfig(${JSON.stringify(hook.id)}, "after_tool", { ...input, ...output }, ${hook.timeoutMs}); if (result.blocked) throw new Error(result.reason); }`).join("\n");
-  return `${pluginPreamble("opencode")}\nexport const CanonfigPlugin = async () => ({\n  "tool.execute.before": async (input, output) => {\n${beforeBody}\n  },\n  "tool.execute.after": async (input, output) => {\n${afterBody}\n  },\n});\n`;
+  return `${pluginPreamble(target)}\nexport const CanonfigPlugin = async () => ({\n  "tool.execute.before": async (input, output) => {\n${beforeBody}\n  },\n  "tool.execute.after": async (input, output) => {\n${afterBody}\n  },\n});\n`;
 }

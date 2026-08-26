@@ -3,6 +3,7 @@ import type { CanonfigConfig } from "./schema.ts";
 export const TARGET_IDS = [
   "codex", "claude-code", "amp", "oh-my-pi", "pi", "factory-droid",
   "cursor", "devin", "opencode", "grok-build", "antigravity", "copilot-cli",
+  "kimi", "kilo", "hermes", "qwen",
 ] as const;
 
 export type TargetId = (typeof TARGET_IDS)[number];
@@ -136,6 +137,7 @@ export interface JsonManagedHooksCleanup {
   marker: string;
   events?: string[];
   originals?: Record<string, { existed: boolean; value?: unknown }>;
+  pathExisted?: boolean;
 }
 export interface TomlBlockCleanup { kind: "toml-block"; marker: string; blockHash: string; }
 export interface TomlKeyCleanup {
