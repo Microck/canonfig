@@ -3,6 +3,7 @@ import { BUILTIN_ADAPTERS } from "../adapters/index.ts";
 import { commonArtifacts, enabledMcpServerEntries } from "../adapters/shared.ts";
 import { configuredTargets, findRepositoryRoot, loadConfig, targetOptions } from "./config.ts";
 import { CanonfigError } from "./errors.ts";
+import { sha256 } from "./hash.ts";
 import { createPlan } from "./planner.ts";
 import type {
   BuildContext,
@@ -93,6 +94,29 @@ function commonMcpProjectionDiagnostics(context: BuildContext): Diagnostic[] {
   return diagnostics;
 }
 
+function deduplicateExactReplaceArtifacts(
+  artifacts: readonly DesiredArtifact[],
+): DesiredArtifact[] {
+  const seen = new Set<string>();
+  const result: DesiredArtifact[] = [];
+  for (const artifact of artifacts) {
+    if (artifact.kind !== "replace") {
+      result.push(artifact);
+      continue;
+    }
+    const identity = [
+      artifact.owner,
+      artifact.path,
+      artifact.mode ?? "",
+      sha256(artifact.content),
+    ].join("\0");
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    result.push(artifact);
+  }
+  return result;
+}
+
 export class AdapterRegistry {
   readonly #adapters = new Map<TargetId, HarnessAdapter>();
 
@@ -169,7 +193,13 @@ export class HarnessConfigurationCompiler {
       diagnostics.push(...result.diagnostics);
     }
 
-    return { root, configPath: loaded.path, targets, artifacts, diagnostics };
+    return {
+      root,
+      configPath: loaded.path,
+      targets,
+      artifacts: deduplicateExactReplaceArtifacts(artifacts),
+      diagnostics,
+    };
   }
 
   async plan(options: CompileOptions = {}): Promise<Plan> {
