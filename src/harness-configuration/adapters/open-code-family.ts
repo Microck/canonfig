@@ -58,18 +58,26 @@ export function createOpenCodeFamilyAdapter(
       artifacts.push(...await skillArtifacts(context, `${root}/skills`, definition.id));
 
       if (Object.keys(context.config.mcp.servers).length > 0) {
-        artifacts.push({
-          kind: "json",
-          path: definition.configPath,
-          owner: definition.id,
-          rootDefaults: { $schema: definition.schemaUrl },
-          operations: [{
-            kind: "managed-map",
-            path: ["mcp"],
-            entries: openCodeMcpMap(context),
-            collision: "error",
-          }],
-        });
+        artifacts.push(
+          {
+            kind: "json",
+            path: definition.configPath,
+            owner: definition.id,
+            operations: [{
+              kind: "managed-map",
+              path: ["mcp"],
+              entries: openCodeMcpMap(context),
+              collision: "error",
+            }],
+          },
+          {
+            kind: "json",
+            path: definition.configPath,
+            owner: definition.id,
+            rootDefaults: { $schema: definition.schemaUrl },
+            operations: [],
+          },
+        );
       }
 
       const hooks = enabledHooks(context);
