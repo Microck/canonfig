@@ -173,7 +173,7 @@ describe("Kimi, Kilo, Hermes, and Qwen harness adapters", () => {
     });
     expect(qwen.hooks.PreToolUse).toEqual([expect.objectContaining({
       matcher: "*",
-      hooks: [expect.objectContaining({ timeout: 5 })],
+      hooks: [expect.objectContaining({ timeout: 5_000 })],
     })]);
     await expect(readFile(path.join(root, ".qwen/commands/release-check.md"), "utf8"))
       .resolves.toContain("description: Check release readiness");

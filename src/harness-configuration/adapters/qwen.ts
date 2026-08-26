@@ -61,7 +61,7 @@ function qwenHooks(
       hooks: [{
         type: "command",
         command: hookCommand("qwen", hook),
-        timeout: Math.max(1, Math.ceil(hook.timeoutMs / 1000)),
+        timeout: hook.timeoutMs,
       }],
     };
     (hooks[event] ??= []).push(entry);
