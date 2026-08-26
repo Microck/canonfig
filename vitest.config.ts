@@ -8,6 +8,7 @@ export default defineProject({
       "tests/doctor.test.ts",
       "tests/foundation.test.ts",
       "tests/harness-configuration.test.ts",
+      "tests/harness-configuration-antigravity.test.ts",
       "tests/harness-configuration-providers.test.ts",
       "tests/packed-cli.test.ts",
       "tests/profile-contract.test.ts",
