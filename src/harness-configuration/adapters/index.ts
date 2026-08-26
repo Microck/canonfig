@@ -10,6 +10,10 @@ export { opencodeAdapter } from "./opencode.ts";
 export { grokAdapter } from "./grok.ts";
 export { antigravityAdapter } from "./antigravity.ts";
 export { copilotAdapter } from "./copilot.ts";
+export { kimiAdapter } from "./kimi.ts";
+export { kiloAdapter } from "./kilo.ts";
+export { hermesAdapter } from "./hermes.ts";
+export { qwenAdapter } from "./qwen.ts";
 
 import type { HarnessAdapter } from "../core/types.ts";
 import { codexAdapter } from "./codex.ts";
@@ -24,6 +28,10 @@ import { opencodeAdapter } from "./opencode.ts";
 import { grokAdapter } from "./grok.ts";
 import { antigravityAdapter } from "./antigravity.ts";
 import { copilotAdapter } from "./copilot.ts";
+import { kimiAdapter } from "./kimi.ts";
+import { kiloAdapter } from "./kilo.ts";
+import { hermesAdapter } from "./hermes.ts";
+import { qwenAdapter } from "./qwen.ts";
 
 export const BUILTIN_ADAPTERS: readonly HarnessAdapter[] = [
   codexAdapter,
@@ -38,4 +46,8 @@ export const BUILTIN_ADAPTERS: readonly HarnessAdapter[] = [
   grokAdapter,
   antigravityAdapter,
   copilotAdapter,
+  kimiAdapter,
+  kiloAdapter,
+  hermesAdapter,
+  qwenAdapter,
 ];

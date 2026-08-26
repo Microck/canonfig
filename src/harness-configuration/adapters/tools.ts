@@ -14,6 +14,10 @@ const maps: Record<TargetId, Record<Capability, string[]>> = {
   "grok-build": { read: ["Read"], write: ["Edit", "Write"], search: ["Grep", "Glob"], shell: ["Bash"], web: ["WebFetch", "WebSearch"], mcp: ["mcp__.*"], subagent: ["Agent"], test: ["Bash"], git: ["Bash"] },
   antigravity: { read: ["view_file"], write: ["write_to_file", "replace_file_content", "multi_replace_file_content"], search: ["grep_search", "find_by_name", "list_dir"], shell: ["run_command"], web: ["browser_*", "search_web"], mcp: ["mcp_*"], subagent: ["task"], test: ["run_command"], git: ["run_command"] },
   "copilot-cli": { read: ["Read"], write: ["Edit", "Write"], search: ["Grep", "Glob"], shell: ["Bash"], web: ["WebFetch", "WebSearch"], mcp: ["mcp__*"], subagent: ["Task"], test: ["Bash"], git: ["Bash"] },
+  kimi: { read: ["Read"], write: ["Edit", "Write"], search: ["Grep", "Glob"], shell: ["Bash"], web: ["WebSearch", "FetchURL"], mcp: ["mcp__*"], subagent: ["Agent", "AgentSwarm"], test: ["Bash"], git: ["Bash"] },
+  kilo: { read: ["read"], write: ["edit", "write"], search: ["grep", "glob"], shell: ["bash"], web: ["webfetch"], mcp: [], subagent: ["task"], test: ["bash"], git: ["bash"] },
+  hermes: { read: ["read_file"], write: ["write_file", "patch"], search: ["search_files"], shell: ["terminal"], web: ["web_search", "web_extract"], mcp: ["mcp"], subagent: ["delegate_task"], test: ["terminal"], git: ["terminal"] },
+  qwen: { read: ["read_file"], write: ["edit", "write_file"], search: ["grep_search", "glob", "list_directory"], shell: ["run_shell_command"], web: ["web_fetch", "web_search"], mcp: ["mcp__*"], subagent: ["agent"], test: ["run_shell_command"], git: ["run_shell_command"] },
 };
 
 export function nativeToolsForCapabilities(target: TargetId, capabilities: readonly Capability[]): string[] {
