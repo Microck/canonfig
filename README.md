@@ -55,7 +55,7 @@ Required; the current executor never fetches or builds source code.
 Install the exact public package version on Linux, macOS, or Windows:
 
 ```bash
-npm install --global @microck/canonfig@2.0.0
+npm install --global @microck/canonfig@2.1.0
 canonfig --version
 ```
 
