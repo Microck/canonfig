@@ -37,7 +37,11 @@ export async function validateProject(root: string, config: CanonfigConfig): Pro
     }
   }
 
-  const skillNames = new Map<string, { readonly path: string; readonly root: string }>();
+  const skillNames = new Map<string, {
+    readonly path: string;
+    readonly root: string;
+    readonly artifactPath: string;
+  }>();
   for (const rootRelative of config.skills.roots) {
     const safeRoot = assertSafeRelativePath(rootRelative);
     const absoluteRoot = path.join(canonfigDir, safeRoot);
@@ -67,7 +71,10 @@ export async function validateProject(root: string, config: CanonfigConfig): Pro
           });
         }
         const previous = skillNames.get(parsed.data.name);
-        if (previous?.root === safeRoot) {
+        if (
+          previous !== undefined
+          && (previous.root === safeRoot || previous.artifactPath !== manifest)
+        ) {
           diagnostics.push({
             level: "error",
             code: "SKILL_NAME_DUPLICATE",
@@ -77,7 +84,11 @@ export async function validateProject(root: string, config: CanonfigConfig): Pro
         } else {
           // Roots are ordered from lowest to highest precedence. A project
           // root can intentionally replace the same skill from a user root.
-          skillNames.set(parsed.data.name, { path: relative, root: safeRoot });
+          skillNames.set(parsed.data.name, {
+            path: relative,
+            root: safeRoot,
+            artifactPath: manifest,
+          });
         }
       } catch (error) {
         diagnostics.push({

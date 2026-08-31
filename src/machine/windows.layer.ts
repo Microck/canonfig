@@ -7,6 +7,7 @@ import {
   readFile,
   realpath,
   rename,
+  rmdir,
   rm,
   stat,
   symlink,
@@ -40,6 +41,7 @@ import type {
   MachinePath,
   NormalizePathInput,
   ProcessEnvironmentEntry,
+  ProcessResult,
   RenderedSchedulerJob,
   RemoveEmptyDirectoryInput,
   SchedulerBackend,
@@ -93,6 +95,34 @@ const errorCode = (cause: unknown): string | undefined =>
   cause instanceof Error && "code" in cause
     ? String(cause.code)
     : undefined;
+
+const removeWindowsManagedLeaf = async (path: string): Promise<void> => {
+  try {
+    const metadata = await lstat(path);
+    if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+      await rmdir(path);
+    } else {
+      await unlink(path);
+    }
+  } catch (cause) {
+    if (errorCode(cause) !== "ENOENT") throw cause;
+  }
+};
+
+const prepareWindowsManagedLeafKind = async (
+  path: string,
+  kind: "directory" | "non-directory",
+): Promise<void> => {
+  try {
+    const metadata = await lstat(path);
+    const directory = metadata.isDirectory() && !metadata.isSymbolicLink();
+    if (kind === "directory" ? !directory : directory) {
+      await removeWindowsManagedLeaf(path);
+    }
+  } catch (cause) {
+    if (errorCode(cause) !== "ENOENT") throw cause;
+  }
+};
 
 const windowsPath = (absolute: string): MachinePath => ({
   platform: "windows",
@@ -182,6 +212,19 @@ const weekdayXmlNames = {
   Fri: "Friday",
   Sat: "Saturday",
 } as const;
+
+export const windowsWeekdaysMatch = (
+  schedule: string,
+  weekdays: ReadonlyArray<keyof typeof weekdayXmlNames>,
+): boolean => {
+  const observed = [...schedule.matchAll(
+    /<(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)(?:\s[^>]*)?\s*\/?>/gu,
+  )].map((match) => match[1]!);
+  const desired = weekdays.map((weekday) => weekdayXmlNames[weekday]);
+  return observed.length === desired.length
+    && new Set(observed).size === observed.length
+    && desired.every((weekday) => observed.includes(weekday));
+};
 
 const windowsCommandLineArgument = (value: string): string => {
   if (value.length > 0 && !/[\s"]/u.test(value)) return value;
@@ -333,6 +376,14 @@ const xmlElement = (xml: string, name: string): string | undefined => {
   return match === null ? undefined : decodeXml(match[1]!.trim());
 };
 
+export const windowsRecurrenceIntervalMatches = (
+  schedule: string,
+  recurrence: "daily" | "weekly",
+): boolean => xmlElement(schedule, recurrence === "daily" ? "DaysInterval" : "WeeksInterval") === "1";
+
+export const windowsTaskTriggerEnabled = (trigger: string): boolean =>
+  xmlElement(trigger, "Enabled") !== "false";
+
 const windowsTaskXml = (
   definition: WindowsTaskDefinition,
   principal: string,
@@ -358,6 +409,31 @@ const windowsTaskXml = (
     `<Arguments>${escapeXml(definition.arguments)}</Arguments></Exec></Actions></Task>`,
   ].join("");
 };
+
+/** Decode Task Scheduler XML without treating UTF-16LE bytes as UTF-8 text. */
+export const decodeWindowsTaskXml = (bytes: Uint8Array): string => {
+  const buffer = Buffer.from(bytes);
+  if (buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.subarray(2).toString("utf16le");
+  }
+  return buffer.toString("utf8").replace(/^\ufeff/u, "");
+};
+
+/** Distinguish a missing task from scheduler access and service failures. */
+export const windowsTaskQueryReportsAbsence = (
+  result: Pick<ProcessResult, "exitCode" | "standardOutput" | "standardError">,
+): boolean => {
+  if (result.exitCode === 0) return false;
+  const output = `${Buffer.from(result.standardOutput).toString("utf8")}\n${
+    Buffer.from(result.standardError).toString("utf8")
+  }`;
+  return /0x80070002/iu.test(output);
+};
+
+/** The native probe maps Task Scheduler's stable missing-object HRESULT to exit code 3. */
+export const windowsTaskProbeReportsAbsence = (
+  result: Pick<ProcessResult, "exitCode">,
+): boolean => result.exitCode === 3;
 
 const credentialKey = (
   reference: CredentialReferenceType,
@@ -583,6 +659,11 @@ export const windowsMachineStateLayer = (
           });
           yield* setPrivateAcl(temporary, false);
           yield* Effect.tryPromise({
+            try: () => prepareWindowsManagedLeafKind(path, "non-directory"),
+            catch: (cause) =>
+              filesystemFailure("prepare Windows file replacement", path, cause),
+          });
+          yield* Effect.tryPromise({
             try: () => rename(temporary, path),
             catch: (cause) =>
               filesystemFailure("replace Windows file", path, cause),
@@ -661,14 +742,16 @@ export const windowsMachineStateLayer = (
         nested: boolean,
       ): Promise<boolean> => {
         if (mutation.kind === "remove") {
-          await rm(guardedTarget, { force: true });
+          await removeWindowsManagedLeaf(guardedTarget);
           return nested;
         }
         if (mutation.kind === "directory") {
+          await prepareWindowsManagedLeafKind(guardedTarget, "directory");
           await Effect.runPromise(secureDirectory(guardedTarget, mutation.mode));
           return true;
         }
         if (mutation.kind === "write") {
+          await prepareWindowsManagedLeafKind(guardedTarget, "non-directory");
           await Effect.runPromise(secureAtomicWrite(
             guardedTarget,
             mutation.content,
@@ -676,6 +759,7 @@ export const windowsMachineStateLayer = (
           ));
           return true;
         }
+        await prepareWindowsManagedLeafKind(guardedTarget, "non-directory");
         await mkdir(win32.dirname(guardedTarget), { recursive: true });
         const temporary = win32.join(
           win32.dirname(guardedTarget),
@@ -744,48 +828,56 @@ export const windowsMachineStateLayer = (
               await mkdir(guard);
               try {
                 try {
-                  const top = await lstat(visibleTop);
-                  if (tail.length > 0 && top.isSymbolicLink()) {
-                    throw new Error(`managed ancestor is a reparse point: ${visibleTop}`);
+                  try {
+                    const top = await lstat(visibleTop);
+                    if (tail.length > 0 && top.isSymbolicLink()) {
+                      throw new Error(`managed ancestor is a reparse point: ${visibleTop}`);
+                    }
+                    await rename(visibleTop, heldTop);
+                    held = true;
+                    if (tail.length > 0 && (await lstat(heldTop)).isSymbolicLink()) {
+                      throw new Error(`managed ancestor is a reparse point: ${visibleTop}`);
+                    }
+                  } catch (cause) {
+                    if (errorCode(cause) !== "ENOENT") throw cause;
+                    if (input.mutation.kind === "remove") return;
+                    if (tail.length > 0) {
+                      await mkdir(heldTop, { recursive: true });
+                      held = true;
+                    }
                   }
-                  await rename(visibleTop, heldTop);
-                  held = true;
-                  if (tail.length > 0 && (await lstat(heldTop)).isSymbolicLink()) {
-                    throw new Error(`managed ancestor is a reparse point: ${visibleTop}`);
+                  const guardedTarget = tail.length === 0
+                    ? heldTop
+                    : win32.join(heldTop, ...tail);
+                  if (tail.length > 0) {
+                    await Effect.runPromise(
+                      validatePathWithinRoot(heldTop, guardedTarget),
+                    );
+                  }
+                  held = await applyGuardedMutation(
+                    input.mutation,
+                    guardedTarget,
+                    tail.length > 0,
+                  );
+
+                  const visibleRoot = await lstat(root);
+                  if (
+                    visibleRoot.isSymbolicLink()
+                    || visibleRoot.dev !== rootBefore.dev
+                    || visibleRoot.ino !== rootBefore.ino
+                  ) {
+                    throw new Error("managed root identity changed during mutation");
+                  }
+                  if (held) {
+                    await rename(heldTop, visibleTop);
+                    held = false;
                   }
                 } catch (cause) {
-                  if (errorCode(cause) !== "ENOENT") throw cause;
-                  if (input.mutation.kind === "remove") return;
-                  if (tail.length > 0) {
-                    await mkdir(heldTop, { recursive: true });
-                    held = true;
+                  if (held) {
+                    await rename(heldTop, visibleTop);
+                    held = false;
                   }
-                }
-                const guardedTarget = tail.length === 0
-                  ? heldTop
-                  : win32.join(heldTop, ...tail);
-                if (tail.length > 0) {
-                  await Effect.runPromise(
-                    validatePathWithinRoot(heldTop, guardedTarget),
-                  );
-                }
-                held = await applyGuardedMutation(
-                  input.mutation,
-                  guardedTarget,
-                  tail.length > 0,
-                );
-
-                const visibleRoot = await lstat(root);
-                if (
-                  visibleRoot.isSymbolicLink()
-                  || visibleRoot.dev !== rootBefore.dev
-                  || visibleRoot.ino !== rootBefore.ino
-                ) {
-                  throw new Error("managed root identity changed during mutation");
-                }
-                if (held) {
-                  await rename(heldTop, visibleTop);
-                  held = false;
+                  throw cause;
                 }
               } finally {
                 if (!held) {
@@ -811,9 +903,10 @@ export const windowsMachineStateLayer = (
             "Run on Windows with Credential Manager available, or explicitly select the local-file credential policy.",
         });
       });
-      const runCredentialScript = (
+      const runPowerShell = (
         script: string,
-        additions: ReadonlyArray<ProcessEnvironmentEntry>,
+        timeoutMilliseconds: number,
+        additions?: ReadonlyArray<ProcessEnvironmentEntry> | undefined,
       ) =>
         machine.runProcess({
           executable: { platform: "linux", absolute: powershell },
@@ -825,9 +918,13 @@ export const windowsMachineStateLayer = (
             script,
           ],
           environment: additions,
-          timeoutMilliseconds: 5_000,
+          timeoutMilliseconds,
           maximumOutputBytes: 1024 * 1024,
         });
+      const runCredentialScript = (
+        script: string,
+        additions: ReadonlyArray<ProcessEnvironmentEntry>,
+      ) => runPowerShell(script, 5_000, additions);
       const runSchedulerCommand = (arguments_: ReadonlyArray<string>) =>
         machine.runProcess({
           executable: { platform: "linux", absolute: schtasks },
@@ -837,6 +934,37 @@ export const windowsMachineStateLayer = (
         });
       const queryScheduledTask = (taskName: string) =>
         runSchedulerCommand(["/Query", "/TN", taskName, "/XML"]);
+      const schedulerAccessError = (action: string) =>
+        new HumanActionRequiredError({
+          action,
+          recovery:
+            "Sign in interactively and ensure the Task Scheduler service and per-user access are available, then retry.",
+        });
+      const scheduledTaskIsAbsent = (
+        taskName: string,
+        query: ProcessResult,
+        action: string,
+      ): Effect.Effect<boolean, MachineStateError> => {
+        if (windowsTaskQueryReportsAbsence(query)) return Effect.succeed(true);
+        const script = [
+          "$ErrorActionPreference='Stop'",
+          `$TaskPath=${powershellLiteral(taskName)}`,
+          "$Separator=$TaskPath.LastIndexOf('\\')",
+          "$FolderPath=if($Separator -lt 0){'\\'}else{'\\'+$TaskPath.Substring(0,$Separator)}",
+          "$TaskName=if($Separator -lt 0){$TaskPath}else{$TaskPath.Substring($Separator+1)}",
+          "try{$Service=New-Object -ComObject 'Schedule.Service';$Service.Connect();$null=$Service.GetFolder($FolderPath).GetTask($TaskName);exit 0}catch{if($_.Exception.HResult -eq -2147024894){exit 3};exit 2}",
+        ].join(";");
+        return runPowerShell(script, schedulerTimeoutMilliseconds).pipe(
+          Effect.flatMap((probe) =>
+            windowsTaskProbeReportsAbsence(probe)
+              ? Effect.succeed(true)
+              : probe.exitCode === 0
+              ? Effect.succeed(false)
+              : Effect.fail(schedulerAccessError(action))
+          ),
+          Effect.catch(() => Effect.fail(schedulerAccessError(action))),
+        );
+      };
       const taskXmlPath = () =>
         win32.join(
           environmentValue(environment, "TEMP") ?? win32.join(home, "AppData", "Local", "Temp"),
@@ -873,6 +1001,27 @@ export const windowsMachineStateLayer = (
       };
       const removeScheduledTask = (taskName: string) =>
         runSchedulerCommand(["/Delete", "/TN", taskName, "/F"]);
+      const removeScheduledTaskIfPresent = (
+        taskName: string,
+        action: string,
+      ): Effect.Effect<void, MachineStateError> =>
+        removeScheduledTask(taskName).pipe(
+          Effect.flatMap((result) =>
+            result.exitCode === 0
+              ? Effect.void
+              : queryScheduledTask(taskName).pipe(
+                Effect.flatMap((query) =>
+                  scheduledTaskIsAbsent(taskName, query, action).pipe(
+                    Effect.flatMap((absent) =>
+                      absent
+                        ? Effect.void
+                        : Effect.fail(schedulerAccessError(action))
+                    ),
+                  )
+                ),
+              )
+          ),
+        );
       const nativeScheduler: SchedulerBackend = {
         inspect: (expected) => {
           const desired = parseWindowsTaskDefinition(expected);
@@ -885,19 +1034,31 @@ export const windowsMachineStateLayer = (
           return queryScheduledTask(expected.serviceName).pipe(
             Effect.flatMap((result): Effect.Effect<SchedulerInspection, MachineStateError> => {
               if (result.exitCode !== 0) {
-                return Effect.succeed({ installed: false, enabled: false, matches: false });
+                return scheduledTaskIsAbsent(
+                  expected.serviceName,
+                  result,
+                  "query the Canonfig scheduled task",
+                ).pipe(
+                  Effect.flatMap((absent) =>
+                    absent
+                      ? Effect.succeed({ installed: false, enabled: false, matches: false })
+                      : Effect.fail(schedulerAccessError("query the Canonfig scheduled task"))
+                  ),
+                );
               }
-              const xml = Buffer.from(result.standardOutput).toString("utf8");
+              const xml = decodeWindowsTaskXml(result.standardOutput);
               const settings = xmlElement(xml, "Settings") ?? "";
+              const trigger = xmlElement(xml, "CalendarTrigger") ?? "";
               const command = xmlElement(xml, "Command")?.replace(/^"(.*)"$/u, "$1");
               const schedule = desired.weekdays === undefined
-                ? xmlElement(xml, "ScheduleByDay")
-                : xmlElement(xml, "ScheduleByWeek");
+                ? xmlElement(trigger, "ScheduleByDay")
+                : xmlElement(trigger, "ScheduleByWeek");
               const weekdaysMatch = desired.weekdays === undefined
-                || desired.weekdays.every((weekday) =>
-                  new RegExp(`<${weekdayXmlNames[weekday]}(?:\\s*/>|>)`, "u").test(
-                    schedule ?? "",
-                  )
+                || windowsWeekdaysMatch(schedule ?? "", desired.weekdays);
+              const intervalMatches = schedule !== undefined
+                && windowsRecurrenceIntervalMatches(
+                  schedule,
+                  desired.weekdays === undefined ? "daily" : "weekly",
                 );
               return Effect.succeed({
                 installed: true,
@@ -909,6 +1070,8 @@ export const windowsMachineStateLayer = (
                     `T${desired.localTime}:00`,
                   ) === true
                   && schedule !== undefined
+                  && intervalMatches
+                  && windowsTaskTriggerEnabled(trigger)
                   && weekdaysMatch,
               });
             }),
@@ -918,14 +1081,24 @@ export const windowsMachineStateLayer = (
           queryScheduledTask(expected.serviceName).pipe(
             Effect.flatMap((result): Effect.Effect<SchedulerSnapshot, MachineStateError> => {
               if (result.exitCode !== 0) {
-                return Effect.succeed({
-                  state: "absent",
-                  platform: expected.platform,
-                  mechanism: expected.mechanism,
-                  serviceName: expected.serviceName,
-                } satisfies SchedulerSnapshot);
+                return scheduledTaskIsAbsent(
+                  expected.serviceName,
+                  result,
+                  "query the Canonfig scheduled task",
+                ).pipe(
+                  Effect.flatMap((absent) =>
+                    absent
+                      ? Effect.succeed({
+                        state: "absent",
+                        platform: expected.platform,
+                        mechanism: expected.mechanism,
+                        serviceName: expected.serviceName,
+                      } satisfies SchedulerSnapshot)
+                      : Effect.fail(schedulerAccessError("query the Canonfig scheduled task"))
+                  ),
+                );
               }
-              const xml = Buffer.from(result.standardOutput).toString("utf8");
+              const xml = decodeWindowsTaskXml(result.standardOutput);
               const settings = xmlElement(xml, "Settings") ?? "";
               const enabled = xmlElement(settings, "Enabled") !== "false";
               return Effect.succeed({
@@ -954,20 +1127,16 @@ export const windowsMachineStateLayer = (
             );
         },
         remove: (definition) =>
-          removeScheduledTask(definition.serviceName).pipe(
-            Effect.flatMap((result) =>
-              result.exitCode === 0
-                ? Effect.void
-                : Effect.fail(new HumanActionRequiredError({
-                  action: "remove the Canonfig scheduled task",
-                  recovery:
-                    "Sign in interactively and ensure per-user Task Scheduler access is available, then retry.",
-                }))
-            ),
+          removeScheduledTaskIfPresent(
+            definition.serviceName,
+            "remove the Canonfig scheduled task",
           ),
         restore: (expected, snapshot) => {
           return Effect.gen(function*() {
-            yield* removeScheduledTask(expected.serviceName).pipe(Effect.ignore);
+            yield* removeScheduledTaskIfPresent(
+              expected.serviceName,
+              "restore the Canonfig scheduled task",
+            );
             if (snapshot.state === "absent") return;
             if (snapshot.native === undefined) {
               return yield* new HumanActionRequiredError({

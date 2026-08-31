@@ -19,7 +19,11 @@ import type {
   AppliedResourceRecord,
   ObservedResourceState,
 } from "../src/domain/synchronization.ts";
-import { sha256Hex } from "../src/profile/profile-codec.ts";
+import { ObservedResourceStateSchema } from "../src/domain/synchronization.ts";
+import {
+  directoryEntriesDigest,
+  sha256Hex,
+} from "../src/profile/profile-codec.ts";
 import {
   getConfigPath,
   parseConfigDocument,
@@ -41,14 +45,28 @@ const blobA = decode(BlobId)("d".repeat(64));
 const blobB = decode(BlobId)("e".repeat(64));
 const follower = decode(FollowerId)("follower-1");
 
+describe("observed resource state schema", () => {
+  it("preserves exact regular-file modes", () => {
+    expect(decode(ObservedResourceStateSchema)({
+      state: "present",
+      digest: digestA,
+      executable: true,
+      mode: 0o750,
+      objectKind: "regular",
+    })).toMatchObject({ mode: 0o750 });
+  });
+});
+
 const desiredForKind = (kind: ResourceKind): DesiredResource => {
   switch (kind) {
     case "file":
-      return { kind, digest: digestA, executable: false };
+      return { kind, digest: digestA, executable: false, mode: 0o600 };
     case "directory":
       return {
         kind,
-        files: [{ path: "one.txt", digest: digestA, executable: false }],
+        mode: 0o700,
+        directories: [],
+        files: [{ path: "one.txt", digest: digestA, executable: false, mode: 0o600 }],
       };
     case "config":
       return {
@@ -61,7 +79,9 @@ const desiredForKind = (kind: ResourceKind): DesiredResource => {
       return {
         kind,
         digest: digestA,
-        files: [{ path: "SKILL.md", digest: digestA, executable: false }],
+        mode: 0o700,
+        directories: [],
+        files: [{ path: "SKILL.md", digest: digestA, executable: false, mode: 0o600 }],
       };
     case "tool":
       return {
@@ -91,6 +111,9 @@ const verificationFor = (
 ) => {
   switch (desired.kind) {
     case "file":
+      return desired.symlinkTo === undefined
+        ? { method: "digest" as const, digest: digestA }
+        : { method: "symlink" as const, target: desired.symlinkTo };
     case "config":
       return { method: "digest" as const, digest: digestA };
     case "directory":
@@ -233,10 +256,16 @@ describe("resource and Apply Policy coverage", () => {
   });
 
   it("observes empty directory roots directly", () => {
-    const desired: DesiredResource = { kind: "directory", files: [] };
+    const desired: DesiredResource = {
+      kind: "directory",
+      mode: 0o700,
+      directories: [],
+      files: [],
+    };
     const observed = {
       state: "directory" as const,
       objectKind: "directory" as const,
+      mode: 0o700,
       files: [],
     };
     const existing = runPlan(plannerInput(
@@ -256,12 +285,15 @@ describe("resource and Apply Policy coverage", () => {
     const subject = resource("missing-member", "directory", "mirror-owned");
     const desired: DesiredResource = {
       kind: "directory",
-      files: [{ path: "new.txt", digest: digestA, executable: false }],
+      mode: 0o700,
+      directories: [],
+      files: [{ path: "new.txt", digest: digestA, executable: false, mode: 0o600 }],
     };
     const plan = runPlan(plannerInput([subject], {
       desired: [desired],
       observed: [{
         state: "directory",
+        mode: 0o700,
         files: [{ path: "new.txt", state: "absent" }],
       }],
     }));
@@ -278,9 +310,10 @@ describe("resource and Apply Policy coverage", () => {
     const subject = resource("missing-owned", "directory", "mirror-owned");
     const previous = { path: "owned.txt", digest: digestA, executable: false };
     const plan = runPlan(plannerInput([subject], {
-      desired: [{ kind: "directory", files: [] }],
+      desired: [{ kind: "directory", mode: 0o700, directories: [], files: [] }],
       observed: [{
         state: "directory",
+        mode: 0o700,
         files: [{ path: "owned.txt", state: "absent" }],
       }],
       applied: [{
@@ -308,7 +341,12 @@ describe("resource and Apply Policy coverage", () => {
   });
 
   it("plans a non-directory root as drift instead of applying a mirror", () => {
-    const desired: DesiredResource = { kind: "directory", files: [] };
+    const desired: DesiredResource = {
+      kind: "directory",
+      mode: 0o700,
+      directories: [],
+      files: [],
+    };
     const plan = runPlan(plannerInput(
       [resource("root-conflict", "directory", "replace")],
       {
@@ -342,6 +380,7 @@ describe("resource and Apply Policy coverage", () => {
       desired: [desired],
       observed: [{
         state: "directory",
+        mode: 0o700,
         files: [{
           path: "link",
           digest: digestA,
@@ -353,6 +392,61 @@ describe("resource and Apply Policy coverage", () => {
     }));
 
     expect(plan.actions.map((action) => action.kind)).toEqual(["no-op"]);
+  });
+
+  it("plans exact member and root permission changes", () => {
+    const subject = resource("directory", "directory", "mirror-owned");
+    const desired = {
+      kind: "directory" as const,
+      mode: 0o750,
+      directories: [],
+      files: [{
+        path: "settings.json",
+        digest: digestA,
+        executable: false,
+        mode: 0o600,
+      }],
+    };
+    const memberMode = runPlan(plannerInput([subject], {
+      desired: [desired],
+      observed: [{
+        state: "directory",
+        mode: desired.mode,
+        files: [{
+          path: "settings.json",
+          digest: digestA,
+          executable: false,
+          mode: 0o640,
+          objectKind: "regular",
+        }],
+      }],
+    }));
+    expect(memberMode.actions[0]?.detail).toMatchObject({
+      kind: "mirror-directory",
+      adds: ["settings.json"],
+      removes: [],
+    });
+
+    const rootMode = runPlan(plannerInput([subject], {
+      desired: [desired],
+      observed: [{
+        state: "directory",
+        mode: 0o700,
+        files: [{
+          path: "settings.json",
+          digest: digestA,
+          executable: false,
+          mode: 0o600,
+          objectKind: "regular",
+        }],
+      }],
+    }));
+    expect(rootMode.actions[0]?.detail).toEqual({
+      kind: "mirror-directory",
+      target: subject.target,
+      adds: [],
+      removes: [],
+    });
   });
 
   it.each([
@@ -439,6 +533,129 @@ describe("resource and Apply Policy coverage", () => {
     })).toBe("remote-only");
   });
 
+  it("does not remove a file whose exact mode changed after apply", () => {
+    const subject = resource("removed-file", "file", "replace");
+    const input = plannerInput([subject], {
+      desired: [{
+        kind: "file",
+        digest: digestA,
+        executable: false,
+        mode: 0o600,
+      }],
+      observed: [{
+        state: "present",
+        digest: digestA,
+        executable: false,
+        mode: 0o640,
+        objectKind: "regular",
+      }],
+      applied: [{
+        resource: subject.id,
+        revision: "previous",
+        digest: digestA,
+        appliedAt: "2026-08-15T00:00:00Z",
+        kind: "file",
+        policy: "replace",
+        target: subject.target,
+        executable: false,
+        mode: 0o600,
+      }],
+    });
+    const plan = runPlan({
+      ...input,
+      revision: {
+        ...input.revision,
+        removedResources: [subject.id],
+      },
+    });
+    expect(plan.actions).toEqual([]);
+  });
+
+  it("ignores meaningless symlink modes for drift and removal safety", () => {
+    const subject = resource("managed-link", "file", "replace-if-unmodified");
+    const desired = {
+      kind: "file" as const,
+      digest: digestA,
+      executable: false,
+      mode: 0o600,
+      symlinkTo: "../target",
+    };
+    const applied = {
+      resource: subject.id,
+      revision: "previous",
+      digest: digestA,
+      appliedAt: "2026-08-15T00:00:00Z",
+      kind: "file" as const,
+      policy: "replace-if-unmodified" as const,
+      target: subject.target,
+      executable: false,
+      mode: 0o600,
+      symlinkTo: "../target",
+    };
+    const input = plannerInput([subject], {
+      desired: [desired],
+      observed: [{
+        state: "present",
+        digest: digestA,
+        executable: false,
+        objectKind: "symlink",
+        symlinkTo: "../target",
+      }],
+      applied: [applied],
+    });
+
+    expect(runPlan(input).actions[0]?.kind).toBe("no-op");
+    expect(runPlan({
+      ...input,
+      revision: { ...input.revision, removedResources: [subject.id] },
+    }).actions[0]?.kind).toBe("remove-resource");
+  });
+
+  it("applies a remote-only skill root mode change", () => {
+    const subject = resource("skill-mode", "skill", "replace-if-unmodified");
+    const treeDigest = directoryEntriesDigest([{
+      path: "SKILL.md",
+      digest: digestA,
+      executable: false,
+      mode: 0o600,
+      objectKind: "regular",
+    }]);
+    const desired = {
+      kind: "skill" as const,
+      digest: treeDigest,
+      mode: 0o750,
+      directories: [],
+      files: [{ path: "SKILL.md", digest: digestA, executable: false, mode: 0o600 }],
+    };
+    const plan = runPlan(plannerInput([subject], {
+      desired: [desired],
+      observed: [{
+        state: "directory",
+        mode: 0o700,
+        objectKind: "directory",
+        files: [{
+          path: "SKILL.md",
+          digest: digestA,
+          executable: false,
+          mode: 0o600,
+          objectKind: "regular",
+        }],
+      }],
+      applied: [{
+        resource: subject.id,
+        revision: "previous",
+        digest: treeDigest,
+        appliedAt: "2026-08-15T00:00:00Z",
+        kind: "skill",
+        policy: "replace-if-unmodified",
+        target: subject.target,
+        mode: 0o700,
+      }],
+    }));
+
+    expect(plan.actions[0]?.kind).toBe("mirror-directory");
+  });
+
   it.each([
     ["file", "file"],
     ["skill", "skill"],
@@ -471,11 +688,13 @@ describe("resource and Apply Policy coverage", () => {
     const desired = {
       kind: "skill" as const,
       digest: digestA,
-      files: [{ path: "SKILL.md", digest: digestA, executable: false }],
+      mode: 0o700,
+      directories: [],
+      files: [{ path: "SKILL.md", digest: digestA, executable: false, mode: 0o600 }],
     };
     const plan = runPlan(plannerInput([subject], {
       desired: [desired],
-      observed: [{ state: "directory", files: [] }],
+      observed: [{ state: "directory", mode: 0o700, files: [] }],
       applied: [{
         resource: subject.id,
         revision: "previous",
@@ -547,11 +766,13 @@ describe("resource and Apply Policy coverage", () => {
     const subject = resource("directory", "directory", "mirror-owned");
     const desired = {
       kind: "directory" as const,
-      files: [{ path: "kept.txt", digest: digestA, executable: false }],
+      mode: 0o700,
+      directories: [],
+      files: [{ path: "kept.txt", digest: digestA, executable: false, mode: 0o600 }],
     };
     const previouslyOwned = [
-      { path: "kept.txt", digest: digestA, executable: false },
-      { path: "removed.txt", digest: digestB, executable: false },
+      { path: "kept.txt", digest: digestA, executable: false, mode: 0o600 },
+      { path: "removed.txt", digest: digestB, executable: false, mode: 0o600 },
     ];
     const previousDigest = decode(ContentDigest)(sha256Hex(
       previouslyOwned
@@ -560,13 +781,17 @@ describe("resource and Apply Policy coverage", () => {
     ));
     const input = plannerInput([subject], {
       desired: [desired],
-      observed: [{ state: "directory", files: previouslyOwned }],
+      observed: [{ state: "directory", mode: 0o700, files: previouslyOwned }],
       applied: [{
         resource: subject.id,
         revision: "revision-previous",
         digest: previousDigest,
         appliedAt: "2026-08-15T00:00:00Z",
-        ownedFiles: previouslyOwned.map(({ path, digest }) => ({ path, digest })),
+        ownedFiles: previouslyOwned.map(({ path, digest, mode }) => ({
+          path,
+          digest,
+          mode,
+        })),
       }],
     });
 
@@ -579,30 +804,126 @@ describe("resource and Apply Policy coverage", () => {
     });
   });
 
+  it("preserves an owned directory that contains desired descendants", () => {
+    const subject = resource("directory", "directory", "mirror-owned");
+    const desired = {
+      kind: "directory" as const,
+      mode: 0o700,
+      directories: [],
+      files: [{
+        path: "locked/keep.txt",
+        digest: digestA,
+        executable: false,
+        mode: 0o600,
+      }],
+    };
+    const previouslyOwned = [
+      {
+        path: "locked",
+        digest: sha256Hex("canonfig:directory"),
+        executable: true,
+        mode: 0o500,
+        objectKind: "directory" as const,
+      },
+      {
+        path: "locked/keep.txt",
+        digest: digestA,
+        executable: false,
+        mode: 0o600,
+      },
+      {
+        path: "locked/obsolete.txt",
+        digest: digestB,
+        executable: false,
+        mode: 0o600,
+      },
+    ];
+    const input = plannerInput([subject], {
+      desired: [desired],
+      observed: [{ state: "directory", mode: 0o700, files: previouslyOwned }],
+      applied: [{
+        resource: subject.id,
+        revision: "revision-previous",
+        digest: digestA,
+        appliedAt: "2026-08-15T00:00:00Z",
+        ownedFiles: previouslyOwned,
+      }],
+    });
+
+    expect(runPlan(input).actions[0]?.detail).toEqual({
+      kind: "mirror-directory",
+      target: subject.target,
+      adds: [],
+      removes: ["locked/obsolete.txt"],
+    });
+  });
+
+  it("removes an owned regular file that blocks a desired descendant", () => {
+    const subject = resource("directory", "directory", "mirror-owned");
+    const desired = {
+      kind: "directory" as const,
+      mode: 0o700,
+      directories: [],
+      files: [{
+        path: "blocked/value.txt",
+        digest: digestA,
+        executable: false,
+        mode: 0o600,
+      }],
+    };
+    const blockingFile = {
+      path: "blocked",
+      digest: digestB,
+      executable: false,
+      mode: 0o600,
+      objectKind: "regular" as const,
+    };
+    const input = plannerInput([subject], {
+      desired: [desired],
+      observed: [{ state: "directory", mode: 0o700, files: [blockingFile] }],
+      applied: [{
+        resource: subject.id,
+        revision: "revision-previous",
+        digest: digestB,
+        appliedAt: "2026-08-15T00:00:00Z",
+        ownedFiles: [blockingFile],
+      }],
+    });
+
+    expect(runPlan(input).actions[0]?.detail).toEqual({
+      kind: "mirror-directory",
+      target: subject.target,
+      adds: ["blocked/value.txt"],
+      removes: ["blocked"],
+    });
+  });
+
   it("evaluates mirror removal ownership and drift per file", () => {
     const subject = resource("directory", "directory", "mirror-owned");
     const desired = {
       kind: "directory" as const,
-      files: [{ path: "kept.txt", digest: digestA, executable: false }],
+      mode: 0o700,
+      directories: [],
+      files: [{ path: "kept.txt", digest: digestA, executable: false, mode: 0o600 }],
     };
     const observed = [
-      { path: "kept.txt", digest: digestA, executable: false },
-      { path: "clean.txt", digest: digestB, executable: false },
-      { path: "modified.txt", digest: digestC, executable: false },
-      { path: "unowned.txt", digest: digestC, executable: false },
+      { path: "kept.txt", digest: digestA, executable: false, mode: 0o600 },
+      { path: "clean.txt", digest: digestB, executable: false, mode: 0o600 },
+      { path: "modified.txt", digest: digestC, executable: false, mode: 0o600 },
+      { path: "unowned.txt", digest: digestC, executable: false, mode: 0o600 },
     ];
     const input = plannerInput([subject], {
       desired: [desired],
-      observed: [{ state: "directory", files: observed }],
+      observed: [{ state: "directory", mode: 0o700, files: observed }],
       applied: [{
         resource: subject.id,
         revision: "revision-previous",
         digest: digestA,
         appliedAt: "2026-08-15T00:00:00Z",
         ownedFiles: [
-          { path: "kept.txt", digest: digestA },
-          { path: "clean.txt", digest: digestB },
-          { path: "modified.txt", digest: digestB },
+          { path: "kept.txt", digest: digestA, mode: 0o600 },
+          { path: "clean.txt", digest: digestB, mode: 0o600 },
+          { path: "modified.txt", digest: digestB, mode: 0o600 },
         ],
       }],
     });
@@ -667,7 +988,14 @@ describe("transfer and apply separation", () => {
     const base = plannerInput([subject], {
       desired: [{
         kind: "directory",
-        files: paths.map((path) => ({ path, digest: digestA, executable: false })),
+        mode: 0o700,
+        directories: [],
+        files: paths.map((path) => ({
+          path,
+          digest: digestA,
+          executable: false,
+          mode: 0o600,
+        })),
       }],
     });
     const error = Effect.runSync(Effect.flip(planSynchronization(base)));
@@ -678,9 +1006,11 @@ describe("transfer and apply separation", () => {
     const subject = resource("tree", "directory", "mirror-owned", [], [blobA]);
     const desired = {
       kind: "directory" as const,
+      mode: 0o700,
+      directories: [],
       files: [
-        { path: "Readme.md", digest: digestA, executable: false },
-        { path: "README.md", digest: digestB, executable: false },
+        { path: "Readme.md", digest: digestA, executable: false, mode: 0o600 },
+        { path: "README.md", digest: digestB, executable: false, mode: 0o600 },
       ],
     };
     const linuxInput = plannerInput([subject], { desired: [desired] });
@@ -794,23 +1124,44 @@ describe("three-way skill drift", () => {
         lastAppliedDigest: entry.applied,
       })).toBe(entry.expected);
       const subject = resource("skill", "skill", "replace-if-unmodified");
+      const treeDigest = (digest: typeof digestA) => directoryEntriesDigest([{
+        path: "SKILL.md",
+        digest,
+        executable: false,
+        mode: 0o600,
+        objectKind: "regular",
+      }]);
       const plan = runPlan(plannerInput(
         [subject],
         {
           desired: [{
             kind: "skill",
             digest: entry.desired,
-            files: [{ path: "SKILL.md", digest: entry.desired }],
+            mode: 0o700,
+            directories: [],
+            files: [{
+              path: "SKILL.md",
+              digest: entry.desired,
+              executable: false,
+              mode: 0o600,
+            }],
           }],
           observed: [{
-            state: "present",
-            digest: entry.observed,
-            executable: false,
+            state: "directory",
+            mode: 0o700,
+            objectKind: "directory",
+            files: [{
+              path: "SKILL.md",
+              digest: entry.observed,
+              executable: false,
+              mode: 0o600,
+              objectKind: "regular",
+            }],
           }],
           applied: [{
             resource: subject.id,
             revision: "previous",
-            digest: entry.applied,
+            digest: treeDigest(entry.applied),
             appliedAt: "2026-08-14T00:00:00Z",
           }],
         },

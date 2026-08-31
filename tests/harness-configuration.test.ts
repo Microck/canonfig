@@ -248,6 +248,7 @@ describe("harness configuration compiler", () => {
     await write(root, ".canonfig/user-skills/change-impact-map/SKILL.md", [
       "---", "name: change-impact-map", "description: User default.", "---", "", "user", "",
     ].join("\n"));
+    await write(root, ".canonfig/user-skills/change-impact-map/scripts/old.sh", "old\n");
     await write(root, ".canonfig/project-skills/change-impact-map/SKILL.md", [
       "---", "name: change-impact-map", "description: Project override.", "---", "", "project", "",
     ].join("\n"));
@@ -265,6 +266,31 @@ describe("harness configuration compiler", () => {
       : new TextDecoder().decode(skill!.content);
     expect(content).toContain("project");
     expect(content).not.toContain("user\n");
+    expect(plan.entries.some((entry) =>
+      entry.path === ".agents/skills/change-impact-map/scripts/old.sh"
+    )).toBe(false);
+  });
+
+  it("rejects same-named skills at different artifact paths", async () => {
+    const root = await fixture(["codex"]);
+    const configPath = path.join(root, ".canonfig", "harness.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.skills.roots = ["user-skills", "project-skills"];
+    await writeFile(configPath, `${JSON.stringify(config, undefined, 2)}\n`, "utf8");
+    await write(root, ".canonfig/user-skills/first/SKILL.md", [
+      "---", "name: shared-skill", "description: User default.", "---", "", "user", "",
+    ].join("\n"));
+    await write(root, ".canonfig/project-skills/second/SKILL.md", [
+      "---", "name: shared-skill", "description: Project override.", "---", "", "project", "",
+    ].join("\n"));
+
+    const plan = await new HarnessConfigurationCompiler().plan({ root });
+
+    expect(plan.diagnostics).toContainEqual(expect.objectContaining({
+      code: "SKILL_NAME_DUPLICATE",
+      level: "error",
+      path: ".canonfig/project-skills/second/SKILL.md",
+    }));
   });
 
   it.skipIf(process.platform === "win32")("restores symlink identity when apply rolls back", async () => {

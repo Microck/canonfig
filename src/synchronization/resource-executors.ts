@@ -18,7 +18,11 @@ import type { PlannedAction } from "../domain/synchronization.ts";
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachinePath } from "../machine/machine-state.types.ts";
-import { sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
+import {
+  directoryVerificationDigest,
+  sha256BytesHex,
+  sha256Hex,
+} from "../profile/profile-codec.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
   syncScheduleFromResourceSpec,
@@ -44,7 +48,6 @@ import {
   serializeConfigDocument,
   setConfigPath,
 } from "./config-codec.ts";
-import { desiredResourceDigest } from "./resource-plans.ts";
 import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
 import {
   isMissingAutomaticRecipeVersion,
@@ -60,6 +63,8 @@ import {
   verifyNpmArtifactBytes,
   type NpmArtifactTransport,
 } from "./npm-artifact.ts";
+import { relativePathAncestors } from "./resource-plans.ts";
+import { captureScheduleRollback } from "./schedule-rollbacks.ts";
 
 const isUnboundedNonNpmPackage = (value: string): boolean =>
   /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
@@ -75,7 +80,7 @@ interface LegacyStoredFile {
 
 type StoredFile =
   | { readonly path: string; readonly state: "absent" }
-  | { readonly path: string; readonly state: "directory" }
+  | { readonly path: string; readonly state: "directory"; readonly mode: number }
   | { readonly path: string; readonly state: "regular"; readonly content: string; readonly mode: number }
   | { readonly path: string; readonly state: "symlink"; readonly target: string }
   | LegacyStoredFile;
@@ -97,6 +102,7 @@ const StoredFileSchema = Schema.Union([
   Schema.Struct({
     path: Schema.NonEmptyString,
     state: Schema.Literal("directory"),
+    mode: Schema.Int,
   }),
   Schema.Struct({
     path: Schema.NonEmptyString,
@@ -164,7 +170,7 @@ const scheduleInputFromSpec = (
   schedule: syncScheduleFromResourceSpec(spec),
 });
 
-const scheduleInputFor = (
+export const scheduleInputFor = (
   context: ResourceExecutionContext,
 ): Effect.Effect<
   SetScheduleInput,
@@ -176,6 +182,14 @@ const scheduleInputFor = (
       return yield* new InvalidExecutionPlanError({
         message: `schedule action targets non-schedule resource ${context.resource.id}`,
       });
+    }
+    if (context.action.detail.kind === "remove-resource") {
+      if (context.action.detail.schedule === undefined) {
+        return yield* new InvalidExecutionPlanError({
+          message: `schedule removal ${context.action.id} lacks its persisted schedule`,
+        });
+      }
+      return { schedule: context.action.detail.schedule };
     }
     const digest = context.desired.digest;
     const bytes = yield* artifact(context.artifacts, digest);
@@ -236,14 +250,15 @@ const captureStoredFile = (
     const machine = yield* MachineState;
     const kind = yield* machine.inspectPath(path).pipe(
       Effect.catchTag("MachineFilesystemError", (error) =>
-        error.message.includes("ENOENT")
+        error.message.includes("ENOENT") || error.message.includes("ENOTDIR")
           ? Effect.succeed(undefined)
           : Effect.fail(error)
       ),
     );
     if (kind === undefined) return { path: path.absolute, state: "absent" };
     if (kind.kind === "directory") {
-      return { path: path.absolute, state: "directory" };
+      const permissions = yield* machine.permissions(path);
+      return { path: path.absolute, state: "directory", mode: permissions.mode };
     }
     const symlink = yield* machine.readSymlink(path).pipe(
       Effect.catchTag("MachineFilesystemError", () => Effect.succeed(undefined)),
@@ -318,7 +333,26 @@ const restoreStoredFile = (
         }
         return;
       case "directory":
-        yield* machine.ensureDirectory({ path });
+        if (root === undefined) {
+          const currentKind = yield* machine.inspectPath(path).pipe(
+            Effect.catchTag("MachineFilesystemError", (error) =>
+              error.message.includes("ENOENT")
+                ? Effect.succeed(undefined)
+                : Effect.fail(error)
+            ),
+          );
+          if (currentKind !== undefined && currentKind.kind !== "directory") {
+            yield* machine.removeFile({ path });
+          }
+          yield* machine.ensureDirectory({ path, mode: entry.mode });
+          yield* machine.setPermissions({ path, mode: entry.mode });
+        } else {
+          yield* machine.mutateWithinRoot({
+            root,
+            path,
+            mutation: { kind: "directory", mode: entry.mode },
+          });
+        }
         return;
       case "regular": {
         const content = Buffer.from(entry.content, "base64");
@@ -472,14 +506,99 @@ const rollbackPathSet = (
     );
   });
 
-const restoreOrder = (
-  entries: ReadonlyArray<StoredFile>,
-): ReadonlyArray<StoredFile> =>
-  [...entries].sort((left, right) =>
-    right.path.split(/[\\/]/u).length - left.path.split(/[\\/]/u).length
-    || right.path.length - left.path.length
-    || left.path.localeCompare(right.path)
-  );
+const deepestPathFirst = <Value>(
+  entries: ReadonlyArray<Value>,
+  pathOf: (entry: Value) => string,
+): ReadonlyArray<Value> =>
+  entries
+    .map((value) => {
+      const path = pathOf(value);
+      return { value, path, depth: path.split(/[\\/]/u).length };
+    })
+    .sort((left, right) =>
+      right.depth - left.depth
+      || right.path.length - left.path.length
+      || left.path.localeCompare(right.path)
+    )
+    .map(({ value }) => value);
+
+type StoredDirectory = Extract<StoredFile, { readonly state: "directory" }>;
+
+/**
+ * Restore a managed tree while its directories are still writable. Exact
+ * captured modes are applied from the leaves upward only after every child
+ * object is back in place, with the root mode applied last.
+ */
+const restoreStoredFiles = (
+  stored: ReadonlyArray<StoredFile>,
+  root?: MachinePath | undefined,
+): Effect.Effect<void, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const deepestEntries = deepestPathFirst(stored, (file) => file.path);
+    if (root === undefined) {
+      for (const entry of deepestEntries) {
+        yield* restoreStoredFile(entry);
+      }
+      return;
+    }
+
+    const machine = yield* MachineState;
+    const rootEntry = stored.find((entry) => entry.path === root.absolute);
+    const rootState = rootEntry === undefined ? undefined : storedState(rootEntry);
+    const directories = stored.filter(
+      (entry): entry is StoredDirectory => "state" in entry && entry.state === "directory",
+    );
+    const deepestDirectories = deepestPathFirst(directories, (entry) => entry.path);
+    const rootDirectory = directories.find((entry) => entry.path === root.absolute);
+    if (rootEntry !== undefined && rootState !== "absent" && rootState !== "directory") {
+      for (const entry of deepestEntries) {
+        if (entry === rootEntry) continue;
+        yield* restoreStoredFile(entry, root);
+      }
+      yield* restoreStoredFile(rootEntry);
+      return;
+    }
+
+    if (rootDirectory !== undefined) {
+      yield* restoreStoredFile({ ...rootDirectory, mode: rootDirectory.mode | 0o700 });
+    } else {
+      const currentKind = yield* machine.inspectPath(root).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          error.message.includes("ENOENT")
+            ? Effect.succeed(undefined)
+            : Effect.fail(error)
+        ),
+      );
+      if (currentKind?.kind === "directory") {
+        yield* machine.setPermissions({ path: root, mode: 0o700 });
+      }
+    }
+
+    for (const directory of [...deepestDirectories].reverse()) {
+      if (directory === rootEntry) continue;
+      yield* restoreStoredFile({ ...directory, mode: directory.mode | 0o700 }, root);
+    }
+
+    for (const entry of deepestEntries) {
+      if (entry === rootEntry || storedState(entry) === "directory") continue;
+      yield* restoreStoredFile(entry, root);
+    }
+
+    for (const directory of deepestDirectories) {
+      if (directory === rootEntry) continue;
+      const path = yield* machine.normalizePath({ path: directory.path });
+      yield* machine.setPermissions({ path, mode: directory.mode });
+    }
+    if (rootDirectory !== undefined) {
+      yield* machine.setPermissions({ path: root, mode: rootDirectory.mode });
+    } else if (rootEntry !== undefined && rootState === "absent") {
+      yield* machine.removeEmptyDirectory({ path: root }).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
+        ),
+      );
+    }
+  });
 
 const captureRollback = (
   context: ResourceExecutionContext,
@@ -503,39 +622,30 @@ const captureRollback = (
       base: rollbackDirectory,
     });
     const pathsWithAncestors = yield* rollbackPathSet(paths, root);
+    const rootKind = root === undefined
+      ? undefined
+      : yield* machine.inspectPath(root).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          error.message.includes("ENOENT")
+            ? Effect.succeed(undefined)
+            : Effect.fail(error)
+        ),
+      );
     const stored = yield* Effect.forEach(
       pathsWithAncestors,
-      (path) => captureStoredFile(path, context.limits.maximumFileBytes),
+      (path) =>
+        root !== undefined
+          && rootKind !== undefined
+          && rootKind.kind !== "directory"
+          && !sameMachinePath(path, root)
+          ? Effect.succeed({ path: path.absolute, state: "absent" } as const)
+          : captureStoredFile(path, context.limits.maximumFileBytes),
     );
     yield* machine.atomicWrite({
       path: rollbackPath,
       content: encoder.encode(JSON.stringify(stored)),
     });
-    const restore = Effect.gen(function*() {
-      const rootEntry = root === undefined
-        ? undefined
-        : stored.find((entry) => entry.path === root.absolute);
-      if (root !== undefined && rootEntry !== undefined && storedState(rootEntry) !== "absent") {
-        yield* restoreStoredFile(rootEntry);
-      }
-      if (
-        rootEntry === undefined
-        || storedState(rootEntry) === "absent"
-        || storedState(rootEntry) === "directory"
-      ) {
-        for (const entry of restoreOrder(stored)) {
-          if (entry === rootEntry) continue;
-          yield* restoreStoredFile(entry, root);
-        }
-      }
-      if (root !== undefined && rootEntry !== undefined && storedState(rootEntry) === "absent") {
-        yield* machine.removeEmptyDirectory({ path: root }).pipe(
-          Effect.catchTag("MachineFilesystemError", (error) =>
-            error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
-          ),
-        );
-      }
-    });
+    const restore = restoreStoredFiles(stored, root);
     return { reference: rollbackPath.absolute, restore };
   });
 
@@ -554,8 +664,12 @@ const rollbackPaths = (
         return [yield* targetPath(detail.target)];
       case "mirror-directory": {
         const root = yield* targetPath(detail.target);
+        const declaredDirectories = context.desired.kind === "directory"
+            || context.desired.kind === "skill"
+          ? (context.desired.directories ?? []).map((directory) => directory.path)
+          : [];
         const descendants = yield* Effect.forEach(
-          [...new Set([...detail.adds, ...detail.removes])],
+          [...new Set([...detail.adds, ...detail.removes, ...declaredDirectories])],
           (path) => normalizeRelative(root, path),
         );
         return yield* rollbackPathSet([root, ...descendants], root);
@@ -645,29 +759,7 @@ export const restoreRollbackReference = (
       )
       ? yield* targetPath(context.action.detail.target)
       : undefined;
-    const rootEntry = root === undefined
-      ? undefined
-      : stored.find((entry) => entry.path === root.absolute);
-    if (root !== undefined && rootEntry !== undefined && storedState(rootEntry) !== "absent") {
-      yield* restoreStoredFile(rootEntry);
-    }
-    if (
-      rootEntry === undefined
-      || storedState(rootEntry) === "absent"
-      || storedState(rootEntry) === "directory"
-    ) {
-      for (const entry of restoreOrder(stored)) {
-        if (entry === rootEntry) continue;
-        yield* restoreStoredFile(entry, root);
-      }
-    }
-    if (root !== undefined && rootEntry !== undefined && storedState(rootEntry) === "absent") {
-      yield* machine.removeEmptyDirectory({ path: root }).pipe(
-        Effect.catchTag("MachineFilesystemError", (error) =>
-          error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
-        ),
-      );
-    }
+    yield* restoreStoredFiles(stored, root);
   });
 
 const targetPath = (
@@ -693,17 +785,16 @@ const prepareSchedule = (
       });
     }
     const input = yield* scheduleInputFor(context);
+    const captured = yield* captureScheduleRollback(context, scheduleManager, input);
     const execute = (context.previousSchedule === undefined
       ? scheduleManager.install(input)
       : scheduleManager.update(input)
     ).pipe(Effect.asVoid);
-    const rollback = context.previousSchedule === undefined
-      ? scheduleManager.remove(input).pipe(Effect.asVoid)
-      : scheduleManager.update({
-        ...input,
-        schedule: context.previousSchedule,
-      }).pipe(Effect.asVoid);
-    return { execute, rollback };
+    return {
+      rollbackReference: captured.reference,
+      execute,
+      rollback: captured.restore,
+    };
   });
 
 const prepareWrite = (
@@ -815,9 +906,6 @@ const prepareMirror = (
       });
     }
     const root = yield* targetPath(target);
-    const allRelative = [...new Set([...adds, ...removes])];
-    const paths = yield* Effect.forEach(allRelative, (path) => normalizeRelative(root, path));
-    const byRelative = new Map(allRelative.map((path, index) => [path, paths[index]!]));
     const desiredByPath = new Map(desired.files.map((file) => [
       file.path,
       file,
@@ -826,6 +914,18 @@ const prepareMirror = (
       directory.path,
       directory,
     ]));
+    const removedPaths = new Set(removes);
+    const mutationAncestors = relativePathAncestors([...adds, ...removes]);
+    const allRelative = [
+      ...new Set([
+        ...adds,
+        ...removes,
+        ...desiredDirectories.keys(),
+        ...mutationAncestors,
+      ]),
+    ];
+    const paths = yield* Effect.forEach(allRelative, (path) => normalizeRelative(root, path));
+    const byRelative = new Map(allRelative.map((path, index) => [path, paths[index]!]));
     const contentByPath = new Map<string, Uint8Array>();
     for (const relative of adds) {
       const desiredFile = desiredByPath.get(relative);
@@ -845,24 +945,73 @@ const prepareMirror = (
     const execute = Effect.gen(function*() {
       const activeMachine = yield* MachineState;
       const rootMode = desired.mode ?? 0o700;
-      yield* activeMachine.ensureDirectory({ path: root, mode: rootMode });
-      yield* activeMachine.setPermissions({ path: root, mode: rootMode });
-      const orderedAdds = [...adds].sort((left, right) => {
-        const leftDirectory = desiredDirectories.has(left);
-        const rightDirectory = desiredDirectories.has(right);
-        if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
-        return left.split("/").length - right.split("/").length;
-      });
-      for (const relative of orderedAdds) {
-        const desiredDirectory = desiredDirectories.get(relative);
-        if (desiredDirectory !== undefined) {
-          yield* activeMachine.mutateWithinRoot({
-            root,
-            path: byRelative.get(relative)!,
-            mutation: { kind: "directory", mode: desiredDirectory.mode },
-          });
-          continue;
+      const rootKind = yield* activeMachine.inspectPath(root).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          error.message.includes("ENOENT")
+            ? Effect.succeed(undefined)
+            : Effect.fail(error)
+        ),
+      );
+      if (rootKind !== undefined && rootKind.kind !== "directory") {
+        yield* activeMachine.removeFile({ path: root });
+      }
+      const traversableRootMode = rootMode | 0o700;
+      yield* activeMachine.ensureDirectory({ path: root, mode: traversableRootMode });
+      yield* activeMachine.setPermissions({ path: root, mode: traversableRootMode });
+      const orderedDirectories = [...desiredDirectories.values()].sort((left, right) =>
+        left.path.split("/").length - right.path.split("/").length
+        || left.path.localeCompare(right.path)
+      );
+      const orderedMutationAncestors = [...mutationAncestors].sort((left, right) =>
+        left.split("/").length - right.split("/").length
+        || left.localeCompare(right)
+      );
+      const preservedAncestorModes = new Map<string, number>();
+      // Widen before child mutations, then restore surviving modes below.
+      for (const relative of orderedMutationAncestors) {
+        const path = byRelative.get(relative)!;
+        const current = yield* activeMachine.inspectPath(path).pipe(
+          Effect.catchTag("MachineFilesystemError", (error) =>
+            error.message.includes("ENOENT")
+              ? Effect.succeed(undefined)
+              : Effect.fail(error)
+          ),
+        );
+        if (current?.kind === "directory") {
+          const permissions = yield* activeMachine.permissions(path);
+          if (!desiredDirectories.has(relative) && !removedPaths.has(relative)) {
+            preservedAncestorModes.set(relative, permissions.mode);
+          }
+          const writableMode = permissions.mode | 0o700;
+          if (writableMode !== permissions.mode) {
+            yield* activeMachine.setPermissions({ path, mode: writableMode });
+          }
         }
+      }
+      const orderedRemoves = [...removes].sort((left, right) =>
+        right.split("/").length - left.split("/").length
+      );
+      for (const relative of orderedRemoves) {
+        yield* activeMachine.mutateWithinRoot({
+          root,
+          path: byRelative.get(relative)!,
+          mutation: { kind: "remove" },
+        });
+      }
+      for (const directory of orderedDirectories) {
+        yield* activeMachine.mutateWithinRoot({
+          root,
+          path: byRelative.get(directory.path)!,
+          mutation: { kind: "directory", mode: directory.mode | 0o700 },
+        });
+      }
+      const orderedAdds = adds
+        .filter((relative) => !desiredDirectories.has(relative))
+        .sort((left, right) =>
+          left.split("/").length - right.split("/").length
+          || left.localeCompare(right)
+        );
+      for (const relative of orderedAdds) {
         const desiredFile = desiredByPath.get(relative)!;
         yield* activeMachine.mutateWithinRoot({
           root,
@@ -876,16 +1025,20 @@ const prepareMirror = (
             : { kind: "symlink", target: desiredFile.symlinkTo },
         });
       }
-      const orderedRemoves = [...removes].sort((left, right) =>
-        right.split("/").length - left.split("/").length
+      const finalDirectoryModes = deepestPathFirst(
+        [
+          ...orderedDirectories,
+          ...[...preservedAncestorModes].map(([path, mode]) => ({ path, mode })),
+        ],
+        (directory) => directory.path,
       );
-      for (const relative of orderedRemoves) {
-        yield* activeMachine.mutateWithinRoot({
-          root,
-          path: byRelative.get(relative)!,
-          mutation: { kind: "remove" },
+      for (const directory of finalDirectoryModes) {
+        yield* activeMachine.setPermissions({
+          path: byRelative.get(directory.path)!,
+          mode: directory.mode,
         });
       }
+      yield* activeMachine.setPermissions({ path: root, mode: rootMode });
     });
     return {
       rollbackReference: rollback.reference,
@@ -979,16 +1132,73 @@ const prepareRemoval = (
         const rollback = yield* captureRollback(context, [root, ...paths], root);
         const execute = Effect.gen(function*() {
           const machine = yield* MachineState;
-          for (const path of paths) {
-            yield* machine.mutateWithinRoot({
-              root,
-              path,
-              mutation: { kind: "remove" },
-            }).pipe(
-              Effect.catchTag("MachineFilesystemError", (error) =>
-                error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
+          const parentPaths = yield* rollbackPathSet(
+            paths.map((path): MachinePath => ({
+              platform: path.platform,
+              absolute: path.platform === "windows"
+                ? win32.dirname(path.absolute)
+                : dirname(path.absolute),
+            })),
+            root,
+          );
+          const originalModes = (yield* Effect.forEach(
+            parentPaths,
+            (path) =>
+              machine.inspectPath(path).pipe(
+                Effect.flatMap((kind) =>
+                  kind.kind === "directory"
+                    ? machine.permissions(path).pipe(
+                      Effect.map((permissions) => ({ path, mode: permissions.mode })),
+                    )
+                    : Effect.succeed(undefined)
+                ),
+                Effect.catchTag("MachineFilesystemError", (error) =>
+                  /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
+                    ? Effect.succeed(undefined)
+                    : Effect.fail(error)
+                ),
               ),
-            );
+          )).filter((entry): entry is { readonly path: MachinePath; readonly mode: number } =>
+            entry !== undefined
+          );
+          const changedModes: Array<{ readonly path: MachinePath; readonly mode: number }> = [];
+          const removal = Effect.gen(function*() {
+            for (const entry of [...deepestPathFirst(originalModes, (value) => value.path.absolute)].reverse()) {
+              const writableMode = entry.mode | 0o700;
+              if (writableMode === entry.mode) continue;
+              yield* machine.setPermissions({ path: entry.path, mode: writableMode });
+              changedModes.push(entry);
+            }
+            for (const path of deepestPathFirst(paths, (value) => value.absolute)) {
+              yield* machine.mutateWithinRoot({
+                root,
+                path,
+                mutation: { kind: "remove" },
+              }).pipe(
+                Effect.catchTag("MachineFilesystemError", (error) =>
+                  error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
+                ),
+              );
+            }
+          });
+          const removalResult = yield* Effect.result(removal);
+          const restorationResult = yield* Effect.result(Effect.forEach(
+            deepestPathFirst(changedModes, (entry) => entry.path.absolute),
+            (entry) =>
+              machine.setPermissions({ path: entry.path, mode: entry.mode }).pipe(
+                Effect.catchTag("MachineFilesystemError", (error) =>
+                  /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
+                    ? Effect.void
+                    : Effect.fail(error)
+                ),
+              ),
+            { discard: true },
+          ));
+          if (removalResult._tag === "Failure") {
+            return yield* Effect.fail(removalResult.failure);
+          }
+          if (restorationResult._tag === "Failure") {
+            return yield* Effect.fail(restorationResult.failure);
           }
         });
         return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
@@ -1003,10 +1213,12 @@ const prepareRemoval = (
             message: `removal action requires a schedule manager for ${context.resource.id}`,
           });
         }
-        const input = { schedule: detail.schedule };
+        const input = yield* scheduleInputFor(context);
+        const captured = yield* captureScheduleRollback(context, scheduleManager, input);
         return {
+          rollbackReference: captured.reference,
           execute: scheduleManager.remove(input).pipe(Effect.asVoid),
-          rollback: scheduleManager.install(input).pipe(Effect.asVoid),
+          rollback: captured.restore,
         };
       }
       case "tool":
@@ -1484,7 +1696,7 @@ export const verifyResource = (
       });
     case "skill":
     case "directory":
-      return desiredResourceDigest(desired) === declaredDigest
+      return directoryVerificationDigest(desired.files) === declaredDigest
         ? verifyDirectory(context, [
           ...desired.files,
           ...(desired.directories ?? []).map((directory) => ({

@@ -33,16 +33,19 @@ import {
   executionContexts,
   executionLimits,
   executeSynchronizationAction,
-  restoreScheduleRollbackReference,
+  ownedFilesFor,
   type ActionResult,
   type SynchronizationExecutionResult,
 } from "./executor.ts";
 import { desiredResourceDigest } from "./resource-plans.ts";
 import {
   restoreRollbackReference,
+  scheduleInputFor,
   verifyResource,
+  type ResourceExecutionContext,
   type ResourceVerification,
 } from "./resource-executors.ts";
+import { restoreScheduleRollbackReference } from "./schedule-rollbacks.ts";
 import {
   RecoveryIntegrityError,
   RecoveryRunNotFoundError,
@@ -165,14 +168,36 @@ const validateJournal = (
           `action ${action.id} does not have one valid initial journal event`,
         );
       }
-      const terminal = actionEvents.findIndex((event) =>
-        event.state === "succeeded" || event.state === "skipped"
-      );
-      if (terminal >= 0 && terminal !== actionEvents.length - 1) {
-        return yield* integrityError(
-          recovery,
-          `terminal action ${action.id} has later journal events`,
+      const attempts = new Map<number, Array<ActionJournalRecord>>();
+      let previousAttempt = 0;
+      for (const event of actionEvents.slice(1)) {
+        if (event.attempt < 1 || event.attempt < previousAttempt) {
+          return yield* integrityError(
+            recovery,
+            `action ${action.id} has invalid attempt ordering`,
+          );
+        }
+        previousAttempt = event.attempt;
+        const attemptEvents = attempts.get(event.attempt) ?? [];
+        attemptEvents.push(event);
+        attempts.set(event.attempt, attemptEvents);
+      }
+      for (const [attempt, attemptEvents] of attempts) {
+        const terminal = attemptEvents.findIndex((event) =>
+          event.state === "succeeded" || event.state === "skipped"
         );
+        const laterEvents = terminal < 0 ? [] : attemptEvents.slice(terminal + 1);
+        const completedRollback = attemptEvents[terminal]?.state === "succeeded"
+          && laterEvents.length === 1
+          && laterEvents[0]?.state === "failed"
+          && laterEvents[0]?.verification?.status === "not-run"
+          && laterEvents[0]?.verification?.method === "run-rolled-back";
+        if (terminal >= 0 && terminal !== attemptEvents.length - 1 && !completedRollback) {
+          return yield* integrityError(
+            recovery,
+            `terminal action ${action.id} attempt ${String(attempt)} has later journal events`,
+          );
+        }
       }
       const last = actionEvents.at(-1)!;
       if (
@@ -237,6 +262,8 @@ const appendJournal = (
   attempt: number,
   verification?: VerificationEvidence,
   rollbackReference?: string,
+  appliedResource?: AppliedResourceRecord,
+  removedResource?: ResourceId,
 ) =>
   Effect.gen(function*() {
     const repository = yield* StateRepository;
@@ -251,7 +278,46 @@ const appendJournal = (
       ...base,
       verification,
       rollbackReference,
+      appliedResource,
+      removedResource,
     });
+  });
+
+const latestRollbackReference = (
+  events: ReadonlyArray<ActionJournalRecord>,
+  action: ActionJournalRecord["action"],
+): string | undefined => {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (event.action === action && event.rollbackReference !== undefined) {
+      return event.rollbackReference;
+    }
+  }
+  return undefined;
+};
+
+const restoreResourceRollbackReference = (
+  context: ResourceExecutionContext,
+  reference: string,
+  scheduleManager: ScheduleManager["Service"] | undefined,
+) =>
+  Effect.gen(function*() {
+    if (context.resource.kind !== "schedule") {
+      return yield* restoreRollbackReference(context, reference);
+    }
+    if (scheduleManager === undefined) {
+      return yield* new RecoveryIntegrityError({
+        run: context.run,
+        message: `cannot restore schedule action ${context.action.id}: native scheduler is unavailable`,
+      });
+    }
+    const input = yield* scheduleInputFor(context);
+    yield* restoreScheduleRollbackReference(
+      context,
+      reference,
+      scheduleManager,
+      input,
+    );
   });
 
 const preservedOutcome = (
@@ -406,6 +472,14 @@ export const recoverSynchronizationPlan = (
     const removedResources = new Set<ResourceId>();
     const human: Array<HumanAction> = [];
     const drift: Array<DriftConflict> = recovery.drift.map((entry) => entry.conflict);
+    const completedRollbacks: Array<{
+      readonly action: PlannedAction;
+      readonly attempt: number;
+      readonly rollback: Effect.Effect<void, unknown, MachineState>;
+      readonly reference?: string | undefined;
+      readonly resource?: ResourceId | undefined;
+      readonly previousApplied?: AppliedResourceRecord | undefined;
+    }> = [];
     let failedReason: string | undefined;
 
     for (const state of states) {
@@ -415,37 +489,44 @@ export const recoverSynchronizationPlan = (
         ? Option.getOrUndefined(yield* Effect.serviceOption(ScheduleManager))
         : undefined;
       let result: ActionResult;
+      let rollbackOwnership: {
+        readonly resource: ResourceId;
+        readonly previousApplied?: AppliedResourceRecord | undefined;
+      } | undefined;
       if (state.action.detail.kind === "schedule-default") {
-        // A native scheduler mutation is an external side effect. Re-run the
-        // idempotent action on recovery, including after a previously
-        // journaled success, so a restart cannot trust stale scheduler state.
-        if (last.state === "running" || last.state === "failed") {
-          const rollbackReference = [...recovery.actions].reverse().find((event) =>
-            event.action === state.action.id && event.rollbackReference !== undefined
-          )?.rollbackReference;
-          if (rollbackReference !== undefined) {
-            const manager = Option.getOrUndefined(
-              yield* Effect.serviceOption(ScheduleManager),
-            );
-            if (manager === undefined) {
-              return yield* integrityError(
-                recovery,
-                `cannot restore schedule action ${state.action.id}: native scheduler is unavailable`,
-              );
-            }
-            yield* restoreScheduleRollbackReference(
-              state.context,
-              rollbackReference,
-              manager,
-            ).pipe(
-              Effect.mapError((error) =>
-                integrityError(
-                  recovery,
-                  `cannot restore schedule action ${state.action.id}: ${String(error)}`,
-                )
-              ),
+        // Replaying from the applied schedule would replace the original
+        // rollback baseline. Restore persisted native state before every
+        // resumed attempt so a later failure still unwinds the whole run.
+        const rollbackReference = latestRollbackReference(
+          recovery.actions,
+          state.action.id,
+        );
+        if (last.state === "succeeded" && rollbackReference === undefined) {
+          return yield* integrityError(
+            recovery,
+            `completed schedule action ${state.action.id} lacks rollback material`,
+          );
+        }
+        if (last.state !== "pending" && rollbackReference !== undefined) {
+          if (scheduleManager === undefined) {
+            return yield* integrityError(
+              recovery,
+              `cannot restore schedule action ${state.action.id}: native scheduler is unavailable`,
             );
           }
+          yield* restoreScheduleRollbackReference(
+            state.context,
+            rollbackReference,
+            scheduleManager,
+            { schedule: state.action.detail.schedule },
+          ).pipe(
+            Effect.mapError((error) =>
+              integrityError(
+                recovery,
+                `cannot restore schedule action ${state.action.id}: ${String(error)}`,
+              )
+            ),
+          );
         }
         result = yield* executeSynchronizationAction(input, state, attempt);
       } else if (last.state === "skipped") {
@@ -469,19 +550,78 @@ export const recoverSynchronizationPlan = (
         state.action.detail.kind === "remove-resource"
         && last.state === "succeeded"
       ) {
+        if (last.rollbackReference === undefined) {
+          return yield* integrityError(
+            recovery,
+            `completed removal ${state.action.id} lacks rollback material`,
+          );
+        }
+        yield* restoreResourceRollbackReference(
+          state.context,
+          last.rollbackReference,
+          scheduleManager,
+        ).pipe(
+          Effect.mapError((error) =>
+            integrityError(recovery, `cannot restore ${state.action.id}: ${String(error)}`)
+          ),
+        );
+        rollbackOwnership = {
+          resource: state.action.resource,
+          previousApplied: last.removedResource,
+        };
         result = yield* executeSynchronizationAction(input, state, attempt);
       } else if (last.state === "succeeded") {
+        if (
+          last.rollbackReference === undefined
+          && state.context.resource.kind === "schedule"
+          && state.action.detail.kind !== "no-op"
+          && state.action.detail.kind !== "verify-only"
+        ) {
+          return yield* integrityError(
+            recovery,
+            `completed schedule action ${state.action.id} lacks rollback material`,
+          );
+        }
         const verification = yield* verifyResource(state.context, scheduleManager).pipe(
           Effect.mapError((error) =>
             integrityError(recovery, `cannot reverify ${state.action.id}: ${String(error)}`)
           ),
         );
         if (verification.passed) {
-          result = { kind: "verified", resource: state.action.resource };
+          const rollback = last.rollbackReference === undefined
+            ? undefined
+            : restoreResourceRollbackReference(
+              state.context,
+              last.rollbackReference,
+              scheduleManager,
+            );
+          result = {
+            kind: "verified",
+            resource: state.action.resource,
+            // Agent successes only verify external work. Ordinary successes
+            // with a digest also replaced the ownership record atomically.
+            rollback: rollback
+              ?? (
+                state.action.detail.kind !== "agent-task"
+                  && desiredResourceDigest(state.context.desired) !== undefined
+                  ? Effect.void
+                  : undefined
+              ),
+            rollbackReference: last.rollbackReference,
+          };
+          rollbackOwnership = {
+            resource: state.action.resource,
+            previousApplied: last.removedResource,
+          };
         } else if (last.rollbackReference !== undefined) {
-          yield* restoreRollbackReference(
+          rollbackOwnership = {
+            resource: state.action.resource,
+            previousApplied: last.removedResource,
+          };
+          yield* restoreResourceRollbackReference(
             state.context,
             last.rollbackReference,
+            scheduleManager,
           ).pipe(
             Effect.mapError((error) =>
               integrityError(recovery, `cannot restore ${state.action.id}: ${String(error)}`)
@@ -495,20 +635,56 @@ export const recoverSynchronizationPlan = (
           };
         }
       } else {
-        const rollbackReference = [...recovery.actions].reverse().find((event) =>
-          event.action === state.action.id && event.rollbackReference !== undefined
-        )?.rollbackReference;
+        const rollbackReference = latestRollbackReference(
+          recovery.actions,
+          state.action.id,
+        );
         if (
           (last.state === "running" || last.state === "failed")
           && rollbackReference !== undefined
         ) {
-          yield* restoreRollbackReference(state.context, rollbackReference).pipe(
+          yield* restoreResourceRollbackReference(
+            state.context,
+            rollbackReference,
+            scheduleManager,
+          ).pipe(
             Effect.mapError((error) =>
               integrityError(recovery, `cannot restore ${state.action.id}: ${String(error)}`)
             ),
           );
         }
         result = yield* executeSynchronizationAction(input, state, attempt);
+      }
+      if (result.kind === "verified" && result.rollback !== undefined) {
+        if (result.resource !== undefined && rollbackOwnership === undefined) {
+          rollbackOwnership = {
+            resource: result.resource,
+            previousApplied: input.appliedResources?.find((record) =>
+              record.resource === result.resource
+            ),
+          };
+        }
+        completedRollbacks.push({
+          action: state.action,
+          attempt,
+          rollback: result.rollback,
+          reference: result.rollbackReference,
+          resource: rollbackOwnership?.resource,
+          previousApplied: rollbackOwnership?.previousApplied,
+        });
+      } else if (result.kind === "failed" && rollbackOwnership !== undefined) {
+        yield* appendJournal(
+          input.id,
+          state.action,
+          "failed",
+          attempt,
+          { status: "not-run", method: "run-rolled-back" },
+          result.rollbackReference,
+          rollbackOwnership.previousApplied,
+          rollbackOwnership.previousApplied === undefined
+            ? rollbackOwnership.resource
+            : undefined,
+        );
       }
       if (result.resource !== undefined) verified.add(result.resource);
       if (
@@ -525,7 +701,31 @@ export const recoverSynchronizationPlan = (
         drift.push(result.drift);
       }
       if (result.reason !== undefined) failedReason = result.reason;
-      if (result.kind !== "verified") break;
+      if (result.kind !== "verified") {
+        if (result.kind === "failed") {
+          for (const completed of completedRollbacks.reverse()) {
+            yield* completed.rollback.pipe(
+              Effect.andThen(appendJournal(
+                input.id,
+                completed.action,
+                "failed",
+                completed.attempt,
+                { status: "not-run", method: "run-rolled-back" },
+                completed.reference,
+                completed.previousApplied,
+                completed.previousApplied === undefined
+                  ? completed.resource
+                  : undefined,
+              )),
+              Effect.catch((error) => {
+                failedReason = `${failedReason ?? "synchronization recovery failed"}; rollback failed for ${completed.action.id}: ${String(error)}`;
+                return Effect.void;
+              }),
+            );
+          }
+        }
+        break;
+      }
     }
 
     const outcome: SynchronizationOutcome = failedReason !== undefined
@@ -557,14 +757,7 @@ export const recoverSynchronizationPlan = (
           ? undefined
           : desiredResourceDigest(value);
         if (digest !== undefined) {
-          const ownedFiles = value?.kind === "directory" || value?.kind === "skill"
-            ? value.files.map((file) => ({
-              path: file.path,
-              digest: file.digest,
-              executable: file.executable,
-              mode: file.mode,
-            }))
-            : undefined;
+          const ownedFiles = value === undefined ? undefined : ownedFilesFor(value);
           appliedResources.push({
             resource,
             revision: recoveryInput.revision.id,
@@ -574,7 +767,11 @@ export const recoverSynchronizationPlan = (
             policy: resourceById.get(resource)?.policy,
             target: resourceById.get(resource)?.target,
             executable: value?.kind === "file" ? value.executable : undefined,
-            mode: value?.kind === "file" ? value.mode : undefined,
+            mode: value?.kind === "file"
+                || value?.kind === "directory"
+                || value?.kind === "skill"
+              ? value.mode
+              : undefined,
             symlinkTo: value?.kind === "file" ? value.symlinkTo : undefined,
             ownedFiles,
             ownedKeys: value?.kind === "config" ? value.keys : undefined,

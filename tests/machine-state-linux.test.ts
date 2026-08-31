@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -47,6 +48,43 @@ machineStateContract("Linux", {
 });
 
 describe("portable safe-root mutation", () => {
+  it("replaces an empty directory with a standalone symlink but preserves non-empty directories", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-standalone-symlink-"));
+    try {
+      const empty = join(root, "empty");
+      const blocked = join(root, "blocked");
+      const target = join(root, "target.txt");
+      mkdirSync(empty);
+      mkdirSync(blocked);
+      writeFileSync(join(blocked, "child.txt"), "preserve");
+      writeFileSync(target, "target");
+      const layer = linuxMachineStateLayer({ environment: environment(root) });
+
+      await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const emptyPath = yield* machine.normalizePath({ path: empty });
+          yield* machine.replaceSymlink({ path: emptyPath, target });
+        }).pipe(Effect.provide(layer)),
+      );
+      expect(readlinkSync(empty)).toBe(target);
+
+      await expect(Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const blockedPath = yield* machine.normalizePath({ path: blocked });
+          yield* machine.replaceSymlink({ path: blockedPath, target });
+        }).pipe(Effect.provide(layer)),
+      )).rejects.toMatchObject({
+        _tag: "MachineFilesystemError",
+        operation: "replace symlink",
+      });
+      expect(readFileSync(join(blocked, "child.txt"), "utf8")).toBe("preserve");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates descendants and atomically replaces a final symlink", async () => {
     const root = mkdtempSync(join(tmpdir(), "canonfig-portable-safe-root-"));
     try {
@@ -86,6 +124,75 @@ describe("portable safe-root mutation", () => {
 
       expect(readFileSync(target, "utf8")).toBe("managed");
       expect(readFileSync(outside, "utf8")).toBe("outside");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces conflicting final object kinds but preserves non-empty directories", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-portable-safe-root-"));
+    try {
+      const managed = join(root, "managed");
+      const target = join(managed, "entry");
+      const blocked = join(managed, "blocked");
+      mkdirSync(managed);
+      writeFileSync(target, "file");
+      mkdirSync(blocked);
+      writeFileSync(join(blocked, "child.txt"), "preserve");
+      const layer = linuxMachineStateLayer({
+        environment: environment(root),
+        safeRootMutationStrategy: "portable",
+      });
+
+      const kinds = await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const managedPath = yield* machine.normalizePath({ path: managed });
+          const targetPath = yield* machine.normalizePath({ path: target });
+          yield* machine.mutateWithinRoot({
+            root: managedPath,
+            path: targetPath,
+            mutation: { kind: "directory", mode: 0o700 },
+          });
+          const directory = yield* machine.inspectPath(targetPath);
+          yield* machine.mutateWithinRoot({
+            root: managedPath,
+            path: targetPath,
+            mutation: {
+              kind: "write",
+              content: new TextEncoder().encode("replacement"),
+            },
+          });
+          const regular = yield* machine.inspectPath(targetPath);
+          return { directory, regular };
+        }).pipe(Effect.provide(layer)),
+      );
+
+      expect(kinds).toEqual({
+        directory: { kind: "directory" },
+        regular: { kind: "regular" },
+      });
+      expect(readFileSync(target, "utf8")).toBe("replacement");
+
+      await expect(Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const managedPath = yield* machine.normalizePath({ path: managed });
+          const blockedPath = yield* machine.normalizePath({ path: blocked });
+          yield* machine.mutateWithinRoot({
+            root: managedPath,
+            path: blockedPath,
+            mutation: {
+              kind: "write",
+              content: new TextEncoder().encode("replacement"),
+            },
+          });
+        }).pipe(Effect.provide(layer)),
+      )).rejects.toMatchObject({
+        _tag: "MachineFilesystemError",
+        operation: "mutate managed path",
+      });
+      expect(readFileSync(join(blocked, "child.txt"), "utf8")).toBe("preserve");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

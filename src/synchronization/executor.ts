@@ -17,9 +17,11 @@ import type {
 } from "../domain/synchronization.ts";
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import type { SchedulerSnapshot } from "../machine/machine-state.types.ts";
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
-import { desiredResourceDigest } from "./resource-plans.ts";
+import {
+  desiredDirectoryEntries,
+  desiredResourceDigest,
+} from "./resource-plans.ts";
 import {
   prepareResourceAction,
   verifyResource,
@@ -40,6 +42,7 @@ import type {
   SynchronizationExecutionLimits,
   SynchronizationRunInput,
 } from "./synchronization.types.ts";
+import { captureScheduleRollback } from "./schedule-rollbacks.ts";
 
 export const defaultSynchronizationExecutionLimits: SynchronizationExecutionLimits = {
   maximumFileBytes: 16 * 1024 * 1024,
@@ -83,139 +86,6 @@ const profileScheduleDesired = (
   ),
   schedule,
 });
-
-const SchedulerSnapshotSchema = Schema.Union([
-  Schema.Struct({
-    state: Schema.Literal("absent"),
-    platform: Schema.Literals(["linux", "macos", "windows"]),
-    mechanism: Schema.Literals([
-      "systemd-user-timer",
-      "launchd-user-agent",
-      "task-scheduler",
-    ]),
-    serviceName: Schema.NonEmptyString,
-  }),
-  Schema.Struct({
-    state: Schema.Literal("present"),
-    platform: Schema.Literals(["linux", "macos", "windows"]),
-    mechanism: Schema.Literals([
-      "systemd-user-timer",
-      "launchd-user-agent",
-      "task-scheduler",
-    ]),
-    serviceName: Schema.NonEmptyString,
-    enabled: Schema.Boolean,
-    active: Schema.optional(Schema.Boolean),
-    servicePresent: Schema.Boolean,
-    schedulePresent: Schema.Boolean,
-    service: Schema.optional(Schema.String),
-    schedule: Schema.optional(Schema.String),
-    serviceMode: Schema.optional(Schema.Int),
-    scheduleMode: Schema.optional(Schema.Int),
-    native: Schema.optional(Schema.String),
-  }),
-]);
-
-const scheduleRollbackReference = (
-  context: ActionState["context"],
-): Effect.Effect<
-  string,
-  SynchronizationExecutionInputError | MachineStateError,
-  MachineState
-> =>
-  Effect.gen(function*() {
-    const machine = yield* MachineState;
-    const directories = yield* machine.userDirectories();
-    const directory = yield* machine.normalizePath({
-      path: `canonfig/rollback/${context.run}`,
-      base: directories.cache,
-    });
-    yield* machine.ensureDirectory({ path: directory });
-    return (yield* machine.normalizePath({
-      path: `${sha256Hex(context.action.id)}.schedule.json`,
-      base: directory,
-    })).absolute;
-  });
-
-const captureScheduleRollback = (
-  context: ActionState["context"],
-  scheduleManager: ScheduleManager["Service"],
-): Effect.Effect<
-  {
-    readonly reference: string;
-    readonly snapshot: SchedulerSnapshot;
-    readonly restore: Effect.Effect<void, ScheduleManagerError | MachineStateError, MachineState>;
-  },
-  SynchronizationExecutionInputError | MachineStateError | ScheduleManagerError,
-  MachineState
-> =>
-  Effect.gen(function*() {
-    const reference = yield* scheduleRollbackReference(context);
-    const snapshot = yield* scheduleManager.snapshot({
-      schedule: context.action.detail.kind === "schedule-default"
-        ? context.action.detail.schedule
-        : undefined,
-    });
-    const machine = yield* MachineState;
-    yield* machine.atomicWrite({
-      path: yield* machine.normalizePath({ path: reference }),
-      content: new TextEncoder().encode(JSON.stringify(snapshot)),
-    });
-    return {
-      reference,
-      snapshot,
-      restore: scheduleManager.restore(
-        {
-          schedule: context.action.detail.kind === "schedule-default"
-            ? context.action.detail.schedule
-            : undefined,
-        },
-        snapshot,
-      ),
-    };
-  });
-
-export const restoreScheduleRollbackReference = (
-  context: ActionState["context"],
-  reference: string,
-  scheduleManager: ScheduleManager["Service"],
-): Effect.Effect<
-  void,
-  SynchronizationExecutionInputError | MachineStateError | ScheduleManagerError,
-  MachineState
-> =>
-  Effect.gen(function*() {
-    const expected = yield* scheduleRollbackReference(context);
-    const machine = yield* MachineState;
-    const actual = yield* machine.normalizePath({ path: reference });
-    if (actual.absolute !== expected) {
-      return yield* new InvalidExecutionPlanError({
-        message: `schedule rollback reference does not belong to action ${context.action.id}`,
-      });
-    }
-    const bytes = yield* machine.readFile({
-      path: actual,
-      maximumBytes: 16 * 1024 * 1024,
-    });
-    const snapshot = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(SchedulerSnapshotSchema),
-    )(new TextDecoder().decode(bytes)).pipe(
-      Effect.mapError((error) =>
-        new InvalidExecutionPlanError({
-          message: `invalid schedule rollback material for action ${context.action.id}: ${String(error)}`,
-        })
-      ),
-    );
-    if (context.action.detail.kind !== "schedule-default") {
-      return yield* new InvalidExecutionPlanError({
-        message: `schedule rollback reference targets a non-schedule action ${context.action.id}`,
-      });
-    }
-    yield* scheduleManager.restore(
-      { schedule: context.action.detail.schedule },
-      snapshot,
-    );
-  });
 
 const now = (): Effect.Effect<string> =>
   Effect.map(Clock.currentTimeMillis, (milliseconds) =>
@@ -524,6 +394,21 @@ const rollbackPrepared = (
   prepared: PreparedResourceAction | undefined,
 ) => prepared?.rollback ?? Effect.void;
 
+export const ownedFilesFor = (
+  desired: SynchronizationRunInput["revision"]["desired"][number]["desired"],
+): AppliedResourceRecord["ownedFiles"] =>
+  desired.kind === "directory" || desired.kind === "skill"
+    ? desiredDirectoryEntries(desired).map((entry) => ({
+      path: entry.path,
+      digest: entry.digest,
+      executable: entry.executable,
+      mode: entry.mode,
+      objectKind: ("objectKind" in entry ? entry.objectKind : undefined)
+        ?? ("symlinkTo" in entry && entry.symlinkTo !== undefined ? "symlink" : "regular"),
+      symlinkTo: "symlinkTo" in entry ? entry.symlinkTo : undefined,
+    }))
+    : undefined;
+
 const appliedResourceFor = (
   input: SynchronizationRunInput,
   state: ActionState,
@@ -541,16 +426,11 @@ const appliedResourceFor = (
     policy: state.context.resource.policy,
     target: state.context.resource.target,
     executable: desired.kind === "file" ? desired.executable : undefined,
-    mode: desired.kind === "file" ? desired.mode : undefined,
-    symlinkTo: desired.kind === "file" ? desired.symlinkTo : undefined,
-    ownedFiles: desired.kind === "directory" || desired.kind === "skill"
-      ? desired.files.map((file) => ({
-        path: file.path,
-        digest: file.digest,
-        executable: file.executable,
-        mode: file.mode,
-      }))
+    mode: desired.kind === "file" || desired.kind === "directory" || desired.kind === "skill"
+      ? desired.mode
       : undefined,
+    symlinkTo: desired.kind === "file" ? desired.symlinkTo : undefined,
+    ownedFiles: ownedFilesFor(desired),
     ownedKeys: desired.kind === "config" ? desired.keys : undefined,
     configFormat: desired.kind === "config" ? desired.format : undefined,
     schedule: desired.kind === "schedule" ? desired.schedule : undefined,
@@ -563,7 +443,7 @@ export interface ActionResult {
   readonly human?: HumanAction | undefined;
   readonly drift?: DriftConflict | undefined;
   readonly reason?: string | undefined;
-  /** In-memory inverse retained until the full run reaches a terminal state. */
+  /** Runtime inverse retained until physical and ownership changes are terminal. */
   readonly rollback?: Effect.Effect<void, unknown, MachineState> | undefined;
   readonly rollbackReference?: string | undefined;
 }
@@ -631,6 +511,7 @@ const executeScheduleDefaultAction = (
       const captured = yield* captureScheduleRollback(
         state.context,
         scheduleManager,
+        { schedule: detail.schedule },
       );
       rollback = captured.restore;
       rollbackReference = captured.reference;
@@ -957,7 +838,7 @@ export const executeSynchronizationAction = (
         return {
           kind: "verified",
           resource: state.action.resource,
-          rollback: prepared.rollback,
+          rollback: prepared.rollback ?? Effect.void,
           rollbackReference: prepared.rollbackReference,
         } satisfies ActionResult;
       }
@@ -979,6 +860,9 @@ export const executeSynchronizationAction = (
         } satisfies ActionResult;
       }
       const appliedResource = appliedResourceFor(input, state, yield* now());
+      const previousAppliedResource = input.appliedResources?.find((record) =>
+        record.resource === state.action.resource
+      );
       yield* journal(
         input.id,
         state.action.id,
@@ -987,11 +871,14 @@ export const executeSynchronizationAction = (
         prepared.rollbackReference,
         attempt,
         appliedResource,
+        undefined,
+        previousAppliedResource,
       );
       return {
         kind: "verified",
         resource: state.action.resource,
-        rollback: prepared.rollback,
+        rollback: prepared.rollback
+          ?? (appliedResource === undefined ? undefined : Effect.void),
         rollbackReference: prepared.rollbackReference,
       } satisfies ActionResult;
     }).pipe(
@@ -1070,7 +957,7 @@ export const executeSynchronizationPlan = (
     const removedResources = new Set<ResourceId>();
     const completedRollbacks: Array<{
       readonly action: ActionId;
-      readonly resource: ResourceId;
+      readonly resource?: ResourceId | undefined;
       readonly rollback: Effect.Effect<void, unknown, MachineState>;
       readonly reference?: string | undefined;
     }> = [];
@@ -1081,11 +968,7 @@ export const executeSynchronizationPlan = (
         const state = states[index]!;
         const result = yield* executeSynchronizationAction(input, state);
         completedActions.push(state.action.id);
-        if (
-          result.kind === "verified"
-          && result.resource !== undefined
-          && result.rollback !== undefined
-        ) {
+        if (result.kind === "verified" && result.rollback !== undefined) {
           completedRollbacks.push({
             action: state.action.id,
             resource: result.resource,
@@ -1106,9 +989,11 @@ export const executeSynchronizationPlan = (
         if (result.kind !== "verified") {
           if (result.kind === "failed") {
             for (const completed of completedRollbacks.reverse()) {
-              const previousApplied = input.appliedResources?.find((record) =>
-                record.resource === completed.resource
-              );
+              const previousApplied = completed.resource === undefined
+                ? undefined
+                : input.appliedResources?.find((record) =>
+                  record.resource === completed.resource
+                );
               yield* completed.rollback.pipe(
                 Effect.andThen(journal(
                   input.id,
@@ -1118,7 +1003,9 @@ export const executeSynchronizationPlan = (
                   completed.reference,
                   1,
                   previousApplied,
-                  previousApplied === undefined ? completed.resource : undefined,
+                  completed.resource !== undefined && previousApplied === undefined
+                    ? completed.resource
+                    : undefined,
                 )),
                 Effect.catch((error) => {
                   failedReason = `${failedReason ?? "synchronization failed"}; rollback failed for ${completed.action}: ${redact(
@@ -1182,14 +1069,7 @@ export const executeSynchronizationPlan = (
         const desired = desiredByResource.get(resource);
         const digest = desired === undefined ? undefined : desiredResourceDigest(desired);
         if (digest !== undefined) {
-          const ownedFiles = desired?.kind === "directory" || desired?.kind === "skill"
-            ? desired.files.map((file) => ({
-              path: file.path,
-              digest: file.digest,
-              executable: file.executable,
-              mode: file.mode,
-            }))
-            : undefined;
+          const ownedFiles = desired === undefined ? undefined : ownedFilesFor(desired);
           applied.push({
             resource,
             revision: input.revision.id,
@@ -1199,7 +1079,11 @@ export const executeSynchronizationPlan = (
             policy: resourceById.get(resource)?.policy,
             target: resourceById.get(resource)?.target,
             executable: desired?.kind === "file" ? desired.executable : undefined,
-            mode: desired?.kind === "file" ? desired.mode : undefined,
+            mode: desired?.kind === "file"
+                || desired?.kind === "directory"
+                || desired?.kind === "skill"
+              ? desired.mode
+              : undefined,
             symlinkTo: desired?.kind === "file" ? desired.symlinkTo : undefined,
             ownedFiles,
             ownedKeys: desired?.kind === "config" ? desired.keys : undefined,

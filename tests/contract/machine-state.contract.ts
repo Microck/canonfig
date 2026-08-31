@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
+import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -309,6 +309,40 @@ export const machineStateContract = (
           operation: "mutate managed path",
         });
         expect(await readFile(outside, "utf8")).toBe("outside");
+      },
+    );
+
+    it.skipIf(!nativeOperations)(
+      "restores an isolated managed entry when its mutation fails",
+      async () => {
+        const root = temporaryDirectory();
+        const managed = pathJoin(root, "managed");
+        const target = pathJoin(managed, "entry");
+        const child = pathJoin(target, "child.txt");
+        await mkdir(target, { recursive: true });
+        await writeFile(child, "preserve");
+        const layer = adapter.localFileLayer(root);
+
+        await expect(runWith(
+          layer,
+          Effect.gen(function*() {
+            const machine = yield* MachineState;
+            const managedPath = yield* machine.normalizePath({ path: managed });
+            const targetPath = yield* machine.normalizePath({ path: target });
+            yield* machine.mutateWithinRoot({
+              root: managedPath,
+              path: targetPath,
+              mutation: {
+                kind: "write",
+                content: new TextEncoder().encode("replacement"),
+              },
+            });
+          }),
+        )).rejects.toMatchObject({
+          _tag: "MachineFilesystemError",
+          operation: "mutate managed path",
+        });
+        expect(await readFile(child, "utf8")).toBe("preserve");
       },
     );
 

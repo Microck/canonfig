@@ -191,6 +191,7 @@ export type ObservedResourceState =
   | {
     readonly state: "directory";
     readonly objectKind?: ObservedObjectKind | undefined;
+    readonly mode: number;
     readonly files: ReadonlyArray<ObservedDirectoryFile>;
   }
   | { readonly state: "unverifiable"; readonly reason: string };
@@ -212,6 +213,8 @@ export interface AppliedResourceRecord {
     readonly digest: string;
     readonly executable?: boolean | undefined;
     readonly mode?: number | undefined;
+    readonly objectKind?: "regular" | "directory" | "symlink" | undefined;
+    readonly symlinkTo?: string | undefined;
   }> | undefined;
   readonly ownedKeys?: ReadonlyArray<string> | undefined;
   readonly configFormat?: "toml" | "json" | "yaml" | undefined;
@@ -419,12 +422,14 @@ export const ObservedResourceStateSchema = Schema.Union([
     state: Schema.Literal("present"),
     digest: ContentDigest,
     executable: Schema.Boolean,
+    mode: Schema.optional(Schema.Int),
     objectKind: Schema.optional(ObservedObjectKind),
     symlinkTo: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     state: Schema.Literal("directory"),
     objectKind: Schema.optional(ObservedObjectKind),
+    mode: Schema.Int,
     files: Schema.Array(Schema.Union([
       Schema.Struct({
         path: Schema.NonEmptyString,
@@ -477,6 +482,8 @@ export const AppliedResourceRecordSchema = Schema.Struct({
     digest: ContentDigest,
     executable: Schema.optional(Schema.Boolean),
     mode: Schema.optional(Schema.Int),
+    objectKind: Schema.optional(Schema.Literals(["regular", "directory", "symlink"])),
+    symlinkTo: Schema.optional(Schema.NonEmptyString),
   }))),
   ownedKeys: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   configFormat: Schema.optional(Schema.Literals(["toml", "json", "yaml"])),

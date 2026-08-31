@@ -152,9 +152,8 @@ export interface JournalActionInput {
   readonly appliedResource?: AppliedResourceRecord | undefined;
   readonly removedResource?: ResourceId | undefined;
   /**
-   * The ownership baseline removed by a terminal removal action. The
-   * resource id alone is not enough to reconstruct a safe rollback or
-   * recovery context after the applied-resource row is deleted.
+   * The ownership baseline replaced or removed by a terminal action. The
+   * current record alone is not enough to restore ownership during recovery.
    */
   readonly removedResourceRecord?: AppliedResourceRecord | undefined;
 }

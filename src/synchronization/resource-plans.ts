@@ -8,7 +8,10 @@ import {
 import type { ActionDetail, PlannedActionKind } from "../domain/synchronization.ts";
 import type { AutomaticRecipeMethod, BuildPolicy } from "../domain/resource.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
-import { sha256Hex } from "../profile/profile-codec.ts";
+import {
+  directoryEntriesDigest,
+  sha256Hex,
+} from "../profile/profile-codec.ts";
 import {
   isMissingAutomaticRecipeVersion,
   recipeSourceDetails,
@@ -66,9 +69,25 @@ const compareText = (left: string, right: string): number => {
 const sortedUnique = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
   [...new Set(values)].sort(compareText);
 
+export const relativePathAncestors = (
+  paths: ReadonlyArray<string>,
+): ReadonlySet<string> => {
+  const ancestors = new Set<string>();
+  for (const path of paths) {
+    let separator = path.lastIndexOf("/");
+    while (separator >= 0) {
+      const ancestor = path.slice(0, separator);
+      if (ancestors.has(ancestor)) break;
+      ancestors.add(ancestor);
+      separator = ancestor.lastIndexOf("/");
+    }
+  }
+  return ancestors;
+};
+
 const directoryDigest = sha256Hex("canonfig:directory");
 
-const desiredDirectoryEntries = (
+export const desiredDirectoryEntries = (
   desired: Extract<DesiredResource, { readonly kind: "directory" | "skill" }>,
 ) => [
   ...desired.files,
@@ -82,26 +101,6 @@ const desiredDirectoryEntries = (
 ];
 
 const pendingAgentTaskId = Schema.decodeUnknownSync(AgentTaskId)("pending");
-
-const filesDigest = (
-  files: ReadonlyArray<{
-    readonly path: string;
-    readonly digest: string;
-    readonly executable?: boolean | undefined;
-    readonly mode?: number | undefined;
-    readonly objectKind?: string | undefined;
-    readonly symlinkTo?: string | undefined;
-  }>,
-): ContentDigest => {
-  const encoded = [...files]
-    .sort((left, right) => compareText(left.path, right.path))
-    .map((file) => (file.objectKind === undefined || file.objectKind === "regular")
-        && file.symlinkTo === undefined
-      ? `${file.path}\0${file.digest}\0${file.executable === true ? "x" : "-"}`
-      : `${file.path}\0${file.digest}\0${file.symlinkTo === undefined && file.executable === true ? "x" : "-"}\0${file.objectKind ?? "symlink"}\0${file.symlinkTo ?? ""}`)
-    .join("\n");
-  return sha256Hex(encoded);
-};
 
 const presentObservedFiles = (
   files: ReadonlyArray<{
@@ -141,11 +140,11 @@ export const desiredResourceDigest = (desired: DesiredResource): ContentDigest |
   switch (desired.kind) {
     case "file":
     case "config":
-    case "skill":
     case "schedule":
       return desired.digest;
+    case "skill":
     case "directory":
-      return filesDigest(desiredDirectoryEntries(desired));
+      return directoryEntriesDigest(desiredDirectoryEntries(desired));
     case "tool":
     case "credential":
       return undefined;
@@ -162,7 +161,7 @@ const observedDigest = (
     case "present":
       return Schema.decodeUnknownSync(ContentDigestSchema)(context.observed.digest);
     case "directory":
-      return filesDigest(presentObservedFiles(context.observed.files));
+      return directoryEntriesDigest(presentObservedFiles(context.observed.files));
   }
 };
 
@@ -236,8 +235,9 @@ const observedMatchesDesired = (
     case "skill":
       return observed.state === "directory"
         && (observed.objectKind === undefined || observed.objectKind === "directory")
+        && observed.mode === desired.mode
         && observed.files.every((file) => !("state" in file))
-        && filesDigest(presentObservedFiles(observed.files)) === desiredResourceDigest(desired);
+        && directoryEntriesDigest(presentObservedFiles(observed.files)) === desiredResourceDigest(desired);
     case "tool":
     case "credential":
       return observed.state === "present";
@@ -257,11 +257,12 @@ const observedMatchesApplied = (
     const ownedByPath = new Map(
       applied.ownedFiles.map((file) => [file.path, fileSignature(file)] as const),
     );
-    return context.observed.files.every((file) =>
-      "state" in file
-        || ownedByPath.get(file.path) === undefined
-        || ownedByPath.get(file.path) === fileSignature(file)
-    );
+    return (applied.mode === undefined || context.observed.mode === applied.mode)
+      && context.observed.files.every((file) =>
+        "state" in file
+          || ownedByPath.get(file.path) === undefined
+          || ownedByPath.get(file.path) === fileSignature(file)
+      );
   }
   const currentDigest = observedDigest(context);
   if (currentDigest !== applied.digest) return false;
@@ -271,6 +272,9 @@ const observedMatchesApplied = (
     && (
       applied.executable !== undefined
         && context.observed.executable !== applied.executable
+      || applied.symlinkTo === undefined
+        && applied.mode !== undefined
+        && context.observed.mode !== applied.mode
       || applied.symlinkTo === undefined
         && context.observed.objectKind !== undefined
         && context.observed.objectKind !== "regular"
@@ -500,6 +504,9 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
 };
 
 const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
+  const desiredRootMode = context.desired.kind === "directory" || context.desired.kind === "skill"
+    ? context.desired.mode
+    : undefined;
   const desiredFiles = context.desired.kind === "directory" || context.desired.kind === "skill"
     ? desiredDirectoryEntries(context.desired)
     : [{ path: context.resource.target, digest: desiredResourceDigest(context.desired) }];
@@ -511,6 +518,7 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     fileSignature(file),
   ] as const));
   const desiredPaths = new Set(desiredFiles.map((file) => file.path));
+  const desiredAncestorPaths = relativePathAncestors([...desiredPaths]);
   const ownedByPath = new Map(
     (context.applied?.ownedFiles ?? []).map((file) => [file.path, file] as const),
   );
@@ -523,14 +531,14 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     .map((file) => file.path)
     .sort(compareText);
   const removes = observedFiles
-    .filter((file) => !desiredPaths.has(file.path))
+    .filter((file) =>
+      !desiredPaths.has(file.path)
+      && !(file.objectKind === "directory" && desiredAncestorPaths.has(file.path))
+    )
     .filter((file) => {
       const owned = ownedByPath.get(file.path);
       return owned !== undefined
-        && owned.digest === file.digest
-        && (owned.mode === undefined
-          ? (owned.executable ?? false) === (file.executable ?? false)
-          : owned.mode === file.mode);
+        && fileSignature(owned) === fileSignature(file);
     })
     .map((file) => file.path)
     .sort(compareText);
@@ -538,6 +546,10 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     adds.length === 0
     && removes.length === 0
     && context.observed.state !== "absent"
+    && (
+      context.observed.state !== "directory"
+      || context.observed.mode === desiredRootMode
+    )
   ) {
     return [noOp()];
   }
@@ -578,32 +590,64 @@ const planReplaceIfUnmodified = (
     }];
   }
   const currentDigest = observedDigest(context);
+  if (
+    context.desired.kind === "file"
+    && context.applied !== undefined
+    && context.observed.state === "present"
+    && (
+      context.applied.symlinkTo === undefined
+        ? context.observed.symlinkTo !== undefined
+          || context.observed.objectKind !== undefined
+            && context.observed.objectKind !== "regular"
+        : context.observed.symlinkTo === undefined
+          || context.observed.objectKind !== undefined
+            && context.observed.objectKind !== "symlink"
+    )
+  ) {
+    return [driftConflict(
+      context,
+      desiredDigest,
+      currentDigest ?? sha256Hex("canonfig:unverifiable-observed-state"),
+      context.desired.executable,
+      context.observed.executable,
+    )];
+  }
   const observedStateMatchesDesired = observedMatchesDesired(context.desired, context.observed)
     || (
       context.desired.kind === "skill"
       && context.observed.state === "present"
       && context.observed.objectKind === undefined
     );
+  const compareFilePermissions = context.desired.kind === "file"
+    && context.desired.symlinkTo === undefined;
+  const compareSkillRootPermissions = context.desired.kind === "skill"
+    && context.observed.state === "directory";
   const drift = detectSkillDrift({
     desiredDigest,
     observedDigest: currentDigest,
     lastAppliedDigest: context.applied === undefined
       ? undefined
       : Schema.decodeUnknownSync(ContentDigestSchema)(context.applied.digest),
-    desiredExecutable: context.desired.kind === "file"
+    desiredExecutable: compareFilePermissions
       ? context.desired.executable
       : undefined,
-    observedExecutable: context.observed.state === "present"
+    observedExecutable: compareFilePermissions && context.observed.state === "present"
       ? context.observed.executable
       : undefined,
-    lastAppliedExecutable: context.applied?.executable,
-    desiredMode: context.desired.kind === "file"
+    lastAppliedExecutable: compareFilePermissions
+      ? context.applied?.executable
+      : undefined,
+    desiredMode: compareFilePermissions || compareSkillRootPermissions
       ? context.desired.mode
       : undefined,
-    observedMode: context.observed.state === "present"
+    observedMode: compareFilePermissions && context.observed.state === "present"
+      ? context.observed.mode
+      : compareSkillRootPermissions && context.observed.state === "directory"
       ? context.observed.mode
       : undefined,
-    lastAppliedMode: context.applied?.mode,
+    lastAppliedMode: compareFilePermissions || compareSkillRootPermissions
+      ? context.applied?.mode
+      : undefined,
   });
   switch (drift) {
     case "unchanged":

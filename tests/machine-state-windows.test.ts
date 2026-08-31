@@ -5,9 +5,15 @@ import { win32 } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  decodeWindowsTaskXml,
   windowsMachineStateLayer,
   windowsAccountPrincipal,
   windowsPrivateAclArguments,
+  windowsRecurrenceIntervalMatches,
+  windowsTaskQueryReportsAbsence,
+  windowsTaskProbeReportsAbsence,
+  windowsTaskTriggerEnabled,
+  windowsWeekdaysMatch,
 } from "../src/machine/windows.layer.ts";
 import { machineStateContract } from "./contract/machine-state.contract.ts";
 
@@ -97,6 +103,56 @@ describe("Windows ACL command rendering", () => {
       { name: "USERDNSDOMAIN", value: "micr.example" },
       { name: "COMPUTERNAME", value: "WORKSTATION" },
     ], "C:\\Users\\operator")).toBe("MICR\\operator");
+  });
+});
+
+describe("Windows Task Scheduler inspection", () => {
+  it("decodes UTF-16LE task exports with a byte-order mark", () => {
+    const xml = "<?xml version=\"1.0\"?><Task><Enabled>true</Enabled></Task>";
+    const encoded = Buffer.from(`\ufeff${xml}`, "utf16le");
+    expect(decodeWindowsTaskXml(encoded)).toBe(xml);
+    expect(decodeWindowsTaskXml(Buffer.from(xml, "utf8"))).toBe(xml);
+  });
+
+  it("requires the installed weekly trigger to have the exact day set", () => {
+    const exact = "<DaysOfWeek><Friday /><Monday /></DaysOfWeek>";
+    const extra = "<DaysOfWeek><Monday /><Friday /><Sunday /></DaysOfWeek>";
+    expect(windowsWeekdaysMatch(exact, ["Mon", "Fri"])).toBe(true);
+    expect(windowsWeekdaysMatch(extra, ["Mon", "Fri"])).toBe(false);
+  });
+
+  it("requires daily and weekly recurrence intervals of one", () => {
+    expect(windowsRecurrenceIntervalMatches("<DaysInterval>1</DaysInterval>", "daily")).toBe(true);
+    expect(windowsRecurrenceIntervalMatches("<DaysInterval>2</DaysInterval>", "daily")).toBe(false);
+    expect(windowsRecurrenceIntervalMatches("<WeeksInterval>1</WeeksInterval>", "weekly")).toBe(true);
+    expect(windowsRecurrenceIntervalMatches("<WeeksInterval>2</WeeksInterval>", "weekly")).toBe(false);
+  });
+
+  it("requires the calendar trigger itself to be enabled", () => {
+    expect(windowsTaskTriggerEnabled("<Enabled>true</Enabled>")).toBe(true);
+    expect(windowsTaskTriggerEnabled("<Enabled>false</Enabled>")).toBe(false);
+    expect(windowsTaskTriggerEnabled("<StartBoundary>2000-01-01T00:00:00</StartBoundary>"))
+      .toBe(true);
+  });
+
+  it("distinguishes a missing task from scheduler query failures", () => {
+    const query = (exitCode: number, standardError: string) => ({
+      exitCode,
+      standardOutput: new Uint8Array(),
+      standardError: Buffer.from(standardError),
+    });
+    expect(windowsTaskQueryReportsAbsence(
+      query(1, "ERROR: 0x80070002"),
+    )).toBe(true);
+    expect(windowsTaskQueryReportsAbsence(
+      query(1, "FEHLER: Das System kann die angegebene Datei nicht finden."),
+    )).toBe(false);
+    expect(windowsTaskQueryReportsAbsence(
+      query(1, "ERROR: Access is denied."),
+    )).toBe(false);
+    expect(windowsTaskQueryReportsAbsence(query(0, ""))).toBe(false);
+    expect(windowsTaskProbeReportsAbsence(query(3, ""))).toBe(true);
+    expect(windowsTaskProbeReportsAbsence(query(2, ""))).toBe(false);
   });
 });
 

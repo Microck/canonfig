@@ -40,6 +40,7 @@ import {
   recipeValidationError,
 } from "../domain/recipe-versions.ts";
 import {
+  desiredDirectoryEntries,
   planRemoved,
   planResource,
   type ResourceActionDraft,
@@ -290,7 +291,12 @@ const validateResourceInputs = (
     resources.map((resource) => {
       const desired = indexed.desired.get(resource.id);
       const entries = desired?.kind === "directory" || desired?.kind === "skill"
-        ? desired.files.map((file) => file.path)
+        ? desiredDirectoryEntries(desired).map((entry) => ({
+          path: entry.path,
+          kind: "objectKind" in entry && entry.objectKind === "directory"
+            ? "directory" as const
+            : "leaf" as const,
+        }))
         : [];
       return {
         id: resource.id,

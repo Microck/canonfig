@@ -52,6 +52,7 @@ import type {
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
+  directoryVerificationDigest,
   sha256BytesHex,
   sha256Hex,
 } from "../../src/profile/profile-codec.ts";
@@ -78,6 +79,7 @@ import {
 } from "../../src/synchronization/config-codec.ts";
 import {
   prepareResourceAction,
+  restoreRollbackReference,
   type ResourceExecutionContext,
 } from "../../src/synchronization/resource-executors.ts";
 import type { NpmArtifactTransport } from "../../src/synchronization/npm-artifact.ts";
@@ -1051,6 +1053,70 @@ if (process.argv.slice(2).some((value) =>
     ).resolves.toMatchObject({ state: "absent" });
   });
 
+  it("rolls back a verified profile schedule when a later action fails", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "schedule-later-failure");
+    const previous = { kind: "daily" as const, localTime: "02:15" };
+    const manager = scheduleManagerFor({
+      failUpdate: false,
+      blockUpdate: false,
+      initial: previous,
+    });
+    const scheduleInput = scheduleDefaultRunInput(
+      fixture,
+      "schedule-later-failure",
+    );
+    const input: SynchronizationRunInput = {
+      ...fixture.input,
+      id: scheduleInput.id,
+      plan: reencodePlan({
+        ...fixture.input.plan,
+        actions: [
+          scheduleInput.plan.actions[0]!,
+          ...fixture.input.plan.actions,
+        ],
+      }),
+      // The missing file artifact makes the action after the schedule fail.
+      artifacts: [],
+    };
+    const state = stateRepositoryLayer(fixture.database);
+    const machine = machineLayer(fixture.root);
+    const synchronization = SynchronizationLive.pipe(
+      Layer.provide(Layer.merge(state, machine)),
+    );
+    const layer = Layer.mergeAll(
+      state,
+      machine,
+      synchronization,
+      Layer.succeed(ScheduleManager, manager),
+    );
+
+    const outcome = await Effect.runPromise(
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        yield* repository.registerFollower({ follower });
+        yield* repository.publishRevision({ revision: fixture.revision });
+        const service = yield* Synchronization;
+        return yield* service.run(input);
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(outcome).toMatchObject({
+      outcome: "Failed",
+      reason: "MissingArtifactError",
+    });
+    const restored = await Effect.runPromise(manager.snapshot({
+      schedule: { kind: "daily", localTime: "03:30" },
+    }));
+    expect(restored.state).toBe("present");
+    expect(JSON.parse(restored.schedule ?? "{}")).toEqual(previous);
+    expect(actionRows(fixture.database)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        state: "failed",
+        verification_json: expect.stringContaining("run-rolled-back"),
+      }),
+    ]));
+  });
+
   it("restores a pre-existing native schedule after an update failure", async () => {
     const fixture = fileFixture(temporaryDirectory(), "schedule-preexisting-update");
     const previous = { kind: "daily" as const, localTime: "02:15" };
@@ -1395,6 +1461,93 @@ if (process.argv.slice(2).some((value) =>
     expect(await readFile(outside, "utf8")).toBe("outside content");
   });
 
+  it("captures rollback when a mirror root is a regular file", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const target = join(managed, "nested", "settings.json");
+    writeFileSync(managed, "original root file");
+    const context = mirrorContext(
+      root,
+      managed,
+      "nested/settings.json",
+      "managed content",
+    );
+    const layer = machineLayer(root);
+
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(layer)),
+    );
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(layer)));
+    expect(await readFile(target, "utf8")).toBe("managed content");
+
+    await Effect.runPromise(prepared.rollback!.pipe(Effect.provide(layer)));
+    expect(await readFile(managed, "utf8")).toBe("original root file");
+  });
+
+  it("restores persisted mirror rollback material for unchanged desired directories", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const empty = join(managed, "empty");
+    mkdirSync(empty, { recursive: true });
+    chmodSync(empty, 0o750);
+    const baseContext = mirrorContext(root, managed, "new.txt", "managed content");
+    if (baseContext.desired.kind !== "directory") throw new Error("expected directory context");
+    const context: ResourceExecutionContext = {
+      ...baseContext,
+      desired: {
+        ...baseContext.desired,
+        directories: [{ path: "empty", mode: 0o750 }],
+      },
+    };
+    const layer = machineLayer(root);
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(layer)),
+    );
+    if (prepared.rollbackReference === undefined) throw new Error("expected rollback reference");
+
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(layer)));
+    await Effect.runPromise(
+      restoreRollbackReference(context, prepared.rollbackReference).pipe(
+        Effect.provide(layer),
+      ),
+    );
+
+    await expect(access(join(managed, "new.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(statSync(empty).isDirectory()).toBe(true);
+    expect(statSync(empty).mode & 0o7777).toBe(0o750);
+  });
+
+  it("removes managed descendants before replacing their directory with a leaf", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const child = join(managed, "entry", "child.txt");
+    mkdirSync(dirname(child), { recursive: true });
+    writeFileSync(child, "previous child");
+    const context = mirrorContext(root, managed, "entry", "replacement leaf");
+    const transitionContext: ResourceExecutionContext = {
+      ...context,
+      action: {
+        ...context.action,
+        detail: {
+          kind: "mirror-directory",
+          target: managed,
+          adds: ["entry"],
+          removes: ["entry/child.txt"],
+        },
+      },
+    };
+    const layer = machineLayer(root);
+
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(transitionContext).pipe(Effect.provide(layer)),
+    );
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(layer)));
+    expect(await readFile(join(managed, "entry"), "utf8")).toBe("replacement leaf");
+
+    await Effect.runPromise(prepared.rollback!.pipe(Effect.provide(layer)));
+    expect(await readFile(child, "utf8")).toBe("previous child");
+  });
+
   it("preserves exact file, directory, empty-directory, and relative-symlink state", async () => {
     const root = temporaryDirectory();
     const managed = join(root, "managed");
@@ -1445,6 +1598,265 @@ if (process.argv.slice(2).some((value) =>
     expect(readlinkSync(join(managed, "links", "tool"))).toBe("../bin/tool");
   });
 
+  it("defers restrictive directory modes until child mutations finish", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const context = mirrorContext(root, managed, "locked/value.txt", "managed content");
+    const desired = {
+      kind: "directory" as const,
+      mode: 0o600,
+      directories: [{ path: "locked", mode: 0o600 }],
+      files: context.desired.files,
+    };
+    const restrictiveContext: ResourceExecutionContext = {
+      ...context,
+      action: {
+        ...context.action,
+        detail: {
+          kind: "mirror-directory",
+          target: managed,
+          adds: ["locked", "locked/value.txt"],
+          removes: [],
+        },
+      },
+      desired,
+    };
+
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(restrictiveContext).pipe(Effect.provide(machineLayer(root))),
+    );
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(machineLayer(root))));
+
+    expect(statSync(managed).mode & 0o7777).toBe(0o600);
+    chmodSync(managed, 0o700);
+    expect(statSync(join(managed, "locked")).mode & 0o7777).toBe(0o600);
+    chmodSync(join(managed, "locked"), 0o700);
+    expect(await readFile(join(managed, "locked", "value.txt"), "utf8"))
+      .toBe("managed content");
+  });
+
+  it.each([
+    {
+      case: "surviving",
+      adds: [],
+      directories: [{ path: "locked", mode: 0o500 }],
+      desiredFile: undefined,
+      removes: ["locked/obsolete.txt"],
+    },
+    {
+      case: "removed",
+      adds: [],
+      directories: [],
+      desiredFile: undefined,
+      removes: ["locked/obsolete.txt", "locked"],
+    },
+    {
+      case: "implicitly surviving",
+      adds: [],
+      directories: [],
+      desiredFile: { exists: true, path: "locked/keep.txt" },
+      removes: ["locked/obsolete.txt"],
+    },
+    {
+      case: "implicit add",
+      adds: ["locked/new.txt"],
+      directories: [],
+      desiredFile: { exists: false, path: "locked/new.txt" },
+      removes: [],
+    },
+  ])("widens restrictive $case mirror directories before mutating descendants", async ({
+    adds,
+    directories,
+    desiredFile,
+    removes,
+  }) => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const locked = join(managed, "locked");
+    const obsolete = join(locked, "obsolete.txt");
+    mkdirSync(locked, { recursive: true });
+    if (removes.includes("locked/obsolete.txt")) {
+      writeFileSync(obsolete, "obsolete content");
+    }
+    if (desiredFile?.exists === true) {
+      writeFileSync(join(managed, desiredFile.path), "managed content");
+    }
+    chmodSync(locked, 0o500);
+    chmodSync(managed, 0o500);
+    const baseContext = mirrorContext(
+      root,
+      managed,
+      desiredFile?.path ?? "unused.txt",
+      "managed content",
+    );
+    if (baseContext.desired.kind !== "directory") throw new Error("expected directory context");
+    const context: ResourceExecutionContext = {
+      ...baseContext,
+      action: {
+        ...baseContext.action,
+        detail: {
+          kind: "mirror-directory",
+          target: managed,
+          adds,
+          removes,
+        },
+      },
+      desired: {
+        kind: "directory",
+        mode: 0o500,
+        directories,
+        files: desiredFile === undefined ? [] : baseContext.desired.files,
+      },
+    };
+    const layer = machineLayer(root);
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(layer)),
+    );
+
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(layer)));
+
+    const managedMode = statSync(managed).mode & 0o7777;
+    const lockedSurvives = !removes.includes("locked");
+    const lockedMode = lockedSurvives ? statSync(locked).mode & 0o7777 : undefined;
+    // Leave the temporary fixture removable after proving exact restoration.
+    chmodSync(managed, 0o700);
+    if (lockedSurvives) chmodSync(locked, 0o700);
+    if (removes.length > 0) {
+      await expect(access(lockedSurvives ? obsolete : locked)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    }
+    if (adds.length > 0) {
+      expect(await readFile(join(managed, adds[0]!), "utf8")).toBe("managed content");
+    }
+    expect(managedMode).toBe(0o500);
+    if (lockedSurvives) expect(lockedMode).toBe(0o500);
+  });
+
+  it("persists and later removes an explicitly owned empty directory", async () => {
+    const root = temporaryDirectory();
+    const base = fileFixture(root, "run-empty-directory");
+    const target = join(root, "managed");
+    const resource: PublishedResource = {
+      id: decode(ResourceId)("managed-tree"),
+      kind: "directory",
+      policy: "mirror-owned",
+      target,
+      dependsOn: [],
+      blobs: [],
+    };
+    const desired: DesiredResource = {
+      kind: "directory",
+      mode: 0o755,
+      directories: [{ path: "empty", mode: 0o750 }],
+      files: [],
+    };
+    const digest = directoryVerificationDigest([]);
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      resources: [resource],
+      desired: [{
+        resource: resource.id,
+        desired,
+        verification: { method: "digest", digest },
+      }],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{ resource: resource.id, observed: { state: "absent" } }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const fixture: Fixture = {
+      ...base,
+      target,
+      revision,
+      input: {
+        ...base.input,
+        plan,
+        revision,
+        artifacts: [],
+      },
+    };
+
+    const first = await seedAndRun(fixture);
+    expect(first.outcome).toBe("Converged");
+    expect(statSync(join(target, "empty")).isDirectory()).toBe(true);
+    const applied = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadAppliedResources(follower.id)
+      ).pipe(Effect.provide(stateRepositoryLayer(fixture.database))),
+    );
+    expect(applied[0]).toMatchObject({
+      resource: resource.id,
+      mode: 0o755,
+      ownedFiles: [{
+        path: "empty",
+        digest: sha256Hex("canonfig:directory"),
+        executable: true,
+        mode: 0o750,
+        objectKind: "directory",
+      }],
+    });
+
+    const removedRevision: PlanningProfileRevision = {
+      ...revision,
+      id: decode(ProfileRevisionId)("revision-empty-directory-removed"),
+      sequence: 2,
+      removedResources: [resource.id],
+    };
+    const removalPlan = Effect.runSync(planSynchronization({
+      revision: removedRevision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{
+          resource: resource.id,
+          observed: {
+            state: "directory",
+            objectKind: "directory",
+            mode: 0o755,
+            files: [{
+              path: "empty",
+              digest: decode(ContentDigest)(sha256Hex("canonfig:directory")),
+              executable: true,
+              mode: 0o750,
+              objectKind: "directory",
+            }],
+          },
+        }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: applied,
+    }));
+    expect(removalPlan.actions[0]?.detail).toMatchObject({
+      kind: "remove-resource",
+      paths: ["empty"],
+    });
+
+    const removed = await seedAndRun({
+      ...fixture,
+      revision: removedRevision,
+      input: {
+        ...fixture.input,
+        id: decode(RunId)("run-empty-directory-removed"),
+        plan: removalPlan,
+        revision: removedRevision,
+        appliedResources: applied,
+      },
+    });
+    expect(removed.outcome).toBe("Converged");
+    await expect(access(join(target, "empty"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("rolls back a newly-created directory root to missing", async () => {
     const root = temporaryDirectory();
     const managed = join(root, "managed");
@@ -1464,6 +1876,95 @@ if (process.argv.slice(2).some((value) =>
 
     await Effect.runPromise(prepared.rollback!.pipe(Effect.provide(machineLayer(root))));
     await expect(access(managed)).rejects.toThrow();
+  });
+
+  it("keeps managed directories writable until a rollback restores their descendants", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const nested = join(managed, "nested");
+    const target = join(nested, "settings.json");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(target, "original content");
+    chmodSync(nested, 0o500);
+    chmodSync(managed, 0o500);
+    const baseContext = mirrorContext(
+      root,
+      managed,
+      "nested/settings.json",
+      "managed content",
+    );
+    if (baseContext.desired.kind !== "directory") throw new Error("expected directory context");
+    const context: ResourceExecutionContext = {
+      ...baseContext,
+      desired: {
+        ...baseContext.desired,
+        mode: 0o500,
+        directories: [{ path: "nested", mode: 0o500 }],
+      },
+    };
+    const layer = machineLayer(root);
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(layer)),
+    );
+
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(layer)));
+    expect(await readFile(target, "utf8")).toBe("managed content");
+
+    await Effect.runPromise(prepared.rollback!.pipe(Effect.provide(layer)));
+    const restoredContent = await readFile(target, "utf8");
+    const nestedMode = statSync(nested).mode & 0o777;
+    const managedMode = statSync(managed).mode & 0o777;
+    // Leave the temporary fixture removable after proving exact restoration.
+    chmodSync(managed, 0o700);
+    chmodSync(nested, 0o700);
+    expect(restoredContent).toBe("original content");
+    expect(nestedMode).toBe(0o500);
+    expect(managedMode).toBe(0o500);
+  });
+
+  it("temporarily makes restrictive managed parents writable during removal", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const nested = join(managed, "nested");
+    const target = join(nested, "settings.json");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(target, "owned content");
+    chmodSync(nested, 0o500);
+    chmodSync(managed, 0o500);
+    const baseContext = mirrorContext(
+      root,
+      managed,
+      "nested/settings.json",
+      "owned content",
+    );
+    if (baseContext.desired.kind !== "directory") throw new Error("expected directory context");
+    const context: ResourceExecutionContext = {
+      ...baseContext,
+      action: {
+        ...baseContext.action,
+        kind: "remove-resource",
+        detail: {
+          kind: "remove-resource",
+          target: managed,
+          paths: ["nested/settings.json", "nested"],
+          keys: [],
+        },
+      },
+      desired: {
+        ...baseContext.desired,
+        mode: 0o500,
+        directories: [{ path: "nested", mode: 0o500 }],
+      },
+    };
+    const layer = machineLayer(root);
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(layer)),
+    );
+
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(layer)));
+
+    await expect(access(nested)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(statSync(managed).mode & 0o7777).toBe(0o500);
   });
 
   it("keeps outside paths untouched when an ancestor is swapped during a mirror write", async () => {
@@ -1649,6 +2150,42 @@ if (process.argv.slice(2).some((value) =>
       "succeeded",
     ]);
     expect(actionRows(fixture.database)[2]?.rollback_reference).toBeNull();
+  });
+
+  it("rolls back ownership from a no-op when a later action fails", async () => {
+    const root = temporaryDirectory();
+    const fixture = fileFixture(root, "run-no-op-later-failure");
+    mkdirSync(dirname(fixture.target), { recursive: true });
+    writeFileSync(fixture.target, fixture.artifact.content);
+    const noOp = fileFixture(root, "unused", fixture.artifact.digest)
+      .input.plan.actions[0]!;
+    const input = {
+      ...fixture.input,
+      plan: reencodePlan({
+        ...fixture.input.plan,
+        actions: [noOp, ...fixture.input.plan.actions],
+      }),
+      artifacts: [],
+    };
+
+    const outcome = await seedAndRun({ ...fixture, input });
+
+    expect(outcome).toMatchObject({
+      outcome: "Failed",
+      reason: "MissingArtifactError",
+    });
+    const applied = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadAppliedResources(follower.id)
+      ).pipe(Effect.provide(stateRepositoryLayer(fixture.database))),
+    );
+    expect(applied).toEqual([]);
+    expect(actionRows(fixture.database)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        state: "failed",
+        verification_json: expect.stringContaining("run-rolled-back"),
+      }),
+    ]));
   });
 
   it("removes an entire previously owned resource once and preserves unowned files", async () => {
@@ -1917,6 +2454,9 @@ if (process.argv.slice(2).some((value) =>
         Effect.provide(Layer.merge(machine, managerLayer)),
       ),
     );
+    expect(prepared.rollbackReference).toContain(".schedule.json");
+    expect(JSON.parse(await readFile(prepared.rollbackReference!, "utf8")))
+      .toMatchObject({ state: "absent" });
 
     await Effect.runPromise(prepared.execute.pipe(Effect.provide(machine)));
     expect(scheduler.installs).toHaveLength(1);
@@ -1927,7 +2467,7 @@ if (process.argv.slice(2).some((value) =>
     await Effect.runPromise(
       prepared.rollback!.pipe(Effect.provide(machine)),
     );
-    expect(scheduler.removals).toBe(1);
+    expect(scheduler.removals).toBe(0);
     expect(scheduler.definition).toBeUndefined();
   });
 
@@ -1965,6 +2505,9 @@ if (process.argv.slice(2).some((value) =>
         Effect.provide(Layer.merge(machine, managerLayer)),
       ),
     );
+    expect(prepared.rollbackReference).toContain(".schedule.json");
+    expect(JSON.parse(await readFile(prepared.rollbackReference!, "utf8")))
+      .toMatchObject({ state: "present" });
     await Effect.runPromise(prepared.execute.pipe(Effect.provide(machine)));
     expect(scheduler.installs).toHaveLength(2);
     expect(scheduler.definition?.schedule).toContain("03:30");
@@ -1972,7 +2515,7 @@ if (process.argv.slice(2).some((value) =>
     await Effect.runPromise(
       prepared.rollback!.pipe(Effect.provide(machine)),
     );
-    expect(scheduler.installs).toHaveLength(3);
+    expect(scheduler.installs).toHaveLength(2);
     expect(scheduler.definition?.schedule).toContain("01:00");
     expect(scheduler.removals).toBe(0);
   });

@@ -131,6 +131,8 @@ const OwnedFilesSchema = Schema.Array(Schema.Struct({
   digest: ContentDigest,
   executable: Schema.optional(Schema.Boolean),
   mode: Schema.optional(Schema.Int),
+  objectKind: Schema.optional(Schema.Literals(["regular", "directory", "symlink"])),
+  symlinkTo: Schema.optional(Schema.NonEmptyString),
 }));
 const OwnedKeysSchema = Schema.Array(Schema.NonEmptyString);
 const StoredScheduleSchema = SyncScheduleSchema;

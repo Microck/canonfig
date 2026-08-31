@@ -54,9 +54,20 @@ export async function skillArtifacts(
 ): Promise<DesiredArtifact[]> {
   const artifacts = new Map<string, DesiredArtifact>();
   for (const root of context.config.skills.roots) {
-    for (const artifact of await copyDirectoryArtifacts(context, root, destination, owner)) {
+    const rootArtifacts = await copyDirectoryArtifacts(context, root, destination, owner);
+    const replacedSkillDirectories = rootArtifacts
+      .filter((artifact) => path.posix.basename(artifact.path) === "SKILL.md")
+      .map((artifact) => path.posix.dirname(artifact.path));
+    for (const skillDirectory of replacedSkillDirectories) {
+      for (const artifactPath of artifacts.keys()) {
+        if (artifactPath === skillDirectory || artifactPath.startsWith(`${skillDirectory}/`)) {
+          artifacts.delete(artifactPath);
+        }
+      }
+    }
+    for (const artifact of rootArtifacts) {
       // Skill roots are layered in declaration order. Later roots represent
-      // narrower scopes, such as project configuration over user defaults.
+      // narrower scopes, and a manifest replaces its complete prior skill tree.
       artifacts.set(artifact.path, artifact);
     }
   }

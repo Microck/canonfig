@@ -102,7 +102,7 @@ describe("JSONC parsing", () => {
 });
 
 describe("filesystem authoring fidelity", () => {
-  it("preserves exact modes, empty directories, and relative symlink text", () => {
+  it("preserves exact modes and canonicalizes non-semantic symlink permissions", () => {
     const profile = decodeMachineProfileJsonc(JSON.stringify({
       id: "filesystem-fidelity",
       name: "Filesystem fidelity",
@@ -132,8 +132,8 @@ describe("filesystem authoring fidelity", () => {
       files: [{
         path: "tool-link",
         content: "",
-        mode: 0o777,
-        executable: true,
+        mode: 0,
+        executable: false,
         symlinkTo: "../bin/tool",
       }],
     });
@@ -400,6 +400,79 @@ describe("resource graph validation", () => {
       verify: { method: "digest", digest: digestA },
     }], undefined, platform);
     expect(errors.map((error) => error._tag)).toEqual(expected);
+  });
+
+  it("validates explicit directory claims without rejecting their descendants", () => {
+    const valid = validateProfileResources([{
+      id: "tree",
+      kind: "directory",
+      target: "~/.canonfig/tree",
+      spec: {
+        kind: "directory",
+        directories: [{ path: "nested", mode: 0o700 }],
+        files: [{ path: "nested/file.txt", content: "managed" }],
+      },
+      verify: { method: "digest", digest: digestA },
+    }]);
+    expect(valid).toEqual([]);
+
+    const invalid = validateProfileResources([{
+      id: "tree",
+      kind: "directory",
+      target: "~/.canonfig/tree",
+      spec: {
+        kind: "directory",
+        directories: [
+          { path: "../escape", mode: 0o700 },
+          { path: "collision", mode: 0o700 },
+        ],
+        files: [{ path: "collision", content: "managed" }],
+      },
+      verify: { method: "digest", digest: digestA },
+    }]);
+    expect(invalid.map((error) => error._tag)).toEqual([
+      "InvalidTargetError",
+      "ConflictingResourceTargetError",
+    ]);
+  });
+
+  it("rejects filesystem modes that prevent deterministic verification", () => {
+    const errors = validateProfileResources([
+      {
+        id: "file",
+        kind: "file",
+        target: "~/.canonfig/file",
+        spec: { kind: "file", content: "managed", mode: 0o200 },
+        verify: { method: "digest", digest: digestA },
+      },
+      {
+        id: "tree",
+        kind: "directory",
+        target: "~/.canonfig/tree",
+        spec: {
+          kind: "directory",
+          mode: 0o600,
+          directories: [{ path: "locked", mode: 0o400 }],
+          files: [{ path: "write-only.txt", content: "managed", mode: 0o200 }],
+        },
+        verify: { method: "digest", digest: digestA },
+      },
+      {
+        id: "link",
+        kind: "file",
+        target: "~/.canonfig/link",
+        spec: { kind: "file", content: "", mode: 0o000, symlinkTo: "target" },
+        verify: { method: "symlink", target: "target" },
+      },
+    ]);
+
+    expect(errors.filter((error) => error._tag === "UnmanageableFilesystemModeError"))
+      .toMatchObject([
+        { id: "file", path: "~/.canonfig/file", mode: 0o200 },
+        { id: "tree", path: "~/.canonfig/tree", mode: 0o600 },
+        { id: "tree", path: "locked", mode: 0o400 },
+        { id: "tree", path: "write-only.txt", mode: 0o200 },
+      ]);
   });
 
   it("applies case folding only on case-insensitive targets", () => {

@@ -63,6 +63,7 @@ import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import {
   canonicalJson,
   digestOf,
+  directoryVerificationDigest,
   sha256Hex,
 } from "../../src/profile/profile-codec.ts";
 import { revisionSigningPayload } from "../../src/profile/publication.ts";
@@ -280,15 +281,12 @@ const declaredDigest = (spec: ResourceSpecInput): string => {
       return sha256Hex(spec.symlinkTo ?? spec.content);
     case "directory":
     case "skill":
-      return sha256Hex(
-        [...spec.files]
-          .sort((left, right) => compareText(left.path, right.path))
-          .map((file) =>
-            `${file.path}\0${sha256Hex(file.content)}\0${
-              file.executable === true ? "x" : "-"
-            }`
-          )
-          .join("\n"),
+      return directoryVerificationDigest(
+        spec.files.map((file) => ({
+          path: file.path,
+          digest: sha256Hex(file.symlinkTo ?? file.content),
+          executable: file.executable,
+        })),
       );
     case "config": {
       const document: ConfigDocument = {};

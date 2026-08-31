@@ -378,6 +378,34 @@ const runCredentialCommand = (
 const makeTemporarySibling = (path: string): string =>
   join(dirname(path), `.${basename(path)}.canonfig-${randomBytes(12).toString("hex")}`);
 
+const removeManagedLeaf = async (path: string): Promise<void> => {
+  try {
+    const metadata = await lstat(path);
+    if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+      await rmdir(path);
+    } else {
+      await unlink(path);
+    }
+  } catch (cause) {
+    if (errorCode(cause) !== "ENOENT") throw cause;
+  }
+};
+
+const prepareManagedLeafKind = async (
+  path: string,
+  kind: "directory" | "non-directory",
+): Promise<void> => {
+  try {
+    const metadata = await lstat(path);
+    const directory = metadata.isDirectory() && !metadata.isSymbolicLink();
+    if (kind === "directory" ? !directory : directory) {
+      await removeManagedLeaf(path);
+    }
+  } catch (cause) {
+    if (errorCode(cause) !== "ENOENT") throw cause;
+  }
+};
+
 const syncHandle = (
   handle: Awaited<ReturnType<typeof open>>,
 ): Promise<void> =>
@@ -412,6 +440,7 @@ const atomicWriteFile = (
       await handle.chmod(mode);
       await handle.close();
       handle = undefined;
+      await prepareManagedLeafKind(path, "non-directory");
       await rename(temporary, path);
       const directory = await open(dirname(path), "r");
       try {
@@ -493,11 +522,12 @@ const portableSafeRootMutation = async (
     const name = parts.at(-1)!;
     const target = join(parent, name);
     if (input.mutation.kind === "remove") {
-      await rm(target, { force: true });
+      await removeManagedLeaf(target);
       return;
     }
 
     if (input.mutation.kind === "directory") {
+      await prepareManagedLeafKind(target, "directory");
       await mkdir(target, { recursive: true, mode: input.mutation.mode });
       await chmod(target, input.mutation.mode);
       return;
@@ -508,6 +538,7 @@ const portableSafeRootMutation = async (
       `.${name}.canonfig-${randomBytes(12).toString("hex")}`,
     );
     try {
+      await prepareManagedLeafKind(target, "non-directory");
       if (input.mutation.kind === "symlink") {
         await symlink(symlinkTarget!, temporary);
       } else {
@@ -639,12 +670,13 @@ const safeRootMutation = (
         const name = parts.at(-1)!;
         const target = join(descriptorPath(parent), name);
         if (input.mutation.kind === "remove") {
-          await rm(target, { force: true });
+          await removeManagedLeaf(target);
           await syncHandle(parent);
           return;
         }
 
         if (input.mutation.kind === "directory") {
+          await prepareManagedLeafKind(target, "directory");
           await mkdir(target, { recursive: true, mode: input.mutation.mode });
           await chmod(target, input.mutation.mode);
           await syncHandle(parent);
@@ -656,6 +688,7 @@ const safeRootMutation = (
           `.${name}.canonfig-${randomBytes(12).toString("hex")}`,
         );
         try {
+          await prepareManagedLeafKind(target, "non-directory");
           if (input.mutation.kind === "symlink") {
             await symlink(symlinkTarget!, temporary);
           } else {
@@ -1346,6 +1379,7 @@ export const linuxMachineStateLayer = (
             const temporary = makeTemporarySibling(path);
             try {
               await symlink(input.target, temporary);
+              await prepareManagedLeafKind(path, "non-directory");
               await rename(temporary, path);
             } finally {
               await unlink(temporary).catch(() => undefined);
