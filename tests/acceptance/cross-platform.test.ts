@@ -270,6 +270,11 @@ const machineFixture = (
 };
 
 const declaredDigest = (spec: ResourceSpecInput): string => {
+  const compareText = (left: string, right: string): number => {
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  };
   switch (spec.kind) {
     case "file":
       return sha256Hex(spec.symlinkTo ?? spec.content);
@@ -277,7 +282,7 @@ const declaredDigest = (spec: ResourceSpecInput): string => {
     case "skill":
       return sha256Hex(
         [...spec.files]
-          .sort((left, right) => left.path.localeCompare(right.path))
+          .sort((left, right) => compareText(left.path, right.path))
           .map((file) =>
             `${file.path}\0${sha256Hex(file.content)}\0${
               file.executable === true ? "x" : "-"
@@ -288,7 +293,7 @@ const declaredDigest = (spec: ResourceSpecInput): string => {
     case "config": {
       const document: ConfigDocument = {};
       for (const entry of [...spec.keys].sort((left, right) =>
-        left.path.localeCompare(right.path)
+        compareText(left.path, right.path)
       )) {
         setConfigPath(document, entry.path, entry.value);
       }

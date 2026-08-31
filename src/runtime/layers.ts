@@ -120,6 +120,10 @@ const payload = <Value>(value: Value): CliPayload =>
 
 interface TaggedRuntimeError extends Error {
   readonly _tag?: string | undefined;
+  readonly action?: string | undefined;
+  readonly recovery?: string | undefined;
+  readonly executable?: string | undefined;
+  readonly timeoutMilliseconds?: number | undefined;
 }
 
 const categoryForError = (error: TaggedRuntimeError): CliFailureCategory => {
@@ -139,10 +143,21 @@ const categoryForError = (error: TaggedRuntimeError): CliFailureCategory => {
   return "internal";
 };
 
+const runtimeErrorMessage = (error: TaggedRuntimeError): string => {
+  if (error.message.length > 0) return error.message;
+  if (error.action !== undefined && error.recovery !== undefined) {
+    return `${error.action}: ${error.recovery}`;
+  }
+  if (error.executable !== undefined && error.timeoutMilliseconds !== undefined) {
+    return `${error.executable} timed out after ${error.timeoutMilliseconds} ms`;
+  }
+  return String(error);
+};
+
 const commandFailure = (error: TaggedRuntimeError): CliCommandFailure =>
   new CliCommandFailure({
     category: categoryForError(error),
-    message: error instanceof Error ? error.message : String(error),
+    message: runtimeErrorMessage(error),
   });
 
 const emptyDiscoveryProposal: DiscoveryScanResult = {

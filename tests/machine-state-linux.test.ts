@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -10,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
@@ -66,7 +67,7 @@ describe("portable safe-root mutation", () => {
             path: targetPath,
             mutation: {
               kind: "symlink",
-              target: outsidePath,
+              target: outsidePath.absolute,
             },
           });
           yield* machine.mutateWithinRoot({
@@ -213,6 +214,57 @@ describe("portable safe-root mutation", () => {
       expect(result.directoryDigest._tag).toBe("Failure");
       expect(readFileSync(outside, "utf8")).toBe("outside");
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("bounded process cleanup", () => {
+  it("terminates the process group after a timeout", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-process-tree-"));
+    const childPidPath = join(root, "child.pid");
+    try {
+      const parentScript = [
+        'const { spawn } = require("node:child_process");',
+        'const { writeFileSync } = require("node:fs");',
+        `const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });`,
+        `writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
+        "setInterval(() => {}, 1000);",
+      ].join("\n");
+      const exit = await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const executable = yield* machine.normalizePath({ path: process.execPath });
+          return yield* machine.runProcess({
+            executable,
+            arguments: ["-e", parentScript],
+            timeoutMilliseconds: 500,
+            maximumOutputBytes: 1024,
+          }).pipe(Effect.exit);
+        }).pipe(Effect.provide(linuxMachineStateLayer({ environment: environment(root) }))),
+      );
+
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag !== "Failure") return;
+      expect(Cause.pretty(exit.cause)).toContain("ProcessTimeoutError");
+      const childPid = Number(readFileSync(childPidPath, "utf8"));
+      await expect.poll(() => {
+        try {
+          process.kill(childPid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      }, { timeout: 2_000 }).toBe(false);
+    } finally {
+      if (existsSync(childPidPath)) {
+        const childPid = Number(readFileSync(childPidPath, "utf8"));
+        try {
+          process.kill(childPid, "SIGKILL");
+        } catch {
+          // The expected path: the timed-out process group is already gone.
+        }
+      }
       rmSync(root, { recursive: true, force: true });
     }
   });

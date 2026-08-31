@@ -19,6 +19,9 @@ export default defineConfig({
     { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
   ],
   rules: {
+    // Enforce the current repository ceiling without forcing unrelated rewrites.
+    // Lower this as the existing CLI parser and orchestration functions are split.
+    "eslint/complexity": ["error", 101],
     "anti-slop/no-chained-type-assertions": "error",
     "anti-slop/no-conditional-empty-object-spread": "error",
     "anti-slop/no-known-value-widening": "error",

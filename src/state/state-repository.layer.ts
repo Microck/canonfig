@@ -123,12 +123,14 @@ const AppliedResourceRow = Schema.Struct({
   owned_keys_json: Schema.NullOr(Schema.String),
   config_format: Schema.NullOr(Schema.String),
   executable: Schema.NullOr(Schema.Number),
+  mode: Schema.NullOr(Schema.Number),
   symlink_target: Schema.NullOr(Schema.String),
 });
 const OwnedFilesSchema = Schema.Array(Schema.Struct({
   path: Schema.NonEmptyString,
   digest: ContentDigest,
   executable: Schema.optional(Schema.Boolean),
+  mode: Schema.optional(Schema.Int),
 }));
 const OwnedKeysSchema = Schema.Array(Schema.NonEmptyString);
 const StoredScheduleSchema = SyncScheduleSchema;
@@ -1390,7 +1392,7 @@ const makeRepository = Effect.gen(function*() {
     const rows = yield* sql`
       SELECT resource_id, revision_id, digest, applied_at, owned_files_json, schedule_json,
         kind, policy, target, owned_keys_json, config_format
-        , executable, symlink_target
+        , executable, mode, symlink_target
       FROM applied_resources
       WHERE follower_id = ${follower}
       ORDER BY resource_id
@@ -1438,6 +1440,7 @@ const makeRepository = Effect.gen(function*() {
           executable: row.executable === null
             ? undefined
             : row.executable === 1,
+          mode: row.mode ?? undefined,
           symlinkTo: row.symlink_target ?? undefined,
           ownedFiles,
           ownedKeys,
@@ -1650,6 +1653,7 @@ const makeRepository = Effect.gen(function*() {
               owned_keys_json,
               config_format,
               executable,
+              mode,
               symlink_target
             ) VALUES (
               ${run.follower_id},
@@ -1673,6 +1677,7 @@ const makeRepository = Effect.gen(function*() {
               , ${record.executable === undefined
                 ? null
                 : record.executable ? 1 : 0}
+              , ${record.mode ?? null}
               , ${record.symlinkTo ?? null}
             )
             ON CONFLICT(follower_id, resource_id) DO UPDATE SET
@@ -1687,6 +1692,7 @@ const makeRepository = Effect.gen(function*() {
               , owned_keys_json = excluded.owned_keys_json
               , config_format = excluded.config_format
               , executable = excluded.executable
+              , mode = excluded.mode
               , symlink_target = excluded.symlink_target
           `;
         }
@@ -1787,6 +1793,7 @@ const makeRepository = Effect.gen(function*() {
               owned_keys_json,
               config_format,
               executable,
+              mode,
               symlink_target
             ) VALUES (
               ${run.follower_id},
@@ -1810,6 +1817,7 @@ const makeRepository = Effect.gen(function*() {
               , ${record.executable === undefined
                 ? null
                 : record.executable ? 1 : 0}
+              , ${record.mode ?? null}
               , ${record.symlinkTo ?? null}
             )
             ON CONFLICT(follower_id, resource_id) DO UPDATE SET
@@ -1824,6 +1832,7 @@ const makeRepository = Effect.gen(function*() {
               , owned_keys_json = excluded.owned_keys_json
               , config_format = excluded.config_format
               , executable = excluded.executable
+              , mode = excluded.mode
               , symlink_target = excluded.symlink_target
           `;
         }

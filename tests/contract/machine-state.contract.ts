@@ -182,8 +182,8 @@ export const machineStateContract = (
             content: new TextEncoder().encode("second"),
           });
           yield* machine.setPermissions({ path: second, mode: 0o750 });
-          yield* machine.replaceSymlink({ path: link, target: first });
-          yield* machine.replaceSymlink({ path: link, target: second });
+          yield* machine.replaceSymlink({ path: link, target: first.absolute });
+          yield* machine.replaceSymlink({ path: link, target: second.absolute });
           return {
             permissions: yield* machine.permissions(second),
             target: yield* machine.readSymlink(link),
@@ -195,7 +195,7 @@ export const machineStateContract = (
         mode: 0o750,
         executableByOwner: true,
       });
-      expect(result.target.absolute).toBe(join(root, "second"));
+      expect(result.target).toBe(join(root, "second"));
       },
     );
 
@@ -223,7 +223,7 @@ export const machineStateContract = (
               path: nestedPath,
               mutation: {
                 kind: "symlink",
-                target: outsidePath,
+                target: outsidePath.absolute,
               },
             });
             const linkTarget = yield* machine.readSymlink(nestedPath);
@@ -249,7 +249,7 @@ export const machineStateContract = (
           }),
         );
 
-        expect(result.linkTarget.absolute).toBe(outside);
+        expect(result.linkTarget).toBe(outside);
         expect(new TextDecoder().decode(result.managedContent)).toBe("managed");
         expect(new TextDecoder().decode(result.outsideContent)).toBe("outside");
       },
@@ -284,7 +284,7 @@ export const machineStateContract = (
             });
             yield* machine.replaceSymlink({
               path: ancestorPath,
-              target: outsideDirectoryPath,
+              target: outsideDirectoryPath.absolute,
             });
           }),
         );

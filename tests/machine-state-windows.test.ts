@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   windowsMachineStateLayer,
+  windowsAccountPrincipal,
   windowsPrivateAclArguments,
 } from "../src/machine/windows.layer.ts";
 import { machineStateContract } from "./contract/machine-state.contract.ts";
@@ -81,6 +82,21 @@ describe("Windows ACL command rendering", () => {
       "*S-1-5-11",
       "*S-1-5-32-545",
     ]);
+  });
+
+  it("uses the computer account namespace for local OpenSSH users", () => {
+    expect(windowsAccountPrincipal([
+      { name: "USERNAME", value: "crabbox" },
+      { name: "USERDOMAIN", value: "WORKGROUP" },
+      { name: "COMPUTERNAME", value: "CANONFIG-ARM64" },
+    ], "C:\\Users\\crabbox")).toBe("CANONFIG-ARM64\\crabbox");
+
+    expect(windowsAccountPrincipal([
+      { name: "USERNAME", value: "operator" },
+      { name: "USERDOMAIN", value: "MICR" },
+      { name: "USERDNSDOMAIN", value: "micr.example" },
+      { name: "COMPUTERNAME", value: "WORKSTATION" },
+    ], "C:\\Users\\operator")).toBe("MICR\\operator");
   });
 });
 

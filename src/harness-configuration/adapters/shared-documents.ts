@@ -52,11 +52,15 @@ export async function skillArtifacts(
   destination: string,
   owner: ArtifactOwner,
 ): Promise<DesiredArtifact[]> {
-  const artifacts: DesiredArtifact[] = [];
+  const artifacts = new Map<string, DesiredArtifact>();
   for (const root of context.config.skills.roots) {
-    artifacts.push(...await copyDirectoryArtifacts(context, root, destination, owner));
+    for (const artifact of await copyDirectoryArtifacts(context, root, destination, owner)) {
+      // Skill roots are layered in declaration order. Later roots represent
+      // narrower scopes, such as project configuration over user defaults.
+      artifacts.set(artifact.path, artifact);
+    }
   }
-  return artifacts;
+  return [...artifacts.values()];
 }
 
 export async function ruleDocuments(context: BuildContext): Promise<Array<{ rule: Rule; content: string }>> {

@@ -485,29 +485,22 @@ export const macosMachineStateLayer = (
           Effect.all({
             root: requireMacosPath(input.root),
             path: requireMacosPath(input.path),
-            target: input.mutation.kind === "symlink"
-              ? requireMacosPath(input.mutation.target)
-              : Effect.succeed(undefined),
           }).pipe(
-            Effect.flatMap(({ root, path, target }) =>
+            Effect.flatMap(({ root, path }) =>
               machine.mutateWithinRoot({
                 root,
                 path,
-                mutation: input.mutation.kind === "symlink"
-                  ? { ...input.mutation, target: target! }
-                  : input.mutation,
+                mutation: input.mutation,
               })
             ),
           ),
         replaceSymlink: (input) =>
-          Effect.all({
-            path: requireMacosPath(input.path),
-            target: requireMacosPath(input.target),
-          }).pipe(Effect.flatMap(machine.replaceSymlink)),
+          requireMacosPath(input.path).pipe(
+            Effect.flatMap((path) => machine.replaceSymlink({ ...input, path })),
+          ),
         readSymlink: (path) =>
           requireMacosPath(path).pipe(
             Effect.flatMap(machine.readSymlink),
-            Effect.map((target) => macosPath(target.absolute)),
           ),
         inspectPath: (path) =>
           requireMacosPath(path).pipe(Effect.flatMap(machine.inspectPath)),

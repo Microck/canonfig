@@ -127,10 +127,18 @@ export const GroupFilter = Schema.Struct({
 });
 export type GroupFilter = Schema.Schema.Type<typeof GroupFilter>;
 
+/** Portable POSIX mode bits accepted by authoring and published resource contracts. */
+export const FilesystemMode = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isLessThanOrEqualTo(0o7777),
+);
+
 export const DirectoryFile = Schema.Struct({
   path: Schema.NonEmptyString,
   blob: BlobId,
   executable: Schema.Boolean,
+  mode: Schema.optional(FilesystemMode),
+  symlinkTo: Schema.optional(Schema.NonEmptyString),
 });
 export type DirectoryFile = Schema.Schema.Type<typeof DirectoryFile>;
 
@@ -139,12 +147,18 @@ export const FileResourceSpec = Schema.Struct({
   content: Schema.String,
   digest: ContentDigest,
   executable: Schema.Boolean,
+  mode: Schema.optional(FilesystemMode),
   symlinkTo: Schema.optional(Schema.NonEmptyString),
 });
 export type FileResourceSpec = Schema.Schema.Type<typeof FileResourceSpec>;
 
 export const DirectoryResourceSpec = Schema.Struct({
   kind: Schema.Literal("directory"),
+  mode: Schema.optional(FilesystemMode),
+  directories: Schema.optional(Schema.Array(Schema.Struct({
+    path: Schema.NonEmptyString,
+    mode: FilesystemMode,
+  }))),
   files: Schema.Array(DirectoryFile),
 });
 export type DirectoryResourceSpec = Schema.Schema.Type<typeof DirectoryResourceSpec>;
@@ -176,6 +190,11 @@ export type ConfigResourceSpec = Schema.Schema.Type<typeof ConfigResourceSpec>;
 export const SkillResourceSpec = Schema.Struct({
   kind: Schema.Literal("skill"),
   name: Schema.NonEmptyString,
+  mode: Schema.optional(FilesystemMode),
+  directories: Schema.optional(Schema.Array(Schema.Struct({
+    path: Schema.NonEmptyString,
+    mode: FilesystemMode,
+  }))),
   files: Schema.Array(DirectoryFile),
 });
 export type SkillResourceSpec = Schema.Schema.Type<typeof SkillResourceSpec>;

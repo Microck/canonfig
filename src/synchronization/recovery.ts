@@ -562,6 +562,7 @@ export const recoverSynchronizationPlan = (
               path: file.path,
               digest: file.digest,
               executable: file.executable,
+              mode: file.mode,
             }))
             : undefined;
           appliedResources.push({
@@ -573,6 +574,7 @@ export const recoverSynchronizationPlan = (
             policy: resourceById.get(resource)?.policy,
             target: resourceById.get(resource)?.target,
             executable: value?.kind === "file" ? value.executable : undefined,
+            mode: value?.kind === "file" ? value.mode : undefined,
             symlinkTo: value?.kind === "file" ? value.symlinkTo : undefined,
             ownedFiles,
             ownedKeys: value?.kind === "config" ? value.keys : undefined,

@@ -55,6 +55,7 @@ export interface WindowsMachineStateOptions {
   readonly credentialStoreAccess?: "auto" | "unavailable" | undefined;
   readonly environment?: ReadonlyArray<ProcessEnvironmentEntry> | undefined;
   readonly schedulerBackend?: SchedulerBackend | undefined;
+  readonly schedulerTimeoutMilliseconds?: number | undefined;
   /** Test seam invoked after the managed root is identified but before custody. */
   readonly beforeSafeRootMutation?: (() => Promise<void>) | undefined;
 }
@@ -72,6 +73,21 @@ const environmentValue = (
   name: string,
 ): string | undefined =>
   environment.find((entry) => entry.name.toUpperCase() === name.toUpperCase())?.value;
+
+export const windowsAccountPrincipal = (
+  environment: ReadonlyArray<ProcessEnvironmentEntry>,
+  home: string,
+): string => {
+  const userName = environmentValue(environment, "USERNAME")
+    ?? process.env.USERNAME
+    ?? win32.basename(home);
+  // USERDOMAIN can be the workgroup name in OpenSSH sessions. USERDNSDOMAIN
+  // identifies an actual domain login; local accounts belong to COMPUTERNAME.
+  const domain = environmentValue(environment, "USERDNSDOMAIN") === undefined
+    ? environmentValue(environment, "COMPUTERNAME")
+    : environmentValue(environment, "USERDOMAIN");
+  return domain === undefined ? userName : `${domain}\\${userName}`;
+};
 
 const errorCode = (cause: unknown): string | undefined =>
   cause instanceof Error && "code" in cause
@@ -157,14 +173,14 @@ const validateSingleLine = (
 const powershellLiteral = (value: string): string =>
   `'${value.replaceAll("'", "''")}'`;
 
-const weekdayMasks = {
-  Sun: 1,
-  Mon: 2,
-  Tue: 4,
-  Wed: 8,
-  Thu: 16,
-  Fri: 32,
-  Sat: 64,
+const weekdayXmlNames = {
+  Sun: "Sunday",
+  Mon: "Monday",
+  Tue: "Tuesday",
+  Wed: "Wednesday",
+  Thu: "Thursday",
+  Fri: "Friday",
+  Sat: "Saturday",
 } as const;
 
 const windowsCommandLineArgument = (value: string): string => {
@@ -254,6 +270,95 @@ const renderTaskSchedulerJob = (
     };
   });
 
+interface WindowsTaskDefinition {
+  readonly taskName: string;
+  readonly description: string;
+  readonly executable: string;
+  readonly arguments: string;
+  readonly localTime: string;
+  readonly weekdays?: ReadonlyArray<keyof typeof weekdayXmlNames> | undefined;
+}
+
+const decodePowerShellLiteral = (value: string): string =>
+  value.replaceAll("''", "'");
+
+const parseWindowsTaskDefinition = (
+  definition: RenderedSchedulerJob,
+): WindowsTaskDefinition | undefined => {
+  const action = /-Execute '((?:''|[^'])*)' -Argument '((?:''|[^'])*)'/u
+    .exec(definition.service);
+  const description = /-Description '((?:''|[^'])*)'/u.exec(definition.schedule);
+  const daily = /-Daily -At '([0-2]\d:[0-5]\d)'/u.exec(definition.schedule);
+  const weekly = /-Weekly -DaysOfWeek ((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:,(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*) -At '([0-2]\d:[0-5]\d)'/u
+    .exec(definition.schedule);
+  if (action === null || description === null || (daily === null && weekly === null)) {
+    return undefined;
+  }
+  const weekdays = weekly?.[1]?.split(",");
+  if (
+    weekdays !== undefined
+    && !weekdays.every((weekday): weekday is keyof typeof weekdayXmlNames =>
+      Object.hasOwn(weekdayXmlNames, weekday)
+    )
+  ) return undefined;
+  return {
+    taskName: definition.serviceName,
+    description: decodePowerShellLiteral(description[1]!),
+    executable: decodePowerShellLiteral(action[1]!),
+    arguments: decodePowerShellLiteral(action[2]!),
+    localTime: daily?.[1] ?? weekly![2]!,
+    weekdays,
+  };
+};
+
+const escapeXml = (value: string): string =>
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+
+const decodeXml = (value: string): string =>
+  value
+    .replaceAll("&apos;", "'")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&");
+
+const xmlElement = (xml: string, name: string): string | undefined => {
+  const match = new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)</${name}>`, "u")
+    .exec(xml);
+  return match === null ? undefined : decodeXml(match[1]!.trim());
+};
+
+const windowsTaskXml = (
+  definition: WindowsTaskDefinition,
+  principal: string,
+): string => {
+  const schedule = definition.weekdays === undefined
+    ? "<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>"
+    : `<ScheduleByWeek><WeeksInterval>1</WeeksInterval><DaysOfWeek>${
+      definition.weekdays.map((weekday) => `<${weekdayXmlNames[weekday]} />`).join("")
+    }</DaysOfWeek></ScheduleByWeek>`;
+  return [
+    '<?xml version="1.0" encoding="UTF-16"?>',
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+    `<RegistrationInfo><Description>${escapeXml(definition.description)}</Description></RegistrationInfo>`,
+    `<Triggers><CalendarTrigger><StartBoundary>2000-01-01T${definition.localTime}:00</StartBoundary>`,
+    `<Enabled>true</Enabled>${schedule}</CalendarTrigger></Triggers>`,
+    `<Principals><Principal id="Author"><UserId>${escapeXml(principal)}</UserId>`,
+    "<LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>",
+    "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+    "<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>",
+    "<StopIfGoingOnBatteries>true</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate>",
+    "<Enabled>true</Enabled><ExecutionTimeLimit>PT1H</ExecutionTimeLimit></Settings>",
+    `<Actions Context="Author"><Exec><Command>${escapeXml(definition.executable)}</Command>`,
+    `<Arguments>${escapeXml(definition.arguments)}</Arguments></Exec></Actions></Task>`,
+  ].join("");
+};
+
 const credentialKey = (
   reference: CredentialReferenceType,
 ): Effect.Effect<string, CredentialStorageError> => {
@@ -338,14 +443,14 @@ export const windowsMachineStateLayer = (
       "System32",
       "icacls.exe",
     );
-  const userName = environmentValue(environment, "USERNAME")
-    ?? process.env.USERNAME
-    ?? win32.basename(home);
-  const userDomain = environmentValue(environment, "USERDOMAIN")
-    ?? process.env.USERDOMAIN;
-  const currentUser = userDomain === undefined
-    ? userName
-    : `${userDomain}\\${userName}`;
+  const schtasks = environmentValue(environment, "CANONFIG_SCHTASKS")
+    ?? win32.join(
+      environmentValue(environment, "SystemRoot") ?? "C:\\Windows",
+      "System32",
+      "schtasks.exe",
+    );
+  const currentUser = windowsAccountPrincipal(environment, home);
+  const schedulerTimeoutMilliseconds = options.schedulerTimeoutMilliseconds ?? 60_000;
   const base = linuxMachineStateLayer({
     credentialPolicy: policy,
     environment,
@@ -550,6 +655,40 @@ export const windowsMachineStateLayer = (
             filesystemFailure("validate managed path containment", path, cause),
         });
       };
+      const applyGuardedMutation = async (
+        mutation: SafeRootMutationInput["mutation"],
+        guardedTarget: string,
+        nested: boolean,
+      ): Promise<boolean> => {
+        if (mutation.kind === "remove") {
+          await rm(guardedTarget, { force: true });
+          return nested;
+        }
+        if (mutation.kind === "directory") {
+          await Effect.runPromise(secureDirectory(guardedTarget, mutation.mode));
+          return true;
+        }
+        if (mutation.kind === "write") {
+          await Effect.runPromise(secureAtomicWrite(
+            guardedTarget,
+            mutation.content,
+            mutation.mode ?? 0o600,
+          ));
+          return true;
+        }
+        await mkdir(win32.dirname(guardedTarget), { recursive: true });
+        const temporary = win32.join(
+          win32.dirname(guardedTarget),
+          `.${win32.basename(guardedTarget)}.canonfig-${randomBytes(12).toString("hex")}`,
+        );
+        try {
+          await symlink(mutation.target, temporary);
+          await rename(temporary, guardedTarget);
+        } finally {
+          await unlink(temporary).catch(() => undefined);
+        }
+        return true;
+      };
       const mutateWithinRoot = (
         input: SafeRootMutationInput,
       ): Effect.Effect<void, MachineStateError> =>
@@ -557,8 +696,14 @@ export const windowsMachineStateLayer = (
           const rootPath = yield* requireWindowsPath(input.root);
           const targetPath = yield* requireWindowsPath(input.path);
           const linkTarget = input.mutation.kind === "symlink"
-            ? yield* requireWindowsPath(input.mutation.target)
+            ? input.mutation.target
             : undefined;
+          if (linkTarget !== undefined && (linkTarget.length === 0 || linkTarget.includes("\0"))) {
+            return yield* new InvalidMachinePathError({
+              path: linkTarget,
+              message: "symlink target must not be empty or contain NUL bytes",
+            });
+          }
           const root = rootPath.absolute;
           const path = targetPath.absolute;
           if (
@@ -624,32 +769,11 @@ export const windowsMachineStateLayer = (
                     validatePathWithinRoot(heldTop, guardedTarget),
                   );
                 }
-                if (input.mutation.kind === "remove") {
-                  await rm(guardedTarget, { force: true });
-                  if (tail.length === 0) held = false;
-                } else if (input.mutation.kind === "write") {
-                  await Effect.runPromise(secureAtomicWrite(
-                    guardedTarget,
-                    input.mutation.content,
-                    input.mutation.mode ?? 0o600,
-                  ));
-                  held = true;
-                } else {
-                  await mkdir(win32.dirname(guardedTarget), { recursive: true });
-                  const temporary = win32.join(
-                    win32.dirname(guardedTarget),
-                    `.${win32.basename(guardedTarget)}.canonfig-${
-                      randomBytes(12).toString("hex")
-                    }`,
-                  );
-                  try {
-                    await symlink(linkTarget!.absolute, temporary);
-                    await rename(temporary, guardedTarget);
-                  } finally {
-                    await unlink(temporary).catch(() => undefined);
-                  }
-                  held = true;
-                }
+                held = await applyGuardedMutation(
+                  input.mutation,
+                  guardedTarget,
+                  tail.length > 0,
+                );
 
                 const visibleRoot = await lstat(root);
                 if (
@@ -704,117 +828,96 @@ export const windowsMachineStateLayer = (
           timeoutMilliseconds: 5_000,
           maximumOutputBytes: 1024 * 1024,
         });
-      const runSchedulerScript = (script: string) =>
+      const runSchedulerCommand = (arguments_: ReadonlyArray<string>) =>
         machine.runProcess({
-          executable: { platform: "linux", absolute: powershell },
-          arguments: [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-          ],
-          timeoutMilliseconds: 10_000,
+          executable: { platform: "linux", absolute: schtasks },
+          arguments: arguments_,
+          timeoutMilliseconds: schedulerTimeoutMilliseconds,
           maximumOutputBytes: 1024 * 1024,
         });
+      const queryScheduledTask = (taskName: string) =>
+        runSchedulerCommand(["/Query", "/TN", taskName, "/XML"]);
+      const taskXmlPath = () =>
+        win32.join(
+          environmentValue(environment, "TEMP") ?? win32.join(home, "AppData", "Local", "Temp"),
+          `.canonfig-task-${randomBytes(12).toString("hex")}.xml`,
+        );
+      const createScheduledTask = (
+        taskName: string,
+        xml: string,
+      ): Effect.Effect<void, MachineStateError> => {
+        const path = taskXmlPath();
+        return Effect.tryPromise({
+          try: () => writeFile(path, Buffer.from(`\ufeff${xml}`, "utf16le")),
+          catch: (cause) => filesystemFailure("write Task Scheduler XML", path, cause),
+        }).pipe(
+          Effect.andThen(runSchedulerCommand([
+            "/Create",
+            "/TN",
+            taskName,
+            "/XML",
+            path,
+            "/F",
+          ])),
+          Effect.flatMap((result) =>
+            result.exitCode === 0
+              ? Effect.void
+              : Effect.fail(new HumanActionRequiredError({
+                action: "register the Canonfig scheduled task",
+                recovery:
+                  "Sign in interactively and ensure per-user Task Scheduler access is available, then retry.",
+              }))
+          ),
+          Effect.ensuring(Effect.promise(() => rm(path, { force: true }).catch(() => undefined))),
+        );
+      };
+      const removeScheduledTask = (taskName: string) =>
+        runSchedulerCommand(["/Delete", "/TN", taskName, "/F"]);
       const nativeScheduler: SchedulerBackend = {
         inspect: (expected) => {
-          const fingerprint = /\[canonfig:([a-f0-9]{64})\]/u.exec(expected.schedule)?.[1];
-          const action = /-Execute '((?:''|[^'])*)' -Argument '((?:''|[^'])*)'/u
-            .exec(expected.service);
-          const daily = /-Daily -At '([0-2]\d:[0-5]\d)'/u.exec(expected.schedule);
-          const weekly = /-Weekly -DaysOfWeek ((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:,(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*) -At '([0-2]\d:[0-5]\d)'/u
-            .exec(expected.schedule);
-          const taskName = powershellLiteral(expected.serviceName);
-          const script = [
-            `$Task = Get-ScheduledTask -TaskName ${taskName} -ErrorAction SilentlyContinue`,
-            "if ($null -eq $Task) { [Console]::Out.Write('missing') } else {",
-            "  $Trigger = $Task.Triggers[0]",
-            "  [ordered]@{",
-            "    Description = $Task.Description",
-            "    Enabled = $Task.Settings.Enabled",
-            "    Execute = $Task.Actions[0].Execute",
-            "    Arguments = $Task.Actions[0].Arguments",
-            "    TriggerType = $Trigger.CimClass.CimClassName",
-            "    StartBoundary = $Trigger.StartBoundary",
-            "    DaysOfWeek = $Trigger.DaysOfWeek",
-            "  } | ConvertTo-Json -Compress",
-            "}",
-          ].join("\r\n");
-          return runSchedulerScript(script).pipe(
+          const desired = parseWindowsTaskDefinition(expected);
+          if (desired === undefined) {
+            return Effect.fail(new InvalidSchedulerJobError({
+              field: "definition",
+              message: "rendered Task Scheduler definition is invalid",
+            }));
+          }
+          return queryScheduledTask(expected.serviceName).pipe(
             Effect.flatMap((result): Effect.Effect<SchedulerInspection, MachineStateError> => {
-              const output = Buffer.from(result.standardOutput).toString("utf8");
-              if (result.exitCode === 0 && output.trim() === "missing") {
+              if (result.exitCode !== 0) {
                 return Effect.succeed({ installed: false, enabled: false, matches: false });
               }
-              if (result.exitCode !== 0) {
-                return Effect.fail(new HumanActionRequiredError({
-                  action: "inspect the Canonfig scheduled task",
-                  recovery:
-                    "Task Scheduler inspection failed; ensure per-user Task Scheduler access is available and retry.",
-                }));
-              }
-              let actual: {
-                readonly Description?: string | undefined;
-                readonly Enabled?: boolean | undefined;
-                readonly Execute?: string | undefined;
-                readonly Arguments?: string | undefined;
-                readonly TriggerType?: string | undefined;
-                readonly StartBoundary?: string | undefined;
-                readonly DaysOfWeek?: number | undefined;
-              };
-              try {
-                actual = JSON.parse(output);
-              } catch {
-                return Effect.fail(new HumanActionRequiredError({
-                  action: "inspect the Canonfig scheduled task",
-                  recovery:
-                    "Task Scheduler inspection returned invalid data; ensure per-user Task Scheduler access is available and retry.",
-                }));
-              }
-              const expectedExecutable = action?.[1]?.replaceAll("''", "'");
-              const expectedArguments = action?.[2]?.replaceAll("''", "'");
-              const expectedTime = daily?.[1] ?? weekly?.[2];
-              const weekdayMask = weekly === null
-                ? undefined
-                : weekly[1]!.split(",").reduce((mask, weekday) => {
-                  if (!Object.hasOwn(weekdayMasks, weekday)) return mask;
-                  // SAFETY: Object.hasOwn above narrows this regex-captured weekday
-                  // to one of the seven literal Task Scheduler weekday keys.
-                  const normalizedWeekday = weekday as keyof typeof weekdayMasks;
-                  return mask + weekdayMasks[normalizedWeekday];
-                }, 0);
-              const triggerMatches = expectedTime !== undefined
-                && actual.StartBoundary?.includes(`T${expectedTime}:00`) === true
-                && (daily !== null
-                  ? actual.TriggerType?.includes("Daily") === true
-                  : actual.TriggerType?.includes("Weekly") === true
-                    && actual.DaysOfWeek === weekdayMask);
+              const xml = Buffer.from(result.standardOutput).toString("utf8");
+              const settings = xmlElement(xml, "Settings") ?? "";
+              const command = xmlElement(xml, "Command")?.replace(/^"(.*)"$/u, "$1");
+              const schedule = desired.weekdays === undefined
+                ? xmlElement(xml, "ScheduleByDay")
+                : xmlElement(xml, "ScheduleByWeek");
+              const weekdaysMatch = desired.weekdays === undefined
+                || desired.weekdays.every((weekday) =>
+                  new RegExp(`<${weekdayXmlNames[weekday]}(?:\\s*/>|>)`, "u").test(
+                    schedule ?? "",
+                  )
+                );
               return Effect.succeed({
                 installed: true,
-                enabled: actual.Enabled === true,
-                matches: fingerprint !== undefined
-                  && actual.Description?.includes(`[canonfig:${fingerprint}]`) === true
-                  && actual.Execute === expectedExecutable
-                  && actual.Arguments === expectedArguments
-                  && triggerMatches,
+                enabled: xmlElement(settings, "Enabled") !== "false",
+                matches: xmlElement(xml, "Description") === desired.description
+                  && command === desired.executable
+                  && xmlElement(xml, "Arguments") === desired.arguments
+                  && xmlElement(xml, "StartBoundary")?.includes(
+                    `T${desired.localTime}:00`,
+                  ) === true
+                  && schedule !== undefined
+                  && weekdaysMatch,
               });
             }),
           );
         },
-        snapshot: (expected) => {
-          const taskName = powershellLiteral(expected.serviceName);
-          const script = [
-            `$Task = Get-ScheduledTask -TaskName ${taskName} -ErrorAction SilentlyContinue`,
-            "if ($null -eq $Task) { [Console]::Out.Write('missing') } else {",
-            "  $Xml = Export-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath",
-            "  [ordered]@{ Enabled = $Task.Settings.Enabled; Xml = $Xml } | ConvertTo-Json -Compress",
-            "}",
-          ].join("\r\n");
-          return runSchedulerScript(script).pipe(
+        snapshot: (expected) =>
+          queryScheduledTask(expected.serviceName).pipe(
             Effect.flatMap((result): Effect.Effect<SchedulerSnapshot, MachineStateError> => {
-              const output = Buffer.from(result.standardOutput).toString("utf8");
-              if (result.exitCode === 0 && output.trim() === "missing") {
+              if (result.exitCode !== 0) {
                 return Effect.succeed({
                   state: "absent",
                   platform: expected.platform,
@@ -822,59 +925,36 @@ export const windowsMachineStateLayer = (
                   serviceName: expected.serviceName,
                 } satisfies SchedulerSnapshot);
               }
-              if (result.exitCode !== 0) {
-                return Effect.fail(new HumanActionRequiredError({
-                  action: "capture the Canonfig scheduled task",
-                  recovery:
-                    "Task Scheduler inspection failed; ensure per-user Task Scheduler access is available and retry.",
-                }));
-              }
-              try {
-                const actual = Schema.decodeUnknownSync(Schema.Struct({
-                  Enabled: Schema.optional(Schema.Boolean),
-                  Xml: Schema.optional(Schema.String),
-                }))(JSON.parse(output));
-                if (actual.Xml === undefined || actual.Enabled === undefined) {
-                  throw new Error("Task Scheduler export was incomplete");
-                }
-                return Effect.succeed({
-                  state: "present",
-                  platform: expected.platform,
-                  mechanism: expected.mechanism,
-                  serviceName: expected.serviceName,
-                  enabled: actual.Enabled,
-                  active: actual.Enabled,
-                  servicePresent: false,
-                  schedulePresent: false,
-                  native: Buffer.from(actual.Xml, "utf8").toString("base64"),
-                } satisfies SchedulerSnapshot);
-              } catch (error) {
-                return Effect.fail(new HumanActionRequiredError({
-                  action: "capture the Canonfig scheduled task",
-                  recovery: `Task Scheduler export was invalid: ${String(error)}`,
-                }));
-              }
+              const xml = Buffer.from(result.standardOutput).toString("utf8");
+              const settings = xmlElement(xml, "Settings") ?? "";
+              const enabled = xmlElement(settings, "Enabled") !== "false";
+              return Effect.succeed({
+                state: "present",
+                platform: expected.platform,
+                mechanism: expected.mechanism,
+                serviceName: expected.serviceName,
+                enabled,
+                active: enabled,
+                servicePresent: false,
+                schedulePresent: false,
+                native: Buffer.from(xml, "utf8").toString("base64"),
+              } satisfies SchedulerSnapshot);
             }),
-          );
-        },
-        install: (definition) =>
-          runSchedulerScript(`${definition.service}\r\n${definition.schedule}`).pipe(
-            Effect.flatMap((result) =>
-              result.exitCode === 0
-                ? Effect.void
-                : Effect.fail(new HumanActionRequiredError({
-                  action: "register the Canonfig scheduled task",
-                  recovery:
-                    "Sign in interactively and ensure per-user Task Scheduler access is available, then retry.",
-                }))
-            ),
           ),
+        install: (definition) => {
+          const desired = parseWindowsTaskDefinition(definition);
+          return desired === undefined
+            ? Effect.fail(new InvalidSchedulerJobError({
+              field: "definition",
+              message: "rendered Task Scheduler definition is invalid",
+            }))
+            : createScheduledTask(
+              definition.serviceName,
+              windowsTaskXml(desired, currentUser),
+            );
+        },
         remove: (definition) =>
-          runSchedulerScript(
-            `Unregister-ScheduledTask -TaskName ${
-              powershellLiteral(definition.serviceName)
-            } -Confirm:$false -ErrorAction SilentlyContinue`,
-          ).pipe(
+          removeScheduledTask(definition.serviceName).pipe(
             Effect.flatMap((result) =>
               result.exitCode === 0
                 ? Effect.void
@@ -886,11 +966,8 @@ export const windowsMachineStateLayer = (
             ),
           ),
         restore: (expected, snapshot) => {
-          const taskName = powershellLiteral(expected.serviceName);
           return Effect.gen(function*() {
-            yield* runSchedulerScript(
-              `Unregister-ScheduledTask -TaskName ${taskName} -Confirm:$false -ErrorAction SilentlyContinue`,
-            ).pipe(Effect.ignore);
+            yield* removeScheduledTask(expected.serviceName).pipe(Effect.ignore);
             if (snapshot.state === "absent") return;
             if (snapshot.native === undefined) {
               return yield* new HumanActionRequiredError({
@@ -898,18 +975,10 @@ export const windowsMachineStateLayer = (
                 recovery: "The captured Task Scheduler export was incomplete; inspect the task manually.",
               });
             }
-            const script = [
-              `$Xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${snapshot.native}'))`,
-              `Register-ScheduledTask -TaskName ${taskName} -Xml $Xml -Force`,
-            ].join("\r\n");
-            const result = yield* runSchedulerScript(script);
-            if (result.exitCode !== 0) {
-              return yield* new HumanActionRequiredError({
-                action: "restore the Canonfig scheduled task",
-                recovery:
-                  "Sign in interactively and ensure per-user Task Scheduler access is available, then retry.",
-              });
-            }
+            yield* createScheduledTask(
+              expected.serviceName,
+              Buffer.from(snapshot.native, "base64").toString("utf8"),
+            );
           });
         },
       };
@@ -971,14 +1040,12 @@ export const windowsMachineStateLayer = (
           ),
         mutateWithinRoot,
         replaceSymlink: (input) =>
-          Effect.all({
-            path: requireWindowsPath(input.path),
-            target: requireWindowsPath(input.target),
-          }).pipe(Effect.flatMap(machine.replaceSymlink)),
+          requireWindowsPath(input.path).pipe(
+            Effect.flatMap((path) => machine.replaceSymlink({ ...input, path })),
+          ),
         readSymlink: (path) =>
           requireWindowsPath(path).pipe(
             Effect.flatMap(machine.readSymlink),
-            Effect.map((target) => windowsPath(target.absolute)),
           ),
         inspectPath: (path) =>
           requireWindowsPath(path).pipe(Effect.flatMap(machine.inspectPath)),

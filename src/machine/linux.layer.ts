@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   access,
@@ -91,6 +91,36 @@ class ProcessTimeoutSignal extends Error {}
 class ProcessOutputLimitSignal extends Error {}
 class ProcessStartSignal extends Error {}
 class CredentialCommandSignal extends Error {}
+
+const terminateProcessTree = (child: ChildProcess): void => {
+  if (child.pid === undefined) {
+    child.kill("SIGKILL");
+    return;
+  }
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
+    return;
+  }
+
+  const taskkill = spawn(
+    join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+    ["/PID", String(child.pid), "/T", "/F"],
+    { shell: false, stdio: "ignore", windowsHide: true },
+  );
+  const fallback = setTimeout(() => child.kill("SIGKILL"), 5_000);
+  taskkill.once("error", () => {
+    clearTimeout(fallback);
+    child.kill("SIGKILL");
+  });
+  taskkill.once("close", () => {
+    clearTimeout(fallback);
+    child.kill("SIGKILL");
+  });
+};
 
 const messageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
@@ -467,6 +497,12 @@ const portableSafeRootMutation = async (
       return;
     }
 
+    if (input.mutation.kind === "directory") {
+      await mkdir(target, { recursive: true, mode: input.mutation.mode });
+      await chmod(target, input.mutation.mode);
+      return;
+    }
+
     const temporary = join(
       parent,
       `.${name}.canonfig-${randomBytes(12).toString("hex")}`,
@@ -530,8 +566,14 @@ const safeRootMutation = (
       });
     }
     const symlinkTarget = input.mutation.kind === "symlink"
-      ? yield* checkLinuxPath(input.mutation.target)
+      ? input.mutation.target
       : undefined;
+    if (symlinkTarget !== undefined && (symlinkTarget.length === 0 || symlinkTarget.includes("\0"))) {
+      return yield* new InvalidMachinePathError({
+        path: symlinkTarget,
+        message: "symlink target must not be empty or contain NUL bytes",
+      });
+    }
     const remainder = relative(root, path);
     const parts = remainder.split(sep);
     yield* promiseEffect("mutate managed path", path, async () => {
@@ -598,6 +640,13 @@ const safeRootMutation = (
         const target = join(descriptorPath(parent), name);
         if (input.mutation.kind === "remove") {
           await rm(target, { force: true });
+          await syncHandle(parent);
+          return;
+        }
+
+        if (input.mutation.kind === "directory") {
+          await mkdir(target, { recursive: true, mode: input.mutation.mode });
+          await chmod(target, input.mutation.mode);
           await syncHandle(parent);
           return;
         }
@@ -740,11 +789,12 @@ const runBoundedProcess = (
           ),
           shell: false,
           stdio: ["ignore", "pipe", "pipe"],
+          detached: process.platform !== "win32",
         });
         const terminate = (reason: Error): void => {
           if (failure !== undefined) return;
           failure = reason;
-          child.kill("SIGKILL");
+          terminateProcessTree(child);
         };
         const capture = (target: Array<Buffer>) => (chunk: Buffer): void => {
           outputBytes += chunk.byteLength;
@@ -764,7 +814,7 @@ const runBoundedProcess = (
           invocation.timeoutMilliseconds,
         );
         const abort = (): void => {
-          child.kill("SIGKILL");
+          terminateProcessTree(child);
         };
         signal.addEventListener("abort", abort, { once: true });
         child.once("close", (exitCode, childSignal) => {
@@ -1285,12 +1335,17 @@ export const linuxMachineStateLayer = (
       const replaceSymlink = Effect.fn("MachineState.replaceSymlink")(
         function*(input: SymlinkInput): Effect.fn.Return<void, MachineStateError> {
           const path = yield* checkLinuxPath(input.path);
-          const target = yield* checkLinuxPath(input.target);
+          if (input.target.length === 0 || input.target.includes("\0")) {
+            return yield* new InvalidMachinePathError({
+              path: input.target,
+              message: "symlink target must not be empty or contain NUL bytes",
+            });
+          }
           yield* promiseEffect("replace symlink", path, async () => {
             await mkdir(dirname(path), { recursive: true, mode: defaultDirectoryMode });
             const temporary = makeTemporarySibling(path);
             try {
-              await symlink(target, temporary);
+              await symlink(input.target, temporary);
               await rename(temporary, path);
             } finally {
               await unlink(temporary).catch(() => undefined);
@@ -1379,10 +1434,9 @@ export const linuxMachineStateLayer = (
       );
 
       const readSymlink = Effect.fn("MachineState.readSymlink")(
-        function*(machinePath: MachinePath): Effect.fn.Return<MachinePath, MachineStateError> {
+        function*(machinePath: MachinePath): Effect.fn.Return<string, MachineStateError> {
           const path = yield* checkLinuxPath(machinePath);
-          const target = yield* promiseEffect("read symlink", path, () => readlink(path));
-          return linuxPath(resolve(dirname(path), target));
+          return yield* promiseEffect("read symlink", path, () => readlink(path));
         },
       );
 

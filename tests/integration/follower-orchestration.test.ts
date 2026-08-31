@@ -95,6 +95,12 @@ const machineLayer = (root: string) =>
 const asJson = <Value>(value: Value) =>
   decode(Schema.MutableJson)(JSON.parse(JSON.stringify(value)));
 
+const compareText = (left: string, right: string): number => {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+};
+
 const directoryDigest = (
   files: ReadonlyArray<{
     readonly path: string;
@@ -103,7 +109,7 @@ const directoryDigest = (
   }>,
 ) => decode(ContentDigest)(sha256Hex(
   [...files]
-    .sort((left, right) => left.path.localeCompare(right.path))
+    .sort((left, right) => compareText(left.path, right.path))
     .map((file) =>
       `${file.path}\0${sha256Hex(file.content)}\0${file.executable === true ? "x" : "-"}`
     )
@@ -331,6 +337,7 @@ describe("production follower orchestration", () => {
       files: [
         { path: "kept.txt", content: "kept\n", executable: false },
         { path: "removed.txt", content: "remove later\n", executable: false },
+        { path: "東京.txt", content: "unicode path\n", executable: false },
       ],
     };
     let signingKey: ReturnType<typeof createPrivateKey> | undefined;
@@ -768,7 +775,7 @@ describe("production follower orchestration", () => {
     if (signingKey === undefined) throw new Error("source signing key was not initialized");
     const nextDirectorySpec = {
       ...directorySpec,
-      files: [directorySpec.files[0]!],
+      files: [directorySpec.files[0]!, directorySpec.files[2]!],
     };
     const nextProfile: MachineProfile = {
       id: profileId,
@@ -869,6 +876,7 @@ describe("production follower orchestration", () => {
       ownedFiles: [
         { path: "kept.txt" },
         { path: "removed.txt" },
+        { path: "東京.txt" },
       ],
     });
     expect(

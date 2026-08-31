@@ -65,7 +65,7 @@ export class MachineState extends Context.Service<MachineState, {
   ) => Effect.Effect<void, MachineStateError>;
   readonly readSymlink: (
     path: MachinePath,
-  ) => Effect.Effect<MachinePath, MachineStateError>;
+  ) => Effect.Effect<string, MachineStateError>;
   /** Inspect the final path component without following symlinks or reparse points. */
   readonly inspectPath: (
     path: MachinePath,

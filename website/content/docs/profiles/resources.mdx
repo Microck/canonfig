@@ -37,8 +37,8 @@ groups, invalid targets, incompatible policies, and incompatible verification.
 
 | Kind | Desired outcome | Default Apply Policy |
 | --- | --- | --- |
-| `file` | Exact file or symlink content | `replace` |
-| `directory` | A source-owned tree | `mirror-owned` |
+| `file` | Exact regular-file content and mode, or raw symlink target | `replace` |
+| `directory` | A source-owned tree with explicit directories and modes | `mirror-owned` |
 | `config` | Declared keys in TOML, JSON, or YAML | `merge` |
 | `skill` | A canonical skill tree | `replace-if-unmodified` |
 | `tool` | Installed and verified executable capability | `ensure` |
@@ -48,6 +48,33 @@ groups, invalid targets, incompatible policies, and incompatible verification.
 Every Profile Resource has a unique ID, kind, target, kind-specific
 specification, verification contract, optional groups, and optional
 dependencies. Dependencies form a directed acyclic graph.
+
+## Filesystem fidelity
+
+File, directory, and skill resources preserve numeric modes. Directory and
+skill resources can also declare empty directories. A symlink target remains
+the exact authored string, so a relative target stays relative to the link:
+
+```jsonc
+{
+  "id": "tools",
+  "kind": "directory",
+  "target": "~/.local/tools",
+  "spec": {
+    "kind": "directory",
+    "mode": 493, // 0755
+    "directories": [
+      { "path": "cache", "mode": 488 } // 0750
+    ],
+    "files": [
+{ "path": "current", "content": "", "symlinkTo": "../bin/tool" }
+    ]
+  },
+  "verify": { "method": "digest", "digest": "<directory-digest>" }
+}
+```
+
+JSON numbers are decimal. The comments above show their octal permission forms.
 
 ## Apply Policies
 
@@ -78,7 +105,8 @@ kind. Verification is mandatory after mutation, including after agent apply.
 
 ## Applied Resource Records
 
-An **Applied Resource Record** stores the exact resource revision and digest
-Canonfig last applied. This record enables safe mirror deletion, skill drift
-detection, audit, and recovery. It is not a Local Overlay and does not confer
-source authority on the follower.
+An **Applied Resource Record** stores the exact resource revision, digest,
+mode, raw symlink target, and owned tree entries that Canonfig last applied.
+This record enables safe mirror deletion, mode-aware drift detection, audit,
+and recovery. It is not a Local Overlay and does not confer source authority on
+the follower.

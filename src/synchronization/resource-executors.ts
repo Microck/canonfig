@@ -246,7 +246,6 @@ const captureStoredFile = (
       return { path: path.absolute, state: "directory" };
     }
     const symlink = yield* machine.readSymlink(path).pipe(
-      Effect.map((target) => target.absolute),
       Effect.catchTag("MachineFilesystemError", () => Effect.succeed(undefined)),
     );
     if (symlink !== undefined) {
@@ -335,14 +334,13 @@ const restoreStoredFile = (
         return;
       }
       case "symlink": {
-        const target = yield* machine.normalizePath({ path: entry.target });
         if (root === undefined) {
-          yield* machine.replaceSymlink({ path, target });
+          yield* machine.replaceSymlink({ path, target: entry.target });
         } else {
           yield* machine.mutateWithinRoot({
             root,
             path,
-            mutation: { kind: "symlink", target },
+            mutation: { kind: "symlink", target: entry.target },
           });
         }
       }
@@ -724,17 +722,17 @@ const prepareWrite = (
         return;
       }
       if (context.desired.symlinkTo !== undefined) {
-        const target = yield* machine.normalizePath({
-          path: context.desired.symlinkTo,
+        yield* machine.replaceSymlink({
+          path,
+          target: context.desired.symlinkTo,
         });
-        yield* machine.replaceSymlink({ path, target });
         return;
       }
       const content = yield* artifact(context.artifacts, digest);
       yield* machine.atomicWrite({
         path,
         content,
-        mode: context.desired.executable ? 0o700 : 0o600,
+        mode: context.desired.mode ?? (context.desired.executable ? 0o700 : 0o600),
       });
     });
     return {
@@ -810,7 +808,8 @@ const prepareMirror = (
   removes: ReadonlyArray<string>,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
-    if (context.desired.kind !== "directory" && context.desired.kind !== "skill") {
+    const desired = context.desired;
+    if (desired.kind !== "directory" && desired.kind !== "skill") {
       return yield* new InvalidExecutionPlanError({
         message: `mirror action does not target a directory resource: ${context.resource.id}`,
       });
@@ -819,39 +818,68 @@ const prepareMirror = (
     const allRelative = [...new Set([...adds, ...removes])];
     const paths = yield* Effect.forEach(allRelative, (path) => normalizeRelative(root, path));
     const byRelative = new Map(allRelative.map((path, index) => [path, paths[index]!]));
-    const desiredByPath = new Map(context.desired.files.map((file) => [
+    const desiredByPath = new Map(desired.files.map((file) => [
       file.path,
       file,
+    ]));
+    const desiredDirectories = new Map((desired.directories ?? []).map((directory) => [
+      directory.path,
+      directory,
     ]));
     const contentByPath = new Map<string, Uint8Array>();
     for (const relative of adds) {
       const desiredFile = desiredByPath.get(relative);
-      if (desiredFile === undefined) {
+      if (desiredFile === undefined && desiredDirectories.get(relative) === undefined) {
         return yield* new InvalidExecutionPlanError({
           message: `mirror add is absent from desired content: ${relative}`,
         });
       }
-      contentByPath.set(
-        relative,
-        yield* artifact(context.artifacts, desiredFile.digest),
-      );
+      if (desiredFile !== undefined && desiredFile.symlinkTo === undefined) {
+        contentByPath.set(
+          relative,
+          yield* artifact(context.artifacts, desiredFile.digest),
+        );
+      }
     }
     const rollback = yield* captureRollback(context, [root, ...paths], root);
     const execute = Effect.gen(function*() {
       const activeMachine = yield* MachineState;
-      yield* activeMachine.ensureDirectory({ path: root });
-      for (const relative of adds) {
+      const rootMode = desired.mode ?? 0o700;
+      yield* activeMachine.ensureDirectory({ path: root, mode: rootMode });
+      yield* activeMachine.setPermissions({ path: root, mode: rootMode });
+      const orderedAdds = [...adds].sort((left, right) => {
+        const leftDirectory = desiredDirectories.has(left);
+        const rightDirectory = desiredDirectories.has(right);
+        if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
+        return left.split("/").length - right.split("/").length;
+      });
+      for (const relative of orderedAdds) {
+        const desiredDirectory = desiredDirectories.get(relative);
+        if (desiredDirectory !== undefined) {
+          yield* activeMachine.mutateWithinRoot({
+            root,
+            path: byRelative.get(relative)!,
+            mutation: { kind: "directory", mode: desiredDirectory.mode },
+          });
+          continue;
+        }
+        const desiredFile = desiredByPath.get(relative)!;
         yield* activeMachine.mutateWithinRoot({
           root,
           path: byRelative.get(relative)!,
-          mutation: {
-            kind: "write",
-            content: contentByPath.get(relative)!,
-            mode: desiredByPath.get(relative)!.executable ? 0o700 : 0o600,
-          },
+          mutation: desiredFile.symlinkTo === undefined
+            ? {
+              kind: "write",
+              content: contentByPath.get(relative)!,
+              mode: desiredFile.mode ?? (desiredFile.executable ? 0o700 : 0o600),
+            }
+            : { kind: "symlink", target: desiredFile.symlinkTo },
         });
       }
-      for (const relative of removes) {
+      const orderedRemoves = [...removes].sort((left, right) =>
+        right.split("/").length - left.split("/").length
+      );
+      for (const relative of orderedRemoves) {
         yield* activeMachine.mutateWithinRoot({
           root,
           path: byRelative.get(relative)!,
@@ -1150,7 +1178,6 @@ const installInvocation = (
         path: artifactPath,
       });
       const symlinkTarget = yield* machine.readSymlink(artifactPath).pipe(
-        Effect.map((target) => target.absolute),
         Effect.catch(() => Effect.succeed(undefined)),
       );
       if (symlinkTarget !== undefined) {
@@ -1449,14 +1476,23 @@ export const verifyResource = (
         }
         return {
           ...digest,
-          passed: permissions.executableByOwner === desired.executable,
+          passed: desired.mode === undefined
+            ? permissions.executableByOwner === desired.executable
+            : permissions.mode === desired.mode,
           method: `${digest.method}+permissions`,
         };
       });
     case "skill":
     case "directory":
       return desiredResourceDigest(desired) === declaredDigest
-        ? verifyDirectory(context, desired.files)
+        ? verifyDirectory(context, [
+          ...desired.files,
+          ...(desired.directories ?? []).map((directory) => ({
+            ...directory,
+            digest: sha256Hex("canonfig:directory"),
+            objectKind: "directory" as const,
+          })),
+        ])
         : Effect.succeed({
           passed: false,
           method: "declared-directory-digest",
@@ -1552,10 +1588,9 @@ const verifySymlink = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: context.resource.target });
-    const expected = yield* machine.normalizePath({ path: target });
     return yield* machine.readSymlink(path).pipe(
       Effect.map((observed) => ({
-        passed: observed.absolute === expected.absolute,
+        passed: observed === target,
         method: "symlink-target",
       })),
       Effect.catch(() =>
@@ -1566,7 +1601,13 @@ const verifySymlink = (
 
 const verifyDirectory = (
   context: ResourceExecutionContext,
-  files: ReadonlyArray<{ readonly path: string; readonly digest: string }>,
+  files: ReadonlyArray<{
+    readonly path: string;
+    readonly digest: string;
+    readonly mode: number;
+    readonly objectKind?: "directory" | undefined;
+    readonly symlinkTo?: string | undefined;
+  }>,
 ): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const root = yield* targetPath(context.resource.target);
@@ -1587,16 +1628,40 @@ const verifyDirectory = (
         method: `directory-root-non-${rootKind.kind}`,
       };
     }
+    if (context.desired.kind === "directory" || context.desired.kind === "skill") {
+      const rootPermissions = yield* machine.permissions(root);
+      if (rootPermissions.mode !== (context.desired.mode ?? 0o700)) {
+        return { passed: false, method: "directory-root-permissions" };
+      }
+    }
     const observations = yield* Effect.forEach(files, (file) =>
       Effect.gen(function*() {
       const path = yield* normalizeRelative(root, file.path);
       const kind = yield* machine.inspectPath(path);
+      if (file.objectKind === "directory") {
+        if (kind.kind !== "directory") {
+          return { expected: file.digest, observed: undefined, mode: -1, expectedMode: file.mode };
+        }
+        const permissions = yield* machine.permissions(path);
+        return { expected: file.digest, observed: file.digest, mode: permissions.mode, expectedMode: file.mode };
+      }
+      if (file.symlinkTo !== undefined) {
+        const target = kind.kind === "symlink"
+          ? yield* machine.readSymlink(path)
+          : undefined;
+        return {
+          expected: file.digest,
+          observed: target === file.symlinkTo ? file.digest : undefined,
+          mode: file.mode,
+          expectedMode: file.mode,
+        };
+      }
       if (kind.kind !== "regular") {
         return {
           expected: file.digest,
           observed: undefined,
-          executable: false,
-          expectedExecutable: "executable" in file && file.executable === true,
+          mode: -1,
+          expectedMode: file.mode,
         };
       }
       const observed = yield* machine.digestFile({ path });
@@ -1605,15 +1670,15 @@ const verifyDirectory = (
         return {
           expected: file.digest,
           observed: finalKind.kind === "regular" ? observed.value : undefined,
-          executable: permissions.executableByOwner,
-          expectedExecutable: "executable" in file && file.executable === true,
+          mode: permissions.mode,
+          expectedMode: file.mode,
         };
       }), {
       concurrency: context.limits.verificationConcurrency,
     });
     const mismatch = observations.find((observation) =>
       observation.observed !== observation.expected
-      || observation.executable !== observation.expectedExecutable
+      || observation.mode !== observation.expectedMode
     );
     if (mismatch !== undefined) {
       return {

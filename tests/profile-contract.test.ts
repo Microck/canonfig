@@ -34,6 +34,7 @@ import {
   type SynchronizationOutcome,
   type SynchronizationPlan,
 } from "../src/domain/synchronization.ts";
+import { FileResourceSpec } from "../src/domain/resource.ts";
 
 const fixture = (name: string): string =>
   readFileSync(new URL(`./fixtures/profile-contract/${name}`, import.meta.url), "utf8");
@@ -98,6 +99,63 @@ describe("JSONC parsing", () => {
   it("rejects invalid JSONC", () => {
     expect(() => parseJsonc(`{"a": `)).toThrow();
   });
+});
+
+describe("filesystem authoring fidelity", () => {
+  it("preserves exact modes, empty directories, and relative symlink text", () => {
+    const profile = decodeMachineProfileJsonc(JSON.stringify({
+      id: "filesystem-fidelity",
+      name: "Filesystem fidelity",
+      resources: [{
+        id: "tree",
+        kind: "directory",
+        target: "~/.canonfig/tree",
+        spec: {
+          kind: "directory",
+          mode: 0o755,
+          directories: [{ path: "empty", mode: 0o750 }],
+          files: [{
+            path: "tool-link",
+            content: "",
+            mode: 0o777,
+            symlinkTo: "../bin/tool",
+          }],
+        },
+        verify: { method: "digest", digest: digestA },
+      }],
+    }));
+
+    expect(profile.resources[0]?.spec).toEqual({
+      kind: "directory",
+      mode: 0o755,
+      directories: [{ path: "empty", mode: 0o750 }],
+      files: [{
+        path: "tool-link",
+        content: "",
+        mode: 0o777,
+        executable: true,
+        symlinkTo: "../bin/tool",
+      }],
+    });
+  });
+
+  it.each([-1, 0o10000])(
+    "rejects out-of-range mode %i at authoring and publication boundaries",
+    (mode) => {
+      expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+        kind: "file",
+        content: "hello",
+        mode,
+      })).toThrow();
+      expect(() => Schema.decodeUnknownSync(FileResourceSpec)({
+        kind: "file",
+        content: "hello",
+        digest: sha256Hex("hello"),
+        executable: false,
+        mode,
+      })).toThrow();
+    },
+  );
 });
 
 describe("resource graph validation", () => {
@@ -802,7 +860,7 @@ describe("v2 profile fixtures", () => {
     expect(encodeMachineProfile(implicit)).toBe(encodeMachineProfile(explicit));
     expect(digestMachineProfile(implicit)).toBe(digestMachineProfile(explicit));
     expect(digestMachineProfile(implicit)).toBe(
-      "a98186407a99282f110fec3ca368702078400c754b2a986415e53f3b6001f5c3",
+      "055574fcd04e14ac25851e0532f15b941e2566efb0c241c7edb55c2a4a2438f5",
     );
   });
 

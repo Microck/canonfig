@@ -437,7 +437,8 @@ export const executionContexts = (
         && (
           desiredEntry.desired.kind === "file"
             ? action.detail.executable !== desiredEntry.desired.executable
-            : action.detail.executable !== undefined
+              || action.detail.mode !== desiredEntry.desired.mode
+            : action.detail.executable !== undefined || action.detail.mode !== undefined
         )
       ) {
         return yield* new InvalidExecutionPlanError({
@@ -540,12 +541,14 @@ const appliedResourceFor = (
     policy: state.context.resource.policy,
     target: state.context.resource.target,
     executable: desired.kind === "file" ? desired.executable : undefined,
+    mode: desired.kind === "file" ? desired.mode : undefined,
     symlinkTo: desired.kind === "file" ? desired.symlinkTo : undefined,
     ownedFiles: desired.kind === "directory" || desired.kind === "skill"
       ? desired.files.map((file) => ({
         path: file.path,
         digest: file.digest,
         executable: file.executable,
+        mode: file.mode,
       }))
       : undefined,
     ownedKeys: desired.kind === "config" ? desired.keys : undefined,
@@ -560,6 +563,9 @@ export interface ActionResult {
   readonly human?: HumanAction | undefined;
   readonly drift?: DriftConflict | undefined;
   readonly reason?: string | undefined;
+  /** In-memory inverse retained until the full run reaches a terminal state. */
+  readonly rollback?: Effect.Effect<void, unknown, MachineState> | undefined;
+  readonly rollbackReference?: string | undefined;
 }
 
 export const driftResult = (
@@ -676,7 +682,11 @@ const executeScheduleDefaultAction = (
         rollbackReference,
         attempt,
       );
-      return { kind: "verified" } satisfies ActionResult;
+      return {
+        kind: "verified",
+        rollback,
+        rollbackReference,
+      } satisfies ActionResult;
     });
 
     return yield* work.pipe(
@@ -923,7 +933,11 @@ export const executeSynchronizationAction = (
           prepared.rollbackReference,
           attempt,
         );
-        return { kind: "verified" } satisfies ActionResult;
+        return {
+          kind: "verified",
+          rollback: prepared.rollback,
+          rollbackReference: prepared.rollbackReference,
+        } satisfies ActionResult;
       }
       if (detail.kind === "remove-resource") {
         const removedResourceRecord = input.appliedResources?.find((record) =>
@@ -943,6 +957,8 @@ export const executeSynchronizationAction = (
         return {
           kind: "verified",
           resource: state.action.resource,
+          rollback: prepared.rollback,
+          rollbackReference: prepared.rollbackReference,
         } satisfies ActionResult;
       }
       const verification = yield* verifyResource(state.context, scheduleManager);
@@ -975,6 +991,8 @@ export const executeSynchronizationAction = (
       return {
         kind: "verified",
         resource: state.action.resource,
+        rollback: prepared.rollback,
+        rollbackReference: prepared.rollbackReference,
       } satisfies ActionResult;
     }).pipe(
       Effect.onInterrupt(() =>
@@ -1050,6 +1068,12 @@ export const executeSynchronizationPlan = (
     const human: Array<HumanAction> = [];
     const drift: Array<DriftConflict> = [];
     const removedResources = new Set<ResourceId>();
+    const completedRollbacks: Array<{
+      readonly action: ActionId;
+      readonly resource: ResourceId;
+      readonly rollback: Effect.Effect<void, unknown, MachineState>;
+      readonly reference?: string | undefined;
+    }> = [];
     let failedReason: string | undefined;
 
     const runActions = Effect.gen(function*() {
@@ -1057,6 +1081,18 @@ export const executeSynchronizationPlan = (
         const state = states[index]!;
         const result = yield* executeSynchronizationAction(input, state);
         completedActions.push(state.action.id);
+        if (
+          result.kind === "verified"
+          && result.resource !== undefined
+          && result.rollback !== undefined
+        ) {
+          completedRollbacks.push({
+            action: state.action.id,
+            resource: result.resource,
+            rollback: result.rollback,
+            reference: result.rollbackReference,
+          });
+        }
         if (result.resource !== undefined) verified.add(result.resource);
         if (
           result.resource !== undefined
@@ -1068,6 +1104,32 @@ export const executeSynchronizationPlan = (
         if (result.drift !== undefined) drift.push(result.drift);
         if (result.reason !== undefined) failedReason = result.reason;
         if (result.kind !== "verified") {
+          if (result.kind === "failed") {
+            for (const completed of completedRollbacks.reverse()) {
+              const previousApplied = input.appliedResources?.find((record) =>
+                record.resource === completed.resource
+              );
+              yield* completed.rollback.pipe(
+                Effect.andThen(journal(
+                  input.id,
+                  completed.action,
+                  "failed",
+                  { status: "not-run", method: "run-rolled-back" },
+                  completed.reference,
+                  1,
+                  previousApplied,
+                  previousApplied === undefined ? completed.resource : undefined,
+                )),
+                Effect.catch((error) => {
+                  failedReason = `${failedReason ?? "synchronization failed"}; rollback failed for ${completed.action}: ${redact(
+                    error instanceof Error ? error : new Error(String(error)),
+                    input.knownSecrets ?? [],
+                  )}`;
+                  return Effect.void;
+                }),
+              );
+            }
+          }
           yield* completeSkipped(input, states.slice(index + 1));
           break;
         }
@@ -1125,6 +1187,7 @@ export const executeSynchronizationPlan = (
               path: file.path,
               digest: file.digest,
               executable: file.executable,
+              mode: file.mode,
             }))
             : undefined;
           applied.push({
@@ -1136,6 +1199,7 @@ export const executeSynchronizationPlan = (
             policy: resourceById.get(resource)?.policy,
             target: resourceById.get(resource)?.target,
             executable: desired?.kind === "file" ? desired.executable : undefined,
+            mode: desired?.kind === "file" ? desired.mode : undefined,
             symlinkTo: desired?.kind === "file" ? desired.symlinkTo : undefined,
             ownedFiles,
             ownedKeys: desired?.kind === "config" ? desired.keys : undefined,

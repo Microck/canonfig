@@ -45,6 +45,7 @@ interface WriteFileActionDetail {
   readonly target: string;
   readonly digest: ContentDigest;
   executable?: boolean;
+  mode?: number;
 }
 
 interface DriftConflictActionDetail {
@@ -65,6 +66,21 @@ const compareText = (left: string, right: string): number => {
 const sortedUnique = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
   [...new Set(values)].sort(compareText);
 
+const directoryDigest = sha256Hex("canonfig:directory");
+
+const desiredDirectoryEntries = (
+  desired: Extract<DesiredResource, { readonly kind: "directory" | "skill" }>,
+) => [
+  ...desired.files,
+  ...(desired.directories ?? []).map((directory) => ({
+    path: directory.path,
+    digest: directoryDigest,
+    executable: (directory.mode & 0o100) !== 0,
+    mode: directory.mode,
+    objectKind: "directory" as const,
+  })),
+];
+
 const pendingAgentTaskId = Schema.decodeUnknownSync(AgentTaskId)("pending");
 
 const filesDigest = (
@@ -72,11 +88,17 @@ const filesDigest = (
     readonly path: string;
     readonly digest: string;
     readonly executable?: boolean | undefined;
+    readonly mode?: number | undefined;
+    readonly objectKind?: string | undefined;
+    readonly symlinkTo?: string | undefined;
   }>,
 ): ContentDigest => {
   const encoded = [...files]
     .sort((left, right) => compareText(left.path, right.path))
-    .map((file) => `${file.path}\0${file.digest}\0${file.executable === true ? "x" : "-"}`)
+    .map((file) => (file.objectKind === undefined || file.objectKind === "regular")
+        && file.symlinkTo === undefined
+      ? `${file.path}\0${file.digest}\0${file.executable === true ? "x" : "-"}`
+      : `${file.path}\0${file.digest}\0${file.symlinkTo === undefined && file.executable === true ? "x" : "-"}\0${file.objectKind ?? "symlink"}\0${file.symlinkTo ?? ""}`)
     .join("\n");
   return sha256Hex(encoded);
 };
@@ -87,24 +109,33 @@ const presentObservedFiles = (
     readonly state?: "absent" | undefined;
     readonly digest?: string | undefined;
     readonly executable?: boolean | undefined;
+    readonly mode?: number | undefined;
+    readonly objectKind?: string | undefined;
+    readonly symlinkTo?: string | undefined;
   }>,
 ): ReadonlyArray<{
   readonly path: string;
   readonly digest: string;
   readonly executable?: boolean | undefined;
+  readonly mode?: number | undefined;
+  readonly objectKind?: string | undefined;
+  readonly symlinkTo?: string | undefined;
 }> =>
   files.flatMap((file) =>
     "state" in file || file.digest === undefined
       ? []
-      : [{ path: file.path, digest: file.digest, executable: file.executable }]
+      : [{ path: file.path, digest: file.digest, executable: file.executable, mode: file.mode, objectKind: file.objectKind, symlinkTo: file.symlinkTo }]
   );
 
 const fileSignature = (
   file: {
     readonly digest: string;
     readonly executable?: boolean | undefined;
+    readonly mode?: number | undefined;
+    readonly objectKind?: string | undefined;
+    readonly symlinkTo?: string | undefined;
   },
-): string => `${file.digest}\0${file.executable === true ? "x" : "-"}`;
+): string => `${file.digest}\0${file.symlinkTo === undefined && file.objectKind !== "symlink" ? file.mode?.toString(8) ?? (file.executable === true ? "x" : "-") : "-"}\0${file.objectKind ?? (file.symlinkTo === undefined ? "regular" : "symlink")}\0${file.symlinkTo ?? ""}`;
 
 export const desiredResourceDigest = (desired: DesiredResource): ContentDigest | undefined => {
   switch (desired.kind) {
@@ -114,7 +145,7 @@ export const desiredResourceDigest = (desired: DesiredResource): ContentDigest |
     case "schedule":
       return desired.digest;
     case "directory":
-      return filesDigest(desired.files);
+      return filesDigest(desiredDirectoryEntries(desired));
     case "tool":
     case "credential":
       return undefined;
@@ -140,18 +171,24 @@ export const detectSkillDrift = (input: SkillDriftInput): SkillDriftState => {
   const applied = input.lastAppliedDigest;
   const observedMatchesDesired = observed === input.desiredDigest
     && (
-      input.desiredExecutable === undefined
-      || input.observedExecutable === input.desiredExecutable
+      input.desiredMode === undefined
+        ? input.desiredExecutable === undefined
+          || input.observedExecutable === input.desiredExecutable
+        : input.observedMode === input.desiredMode
     );
   const observedMatchesApplied = observed === applied
     && (
-      input.lastAppliedExecutable === undefined
-      || input.observedExecutable === input.lastAppliedExecutable
+      input.lastAppliedMode === undefined
+        ? input.lastAppliedExecutable === undefined
+          || input.observedExecutable === input.lastAppliedExecutable
+        : input.observedMode === input.lastAppliedMode
     );
   const desiredMatchesApplied = input.desiredDigest === applied
     && (
-      input.desiredExecutable === undefined
-      || input.lastAppliedExecutable === input.desiredExecutable
+      input.desiredMode === undefined || input.lastAppliedMode === undefined
+        ? input.desiredExecutable === undefined
+          || input.lastAppliedExecutable === input.desiredExecutable
+        : input.lastAppliedMode === input.desiredMode
     );
   if (observedMatchesDesired) {
     return desiredMatchesApplied ? "unchanged" : "converged";
@@ -182,6 +219,7 @@ const observedMatchesDesired = (
       return observed.state === "present"
         && observed.digest === desired.digest
         && observed.executable === desired.executable
+        && (observed.mode === undefined || observed.mode === desired.mode)
         && (
           desired.symlinkTo === undefined
             ? observed.symlinkTo === undefined
@@ -258,6 +296,7 @@ const writeFile = (
   context: ResourcePlanningContext,
   digest: ContentDigest,
   executable?: boolean | undefined,
+  mode?: number | undefined,
 ): ResourceActionDraft => {
   const detail: WriteFileActionDetail = {
     kind: "write-file",
@@ -265,6 +304,7 @@ const writeFile = (
     digest,
   };
   if (executable !== undefined) detail.executable = executable;
+  if (mode !== undefined) detail.mode = mode;
   return { kind: "write-file", detail };
 };
 
@@ -278,19 +318,20 @@ const replaceDirectory = (
   const observedByPath = new Map(
     observedFiles.map((file) => [
       file.path,
-      `${file.digest}\0${file.executable === true ? "x" : "-"}`,
+      fileSignature(file),
     ] as const),
   );
-  const desiredPaths = new Set(desired.files.map((file) => file.path));
+  const desiredEntries = desiredDirectoryEntries(desired);
+  const desiredPaths = new Set(desiredEntries.map((file) => file.path));
   return {
     kind: "mirror-directory",
     detail: {
       kind: "mirror-directory",
       target: context.resource.target,
-      adds: desired.files
+      adds: desiredEntries
         .filter((file) =>
           observedByPath.get(file.path)
-            !== `${file.digest}\0${file.executable ? "x" : "-"}`
+            !== fileSignature(file)
         )
         .map((file) => file.path)
         .sort(compareText),
@@ -414,6 +455,7 @@ const planReplace = (context: ResourcePlanningContext): ReadonlyArray<ResourceAc
       context,
       desiredDigest,
       context.desired.kind === "file" ? context.desired.executable : undefined,
+      context.desired.kind === "file" ? context.desired.mode : undefined,
     ),
   ];
 };
@@ -459,36 +501,37 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
 
 const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
   const desiredFiles = context.desired.kind === "directory" || context.desired.kind === "skill"
-    ? context.desired.files
+    ? desiredDirectoryEntries(context.desired)
     : [{ path: context.resource.target, digest: desiredResourceDigest(context.desired) }];
   const observedFiles = context.observed.state === "directory"
     ? presentObservedFiles(context.observed.files)
     : [];
   const currentByPath = new Map(observedFiles.map((file) => [
     file.path,
-    `${file.digest}\0${file.executable === true ? "x" : "-"}`,
+    fileSignature(file),
   ] as const));
   const desiredPaths = new Set(desiredFiles.map((file) => file.path));
   const ownedByPath = new Map(
-    (context.applied?.ownedFiles ?? []).map((file) => [
-      file.path,
-      `${file.digest}\0${file.executable === true ? "x" : "-"}`,
-    ] as const),
+    (context.applied?.ownedFiles ?? []).map((file) => [file.path, file] as const),
   );
   const adds = desiredFiles
-    .filter((file) =>
-      file.digest !== undefined
-      && currentByPath.get(file.path)
-        !== `${file.digest}\0${"executable" in file && file.executable ? "x" : "-"}`
-    )
+    .filter((file) => file.digest !== undefined
+      && currentByPath.get(file.path) !== fileSignature({
+        ...file,
+        digest: file.digest,
+      }))
     .map((file) => file.path)
     .sort(compareText);
   const removes = observedFiles
     .filter((file) => !desiredPaths.has(file.path))
-    .filter((file) =>
-      ownedByPath.get(file.path)
-        === `${file.digest}\0${file.executable === true ? "x" : "-"}`,
-    )
+    .filter((file) => {
+      const owned = ownedByPath.get(file.path);
+      return owned !== undefined
+        && owned.digest === file.digest
+        && (owned.mode === undefined
+          ? (owned.executable ?? false) === (file.executable ?? false)
+          : owned.mode === file.mode);
+    })
     .map((file) => file.path)
     .sort(compareText);
   if (
@@ -554,6 +597,13 @@ const planReplaceIfUnmodified = (
       ? context.observed.executable
       : undefined,
     lastAppliedExecutable: context.applied?.executable,
+    desiredMode: context.desired.kind === "file"
+      ? context.desired.mode
+      : undefined,
+    observedMode: context.observed.state === "present"
+      ? context.observed.mode
+      : undefined,
+    lastAppliedMode: context.applied?.mode,
   });
   switch (drift) {
     case "unchanged":
@@ -578,6 +628,7 @@ const planReplaceIfUnmodified = (
           context,
           desiredDigest,
           context.desired.kind === "file" ? context.desired.executable : undefined,
+          context.desired.kind === "file" ? context.desired.mode : undefined,
         ),
       ];
     case "local-only":
@@ -588,6 +639,7 @@ const planReplaceIfUnmodified = (
             context,
             desiredDigest,
             context.desired.kind === "file" ? context.desired.executable : undefined,
+            context.desired.kind === "file" ? context.desired.mode : undefined,
           ),
         ];
       }

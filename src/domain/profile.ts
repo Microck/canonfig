@@ -11,6 +11,7 @@ import {
   defaultPolicyForKind,
   ApplyPolicy as ApplyPolicySchema,
   BuildPolicy as BuildPolicySchema,
+  FilesystemMode as FilesystemModeSchema,
   ResourceKind as ResourceKindSchema,
   ToolRecipeRef,
   policyCompatibleWithKind,
@@ -84,10 +85,10 @@ export interface ProfileResourceInput {
 }
 
 export type ResourceSpecInput =
-  | { readonly kind: "file"; readonly content: string; readonly executable?: boolean | undefined; readonly symlinkTo?: string | undefined }
-  | { readonly kind: "directory"; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined }> }
+  | { readonly kind: "file"; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }
+  | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: string | number | boolean | ReadonlyArray<string> }> }
-  | { readonly kind: "skill"; readonly name: string; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined }> }
+  | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
   | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string }
   | { readonly kind: "schedule"; readonly calendar: { readonly type: "daily"; readonly at: string } | { readonly type: "weekly"; readonly days: ReadonlyArray<string>; readonly at: string } | { readonly type: "custom"; readonly expression: string }; readonly timezone: string };
@@ -158,6 +159,7 @@ const AuthoringFileSchema = Schema.Struct({
   kind: Schema.Literal("file"),
   content: Schema.String,
   executable: Schema.optional(Schema.Boolean),
+  mode: Schema.optional(FilesystemModeSchema),
   symlinkTo: Schema.optional(Schema.NonEmptyString),
 });
 
@@ -165,6 +167,13 @@ const AuthoringDirectoryFileSchema = Schema.Struct({
   path: Schema.NonEmptyString,
   content: Schema.String,
   executable: Schema.optional(Schema.Boolean),
+  mode: Schema.optional(FilesystemModeSchema),
+  symlinkTo: Schema.optional(Schema.NonEmptyString),
+});
+
+const AuthoringDirectorySchema = Schema.Struct({
+  path: Schema.NonEmptyString,
+  mode: FilesystemModeSchema,
 });
 
 const AuthoringLoginSchema = Schema.Union([
@@ -179,6 +188,8 @@ export const ResourceSpecInputSchema = Schema.Union([
   AuthoringFileSchema,
   Schema.Struct({
     kind: Schema.Literal("directory"),
+    mode: Schema.optional(FilesystemModeSchema),
+    directories: Schema.optional(Schema.Array(AuthoringDirectorySchema)),
     files: Schema.Array(AuthoringDirectoryFileSchema),
   }),
   Schema.Struct({
@@ -192,6 +203,8 @@ export const ResourceSpecInputSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("skill"),
     name: Schema.NonEmptyString,
+    mode: Schema.optional(FilesystemModeSchema),
+    directories: Schema.optional(Schema.Array(AuthoringDirectorySchema)),
     files: Schema.Array(AuthoringDirectoryFileSchema),
   }),
   Schema.Struct({
@@ -1107,10 +1120,12 @@ const uniqueSorted = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
 const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
   switch (spec.kind) {
     case "file": {
+      const mode = spec.mode ?? (spec.executable === true ? 0o700 : 0o600);
       const base = {
         kind: spec.kind,
         content: spec.content,
-        executable: spec.executable ?? false,
+        mode,
+        executable: (mode & 0o100) !== 0,
       } as const;
       if (spec.symlinkTo === undefined) return base;
       return { ...base, symlinkTo: spec.symlinkTo };
@@ -1118,12 +1133,22 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
     case "directory":
       return {
         kind: spec.kind,
+        mode: spec.mode ?? 0o700,
+        directories: [...(spec.directories ?? [])]
+          .sort((left, right) => compareText(left.path, right.path)),
         files: spec.files
-          .map((file) => ({
-            path: file.path,
-            content: file.content,
-            executable: file.executable ?? false,
-          }))
+          .map((file) => {
+            const mode = file.mode ?? (file.executable === true ? 0o700 : 0o600);
+            const normalized = {
+              path: file.path,
+              content: file.content,
+              mode,
+              executable: (mode & 0o100) !== 0,
+            };
+            return file.symlinkTo === undefined
+              ? normalized
+              : { ...normalized, symlinkTo: file.symlinkTo };
+          })
           .sort((left, right) => compareText(left.path, right.path)),
       };
     case "config":
@@ -1136,12 +1161,22 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
       return {
         kind: spec.kind,
         name: spec.name,
+        mode: spec.mode ?? 0o700,
+        directories: [...(spec.directories ?? [])]
+          .sort((left, right) => compareText(left.path, right.path)),
         files: spec.files
-          .map((file) => ({
-            path: file.path,
-            content: file.content,
-            executable: file.executable ?? false,
-          }))
+          .map((file) => {
+            const mode = file.mode ?? (file.executable === true ? 0o700 : 0o600);
+            const normalized = {
+              path: file.path,
+              content: file.content,
+              mode,
+              executable: (mode & 0o100) !== 0,
+            };
+            return file.symlinkTo === undefined
+              ? normalized
+              : { ...normalized, symlinkTo: file.symlinkTo };
+          })
           .sort((left, right) => compareText(left.path, right.path)),
       };
     case "tool":

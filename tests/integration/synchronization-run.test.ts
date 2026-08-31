@@ -386,7 +386,9 @@ const mirrorContext = (
     },
     desired: {
       kind: "directory",
-      files: [{ path: relative, digest, executable: false }],
+      mode: 0o755,
+      directories: [],
+      files: [{ path: relative, digest, executable: false, mode: 0o644 }],
     },
     verification: { method: "digest", digest },
     artifacts: new Map([[digest, { digest, content: bytes }]]),
@@ -1393,6 +1395,56 @@ if (process.argv.slice(2).some((value) =>
     expect(await readFile(outside, "utf8")).toBe("outside content");
   });
 
+  it("preserves exact file, directory, empty-directory, and relative-symlink state", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const context = mirrorContext(root, managed, "bin/tool", "#!/bin/sh\n");
+    const linkDigest = decode(ContentDigest)(sha256BytesHex(new TextEncoder().encode("../bin/tool")));
+    const desired = {
+      kind: "directory" as const,
+      mode: 0o755,
+      directories: [
+        { path: "bin", mode: 0o755 },
+        { path: "empty", mode: 0o750 },
+        { path: "links", mode: 0o755 },
+      ],
+      files: [
+        { ...context.desired.files[0]!, mode: 0o755, executable: true },
+        {
+          path: "links/tool",
+          digest: linkDigest,
+          executable: false,
+          mode: 0o777,
+          symlinkTo: "../bin/tool",
+        },
+      ],
+    };
+    const exactContext: ResourceExecutionContext = {
+      ...context,
+      action: {
+        ...context.action,
+        detail: {
+          kind: "mirror-directory",
+          target: managed,
+          adds: ["bin", "empty", "links", "bin/tool", "links/tool"],
+          removes: [],
+        },
+      },
+      desired,
+      artifacts: new Map(context.artifacts),
+    };
+
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(exactContext).pipe(Effect.provide(machineLayer(root))),
+    );
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(machineLayer(root))));
+
+    expect(statSync(managed).mode & 0o7777).toBe(0o755);
+    expect(statSync(join(managed, "bin", "tool")).mode & 0o7777).toBe(0o755);
+    expect(statSync(join(managed, "empty")).mode & 0o7777).toBe(0o750);
+    expect(readlinkSync(join(managed, "links", "tool"))).toBe("../bin/tool");
+  });
+
   it("rolls back a newly-created directory root to missing", async () => {
     const root = temporaryDirectory();
     const managed = join(root, "managed");
@@ -1697,7 +1749,7 @@ if (process.argv.slice(2).some((value) =>
     expect(await readFile(unowned, "utf8")).toBe("keep me\n");
   });
 
-  it("persists successful ownership before a later action fails and reuses it on the next sync", async () => {
+  it("rolls back successful work when a later action fails", async () => {
     const base = fileFixture(temporaryDirectory(), "run-partial");
     const secondTarget = join(base.root, "home", "other-settings.json");
     const secondContent = new TextEncoder().encode("second canonical content");
@@ -1768,7 +1820,7 @@ if (process.argv.slice(2).some((value) =>
       },
     }, failingMachine);
     expect(failed.outcome).toBe("Failed");
-    expect(await readFile(base.target, "utf8")).toBe("canonical content");
+    expect(await readFile(base.target).catch(() => undefined)).toBeUndefined();
     expect(await readFile(secondTarget).catch(() => undefined)).toBeUndefined();
 
     const appliedAfterFailure = await Effect.runPromise(
@@ -1776,7 +1828,7 @@ if (process.argv.slice(2).some((value) =>
         repository.loadAppliedResources(follower.id)
       ).pipe(Effect.provide(stateRepositoryLayer(base.database))),
     );
-    expect(appliedAfterFailure.map((record) => record.resource)).toEqual(["settings"]);
+    expect(appliedAfterFailure).toEqual([]);
 
     const nextPlan = Effect.runSync(planSynchronization({
       revision,
@@ -1784,14 +1836,7 @@ if (process.argv.slice(2).some((value) =>
       observedState: {
         platform: "linux",
         resources: [
-          {
-            resource: firstResource.id,
-            observed: {
-              state: "present",
-              digest: decode(ContentDigest)(base.artifact.digest),
-              executable: false,
-            },
-          },
+          { resource: firstResource.id, observed: { state: "absent" } },
           { resource: secondResource.id, observed: { state: "absent" } },
         ],
         availableBlobs: [],
@@ -1803,7 +1848,7 @@ if (process.argv.slice(2).some((value) =>
       nextPlan.actions
         .filter((action) => action.kind !== "no-op")
         .map((action) => action.resource),
-    ).toEqual(["zz-other-settings"]);
+    ).toEqual(["settings", "zz-other-settings"]);
     const nextInput: SynchronizationRunInput = {
       ...base.input,
       id: decode(RunId)("run-partial-retry"),

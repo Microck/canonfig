@@ -1506,14 +1506,15 @@ esac
         outcome: { outcome: "Failed" },
       });
       expect(readFileSync(resolve(root, "managed.txt"), "utf8"))
-        .toBe("version two\n");
+        .toBe("version one\n");
       expect(readFileSync(resolve(root, "mirror", "keep.txt"), "utf8"))
-        .toBe("directory v2\n");
-      expect(() => statSync(resolve(root, "mirror", "remove.txt"))).toThrow();
+        .toBe("directory v1\n");
+      expect(readFileSync(resolve(root, "mirror", "remove.txt"), "utf8"))
+        .toBe("owned v1\n");
       expect(JSON.parse(readFileSync(resolve(root, "settings.json"), "utf8")))
         .toEqual({
           local: { keep: "preserve" },
-          canonical: { existing: "preserve", enabled: false, removed: "v1" },
+          canonical: { existing: "preserve", enabled: true, removed: "v1" },
         });
       expect(
         requireSuccess(

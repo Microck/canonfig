@@ -39,10 +39,13 @@ export type DesiredResource =
     readonly kind: "file";
     readonly digest: ContentDigest;
     readonly executable: boolean;
+    readonly mode: number;
     readonly symlinkTo?: string | undefined;
   }
   | {
     readonly kind: "directory";
+    readonly mode: number;
+    readonly directories: ReadonlyArray<DesiredDirectory>;
     readonly files: ReadonlyArray<DesiredFile>;
   }
   | {
@@ -54,6 +57,8 @@ export type DesiredResource =
   | {
     readonly kind: "skill";
     readonly digest: ContentDigest;
+    readonly mode: number;
+    readonly directories: ReadonlyArray<DesiredDirectory>;
     readonly files: ReadonlyArray<DesiredFile>;
   }
   | {
@@ -78,6 +83,13 @@ export interface DesiredFile {
   readonly path: string;
   readonly digest: ContentDigest;
   readonly executable: boolean;
+  readonly mode: number;
+  readonly symlinkTo?: string | undefined;
+}
+
+export interface DesiredDirectory {
+  readonly path: string;
+  readonly mode: number;
 }
 
 export interface ToolRecipe {
@@ -151,6 +163,9 @@ export interface SkillDriftInput {
   readonly desiredExecutable?: boolean | undefined;
   readonly observedExecutable?: boolean | undefined;
   readonly lastAppliedExecutable?: boolean | undefined;
+  readonly desiredMode?: number | undefined;
+  readonly observedMode?: number | undefined;
+  readonly lastAppliedMode?: number | undefined;
 }
 
 export interface PlannedResourceActions {

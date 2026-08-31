@@ -798,7 +798,7 @@ describe("synchronization crash recovery", () => {
         },
         replaceSymlink: (input) => {
           if (input.path.absolute === value.target) {
-            operations.push(`symlink:${input.target.absolute}`);
+            operations.push(`symlink:${input.target}`);
           }
           return service.replaceSymlink(input);
         },

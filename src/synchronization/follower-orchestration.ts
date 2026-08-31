@@ -78,6 +78,12 @@ import type {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+const compareText = (left: string, right: string): number => {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+};
+
 const isNotFoundFilesystemError = (
   error: MachineFilesystemError,
 ): boolean => /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message);
@@ -252,11 +258,16 @@ const decodeSpecs = (
 const fileDigest = (content: string): typeof ContentDigest.Type =>
   Schema.decodeUnknownSync(ContentDigest)(sha256BytesHex(encoder.encode(content)));
 
-const filesDigest = (files: ReadonlyArray<DesiredFile>): typeof ContentDigest.Type =>
+const filesDigest = (files: ReadonlyArray<DesiredFile & {
+  readonly objectKind?: "regular" | "directory" | "symlink" | undefined;
+}>): typeof ContentDigest.Type =>
   Schema.decodeUnknownSync(ContentDigest)(sha256Hex(
     [...files]
-      .sort((left, right) => left.path.localeCompare(right.path))
-      .map((file) => `${file.path}\0${file.digest}\0${file.executable ? "x" : "-"}`)
+      .sort((left, right) => compareText(left.path, right.path))
+      .map((file) => (file.objectKind === undefined || file.objectKind === "regular")
+          && file.symlinkTo === undefined
+        ? `${file.path}\0${file.digest}\0${file.executable ? "x" : "-"}`
+        : `${file.path}\0${file.digest}\0${file.symlinkTo === undefined && file.executable ? "x" : "-"}\0${file.objectKind ?? "symlink"}\0${file.symlinkTo ?? ""}`)
       .join("\n"),
   ));
 
@@ -265,7 +276,7 @@ const configDocument = (
 ): Uint8Array => {
   const document: ConfigDocument = {};
   for (const entry of [...spec.keys].sort((left, right) =>
-    left.path.localeCompare(right.path)
+    compareText(left.path, right.path)
   )) {
     setConfigPath(document, entry.path, entry.value);
   }
@@ -307,6 +318,7 @@ const desiredFor = (
           kind: "file",
           digest,
           executable: spec.executable ?? false,
+          mode: spec.mode ?? (spec.executable === true ? 0o700 : 0o600),
           symlinkTo: spec.symlinkTo,
         },
         artifacts: spec.symlinkTo === undefined ? [{ digest, content }] : [],
@@ -316,18 +328,34 @@ const desiredFor = (
     case "skill": {
       const files = spec.files.map((file) => ({
         path: file.path,
-        digest: fileDigest(file.content),
+        digest: file.symlinkTo === undefined
+          ? fileDigest(file.content)
+          : Schema.decodeUnknownSync(ContentDigest)(sha256Hex(file.symlinkTo)),
         executable: file.executable ?? false,
+        mode: file.mode ?? (file.executable === true ? 0o700 : 0o600),
+        symlinkTo: file.symlinkTo,
       }));
-      const artifacts = spec.files.map((file, index) => ({
-        digest: files[index]!.digest,
-        content: encoder.encode(file.content),
-      }));
-      const digest = filesDigest(files);
+      const artifacts = spec.files.flatMap((file, index) =>
+        file.symlinkTo === undefined
+          ? [{ digest: files[index]!.digest, content: encoder.encode(file.content) }]
+          : []
+      );
+      const directories = spec.directories ?? [];
+      const mode = spec.mode ?? 0o700;
+      const digest = filesDigest([
+        ...files,
+        ...directories.map((directory) => ({
+          path: directory.path,
+          digest: Schema.decodeUnknownSync(ContentDigest)(sha256Hex("canonfig:directory")),
+          executable: (directory.mode & 0o100) !== 0,
+          mode: directory.mode,
+          objectKind: "directory" as const,
+        })),
+      ]);
       return {
         desired: spec.kind === "skill"
-          ? { kind: "skill", digest, files }
-          : { kind: "directory", files },
+          ? { kind: "skill", digest, mode, directories, files }
+          : { kind: "directory", mode, directories, files },
         artifacts,
       };
     }
@@ -395,18 +423,15 @@ const observeFile = (
     const path = yield* machine.normalizePath({ path: target });
     const observedKind = yield* machine.inspectPath(path);
     if (observedKind.kind === "symlink") {
-      const expected = desired.symlinkTo === undefined
-        ? undefined
-        : yield* machine.normalizePath({ path: desired.symlinkTo });
       return yield* machine.readSymlink(path).pipe(
         Effect.map((symlinkTo): ObservedResourceState => ({
           state: "present",
-          digest: expected?.absolute === symlinkTo.absolute
+          digest: desired.symlinkTo === symlinkTo
             ? desired.digest
-            : sha256Hex(symlinkTo.absolute),
+            : sha256Hex(symlinkTo),
           executable: false,
           objectKind: "symlink",
-          symlinkTo: symlinkTo.absolute,
+          symlinkTo,
         })),
       );
     }
@@ -433,6 +458,7 @@ const observeFile = (
             state: "present",
             digest: digest.value,
             executable: permissions.executableByOwner,
+            mode: permissions.mode,
             objectKind: "regular",
           })),
         )
@@ -568,6 +594,13 @@ const observe = (
             executable: file.executable ?? false,
           })),
           ...desired.files,
+          ...desired.directories.map((directory) => ({
+            path: directory.path,
+            digest: Schema.decodeUnknownSync(ContentDigest)(sha256Hex("canonfig:directory")),
+            executable: (directory.mode & 0o100) !== 0,
+            mode: directory.mode,
+            objectKind: "directory" as const,
+          })),
         ].map((file) => [file.path, file])).values()];
         const files = yield* Effect.forEach(candidates, (file) =>
           Effect.gen(function*() {
@@ -581,6 +614,26 @@ const observe = (
             );
             if (kind === undefined) {
               return { path: file.path, state: "absent" } as const;
+            }
+            if (kind.kind === "directory") {
+              const permissions = yield* machine.permissions(path);
+              return {
+                path: file.path,
+                digest: sha256Hex("canonfig:directory"),
+                executable: permissions.executableByOwner,
+                mode: permissions.mode,
+                objectKind: "directory" as const,
+              };
+            }
+            if (kind.kind === "symlink") {
+              const symlinkTo = yield* machine.readSymlink(path);
+              return {
+                path: file.path,
+                digest: sha256Hex(symlinkTo),
+                executable: false,
+                objectKind: "symlink" as const,
+                symlinkTo,
+              };
             }
             if (kind.kind !== "regular") {
               return {
@@ -597,6 +650,7 @@ const observe = (
                     path: file.path,
                     digest: digest.value,
                     executable: permissions.executableByOwner,
+                    mode: permissions.mode,
                     objectKind: "regular" as const,
                   })),
                 )
@@ -692,6 +746,7 @@ const removedResourceState = (
           kind: "file",
           digest,
           executable: applied.executable ?? false,
+          mode: applied.executable === true ? 0o700 : 0o600,
           symlinkTo: applied.symlinkTo,
         },
       };
@@ -703,10 +758,13 @@ const removedResourceState = (
         desired: {
           kind: applied.kind,
           digest,
+          mode: 0o700,
+          directories: [],
           files: applied.ownedFiles.map((file) => ({
             path: file.path,
             digest: Schema.decodeUnknownSync(ContentDigest)(file.digest),
             executable: file.executable ?? false,
+            mode: file.executable === true ? 0o700 : 0o600,
           })),
         },
       };

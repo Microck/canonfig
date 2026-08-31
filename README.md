@@ -16,8 +16,8 @@ A Machine Profile can declare these resource kinds and apply policies:
 
 | Resource | Default policy | Outcome |
 | --- | --- | --- |
-| File | `replace` | Exact owned file or symlink content |
-| Directory | `mirror-owned` | Source-owned tree; only unchanged owned files are removed |
+| File | `replace` | Exact owned regular-file content and mode, or raw symlink target |
+| Directory | `mirror-owned` | Source-owned tree with exact modes and empty directories; only unchanged owned entries are removed |
 | Config | `merge` | Declared TOML, JSON, or YAML keys with local keys preserved |
 | Skill | `replace-if-unmodified` | Canonical skill tree without overwriting follower edits |
 | Tool | `ensure` | Platform-specific installation and verification |
@@ -234,8 +234,10 @@ failure (`7`).
 - Source discovery scans files passed through `--file`; it is not an implicit
   whole-home scan.
 - Supported agent harness kinds are `codex`, `claude`, and `gemini`.
-- Third-party installers, login operations, and arbitrary agent commands do not
-  promise full rollback. Recovery re-observes and re-verifies them.
+- A failed run rolls back its earlier deterministic file and directory changes
+  in reverse order. Third-party installers, login operations, and arbitrary
+  agent commands cannot promise rollback, so recovery re-observes and
+  re-verifies them.
 - Canonfig is one-way. It does not provide bidirectional sync, automatic
   credential transfer, silent skill conflict resolution, whole-home backup, or
   a hosted fleet control plane.

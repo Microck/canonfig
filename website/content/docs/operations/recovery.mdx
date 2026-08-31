@@ -39,6 +39,11 @@ available and the journal has enough information to re-observe incomplete
 actions. Owned file writes use recorded rollback material, sibling temporary
 files, durability synchronization where supported, and atomic rename.
 
+When a deterministic action fails, Canonfig rolls back earlier file and
+directory mutations from that run in reverse order. It restores the previous
+Applied Resource Record, or removes a newly created record, with the matching
+filesystem rollback.
+
 Idempotent verification runs again before Canonfig records Convergence.
 
 ## Recovery limits

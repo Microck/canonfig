@@ -324,6 +324,37 @@ describe("resource and Apply Policy coverage", () => {
     expect(plan.actions.map((action) => action.kind)).toEqual(["drift-conflict"]);
   });
 
+  it("treats an exact relative symlink as converged", () => {
+    const subject = resource("directory", "directory", "mirror-owned");
+    const desired = {
+      kind: "directory" as const,
+      mode: 0o700,
+      directories: [],
+      files: [{
+        path: "link",
+        digest: digestA,
+        executable: true,
+        mode: 0o777,
+        symlinkTo: "../target",
+      }],
+    };
+    const plan = runPlan(plannerInput([subject], {
+      desired: [desired],
+      observed: [{
+        state: "directory",
+        files: [{
+          path: "link",
+          digest: digestA,
+          executable: false,
+          objectKind: "symlink",
+          symlinkTo: "../target",
+        }],
+      }],
+    }));
+
+    expect(plan.actions.map((action) => action.kind)).toEqual(["no-op"]);
+  });
+
   it.each([
     {
       name: "regular to executable",
@@ -395,6 +426,17 @@ describe("resource and Apply Policy coverage", () => {
         observedExecutable,
       });
     }
+  });
+
+  it("treats a same-byte exact mode change as remote intent", () => {
+    expect(detectSkillDrift({
+      desiredDigest: digestA,
+      observedDigest: digestA,
+      lastAppliedDigest: digestA,
+      desiredMode: 0o644,
+      observedMode: 0o600,
+      lastAppliedMode: 0o600,
+    })).toBe("remote-only");
   });
 
   it.each([
