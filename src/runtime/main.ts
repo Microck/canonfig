@@ -35,6 +35,28 @@ const nodeCliIo: CliIo = {
   },
 };
 
+const automaticSecretFailure = (
+  error: SecretTransferError,
+  json: boolean,
+): void => {
+  const exitCode = secretExitCode(error);
+  nodeCliIo.writeStderr(json
+    ? `${JSON.stringify({
+      schema: "canonfig.secrets/v1",
+      ok: false,
+      command: "secrets.sync",
+      automatic: true,
+      error: {
+        category: error.category,
+        operation: error.operation,
+        message: error.message,
+      },
+      exitCode,
+    })}\n`
+    : `Secret synchronization failed: ${error.message}\n`);
+  nodeCliIo.setExitCode(exitCode);
+};
+
 const arguments_ = process.argv.slice(2);
 
 if (isSecretsCommand(arguments_)) {
@@ -74,10 +96,10 @@ if (isSecretsCommand(arguments_)) {
                               operation: "synchronize shared secrets",
                               message: "the secret synchronization state is unavailable",
                             });
-                          nodeCliIo.writeStderr(
-                            `Secret synchronization failed: ${error.message}\n`,
+                          automaticSecretFailure(
+                            error,
+                            outcome.format === "json",
                           );
-                          nodeCliIo.setExitCode(secretExitCode(error));
                         })
                       ),
                       Effect.asVoid,
