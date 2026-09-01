@@ -13,6 +13,7 @@ import { MachineState } from "../machine/machine-state.service.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import {
   applyTransferredSecrets,
+  clearTransferredSecrets,
   SecretTransferError,
   TransferredSecretsSchema,
   type TransferredSecrets,
@@ -39,7 +40,10 @@ export interface FetchSharedSecretsInput {
 }
 
 export type FetchSharedSecretsResult =
-  | { readonly status: "not-shared" }
+  | {
+    readonly status: "not-shared";
+    readonly secrets: ReadonlyArray<string>;
+  }
   | { readonly status: "shared"; readonly payload: TransferredSecrets };
 
 export type SecretSynchronizationResult =
@@ -211,7 +215,10 @@ export const fetchSharedSecrets = (
       credential,
       timeoutMilliseconds,
     );
-    if (response.status === 404) return { status: "not-shared" };
+    if (response.status === 404) {
+      const secrets = yield* clearTransferredSecrets();
+      return { status: "not-shared", secrets };
+    }
     if (response.status === 401 || response.status === 403) {
       return yield* failure(
         "authentication",
@@ -268,9 +275,7 @@ export const synchronizeSharedSecrets = (): Effect.Effect<
       credentialReference: configuration.credentialReference,
       timeoutMilliseconds: configuration.scheduledInvocation.timeoutMilliseconds,
     });
-    if (fetched.status === "not-shared") {
-      return { status: "not-shared", secrets: [] };
-    }
+    if (fetched.status === "not-shared") return fetched;
     const secrets = yield* applyTransferredSecrets(fetched.payload);
     return { status: "synchronized", secrets };
   });
