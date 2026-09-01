@@ -11,10 +11,14 @@ import {
   listSecrets,
   maximumSecretBytes,
   removeSecret,
+  type SharedSecretSummary,
   SecretTransferError,
   storeSecret,
 } from "./secret-store.ts";
-import { synchronizeSharedSecrets } from "./secret-client.ts";
+import {
+  synchronizeSharedSecrets,
+  type SecretSynchronizationResult,
+} from "./secret-client.ts";
 
 export const secretsHelpText = `Canonfig shared secrets
 
@@ -102,11 +106,18 @@ const readSecretFromStdin = (): Effect.Effect<string, SecretTransferError> =>
       }),
   });
 
+type SecretCliData =
+  | SharedSecretSummary
+  | SecretSynchronizationResult
+  | { readonly commands: ReadonlyArray<string> }
+  | { readonly secrets: ReadonlyArray<SharedSecretSummary> }
+  | { readonly name: string; readonly removed: boolean };
+
 const writeSuccess = (
   io: CliIo,
   json: boolean,
   command: string,
-  data: unknown,
+  data: SecretCliData,
   human: string,
 ): void => {
   if (json) {
@@ -191,13 +202,14 @@ export const runSecretsCli = (
     }
     if (command === "remove") {
       if (rest.length !== 1) return yield* usageError("usage: canonfig secrets remove <name>");
-      const removed = yield* removeSecret(rest[0]!);
+      const name = rest[0]!;
+      const removed = yield* removeSecret(name);
       writeSuccess(
         io,
         json,
         commandName,
-        { name: rest[0], removed },
-        removed ? `Removed secret ${rest[0]}.\n` : `Secret ${rest[0]} is not stored.\n`,
+        { name, removed },
+        removed ? `Removed secret ${name}.\n` : `Secret ${name} is not stored.\n`,
       );
       return;
     }
