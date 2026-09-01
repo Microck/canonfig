@@ -4,6 +4,12 @@
 
 <h1 align="center">canonfig</h1>
 
+<p align="center">
+  <a href="https://github.com/Microck/canonfig/actions/workflows/acceptance.yml"><img src="https://github.com/Microck/canonfig/actions/workflows/acceptance.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="https://www.npmjs.com/package/@microck/canonfig"><img src="https://img.shields.io/npm/v/@microck/canonfig?style=flat-square" alt="NPM version"></a>
+  <a href="https://www.npmjs.com/package/@microck/canonfig"><img src="https://img.shields.io/npm/dm/@microck/canonfig?style=flat-square" alt="NPM downloads"></a>
+</p>
+
 ---
 
 `canonfig` is a deterministic, one-way configuration synchronizer for ai agent setups. one source machine discovers and explicitly publishes immutable, signed profile revisions. linux, macos, and windows follower machines fetch only the revisions allowed for their identities and groups, then plan, apply, and independently verify the selected profile.
