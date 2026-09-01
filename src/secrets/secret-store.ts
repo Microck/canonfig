@@ -9,7 +9,7 @@ import type { MachinePath } from "../machine/machine-state.types.ts";
 
 export const SECRET_SHARE_GROUP = "canonfig:secrets";
 export const maximumSharedSecrets = 128;
-export const maximumSecretBytes = 64 * 1024;
+export const maximumSecretBytes = 16 * 1024;
 const maximumManifestBytes = 256 * 1024;
 
 export const SecretNameSchema = Schema.String.check(
