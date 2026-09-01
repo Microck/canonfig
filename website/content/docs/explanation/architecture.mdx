@@ -25,7 +25,7 @@ The Source Machine signs canonical Profile Revision payloads. Followers verify t
 
 Transport trust relies on pinning the source HTTPS certificate fingerprint at enrollment. Later synchronization rejects unexpected TLS certificates, invalid signatures, digest mismatches, or revoked credentials.
 
-Credentials are confirmed through platform secret storage (Linux Secret Service, macOS Keychain, Windows Credential Manager) and never leave the machine. The local state database stores credential references, never ordinary credential values.
+Profile credential resources remain local references and are never copied into revisions. Operators may separately opt a follower into shared-secret transfer by enrolling it with the `canonfig:secrets` group. Those values travel only over the existing authenticated, certificate-pinned HTTPS channel, are written directly to platform secret storage (Linux Secret Service, macOS Keychain, Windows Credential Manager), and are never written to the ordinary state database or JSON manifest. Secrets received from a source are not re-shared by followers.
 
 ## Determinism and agents
 
