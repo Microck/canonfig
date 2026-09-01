@@ -1,5 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
+import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -60,6 +61,11 @@ interface Fixture {
   readonly sourceMachine: ReturnType<typeof linuxMachineStateLayer>;
   readonly followerMachine: ReturnType<typeof linuxMachineStateLayer>;
   readonly runtime: SourceRuntime;
+}
+
+interface RawResponse {
+  readonly status: number;
+  readonly body: string;
 }
 
 afterEach(async () => {
@@ -148,6 +154,43 @@ const runFollower = <Value, Failure>(
 ): Promise<Value> =>
   Effect.runPromise(effect.pipe(Effect.provide(setup.followerMachine)));
 
+const requestRaw = async (
+  setup: Fixture,
+  server: SourceServerHandle,
+  enrolled: FollowerEnrollment,
+  path: string,
+): Promise<RawResponse> => {
+  const credential = await runFollower(setup, Effect.gen(function*() {
+    const machine = yield* MachineState;
+    return yield* machine.loadCredential({
+      reference: enrolled.credentialReference,
+    });
+  }));
+  const endpoint = new URL(server.endpoint);
+  return new Promise<RawResponse>((resolveResponse, rejectResponse) => {
+    const request = httpsRequest({
+      protocol: "https:",
+      hostname: endpoint.hostname.replaceAll("[", "").replaceAll("]", ""),
+      port: endpoint.port,
+      path,
+      method: "GET",
+      rejectUnauthorized: false,
+      headers: {
+        authorization: `Bearer ${Redacted.value(credential)}`,
+      },
+    }, (response) => {
+      const chunks: Array<Buffer> = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => resolveResponse({
+        status: response.statusCode ?? 500,
+        body: Buffer.concat(chunks).toString("utf8"),
+      }));
+    });
+    request.once("error", rejectResponse);
+    request.end();
+  });
+};
+
 const storedValue = async (
   setup: Fixture,
   name: string,
@@ -234,8 +277,13 @@ describe("secure secret transfer", () => {
       tlsFingerprint: server.fingerprint,
       credentialReference: enrolled.credentialReference,
     }));
+    const [secretsResponse, missingResponse] = await Promise.all([
+      requestRaw(setup, server, enrolled, "/v1/transport/secrets"),
+      requestRaw(setup, server, enrolled, "/v1/transport/not-a-route"),
+    ]);
 
     expect(fetched).toEqual({ status: "not-shared" });
+    expect(secretsResponse).toEqual(missingResponse);
     await expect(
       access(join(setup.followerHome, ".canonfig", "secrets.json")),
     ).rejects.toMatchObject({ code: "ENOENT" });
