@@ -10,7 +10,7 @@ AgentResolution runtime.
 
 ```text
 .canonfig/
-  harness.yaml
+  harness.yaml or harness.json
   instructions/
     AGENTS.md
   rules/
@@ -22,12 +22,14 @@ AgentResolution runtime.
 
 `harness.yaml`, `harness.yml`, and `harness.json` are accepted. Generated-file
 ownership is stored in `.canonfig/.harness-state.json`; it contains hashes and
-cleanup metadata, never credential values.
+cleanup metadata, never credential values. Initialize strict, pretty-printed
+JSON with `canonfig harness init --format json`; YAML remains the default.
 
 ## Commands
 
 ```bash
 canonfig harness init
+canonfig harness init --format json
 canonfig harness validate
 canonfig harness targets
 canonfig harness plan
@@ -41,7 +43,9 @@ canonfig harness doctor
 Use repeatable `--target <id>` or comma-separated `--targets <ids>` to select
 specific harnesses. `--strict` rejects mappings classified as `shim`, `lossy`,
 or `unsupported`. `--force` is required to take ownership of an existing native
-entry or externally edited generated file.
+entry or externally edited generated file. Canonfig rejects a directory that
+contains more than one supported harness config format instead of silently
+selecting one.
 
 ## Target identifiers
 
