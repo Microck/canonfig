@@ -32,6 +32,12 @@ import { StateRepository } from "../../src/state/state-repository.service.ts";
 const temporaryDirectories: Array<string> = [];
 const openServers: Array<SourceServerHandle> = [];
 const runtimes: Array<SourceRuntime> = [];
+const SecretManifestReferenceSchema = Schema.Struct({
+  secrets: Schema.Array(Schema.Struct({
+    name: Schema.String,
+    reference: CredentialReference,
+  })),
+});
 
 interface SourceRuntime {
   readonly runPromise: <Value, Failure>(
@@ -145,15 +151,14 @@ const storedValue = async (
 ): Promise<string | undefined> => {
   const manifestPath = join(setup.followerHome, ".canonfig", "secrets.json");
   try {
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
-      secrets: Array<{ name: string; reference: string }>;
-    };
+    const manifest = Schema.decodeUnknownSync(SecretManifestReferenceSchema)(
+      JSON.parse(await readFile(manifestPath, "utf8")),
+    );
     const entry = manifest.secrets.find((secret) => secret.name === name);
     if (entry === undefined) return undefined;
-    const reference = Schema.decodeUnknownSync(CredentialReference)(entry.reference);
     const value = await runFollower(setup, Effect.gen(function*() {
       const machine = yield* MachineState;
-      return yield* machine.loadCredential({ reference });
+      return yield* machine.loadCredential({ reference: entry.reference });
     }));
     return Redacted.value(value);
   } catch (cause) {
