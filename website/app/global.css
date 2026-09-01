@@ -23,7 +23,7 @@
 }
 
 body {
-  text-rendering: optimizeLegibility;
+  text-rendering: optimizelegibility;
   background-color: #000000;
   color: #ffffff;
   font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";

@@ -55,7 +55,9 @@ canonfig source serve --host 127.0.0.1 --port 17342
 canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers
 ```
 
-treat the returned invitation as temporary sensitive material. the source server binds to loopback hosts only (`127.0.0.1` or `::1`).
+Treat the returned invitation as temporary sensitive material.
+This example binds to loopback (`127.0.0.1`) for same-machine follower enrollment.
+If the follower is on a different machine, bind `--host` to a reachable address for both machines and pass the same address in `--endpoint`.
 
 ### 2. follower machine enrollment
 

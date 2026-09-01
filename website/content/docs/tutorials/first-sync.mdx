@@ -23,7 +23,8 @@ The Source Machine must serve the local endpoint to allow follower enrollment an
 canonfig source serve --host 127.0.0.1 --port 17342
 ```
 
-Keep this running. The shipped CLI accepts loopback addresses (`127.0.0.1` or `::1`) only.
+Keep this running. This example uses loopback (`127.0.0.1`) for same-machine enrollment.
+If you enroll from another machine, use a source-reachable host in `--host` and the same host in the invitation endpoint.
 
 ## 3. Discover and publish a profile
 
