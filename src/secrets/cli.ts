@@ -11,6 +11,7 @@ import {
   listSecrets,
   maximumSecretBytes,
   removeSecret,
+  SECRET_SHARE_GROUP,
   type SharedSecretSummary,
   SecretTransferError,
   storeSecret,
@@ -35,6 +36,7 @@ Options:
   -h, --help      Show help
 
 Secret values are accepted only through stdin and are never printed.
+Followers must be enrolled with the ${SECRET_SHARE_GROUP} group to receive them.
 `;
 
 export const isSecretsCommand = (
