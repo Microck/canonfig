@@ -7,7 +7,7 @@ import { CredentialReference } from "../domain/brand.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachinePath } from "../machine/machine-state.types.ts";
 
-export const SECRET_SHARE_GROUP = "secrets";
+export const SECRET_SHARE_GROUP = "canonfig:secrets";
 export const maximumSharedSecrets = 128;
 export const maximumSecretBytes = 64 * 1024;
 const maximumManifestBytes = 256 * 1024;
