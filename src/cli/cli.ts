@@ -41,7 +41,7 @@ import {
 
 export const programName = "canonfig";
 export const programDisplayName = "Canonfig";
-export const programVersion = "2.1.0";
+export const programVersion = "2.1.1";
 
 export const helpText = `${programDisplayName} ${programVersion}
 

@@ -28,7 +28,7 @@ managing agent setups across multiple machines usually breaks because machines d
 requires Node.js 24+ and npm.
 
 ```bash
-npm install -g @microck/canonfig
+npm install --global @microck/canonfig@2.1.1
 canonfig --version
 ```
 
@@ -155,9 +155,6 @@ transfers are content-addressed and incremental. transfer and apply remain separ
 - [how-to: recover](website/content/docs/how-to/recover.mdx)
 - [tutorial: first end-to-end sync](website/content/docs/tutorials/first-sync.mdx)
 - [cli reference](website/content/docs/reference/cli.mdx)
-- [cross-platform reference](website/content/docs/reference/cross-platform.mdx)
-- [diagnostics reference](website/content/docs/reference/diagnostics.mdx)
-- [security reference](website/content/docs/reference/security.mdx)
 - [install skill](skills/install-canonfig/SKILL.md)
 - [operate skill](skills/operate-canonfig/SKILL.md)
 
