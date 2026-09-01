@@ -78,6 +78,7 @@ export const runHarnessConfigurationCli = async (
       const written = await scaffoldProject(parsed.root, {
         targets: parsed.targets,
         force: parsed.force,
+        format: parsed.format,
       });
       renderHarnessResult(io, {
         command: commandName,

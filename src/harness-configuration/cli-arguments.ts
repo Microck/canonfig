@@ -4,10 +4,13 @@ import { parseTargetList } from "./core/config.ts";
 import { CanonfigError } from "./core/errors.ts";
 import type { TargetId } from "./core/types.ts";
 
+export type HarnessConfigFormat = "yaml" | "json";
+
 export interface ParsedHarnessArguments {
   readonly command: string;
   readonly root: string;
   readonly json: boolean;
+  readonly format: HarnessConfigFormat;
   readonly strict: boolean;
   readonly force: boolean;
   readonly all: boolean;
@@ -20,7 +23,7 @@ export const harnessHelpText = `Canonfig harness configuration
 Usage: canonfig harness <command> [options]
 
 Commands:
-  init       Create .canonfig/harness.yaml and canonical source directories
+  init       Create .canonfig/harness.yaml or .canonfig/harness.json
   validate   Validate canonical sources and selected adapter translations
   targets    List built-in harness adapters and support levels
   plan       Show native files that would change
@@ -35,6 +38,7 @@ Options:
   --root <path>         Repository root or descendant working directory
   --target <id>         Select one target; repeatable
   --targets <ids>       Select comma-separated targets
+  --format <format>     Configuration format for init: yaml or json
   --strict              Reject shim, lossy, and unsupported mappings
   --force               Take ownership of explicit collisions or managed edits
   --all                 Include unchanged files in plan output
@@ -49,6 +53,7 @@ export const parseHarnessArguments = (
   const [command = "help", ...rest] = arguments_;
   let root = process.cwd();
   let json = false;
+  let format: HarnessConfigFormat = "yaml";
   let strict = false;
   let force = false;
   let all = false;
@@ -83,6 +88,7 @@ export const parseHarnessArguments = (
         command: "help",
         root: path.resolve(root),
         json,
+        format,
         strict,
         force,
         all,
@@ -94,6 +100,7 @@ export const parseHarnessArguments = (
       || argument === "--cwd"
       || argument === "--target"
       || argument === "--targets"
+      || argument === "--format"
     ) {
       const value = rest[index + 1];
       if (value === undefined || value.startsWith("-")) {
@@ -103,8 +110,19 @@ export const parseHarnessArguments = (
         );
       }
       index += 1;
-      if (argument === "--root" || argument === "--cwd") root = path.resolve(value);
-      else requestedTargets.push(value);
+      if (argument === "--root" || argument === "--cwd") {
+        root = path.resolve(value);
+      } else if (argument === "--format") {
+        if (value !== "yaml" && value !== "json") {
+          throw new CanonfigError(
+            "HARNESS_FORMAT_INVALID",
+            "--format must be yaml or json.",
+          );
+        }
+        format = value;
+      } else {
+        requestedTargets.push(value);
+      }
       continue;
     }
     throw new CanonfigError(
@@ -120,6 +138,7 @@ export const parseHarnessArguments = (
     command,
     root: path.resolve(root),
     json,
+    format,
     strict,
     force,
     all,
