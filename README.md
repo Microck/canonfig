@@ -1,14 +1,16 @@
-<p align="center">
+<div align="center">
+
   <img src=".github/assets/canonfig-logo.png" width="160" alt="canonfig logo">
-</p>
 
-<h1 align="center">canonfig</h1>
+  <h1>canonfig</h1>
 
-<p align="center">
-  <a href="https://github.com/Microck/canonfig/actions/workflows/acceptance.yml"><img src="https://github.com/Microck/canonfig/actions/workflows/acceptance.yml/badge.svg?branch=main" alt="CI status"></a>
-  <a href="https://www.npmjs.com/package/@microck/canonfig"><img src="https://img.shields.io/npm/v/@microck/canonfig?style=flat-square" alt="NPM version"></a>
-  <a href="https://www.npmjs.com/package/@microck/canonfig"><img src="https://img.shields.io/npm/dm/@microck/canonfig?style=flat-square" alt="NPM downloads"></a>
-</p>
+  <p>
+    <a href="https://www.npmjs.com/package/@microck/canonfig"><img src="https://img.shields.io/npm/v/@microck/canonfig?style=flat-square&color=000000" alt="npm version badge"></a>
+    <a href="https://www.npmjs.com/package/@microck/canonfig"><img src="https://img.shields.io/npm/dt/@microck/canonfig?style=flat-square&color=000000" alt="npm total downloads badge"></a>
+    <a href="https://github.com/Microck/canonfig/actions/workflows/acceptance.yml"><img src="https://img.shields.io/github/actions/workflow/status/Microck/canonfig/acceptance.yml?branch=main&style=flat-square&label=ci&color=000000" alt="ci badge"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-000000?style=flat-square" alt="license badge"></a>
+  </p>
+</div>
 
 ---
 
