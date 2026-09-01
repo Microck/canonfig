@@ -25,6 +25,7 @@ import {
   loadSharedSecrets,
   maximumSecretBytes,
   removeSecret,
+  SECRET_SHARE_GROUP,
   storeSecret,
 } from "../../src/secrets/secret-store.ts";
 import { fetchSharedSecrets } from "../../src/secrets/secret-client.ts";
@@ -179,7 +180,7 @@ describe("secure secret transfer", () => {
     const secretValue = "github-token-value-that-never-belongs-in-json";
     await setup.runtime.runPromise(storeSecret("github-token", secretValue));
     const server = await start(setup);
-    const enrolled = await enroll(setup, server, [group("secrets")]);
+    const enrolled = await enroll(setup, server, [group(SECRET_SHARE_GROUP)]);
 
     const fetched = await runFollower(setup, fetchSharedSecrets({
       endpoint: server.endpoint,
