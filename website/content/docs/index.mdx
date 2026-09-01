@@ -13,31 +13,23 @@ its **Machine Profile** and **Follower Groups**.
   output become Profile Change Proposals; publication is always explicit.
 </Callout>
 
-## The operating model
-
-| Stage | Owner | Result |
-| --- | --- | --- |
-| Observe | Deterministic Canonfig code | Evidence-backed Observed State |
-| Propose | Discovery or a Configuration Agent | A reviewable Profile Change Proposal |
-| Publish | An authorized reviewer | An immutable, signed Profile Revision |
-| Plan | Deterministic Canonfig code | A complete, persisted Synchronization Plan |
-| Apply | Deterministic actions, then an eligible bounded Agent Task | Recorded action evidence |
-| Verify | Canonfig, independently of the agent | Convergence or a typed non-converged outcome |
-
 ## Start here
 
 <Cards>
-  <Card title="Understand the architecture" href="/docs/concepts/architecture">
-    Learn where authority, state, policy, and verification live.
+  <Card title="Tutorial: First end-to-end sync" href="/docs/tutorials/first-sync">
+    Initialize a Source Machine, publish a profile, enroll a follower, and apply the configuration.
   </Card>
-  <Card title="Set up the Source Machine" href="/docs/source/setup">
-    Initialize the source-owned Canonfig state.
+  <Card title="How-to: Manage schedules" href="/docs/how-to/manage-schedules">
+    Install and inspect native daily or weekly follower synchronization.
   </Card>
-  <Card title="Enroll a Follower Machine" href="/docs/followers/enrollment">
-    Bootstrap pinned trust with a short-lived, single-use invitation.
+  <Card title="How-to: Recover drift" href="/docs/how-to/recover">
+    Resume an interrupted synchronization or resolve non-converged outcomes.
   </Card>
-  <Card title="Operate synchronization" href="/docs/operations/synchronization">
-    Plan first, apply second, and interpret recorded outcomes.
+  <Card title="Explanation: Architecture" href="/docs/explanation/architecture">
+    Understand the authority model, determinism, credentials, and rollback.
+  </Card>
+  <Card title="Reference: CLI" href="/docs/reference/cli">
+    Complete CLI command surface, platform behavior, diagnostics, and security.
   </Card>
 </Cards>
 

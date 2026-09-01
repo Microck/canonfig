@@ -51,8 +51,8 @@ Each `--allow-origin` value must be an exact HTTPS origin with no path.
 `--allow-leaf-executable` authorizes only a direct leaf operation. Script
 interpreters are intentionally unsupported because path allowlists cannot
 constrain their descendants.
-Launchers that run nested commands — `xargs`, `find -exec`, `awk`, `perl`,
-`make`, `npx`, elevation wrappers, and similar — are rejected at configuration
+Launchers that run nested commands - `xargs`, `find -exec`, `awk`, `perl`,
+`make`, `npx`, elevation wrappers, and similar - are rejected at configuration
 time and always require Human Action Required. Inline programs and
 unclassified executables fail closed the same way.
 `--maximum-input-bytes` is positive and cannot exceed 1 MiB. Repeat

@@ -2,11 +2,9 @@
   "title": "Canonfig",
   "pages": [
     "index",
-    "concepts",
-    "source",
-    "followers",
-    "profiles",
-    "operations",
+    "tutorials",
+    "how-to",
+    "explanation",
     "reference"
   ]
 }
