@@ -322,4 +322,12 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       ) AS blob
     `;
   }),
+  "0012_applied_resource_modes": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN mode INTEGER
+    `;
+  }),
 });

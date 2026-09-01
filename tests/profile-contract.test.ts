@@ -34,6 +34,7 @@ import {
   type SynchronizationOutcome,
   type SynchronizationPlan,
 } from "../src/domain/synchronization.ts";
+import { FileResourceSpec } from "../src/domain/resource.ts";
 
 const fixture = (name: string): string =>
   readFileSync(new URL(`./fixtures/profile-contract/${name}`, import.meta.url), "utf8");
@@ -98,6 +99,63 @@ describe("JSONC parsing", () => {
   it("rejects invalid JSONC", () => {
     expect(() => parseJsonc(`{"a": `)).toThrow();
   });
+});
+
+describe("filesystem authoring fidelity", () => {
+  it("preserves exact modes and canonicalizes non-semantic symlink permissions", () => {
+    const profile = decodeMachineProfileJsonc(JSON.stringify({
+      id: "filesystem-fidelity",
+      name: "Filesystem fidelity",
+      resources: [{
+        id: "tree",
+        kind: "directory",
+        target: "~/.canonfig/tree",
+        spec: {
+          kind: "directory",
+          mode: 0o755,
+          directories: [{ path: "empty", mode: 0o750 }],
+          files: [{
+            path: "tool-link",
+            content: "",
+            mode: 0o777,
+            symlinkTo: "../bin/tool",
+          }],
+        },
+        verify: { method: "digest", digest: digestA },
+      }],
+    }));
+
+    expect(profile.resources[0]?.spec).toEqual({
+      kind: "directory",
+      mode: 0o755,
+      directories: [{ path: "empty", mode: 0o750 }],
+      files: [{
+        path: "tool-link",
+        content: "",
+        mode: 0,
+        executable: false,
+        symlinkTo: "../bin/tool",
+      }],
+    });
+  });
+
+  it.each([-1, 0o10000])(
+    "rejects out-of-range mode %i at authoring and publication boundaries",
+    (mode) => {
+      expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
+        kind: "file",
+        content: "hello",
+        mode,
+      })).toThrow();
+      expect(() => Schema.decodeUnknownSync(FileResourceSpec)({
+        kind: "file",
+        content: "hello",
+        digest: sha256Hex("hello"),
+        executable: false,
+        mode,
+      })).toThrow();
+    },
+  );
 });
 
 describe("resource graph validation", () => {
@@ -342,6 +400,79 @@ describe("resource graph validation", () => {
       verify: { method: "digest", digest: digestA },
     }], undefined, platform);
     expect(errors.map((error) => error._tag)).toEqual(expected);
+  });
+
+  it("validates explicit directory claims without rejecting their descendants", () => {
+    const valid = validateProfileResources([{
+      id: "tree",
+      kind: "directory",
+      target: "~/.canonfig/tree",
+      spec: {
+        kind: "directory",
+        directories: [{ path: "nested", mode: 0o700 }],
+        files: [{ path: "nested/file.txt", content: "managed" }],
+      },
+      verify: { method: "digest", digest: digestA },
+    }]);
+    expect(valid).toEqual([]);
+
+    const invalid = validateProfileResources([{
+      id: "tree",
+      kind: "directory",
+      target: "~/.canonfig/tree",
+      spec: {
+        kind: "directory",
+        directories: [
+          { path: "../escape", mode: 0o700 },
+          { path: "collision", mode: 0o700 },
+        ],
+        files: [{ path: "collision", content: "managed" }],
+      },
+      verify: { method: "digest", digest: digestA },
+    }]);
+    expect(invalid.map((error) => error._tag)).toEqual([
+      "InvalidTargetError",
+      "ConflictingResourceTargetError",
+    ]);
+  });
+
+  it("rejects filesystem modes that prevent deterministic verification", () => {
+    const errors = validateProfileResources([
+      {
+        id: "file",
+        kind: "file",
+        target: "~/.canonfig/file",
+        spec: { kind: "file", content: "managed", mode: 0o200 },
+        verify: { method: "digest", digest: digestA },
+      },
+      {
+        id: "tree",
+        kind: "directory",
+        target: "~/.canonfig/tree",
+        spec: {
+          kind: "directory",
+          mode: 0o600,
+          directories: [{ path: "locked", mode: 0o400 }],
+          files: [{ path: "write-only.txt", content: "managed", mode: 0o200 }],
+        },
+        verify: { method: "digest", digest: digestA },
+      },
+      {
+        id: "link",
+        kind: "file",
+        target: "~/.canonfig/link",
+        spec: { kind: "file", content: "", mode: 0o000, symlinkTo: "target" },
+        verify: { method: "symlink", target: "target" },
+      },
+    ]);
+
+    expect(errors.filter((error) => error._tag === "UnmanageableFilesystemModeError"))
+      .toMatchObject([
+        { id: "file", path: "~/.canonfig/file", mode: 0o200 },
+        { id: "tree", path: "~/.canonfig/tree", mode: 0o600 },
+        { id: "tree", path: "locked", mode: 0o400 },
+        { id: "tree", path: "write-only.txt", mode: 0o200 },
+      ]);
   });
 
   it("applies case folding only on case-insensitive targets", () => {
@@ -802,7 +933,7 @@ describe("v2 profile fixtures", () => {
     expect(encodeMachineProfile(implicit)).toBe(encodeMachineProfile(explicit));
     expect(digestMachineProfile(implicit)).toBe(digestMachineProfile(explicit));
     expect(digestMachineProfile(implicit)).toBe(
-      "a98186407a99282f110fec3ca368702078400c754b2a986415e53f3b6001f5c3",
+      "055574fcd04e14ac25851e0532f15b941e2566efb0c241c7edb55c2a4a2438f5",
     );
   });
 

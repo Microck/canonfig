@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -211,7 +212,9 @@ describe("agent resolution", () => {
   let directory = "";
 
   beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "canonfig-agent-"));
+    // macOS exposes its temporary directory through /var, while executable
+    // identity checks correctly resolve the same path through /private/var.
+    directory = await realpath(await mkdtemp(join(tmpdir(), "canonfig-agent-")));
     await Promise.all([
       writeFile(join(directory, "tool"), "#!/bin/sh\nexit 0\n"),
       writeFile(join(directory, "verify"), "#!/bin/sh\nexit 0\n"),

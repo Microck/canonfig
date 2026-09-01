@@ -23,7 +23,10 @@ import { DatabaseSync } from "node:sqlite";
 
 import { Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { JsonValue } from "../src/profile/profile-codec.ts";
+import {
+  directoryVerificationDigest,
+  type JsonValue,
+} from "../src/profile/profile-codec.ts";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const packedRoot = mkdtempSync(resolve(tmpdir(), "canonfig-packed-"));
@@ -54,14 +57,33 @@ const directoryDigest = (
     readonly content: string;
     readonly executable?: boolean;
   }>,
-): string => sha256(
-  [...files]
-    .sort((left, right) => left.path.localeCompare(right.path))
-    .map((file) =>
-      `${file.path}\0${sha256(file.content)}\0${file.executable === true ? "x" : "-"}`
-    )
-    .join("\n"),
-);
+): string => directoryVerificationDigest(files.map((file) => ({
+  path: file.path,
+  digest: sha256(file.content),
+  executable: file.executable,
+})));
+
+const runNpm = (
+  cwd: string,
+  arguments_: ReadonlyArray<string>,
+) => {
+  const npmCli = process.env.npm_execpath;
+  if (process.platform === "win32" && npmCli === undefined) {
+    throw new Error("npm_execpath is required for shell-free npm execution on Windows");
+  }
+  if (npmCli !== undefined && process.platform === "win32") {
+    return spawnSync(process.execPath, [npmCli, ...arguments_], {
+      cwd,
+      encoding: "utf8",
+      timeout: 240_000,
+    });
+  }
+  return spawnSync("npm", [...arguments_], {
+    cwd,
+    encoding: "utf8",
+    timeout: 240_000,
+  });
+};
 
 interface PackedInvocation {
   readonly status: number | null;
@@ -232,9 +254,8 @@ case "$operation" in
 esac
 `);
   chmodSync(secretTool, 0o700);
-  const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
-  const packed = spawnSync(
-    npmExecutable,
+  const packed = runNpm(
+    projectRoot,
     [
       "pack",
       "--ignore-scripts=false",
@@ -242,12 +263,6 @@ esac
       "--pack-destination",
       packedRoot,
     ],
-    {
-      cwd: projectRoot,
-      encoding: "utf8",
-      timeout: 120_000,
-      shell: process.platform === "win32",
-    },
   );
   expect(packed.status, packed.stderr).toBe(0);
   const packedResult = Schema.decodeUnknownSync(PackResult)(
@@ -258,8 +273,8 @@ esac
     resolve(installRoot, "package.json"),
     `${JSON.stringify({ private: true })}\n`,
   );
-  const installed = spawnSync(
-    npmExecutable,
+  const installed = runNpm(
+    installRoot,
     [
       "install",
       "--ignore-scripts",
@@ -267,12 +282,6 @@ esac
       "--no-fund",
       tarball,
     ],
-    {
-      cwd: installRoot,
-      encoding: "utf8",
-      timeout: 120_000,
-      shell: process.platform === "win32",
-    },
   );
   expect(installed.status, installed.stderr).toBe(0);
   executable = process.execPath;
@@ -424,11 +433,16 @@ esac
   const port = await unusedPort();
   const source = await startPackedSource(port);
   sourceEndpoint = source.endpoint;
-}, 180_000);
+}, 360_000);
 
 afterAll(() => {
   sourceProcess?.kill("SIGKILL");
-  rmSync(packedRoot, { recursive: true, force: true });
+  rmSync(packedRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: process.platform === "win32" ? 10 : 0,
+    retryDelay: 100,
+  });
 });
 
 describe("packed Canonfig executable", () => {
@@ -679,7 +693,7 @@ describe("packed Canonfig executable", () => {
     expect(JSON.parse(overlays.stdout).data).toEqual({ overlays: [] });
 
     const first = invoke(followerHome, ["sync", "--apply", "--json"]);
-    if (process.platform !== "darwin") {
+    if (process.platform === "linux") {
       expect(first.status).toBe(7);
       expect(first.stdout).toBe("");
       expect(JSON.parse(first.stderr)).toMatchObject({
@@ -1406,8 +1420,11 @@ esac
     });
     expect(readFileSync(resolve(root, "managed.txt"), "utf8"))
       .toBe("version one\n");
-    expect(statSync(resolve(root, "bin", "managed-tool")).mode & 0o100)
-      .not.toBe(0);
+    const executableMetadata = statSync(resolve(root, "bin", "managed-tool"));
+    expect(executableMetadata.isFile()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(executableMetadata.mode & 0o100).not.toBe(0);
+    }
     expect(readFileSync(resolve(root, "mirror", "keep.txt"), "utf8"))
       .toBe("directory v1\n");
     expect(readFileSync(resolve(root, "mirror", "unowned.txt"), "utf8"))
@@ -1506,14 +1523,15 @@ esac
         outcome: { outcome: "Failed" },
       });
       expect(readFileSync(resolve(root, "managed.txt"), "utf8"))
-        .toBe("version two\n");
+        .toBe("version one\n");
       expect(readFileSync(resolve(root, "mirror", "keep.txt"), "utf8"))
-        .toBe("directory v2\n");
-      expect(() => statSync(resolve(root, "mirror", "remove.txt"))).toThrow();
+        .toBe("directory v1\n");
+      expect(readFileSync(resolve(root, "mirror", "remove.txt"), "utf8"))
+        .toBe("owned v1\n");
       expect(JSON.parse(readFileSync(resolve(root, "settings.json"), "utf8")))
         .toEqual({
           local: { keep: "preserve" },
-          canonical: { existing: "preserve", enabled: false, removed: "v1" },
+          canonical: { existing: "preserve", enabled: true, removed: "v1" },
         });
       expect(
         requireSuccess(

@@ -687,6 +687,13 @@ describe("StateRepository SQLite adapter", () => {
             revision: revision().id,
             digest: digestA,
             appliedAt: "2026-08-15T12:03:00Z",
+            mode: 0o644,
+            ownedFiles: [{
+              path: "nested/file",
+              digest: digestB,
+              executable: false,
+              mode: 0o640,
+            }],
           }],
         });
         const completedRecovery = yield* repository.loadRecovery(follower().id);
@@ -707,6 +714,13 @@ describe("StateRepository SQLite adapter", () => {
       revision: "revision-1",
       digest: digestA,
       appliedAt: "2026-08-15T12:03:00Z",
+      mode: 0o644,
+      ownedFiles: [{
+        path: "nested/file",
+        digest: digestB,
+        executable: false,
+        mode: 0o640,
+      }],
     }]);
   });
 });

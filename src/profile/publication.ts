@@ -33,7 +33,12 @@ import {
   type ProfileCatalogPublishError,
   UnresolvedPublicationProposalError,
 } from "./profile-catalog.errors.ts";
-import { canonicalJson, digestOf, sha256Hex } from "./profile-codec.ts";
+import {
+  canonicalJson,
+  digestOf,
+  directoryVerificationDigest,
+  sha256Hex,
+} from "./profile-codec.ts";
 import type {
   DiscoveredSkill,
   DiscoveredTool,
@@ -191,16 +196,11 @@ const skillFilesDigest = (
     readonly executable?: boolean | undefined;
   }>,
 ): ContentDigest =>
-  sha256Hex(
-    [...files]
-      .sort((left, right) => compareText(left.path, right.path))
-      .map((file) =>
-        `${file.path}\0${sha256Hex(file.content)}\0${
-          file.executable === true ? "x" : "-"
-        }`
-      )
-      .join("\n"),
-  );
+  directoryVerificationDigest(files.map((file) => ({
+    path: file.path,
+    digest: sha256Hex(file.content),
+    executable: file.executable,
+  })));
 
 const resourceForSkill = (skill: DiscoveredSkill): ProfileResourceInput => {
   const files = skill.files ?? [];

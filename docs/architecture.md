@@ -143,8 +143,8 @@ Publishing converts JSONC into a canonical encoded Profile Revision. Comments an
 
 | Kind | Desired outcome | Default Apply Policy |
 |---|---|---|
-| `file` | Exact file or symlink content | `replace` |
-| `directory` | A source-owned tree | `mirror-owned` |
+| `file` | Exact regular-file content and mode, or raw symlink target | `replace` |
+| `directory` | A source-owned tree with explicit directories and modes | `mirror-owned` |
 | `config` | Format-aware declared keys | `merge` |
 | `skill` | Canonical skill tree | `replace-if-unmodified` |
 | `tool` | Installed executable and configuration | `ensure` |
@@ -164,9 +164,11 @@ Policy compatibility is kind-specific: files support only `replace` and
 configs support `merge` and `replace`; skills support `replace-if-unmodified`
 and `replace`; tools, credentials, and schedules support only their listed
 kind-specific policies. A file's verification is also shape-specific:
-symlink files require `symlink` verification, while regular files (including
-executable files) require digest verification. The desired executable bit is
-part of file convergence even when the content digest is unchanged.
+symlink files require `symlink` verification, while regular files require
+digest verification. Exact numeric modes are part of file and directory
+convergence even when content is unchanged. Directory resources can declare
+empty directories and their modes. Symlink targets retain their authored text,
+including relative targets, rather than resolving against the Canonfig process.
 Follower observation uses no-follow final-component semantics and records the
 actual object kind. A symlink, directory, reparse point, or special object at
 a regular-file target is drift; Canonfig never reads through it to decide
@@ -369,11 +371,16 @@ ownership decisions survive synchronization and process restart.
 11. Commit Applied Resource Records and the run outcome.
 ```
 
-A run outcome is one of `Converged`, `HumanActionRequired`, `FollowerDrift`, `Failed`, or `Interrupted`. Partial application is visible and recoverable; Canonfig never reports convergence because some actions succeeded.
+A run outcome is one of `Converged`, `HumanActionRequired`, `FollowerDrift`, `Failed`, or `Interrupted`. If a deterministic action fails, Canonfig rolls back earlier file and directory mutations from that run in reverse order and restores their prior ownership records. External operations that cannot guarantee rollback remain visible and recoverable. Canonfig never reports convergence because some actions succeeded.
 
 ## Failure and recovery
 
 Before each mutation, Canonfig writes an action journal entry and any rollback material needed for owned files. File writes use a sibling temporary file, durability sync where supported, and atomic rename.
+
+If a later deterministic action fails, the executor rolls back earlier file and
+directory mutations from the same run in reverse order. It restores the prior
+Applied Resource Record, or removes a newly created record, only after the
+filesystem rollback succeeds.
 
 When a removed resource is journaled, its prior ownership metadata remains in the
 durable journal even after the live Applied Resource Record is deleted. Recovery

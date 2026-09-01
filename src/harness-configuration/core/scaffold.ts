@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
+import { BUILTIN_ADAPTERS } from "../adapters/index.ts";
 import { TARGET_IDS, type TargetId } from "./types.ts";
 import { CanonfigError } from "./errors.ts";
 import { assertRealPathInside, resolveInside } from "./path.ts";
@@ -40,6 +41,25 @@ description: Discover and run the repository's relevant validation commands.
 3. Report commands, results, and unresolved failures.
 `;
 
+const SCAFFOLD_FEATURES = [
+  "instructions",
+  "rules",
+  "skills",
+  "agents",
+  "commands",
+] as const;
+
+/** Default to every adapter that can represent the generated example without a strict-mode failure. */
+const DEFAULT_SCAFFOLD_TARGETS = BUILTIN_ADAPTERS
+  .filter((adapter) =>
+    SCAFFOLD_FEATURES.every((feature) =>
+      !["shim", "lossy", "unsupported"].includes(
+        adapter.descriptor.capabilities[feature],
+      )
+    )
+  )
+  .map((adapter) => adapter.descriptor.id);
+
 async function writeNew(root: string, relativePath: string, content: string, force: boolean): Promise<boolean> {
   const filePath = resolveInside(root, relativePath);
   await assertRealPathInside(root, filePath);
@@ -57,9 +77,13 @@ async function writeNew(root: string, relativePath: string, content: string, for
 }
 
 export async function scaffoldProject(root: string, options: ScaffoldOptions = {}): Promise<string[]> {
-  const targets = [...new Set(options.targets ?? TARGET_IDS)];
+  const targets = [...new Set(options.targets ?? DEFAULT_SCAFFOLD_TARGETS)];
   if (targets.length === 0) throw new CanonfigError("TARGET_EMPTY", "At least one target is required for init.");
   const force = options.force ?? false;
+
+  // The requested root is the boundary owned by init. Create it before the
+  // containment checks used for every file below.
+  await fs.mkdir(root, { recursive: true });
 
   const config = {
     version: 1,

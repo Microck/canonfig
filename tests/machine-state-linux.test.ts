@@ -1,7 +1,9 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -10,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
@@ -46,6 +48,43 @@ machineStateContract("Linux", {
 });
 
 describe("portable safe-root mutation", () => {
+  it("replaces an empty directory with a standalone symlink but preserves non-empty directories", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-standalone-symlink-"));
+    try {
+      const empty = join(root, "empty");
+      const blocked = join(root, "blocked");
+      const target = join(root, "target.txt");
+      mkdirSync(empty);
+      mkdirSync(blocked);
+      writeFileSync(join(blocked, "child.txt"), "preserve");
+      writeFileSync(target, "target");
+      const layer = linuxMachineStateLayer({ environment: environment(root) });
+
+      await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const emptyPath = yield* machine.normalizePath({ path: empty });
+          yield* machine.replaceSymlink({ path: emptyPath, target });
+        }).pipe(Effect.provide(layer)),
+      );
+      expect(readlinkSync(empty)).toBe(target);
+
+      await expect(Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const blockedPath = yield* machine.normalizePath({ path: blocked });
+          yield* machine.replaceSymlink({ path: blockedPath, target });
+        }).pipe(Effect.provide(layer)),
+      )).rejects.toMatchObject({
+        _tag: "MachineFilesystemError",
+        operation: "replace symlink",
+      });
+      expect(readFileSync(join(blocked, "child.txt"), "utf8")).toBe("preserve");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates descendants and atomically replaces a final symlink", async () => {
     const root = mkdtempSync(join(tmpdir(), "canonfig-portable-safe-root-"));
     try {
@@ -66,7 +105,7 @@ describe("portable safe-root mutation", () => {
             path: targetPath,
             mutation: {
               kind: "symlink",
-              target: outsidePath,
+              target: outsidePath.absolute,
             },
           });
           yield* machine.mutateWithinRoot({
@@ -85,6 +124,75 @@ describe("portable safe-root mutation", () => {
 
       expect(readFileSync(target, "utf8")).toBe("managed");
       expect(readFileSync(outside, "utf8")).toBe("outside");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces conflicting final object kinds but preserves non-empty directories", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-portable-safe-root-"));
+    try {
+      const managed = join(root, "managed");
+      const target = join(managed, "entry");
+      const blocked = join(managed, "blocked");
+      mkdirSync(managed);
+      writeFileSync(target, "file");
+      mkdirSync(blocked);
+      writeFileSync(join(blocked, "child.txt"), "preserve");
+      const layer = linuxMachineStateLayer({
+        environment: environment(root),
+        safeRootMutationStrategy: "portable",
+      });
+
+      const kinds = await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const managedPath = yield* machine.normalizePath({ path: managed });
+          const targetPath = yield* machine.normalizePath({ path: target });
+          yield* machine.mutateWithinRoot({
+            root: managedPath,
+            path: targetPath,
+            mutation: { kind: "directory", mode: 0o700 },
+          });
+          const directory = yield* machine.inspectPath(targetPath);
+          yield* machine.mutateWithinRoot({
+            root: managedPath,
+            path: targetPath,
+            mutation: {
+              kind: "write",
+              content: new TextEncoder().encode("replacement"),
+            },
+          });
+          const regular = yield* machine.inspectPath(targetPath);
+          return { directory, regular };
+        }).pipe(Effect.provide(layer)),
+      );
+
+      expect(kinds).toEqual({
+        directory: { kind: "directory" },
+        regular: { kind: "regular" },
+      });
+      expect(readFileSync(target, "utf8")).toBe("replacement");
+
+      await expect(Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const managedPath = yield* machine.normalizePath({ path: managed });
+          const blockedPath = yield* machine.normalizePath({ path: blocked });
+          yield* machine.mutateWithinRoot({
+            root: managedPath,
+            path: blockedPath,
+            mutation: {
+              kind: "write",
+              content: new TextEncoder().encode("replacement"),
+            },
+          });
+        }).pipe(Effect.provide(layer)),
+      )).rejects.toMatchObject({
+        _tag: "MachineFilesystemError",
+        operation: "mutate managed path",
+      });
+      expect(readFileSync(join(blocked, "child.txt"), "utf8")).toBe("preserve");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -213,6 +321,57 @@ describe("portable safe-root mutation", () => {
       expect(result.directoryDigest._tag).toBe("Failure");
       expect(readFileSync(outside, "utf8")).toBe("outside");
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("bounded process cleanup", () => {
+  it("terminates the process group after a timeout", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-process-tree-"));
+    const childPidPath = join(root, "child.pid");
+    try {
+      const parentScript = [
+        'const { spawn } = require("node:child_process");',
+        'const { writeFileSync } = require("node:fs");',
+        `const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });`,
+        `writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
+        "setInterval(() => {}, 1000);",
+      ].join("\n");
+      const exit = await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const executable = yield* machine.normalizePath({ path: process.execPath });
+          return yield* machine.runProcess({
+            executable,
+            arguments: ["-e", parentScript],
+            timeoutMilliseconds: 500,
+            maximumOutputBytes: 1024,
+          }).pipe(Effect.exit);
+        }).pipe(Effect.provide(linuxMachineStateLayer({ environment: environment(root) }))),
+      );
+
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag !== "Failure") return;
+      expect(Cause.pretty(exit.cause)).toContain("ProcessTimeoutError");
+      const childPid = Number(readFileSync(childPidPath, "utf8"));
+      await expect.poll(() => {
+        try {
+          process.kill(childPid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      }, { timeout: 2_000 }).toBe(false);
+    } finally {
+      if (existsSync(childPidPath)) {
+        const childPid = Number(readFileSync(childPidPath, "utf8"));
+        try {
+          process.kill(childPid, "SIGKILL");
+        } catch {
+          // The expected path: the timed-out process group is already gone.
+        }
+      }
       rmSync(root, { recursive: true, force: true });
     }
   });

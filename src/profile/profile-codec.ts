@@ -29,6 +29,45 @@ export const sha256Hex = (text: string): ContentDigest => {
   return sha256BytesHex(bytes);
 };
 
+/** Digest a managed directory tree, including each entry's exact object shape. */
+export const directoryEntriesDigest = (
+  entries: ReadonlyArray<{
+    readonly path: string;
+    readonly digest: string;
+    readonly executable?: boolean | undefined;
+    readonly mode?: number | undefined;
+    readonly objectKind?: string | undefined;
+    readonly symlinkTo?: string | undefined;
+  }>,
+): ContentDigest => {
+  const encoded = [...entries]
+    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
+    .map((entry) => {
+      const kind = entry.objectKind ?? (entry.symlinkTo === undefined ? "regular" : "symlink");
+      const mode = kind === "symlink"
+        ? "-"
+        : entry.mode?.toString(8) ?? (entry.executable === true ? "100" : "0");
+      return `${entry.path}\0${entry.digest}\0${kind}\0${mode}\0${entry.symlinkTo ?? ""}`;
+    })
+    .join("\n");
+  return sha256Hex(encoded);
+};
+
+/** Stable public digest for the authored file content of a directory resource. */
+export const directoryVerificationDigest = (
+  files: ReadonlyArray<{
+    readonly path: string;
+    readonly digest: string;
+    readonly executable?: boolean | undefined;
+  }>,
+): ContentDigest => {
+  const encoded = [...files]
+    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
+    .map((file) => `${file.path}\0${file.digest}\0${file.executable === true ? "x" : "-"}`)
+    .join("\n");
+  return sha256Hex(encoded);
+};
+
 export const sha256BytesHex = (bytes: Uint8Array): ContentDigest => {
   // Lazy import boundary: node:crypto is the runtime; this codec runs on Node only.
   const { createHash } = nodeCrypto();

@@ -44,6 +44,7 @@ import {
 import {
   canonicalJson,
   digestOf,
+  directoryVerificationDigest,
   sha256BytesHex,
   sha256Hex,
 } from "../../src/profile/profile-codec.ts";
@@ -101,14 +102,11 @@ const directoryDigest = (
     readonly content: string;
     readonly executable?: boolean | undefined;
   }>,
-) => decode(ContentDigest)(sha256Hex(
-  [...files]
-    .sort((left, right) => left.path.localeCompare(right.path))
-    .map((file) =>
-      `${file.path}\0${sha256Hex(file.content)}\0${file.executable === true ? "x" : "-"}`
-    )
-    .join("\n"),
-));
+) => decode(ContentDigest)(directoryVerificationDigest(files.map((file) => ({
+  path: file.path,
+  digest: sha256Hex(file.content),
+  executable: file.executable,
+}))));
 
 describe("production follower orchestration", () => {
   it("separates authorization-filtered views of one source revision", () => {
@@ -328,9 +326,12 @@ describe("production follower orchestration", () => {
     );
     const directorySpec = {
       kind: "directory" as const,
+      mode: 0o750,
+      directories: [{ path: "empty", mode: 0o710 }],
       files: [
-        { path: "kept.txt", content: "kept\n", executable: false },
+        { path: "kept.txt", content: "kept\n", executable: false, mode: 0o640 },
         { path: "removed.txt", content: "remove later\n", executable: false },
+        { path: "東京.txt", content: "unicode path\n", executable: false },
       ],
     };
     let signingKey: ReturnType<typeof createPrivateKey> | undefined;
@@ -634,6 +635,7 @@ describe("production follower orchestration", () => {
     expect(await readFile(join(directoryTarget, "removed.txt"), "utf8")).toBe(
       "remove later\n",
     );
+    expect(await readFile(join(directoryTarget, "kept.txt"), "utf8")).toBe("kept\n");
 
     const second = await Effect.runPromise(
       synchronizeFollower(followerDatabase, "apply").pipe(
@@ -768,7 +770,7 @@ describe("production follower orchestration", () => {
     if (signingKey === undefined) throw new Error("source signing key was not initialized");
     const nextDirectorySpec = {
       ...directorySpec,
-      files: [directorySpec.files[0]!],
+      files: [directorySpec.files[0]!, directorySpec.files[2]!],
     };
     const nextProfile: MachineProfile = {
       id: profileId,
@@ -869,6 +871,8 @@ describe("production follower orchestration", () => {
       ownedFiles: [
         { path: "kept.txt" },
         { path: "removed.txt" },
+        { path: "東京.txt" },
+        { path: "empty", objectKind: "directory" },
       ],
     });
     expect(

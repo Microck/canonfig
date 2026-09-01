@@ -11,6 +11,7 @@ import {
   defaultPolicyForKind,
   ApplyPolicy as ApplyPolicySchema,
   BuildPolicy as BuildPolicySchema,
+  FilesystemMode as FilesystemModeSchema,
   ResourceKind as ResourceKindSchema,
   ToolRecipeRef,
   policyCompatibleWithKind,
@@ -84,10 +85,10 @@ export interface ProfileResourceInput {
 }
 
 export type ResourceSpecInput =
-  | { readonly kind: "file"; readonly content: string; readonly executable?: boolean | undefined; readonly symlinkTo?: string | undefined }
-  | { readonly kind: "directory"; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined }> }
+  | { readonly kind: "file"; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }
+  | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: string | number | boolean | ReadonlyArray<string> }> }
-  | { readonly kind: "skill"; readonly name: string; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined }> }
+  | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
   | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string }
   | { readonly kind: "schedule"; readonly calendar: { readonly type: "daily"; readonly at: string } | { readonly type: "weekly"; readonly days: ReadonlyArray<string>; readonly at: string } | { readonly type: "custom"; readonly expression: string }; readonly timezone: string };
@@ -158,6 +159,7 @@ const AuthoringFileSchema = Schema.Struct({
   kind: Schema.Literal("file"),
   content: Schema.String,
   executable: Schema.optional(Schema.Boolean),
+  mode: Schema.optional(FilesystemModeSchema),
   symlinkTo: Schema.optional(Schema.NonEmptyString),
 });
 
@@ -165,6 +167,13 @@ const AuthoringDirectoryFileSchema = Schema.Struct({
   path: Schema.NonEmptyString,
   content: Schema.String,
   executable: Schema.optional(Schema.Boolean),
+  mode: Schema.optional(FilesystemModeSchema),
+  symlinkTo: Schema.optional(Schema.NonEmptyString),
+});
+
+const AuthoringDirectorySchema = Schema.Struct({
+  path: Schema.NonEmptyString,
+  mode: FilesystemModeSchema,
 });
 
 const AuthoringLoginSchema = Schema.Union([
@@ -179,6 +188,8 @@ export const ResourceSpecInputSchema = Schema.Union([
   AuthoringFileSchema,
   Schema.Struct({
     kind: Schema.Literal("directory"),
+    mode: Schema.optional(FilesystemModeSchema),
+    directories: Schema.optional(Schema.Array(AuthoringDirectorySchema)),
     files: Schema.Array(AuthoringDirectoryFileSchema),
   }),
   Schema.Struct({
@@ -192,6 +203,8 @@ export const ResourceSpecInputSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("skill"),
     name: Schema.NonEmptyString,
+    mode: Schema.optional(FilesystemModeSchema),
+    directories: Schema.optional(Schema.Array(AuthoringDirectorySchema)),
     files: Schema.Array(AuthoringDirectoryFileSchema),
   }),
   Schema.Struct({
@@ -451,7 +464,10 @@ export interface ResourcePathResource {
   readonly id: string;
   readonly kind: ResourceKind;
   readonly target: string;
-  readonly entries: ReadonlyArray<string>;
+  readonly entries: ReadonlyArray<{
+    readonly path: string;
+    readonly kind: "directory" | "leaf";
+  }>;
 }
 
 export class InvalidScheduleError extends Schema.TaggedError<InvalidScheduleError>()(
@@ -484,6 +500,11 @@ export class VerificationContentMismatchError extends Schema.TaggedError<Verific
   { id: Schema.String, method: Schema.String, reason: Schema.String },
 ) {}
 
+export class UnmanageableFilesystemModeError extends Schema.TaggedError<UnmanageableFilesystemModeError>()(
+  "UnmanageableFilesystemModeError",
+  { id: Schema.String, path: Schema.String, mode: Schema.Int, reason: Schema.String },
+) {}
+
 export class InvalidBuildPolicyError extends Schema.TaggedError<InvalidBuildPolicyError>()(
   "InvalidBuildPolicyError",
   { id: Schema.String, reason: Schema.String },
@@ -507,6 +528,7 @@ export type ProfileValidationError =
   | ResourceSpecKindMismatchError
   | VerificationKindMismatchError
   | VerificationContentMismatchError
+  | UnmanageableFilesystemModeError
   | InvalidBuildPolicyError
   | InvalidRecipeError;
 
@@ -585,6 +607,7 @@ export const validateProfileResources = (
     }
     errors.push(...validateRecipes(resource));
     errors.push(...validateVerificationContent(resource));
+    errors.push(...validateFilesystemModes(resource));
     errors.push(...validateBuildPolicies(resource));
     if (!verificationAllowedForSpec(resource.kind, resource.spec, resource.verify.method)) {
       errors.push(new VerificationKindMismatchError({
@@ -597,6 +620,54 @@ export const validateProfileResources = (
   errors.push(...validateResourceTargetConflicts(resources, platform));
   const cycle = findDependencyCycle(resources);
   if (cycle !== null) errors.push(new DependencyCycleError({ cycle }));
+  return errors;
+};
+
+const validateFilesystemModes = (
+  resource: ProfileResourceInput,
+): ReadonlyArray<UnmanageableFilesystemModeError> => {
+  const errors: Array<UnmanageableFilesystemModeError> = [];
+  const regularFile = (path: string, mode: number): void => {
+    if ((mode & 0o400) !== 0) return;
+    errors.push(new UnmanageableFilesystemModeError({
+      id: resource.id,
+      path,
+      mode,
+      reason: "managed regular files must remain owner-readable for digest verification",
+    }));
+  };
+  const directory = (path: string, mode: number): void => {
+    if ((mode & 0o500) === 0o500) return;
+    errors.push(new UnmanageableFilesystemModeError({
+      id: resource.id,
+      path,
+      mode,
+      reason: "managed directories must remain owner-readable and owner-traversable for tree verification",
+    }));
+  };
+
+  switch (resource.spec.kind) {
+    case "file":
+      if (resource.spec.symlinkTo === undefined) {
+        regularFile(resource.target, resource.spec.mode ?? (resource.spec.executable === true ? 0o700 : 0o600));
+      }
+      break;
+    case "directory":
+    case "skill":
+      directory(resource.target, resource.spec.mode ?? 0o700);
+      for (const entry of resource.spec.directories ?? []) directory(entry.path, entry.mode);
+      for (const file of resource.spec.files) {
+        if (file.symlinkTo === undefined) {
+          regularFile(file.path, file.mode ?? (file.executable === true ? 0o700 : 0o600));
+        }
+      }
+      break;
+    case "config":
+    case "tool":
+    case "credential":
+    case "schedule":
+      break;
+  }
   return errors;
 };
 
@@ -735,6 +806,7 @@ interface ResourceTargetClaim {
   readonly namespace: "filesystem" | "schedule";
   readonly rawPath: string;
   readonly isRoot: boolean;
+  readonly isDirectory: boolean;
 }
 
 const normalizedTargetPath = (value: string, platform: Platform = "windows"): string => {
@@ -807,6 +879,7 @@ interface CanonicalResourcePathClaim {
   readonly resource: ResourcePathResource;
   readonly rawPath: string;
   readonly path: string;
+  readonly isDirectory: boolean;
 }
 
 interface CanonicalResourcePathClaimsResult {
@@ -816,9 +889,18 @@ interface CanonicalResourcePathClaimsResult {
 
 const resourceEntries = (
   resource: ProfileResourceInput,
-): ReadonlyArray<string> => {
+): ResourcePathResource["entries"] => {
   if (resource.spec.kind !== "directory" && resource.spec.kind !== "skill") return [];
-  return resource.spec.files.map((file) => file.path);
+  return [
+    ...resource.spec.files.map((file) => ({
+      path: file.path,
+      kind: "leaf" as const,
+    })),
+    ...(resource.spec.directories ?? []).map((directory) => ({
+      path: directory.path,
+      kind: "directory" as const,
+    })),
+  ];
 };
 
 const canonicalResourcePathClaims = (
@@ -827,7 +909,10 @@ const canonicalResourcePathClaims = (
 ): CanonicalResourcePathClaimsResult => {
   const claims: Array<CanonicalResourcePathClaim> = [];
   const errors: Array<InvalidTargetError> = [];
-  for (const rawPath of [...resource.entries].sort(compareText)) {
+  for (const entry of [...resource.entries].sort((left, right) =>
+    compareText(left.path, right.path)
+  )) {
+    const rawPath = entry.path;
     const reason = invalidRelativeTargetReason(rawPath, platform);
     if (reason !== undefined) {
       errors.push(new InvalidTargetError({
@@ -841,6 +926,7 @@ const canonicalResourcePathClaims = (
       resource,
       rawPath,
       path: normalizedTargetPath(`${resource.target}/${rawPath}`, platform),
+      isDirectory: entry.kind === "directory",
     });
   }
   return { claims, errors };
@@ -848,8 +934,8 @@ const canonicalResourcePathClaims = (
 
 /**
  * Validate filesystem claims at a profile or planner boundary. The resource
- * target itself is the explicitly represented directory ancestry; every
- * declared entry is otherwise a file or symlink leaf.
+ * target itself is the explicitly represented directory ancestry. Each
+ * declared entry states whether it is another directory or a leaf.
  */
 export const validateResourcePathConflicts = (
   resources: ReadonlyArray<ResourcePathResource>,
@@ -888,6 +974,7 @@ export const validateResourcePathConflicts = (
         rawPath: resource.target,
         namespace: resource.kind === "schedule" ? "schedule" : "filesystem",
         isRoot: true,
+        isDirectory: resource.kind === "directory" || resource.kind === "skill",
       };
       if (resource.kind === "schedule") return [root];
       return [
@@ -898,6 +985,7 @@ export const validateResourcePathConflicts = (
           rawPath: claim.rawPath,
           namespace: "filesystem" as const,
           isRoot: false,
+          isDirectory: claim.isDirectory,
         })),
       ];
     })
@@ -929,7 +1017,13 @@ export const validateResourcePathConflicts = (
             conflictsWith: other.resource.id,
             reason: `managed path ${claim.path} is declared more than once`,
           }));
-        } else if (claim.rawPath !== other.rawPath) {
+        } else {
+          const ancestor = claim.path.startsWith(`${other.path}/`)
+            ? other
+            : other.path.startsWith(`${claim.path}/`)
+            ? claim
+            : undefined;
+          if (ancestor?.isDirectory === true) continue;
           errors.push(new ConflictingResourceTargetError({
             id: claim.resource.id,
             target: claim.rawPath,
@@ -1104,26 +1198,58 @@ const compareText = (left: string, right: string): number => {
 const uniqueSorted = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
   [...new Set(values)].sort(compareText);
 
+type ManagedFileInput = Extract<
+  ResourceSpecInput,
+  { readonly kind: "directory" }
+>["files"][number];
+
+const normalizeManagedFile = (file: ManagedFileInput) => {
+  if (file.symlinkTo !== undefined) {
+    return {
+      path: file.path,
+      content: file.content,
+      mode: 0,
+      executable: false,
+      symlinkTo: file.symlinkTo,
+    };
+  }
+  const mode = file.mode ?? (file.executable === true ? 0o700 : 0o600);
+  return {
+    path: file.path,
+    content: file.content,
+    mode,
+    executable: (mode & 0o100) !== 0,
+  };
+};
+
 const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
   switch (spec.kind) {
     case "file": {
-      const base = {
+      if (spec.symlinkTo !== undefined) {
+        return {
+          kind: spec.kind,
+          content: spec.content,
+          mode: 0,
+          executable: false,
+          symlinkTo: spec.symlinkTo,
+        };
+      }
+      const mode = spec.mode ?? (spec.executable === true ? 0o700 : 0o600);
+      return {
         kind: spec.kind,
         content: spec.content,
-        executable: spec.executable ?? false,
-      } as const;
-      if (spec.symlinkTo === undefined) return base;
-      return { ...base, symlinkTo: spec.symlinkTo };
+        mode,
+        executable: (mode & 0o100) !== 0,
+      };
     }
     case "directory":
       return {
         kind: spec.kind,
+        mode: spec.mode ?? 0o700,
+        directories: [...(spec.directories ?? [])]
+          .sort((left, right) => compareText(left.path, right.path)),
         files: spec.files
-          .map((file) => ({
-            path: file.path,
-            content: file.content,
-            executable: file.executable ?? false,
-          }))
+          .map(normalizeManagedFile)
           .sort((left, right) => compareText(left.path, right.path)),
       };
     case "config":
@@ -1136,12 +1262,11 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
       return {
         kind: spec.kind,
         name: spec.name,
+        mode: spec.mode ?? 0o700,
+        directories: [...(spec.directories ?? [])]
+          .sort((left, right) => compareText(left.path, right.path)),
         files: spec.files
-          .map((file) => ({
-            path: file.path,
-            content: file.content,
-            executable: file.executable ?? false,
-          }))
+          .map(normalizeManagedFile)
           .sort((left, right) => compareText(left.path, right.path)),
       };
     case "tool":

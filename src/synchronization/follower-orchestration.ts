@@ -46,6 +46,7 @@ import {
 } from "../schedule/schedule-manager.types.ts";
 import {
   canonicalJson,
+  directoryVerificationDigest,
   sha256BytesHex,
   sha256Hex,
 } from "../profile/profile-codec.ts";
@@ -66,7 +67,6 @@ import {
 import { planSynchronization } from "./planner.ts";
 import type {
   AvailableBlob,
-  DesiredFile,
   DesiredResource,
   DesiredResourceEntry,
   PlanningProfileRevision,
@@ -77,6 +77,12 @@ import type {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+const compareText = (left: string, right: string): number => {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+};
 
 const isNotFoundFilesystemError = (
   error: MachineFilesystemError,
@@ -252,20 +258,12 @@ const decodeSpecs = (
 const fileDigest = (content: string): typeof ContentDigest.Type =>
   Schema.decodeUnknownSync(ContentDigest)(sha256BytesHex(encoder.encode(content)));
 
-const filesDigest = (files: ReadonlyArray<DesiredFile>): typeof ContentDigest.Type =>
-  Schema.decodeUnknownSync(ContentDigest)(sha256Hex(
-    [...files]
-      .sort((left, right) => left.path.localeCompare(right.path))
-      .map((file) => `${file.path}\0${file.digest}\0${file.executable ? "x" : "-"}`)
-      .join("\n"),
-  ));
-
 const configDocument = (
   spec: Extract<ResourceSpecInput, { readonly kind: "config" }>,
 ): Uint8Array => {
   const document: ConfigDocument = {};
   for (const entry of [...spec.keys].sort((left, right) =>
-    left.path.localeCompare(right.path)
+    compareText(left.path, right.path)
   )) {
     setConfigPath(document, entry.path, entry.value);
   }
@@ -297,8 +295,9 @@ const desiredFor = (
   switch (spec.kind) {
     case "file": {
       const content = encoder.encode(spec.content);
+      const isSymlink = spec.symlinkTo !== undefined;
       const digest = Schema.decodeUnknownSync(ContentDigest)(
-        spec.symlinkTo === undefined
+        !isSymlink
           ? sha256BytesHex(content)
           : sha256Hex(spec.symlinkTo),
       );
@@ -306,28 +305,40 @@ const desiredFor = (
         desired: {
           kind: "file",
           digest,
-          executable: spec.executable ?? false,
+          executable: isSymlink ? false : spec.executable ?? false,
+          mode: isSymlink ? 0 : spec.mode ?? (spec.executable === true ? 0o700 : 0o600),
           symlinkTo: spec.symlinkTo,
         },
-        artifacts: spec.symlinkTo === undefined ? [{ digest, content }] : [],
+        artifacts: !isSymlink ? [{ digest, content }] : [],
       };
     }
     case "directory":
     case "skill": {
       const files = spec.files.map((file) => ({
         path: file.path,
-        digest: fileDigest(file.content),
-        executable: file.executable ?? false,
+        digest: file.symlinkTo === undefined
+          ? fileDigest(file.content)
+          : Schema.decodeUnknownSync(ContentDigest)(sha256Hex(file.symlinkTo)),
+        executable: file.symlinkTo === undefined ? file.executable ?? false : false,
+        mode: file.symlinkTo === undefined
+          ? file.mode ?? (file.executable === true ? 0o700 : 0o600)
+          : 0,
+        symlinkTo: file.symlinkTo,
       }));
-      const artifacts = spec.files.map((file, index) => ({
-        digest: files[index]!.digest,
-        content: encoder.encode(file.content),
-      }));
-      const digest = filesDigest(files);
+      const artifacts = spec.files.flatMap((file, index) =>
+        file.symlinkTo === undefined
+          ? [{ digest: files[index]!.digest, content: encoder.encode(file.content) }]
+          : []
+      );
+      const directories = spec.directories ?? [];
+      const mode = spec.mode ?? 0o700;
+      // The declared verification digest is a stable content contract. Exact
+      // modes and object kinds belong to the separate convergence-state digest.
+      const digest = directoryVerificationDigest(files);
       return {
         desired: spec.kind === "skill"
-          ? { kind: "skill", digest, files }
-          : { kind: "directory", files },
+          ? { kind: "skill", digest, mode, directories, files }
+          : { kind: "directory", mode, directories, files },
         artifacts,
       };
     }
@@ -395,18 +406,15 @@ const observeFile = (
     const path = yield* machine.normalizePath({ path: target });
     const observedKind = yield* machine.inspectPath(path);
     if (observedKind.kind === "symlink") {
-      const expected = desired.symlinkTo === undefined
-        ? undefined
-        : yield* machine.normalizePath({ path: desired.symlinkTo });
       return yield* machine.readSymlink(path).pipe(
         Effect.map((symlinkTo): ObservedResourceState => ({
           state: "present",
-          digest: expected?.absolute === symlinkTo.absolute
+          digest: desired.symlinkTo === symlinkTo
             ? desired.digest
-            : sha256Hex(symlinkTo.absolute),
+            : sha256Hex(symlinkTo),
           executable: false,
           objectKind: "symlink",
-          symlinkTo: symlinkTo.absolute,
+          symlinkTo,
         })),
       );
     }
@@ -433,6 +441,7 @@ const observeFile = (
             state: "present",
             digest: digest.value,
             executable: permissions.executableByOwner,
+            mode: permissions.mode,
             objectKind: "regular",
           })),
         )
@@ -562,12 +571,20 @@ const observe = (
             objectKind: rootKind.kind,
           } as const;
         }
+        const rootPermissions = yield* machine.permissions(root);
         const candidates = [...new Map([
           ...(applied?.ownedFiles ?? []).map((file) => ({
             ...file,
             executable: file.executable ?? false,
           })),
           ...desired.files,
+          ...desired.directories.map((directory) => ({
+            path: directory.path,
+            digest: Schema.decodeUnknownSync(ContentDigest)(sha256Hex("canonfig:directory")),
+            executable: (directory.mode & 0o100) !== 0,
+            mode: directory.mode,
+            objectKind: "directory" as const,
+          })),
         ].map((file) => [file.path, file])).values()];
         const files = yield* Effect.forEach(candidates, (file) =>
           Effect.gen(function*() {
@@ -581,6 +598,26 @@ const observe = (
             );
             if (kind === undefined) {
               return { path: file.path, state: "absent" } as const;
+            }
+            if (kind.kind === "directory") {
+              const permissions = yield* machine.permissions(path);
+              return {
+                path: file.path,
+                digest: sha256Hex("canonfig:directory"),
+                executable: permissions.executableByOwner,
+                mode: permissions.mode,
+                objectKind: "directory" as const,
+              };
+            }
+            if (kind.kind === "symlink") {
+              const symlinkTo = yield* machine.readSymlink(path);
+              return {
+                path: file.path,
+                digest: sha256Hex(symlinkTo),
+                executable: false,
+                objectKind: "symlink" as const,
+                symlinkTo,
+              };
             }
             if (kind.kind !== "regular") {
               return {
@@ -597,6 +634,7 @@ const observe = (
                     path: file.path,
                     digest: digest.value,
                     executable: permissions.executableByOwner,
+                    mode: permissions.mode,
                     objectKind: "regular" as const,
                   })),
                 )
@@ -609,7 +647,12 @@ const observe = (
             );
           })
         );
-        return { state: "directory", objectKind: "directory", files } as const;
+        return {
+          state: "directory",
+          objectKind: "directory",
+          mode: rootPermissions.mode,
+          files,
+        } as const;
       }).pipe(
         Effect.catch((error) =>
           Effect.succeed({ state: "unverifiable", reason: String(error) } as const)
@@ -692,23 +735,44 @@ const removedResourceState = (
           kind: "file",
           digest,
           executable: applied.executable ?? false,
+          mode: applied.mode ?? (applied.executable === true ? 0o700 : 0o600),
           symlinkTo: applied.symlinkTo,
         },
       };
     case "directory":
     case "skill":
       if (applied.ownedFiles === undefined) return undefined;
+      const directories = applied.ownedFiles
+        .filter((file) => file.objectKind === "directory")
+        .map((directory) => ({
+          path: directory.path,
+          mode: directory.mode ?? 0o700,
+        }));
+      const files = applied.ownedFiles
+        .filter((file) => file.objectKind !== "directory")
+        .map((file) => ({
+          path: file.path,
+          digest: Schema.decodeUnknownSync(ContentDigest)(file.digest),
+          executable: file.executable ?? false,
+          mode: file.mode ?? (file.executable === true ? 0o700 : 0o600),
+          symlinkTo: file.symlinkTo,
+        }));
       return {
         resource,
-        desired: {
-          kind: applied.kind,
-          digest,
-          files: applied.ownedFiles.map((file) => ({
-            path: file.path,
-            digest: Schema.decodeUnknownSync(ContentDigest)(file.digest),
-            executable: file.executable ?? false,
-          })),
-        },
+        desired: applied.kind === "skill"
+          ? {
+            kind: "skill",
+            digest,
+            mode: applied.mode ?? 0o700,
+            directories,
+            files,
+          }
+          : {
+            kind: "directory",
+            mode: applied.mode ?? 0o700,
+            directories,
+            files,
+          },
       };
     case "config":
       if (

@@ -63,6 +63,7 @@ import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import {
   canonicalJson,
   digestOf,
+  directoryVerificationDigest,
   sha256Hex,
 } from "../../src/profile/profile-codec.ts";
 import { revisionSigningPayload } from "../../src/profile/publication.ts";
@@ -270,25 +271,27 @@ const machineFixture = (
 };
 
 const declaredDigest = (spec: ResourceSpecInput): string => {
+  const compareText = (left: string, right: string): number => {
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  };
   switch (spec.kind) {
     case "file":
       return sha256Hex(spec.symlinkTo ?? spec.content);
     case "directory":
     case "skill":
-      return sha256Hex(
-        [...spec.files]
-          .sort((left, right) => left.path.localeCompare(right.path))
-          .map((file) =>
-            `${file.path}\0${sha256Hex(file.content)}\0${
-              file.executable === true ? "x" : "-"
-            }`
-          )
-          .join("\n"),
+      return directoryVerificationDigest(
+        spec.files.map((file) => ({
+          path: file.path,
+          digest: sha256Hex(file.symlinkTo ?? file.content),
+          executable: file.executable,
+        })),
       );
     case "config": {
       const document: ConfigDocument = {};
       for (const entry of [...spec.keys].sort((left, right) =>
-        left.path.localeCompare(right.path)
+        compareText(left.path, right.path)
       )) {
         setConfigPath(document, entry.path, entry.value);
       }

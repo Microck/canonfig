@@ -66,6 +66,7 @@ export type ActionDetail =
     readonly digest: string;
     /** Normalized regular-file executable intent; absent for non-file writes. */
     readonly executable?: boolean | undefined;
+    readonly mode?: number | undefined;
   }
   | { readonly kind: "write-config"; readonly target: string; readonly keys: ReadonlyArray<string> }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
@@ -168,7 +169,9 @@ export type ObservedDirectoryFile =
     readonly path: string;
     readonly digest: string;
     readonly executable?: boolean | undefined;
+    readonly mode?: number | undefined;
     readonly objectKind?: ObservedObjectKind | undefined;
+    readonly symlinkTo?: string | undefined;
   };
 
 export type ObservedResourceState =
@@ -177,6 +180,7 @@ export type ObservedResourceState =
     readonly state: "present";
     readonly digest: string;
     readonly executable: boolean;
+    readonly mode?: number | undefined;
     /**
      * Actual final path kind. Optional for compatibility with observations
      * produced before no-follow object inspection was introduced.
@@ -187,6 +191,7 @@ export type ObservedResourceState =
   | {
     readonly state: "directory";
     readonly objectKind?: ObservedObjectKind | undefined;
+    readonly mode: number;
     readonly files: ReadonlyArray<ObservedDirectoryFile>;
   }
   | { readonly state: "unverifiable"; readonly reason: string };
@@ -201,11 +206,15 @@ export interface AppliedResourceRecord {
   readonly policy?: "replace" | "mirror-owned" | "merge" | "replace-if-unmodified" | "ensure" | "require-local" | undefined;
   readonly target?: string | undefined;
   readonly executable?: boolean | undefined;
+  readonly mode?: number | undefined;
   readonly symlinkTo?: string | undefined;
   readonly ownedFiles?: ReadonlyArray<{
     readonly path: string;
     readonly digest: string;
     readonly executable?: boolean | undefined;
+    readonly mode?: number | undefined;
+    readonly objectKind?: "regular" | "directory" | "symlink" | undefined;
+    readonly symlinkTo?: string | undefined;
   }> | undefined;
   readonly ownedKeys?: ReadonlyArray<string> | undefined;
   readonly configFormat?: "toml" | "json" | "yaml" | undefined;
@@ -263,6 +272,7 @@ export const ActionDetailSchema = Schema.Union([
     target: Schema.NonEmptyString,
     digest: ContentDigest,
     executable: Schema.optional(Schema.Boolean),
+    mode: Schema.optional(Schema.Int),
   }),
   Schema.Struct({
     kind: Schema.Literal("write-config"),
@@ -412,12 +422,14 @@ export const ObservedResourceStateSchema = Schema.Union([
     state: Schema.Literal("present"),
     digest: ContentDigest,
     executable: Schema.Boolean,
+    mode: Schema.optional(Schema.Int),
     objectKind: Schema.optional(ObservedObjectKind),
     symlinkTo: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     state: Schema.Literal("directory"),
     objectKind: Schema.optional(ObservedObjectKind),
+    mode: Schema.Int,
     files: Schema.Array(Schema.Union([
       Schema.Struct({
         path: Schema.NonEmptyString,
@@ -427,7 +439,9 @@ export const ObservedResourceStateSchema = Schema.Union([
         path: Schema.NonEmptyString,
         digest: ContentDigest,
         executable: Schema.optional(Schema.Boolean),
+        mode: Schema.optional(Schema.Int),
         objectKind: Schema.optional(ObservedObjectKind),
+        symlinkTo: Schema.optional(Schema.NonEmptyString),
       }),
     ])),
   }),
@@ -461,11 +475,15 @@ export const AppliedResourceRecordSchema = Schema.Struct({
   ])),
   target: Schema.optional(Schema.NonEmptyString),
   executable: Schema.optional(Schema.Boolean),
+  mode: Schema.optional(Schema.Int),
   symlinkTo: Schema.optional(Schema.NonEmptyString),
   ownedFiles: Schema.optional(Schema.Array(Schema.Struct({
     path: Schema.NonEmptyString,
     digest: ContentDigest,
     executable: Schema.optional(Schema.Boolean),
+    mode: Schema.optional(Schema.Int),
+    objectKind: Schema.optional(Schema.Literals(["regular", "directory", "symlink"])),
+    symlinkTo: Schema.optional(Schema.NonEmptyString),
   }))),
   ownedKeys: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   configFormat: Schema.optional(Schema.Literals(["toml", "json", "yaml"])),

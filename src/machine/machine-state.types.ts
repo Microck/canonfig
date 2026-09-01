@@ -63,7 +63,12 @@ export type SafeRootMutation =
   | { readonly kind: "remove" }
   | {
     readonly kind: "symlink";
-    readonly target: MachinePath;
+    /** Preserve the authored link text so relative targets stay relative. */
+    readonly target: string;
+  }
+  | {
+    readonly kind: "directory";
+    readonly mode: number;
   };
 
 export interface SafeRootMutationInput {
@@ -74,7 +79,8 @@ export interface SafeRootMutationInput {
 
 export interface SymlinkInput {
   readonly path: MachinePath;
-  readonly target: MachinePath;
+  /** Preserve the authored link text so relative targets stay relative. */
+  readonly target: string;
 }
 
 export interface FilePermissions {
