@@ -22,6 +22,8 @@ import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   applyTransferredSecrets,
+  loadSharedSecrets,
+  maximumSecretBytes,
   removeSecret,
   storeSecret,
 } from "../../src/secrets/secret-store.ts";
@@ -193,6 +195,10 @@ describe("secure secret transfer", () => {
 
     await runFollower(setup, applyTransferredSecrets(fetched.payload));
     expect(await storedValue(setup, "github-token")).toBe(secretValue);
+    expect(await runFollower(setup, loadSharedSecrets())).toEqual({
+      schemaVersion: 1,
+      secrets: [],
+    });
 
     const sourceManifest = join(setup.sourceHome, ".canonfig", "secrets.json");
     const followerManifest = join(setup.followerHome, ".canonfig", "secrets.json");
@@ -232,5 +238,17 @@ describe("secure secret transfer", () => {
     await expect(
       access(join(setup.followerHome, ".canonfig", "secrets.json")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("enforces the secret limit in UTF-8 bytes", async () => {
+    const setup = fixture();
+    const oversized = "é".repeat(Math.floor(maximumSecretBytes / 2) + 1);
+
+    await expect(
+      setup.runtime.runPromise(storeSecret("oversized", oversized)),
+    ).rejects.toMatchObject({
+      category: "usage",
+      operation: "validate secret value",
+    });
   });
 });
