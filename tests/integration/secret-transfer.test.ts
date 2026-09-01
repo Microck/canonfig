@@ -20,7 +20,9 @@ import type {
   SourceServerHandle,
 } from "../../src/enrollment/enrollment.types.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
+import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import {
   applyTransferredSecrets,
   loadSharedSecrets,
@@ -58,8 +60,8 @@ interface Fixture {
   readonly root: string;
   readonly sourceHome: string;
   readonly followerHome: string;
-  readonly sourceMachine: ReturnType<typeof linuxMachineStateLayer>;
-  readonly followerMachine: ReturnType<typeof linuxMachineStateLayer>;
+  readonly sourceMachine: Layer.Layer<MachineState>;
+  readonly followerMachine: Layer.Layer<MachineState>;
   readonly runtime: SourceRuntime;
 }
 
@@ -67,6 +69,8 @@ interface RawResponse {
   readonly status: number;
   readonly body: string;
 }
+
+type TestPlatform = "linux" | "macos" | "windows";
 
 afterEach(async () => {
   await Promise.all(openServers.splice(0).map((server) => server.close()));
@@ -76,20 +80,54 @@ afterEach(async () => {
   }
 });
 
+const localFileMachineLayer = (
+  platform: TestPlatform,
+  root: string,
+): Layer.Layer<MachineState> => {
+  const options = {
+    environment: [
+      { name: "HOME", value: join(root, "home") },
+      { name: "PATH", value: join(root, "bin") },
+    ],
+    credentialPolicy: {
+      kind: "local-file" as const,
+      path: join(root, "credentials"),
+    },
+  };
+  switch (platform) {
+    case "macos":
+      return macosMachineStateLayer(options);
+    case "windows":
+      return windowsMachineStateLayer(options);
+    case "linux":
+      return linuxMachineStateLayer(options);
+  }
+};
+
+// Integration tests use a deterministic temporary credential backend while
+// advertising the secure-store capability that production requires. Dedicated
+// tests below prove that unwrapped local-file layers are rejected.
+const secureTestMachineLayer = (
+  layer: Layer.Layer<MachineState>,
+): Layer.Layer<MachineState> =>
+  Layer.effect(
+    MachineState,
+    Effect.map(MachineState, (machine) => ({
+      ...machine,
+      credentialCapability: () =>
+        Effect.succeed({
+          kind: "secure-noninteractive" as const,
+          provider: "secret-service" as const,
+        }),
+    })),
+  ).pipe(Layer.provide(layer));
+
 const machineLayer = (root: string) => {
   const home = join(root, "home");
+  const local = localFileMachineLayer("linux", root);
   return {
     home,
-    layer: linuxMachineStateLayer({
-      environment: [
-        { name: "HOME", value: home },
-        { name: "PATH", value: join(root, "bin") },
-      ],
-      credentialPolicy: {
-        kind: "local-file",
-        path: join(root, "credentials"),
-      },
-    }),
+    layer: secureTestMachineLayer(local),
   };
 };
 
@@ -266,6 +304,37 @@ describe("secure secret transfer", () => {
     expect(await storedValue(setup, "github-token")).toBeUndefined();
   });
 
+  it("clears source-owned secrets when the sharing grant disappears", async () => {
+    const setup = fixture();
+    await setup.runtime.runPromise(storeSecret("revoked-token", "remove-me"));
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server, [group(SECRET_SHARE_GROUP)]);
+    const fetched = await runFollower(setup, fetchSharedSecrets({
+      endpoint: server.endpoint,
+      tlsFingerprint: server.fingerprint,
+      credentialReference: enrolled.credentialReference,
+    }));
+    if (fetched.status !== "shared") throw new Error("expected shared secrets");
+    await runFollower(setup, applyTransferredSecrets(fetched.payload));
+    expect(await storedValue(setup, "revoked-token")).toBe("remove-me");
+
+    await setup.runtime.runPromise(Effect.gen(function*() {
+      const enrollment = yield* Enrollment;
+      yield* enrollment.updateFollowerGroups(enrolled.follower.id, []);
+    }));
+    const revoked = await runFollower(setup, fetchSharedSecrets({
+      endpoint: server.endpoint,
+      tlsFingerprint: server.fingerprint,
+      credentialReference: enrolled.credentialReference,
+    }));
+
+    expect(revoked).toEqual({
+      status: "not-shared",
+      secrets: ["revoked-token"],
+    });
+    expect(await storedValue(setup, "revoked-token")).toBeUndefined();
+  });
+
   it("does not reveal whether secrets exist to unauthorized followers", async () => {
     const setup = fixture();
     await setup.runtime.runPromise(storeSecret("private-token", "do-not-transfer"));
@@ -282,11 +351,29 @@ describe("secure secret transfer", () => {
       requestRaw(setup, server, enrolled, "/v1/transport/not-a-route"),
     ]);
 
-    expect(fetched).toEqual({ status: "not-shared" });
+    expect(fetched).toEqual({ status: "not-shared", secrets: [] });
     expect(secretsResponse).toEqual(missingResponse);
     await expect(
       access(join(setup.followerHome, ".canonfig", "secrets.json")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects local-file credential mode on every platform seam", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-secret-policy-"));
+    temporaryDirectories.push(root);
+
+    for (const platform of ["linux", "macos", "windows"] as const) {
+      await expect(
+        Effect.runPromise(
+          storeSecret("blocked", "never-write-plaintext").pipe(
+            Effect.provide(localFileMachineLayer(platform, join(root, platform))),
+          ),
+        ),
+      ).rejects.toMatchObject({
+        category: "storage",
+        operation: "store secret",
+      });
+    }
   });
 
   it("enforces the secret limit in UTF-8 bytes", async () => {
