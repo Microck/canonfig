@@ -247,11 +247,20 @@ const decodeValue = (
   value: string,
 ): Effect.Effect<string, SecretTransferError> =>
   Schema.decodeUnknownEffect(SecretValueSchema)(value).pipe(
+    Effect.flatMap((decoded) =>
+      new TextEncoder().encode(decoded).byteLength <= maximumSecretBytes
+        ? Effect.succeed(decoded)
+        : Effect.fail(secretError(
+          "usage",
+          "validate secret value",
+          `secret values must contain 1-${maximumSecretBytes} UTF-8 bytes and no NUL bytes`,
+        ))
+    ),
     Effect.mapError(() =>
       secretError(
         "usage",
         "validate secret value",
-        `secret values must contain 1-${maximumSecretBytes} characters and no NUL bytes`,
+        `secret values must contain 1-${maximumSecretBytes} UTF-8 bytes and no NUL bytes`,
       )
     ),
   );
@@ -385,8 +394,17 @@ export const applyTransferredSecrets = (
 ): Effect.Effect<ReadonlyArray<string>, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
+    const incoming = yield* Effect.forEach(payload.secrets, (secret) =>
+      Effect.all({
+        name: decodeName(secret.name),
+        value: decodeValue(secret.value),
+      }).pipe(
+        Effect.mapError(() =>
+          secretError("transport", "decode shared secrets", "the source returned invalid secret data")
+        ),
+      ));
     yield* validateUniqueNames(
-      payload.secrets.map((secret) => secret.name),
+      incoming.map((secret) => secret.name),
       "decode shared secrets",
     ).pipe(
       Effect.mapError(() =>
@@ -394,13 +412,13 @@ export const applyTransferredSecrets = (
       ),
     );
     const current = yield* readManifest();
-    const incomingNames = new Set(payload.secrets.map((secret) => secret.name));
+    const incomingNames = new Set(incoming.map((secret) => secret.name));
     const preserved = current.secrets.filter((secret) =>
       secret.origin === "local" && !incomingNames.has(secret.name)
     );
     const retired = current.secrets.filter((secret) => !preserved.includes(secret));
     const created: Array<SecretManifestEntry> = [];
-    for (const secret of payload.secrets) {
+    for (const secret of incoming) {
       const reference = yield* storeValue(secret.name, secret.value).pipe(
         Effect.tapError(() =>
           cleanupReferences(created.map((entry) => entry.reference))
