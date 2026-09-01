@@ -46,6 +46,28 @@ reference, not the credential value. The platform seam uses:
 Unavailable secure storage produces Human Action Required rather than silently
 writing plaintext.
 
+## Opt-in shared secrets
+
+Shared-secret transfer is separate from Profile Resources and disabled unless a
+follower is enrolled with the namespaced `canonfig:secrets` group. Set a source
+secret through stdin so it never appears in the process argument list:
+
+```bash
+printf %s "$GITHUB_TOKEN" | canonfig secrets set github-token
+```
+
+Authorized values travel over the existing authenticated, certificate-pinned
+HTTPS channel after a successful `sync --apply`, or through an explicit
+`canonfig secrets sync`. Canonfig writes values directly to native credential
+storage. The JSON manifest contains only names, origins, and opaque credential
+references; the ordinary state database and profile revisions contain no shared
+secret values.
+
+Followers do not re-share source-origin values. Source deletions retire
+source-owned follower credentials on the next apply. Unauthorized requests are
+indistinguishable from unknown routes, and each value is limited to 16 KiB of
+UTF-8 data.
+
 ## Secrets in process evidence
 
 Canonfig redacts configured secrets from captured arguments, stdout, stderr, and
@@ -73,8 +95,9 @@ command is not proof that the desired resource exists or is correct.
 ```bash
 canonfig doctor --no-input
 canonfig status --json
+canonfig secrets list --json
 ```
 
-Review credential capability, source TLS and authentication probes, agent
-adapter state, action journals, Human Action Required records, and verification
-evidence.
+Review credential capability, source TLS and authentication probes, shared
+secret names and origins, agent adapter state, action journals, Human Action
+Required records, and verification evidence.
