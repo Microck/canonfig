@@ -66,4 +66,17 @@ describe("JSON harness configuration", () => {
       await expect(scaffoldProject(root, { format: "json" }))
         .rejects.toMatchObject({ code: "CONFIG_FORMAT_CONFLICT" });
     }));
+
+  it("rejects multiple config formats instead of silently picking one", async () =>
+    withTemporaryDirectory(async (root) => {
+      await scaffoldProject(root, { format: "json" });
+      await writeFile(
+        path.join(root, ".canonfig", "harness.yaml"),
+        "version: 1\n",
+        "utf8",
+      );
+
+      await expect(loadConfig(root))
+        .rejects.toMatchObject({ code: "CONFIG_FORMAT_CONFLICT" });
+    }));
 });
