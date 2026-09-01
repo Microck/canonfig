@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import { parseHarnessArguments } from "../src/harness-configuration/cli-arguments.ts";
 import { loadConfig } from "../src/harness-configuration/core/config.ts";
 import { scaffoldProject } from "../src/harness-configuration/core/scaffold.ts";
+import { ampPluginSource } from "../src/harness-configuration/templates/runtime.ts";
 
 const withTemporaryDirectory = async <Value>(
   use: (root: string) => Promise<Value>,
@@ -79,4 +80,11 @@ describe("JSON harness configuration", () => {
       await expect(loadConfig(root))
         .rejects.toMatchObject({ code: "CONFIG_FORMAT_CONFLICT" });
     }));
+
+  it("keeps generated edit guidance independent of the source format", () => {
+    const source = ampPluginSource([]);
+
+    expect(source).toContain("Edit the active .canonfig/harness configuration");
+    expect(source).not.toContain("harness.yaml");
+  });
 });
