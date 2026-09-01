@@ -113,6 +113,12 @@ export const parseHarnessArguments = (
       if (argument === "--root" || argument === "--cwd") {
         root = path.resolve(value);
       } else if (argument === "--format") {
+        if (command !== "init") {
+          throw new CanonfigError(
+            "HARNESS_FORMAT_NOT_ALLOWED",
+            "--format is only valid with harness init.",
+          );
+        }
         if (value !== "yaml" && value !== "json") {
           throw new CanonfigError(
             "HARNESS_FORMAT_INVALID",
