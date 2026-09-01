@@ -14,6 +14,8 @@ import {
   secretExitCode,
 } from "../secrets/cli.ts";
 import { synchronizeSharedSecrets } from "../secrets/secret-client.ts";
+import { secretRuntimeLayer } from "../secrets/runtime-layer.ts";
+import { SecretTransferError } from "../secrets/secret-store.ts";
 
 const warningListeners = process.listeners("warning");
 process.removeAllListeners("warning");
@@ -37,12 +39,8 @@ const arguments_ = process.argv.slice(2);
 
 if (isSecretsCommand(arguments_)) {
   NodeRuntime.runMain(
-    Effect.promise(() => import("./layers.ts")).pipe(
-      Effect.flatMap(({ runtimeLayer }) =>
-        runSecretsCli(arguments_.slice(1), nodeCliIo).pipe(
-          Effect.provide(runtimeLayer()),
-        )
-      ),
+    runSecretsCli(arguments_.slice(1), nodeCliIo).pipe(
+      Effect.provide(secretRuntimeLayer()),
     ),
   );
 } else if (isHarnessConfigurationCommand(arguments_)) {
@@ -66,8 +64,16 @@ if (isSecretsCommand(arguments_)) {
                 ? Effect.suspend(() =>
                   (process.exitCode ?? 0) === 0
                     ? synchronizeSharedSecrets().pipe(
-                      Effect.catch((error) =>
+                      Effect.provide(secretRuntimeLayer()),
+                      Effect.catch((cause) =>
                         Effect.sync(() => {
+                          const error = cause instanceof SecretTransferError
+                            ? cause
+                            : new SecretTransferError({
+                              category: "state",
+                              operation: "synchronize shared secrets",
+                              message: "the secret synchronization state is unavailable",
+                            });
                           nodeCliIo.writeStderr(
                             `Secret synchronization failed: ${error.message}\n`,
                           );

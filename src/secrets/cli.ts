@@ -1,7 +1,12 @@
 import { Effect } from "effect";
 
 import type { CliIo } from "../cli/cli.ts";
-import { CliExitCode } from "../cli/exit-codes.ts";
+import {
+  CliExitCode,
+  type CliExitCode as CliExitCodeValue,
+} from "../cli/exit-codes.ts";
+import type { MachineState } from "../machine/machine-state.service.ts";
+import type { StateRepository } from "../state/state-repository.service.ts";
 import {
   listSecrets,
   maximumSecretBytes,
@@ -32,7 +37,9 @@ export const isSecretsCommand = (
   arguments_: ReadonlyArray<string>,
 ): boolean => arguments_[0] === "secrets";
 
-export const secretExitCode = (error: SecretTransferError): number => {
+export const secretExitCode = (
+  error: SecretTransferError,
+): CliExitCodeValue => {
   switch (error.category) {
     case "usage":
     case "state":
@@ -143,7 +150,7 @@ const writeFailure = (
 export const runSecretsCli = (
   arguments_: ReadonlyArray<string>,
   io: CliIo,
-): Effect.Effect<void, never, import("../machine/machine-state.service.ts").MachineState | import("../state/state-repository.service.ts").StateRepository> => {
+): Effect.Effect<void, never, MachineState | StateRepository> => {
   const json = arguments_.includes("--json");
   const positional = arguments_.filter((argument) => argument !== "--json");
   const [command = "help", ...rest] = positional;
