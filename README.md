@@ -27,7 +27,7 @@ managing agent setups across multiple machines usually breaks because machines d
 - one authority: exactly one source machine publishes upstream. followers consume signed revisions and never publish back.
 - deterministic first: declared files, configs, and platform package recipes apply first. configuration agents only handle bounded fallback tasks.
 - immutable and signed: profile revisions are content-addressed, cryptographically signed, and verified after download.
-- local credentials stay local: secrets are referenced through native OS credential stores (Secret Service, Keychain, Credential Manager) and are never copied into profiles or sent across the wire.
+- explicit secret authority: profile credentials remain local by default. operators may separately share named secrets with followers enrolled in the `canonfig:secrets` group; transferred values use pinned HTTPS and native OS credential stores.
 - native schedulers, no daemons: runs on systemd user timers, launchd user agents, and Windows Task Scheduler with zero resident follower background daemons.
 - clear divergence states: stops at human action required when an operator step is needed, and flags follower drift when local skill edits would otherwise be overwritten.
 
@@ -67,6 +67,13 @@ Treat the returned invitation as temporary sensitive material.
 This example binds to loopback (`127.0.0.1`) for same-machine follower enrollment.
 If the follower is on a different machine, bind `--host` to a reachable address for both machines and pass the same address in `--endpoint`.
 
+To opt that follower into shared secrets, add `--group canonfig:secrets` to the invitation and pipe each value into the source credential store:
+
+```bash
+printf %s "$GITHUB_TOKEN" | canonfig secrets set github-token
+canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers --group canonfig:secrets
+```
+
 ### 2. follower machine enrollment
 
 on the follower machine, enroll with the invitation token, select the profile, plan the sync, and apply:
@@ -79,7 +86,7 @@ canonfig sync --apply
 canonfig status
 ```
 
-enrollment pins the source TLS and signing fingerprints. subsequent sync runs verify signatures and digests against these pinned credentials.
+enrollment pins the source TLS and signing fingerprints. subsequent sync runs verify signatures and digests against these pinned credentials. a successful apply also synchronizes authorized shared secrets directly into the follower's native credential store.
 
 ### 3. native schedule
 
@@ -112,7 +119,8 @@ transfers are content-addressed and incremental. transfer and apply remain separ
 - immutable revisions: every revision is content-addressed, signed with the source private key, and verified locally before apply.
 - pinned trust: enrollment pins source TLS and signing certificates. synchronization rejects changed pins, invalid signatures, digest mismatches, and replayed invitations.
 - revocable follower identities: every follower receives an independent revocable credential and group assignment.
-- local credential isolation: credentials are confirmed through platform secret storage (Linux Secret Service, macOS Keychain, Windows Credential Manager) and never leave the machine.
+- explicit secret sharing: profile credential resources stay local. only followers granted `canonfig:secrets` receive separately named source secrets over authenticated pinned HTTPS; values go directly into native secret storage and are never written to profiles, ordinary state tables, or JSON manifests.
+- non-transitive secrets: followers never re-share values received from a source, and source deletions retire source-owned follower credentials on the next apply.
 - bounded agent harness: when agent resolution is enabled, tasks run within strict allowlists for executables, paths, HTTPS origins, and input size. elevation, login, restart, and reboot remain denied by default.
 - fail-closed boundaries: missing logins or manual approvals raise Human Action Required (exit code 3); modified follower skills produce Follower Drift (exit code 4).
 
@@ -128,6 +136,7 @@ transfers are content-addressed and incremental. transfer and apply remain separ
 | `canonfig source revoke` | revoke an enrolled follower identity |
 | `canonfig follower enroll` | enroll follower with pinned source invitation |
 | `canonfig sync` | plan (`--plan`) or apply (`--apply`) profile synchronization |
+| `canonfig secrets` | securely set, list, remove, or synchronize opt-in shared secrets |
 | `canonfig recover` | reconcile state after interrupted synchronization run |
 | `canonfig status` | inspect local follower convergence and drift status |
 | `canonfig doctor` | run non-mutating platform and environment diagnostics |
