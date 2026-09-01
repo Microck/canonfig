@@ -1,0 +1,63 @@
+---
+title: "How-to: recover drift and human-action cases"
+description: Resume an interrupted synchronization or resolve non-converged outcomes without overwriting follower-owned work.
+---
+
+Canonfig records the complete Synchronization Plan before mutation and journals each action. **Follower Drift** and **Human Action Required** are deliberate outcomes that preserve the reason Canonfig did not proceed.
+
+## Resume an interrupted run
+
+Recover after a run finishes as `Interrupted` or if the process stops during apply. First, inspect the status:
+
+```bash
+canonfig status
+```
+
+Resume the recorded plan:
+
+```bash
+canonfig recover
+```
+
+Recovery uses the persisted action journal; it does not guess from partial filesystem changes. If there is no recoverable run, the command returns a usage error rather than inventing work.
+
+## Resolve Follower Drift
+
+For every managed skill file, Canonfig compares three digests: target, desired, and last-applied.
+
+When the observed file does not match the desired file, and the observed file differs from what Canonfig last applied, Canonfig marks it as **Follower Drift** and preserves the follower content. It does not automatically merge modified canonical skills.
+
+1. Inspect the recorded follower state to identify the drifted resource:
+   ```bash
+   canonfig status
+   ```
+2. Decide whether to keep the follower copy, restore the source revision, or move follower-owned changes into a Local Overlay.
+3. Apply your choice manually or via overlay, then rerun synchronization.
+
+## Complete Human Action Required
+
+Canonfig records **Human Action Required** when a person must complete a step before the desired state can be verified, such as:
+
+- a login that cannot be completed noninteractively
+- unavailable secure credential storage
+- an agent policy forbidding a required capability (elevation, restart, reboot)
+- an ambiguous action under `deterministic-only`
+
+<Callout title="Do not bypass the boundary" type="error">
+  Do not put a token on the command line, disable certificate pinning, broaden an allowlist to an entire home directory, or switch to agent apply merely to clear an outcome.
+</Callout>
+
+After completing the exact instructions provided by Canonfig:
+
+1. Check diagnostics:
+   ```bash
+   canonfig doctor --no-input
+   ```
+2. Build a new plan to re-evaluate the state:
+   ```bash
+   canonfig sync --plan
+   ```
+3. Apply the plan to verify the machine state and record Convergence:
+   ```bash
+   canonfig sync --apply
+   ```

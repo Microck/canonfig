@@ -1,0 +1,49 @@
+---
+title: "Explanation: architecture, authority, determinism, credentials, and rollback"
+description: Understand Canonfig's authority model, determinism, credentials, and rollback guarantees.
+---
+
+Canonfig has exactly one **Source Machine** per installation. The Source Machine owns canonical configuration; **Follower Machines** consume it without becoming additional authorities.
+
+## System shape
+
+```text
+Source files → ProfileCatalog → Profile Change Proposal
+                                  ↓ explicit review
+                           signed Profile Revision
+                                  ↓ pinned HTTPS
+CLI or schedule → Synchronization → MachineState
+                         ↘ StateRepository
+                          ↘ AgentResolution, only when eligible
+```
+
+## Authority and credentials
+
+Canonfig separates profile authority, transport trust, follower authentication, and local credentials. 
+
+The Source Machine signs canonical Profile Revision payloads. Followers verify the signing fingerprint pinned at enrollment and verify every content digest. Profile Revisions are immutable after publication.
+
+Transport trust relies on pinning the source HTTPS certificate fingerprint at enrollment. Later synchronization rejects unexpected TLS certificates, invalid signatures, digest mismatches, or revoked credentials.
+
+Credentials are confirmed through platform secret storage (Linux Secret Service, macOS Keychain, Windows Credential Manager) and never leave the machine. The local state database stores credential references, never ordinary credential values.
+
+## Determinism and agents
+
+Canonfig evaluates four kinds of action:
+
+1. **Deterministic**: Canonfig chooses one safe action from declared facts. Runs before any agent work.
+2. **Agent proposal**: A Configuration Agent suggests a bounded resolution. Never changes a published revision.
+3. **Agent apply**: A pre-authorized harness executes within explicit bounds. Completion requires independent verification.
+4. **Human Action Required**: A required human-only step (like login) is missing. Canonfig records exact instructions and stops.
+
+An agent statement is not proof. Canonfig captures process output and changed paths, then runs the Profile Resource's independent verification. Only that verification establishes Convergence.
+
+## Incremental transfer and rollback
+
+Profile Revisions and their blobs are immutable and content-addressed. Follower transfer is incremental: cached blobs are reused after digest verification.
+
+Canonfig records the complete Synchronization Plan before mutation and journals each action before and after execution. When a deterministic action fails, Canonfig rolls back earlier file and directory mutations from that run in reverse order using recorded rollback material, sibling temporary files, durability synchronization, and atomic rename.
+
+<Callout title="External installers are not rolled back" type="info">
+  Package installation, login, and arbitrary agent commands cannot promise full rollback. Canonfig records their evidence and reruns idempotent verification, but does not claim third-party installers are reversed.
+</Callout>

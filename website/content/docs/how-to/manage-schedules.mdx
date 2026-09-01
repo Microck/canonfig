@@ -1,0 +1,62 @@
+---
+title: "How-to: manage schedules"
+description: Install and inspect native daily or weekly follower synchronization.
+---
+
+Canonfig uses the operating system's user scheduler (systemd user timer on Linux, launchd user agent on macOS, and Task Scheduler on Windows). There is no resident Follower Machine daemon. Every native job invokes:
+
+```text
+canonfig sync --apply --no-input
+```
+
+## Set the default schedule
+
+The default schedule is daily at `00:00` in the follower's local timezone. Install it explicitly:
+
+```bash
+canonfig schedule set daily@00:00
+```
+
+## Configure specific times and timezones
+
+Set a daily schedule in a named IANA timezone:
+
+```bash
+canonfig schedule set daily@00:00 --timezone Europe/Paris
+```
+
+Set a weekly schedule on a specific day:
+
+```bash
+canonfig schedule set weekly:Mon@12:30 --timezone Europe/Paris
+```
+
+The CLI accepts weekday abbreviations `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, and `Sun`, with a 24-hour `HH:mm` time.
+
+If scheduler execution needs an explicit Canonfig path, pass the executable location:
+
+```bash
+canonfig schedule set daily@00:00 --executable /opt/canonfig
+```
+
+<Callout title="Custom expressions" type="info">
+  The Machine Profile contract can represent a custom calendar expression, but the shipped `schedule set` CLI accepts only `daily@HH:mm` and `weekly:Day@HH:mm`. Do not pass cron or platform-native expressions to this command.
+</Callout>
+
+## Inspect or remove schedules
+
+Check the status of the native schedule:
+
+```bash
+canonfig schedule status
+```
+
+Status is one of `not-installed`, `current`, `drifted`, or `disabled`.
+
+Remove a schedule completely:
+
+```bash
+canonfig schedule remove
+```
+
+Setting the same schedule is idempotent. Removing a schedule that is already absent is also an unchanged result.

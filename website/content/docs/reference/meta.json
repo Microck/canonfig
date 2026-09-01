@@ -1,4 +1,1 @@
-{
-  "title": "Reference",
-  "pages": ["cli", "security", "diagnostics", "cross-platform"]
-}
+{"title": "Reference", "pages": ["cli", "cross-platform", "diagnostics", "security", "profile-schema"]}

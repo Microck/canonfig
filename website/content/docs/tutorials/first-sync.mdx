@@ -1,0 +1,83 @@
+---
+title: "Tutorial: first end-to-end sync"
+description: Set up a Source Machine, publish a profile, enroll a follower, and synchronize.
+---
+
+This tutorial walks through setting up Canonfig for the first time. You will initialize a Source Machine, publish a Profile Revision, enroll a Follower Machine, and perform a Synchronization Run.
+
+## 1. Initialize the Source Machine
+
+Canonfig uses exactly one Source Machine per installation. Run this in the user account that will own Canonfig:
+
+```bash
+canonfig source init
+```
+
+Initialization creates the source identity and signing material. It does not publish a Machine Profile.
+
+## 2. Start the source endpoint
+
+The Source Machine must serve the local endpoint to allow follower enrollment and synchronization. Start it in a terminal:
+
+```bash
+canonfig source serve --host 127.0.0.1 --port 17342
+```
+
+Keep this running. This example uses loopback (`127.0.0.1`) for same-machine enrollment.
+If you enroll from another machine, use a source-reachable host in `--host` and the same host in the invitation endpoint.
+
+## 3. Discover and publish a profile
+
+In another terminal on the Source Machine, scan for configuration to discover a Profile Change Proposal:
+
+```bash
+canonfig source scan --file package.json
+```
+
+Review the output to ensure the proposal is accurate. Then, publish an immutable Profile Revision:
+
+```bash
+canonfig source publish --proposal package.json --profile workstation --name Workstation --reviewer operator
+```
+
+This binds the review to the proposal, signs the profile, and stores it in revision history.
+
+## 4. Create an invitation
+
+To enroll a Follower Machine, create a short-lived, single-use invitation:
+
+```bash
+canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m
+```
+
+The output includes a base64url invitation containing the endpoint, pinned TLS and signing fingerprints, and a one-time token.
+
+## 5. Enroll the Follower Machine
+
+On the Follower Machine, use the invitation to enroll. Set `INVITE` to the exact invitation string:
+
+```bash
+canonfig follower enroll "$INVITE" --name laptop --profile workstation
+```
+
+The follower validates the pinned TLS fingerprint, authenticates, and receives its own revocable credential. It now knows to request the `workstation` profile.
+
+## 6. Plan the synchronization
+
+Before changing the Follower Machine, inspect what Canonfig intends to do:
+
+```bash
+canonfig sync --plan
+```
+
+Plan mode downloads required metadata and content-addressed blobs, evaluates the target machine state against the Profile Revision, and returns the action graph without mutating the machine.
+
+## 7. Apply the profile
+
+Run the synchronization to apply the planned deterministic actions:
+
+```bash
+canonfig sync --apply
+```
+
+Apply mode journals each action, executes the plan, resolves any eligible Agent Tasks, and independently verifies every required resource. If verification succeeds, the run finishes as `Converged`.

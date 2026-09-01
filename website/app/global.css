@@ -1,10 +1,66 @@
-:root {
-  --canonfig-accent: #176b5c;
-  --canonfig-surface: #f5f7f3;
+:root, .dark {
+  --color-fd-background: #000000;
+  --color-fd-foreground: #ffffff;
+  --color-fd-card: #000000;
+  --color-fd-card-foreground: #ffffff;
+  --color-fd-popover: #000000;
+  --color-fd-popover-foreground: #ffffff;
+  --color-fd-primary: #ffffff;
+  --color-fd-primary-foreground: #000000;
+  --color-fd-muted: #111111;
+  --color-fd-muted-foreground: #a1a1aa;
+  --color-fd-accent: #111111;
+  --color-fd-accent-foreground: #ffffff;
+  --color-fd-border: #000000;
+  --color-fd-input: #333333;
+  --color-fd-ring: #ffffff;
+  --canonfig-accent: #ffffff;
+  --canonfig-surface: #000000;
+  
+  /* Reset animations */
+  --animation-duration: 0ms !important;
+  --transition-duration: 0ms !important;
 }
 
 body {
-  text-rendering: optimizeLegibility;
+  text-rendering: optimizelegibility;
+  background-color: #000000;
+  color: #ffffff;
+  font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+}
+
+/* Remove decorative chrome and lines */
+.prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 {
+  border-bottom: none !important;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+/* Information dense layout */
+.prose {
+  line-height: 1.5;
+  font-size: 0.95rem;
+}
+
+/* Remove card/pill chrome */
+.card, [class*="card"], [class*="badge"], [class*="pill"] {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Disable continuous animations */
+* {
+  animation: none !important;
+  transition-duration: 0ms !important;
+}
+
+/* Honor prefers-reduced-motion and use physical easing for necessary transitions */
+@media (prefers-reduced-motion: no-preference) {
+  /* Use only for necessary interaction reveals if specified, else 0ms */
+  .focus-ring {
+    transition: box-shadow 150ms cubic-bezier(0.175, 0.885, 0.32, 1.1) !important;
+  }
 }
 
 .skip-link {
@@ -13,100 +69,19 @@ body {
   inset-block-start: 0.75rem;
   inset-inline-start: 0.75rem;
   translate: 0 -5rem;
-  border-radius: 0.5rem;
-  background: var(--color-fd-background);
-  color: var(--color-fd-foreground);
+  background: #000000;
+  color: #ffffff;
   padding: 0.75rem 1rem;
   font-weight: 600;
-  outline-offset: 0.25rem;
+  outline: 2px solid #ffffff;
 }
 
 .skip-link:focus {
   translate: 0;
 }
 
-.hero {
-  display: grid;
-  min-height: 70svh;
-  place-items: center;
-  padding: 5rem 1.5rem;
-  background:
-    radial-gradient(circle at 15% 20%, rgb(23 107 92 / 12%), transparent 32rem),
-    linear-gradient(180deg, var(--canonfig-surface), var(--color-fd-background));
-}
-
-.hero-inner {
-  width: min(68rem, 100%);
-}
-
-.eyebrow {
-  color: var(--canonfig-accent);
-  font-size: 0.875rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.hero h1 {
-  max-width: 14ch;
-  margin-block: 1rem;
-  font-size: clamp(2.75rem, 8vw, 6rem);
-  font-weight: 760;
-  letter-spacing: -0.055em;
-  line-height: 0.98;
-  text-wrap: balance;
-}
-
-.hero-copy {
-  max-width: 44rem;
-  color: var(--color-fd-muted-foreground);
-  font-size: clamp(1.05rem, 2vw, 1.3rem);
-  line-height: 1.65;
-}
-
-.hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-block-start: 2rem;
-}
-
-.hero-actions a {
-  display: inline-flex;
-  min-height: 2.75rem;
-  align-items: center;
-  border: 1px solid var(--color-fd-border);
-  border-radius: 0.625rem;
-  padding-inline: 1rem;
-  font-weight: 650;
-  text-decoration: none;
-}
-
-.hero-actions a:first-child {
-  border-color: var(--canonfig-accent);
-  background: var(--canonfig-accent);
-  color: white;
-}
-
-.hero-actions a:hover {
-  filter: brightness(0.95);
-}
-
 a:focus-visible,
 button:focus-visible {
-  outline: 2px solid;
+  outline: 2px solid #ffffff;
   outline-offset: 3px;
-}
-
-h2,
-h3,
-h4 {
-  scroll-margin-top: 6rem;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --canonfig-accent: #70d6c0;
-    --canonfig-surface: #101714;
-  }
 }
