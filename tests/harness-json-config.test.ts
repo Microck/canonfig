@@ -36,6 +36,10 @@ describe("JSON harness configuration", () => {
       });
     expect(() => parseHarnessArguments(["init", "--format", "toml"]))
       .toThrowError(expect.objectContaining({ code: "HARNESS_FORMAT_INVALID" }));
+    expect(() => parseHarnessArguments(["apply", "--format", "json"]))
+      .toThrowError(expect.objectContaining({
+        code: "HARNESS_FORMAT_NOT_ALLOWED",
+      }));
   });
 
   it("scaffolds strict, editable JSON that the compiler can load", async () =>
