@@ -6,3 +6,4 @@ website/.source/
 .residue/
 *.tgz
 .DS_Store
+.vercel/

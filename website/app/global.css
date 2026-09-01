@@ -1,63 +1,110 @@
 :root, .dark {
-  --color-fd-background: #000000;
-  --color-fd-foreground: #ffffff;
-  --color-fd-card: #000000;
-  --color-fd-card-foreground: #ffffff;
-  --color-fd-popover: #000000;
-  --color-fd-popover-foreground: #ffffff;
-  --color-fd-primary: #ffffff;
-  --color-fd-primary-foreground: #000000;
-  --color-fd-muted: #111111;
-  --color-fd-muted-foreground: #a1a1aa;
-  --color-fd-accent: #111111;
-  --color-fd-accent-foreground: #ffffff;
-  --color-fd-border: #000000;
-  --color-fd-input: #333333;
-  --color-fd-ring: #ffffff;
-  --canonfig-accent: #ffffff;
-  --canonfig-surface: #000000;
-  
-  /* Reset animations */
+  --color-fd-background: #000;
+  --color-fd-foreground: #fff;
+  --color-fd-card: #000;
+  --color-fd-card-foreground: #fff;
+  --color-fd-popover: #000;
+  --color-fd-popover-foreground: #fff;
+  --color-fd-primary: #e4d042;
+  --color-fd-primary-foreground: #151200;
+  --color-fd-muted: #060f0f;
+  --color-fd-muted-foreground: #9ac0c0;
+  --color-fd-accent: #060f0f;
+  --color-fd-accent-foreground: #fff;
+  --color-fd-secondary: #0a1e1f;
+  --color-fd-secondary-foreground: #fff;
+  --color-fd-border: #1a2d2d;
+  --color-fd-input: #172728;
+  --color-fd-ring: #e4d042;
+  --canonfig-accent: #e4d042;
+  --canonfig-surface: #000;
+  --canonfig-code: #0a1e1f;
+
   --animation-duration: 0ms !important;
   --transition-duration: 0ms !important;
 }
 
+@supports (color: oklch(0 0 0)) {
+  :root, .dark {
+    --color-fd-background: oklch(0 0 0);
+    --color-fd-foreground: oklch(1 0 0);
+    --color-fd-card: oklch(0 0 0);
+    --color-fd-card-foreground: oklch(1 0 0);
+    --color-fd-popover: oklch(0 0 0);
+    --color-fd-popover-foreground: oklch(1 0 0);
+    /* Logo latch hue 100.8. L lifted past 0.75 so gold reads on true black. */
+    --color-fd-primary: oklch(0.85 0.156 100.8);
+    --color-fd-primary-foreground: oklch(0.18 0.04 100.8);
+    /* Logo chest hue 196.4. Surfaces, not interactive. */
+    --color-fd-muted: oklch(0.16 0.015 196.4);
+    --color-fd-muted-foreground: oklch(0.78 0.04 196.4);
+    --color-fd-accent: oklch(0.16 0.015 196.4);
+    --color-fd-accent-foreground: oklch(1 0 0);
+    --color-fd-secondary: oklch(0.22 0.026 196.4);
+    --color-fd-secondary-foreground: oklch(1 0 0);
+    --color-fd-border: oklch(0.28 0.024 196.4);
+    --color-fd-input: oklch(0.26 0.022 196.4);
+    --color-fd-ring: oklch(0.85 0.156 100.8);
+    --canonfig-accent: oklch(0.85 0.156 100.8);
+    --canonfig-surface: oklch(0 0 0);
+    --canonfig-code: oklch(0.22 0.026 196.4);
+  }
+}
+
+@media (color-gamut: p3) {
+  @supports (color: oklch(0 0 0)) {
+    :root, .dark {
+      --color-fd-primary: oklch(0.85 0.181 100.8);
+      --color-fd-ring: oklch(0.85 0.181 100.8);
+      --canonfig-accent: oklch(0.85 0.181 100.8);
+    }
+  }
+}
+
 body {
   text-rendering: optimizelegibility;
-  background-color: #000000;
-  color: #ffffff;
+  background-color: var(--color-fd-background);
+  color: var(--color-fd-foreground);
   font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
 }
 
-/* Remove decorative chrome and lines */
 .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 {
   border-bottom: none !important;
   margin-top: 1.5em;
   margin-bottom: 0.5em;
 }
 
-/* Information dense layout */
 .prose {
   line-height: 1.5;
   font-size: 0.95rem;
 }
 
-/* Remove card/pill chrome */
-.card, [class*="card"], [class*="badge"], [class*="pill"] {
+.prose a {
+  color: var(--color-fd-primary);
+}
+
+[data-card], [class*="badge"], [class*="pill"] {
   border: none !important;
   background: transparent !important;
   box-shadow: none !important;
 }
 
-/* Disable continuous animations */
+figure.shiki,
+pre.shiki {
+  background-color: var(--canonfig-code) !important;
+}
+
+:not(pre) > code {
+  background-color: var(--canonfig-code);
+  color: var(--color-fd-foreground);
+}
+
 * {
   animation: none !important;
   transition-duration: 0ms !important;
 }
 
-/* Honor prefers-reduced-motion and use physical easing for necessary transitions */
 @media (prefers-reduced-motion: no-preference) {
-  /* Use only for necessary interaction reveals if specified, else 0ms */
   .focus-ring {
     transition: box-shadow 150ms cubic-bezier(0.175, 0.885, 0.32, 1.1) !important;
   }
@@ -69,11 +116,11 @@ body {
   inset-block-start: 0.75rem;
   inset-inline-start: 0.75rem;
   translate: 0 -5rem;
-  background: #000000;
-  color: #ffffff;
+  background: var(--color-fd-background);
+  color: var(--color-fd-primary);
   padding: 0.75rem 1rem;
   font-weight: 600;
-  outline: 2px solid #ffffff;
+  outline: 2px solid var(--color-fd-primary);
 }
 
 .skip-link:focus {
@@ -82,6 +129,6 @@ body {
 
 a:focus-visible,
 button:focus-visible {
-  outline: 2px solid #ffffff;
+  outline: 2px solid var(--color-fd-primary);
   outline-offset: 3px;
 }

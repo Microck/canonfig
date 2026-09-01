@@ -13,13 +13,8 @@ export const baseOptions: BaseLayoutProps = {
   },
   links: [
     {
-      text: "Documentation",
-      url: "/docs",
-      active: "nested-url",
-    },
-    {
       text: "CLI reference",
-      url: "/docs/reference/cli",
+      url: "/reference/cli",
       active: "nested-url",
     },
   ],

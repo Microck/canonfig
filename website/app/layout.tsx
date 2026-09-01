@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
+import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import "fumadocs-ui/style.css";
 import "./global.css";
 
+import { baseOptions } from "@/lib/layout";
 import { siteUrl } from "@/lib/site";
+import { source } from "@/lib/source";
 
 export const metadata: Metadata = {
   metadataBase: siteUrl,
@@ -27,12 +30,16 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" className="dark" suppressHydrationWarning>
       <body>
         <a className="skip-link" href="#main-content">
           Skip to content
         </a>
-        <RootProvider>{children}</RootProvider>
+        <RootProvider theme={{ enabled: false }}>
+          <DocsLayout tree={source.pageTree} {...baseOptions}>
+            {children}
+          </DocsLayout>
+        </RootProvider>
       </body>
     </html>
   );
