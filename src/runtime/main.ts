@@ -8,6 +8,12 @@ import {
   isHarnessConfigurationCommand,
   runHarnessConfigurationCli,
 } from "../harness-configuration/cli.ts";
+import {
+  isSecretsCommand,
+  runSecretsCli,
+  secretExitCode,
+} from "../secrets/cli.ts";
+import { synchronizeSharedSecrets } from "../secrets/secret-client.ts";
 
 const warningListeners = process.listeners("warning");
 process.removeAllListeners("warning");
@@ -29,7 +35,17 @@ const nodeCliIo: CliIo = {
 
 const arguments_ = process.argv.slice(2);
 
-if (isHarnessConfigurationCommand(arguments_)) {
+if (isSecretsCommand(arguments_)) {
+  NodeRuntime.runMain(
+    Effect.promise(() => import("./layers.ts")).pipe(
+      Effect.flatMap(({ runtimeLayer }) =>
+        runSecretsCli(arguments_.slice(1), nodeCliIo).pipe(
+          Effect.provide(runtimeLayer()),
+        )
+      ),
+    ),
+  );
+} else if (isHarnessConfigurationCommand(arguments_)) {
   NodeRuntime.runMain(
     Effect.promise(() =>
       runHarnessConfigurationCli(arguments_.slice(1), nodeCliIo)
@@ -39,10 +55,31 @@ if (isHarnessConfigurationCommand(arguments_)) {
   const outcome = evaluateCli(arguments_);
 
   if (outcome._tag === "Command") {
+    const automaticSecretSync = outcome.command._tag === "Synchronize"
+      && outcome.command.mode === "apply";
     NodeRuntime.runMain(
       Effect.promise(() => import("./layers.ts")).pipe(
         Effect.flatMap(({ runtimeLayer }) =>
           runCli(arguments_, nodeCliIo).pipe(
+            Effect.andThen(
+              automaticSecretSync
+                ? Effect.suspend(() =>
+                  (process.exitCode ?? 0) === 0
+                    ? synchronizeSharedSecrets().pipe(
+                      Effect.catch((error) =>
+                        Effect.sync(() => {
+                          nodeCliIo.writeStderr(
+                            `Secret synchronization failed: ${error.message}\n`,
+                          );
+                          nodeCliIo.setExitCode(secretExitCode(error));
+                        })
+                      ),
+                      Effect.asVoid,
+                    )
+                    : Effect.void
+                )
+                : Effect.void,
+            ),
             Effect.andThen(
               outcome.command._tag === "SourceServe"
                 ? Effect.never

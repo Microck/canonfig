@@ -9,6 +9,11 @@ import { MachineState } from "../machine/machine-state.service.ts";
 import type { CertificateFingerprint } from "../domain/brand.ts";
 import type { SourceIdentity } from "../domain/identity.ts";
 import {
+  loadSharedSecrets,
+  SECRET_SHARE_GROUP,
+  type TransferredSecrets,
+} from "../secrets/secret-store.ts";
+import {
   DuplicateFollowerIdentityError,
   EnrollmentConfigurationError,
   EnrollmentFingerprintMismatchError,
@@ -63,6 +68,7 @@ type SourceServerResponse =
   | AuthenticatedFollower
   | RevisionList
   | RevisionMetadata
+  | TransferredSecrets
   | { readonly ok: true }
   | ErrorResponse;
 
@@ -328,6 +334,44 @@ export const startSourceServer = (
               ),
             );
             sendJson(response, 200, authenticated);
+            return;
+          }
+          if (
+            request.method === "GET"
+            && requestUrl.pathname === "/v1/transport/secrets"
+          ) {
+            const authenticated = await runRequestEffect(
+              enrollment.authenticate(
+                bearerCredential(request.headers.authorization),
+              ),
+            );
+            if (
+              !authenticated.follower.groups.some((group) =>
+                group === SECRET_SHARE_GROUP
+              )
+            ) {
+              throw new TransportUnauthorizedError({
+                resource: "shared-secrets",
+              });
+            }
+            const secrets = await runRequestEffect(
+              loadSharedSecrets().pipe(
+                Effect.provideService(MachineState, machine),
+                Effect.mapError(() =>
+                  new EnrollmentConfigurationError({
+                    operation: "load shared secrets",
+                    message: "shared secrets are unavailable",
+                  })
+                ),
+              ),
+            );
+            if (Buffer.byteLength(JSON.stringify(secrets)) > maximumMetadataBytes) {
+              throw new TransportSizeLimitError({
+                artifact: "shared-secrets",
+                limit: maximumMetadataBytes,
+              });
+            }
+            sendJson(response, 200, secrets);
             return;
           }
           if (
