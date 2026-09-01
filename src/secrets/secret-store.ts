@@ -381,17 +381,12 @@ export const loadSharedSecrets = (): Effect.Effect<
   });
 
 export const applyTransferredSecrets = (
-  payload: unknown,
+  payload: TransferredSecrets,
 ): Effect.Effect<ReadonlyArray<string>, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    const decoded = yield* Schema.decodeUnknownEffect(TransferredSecretsSchema)(payload).pipe(
-      Effect.mapError(() =>
-        secretError("transport", "decode shared secrets", "the source returned invalid secret data")
-      ),
-    );
     yield* validateUniqueNames(
-      decoded.secrets.map((secret) => secret.name),
+      payload.secrets.map((secret) => secret.name),
       "decode shared secrets",
     ).pipe(
       Effect.mapError(() =>
@@ -399,13 +394,13 @@ export const applyTransferredSecrets = (
       ),
     );
     const current = yield* readManifest();
-    const incomingNames = new Set(decoded.secrets.map((secret) => secret.name));
+    const incomingNames = new Set(payload.secrets.map((secret) => secret.name));
     const preserved = current.secrets.filter((secret) =>
       secret.origin === "local" && !incomingNames.has(secret.name)
     );
     const retired = current.secrets.filter((secret) => !preserved.includes(secret));
     const created: Array<SecretManifestEntry> = [];
-    for (const secret of decoded.secrets) {
+    for (const secret of payload.secrets) {
       const reference = yield* storeValue(secret.name, secret.value).pipe(
         Effect.tapError(() =>
           cleanupReferences(created.map((entry) => entry.reference))
