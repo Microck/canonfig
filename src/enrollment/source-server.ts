@@ -350,9 +350,11 @@ export const startSourceServer = (
                 group === SECRET_SHARE_GROUP
               )
             ) {
-              throw new TransportUnauthorizedError({
-                resource: "shared-secrets",
+              sendJson(response, 404, {
+                error: "NotFound",
+                message: "the enrollment endpoint does not exist",
               });
+              return;
             }
             const secrets = await runRequestEffect(
               loadSharedSecrets().pipe(
