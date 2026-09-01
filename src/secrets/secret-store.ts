@@ -81,6 +81,31 @@ interface SecretPaths {
   readonly manifest: MachinePath;
 }
 
+const requireSecureStorage = (
+  operation: string,
+): Effect.Effect<void, SecretTransferError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const capability = yield* machine.credentialCapability().pipe(
+      Effect.mapError(() =>
+        secretError(
+          "storage",
+          operation,
+          "the platform credential-store capability could not be determined",
+        )
+      ),
+    );
+    if (capability.kind === "secure-noninteractive") return;
+    const recovery = capability.kind === "unavailable"
+      ? capability.recovery
+      : "configure the native platform credential store; local-file credential mode is not allowed for shared secrets";
+    return yield* secretError(
+      "storage",
+      operation,
+      `shared secrets require secure noninteractive credential storage: ${recovery}`,
+    );
+  });
+
 const secretPaths = (): Effect.Effect<
   SecretPaths,
   SecretTransferError,
@@ -315,6 +340,7 @@ export const storeSecret = (
 ): Effect.Effect<SharedSecretSummary, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
+    yield* requireSecureStorage("store secret");
     const validName = yield* decodeName(name);
     const validValue = yield* decodeValue(value);
     const current = yield* readManifest();
@@ -367,6 +393,35 @@ export const removeSecret = (
     return true;
   });
 
+export const clearTransferredSecrets = (): Effect.Effect<
+  ReadonlyArray<string>,
+  SecretTransferError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const current = yield* readManifest();
+    const local = current.secrets.filter((secret) => secret.origin === "local");
+    const source = current.secrets.filter((secret) => secret.origin === "source");
+    if (source.length === 0) return [];
+    const failed: SecretManifestEntry[] = [];
+    for (const secret of source) {
+      const removed = yield* machine.removeCredential(secret.reference).pipe(
+        Effect.match({ onFailure: () => false, onSuccess: () => true }),
+      );
+      if (!removed) failed.push(secret);
+    }
+    yield* writeManifest([...local, ...failed]);
+    if (failed.length > 0) {
+      return yield* secretError(
+        "storage",
+        "clear transferred secrets",
+        "secret sharing was revoked but some source-owned credentials could not be removed",
+      );
+    }
+    return source.map((secret) => secret.name);
+  });
+
 export const loadSharedSecrets = (): Effect.Effect<
   TransferredSecrets,
   SecretTransferError,
@@ -374,6 +429,7 @@ export const loadSharedSecrets = (): Effect.Effect<
 > =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
+    yield* requireSecureStorage("load shared secrets");
     const manifest = yield* readManifest();
     const shared = manifest.secrets.filter((secret) => secret.origin === "local");
     const secrets = yield* Effect.forEach(shared, (secret) =>
@@ -394,6 +450,7 @@ export const applyTransferredSecrets = (
 ): Effect.Effect<ReadonlyArray<string>, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
+    yield* requireSecureStorage("apply transferred secrets");
     const incoming = yield* Effect.forEach(payload.secrets, (secret) =>
       Effect.all({
         name: decodeName(secret.name),
