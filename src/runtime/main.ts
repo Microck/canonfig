@@ -30,6 +30,7 @@ process.on("warning", (warning) => {
 
 const arguments_ = process.argv.slice(2);
 installCommandLog(arguments_);
+const outcome = evaluateCli(arguments_);
 const json = arguments_.includes("--json");
 const commandArguments = arguments_.filter((argument) => argument !== "--json");
 const routedArguments = json
@@ -66,7 +67,18 @@ const automaticSecretFailure = (
   nodeCliIo.setExitCode(exitCode);
 };
 
-if (isSecretsCommand(routedArguments)) {
+const renderNonCommandOutcome = (): void => {
+  if (outcome._tag === "Help" || outcome._tag === "Version") {
+    nodeCliIo.writeStdout(`${outcome.text}\n`);
+  } else if (outcome._tag === "Invalid") {
+    nodeCliIo.writeStderr(`${outcome.message}\n`);
+  }
+  nodeCliIo.setExitCode(outcome.exitCode);
+};
+
+if (outcome._tag === "Help" || outcome._tag === "Version") {
+  NodeRuntime.runMain(Effect.sync(renderNonCommandOutcome));
+} else if (isSecretsCommand(routedArguments)) {
   NodeRuntime.runMain(
     runSecretsCli(routedArguments.slice(1), nodeCliIo).pipe(
       Effect.provide(secretRuntimeLayer()),
@@ -78,61 +90,50 @@ if (isSecretsCommand(routedArguments)) {
       runHarnessConfigurationCli(routedArguments.slice(1), nodeCliIo)
     ),
   );
-} else {
-  const outcome = evaluateCli(arguments_);
-
-  if (outcome._tag === "Command") {
-    const automaticSecretSync = outcome.command._tag === "Synchronize"
-      && outcome.command.mode === "apply";
-    NodeRuntime.runMain(
-      Effect.promise(() => import("./layers.ts")).pipe(
-        Effect.flatMap(({ runtimeLayer }) =>
-          runCli(arguments_, nodeCliIo).pipe(
-            Effect.andThen(
-              automaticSecretSync
-                ? Effect.suspend(() =>
-                  (process.exitCode ?? 0) === 0
-                    ? synchronizeSharedSecrets().pipe(
-                      Effect.provide(secretRuntimeLayer()),
-                      Effect.catch((cause) =>
-                        Effect.sync(() => {
-                          const error = cause instanceof SecretTransferError
-                            ? cause
-                            : new SecretTransferError({
-                              category: "state",
-                              operation: "synchronize shared secrets",
-                              message: "the secret synchronization state is unavailable",
-                            });
-                          automaticSecretFailure(
-                            error,
-                            outcome.format === "json",
-                          );
-                        })
-                      ),
-                      Effect.asVoid,
-                    )
-                    : Effect.void
-                )
-                : Effect.void,
-            ),
-            Effect.andThen(
-              outcome.command._tag === "SourceServe"
-                ? Effect.never
-                : Effect.void,
-            ),
-            Effect.provide(runtimeLayer()),
-          )
-        ),
+} else if (outcome._tag === "Command") {
+  const automaticSecretSync = outcome.command._tag === "Synchronize"
+    && outcome.command.mode === "apply";
+  NodeRuntime.runMain(
+    Effect.promise(() => import("./layers.ts")).pipe(
+      Effect.flatMap(({ runtimeLayer }) =>
+        runCli(arguments_, nodeCliIo).pipe(
+          Effect.andThen(
+            automaticSecretSync
+              ? Effect.suspend(() =>
+                (process.exitCode ?? 0) === 0
+                  ? synchronizeSharedSecrets().pipe(
+                    Effect.provide(secretRuntimeLayer()),
+                    Effect.catch((cause) =>
+                      Effect.sync(() => {
+                        const error = cause instanceof SecretTransferError
+                          ? cause
+                          : new SecretTransferError({
+                            category: "state",
+                            operation: "synchronize shared secrets",
+                            message: "the secret synchronization state is unavailable",
+                          });
+                        automaticSecretFailure(
+                          error,
+                          outcome.format === "json",
+                        );
+                      })
+                    ),
+                    Effect.asVoid,
+                  )
+                  : Effect.void
+              )
+              : Effect.void,
+          ),
+          Effect.andThen(
+            outcome.command._tag === "SourceServe"
+              ? Effect.never
+              : Effect.void,
+          ),
+          Effect.provide(runtimeLayer()),
+        )
       ),
-    );
-  } else {
-    NodeRuntime.runMain(Effect.sync(() => {
-      if (outcome._tag === "Help" || outcome._tag === "Version") {
-        nodeCliIo.writeStdout(`${outcome.text}\n`);
-      } else {
-        nodeCliIo.writeStderr(`${outcome.message}\n`);
-      }
-      nodeCliIo.setExitCode(outcome.exitCode);
-    }));
-  }
+    ),
+  );
+} else {
+  NodeRuntime.runMain(Effect.sync(renderNonCommandOutcome));
 }
