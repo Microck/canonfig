@@ -40,7 +40,7 @@ const SINGLE_COMMANDS = new Set([
   "status",
   "sync",
 ]);
-const HELP_OPTIONS = new Set(["--help", "-h", "--json"]);
+const SCOPED_HELP_ACTIONS = new Set(["help", "--help", "-h"]);
 const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$path = [Environment]::GetEnvironmentVariable('CANONFIG_LOG_ACL_PATH')",
@@ -129,20 +129,25 @@ const nodeFileOperations: CommandLogFileOperations = {
 };
 
 const commandName = (arguments_: ReadonlyArray<string>): string => {
-  const first = arguments_[0];
-  if (first === undefined || first === "--help" || first === "-h") return "help";
-  if (first === "--version" || first === "-V" || first === "-v") return "version";
-  if (SINGLE_COMMANDS.has(first)) return first;
-  const actions = COMMAND_ACTIONS.get(first);
-  const second = arguments_[1];
-  if (second !== undefined && actions?.has(second) === true) {
-    return `${first}.${second}`;
-  }
+  if (arguments_.length === 0) return "help";
+
+  const normalizedArguments = arguments_.filter((argument) => argument !== "--json");
+  const first = normalizedArguments[0];
+  const second = normalizedArguments[1];
+  const actions = first === undefined ? undefined : COMMAND_ACTIONS.get(first);
   if (
     actions?.has("help") === true
-    && (second === undefined || HELP_OPTIONS.has(second))
+    && (second === undefined || SCOPED_HELP_ACTIONS.has(second))
   ) {
     return `${first}.help`;
+  }
+
+  if (arguments_.includes("--help") || arguments_.includes("-h")) return "help";
+  if (arguments_.includes("--version") || arguments_.includes("-V")) return "version";
+  if (first === undefined) return "unknown";
+  if (SINGLE_COMMANDS.has(first)) return first;
+  if (second !== undefined && actions?.has(second) === true) {
+    return `${first}.${second}`;
   }
   return "unknown";
 };
