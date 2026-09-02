@@ -85,7 +85,7 @@ export const nativeCredentialWriteCommand = (
     return {
       provider: "keychain",
       executable: "/usr/bin/security",
-      arguments: [],
+      arguments: ["-i"],
       environment: [],
       standardInput: new TextEncoder().encode(
         `add-generic-password -U -a canonfig -s dev.canonfig.${key} -X ${hexadecimalValue}\n`,
