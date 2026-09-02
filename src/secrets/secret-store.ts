@@ -10,6 +10,7 @@ import type { MachinePath } from "../machine/machine-state.types.ts";
 export const SECRET_SHARE_GROUP = "canonfig:secrets";
 export const maximumSharedSecrets = 128;
 export const maximumSecretBytes = 16 * 1024;
+export const maximumSharedSecretPayloadBytes = 1024 * 1024;
 const maximumManifestBytes = 256 * 1024;
 
 export const SecretNameSchema = Schema.String.check(
@@ -54,6 +55,10 @@ export interface SharedSecretSummary {
 
 type SecretManifest = typeof SecretManifestSchema.Type;
 type SecretManifestEntry = typeof SecretManifestEntrySchema.Type;
+interface SecretValue {
+  readonly name: string;
+  readonly value: string;
+}
 
 export class SecretTransferError extends Schema.TaggedError<SecretTransferError>()(
   "SecretTransferError",
@@ -177,6 +182,24 @@ const validateUniqueNames = (
     ));
   }
   return Effect.void;
+};
+
+const validatePayloadBudget = (
+  secrets: ReadonlyArray<SecretValue>,
+  category: SecretTransferError["category"],
+  operation: string,
+): Effect.Effect<void, SecretTransferError> => {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    schemaVersion: 1,
+    secrets,
+  })).byteLength;
+  return bytes <= maximumSharedSecretPayloadBytes
+    ? Effect.void
+    : Effect.fail(secretError(
+      category,
+      operation,
+      `the encoded shared-secret payload must not exceed ${maximumSharedSecretPayloadBytes} bytes`,
+    ));
 };
 
 const readManifest = (): Effect.Effect<
@@ -310,6 +333,24 @@ const storeValue = (
     );
   });
 
+const loadSecretValues = (
+  entries: ReadonlyArray<SecretManifestEntry>,
+  operation: string,
+): Effect.Effect<ReadonlyArray<SecretValue>, SecretTransferError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    return yield* Effect.forEach(entries, (secret) =>
+      machine.loadCredential({ reference: secret.reference }).pipe(
+        Effect.map((value) => ({
+          name: secret.name,
+          value: Redacted.value(value),
+        })),
+        Effect.mapError(() =>
+          secretError("storage", operation, "a shared credential is unavailable")
+        ),
+      ));
+  });
+
 const cleanupReferences = (
   references: ReadonlyArray<typeof CredentialReference.Type>,
 ): Effect.Effect<void, never, MachineState> =>
@@ -345,6 +386,17 @@ export const storeSecret = (
     const validValue = yield* decodeValue(value);
     const current = yield* readManifest();
     const previous = current.secrets.find((secret) => secret.name === validName);
+    if (origin === "local") {
+      const retained = current.secrets.filter((secret) =>
+        secret.origin === "local" && secret.name !== validName
+      );
+      const values = yield* loadSecretValues(retained, "measure shared secrets");
+      yield* validatePayloadBudget(
+        [...values, { name: validName, value: validValue }],
+        "usage",
+        "store secret",
+      );
+    }
     const reference = yield* storeValue(validName, validValue);
     const next = [
       ...current.secrets.filter((secret) => secret.name !== validName),
@@ -404,15 +456,15 @@ export const clearTransferredSecrets = (): Effect.Effect<
     const local = current.secrets.filter((secret) => secret.origin === "local");
     const source = current.secrets.filter((secret) => secret.origin === "source");
     if (source.length === 0) return [];
-    const failed: SecretManifestEntry[] = [];
+    yield* writeManifest(local);
+    let cleanupFailed = false;
     for (const secret of source) {
       const removed = yield* machine.removeCredential(secret.reference).pipe(
         Effect.match({ onFailure: () => false, onSuccess: () => true }),
       );
-      if (!removed) failed.push(secret);
+      cleanupFailed ||= !removed;
     }
-    yield* writeManifest([...local, ...failed]);
-    if (failed.length > 0) {
+    if (cleanupFailed) {
       return yield* secretError(
         "storage",
         "clear transferred secrets",
@@ -428,20 +480,11 @@ export const loadSharedSecrets = (): Effect.Effect<
   MachineState
 > =>
   Effect.gen(function*() {
-    const machine = yield* MachineState;
     yield* requireSecureStorage("load shared secrets");
     const manifest = yield* readManifest();
     const shared = manifest.secrets.filter((secret) => secret.origin === "local");
-    const secrets = yield* Effect.forEach(shared, (secret) =>
-      machine.loadCredential({ reference: secret.reference }).pipe(
-        Effect.map((value) => ({
-          name: secret.name,
-          value: Redacted.value(value),
-        })),
-        Effect.mapError(() =>
-          secretError("storage", "load shared secrets", "a shared credential is unavailable")
-        ),
-      ));
+    const secrets = yield* loadSecretValues(shared, "load shared secrets");
+    yield* validatePayloadBudget(secrets, "storage", "load shared secrets");
     return { schemaVersion: 1, secrets };
   });
 
@@ -468,12 +511,27 @@ export const applyTransferredSecrets = (
         secretError("transport", "decode shared secrets", "the source returned invalid secret data")
       ),
     );
+    yield* validatePayloadBudget(
+      incoming,
+      "transport",
+      "decode shared secrets",
+    );
     const current = yield* readManifest();
     const incomingNames = new Set(incoming.map((secret) => secret.name));
-    const preserved = current.secrets.filter((secret) =>
-      secret.origin === "local" && !incomingNames.has(secret.name)
+    const conflicting = current.secrets.filter((secret) =>
+      secret.origin === "local" && incomingNames.has(secret.name)
     );
-    const retired = current.secrets.filter((secret) => !preserved.includes(secret));
+    if (conflicting.length > 0) {
+      return yield* secretError(
+        "usage",
+        "apply transferred secrets",
+        `source-owned secrets conflict with locally owned names: ${
+          conflicting.map((secret) => secret.name).sort().join(", ")
+        }`,
+      );
+    }
+    const preserved = current.secrets.filter((secret) => secret.origin === "local");
+    const retired = current.secrets.filter((secret) => secret.origin === "source");
     const created: Array<SecretManifestEntry> = [];
     for (const secret of incoming) {
       const reference = yield* storeValue(secret.name, secret.value).pipe(
