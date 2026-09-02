@@ -1,0 +1,43 @@
+name: Fix invitation example
+
+on:
+  push:
+    branches:
+      - release/v2.2.0
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: release/v2.2.0
+          fetch-depth: 0
+
+      - name: Remove escaped Markdown quotes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("docs/architecture.md")
+          text = path.read_text(encoding="utf-8")
+          old = r'canonfig follower enroll \"$INVITE\" --name laptop --profile workstation'
+          new = 'canonfig follower enroll "$INVITE" --name laptop --profile workstation'
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one escaped invitation example, found {text.count(old)}")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+          rm .github/workflows/fix-invite-example.yml
+          git diff --check
+
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "docs(release): fix invitation example quoting"
+          git push origin HEAD:release/v2.2.0
