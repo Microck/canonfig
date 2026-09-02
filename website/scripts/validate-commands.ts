@@ -1,11 +1,12 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { evaluateCli } from "../../src/cli/cli.ts";
 import { parseHarnessArguments } from "../../src/harness-configuration/cli-arguments.ts";
 
 const projectRoot = resolve(import.meta.dirname, "../..");
-const contentRoots = [
+export const defaultDocumentationRoots: ReadonlyArray<string> = [
   resolve(projectRoot, "README.md"),
   resolve(projectRoot, "docs"),
   resolve(projectRoot, "skills"),
@@ -36,7 +37,7 @@ const markdownFiles = async (path: string): Promise<ReadonlyArray<string>> => {
   return paths.flat().sort();
 };
 
-const commandLines = (text: string): ReadonlyArray<string> => {
+export const commandLines = (text: string): ReadonlyArray<string> => {
   const commands: Array<string> = [];
   for (const block of text.matchAll(/```[^\n]*\n(?<body>[\s\S]*?)```/gu)) {
     const body = block.groups?.body ?? "";
@@ -112,40 +113,58 @@ const validHarnessCommand = (arguments_: ReadonlyArray<string>): boolean => {
   }
 };
 
-const files = (await Promise.all(contentRoots.map(markdownFiles))).flat().sort();
-let checked = 0;
-for (const path of files) {
-  const text = await readFile(path, "utf8");
-  const legacyProductName = ["cod", "export"].join("");
-  for (const forbidden of [legacyProductName, "--insecure", "--no-verify", "--trust-reset"]) {
-    if (text.toLowerCase().includes(forbidden)) {
-      throw new Error(`${path} contains forbidden compatibility or insecure text: ${forbidden}`);
-    }
-  }
-  for (const example of commandLines(text)) {
-    const [program, ...arguments_] = tokenize(example).map((value) =>
-      value === "$INVITE" ? invitation : value
-    );
-    if (program !== "canonfig") throw new Error(`${path} uses an unexpected executable`);
-    if (arguments_[0] === "secrets") {
-      if (!validSecretsCommand(arguments_)) {
-        throw new Error(`${path} contains an invalid CLI example: ${example}`);
-      }
-    } else if (arguments_[0] === "harness") {
-      if (!validHarnessCommand(arguments_)) {
-        throw new Error(`${path} contains an invalid CLI example: ${example}`);
-      }
-    } else {
-      const outcome = evaluateCli(arguments_);
-      if (outcome._tag === "InvalidInput") {
-        throw new Error(`${path} contains an invalid CLI example: ${example}\n${outcome.message}`);
-      }
-    }
-    checked += 1;
-  }
+export interface DocumentationValidationResult {
+  readonly checked: number;
+  readonly files: ReadonlyArray<string>;
 }
 
-if (checked === 0) throw new Error("no Canonfig command examples were found");
-process.stdout.write(
-  `Validated ${checked} Canonfig command examples across ${files.length} documentation files.\n`,
-);
+export const validateDocumentation = async (
+  roots: ReadonlyArray<string> = defaultDocumentationRoots,
+): Promise<DocumentationValidationResult> => {
+  const files = (await Promise.all(roots.map(markdownFiles))).flat().sort();
+  let checked = 0;
+  for (const path of files) {
+    const text = await readFile(path, "utf8");
+    const legacyProductName = ["cod", "export"].join("");
+    for (const forbidden of [legacyProductName, "--insecure", "--no-verify", "--trust-reset"]) {
+      if (text.toLowerCase().includes(forbidden)) {
+        throw new Error(`${path} contains forbidden compatibility or insecure text: ${forbidden}`);
+      }
+    }
+    for (const example of commandLines(text)) {
+      const [program, ...arguments_] = tokenize(example).map((value) =>
+        value === "$INVITE" ? invitation : value
+      );
+      if (program !== "canonfig") throw new Error(`${path} uses an unexpected executable`);
+      if (arguments_[0] === "secrets") {
+        if (!validSecretsCommand(arguments_)) {
+          throw new Error(`${path} contains an invalid CLI example: ${example}`);
+        }
+      } else if (arguments_[0] === "harness") {
+        if (!validHarnessCommand(arguments_)) {
+          throw new Error(`${path} contains an invalid CLI example: ${example}`);
+        }
+      } else {
+        const outcome = evaluateCli(arguments_);
+        if (outcome._tag === "InvalidInput") {
+          throw new Error(`${path} contains an invalid CLI example: ${example}\n${outcome.message}`);
+        }
+      }
+      checked += 1;
+    }
+  }
+
+  if (checked === 0) throw new Error("no Canonfig command examples were found");
+  return { checked, files };
+};
+
+const invokedPath = process.argv[1];
+if (
+  invokedPath !== undefined
+  && import.meta.url === pathToFileURL(resolve(invokedPath)).href
+) {
+  const result = await validateDocumentation();
+  process.stdout.write(
+    `Validated ${result.checked} Canonfig command examples across ${result.files.length} documentation files.\n`,
+  );
+}
