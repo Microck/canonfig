@@ -34,6 +34,27 @@ The report schema is `canonfig.doctor/v1`. Its overall status is `healthy`,
 `warning` and `skipped` produce a degraded report. `fail` produces an unhealthy
 report and maps to a CLI failure category.
 
+## Command lifecycle log
+
+Every CLI process appends one start event and, when termination is observable,
+one completion event to `~/.canonfig/canonfig.log`. The file is JSON Lines using
+the `canonfig.log/v1` schema. Entries contain only the normalized command name,
+timestamp, process ID, final exit code, duration, and severity.
+
+Arguments, standard output, standard error, invitations, tokens, and secret
+values are never recorded. Unsupported command shapes are stored as `unknown`
+rather than interpolating unrecognized input.
+
+Set `CANONFIG_LOG=off` to disable the log. Set `CANONFIG_LOG_FILE` to select a
+different file, including an absolute path used by a local log collector.
+
+Canonfig applies mode `0600` on POSIX systems and an owner-only protected DACL
+on Windows before every append. If directory creation, file creation,
+permission restriction, or append fails, the command continues unchanged.
+Catchable `SIGINT` and `SIGTERM` exits receive completion records with exit codes
+`130` and `143`. `SIGKILL` cannot be observed and therefore cannot produce a
+completion event.
+
 ## Diagnose by symptom
 
 ### Authentication or revocation
@@ -82,7 +103,7 @@ Status explains enrolled identity and recorded run state. A fresh plan rechecks
 Observed State; it does not erase previous action evidence.
 
 <Callout title="Preserve evidence" type="warning">
-  Do not delete the SQLite database, cache, or action journal as a first
-  diagnostic step. Those records distinguish interrupted work, drift, and
-  verification failure.
+  Do not delete the SQLite database, cache, action journal, or command log as a
+  first diagnostic step. Those records distinguish interrupted work, drift,
+  verification failure, and process-level exit history.
 </Callout>
