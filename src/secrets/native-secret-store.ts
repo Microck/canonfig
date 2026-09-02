@@ -149,6 +149,7 @@ export const nativeCredentialWriteCommand = (
     );
   const script = [
     "$ErrorActionPreference='Stop'",
+    "[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false)",
     "$secret=[Console]::In.ReadToEnd()",
     "$vault=New-Object Windows.Security.Credentials.PasswordVault",
     "$credential=New-Object Windows.Security.Credentials.PasswordCredential("
