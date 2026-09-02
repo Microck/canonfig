@@ -827,7 +827,7 @@ describe("packed Canonfig executable", () => {
     expect(tampered.stdout).toBe("");
   });
 
-  it("converges a packed source across multiple isolated followers", () => {
+  it("converges a packed source across multiple isolated followers", async () => {
     const scanFiles = {
       agents: resolve(sourceHome, "AGENTS.md"),
       hooks: resolve(sourceHome, "hooks.sh"),
