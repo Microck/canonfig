@@ -1,0 +1,45 @@
+name: Temporary packed lint fix
+
+on:
+  push:
+    branches:
+      - feat/command-logging
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: feat/command-logging
+          fetch-depth: 0
+
+      - name: Narrow asynchronous test failures
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/packed-cli.test.ts")
+          source = path.read_text()
+          old_signature = "const settleFailure = (error: unknown): void => {"
+          new_signature = "const settleFailure = (error: Error): void => {"
+          if old_signature not in source:
+              raise SystemExit("settleFailure signature not found")
+          source = source.replace(old_signature, new_signature, 1)
+          source = source.replace(
+              "settleFailure(error);",
+              "settleFailure(error instanceof Error ? error : new Error(\"packed automatic-secret failure\"));",
+          )
+          path.write_text(source)
+          PY
+          git config user.name "Microck"
+          git config user.email "contact@micr.dev"
+          git add tests/packed-cli.test.ts
+          git commit -m "test: narrow packed automatic-phase failures"
+          git push origin HEAD:feat/command-logging
