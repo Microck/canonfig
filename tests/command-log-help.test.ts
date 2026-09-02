@@ -37,6 +37,11 @@ describe("command log help normalization", () => {
     [["secrets"], "secrets.help"],
     [["secrets", "help"], "secrets.help"],
     [["secrets", "--help"], "secrets.help"],
+    [["source", "--help"], "help"],
+    [["follower", "enroll", "-h"], "help"],
+    [["--json", "--help"], "help"],
+    [["--json", "source", "init"], "source.init"],
+    [["source", "init", "--version"], "version"],
   ] as const)("normalizes %j as %s", (arguments_, expected) => {
     expect(loggedCommand(arguments_)).toBe(expected);
   });
