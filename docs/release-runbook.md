@@ -38,8 +38,9 @@ release.
 4. Update `RELEASE_NOTES.md` for the selected version.
 5. Search the repository for the previous version and explain any intentional
    remaining reference.
-6. Use a `chore(release): prepare vX.Y.Z` pull request and squash it when
-   merging.
+6. Title the pull request `chore(release): prepare vX.Y.Z` and squash it with
+   the same title. The guarded `main` push trigger uses that exact prefix as the
+   publication gate.
 
 ## 4. Validate
 
@@ -61,19 +62,24 @@ findings before merge.
 
 ## 5. Publish
 
-After the release preparation pull request is merged, open GitHub Actions and
-run the `Publish release` workflow from `main`. Enter the exact package version,
-for example `2.2.0`.
+Squash-merge the green release pull request using the required title. Because
+the merge changes `package.json` and `RELEASE_NOTES.md`, the `Publish release`
+workflow starts automatically on `main`. Other `main` pushes do not publish
+unless their commit message begins with `chore(release): prepare v`.
+
+A manual workflow dispatch with the exact package version is available for an
+unpublished retry. Do not retry after npm has accepted that version; complete
+any missing GitHub release metadata without republishing.
 
 The workflow performs the release in this order:
 
-1. verify that the package version matches the input and that npm and Git do not
-   already contain it;
-2. install locked dependencies and rerun the complete validation matrix;
-3. publish `@microck/canonfig` publicly with provenance;
-4. create the matching `vX.Y.Z` tag and GitHub release from
+1. resolve the package version and verify that the release notes describe it;
+2. verify that npm and Git do not already contain the version;
+3. install locked dependencies and rerun the complete validation matrix;
+4. publish `@microck/canonfig` publicly with provenance;
+5. create the matching `vX.Y.Z` tag and GitHub release from
    `RELEASE_NOTES.md` only after npm accepts the package;
-5. install the published package and verify `canonfig --version`.
+6. install the published package and verify `canonfig --version`.
 
 Do not create the tag or GitHub release before npm publication succeeds.
 
