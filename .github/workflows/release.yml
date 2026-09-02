@@ -74,10 +74,31 @@ jobs:
             echo "tag v${RELEASE_VERSION} already exists" >&2
             exit 1
           fi
-          if npm view "@microck/canonfig@${RELEASE_VERSION}" version >/dev/null 2>&1; then
-            echo "@microck/canonfig@${RELEASE_VERSION} is already published" >&2
+
+          response="$(mktemp)"
+          if ! registry_status="$(
+            curl --silent --show-error --location \
+              --output "${response}" \
+              --write-out '%{http_code}' \
+              "https://registry.npmjs.org/@microck%2fcanonfig/${RELEASE_VERSION}"
+          )"; then
+            echo "npm registry preflight failed" >&2
             exit 1
           fi
+
+          case "${registry_status}" in
+            404)
+              ;;
+            200)
+              echo "@microck/canonfig@${RELEASE_VERSION} is already published" >&2
+              exit 1
+              ;;
+            *)
+              echo "npm registry preflight returned HTTP ${registry_status}" >&2
+              cat "${response}" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Install locked dependencies
         run: npm ci
