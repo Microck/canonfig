@@ -1409,6 +1409,39 @@ esac
       ]),
     });
 
+    const automaticSecretLog = resolve(
+    workstationHome,
+    "automatic-secret-failure.log",
+  );
+  const invalidSecretManifest = resolve(
+    workstationHome,
+    ".canonfig",
+    "secrets.json",
+  );
+  writeFileSync(invalidSecretManifest, '{"invalid":true}\n');
+  const automaticSecretFailure = invoke(
+    workstationHome,
+    ["sync", "--apply", "--json"],
+    { CANONFIG_LOG_FILE: automaticSecretLog },
+  );
+  expect(automaticSecretFailure.status).not.toBe(0);
+  const automaticSecretEntries = readFileSync(
+    automaticSecretLog,
+    "utf8",
+  ).trim().split("\n").map((line) => JSON.parse(line) as {
+    readonly event: string;
+    readonly exitCode?: number;
+    readonly durationMilliseconds?: number;
+  });
+  expect(automaticSecretEntries).toHaveLength(2);
+  expect(automaticSecretEntries[1]).toMatchObject({
+    event: "command.completed",
+    exitCode: automaticSecretFailure.status,
+  });
+  expect(automaticSecretEntries[1]!.durationMilliseconds)
+    .toBeGreaterThan(0);
+  rmSync(invalidSecretManifest, { force: true });
+
     const firstApply = requireSuccess(
       invoke(workstationHome, ["sync", "--apply", "--json"]),
       "apply workstation revision one",
