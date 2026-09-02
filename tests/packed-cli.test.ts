@@ -1418,8 +1418,15 @@ esac
     ".canonfig",
     "secrets.json",
   );
-  writeFileSync(invalidSecretManifest, '{"invalid":true}\n');
   const automaticDelayMilliseconds = 250;
+  if (process.platform === "win32") {
+    writeFileSync(invalidSecretManifest, '{"invalid":true}\n');
+  } else {
+    const fifo = spawnSync("mkfifo", [invalidSecretManifest], {
+      encoding: "utf8",
+    });
+    expect(fifo.status, fifo.stderr).toBe(0);
+  }
   const automaticSecretFailure = process.platform === "win32"
     ? invoke(
       workstationHome,
@@ -1440,46 +1447,63 @@ esac
       );
       let stdout = "";
       let stderr = "";
-      let paused = false;
+      let primaryObserved = false;
       let settled = false;
-      const timeout = setTimeout(() => {
+      const settleFailure = (error: unknown): void => {
         if (settled) return;
         settled = true;
         child.kill("SIGKILL");
-        rejectInvocation(new Error(
+        rejectInvocation(error);
+      };
+      const timeout = setTimeout(() => {
+        settleFailure(new Error(
           `packed automatic-secret failure timed out: ${stderr}`,
         ));
       }, 60_000);
       child.stdout.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8");
-        if (paused || !stdout.includes("\n")) return;
-        paused = true;
-        if (!child.kill("SIGSTOP")) {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeout);
-            rejectInvocation(new Error(
-              "packed sync exited before its automatic phase could be paused",
-            ));
-          }
+        if (primaryObserved) return;
+        const newline = stdout.indexOf("\n");
+        if (newline < 0) return;
+        primaryObserved = true;
+        try {
+          // SAFETY: The first line is the packed sync JSON envelope.
+          const primary = JSON.parse(stdout.slice(0, newline)) as {
+            readonly command?: string;
+            readonly status?: string;
+          };
+          expect(primary).toMatchObject({
+            command: "sync.apply",
+            status: "success",
+          });
+        } catch (error) {
+          clearTimeout(timeout);
+          settleFailure(error);
           return;
         }
-        setTimeout(() => child.kill("SIGCONT"), automaticDelayMilliseconds);
+        setTimeout(() => {
+          if (settled) return;
+          try {
+            // Opening the FIFO blocks until automatic cleanup reads it.
+            writeFileSync(invalidSecretManifest, '{"invalid":true}\n');
+          } catch (error) {
+            clearTimeout(timeout);
+            settleFailure(error);
+          }
+        }, automaticDelayMilliseconds);
       });
       child.stderr.on("data", (chunk: Buffer) => {
         stderr += chunk.toString("utf8");
       });
       child.once("error", (error) => {
-        if (settled) return;
-        settled = true;
         clearTimeout(timeout);
-        rejectInvocation(error);
+        settleFailure(error);
       });
       child.once("exit", (status) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        if (!paused) {
+        if (!primaryObserved) {
           rejectInvocation(new Error(
             `packed sync exited before primary success output: ${stderr}`,
           ));
