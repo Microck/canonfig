@@ -1428,10 +1428,13 @@ esac
   const automaticSecretEntries = readFileSync(
     automaticSecretLog,
     "utf8",
-  ).trim().split("\n").map((line) => JSON.parse(line) as {
-    readonly event: string;
-    readonly exitCode?: number;
-    readonly durationMilliseconds?: number;
+  ).trim().split("\n").map((line) => {
+    // SAFETY: Each line was emitted by the packed command logger as JSON.
+    return JSON.parse(line) as {
+      readonly event: string;
+      readonly exitCode?: number;
+      readonly durationMilliseconds?: number;
+    };
   });
   expect(automaticSecretEntries).toHaveLength(2);
   expect(automaticSecretEntries[1]).toMatchObject({
