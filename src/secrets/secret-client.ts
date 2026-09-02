@@ -9,6 +9,7 @@ import {
   CertificateFingerprint,
   type CredentialReference,
 } from "../domain/brand.ts";
+import { canonicalLoopbackHostname } from "../enrollment/source-server.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import {
@@ -63,10 +64,13 @@ const checkedEndpoint = (
   Effect.try({
     try: () => {
       const url = new URL(endpoint);
-      const loopback = url.hostname === "127.0.0.1"
-        || url.hostname === "[::1]"
-        || url.hostname === "::1";
-      if (url.protocol !== "https:" || !loopback) {
+      const hostname = url.hostname.startsWith("[") && url.hostname.endsWith("]")
+        ? url.hostname.slice(1, -1)
+        : url.hostname;
+      if (
+        url.protocol !== "https:"
+        || canonicalLoopbackHostname(hostname) === undefined
+      ) {
         throw new Error("not loopback HTTPS");
       }
       return url;
@@ -150,6 +154,10 @@ const requestSecrets = (
           const chunks: Array<Buffer> = [];
           let bytes = 0;
           let exceeded = false;
+          response.once("error", rejectResponse);
+          response.once("aborted", () => {
+            rejectResponse(new Error("secret response was interrupted"));
+          });
           response.on("data", (chunk: Buffer) => {
             if (exceeded) return;
             bytes += chunk.byteLength;
@@ -220,10 +228,11 @@ export const fetchSharedSecrets = (
       return { status: "not-shared", secrets };
     }
     if (response.status === 401 || response.status === 403) {
+      yield* clearTransferredSecrets();
       return yield* failure(
         "authentication",
         "authenticate secret transfer",
-        "the source rejected the follower credential",
+        "the source rejected the follower credential; transferred secrets were cleared",
       );
     }
     if (response.status !== 200) {
