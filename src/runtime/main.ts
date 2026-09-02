@@ -8,10 +8,7 @@ import {
   isHarnessConfigurationCommand,
   runHarnessConfigurationCli,
 } from "../harness-configuration/cli.ts";
-import {
-  createCommandLog,
-  registerCommandLogSignalHandlers,
-} from "../logging/command-log.ts";
+import { installCommandLog } from "../logging/command-log.ts";
 import {
   isSecretsCommand,
   runSecretsCli,
@@ -32,9 +29,7 @@ process.on("warning", (warning) => {
 });
 
 const arguments_ = process.argv.slice(2);
-const commandLog = createCommandLog(arguments_);
-process.once("exit", (exitCode) => commandLog.complete(exitCode));
-registerCommandLogSignalHandlers(commandLog);
+installCommandLog(arguments_);
 
 const nodeCliIo: CliIo = {
   writeStdout: (text) => process.stdout.write(text),
