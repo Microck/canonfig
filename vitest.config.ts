@@ -7,6 +7,7 @@ export default defineProject({
       "tests/cli.test.ts",
       "tests/command-log.test.ts",
       "tests/command-log-failure.test.ts",
+      "tests/command-log-final-exit.test.ts",
       "tests/doctor.test.ts",
       "tests/foundation.test.ts",
       "tests/harness-configuration.test.ts",
