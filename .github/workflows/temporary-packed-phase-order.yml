@@ -1,0 +1,146 @@
+name: Temporary packed phase-order patch
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'feat/command-logging'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: feat/command-logging
+          fetch-depth: 0
+
+      - name: Add observable automatic-phase delay
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/packed-cli.test.ts")
+          source = path.read_text()
+          start = source.index("    const automaticSecretLog = resolve(")
+          end = source.index("    const firstApply = requireSuccess(", start)
+          block = '''    const automaticSecretLog = resolve(
+              workstationHome,
+              "automatic-secret-failure.log",
+            );
+            const invalidSecretManifest = resolve(
+              workstationHome,
+              ".canonfig",
+              "secrets.json",
+            );
+            writeFileSync(invalidSecretManifest, '{"invalid":true}\\n');
+            const automaticDelayMilliseconds = 250;
+            const automaticSecretFailure = process.platform === "win32"
+              ? invoke(
+                workstationHome,
+                ["sync", "--apply", "--json"],
+                { CANONFIG_LOG_FILE: automaticSecretLog },
+              )
+              : await new Promise<PackedInvocation>((resolveInvocation, rejectInvocation) => {
+                const child = spawn(
+                  executable,
+                  [packedEntry, "sync", "--apply", "--json"],
+                  {
+                    cwd: installRoot,
+                    env: environmentFor(workstationHome, {
+                      CANONFIG_LOG_FILE: automaticSecretLog,
+                    }),
+                    stdio: ["ignore", "pipe", "pipe"],
+                  },
+                );
+                let stdout = "";
+                let stderr = "";
+                let paused = false;
+                let settled = false;
+                const timeout = setTimeout(() => {
+                  if (settled) return;
+                  settled = true;
+                  child.kill("SIGKILL");
+                  rejectInvocation(new Error(
+                    `packed automatic-secret failure timed out: ${stderr}`,
+                  ));
+                }, 60_000);
+                child.stdout.on("data", (chunk: Buffer) => {
+                  stdout += chunk.toString("utf8");
+                  if (paused || !stdout.includes("\\n")) return;
+                  paused = true;
+                  if (!child.kill("SIGSTOP")) {
+                    if (!settled) {
+                      settled = true;
+                      clearTimeout(timeout);
+                      rejectInvocation(new Error(
+                        "packed sync exited before its automatic phase could be paused",
+                      ));
+                    }
+                    return;
+                  }
+                  setTimeout(() => child.kill("SIGCONT"), automaticDelayMilliseconds);
+                });
+                child.stderr.on("data", (chunk: Buffer) => {
+                  stderr += chunk.toString("utf8");
+                });
+                child.once("error", (error) => {
+                  if (settled) return;
+                  settled = true;
+                  clearTimeout(timeout);
+                  rejectInvocation(error);
+                });
+                child.once("exit", (status) => {
+                  if (settled) return;
+                  settled = true;
+                  clearTimeout(timeout);
+                  if (!paused) {
+                    rejectInvocation(new Error(
+                      `packed sync exited before primary success output: ${stderr}`,
+                    ));
+                    return;
+                  }
+                  resolveInvocation({ status, stdout, stderr });
+                });
+              });
+            expect(automaticSecretFailure.status).not.toBe(0);
+            expect(parseEnvelope(automaticSecretFailure)).toMatchObject({
+              command: "sync.apply",
+              status: "success",
+            });
+            const automaticSecretEntries = readFileSync(
+              automaticSecretLog,
+              "utf8",
+            ).trim().split("\\n").map((line) => {
+              // SAFETY: Each line was emitted by the packed command logger as JSON.
+              return JSON.parse(line) as {
+                readonly event: string;
+                readonly exitCode?: number;
+                readonly durationMilliseconds?: number;
+              };
+            });
+            expect(automaticSecretEntries).toHaveLength(2);
+            expect(automaticSecretEntries[1]).toMatchObject({
+              event: "command.completed",
+              exitCode: automaticSecretFailure.status,
+            });
+            if (process.platform === "win32") {
+              expect(automaticSecretEntries[1]!.durationMilliseconds)
+                .toBeGreaterThan(0);
+            } else {
+              expect(automaticSecretEntries[1]!.durationMilliseconds)
+                .toBeGreaterThanOrEqual(automaticDelayMilliseconds);
+            }
+            rmSync(invalidSecretManifest, { force: true });
+
+          '''
+          path.write_text(source[:start] + block + source[end:])
+          PY
+          git config user.name "Microck"
+          git config user.email "contact@micr.dev"
+          git add tests/packed-cli.test.ts
+          git commit -m "test: prove packed automatic phase ordering and duration"
+          git push origin HEAD:feat/command-logging
