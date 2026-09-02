@@ -24,14 +24,8 @@ jobs:
           from pathlib import Path
           path = Path("src/machine/linux.layer.ts")
           source = path.read_text()
-          old = '''child.stdout.on("data", capture(output));
-          child.stderr.on("data", capture(errors));'''
-          new = '''if (child.stdout === null || child.stderr === null) {
-            terminate(new ProcessStartSignal("process output streams are unavailable"));
-          } else {
-            child.stdout.on("data", capture(output));
-            child.stderr.on("data", capture(errors));
-          }'''
+          old = 'child.stdout.on("data", capture(output));\n        child.stderr.on("data", capture(errors));'
+          new = 'if (child.stdout === null || child.stderr === null) {\n          terminate(new ProcessStartSignal("process output streams are unavailable"));\n        } else {\n          child.stdout.on("data", capture(output));\n          child.stderr.on("data", capture(errors));\n        }'
           if old not in source:
               raise SystemExit("stream listener anchor not found")
           path.write_text(source.replace(old, new, 1))
