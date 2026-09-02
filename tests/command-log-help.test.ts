@@ -14,6 +14,7 @@ const loggedCommand = (arguments_: ReadonlyArray<string>): string => {
     restrictWindowsAccess: () => true,
     restrictPosixAccess: () => undefined,
     append: (_path, content) => {
+      // SAFETY: The capture receives only command-log JSON object entries.
       const entry = JSON.parse(content) as { readonly command: string };
       commands.push(entry.command);
     },
