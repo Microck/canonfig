@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { evaluateCli } from "../../src/cli/cli.ts";
+import { parseHarnessArguments } from "../../src/harness-configuration/cli-arguments.ts";
 
 const projectRoot = resolve(import.meta.dirname, "../..");
 const contentRoots = [
@@ -100,6 +101,15 @@ const validSecretsCommand = (arguments_: ReadonlyArray<string>): boolean => {
   return false;
 };
 
+const validHarnessCommand = (arguments_: ReadonlyArray<string>): boolean => {
+  try {
+    parseHarnessArguments(arguments_.slice(1));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const files = (await Promise.all(contentRoots.map(markdownFiles))).flat().sort();
 let checked = 0;
 for (const path of files) {
@@ -117,6 +127,10 @@ for (const path of files) {
     if (program !== "canonfig") throw new Error(`${path} uses an unexpected executable`);
     if (arguments_[0] === "secrets") {
       if (!validSecretsCommand(arguments_)) {
+        throw new Error(`${path} contains an invalid CLI example: ${example}`);
+      }
+    } else if (arguments_[0] === "harness") {
+      if (!validHarnessCommand(arguments_)) {
         throw new Error(`${path} contains an invalid CLI example: ${example}`);
       }
     } else {
