@@ -86,6 +86,7 @@ import type {
 const decode = Schema.decodeUnknownSync;
 const defaultDirectoryMode = 0o700;
 const defaultFileMode = 0o600;
+const maximumProcessInputBytes = 64 * 1024;
 
 class ProcessTimeoutSignal extends Error {}
 class ProcessOutputLimitSignal extends Error {}
@@ -806,6 +807,15 @@ const runBoundedProcess = (
         maximumOutputBytes: invocation.maximumOutputBytes,
       });
     }
+    if (
+      invocation.standardInput !== undefined
+      && invocation.standardInput.byteLength > maximumProcessInputBytes
+    ) {
+      return yield* new ProcessStartError({
+        executable,
+        message: `standard input exceeds ${maximumProcessInputBytes} bytes`,
+      });
+    }
     return yield* Effect.tryPromise({
       try: (signal) => new Promise<ProcessResult>((resolveProcess, rejectProcess) => {
         const output: Array<Buffer> = [];
@@ -821,7 +831,11 @@ const runBoundedProcess = (
             invocation.environmentUnsetPrefixes ?? [],
           ),
           shell: false,
-          stdio: ["ignore", "pipe", "pipe"],
+          stdio: [
+            invocation.standardInput === undefined ? "ignore" : "pipe",
+            "pipe",
+            "pipe",
+          ],
           detached: process.platform !== "win32",
         });
         const terminate = (reason: Error): void => {
@@ -842,6 +856,12 @@ const runBoundedProcess = (
         child.once("error", (cause) => {
           failure = new ProcessStartSignal(messageOf(cause));
         });
+        if (invocation.standardInput !== undefined && child.stdin !== null) {
+          child.stdin.once("error", (cause) => {
+            terminate(new ProcessStartSignal(messageOf(cause)));
+          });
+          child.stdin.end(invocation.standardInput);
+        }
         const timer = setTimeout(
           () => terminate(new ProcessTimeoutSignal()),
           invocation.timeoutMilliseconds,

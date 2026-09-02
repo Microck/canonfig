@@ -1,13 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { CredentialReference } from "../../src/domain/brand.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { nativeCredentialWriteCommand } from "../../src/secrets/native-secret-store.ts";
@@ -119,6 +120,85 @@ describe("shared-secret cleanup retry", () => {
     }
   });
 
+  it("passes bounded standard input through the machine process boundary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-process-input-"));
+    const layer = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(root, "home") },
+        { name: "PATH", value: process.env.PATH ?? "" },
+      ],
+      credentialPolicy: {
+        kind: "local-file",
+        path: join(root, "credentials"),
+      },
+    });
+    const input = "bounded-standard-input";
+
+    try {
+      const result = await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const executable = yield* machine.normalizePath({
+            path: process.execPath,
+          });
+          return yield* machine.runProcess({
+            executable,
+            arguments: [
+              "-e",
+              "process.stdin.pipe(process.stdout)",
+            ],
+            standardInput: new TextEncoder().encode(input),
+            timeoutMilliseconds: 5_000,
+            maximumOutputBytes: 4_096,
+          });
+        }).pipe(Effect.provide(layer)),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(Buffer.from(result.standardOutput).toString("utf8")).toBe(input);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects oversized standard input before starting a process", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-process-limit-"));
+    const layer = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(root, "home") },
+        { name: "PATH", value: process.env.PATH ?? "" },
+      ],
+      credentialPolicy: {
+        kind: "local-file",
+        path: join(root, "credentials"),
+      },
+    });
+
+    try {
+      await expect(
+        Effect.runPromise(
+          Effect.gen(function*() {
+            const machine = yield* MachineState;
+            const executable = yield* machine.normalizePath({
+              path: process.execPath,
+            });
+            return yield* machine.runProcess({
+              executable,
+              arguments: ["-e", "process.exit(0)"],
+              standardInput: new Uint8Array(64 * 1024 + 1),
+              timeoutMilliseconds: 5_000,
+              maximumOutputBytes: 4_096,
+            });
+          }).pipe(Effect.provide(layer)),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "ProcessStartError",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps macOS secret values out of arguments and environment", () => {
     const secret = "mac-secret-value-not-process-metadata";
     const command = nativeCredentialWriteCommand(
@@ -164,4 +244,50 @@ describe("shared-secret cleanup retry", () => {
     expect(script).toContain("[System.Text.UTF8Encoding]::new($false)");
     expect(script).toContain("[Console]::In.ReadToEnd()");
   });
+
+  it.runIf(process.platform === "win32")(
+    "decodes multibyte Windows standard input as UTF-8",
+    async () => {
+      const secret = "é🔐-windows-round-trip";
+      const layer = windowsMachineStateLayer();
+      const powershell = win32.join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const script = [
+        "$ErrorActionPreference='Stop'",
+        "[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false)",
+        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)",
+        "$value=[Console]::In.ReadToEnd()",
+        "[Console]::Out.Write($value)",
+      ].join(";");
+
+      const result = await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const executable = yield* machine.normalizePath({ path: powershell });
+          return yield* machine.runProcess({
+            executable,
+            arguments: [
+              "-NoLogo",
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              script,
+            ],
+            standardInput: new TextEncoder().encode(secret),
+            timeoutMilliseconds: 5_000,
+            maximumOutputBytes: 4_096,
+          });
+        }).pipe(Effect.provide(layer)),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(Buffer.from(result.standardOutput).toString("utf8")).toBe(secret);
+      expect(Buffer.from(result.standardError).toString("utf8")).toBe("");
+    },
+  );
 });

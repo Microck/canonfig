@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { win32 } from "node:path";
 
@@ -17,7 +16,6 @@ import type {
   StoreCredentialInput,
 } from "../machine/machine-state.types.ts";
 
-const maximumCredentialInputBytes = 64 * 1024;
 const maximumCredentialOutputBytes = 1024 * 1024;
 const credentialTimeoutMilliseconds = 5_000;
 const decode = Schema.decodeUnknownSync;
@@ -34,17 +32,10 @@ export interface NativeCredentialWriteCommand {
 export interface NativeSecretStoreLayerOptions {
   readonly environment?: NodeJS.ProcessEnv | undefined;
   readonly runCommand?: ((
+    machine: MachineState["Service"],
     command: NativeCredentialWriteCommand,
   ) => Effect.Effect<number | null, MachineStateError>) | undefined;
 }
-
-const commandEnvironment = (
-  additions: ReadonlyArray<ProcessEnvironmentEntry>,
-): NodeJS.ProcessEnv => {
-  const environment: NodeJS.ProcessEnv = { ...process.env };
-  for (const entry of additions) environment[entry.name] = entry.value;
-  return environment;
-};
 
 const failure = (
   provider: NativeCredentialWriteCommand["provider"],
@@ -60,59 +51,23 @@ const failure = (
     });
 
 const runNativeCredentialCommand = (
+  machine: MachineState["Service"],
   command: NativeCredentialWriteCommand,
-): Effect.Effect<number | null, MachineStateError> => {
-  if (command.standardInput.byteLength > maximumCredentialInputBytes) {
-    return Effect.fail(new CredentialStorageError({
-      operation: "store credential",
-      reference: command.provider,
-      message: "credential input exceeds the native-store size limit",
-    }));
-  }
-
-  return Effect.tryPromise({
-    try: (signal) =>
-      new Promise<number | null>((resolveCommand, rejectCommand) => {
-        const child = spawn(command.executable, [...command.arguments], {
-          env: commandEnvironment(command.environment),
-          shell: false,
-          stdio: ["pipe", "pipe", "pipe"],
-          windowsHide: true,
-        });
-        let outputBytes = 0;
-        let failed = false;
-        const fail = (cause: unknown): void => {
-          if (failed) return;
-          failed = true;
-          child.kill();
-          rejectCommand(cause);
-        };
-        const capture = (chunk: Buffer): void => {
-          outputBytes += chunk.byteLength;
-          if (outputBytes > maximumCredentialOutputBytes) {
-            fail(new Error("native credential command exceeded its output limit"));
-          }
-        };
-        child.stdout.on("data", capture);
-        child.stderr.on("data", capture);
-        child.once("error", fail);
-        child.stdin.once("error", fail);
-        const timer = setTimeout(
-          () => fail(new Error("native credential command timed out")),
-          credentialTimeoutMilliseconds,
-        );
-        const abort = (): void => fail(new Error("native credential command aborted"));
-        signal.addEventListener("abort", abort, { once: true });
-        child.once("close", (exitCode) => {
-          clearTimeout(timer);
-          signal.removeEventListener("abort", abort);
-          if (!failed) resolveCommand(exitCode);
-        });
-        child.stdin.end(command.standardInput);
-      }),
-    catch: () => failure(command.provider),
+): Effect.Effect<number | null, MachineStateError> =>
+  Effect.gen(function*() {
+    const executable = yield* machine.normalizePath({
+      path: command.executable,
+    });
+    const result = yield* machine.runProcess({
+      executable,
+      arguments: command.arguments,
+      environment: command.environment,
+      standardInput: command.standardInput,
+      timeoutMilliseconds: credentialTimeoutMilliseconds,
+      maximumOutputBytes: maximumCredentialOutputBytes,
+    });
+    return result.exitCode;
   });
-};
 
 export const nativeCredentialWriteCommand = (
   capability: Extract<CredentialStorageCapability, {
@@ -203,6 +158,7 @@ export const nativeSecretStoreLayer = (
           );
           if (command === undefined) return yield* machine.storeCredential(input);
           const exitCode = yield* (options.runCommand ?? runNativeCredentialCommand)(
+            machine,
             command,
           );
           if (exitCode !== 0) return yield* failure(command.provider);
