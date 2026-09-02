@@ -7,6 +7,7 @@ import { parseHarnessArguments } from "../../src/harness-configuration/cli-argum
 const projectRoot = resolve(import.meta.dirname, "../..");
 const contentRoots = [
   resolve(projectRoot, "README.md"),
+  resolve(projectRoot, "docs"),
   resolve(projectRoot, "skills"),
   resolve(projectRoot, "website/content/docs"),
 ];
@@ -41,7 +42,8 @@ const commandLines = (text: string): ReadonlyArray<string> => {
     const body = block.groups?.body ?? "";
     for (const line of body.split(/\r?\n/u)) {
       const candidate = line.trim();
-      if (candidate.startsWith("canonfig ")) commands.push(candidate);
+      const start = candidate.search(/\bcanonfig(?:\s|$)/u);
+      if (start >= 0) commands.push(candidate.slice(start));
     }
   }
   return commands;
@@ -145,5 +147,5 @@ for (const path of files) {
 
 if (checked === 0) throw new Error("no Canonfig command examples were found");
 process.stdout.write(
-  `Validated ${checked} Canonfig command examples across ${files.length} README, skill, and website files.\n`,
+  `Validated ${checked} Canonfig command examples across ${files.length} documentation files.\n`,
 );
