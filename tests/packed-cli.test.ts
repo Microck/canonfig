@@ -1449,7 +1449,7 @@ esac
       let stderr = "";
       let primaryObserved = false;
       let settled = false;
-      const settleFailure = (error: unknown): void => {
+      const settleFailure = (error: Error): void => {
         if (settled) return;
         settled = true;
         child.kill("SIGKILL");
@@ -1478,7 +1478,7 @@ esac
           });
         } catch (error) {
           clearTimeout(timeout);
-          settleFailure(error);
+          settleFailure(error instanceof Error ? error : new Error("packed automatic-secret failure"));
           return;
         }
         setTimeout(() => {
@@ -1488,7 +1488,7 @@ esac
             writeFileSync(invalidSecretManifest, '{"invalid":true}\n');
           } catch (error) {
             clearTimeout(timeout);
-            settleFailure(error);
+            settleFailure(error instanceof Error ? error : new Error("packed automatic-secret failure"));
           }
         }, automaticDelayMilliseconds);
       });
@@ -1497,7 +1497,7 @@ esac
       });
       child.once("error", (error) => {
         clearTimeout(timeout);
-        settleFailure(error);
+        settleFailure(error instanceof Error ? error : new Error("packed automatic-secret failure"));
       });
       child.once("exit", (status) => {
         if (settled) return;
