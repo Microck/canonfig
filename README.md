@@ -29,6 +29,7 @@ managing agent setups across multiple machines usually breaks because machines d
 - immutable and signed: profile revisions are content-addressed, cryptographically signed, and verified after download.
 - explicit secret authority: profile credentials remain local by default. operators may separately share named secrets with followers enrolled in the `canonfig:secrets` group; transferred values use pinned HTTPS and native OS credential stores.
 - native schedulers, no daemons: runs on systemd user timers, launchd user agents, and Windows Task Scheduler with zero resident follower background daemons.
+- privacy-safe observability: local JSON Lines command logs record normalized lifecycle metadata, never arguments, output, invitations, tokens, or secret values.
 - clear divergence states: stops at human action required when an operator step is needed, and flags follower drift when local skill edits would otherwise be overwritten.
 
 ## install
@@ -98,6 +99,20 @@ canonfig schedule status
 ```
 
 scheduled jobs invoke `canonfig sync --apply --no-input` without requiring a resident daemon.
+
+### 4. command log
+
+Each CLI process writes JSON Lines lifecycle events to
+`~/.canonfig/canonfig.log`. Entries use the `canonfig.log/v1` schema and contain
+only the normalized command, timestamp, process ID, final exit code, duration,
+and severity. Arguments, output, invitations, tokens, and secret values are not
+recorded.
+
+Set `CANONFIG_LOG=off` to disable logging. Set `CANONFIG_LOG_FILE` to use a
+custom file. Canonfig applies owner-only permissions before every append and
+ignores logging failures so observability cannot change command behavior.
+Catchable `SIGINT` and `SIGTERM` exits are recorded; `SIGKILL` cannot be
+observed.
 
 ## resource kinds and apply policies
 
