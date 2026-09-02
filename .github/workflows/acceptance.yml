@@ -51,6 +51,9 @@ jobs:
       - name: Run native platform contract
         run: npx vitest run ${{ matrix.native_test }}
 
+      - name: Run native secret-store contract
+        run: npx vitest run tests/integration/secret-cleanup-retry.test.ts
+
       - name: Run acceptance scenario
         run: npm run test:acceptance
         env:

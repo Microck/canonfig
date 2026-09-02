@@ -127,6 +127,8 @@ export interface ProcessInvocation {
   readonly environment?: ReadonlyArray<ProcessEnvironmentEntry> | undefined;
   readonly environmentUnset?: ReadonlyArray<string> | undefined;
   readonly environmentUnsetPrefixes?: ReadonlyArray<string> | undefined;
+  /** Optional bounded bytes written to the child process before stdin is closed. */
+  readonly standardInput?: Uint8Array | undefined;
   readonly timeoutMilliseconds: number;
   readonly maximumOutputBytes: number;
 }

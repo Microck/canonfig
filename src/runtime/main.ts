@@ -8,6 +8,14 @@ import {
   isHarnessConfigurationCommand,
   runHarnessConfigurationCli,
 } from "../harness-configuration/cli.ts";
+import {
+  isSecretsCommand,
+  runSecretsCli,
+  secretExitCode,
+} from "../secrets/cli.ts";
+import { synchronizeSharedSecrets } from "../secrets/secret-client.ts";
+import { secretRuntimeLayer } from "../secrets/runtime-layer.ts";
+import { SecretTransferError } from "../secrets/secret-store.ts";
 
 const warningListeners = process.listeners("warning");
 process.removeAllListeners("warning");
@@ -27,9 +35,37 @@ const nodeCliIo: CliIo = {
   },
 };
 
+const automaticSecretFailure = (
+  error: SecretTransferError,
+  json: boolean,
+): void => {
+  const exitCode = secretExitCode(error);
+  nodeCliIo.writeStderr(json
+    ? `${JSON.stringify({
+      schema: "canonfig.secrets/v1",
+      ok: false,
+      command: "secrets.sync",
+      automatic: true,
+      error: {
+        category: error.category,
+        operation: error.operation,
+        message: error.message,
+      },
+      exitCode,
+    })}\n`
+    : `Secret synchronization failed: ${error.message}\n`);
+  nodeCliIo.setExitCode(exitCode);
+};
+
 const arguments_ = process.argv.slice(2);
 
-if (isHarnessConfigurationCommand(arguments_)) {
+if (isSecretsCommand(arguments_)) {
+  NodeRuntime.runMain(
+    runSecretsCli(arguments_.slice(1), nodeCliIo).pipe(
+      Effect.provide(secretRuntimeLayer()),
+    ),
+  );
+} else if (isHarnessConfigurationCommand(arguments_)) {
   NodeRuntime.runMain(
     Effect.promise(() =>
       runHarnessConfigurationCli(arguments_.slice(1), nodeCliIo)
@@ -39,10 +75,39 @@ if (isHarnessConfigurationCommand(arguments_)) {
   const outcome = evaluateCli(arguments_);
 
   if (outcome._tag === "Command") {
+    const automaticSecretSync = outcome.command._tag === "Synchronize"
+      && outcome.command.mode === "apply";
     NodeRuntime.runMain(
       Effect.promise(() => import("./layers.ts")).pipe(
         Effect.flatMap(({ runtimeLayer }) =>
           runCli(arguments_, nodeCliIo).pipe(
+            Effect.andThen(
+              automaticSecretSync
+                ? Effect.suspend(() =>
+                  (process.exitCode ?? 0) === 0
+                    ? synchronizeSharedSecrets().pipe(
+                      Effect.provide(secretRuntimeLayer()),
+                      Effect.catch((cause) =>
+                        Effect.sync(() => {
+                          const error = cause instanceof SecretTransferError
+                            ? cause
+                            : new SecretTransferError({
+                              category: "state",
+                              operation: "synchronize shared secrets",
+                              message: "the secret synchronization state is unavailable",
+                            });
+                          automaticSecretFailure(
+                            error,
+                            outcome.format === "json",
+                          );
+                        })
+                      ),
+                      Effect.asVoid,
+                    )
+                    : Effect.void
+                )
+                : Effect.void,
+            ),
             Effect.andThen(
               outcome.command._tag === "SourceServe"
                 ? Effect.never

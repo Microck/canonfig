@@ -85,6 +85,21 @@ const tokenize = (command: string): ReadonlyArray<string> => {
   return tokens;
 };
 
+const validSecretsCommand = (arguments_: ReadonlyArray<string>): boolean => {
+  const positionals = arguments_.filter((argument) => argument !== "--json");
+  const [area, action, ...rest] = positionals;
+  if (area !== "secrets") return false;
+  if (
+    action === undefined
+    || action === "help"
+    || action === "--help"
+    || action === "-h"
+  ) return rest.length === 0;
+  if (action === "list" || action === "sync") return rest.length === 0;
+  if (action === "set" || action === "remove") return rest.length === 1;
+  return false;
+};
+
 const files = (await Promise.all(contentRoots.map(markdownFiles))).flat().sort();
 let checked = 0;
 for (const path of files) {
@@ -100,9 +115,15 @@ for (const path of files) {
       value === "$INVITE" ? invitation : value
     );
     if (program !== "canonfig") throw new Error(`${path} uses an unexpected executable`);
-    const outcome = evaluateCli(arguments_);
-    if (outcome._tag === "InvalidInput") {
-      throw new Error(`${path} contains an invalid CLI example: ${example}\n${outcome.message}`);
+    if (arguments_[0] === "secrets") {
+      if (!validSecretsCommand(arguments_)) {
+        throw new Error(`${path} contains an invalid CLI example: ${example}`);
+      }
+    } else {
+      const outcome = evaluateCli(arguments_);
+      if (outcome._tag === "InvalidInput") {
+        throw new Error(`${path} contains an invalid CLI example: ${example}\n${outcome.message}`);
+      }
     }
     checked += 1;
   }
