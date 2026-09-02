@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - .github/workflows/release.yml
       - package.json
       - RELEASE_NOTES.md
   workflow_dispatch:
@@ -39,7 +40,6 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
 
       - name: Resolve release version
         id: release
@@ -91,10 +91,10 @@ jobs:
           npm run build
           git diff --check
 
-      - name: Publish package with provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+      - name: Publish package through npm trusted publishing
+        run: |
+          unset NODE_AUTH_TOKEN NPM_TOKEN
+          npm publish --access public
 
       - name: Create tag and GitHub release
         env:
