@@ -246,6 +246,12 @@ case "$operation" in
     cat "$path"
     ;;
   clear)
+    if test -n "$CANONFIG_TEST_SECRET_CLEAR_DELAY_SECONDS"; then
+      sleep "$CANONFIG_TEST_SECRET_CLEAR_DELAY_SECONDS"
+    fi
+    if test "$CANONFIG_TEST_SECRET_CLEAR_FAIL" = "1"; then
+      exit 1
+    fi
     rm -f "$path"
     ;;
   *)
@@ -1474,104 +1480,49 @@ esac
     "secrets.json",
   );
   const automaticDelayMilliseconds = 500;
-    const automaticDurationToleranceMilliseconds = 100;
-  if (process.platform === "win32") {
-    writeFileSync(invalidSecretManifest, '{"invalid":true}\n');
+  const automaticDurationToleranceMilliseconds = 100;
+  const automaticSecretEnvironment: NodeJS.ProcessEnv = {
+    CANONFIG_LOG_FILE: automaticSecretLog,
+  };
+  if (process.platform === "linux") {
+    writeFileSync(
+      invalidSecretManifest,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        secrets: [{
+          name: "automatic-delay",
+          reference: "secret-service:automatic-delay",
+          origin: "source",
+        }],
+      }, undefined, 2)}\n`,
+    );
+    automaticSecretEnvironment.CANONFIG_TEST_SECRET_CLEAR_DELAY_SECONDS =
+      `${automaticDelayMilliseconds / 1_000}`;
+    automaticSecretEnvironment.CANONFIG_TEST_SECRET_CLEAR_FAIL = "1";
   } else {
-    const fifo = spawnSync("mkfifo", [invalidSecretManifest], {
-      encoding: "utf8",
-    });
-    expect(fifo.status, fifo.stderr).toBe(0);
+    writeFileSync(invalidSecretManifest, '{"invalid":true}\n');
   }
-  const automaticSecretFailure = process.platform === "win32"
-    ? invoke(
-      workstationHome,
-      ["sync", "--apply", "--json"],
-      { CANONFIG_LOG_FILE: automaticSecretLog },
-    )
-    : await new Promise<PackedInvocation>((resolveInvocation, rejectInvocation) => {
-      const child = spawn(
-        executable,
-        [packedEntry, "sync", "--apply", "--json"],
-        {
-          cwd: installRoot,
-          env: environmentFor(workstationHome, {
-            CANONFIG_LOG_FILE: automaticSecretLog,
-          }),
-          stdio: ["ignore", "pipe", "pipe"],
-        },
-      );
-      let stdout = "";
-      let stderr = "";
-      let primaryObserved = false;
-      let settled = false;
-      const settleFailure = (error: Error): void => {
-        if (settled) return;
-        settled = true;
-        child.kill("SIGKILL");
-        rejectInvocation(error);
-      };
-      const timeout = setTimeout(() => {
-        settleFailure(new Error(
-          `packed automatic-secret failure timed out: ${stderr}`,
-        ));
-      }, 60_000);
-      child.stdout.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8");
-        if (primaryObserved) return;
-        const newline = stdout.indexOf("\n");
-        if (newline < 0) return;
-        primaryObserved = true;
-        try {
-          // SAFETY: The first line is the packed sync JSON envelope.
-          const primary = JSON.parse(stdout.slice(0, newline)) as {
-            readonly command?: string;
-            readonly status?: string;
-          };
-          expect(primary).toMatchObject({
-            command: "sync.apply",
-            status: "success",
-          });
-        } catch (error) {
-          clearTimeout(timeout);
-          settleFailure(error instanceof Error ? error : new Error("packed automatic-secret failure"));
-          return;
-        }
-        setTimeout(() => {
-          if (settled) return;
-          try {
-            // Opening the FIFO blocks until automatic cleanup reads it.
-            writeFileSync(invalidSecretManifest, '{"invalid":true}\n');
-          } catch (error) {
-            clearTimeout(timeout);
-            settleFailure(error instanceof Error ? error : new Error("packed automatic-secret failure"));
-          }
-        }, automaticDelayMilliseconds);
-      });
-      child.stderr.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
-      });
-      child.once("error", (error) => {
-        clearTimeout(timeout);
-        settleFailure(error instanceof Error ? error : new Error("packed automatic-secret failure"));
-      });
-      child.once("exit", (status) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        if (!primaryObserved) {
-          rejectInvocation(new Error(
-            `packed sync exited before primary success output: ${stderr}`,
-          ));
-          return;
-        }
-        resolveInvocation({ status, stdout, stderr });
-      });
-    });
+  const automaticSecretFailure = invoke(
+    workstationHome,
+    ["sync", "--apply", "--json"],
+    automaticSecretEnvironment,
+  );
   expect(automaticSecretFailure.status).not.toBe(0);
   expect(parseEnvelope(automaticSecretFailure)).toMatchObject({
     command: "sync.apply",
     status: "success",
+  });
+  expect(JSON.parse(automaticSecretFailure.stderr)).toMatchObject({
+    schema: "canonfig.secrets/v1",
+    ok: false,
+    command: "secrets.sync",
+    automatic: true,
+    error: {
+      operation: process.platform === "linux"
+        ? "clear transferred secrets"
+        : "read secret manifest",
+    },
+    exitCode: automaticSecretFailure.status,
   });
   const automaticSecretEntries = readFileSync(
     automaticSecretLog,
@@ -1589,16 +1540,16 @@ esac
     event: "command.completed",
     exitCode: automaticSecretFailure.status,
   });
-  if (process.platform === "win32") {
-    expect(automaticSecretEntries[1]!.durationMilliseconds)
-      .toBeGreaterThan(0);
-  } else {
+  if (process.platform === "linux") {
     expect(automaticSecretEntries[1]!.durationMilliseconds)
       // Timer wake-up and wall-clock sampling may differ slightly.
-        .toBeGreaterThanOrEqual(
-          automaticDelayMilliseconds
-            - automaticDurationToleranceMilliseconds,
-        );
+      .toBeGreaterThanOrEqual(
+        automaticDelayMilliseconds
+          - automaticDurationToleranceMilliseconds,
+      );
+  } else {
+    expect(automaticSecretEntries[1]!.durationMilliseconds)
+      .toBeGreaterThan(0);
   }
   rmSync(invalidSecretManifest, { force: true });
 
