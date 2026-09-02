@@ -1419,12 +1419,80 @@ esac
     "secrets.json",
   );
   writeFileSync(invalidSecretManifest, '{"invalid":true}\n');
-  const automaticSecretFailure = invoke(
-    workstationHome,
-    ["sync", "--apply", "--json"],
-    { CANONFIG_LOG_FILE: automaticSecretLog },
-  );
+  const automaticDelayMilliseconds = 250;
+  const automaticSecretFailure = process.platform === "win32"
+    ? invoke(
+      workstationHome,
+      ["sync", "--apply", "--json"],
+      { CANONFIG_LOG_FILE: automaticSecretLog },
+    )
+    : await new Promise<PackedInvocation>((resolveInvocation, rejectInvocation) => {
+      const child = spawn(
+        executable,
+        [packedEntry, "sync", "--apply", "--json"],
+        {
+          cwd: installRoot,
+          env: environmentFor(workstationHome, {
+            CANONFIG_LOG_FILE: automaticSecretLog,
+          }),
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let stdout = "";
+      let stderr = "";
+      let paused = false;
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill("SIGKILL");
+        rejectInvocation(new Error(
+          `packed automatic-secret failure timed out: ${stderr}`,
+        ));
+      }, 60_000);
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+        if (paused || !stdout.includes("\n")) return;
+        paused = true;
+        if (!child.kill("SIGSTOP")) {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            rejectInvocation(new Error(
+              "packed sync exited before its automatic phase could be paused",
+            ));
+          }
+          return;
+        }
+        setTimeout(() => child.kill("SIGCONT"), automaticDelayMilliseconds);
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.once("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        rejectInvocation(error);
+      });
+      child.once("exit", (status) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (!paused) {
+          rejectInvocation(new Error(
+            `packed sync exited before primary success output: ${stderr}`,
+          ));
+          return;
+        }
+        resolveInvocation({ status, stdout, stderr });
+      });
+    });
   expect(automaticSecretFailure.status).not.toBe(0);
+  expect(parseEnvelope(automaticSecretFailure)).toMatchObject({
+    command: "sync.apply",
+    status: "success",
+  });
   const automaticSecretEntries = readFileSync(
     automaticSecretLog,
     "utf8",
@@ -1441,8 +1509,13 @@ esac
     event: "command.completed",
     exitCode: automaticSecretFailure.status,
   });
-  expect(automaticSecretEntries[1]!.durationMilliseconds)
-    .toBeGreaterThan(0);
+  if (process.platform === "win32") {
+    expect(automaticSecretEntries[1]!.durationMilliseconds)
+      .toBeGreaterThan(0);
+  } else {
+    expect(automaticSecretEntries[1]!.durationMilliseconds)
+      .toBeGreaterThanOrEqual(automaticDelayMilliseconds);
+  }
   rmSync(invalidSecretManifest, { force: true });
 
     const firstApply = requireSuccess(
