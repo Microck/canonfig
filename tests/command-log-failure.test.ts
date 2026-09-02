@@ -82,6 +82,7 @@ describe("command logging failure isolation", () => {
   it("keeps shipped command output and exit status unchanged when logging fails", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "canonfig-log-failure-"));
     try {
+      // SAFETY: The repository package document requires a string version field.
       const packageDocument = JSON.parse(
         await readFile(path.join(projectRoot, "package.json"), "utf8"),
       ) as { readonly version: string };
