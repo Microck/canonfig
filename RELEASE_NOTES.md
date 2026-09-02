@@ -1,5 +1,7 @@
 # Canonfig v2.2.0
 
+Canonfig 2.2.0 requires Node.js 24 or newer.
+
 ## Features
 
 - Added privacy-safe JSON Lines command lifecycle logging with user-only file permissions, explicit opt-out, normalized command names, and catchable-signal completion records.
