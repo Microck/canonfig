@@ -1,0 +1,140 @@
+name: Temporary automatic clear barrier fix
+
+on:
+  push:
+    branches:
+      - feat/command-logging
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: feat/command-logging
+          fetch-depth: 0
+
+      - name: Replace FIFO with automatic credential-cleanup barrier
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/packed-cli.test.ts")
+          source = path.read_text()
+
+          old_clear = '''  clear)
+              rm -f "$path"
+              ;;'''
+          new_clear = '''  clear)
+              if test -n "$CANONFIG_TEST_SECRET_CLEAR_DELAY_SECONDS"; then
+                sleep "$CANONFIG_TEST_SECRET_CLEAR_DELAY_SECONDS"
+              fi
+              if test "$CANONFIG_TEST_SECRET_CLEAR_FAIL" = "1"; then
+                exit 1
+              fi
+              rm -f "$path"
+              ;;'''
+          if old_clear not in source:
+              raise SystemExit("secret-tool clear fixture not found")
+          source = source.replace(old_clear, new_clear, 1)
+
+          start = source.index("    const automaticSecretLog = resolve(")
+          end = source.index("    const firstApply = requireSuccess(", start)
+          block = '''    const automaticSecretLog = resolve(
+              workstationHome,
+              "automatic-secret-failure.log",
+            );
+            const invalidSecretManifest = resolve(
+              workstationHome,
+              ".canonfig",
+              "secrets.json",
+            );
+            const automaticDelayMilliseconds = 500;
+            const automaticDurationToleranceMilliseconds = 100;
+            const automaticSecretEnvironment: NodeJS.ProcessEnv = {
+              CANONFIG_LOG_FILE: automaticSecretLog,
+            };
+            if (process.platform === "linux") {
+              writeFileSync(
+                invalidSecretManifest,
+                `${JSON.stringify({
+                  schemaVersion: 1,
+                  secrets: [{
+                    name: "automatic-delay",
+                    reference: "secret-service:automatic-delay",
+                    origin: "source",
+                  }],
+                }, undefined, 2)}\\n`,
+              );
+              automaticSecretEnvironment.CANONFIG_TEST_SECRET_CLEAR_DELAY_SECONDS =
+                `${automaticDelayMilliseconds / 1_000}`;
+              automaticSecretEnvironment.CANONFIG_TEST_SECRET_CLEAR_FAIL = "1";
+            } else {
+              writeFileSync(invalidSecretManifest, '{"invalid":true}\\n');
+            }
+            const automaticSecretFailure = invoke(
+              workstationHome,
+              ["sync", "--apply", "--json"],
+              automaticSecretEnvironment,
+            );
+            expect(automaticSecretFailure.status).not.toBe(0);
+            expect(parseEnvelope(automaticSecretFailure)).toMatchObject({
+              command: "sync.apply",
+              status: "success",
+            });
+            expect(JSON.parse(automaticSecretFailure.stderr)).toMatchObject({
+              schema: "canonfig.secrets/v1",
+              ok: false,
+              command: "secrets.sync",
+              automatic: true,
+              error: {
+                operation: process.platform === "linux"
+                  ? "clear transferred secrets"
+                  : "read secret manifest",
+              },
+              exitCode: automaticSecretFailure.status,
+            });
+            const automaticSecretEntries = readFileSync(
+              automaticSecretLog,
+              "utf8",
+            ).trim().split("\\n").map((line) => {
+              // SAFETY: Each line was emitted by the packed command logger as JSON.
+              return JSON.parse(line) as {
+                readonly event: string;
+                readonly exitCode?: number;
+                readonly durationMilliseconds?: number;
+              };
+            });
+            expect(automaticSecretEntries).toHaveLength(2);
+            expect(automaticSecretEntries[1]).toMatchObject({
+              event: "command.completed",
+              exitCode: automaticSecretFailure.status,
+            });
+            if (process.platform === "linux") {
+              expect(automaticSecretEntries[1]!.durationMilliseconds)
+                // Timer wake-up and wall-clock sampling may differ slightly.
+                .toBeGreaterThanOrEqual(
+                  automaticDelayMilliseconds
+                    - automaticDurationToleranceMilliseconds,
+                );
+            } else {
+              expect(automaticSecretEntries[1]!.durationMilliseconds)
+                .toBeGreaterThan(0);
+            }
+            rmSync(invalidSecretManifest, { force: true });
+
+          '''
+          source = source[:start] + block + source[end:]
+          path.write_text(source)
+          PY
+          git config user.name "Microck"
+          git config user.email "contact@micr.dev"
+          git add tests/packed-cli.test.ts
+          git commit -m "test: block inside automatic credential cleanup"
+          git push origin HEAD:feat/command-logging
