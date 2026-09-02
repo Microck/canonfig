@@ -427,7 +427,6 @@ export const storeSecret = (
   origin: SecretOrigin = "local",
 ): Effect.Effect<SharedSecretSummary, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
-    const machine = yield* MachineState;
     yield* requireSecureStorage("store secret");
     const validName = yield* decodeName(name);
     const validValue = yield* decodeValue(value);
@@ -548,6 +547,11 @@ export const applyTransferredSecrets = (
       "decode shared secrets",
     );
     const current = yield* readManifest();
+    yield* removeRetiredReferences(
+      current.secrets,
+      current.retiredReferences ?? [],
+      "clean retired secrets",
+    );
     const incomingNames = new Set(incoming.map((secret) => secret.name));
     const conflicting = current.secrets.filter((secret) =>
       secret.origin === "local" && incomingNames.has(secret.name)
@@ -577,10 +581,7 @@ export const applyTransferredSecrets = (
       });
     }
     const next = [...preserved, ...created];
-    const retired = [
-      ...(current.retiredReferences ?? []),
-      ...replaced.map((secret) => secret.reference),
-    ];
+    const retired = replaced.map((secret) => secret.reference);
     yield* writeManifest(next, retired).pipe(
       Effect.tapError(() =>
         cleanupReferences(created.map((entry) => entry.reference))
