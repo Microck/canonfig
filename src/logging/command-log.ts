@@ -221,3 +221,14 @@ export const registerCommandLogSignalHandlers = (log: CommandLog): void => {
   register("SIGINT", 130);
   register("SIGTERM", 143);
 };
+
+/** Install one command log whose normal completion is the process's final exit. */
+export const installCommandLog = (
+  arguments_: ReadonlyArray<string>,
+  options: CommandLogOptions = {},
+): CommandLog => {
+  const log = createCommandLog(arguments_, options);
+  process.once("exit", (exitCode) => log.complete(exitCode));
+  registerCommandLogSignalHandlers(log);
+  return log;
+};
