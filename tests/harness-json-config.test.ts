@@ -63,7 +63,7 @@ describe("JSON harness configuration", () => {
     });
 
     expect(stdout).toBe("");
-    expect(stderr).toContain("--format is only available for harness init");
+    expect(stderr).toContain("--format is only valid with harness init.");
     expect(exitCode).toBe(CliExitCode.usageOrConfiguration);
   });
 
