@@ -8,6 +8,7 @@ import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  CertificateFingerprint,
   CredentialReference,
   GroupName,
 } from "../../src/domain/brand.ts";
@@ -21,10 +22,12 @@ import type {
 } from "../../src/enrollment/enrollment.types.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
+import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import {
   applyTransferredSecrets,
+  clearTransferredSecrets,
   loadSharedSecrets,
   maximumSecretBytes,
   maximumSharedSecretPayloadBytes,
@@ -44,7 +47,10 @@ const SecretManifestReferenceSchema = Schema.Struct({
     name: Schema.String,
     reference: CredentialReference,
   })),
+  retiredReferences: Schema.optional(Schema.Array(CredentialReference)),
 });
+
+type SecretManifestReference = typeof SecretManifestReferenceSchema.Type;
 
 interface SourceRuntime {
   readonly runPromise: <Value, Failure>(
@@ -120,6 +126,22 @@ const secureTestMachineLayer = (
           kind: "secure-noninteractive" as const,
           provider: "secret-service" as const,
         }),
+    })),
+  ).pipe(Layer.provide(layer));
+
+const failingRemovalMachineLayer = (
+  layer: Layer.Layer<MachineState>,
+): Layer.Layer<MachineState> =>
+  Layer.effect(
+    MachineState,
+    Effect.map(MachineState, (machine) => ({
+      ...machine,
+      removeCredential: (reference: typeof CredentialReference.Type) =>
+        Effect.fail(new CredentialStorageError({
+          operation: "remove credential",
+          reference: String(reference),
+          message: "injected credential removal failure",
+        })),
     })),
   ).pipe(Layer.provide(layer));
 
@@ -230,15 +252,24 @@ const requestRaw = async (
   });
 };
 
+const readSecretManifest = async (
+  setup: Fixture,
+): Promise<SecretManifestReference> =>
+  Schema.decodeUnknownSync(SecretManifestReferenceSchema)(
+    JSON.parse(
+      await readFile(
+        join(setup.followerHome, ".canonfig", "secrets.json"),
+        "utf8",
+      ),
+    ),
+  );
+
 const storedValue = async (
   setup: Fixture,
   name: string,
 ): Promise<string | undefined> => {
-  const manifestPath = join(setup.followerHome, ".canonfig", "secrets.json");
   try {
-    const manifest = Schema.decodeUnknownSync(SecretManifestReferenceSchema)(
-      JSON.parse(await readFile(manifestPath, "utf8")),
-    );
+    const manifest = await readSecretManifest(setup);
     const entry = manifest.secrets.find((secret) => secret.name === name);
     if (entry === undefined) return undefined;
     const value = await runFollower(setup, Effect.gen(function*() {
@@ -303,6 +334,26 @@ describe("secure secret transfer", () => {
     expect(empty.payload.secrets).toEqual([]);
     await runFollower(setup, applyTransferredSecrets(empty.payload));
     expect(await storedValue(setup, "github-token")).toBeUndefined();
+  });
+
+  it("normalizes localhost to the canonical loopback address before dialing", async () => {
+    const setup = fixture();
+    await setup.runtime.runPromise(storeSecret("localhost-token", "loopback-only"));
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server, [group(SECRET_SHARE_GROUP)]);
+
+    const fetched = await runFollower(setup, fetchSharedSecrets({
+      endpoint: server.endpoint.replace("127.0.0.1", "localhost"),
+      tlsFingerprint: server.fingerprint,
+      credentialReference: enrolled.credentialReference,
+    }));
+
+    expect(fetched.status).toBe("shared");
+    if (fetched.status !== "shared") throw new Error("expected shared secrets");
+    expect(fetched.payload.secrets).toEqual([{
+      name: "localhost-token",
+      value: "loopback-only",
+    }]);
   });
 
   it("clears source-owned secrets when the sharing grant disappears", async () => {
@@ -389,6 +440,33 @@ describe("secure secret transfer", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("rejects local-file storage before opening the secret transport", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-secret-preflight-"));
+    temporaryDirectories.push(root);
+    const fingerprint = Schema.decodeUnknownSync(CertificateFingerprint)(
+      "a".repeat(64),
+    );
+    const reference = Schema.decodeUnknownSync(CredentialReference)(
+      `local-file:${join(root, "follower.credential")}`,
+    );
+
+    await expect(
+      Effect.runPromise(
+        fetchSharedSecrets({
+          endpoint: "https://127.0.0.1:1",
+          tlsFingerprint: fingerprint,
+          credentialReference: reference,
+          timeoutMilliseconds: 100,
+        }).pipe(
+          Effect.provide(localFileMachineLayer("linux", root)),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      category: "storage",
+      operation: "fetch shared secrets",
+    });
+  });
+
   it("rejects source values that collide with a local secret", async () => {
     const setup = fixture();
     await runFollower(setup, storeSecret("collision", "local-value"));
@@ -403,6 +481,91 @@ describe("secure secret transfer", () => {
       operation: "apply transferred secrets",
     });
     expect(await storedValue(setup, "collision")).toBe("local-value");
+  });
+
+  it("keeps replaced source credentials tracked until removal can retry", async () => {
+    const setup = fixture();
+    await runFollower(setup, applyTransferredSecrets({
+      schemaVersion: 1,
+      secrets: [{ name: "rotated", value: "old-value" }],
+    }));
+    const oldReference = (await readSecretManifest(setup)).secrets[0]!.reference;
+    const failingLayer = failingRemovalMachineLayer(setup.followerMachine);
+
+    await expect(
+      Effect.runPromise(
+        applyTransferredSecrets({
+          schemaVersion: 1,
+          secrets: [{ name: "rotated", value: "new-value" }],
+        }).pipe(Effect.provide(failingLayer)),
+      ),
+    ).rejects.toMatchObject({
+      category: "storage",
+      operation: "replace shared secrets",
+    });
+    expect((await readSecretManifest(setup)).retiredReferences)
+      .toContain(oldReference);
+
+    await runFollower(setup, applyTransferredSecrets({
+      schemaVersion: 1,
+      secrets: [{ name: "rotated", value: "new-value" }],
+    }));
+    expect((await readSecretManifest(setup)).retiredReferences ?? []).toEqual([]);
+    expect(await storedValue(setup, "rotated")).toBe("new-value");
+  });
+
+  it("keeps deleted source credentials tracked until removal can retry", async () => {
+    const setup = fixture();
+    await runFollower(setup, applyTransferredSecrets({
+      schemaVersion: 1,
+      secrets: [{ name: "deleted", value: "old-value" }],
+    }));
+    const oldReference = (await readSecretManifest(setup)).secrets[0]!.reference;
+    const failingLayer = failingRemovalMachineLayer(setup.followerMachine);
+
+    await expect(
+      Effect.runPromise(
+        applyTransferredSecrets({
+          schemaVersion: 1,
+          secrets: [],
+        }).pipe(Effect.provide(failingLayer)),
+      ),
+    ).rejects.toMatchObject({
+      category: "storage",
+      operation: "replace shared secrets",
+    });
+    expect((await readSecretManifest(setup)).retiredReferences)
+      .toContain(oldReference);
+
+    await runFollower(setup, applyTransferredSecrets({
+      schemaVersion: 1,
+      secrets: [],
+    }));
+    expect((await readSecretManifest(setup)).retiredReferences ?? []).toEqual([]);
+  });
+
+  it("keeps revoked source credentials tracked until removal can retry", async () => {
+    const setup = fixture();
+    await runFollower(setup, applyTransferredSecrets({
+      schemaVersion: 1,
+      secrets: [{ name: "grant-revoked", value: "old-value" }],
+    }));
+    const oldReference = (await readSecretManifest(setup)).secrets[0]!.reference;
+    const failingLayer = failingRemovalMachineLayer(setup.followerMachine);
+
+    await expect(
+      Effect.runPromise(
+        clearTransferredSecrets().pipe(Effect.provide(failingLayer)),
+      ),
+    ).rejects.toMatchObject({
+      category: "storage",
+      operation: "clear transferred secrets",
+    });
+    expect((await readSecretManifest(setup)).retiredReferences)
+      .toContain(oldReference);
+
+    await runFollower(setup, clearTransferredSecrets());
+    expect((await readSecretManifest(setup)).retiredReferences ?? []).toEqual([]);
   });
 
   it("rejects an encoded payload that would exceed the transport ceiling", async () => {
