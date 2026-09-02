@@ -86,7 +86,6 @@ interface CommandLogEntry {
   readonly durationMilliseconds?: number | undefined;
 }
 
-const securedWindowsPaths = new Set<string>();
 const nodeFileOperations: CommandLogFileOperations = {
   platform: process.platform,
   ensureDirectory: (path) => {
@@ -96,7 +95,6 @@ const nodeFileOperations: CommandLogFileOperations = {
     closeSync(openSync(path, "a", 0o600));
   },
   restrictWindowsAccess: (path, environment) => {
-    if (securedWindowsPaths.has(path)) return true;
     const result = spawnSync(
       "powershell.exe",
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_ACL_SCRIPT],
@@ -111,9 +109,7 @@ const nodeFileOperations: CommandLogFileOperations = {
         windowsHide: true,
       },
     );
-    if (result.error !== undefined || result.status !== 0) return false;
-    securedWindowsPaths.add(path);
-    return true;
+    return result.error === undefined && result.status === 0;
   },
   restrictPosixAccess: (path) => {
     chmodSync(path, 0o600);
