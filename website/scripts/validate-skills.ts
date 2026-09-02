@@ -23,7 +23,7 @@ const contracts: ReadonlyArray<SkillContract> = [
     ],
     bodyTerms: [
       "Node.js 24",
-      "@microck/canonfig@2.1.1",
+      "@microck/canonfig@2.2.0",
       "canonfig source init",
       "canonfig follower enroll",
       "pinned trust",

@@ -1,21 +1,26 @@
 ---
 title: "Reference: complete CLI reference"
-description: The shipped Canonfig 2.0 command surface, global output options, and exit semantics.
+description: Canonfig 2.2 commands, harness configuration, shared secrets, logging controls, and exit semantics.
 ---
 
 Canonfig requires Node.js 24 or newer. Commands render human-readable output by
 default. Add the global `--json` option to receive a stable
 `canonfig.cli/v1` envelope.
 
-## Global options
+## Global options and environment
 
 ```text
 canonfig --help
 canonfig --version
 ```
 
-`-h` and `-V` are the short forms. `--json` can appear anywhere in a command.
-There is no compatibility alias for the Canonfig v2 executable or commands.
+`-h` and `-V` are the short forms. `--json` can appear anywhere in a
+command.
+
+Canonfig writes privacy-safe JSON Lines command lifecycle records to
+`~/.canonfig/canonfig.log`. Use `CANONFIG_LOG=off` to disable them or
+`CANONFIG_LOG_FILE` to select another path. Arguments and command output are
+never recorded.
 
 ## Source Machine
 
@@ -28,9 +33,9 @@ canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group 
 canonfig source revoke follower-one
 ```
 
-`source serve` defaults to `127.0.0.1:17342` and accepts only `127.0.0.1` or
-`::1`. Invitation duration uses a positive integer plus `ms`, `s`, `m`, or `h`
-and cannot exceed 24 hours. Repeat `--group` to add Follower Groups.
+`source serve` defaults to `127.0.0.1:17342`. Invitation duration uses a
+positive integer plus `ms`, `s`, `m`, or `h` and cannot exceed 24
+hours. Repeat `--group` to add Follower Groups.
 
 ## Follower enrollment and synchronization
 
@@ -45,9 +50,43 @@ canonfig status --follower follower-one
 canonfig doctor --no-input --timeout-ms 5000
 ```
 
-`--plan` and `--apply` are mutually exclusive. With neither, `sync` plans.
-`recover` accepts only `--no-input`. Doctor timeout must be positive and no more
-than 300000 milliseconds.
+`--plan` and `--apply` are mutually exclusive. With neither, `sync`
+plans. A successful apply also synchronizes shared secrets when the follower has
+the `canonfig:secrets` group. `recover` accepts only `--no-input`.
+
+## Shared secrets
+
+```text
+printf %s "$GITHUB_TOKEN" | canonfig secrets set github-token
+canonfig secrets list
+canonfig secrets sync
+canonfig secrets remove github-token
+```
+
+`secrets set` reads the value from standard input only. Secret values require
+the native noninteractive credential store and are never accepted in argv,
+printed, or written to JSON. `secrets sync` is an explicit retry; normal
+successful `sync --apply` runs synchronize automatically.
+
+## Harness configuration
+
+```text
+canonfig harness init
+canonfig harness init --format json
+canonfig harness validate
+canonfig harness targets
+canonfig harness plan
+canonfig harness apply
+canonfig harness status
+canonfig harness diff
+canonfig harness clean
+canonfig harness doctor
+```
+
+YAML is the default scaffold. `--format json` creates strict, pretty-printed
+`.canonfig/harness.json` and is valid only with `harness init`. YAML and
+JSON use the same schema and compiler. Canonfig rejects ambiguous projects that
+contain multiple supported harness configuration files.
 
 ## Profiles and agent policy
 
@@ -63,8 +102,9 @@ canonfig agent harness
 canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-leaf-executable npm --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
 ```
 
-Harness kinds are `codex`, `claude`, and `gemini`. Capabilities are `elevation`,
-`login`, `restart`, and `reboot`. Allow origins must be exact HTTPS origins.
+Harness kinds are `codex`, `claude`, and `gemini`. Capabilities are
+`elevation`, `login`, `restart`, and `reboot`. Allow origins must be
+exact HTTPS origins.
 
 ## Scheduling
 

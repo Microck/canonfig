@@ -81,6 +81,25 @@ first place.
   values that contain authentication material.
 </Callout>
 
+## Privacy-safe command logs
+
+Canonfig appends JSON Lines lifecycle records to
+`~/.canonfig/canonfig.log`. Records contain the normalized command name,
+timestamp, process ID, duration, and exit code only. They never contain argv,
+stdout, stderr, invitation payloads, credential values, or shared-secret
+values. Unknown command shapes are recorded as `unknown` rather than copying
+unrecognized tokens.
+
+The log is mode `0600` on POSIX. On Windows, Canonfig installs a protected
+current-user-only ACL before the first append and skips logging if it cannot
+secure the file. Logging failures never change command behavior. Set
+`CANONFIG_LOG=off` to disable logging or `CANONFIG_LOG_FILE` to select a
+different path.
+
+`SIGINT` and `SIGTERM` produce completion records before Canonfig re-sends
+the signal. `SIGKILL` cannot be observed and cannot produce a completion
+record.
+
 ## Agent execution
 
 Agent Tasks and harness configuration use intersecting allowlists for paths,
