@@ -7,6 +7,7 @@ import { Effect, Layer } from "effect";
 import { linuxMachineStateLayer } from "../machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../machine/macos.layer.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import type { CredentialPolicy } from "../machine/machine-state.types.ts";
 import { windowsMachineStateLayer } from "../machine/windows.layer.ts";
 import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
 
@@ -14,14 +15,24 @@ export interface SecretRuntimeLayerOptions {
   readonly statePath?: string | undefined;
 }
 
+const credentialPolicyFromEnvironment = (): CredentialPolicy | undefined => {
+  const root = process.env.CANONFIG_LOCAL_CREDENTIAL_ROOT;
+  return root === undefined
+    ? undefined
+    : { kind: "local-file", path: root };
+};
+
 const machineLayer = (): Layer.Layer<MachineState> => {
+  // Enrollment credentials must be loaded from the provider that created them.
+  // Secret values remain protected by the secure-store checks in secret-store.
+  const credentialPolicy = credentialPolicyFromEnvironment();
   switch (process.platform) {
     case "darwin":
-      return macosMachineStateLayer();
+      return macosMachineStateLayer({ credentialPolicy });
     case "win32":
-      return windowsMachineStateLayer();
+      return windowsMachineStateLayer({ credentialPolicy });
     default:
-      return linuxMachineStateLayer();
+      return linuxMachineStateLayer({ credentialPolicy });
   }
 };
 
