@@ -26,7 +26,20 @@ jobs:
           cache: npm
 
       - name: Prepare version and documentation
-        run: node tools/release/prepare-v2.2.0.mjs
+        run: |
+          node tools/release/prepare-v2.2.0.mjs
+          git show HEAD:package-lock.json > package-lock.json
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+          lock.version = "2.2.0";
+          for (const path of ["", "website"]) {
+            if (lock.packages?.[path] !== undefined) {
+              lock.packages[path].version = "2.2.0";
+            }
+          }
+          writeFileSync("package-lock.json", `${JSON.stringify(lock, null, 2)}\n`, "utf8");
+          NODE
 
       - name: Install locked dependencies
         run: npm ci
