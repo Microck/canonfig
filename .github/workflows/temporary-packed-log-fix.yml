@@ -1,0 +1,73 @@
+name: Temporary packed logging cleanup
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'feat/command-logging'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: feat/command-logging
+          fetch-depth: 0
+
+      - name: Clean packed regression
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/packed-cli.test.ts")
+          source = path.read_text()
+          start = source.index("    const automaticSecretLog = resolve(")
+          end = source.index("    const firstApply = requireSuccess(", start)
+          block = '''    const automaticSecretLog = resolve(
+              workstationHome,
+              "automatic-secret-failure.log",
+            );
+            const invalidSecretManifest = resolve(
+              workstationHome,
+              ".canonfig",
+              "secrets.json",
+            );
+            writeFileSync(invalidSecretManifest, '{"invalid":true}\\n');
+            const automaticSecretFailure = invoke(
+              workstationHome,
+              ["sync", "--apply", "--json"],
+              { CANONFIG_LOG_FILE: automaticSecretLog },
+            );
+            expect(automaticSecretFailure.status).not.toBe(0);
+            const automaticSecretEntries = readFileSync(
+              automaticSecretLog,
+              "utf8",
+            ).trim().split("\\n").map((line) => {
+              // SAFETY: Each line was emitted by the packed command logger as JSON.
+              return JSON.parse(line) as {
+                readonly event: string;
+                readonly exitCode?: number;
+                readonly durationMilliseconds?: number;
+              };
+            });
+            expect(automaticSecretEntries).toHaveLength(2);
+            expect(automaticSecretEntries[1]).toMatchObject({
+              event: "command.completed",
+              exitCode: automaticSecretFailure.status,
+            });
+            expect(automaticSecretEntries[1]!.durationMilliseconds)
+              .toBeGreaterThan(0);
+            rmSync(invalidSecretManifest, { force: true });
+
+          '''
+          path.write_text(source[:start] + block + source[end:])
+          PY
+          git config user.name "Microck"
+          git config user.email "contact@micr.dev"
+          git add tests/packed-cli.test.ts
+          git commit -m "test: clean packed automatic-sync log regression"
+          git push origin HEAD:feat/command-logging
