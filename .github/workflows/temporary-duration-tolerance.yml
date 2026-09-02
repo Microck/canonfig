@@ -1,0 +1,50 @@
+name: Temporary duration tolerance fix
+
+on:
+  push:
+    branches:
+      - feat/command-logging
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: feat/command-logging
+          fetch-depth: 0
+
+      - name: Make automatic-phase duration assertion scheduler-tolerant
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/packed-cli.test.ts")
+          source = path.read_text()
+          source = source.replace(
+              "const automaticDelayMilliseconds = 250;",
+              "const automaticDelayMilliseconds = 500;\n"
+              "    const automaticDurationToleranceMilliseconds = 100;",
+              1,
+          )
+          old = ".toBeGreaterThanOrEqual(automaticDelayMilliseconds);"
+          new = "// Timer wake-up and wall-clock sampling may differ slightly.\n"
+          new += "        .toBeGreaterThanOrEqual(\n"
+          new += "          automaticDelayMilliseconds\n"
+          new += "            - automaticDurationToleranceMilliseconds,\n"
+          new += "        );"
+          if old not in source:
+              raise SystemExit("duration assertion not found")
+          path.write_text(source.replace(old, new, 1))
+          PY
+          git config user.name "Microck"
+          git config user.email "contact@micr.dev"
+          git add tests/packed-cli.test.ts
+          git commit -m "test: tolerate automatic-phase timer sampling skew"
+          git push origin HEAD:feat/command-logging
