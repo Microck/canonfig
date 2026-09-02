@@ -9,6 +9,7 @@ import { macosMachineStateLayer } from "../machine/macos.layer.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { windowsMachineStateLayer } from "../machine/windows.layer.ts";
 import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
+import { nativeSecretStoreLayer } from "./native-secret-store.ts";
 
 export interface SecretRuntimeLayerOptions {
   readonly statePath?: string | undefined;
@@ -37,5 +38,5 @@ export const secretRuntimeLayer = (
       Effect.as(stateRepositoryLayer(statePath)),
     ),
   );
-  return Layer.merge(state, machineLayer());
+  return Layer.merge(state, nativeSecretStoreLayer(machineLayer()));
 };
