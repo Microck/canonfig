@@ -9,6 +9,10 @@ import {
   runHarnessConfigurationCli,
 } from "../harness-configuration/cli.ts";
 import {
+  createCommandLog,
+  registerCommandLogSignalHandlers,
+} from "../logging/command-log.ts";
+import {
   isSecretsCommand,
   runSecretsCli,
   secretExitCode,
@@ -27,11 +31,17 @@ process.on("warning", (warning) => {
   for (const listener of warningListeners) listener.call(process, warning);
 });
 
+const arguments_ = process.argv.slice(2);
+const commandLog = createCommandLog(arguments_);
+process.once("exit", (exitCode) => commandLog.complete(exitCode));
+registerCommandLogSignalHandlers(commandLog);
+
 const nodeCliIo: CliIo = {
   writeStdout: (text) => process.stdout.write(text),
   writeStderr: (text) => process.stderr.write(text),
   setExitCode: (exitCode) => {
     process.exitCode = exitCode;
+    commandLog.complete(exitCode);
   },
 };
 
@@ -56,8 +66,6 @@ const automaticSecretFailure = (
     : `Secret synchronization failed: ${error.message}\n`);
   nodeCliIo.setExitCode(exitCode);
 };
-
-const arguments_ = process.argv.slice(2);
 
 if (isSecretsCommand(arguments_)) {
   NodeRuntime.runMain(
