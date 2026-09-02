@@ -420,20 +420,20 @@ The live SQLite implementation uses `@effect/sql-sqlite-node`, rather than depen
 ```text
 canonfig source init
 canonfig source scan --file AGENTS.md
-canonfig source publish
+canonfig source publish --proposal proposal.json --profile workstation --name Workstation --reviewer operator
 canonfig source serve
-canonfig source invite
-canonfig source revoke
+canonfig source invite --endpoint https://127.0.0.1:17342
+canonfig source revoke follower-one
 
-canonfig follower enroll <invite>
-canonfig sync [--plan | --apply]
-canonfig recover
-canonfig status [--json]
+canonfig follower enroll "$INVITE" --name laptop --profile workstation
+canonfig sync --plan
+canonfig recover --no-input
+canonfig status --json
 canonfig overlay list
-canonfig overlay set <resource-id> --target <path> --key <config.path>
-canonfig overlay remove <resource-id>
-canonfig doctor
-canonfig schedule set <calendar>
+canonfig overlay set resource-one --target config.json --key config.path
+canonfig overlay remove resource-one
+canonfig doctor --no-input
+canonfig schedule set daily@00:00
 canonfig schedule remove
 ```
 
