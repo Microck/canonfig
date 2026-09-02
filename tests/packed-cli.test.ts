@@ -1473,7 +1473,8 @@ esac
     ".canonfig",
     "secrets.json",
   );
-  const automaticDelayMilliseconds = 250;
+  const automaticDelayMilliseconds = 500;
+    const automaticDurationToleranceMilliseconds = 100;
   if (process.platform === "win32") {
     writeFileSync(invalidSecretManifest, '{"invalid":true}\n');
   } else {
@@ -1593,7 +1594,11 @@ esac
       .toBeGreaterThan(0);
   } else {
     expect(automaticSecretEntries[1]!.durationMilliseconds)
-      .toBeGreaterThanOrEqual(automaticDelayMilliseconds);
+      // Timer wake-up and wall-clock sampling may differ slightly.
+        .toBeGreaterThanOrEqual(
+          automaticDelayMilliseconds
+            - automaticDurationToleranceMilliseconds,
+        );
   }
   rmSync(invalidSecretManifest, { force: true });
 
