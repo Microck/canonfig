@@ -19,6 +19,7 @@ const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
       "clean",
       "diff",
       "doctor",
+      "help",
       "init",
       "plan",
       "status",
@@ -30,7 +31,7 @@ const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
   ["overlay", new Set(["list", "remove", "set"])],
   ["profile", new Set(["list", "select", "show"])],
   ["schedule", new Set(["remove", "set", "status"])],
-  ["secrets", new Set(["list", "remove", "set", "sync"])],
+  ["secrets", new Set(["help", "list", "remove", "set", "sync"])],
   ["source", new Set(["init", "invite", "publish", "revoke", "scan", "serve"])],
 ]);
 const SINGLE_COMMANDS = new Set([
@@ -39,6 +40,7 @@ const SINGLE_COMMANDS = new Set([
   "status",
   "sync",
 ]);
+const HELP_OPTIONS = new Set(["--help", "-h", "--json"]);
 const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$path = [Environment]::GetEnvironmentVariable('CANONFIG_LOG_ACL_PATH')",
@@ -126,9 +128,16 @@ const commandName = (arguments_: ReadonlyArray<string>): string => {
   if (first === undefined || first === "--help" || first === "-h") return "help";
   if (first === "--version" || first === "-V" || first === "-v") return "version";
   if (SINGLE_COMMANDS.has(first)) return first;
+  const actions = COMMAND_ACTIONS.get(first);
   const second = arguments_[1];
-  if (second !== undefined && COMMAND_ACTIONS.get(first)?.has(second) === true) {
+  if (second !== undefined && actions?.has(second) === true) {
     return `${first}.${second}`;
+  }
+  if (
+    actions?.has("help") === true
+    && (second === undefined || HELP_OPTIONS.has(second))
+  ) {
+    return `${first}.help`;
   }
   return "unknown";
 };
