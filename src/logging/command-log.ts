@@ -51,6 +51,15 @@ const WINDOWS_ACL_SCRIPT = [
   "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'Allow')",
   "$acl.AddAccessRule($rule)",
   "Set-Acl -LiteralPath $path -AclObject $acl",
+  "$verified = Get-Acl -LiteralPath $path",
+  "if (-not $verified.AreAccessRulesProtected) { throw 'log DACL inheritance is not protected' }",
+  "$rules = @($verified.Access)",
+  "if ($rules.Count -ne 1 -or $rules[0].IsInherited) { throw 'log DACL must contain one explicit rule' }",
+  "$verifiedIdentity = $rules[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier])",
+  "if ($verifiedIdentity.Value -ne $identity.Value) { throw 'log DACL identity does not match the current user' }",
+  "if ($rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { throw 'log DACL rule is not an allow rule' }",
+  "$required = [System.Security.AccessControl.FileSystemRights]::FullControl",
+  "if (($rules[0].FileSystemRights -band $required) -ne $required) { throw 'log DACL rule does not grant full control' }",
 ].join("; ");
 
 export interface CommandLogFileOperations {
