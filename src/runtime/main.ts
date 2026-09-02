@@ -67,17 +67,11 @@ const automaticSecretFailure = (
   nodeCliIo.setExitCode(exitCode);
 };
 
-const renderNonCommandOutcome = (): void => {
-  if (outcome._tag === "Help" || outcome._tag === "Version") {
-    nodeCliIo.writeStdout(`${outcome.text}\n`);
-  } else if (outcome._tag === "Invalid") {
-    nodeCliIo.writeStderr(`${outcome.message}\n`);
-  }
-  nodeCliIo.setExitCode(outcome.exitCode);
-};
-
 if (outcome._tag === "Help" || outcome._tag === "Version") {
-  NodeRuntime.runMain(Effect.sync(renderNonCommandOutcome));
+  NodeRuntime.runMain(Effect.sync(() => {
+    nodeCliIo.writeStdout(`${outcome.text}\n`);
+    nodeCliIo.setExitCode(outcome.exitCode);
+  }));
 } else if (isSecretsCommand(routedArguments)) {
   NodeRuntime.runMain(
     runSecretsCli(routedArguments.slice(1), nodeCliIo).pipe(
@@ -135,5 +129,8 @@ if (outcome._tag === "Help" || outcome._tag === "Version") {
     ),
   );
 } else {
-  NodeRuntime.runMain(Effect.sync(renderNonCommandOutcome));
+  NodeRuntime.runMain(Effect.sync(() => {
+    nodeCliIo.writeStderr(`${outcome.message}\n`);
+    nodeCliIo.setExitCode(outcome.exitCode);
+  }));
 }
