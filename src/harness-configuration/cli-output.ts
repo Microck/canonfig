@@ -110,7 +110,7 @@ export const harnessFailureExitCode = (error: unknown): CliExitCodeValue => {
   if (/APPLY|WRITE|ROLLBACK/u.test(error.code)) {
     return CliExitCode.verificationOrApplyFailure;
   }
-  if (/INVALID|NOT_FOUND|UNKNOWN|REQUIRED|EMPTY|PARSE/u.test(error.code)) {
+  if (/INVALID|NOT_ALLOWED|NOT_FOUND|UNKNOWN|REQUIRED|EMPTY|PARSE/u.test(error.code)) {
     return CliExitCode.usageOrConfiguration;
   }
   return CliExitCode.internal;

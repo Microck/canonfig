@@ -9,6 +9,7 @@ import { assertRealPathInside, resolveInside } from "./path.ts";
 export interface ScaffoldOptions {
   targets?: readonly TargetId[] | undefined;
   force?: boolean | undefined;
+  format?: "yaml" | "json" | undefined;
 }
 
 const ROOT_INSTRUCTIONS = `# Repository instructions
@@ -49,6 +50,12 @@ const SCAFFOLD_FEATURES = [
   "commands",
 ] as const;
 
+const CONFIG_PATHS = [
+  ".canonfig/harness.yaml",
+  ".canonfig/harness.yml",
+  ".canonfig/harness.json",
+] as const;
+
 /** Default to every adapter that can represent the generated example without a strict-mode failure. */
 const DEFAULT_SCAFFOLD_TARGETS = BUILTIN_ADAPTERS
   .filter((adapter) =>
@@ -60,15 +67,20 @@ const DEFAULT_SCAFFOLD_TARGETS = BUILTIN_ADAPTERS
   )
   .map((adapter) => adapter.descriptor.id);
 
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 async function writeNew(root: string, relativePath: string, content: string, force: boolean): Promise<boolean> {
   const filePath = resolveInside(root, relativePath);
   await assertRealPathInside(root, filePath);
-  try {
-    await fs.access(filePath);
-    if (!force) return false;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  if (await pathExists(filePath) && !force) return false;
   await assertRealPathInside(root, filePath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await assertRealPathInside(root, filePath);
@@ -76,14 +88,33 @@ async function writeNew(root: string, relativePath: string, content: string, for
   return true;
 }
 
+async function assertNoAlternateConfig(root: string, selectedPath: string): Promise<void> {
+  for (const relativePath of CONFIG_PATHS) {
+    if (relativePath === selectedPath) continue;
+    const filePath = resolveInside(root, relativePath);
+    await assertRealPathInside(root, filePath);
+    if (await pathExists(filePath)) {
+      throw new CanonfigError(
+        "CONFIG_FORMAT_CONFLICT",
+        `${relativePath} already exists; remove or rename it before creating ${selectedPath}.`,
+      );
+    }
+  }
+}
+
 export async function scaffoldProject(root: string, options: ScaffoldOptions = {}): Promise<string[]> {
   const targets = [...new Set(options.targets ?? DEFAULT_SCAFFOLD_TARGETS)];
   if (targets.length === 0) throw new CanonfigError("TARGET_EMPTY", "At least one target is required for init.");
   const force = options.force ?? false;
+  const format = options.format ?? "yaml";
+  const configPath = format === "json"
+    ? ".canonfig/harness.json"
+    : ".canonfig/harness.yaml";
 
   // The requested root is the boundary owned by init. Create it before the
   // containment checks used for every file below.
   await fs.mkdir(root, { recursive: true });
+  await assertNoAlternateConfig(root, configPath);
 
   const config = {
     version: 1,
@@ -119,9 +150,12 @@ export async function scaffoldProject(root: string, options: ScaffoldOptions = {
     permissions: { rules: [] },
     extensions: {},
   };
+  const configContent = format === "json"
+    ? `${JSON.stringify(config, null, 2)}\n`
+    : YAML.stringify(config, { lineWidth: 120 });
 
   const files: Array<[string, string]> = [
-    [".canonfig/harness.yaml", YAML.stringify(config, { lineWidth: 120 })],
+    [configPath, configContent],
     [".canonfig/instructions/AGENTS.md", ROOT_INSTRUCTIONS],
     [".canonfig/rules/source.md", EXAMPLE_RULE],
     [".canonfig/agents/reviewer.md", EXAMPLE_AGENT],

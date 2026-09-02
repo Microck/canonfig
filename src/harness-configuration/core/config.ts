@@ -8,6 +8,7 @@ import { TARGET_IDS, type TargetId } from "./types.ts";
 export const CANONFIG_DIR = ".canonfig";
 export const CONFIG_FILENAMES = ["harness.yaml", "harness.yml", "harness.json"] as const;
 export const STATE_FILENAME = ".harness-state.json";
+const CONFIG_DESCRIPTION = `${CANONFIG_DIR}/harness.yaml, harness.yml, or harness.json`;
 
 export async function findRepositoryRoot(start = process.cwd()): Promise<string> {
   let current = path.resolve(start);
@@ -17,18 +18,32 @@ export async function findRepositoryRoot(start = process.cwd()): Promise<string>
     }
     const parent = path.dirname(current);
     if (parent === current) {
-      throw new CanonfigError("CONFIG_NOT_FOUND", `No ${CANONFIG_DIR}/harness.yaml found from ${path.resolve(start)} upward. Run \"canonfig harness init\" first.`);
+      throw new CanonfigError("CONFIG_NOT_FOUND", `No ${CONFIG_DESCRIPTION} found from ${path.resolve(start)} upward. Run \"canonfig harness init\" first.`);
     }
     current = parent;
   }
 }
 
 export async function findConfigFile(root: string): Promise<string> {
+  const found: string[] = [];
   for (const filename of CONFIG_FILENAMES) {
     const candidate = path.join(root, CANONFIG_DIR, filename);
-    try { await fs.access(candidate); return candidate; } catch { /* continue */ }
+    try {
+      await fs.access(candidate);
+      found.push(candidate);
+    } catch {
+      // Continue looking for another supported format.
+    }
   }
-  throw new CanonfigError("CONFIG_NOT_FOUND", `Missing ${CANONFIG_DIR}/harness.yaml in ${root}`);
+  if (found.length > 1) {
+    throw new CanonfigError(
+      "CONFIG_FORMAT_CONFLICT",
+      `Multiple harness configuration files found in ${path.join(root, CANONFIG_DIR)}: ${found.map((file) => path.basename(file)).join(", ")}`,
+    );
+  }
+  const configPath = found[0];
+  if (configPath !== undefined) return configPath;
+  throw new CanonfigError("CONFIG_NOT_FOUND", `Missing ${CONFIG_DESCRIPTION} in ${root}`);
 }
 
 export async function loadConfig(root: string): Promise<{ config: CanonfigConfig; path: string }> {
