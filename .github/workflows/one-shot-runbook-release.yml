@@ -1,0 +1,190 @@
+name: One-shot runbook release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/one-shot-runbook-release.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.head_commit.message == 'chore: start runbook release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Prepare release commit and documentation
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(node -p "require('./package.json').version")"
+          IFS=. read -r major minor patch <<<"$current"
+          version="$major.$((minor + 1)).0"
+          tag="v$version"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          mkdir -p docs/releases
+          if ! grep -RIl --exclude-dir=node_modules --exclude-dir=.git -E 'CANONFIG_LOG|canonfig\.log' README.md docs website 2>/dev/null | grep -q .; then
+            cat > docs/command-logging.md <<'DOC'
+          # Command logging
+
+          Canonfig writes privacy-safe command lifecycle events as JSON Lines to
+          `~/.canonfig/canonfig.log`.
+
+          Each entry contains only the schema version, timestamp, lifecycle event, log
+          level, normalized command name, process ID, and—on completion—the exit code and
+          duration. Command arguments, standard output, standard error, invitation tokens,
+          and secret values are never recorded.
+
+          Set `CANONFIG_LOG=off` to disable logging. Set `CANONFIG_LOG_FILE` to choose a
+          different path.
+
+          The file is restricted to the current user: mode `0600` on POSIX systems and a
+          protected owner-only ACL on Windows. Logging failures never change command
+          behavior. `SIGINT` and `SIGTERM` produce completion records; `SIGKILL` cannot be
+          observed by the process and therefore cannot produce one.
+          DOC
+          fi
+
+          if ! grep -RIl --exclude-dir=node_modules --exclude-dir=.git -F 'harness init --format json' README.md docs website 2>/dev/null | grep -q .; then
+            cat > docs/json-configuration.md <<'DOC'
+          # JSON harness configuration
+
+          Run `canonfig harness init --format json` to create
+          `.canonfig/harness.json`. The JSON file uses the same validated schema as YAML,
+          is pretty-printed, and is intended for direct editing.
+
+          YAML remains the default. Canonfig rejects a repository containing more than one
+          of `.canonfig/harness.yaml`, `.canonfig/harness.yml`, and
+          `.canonfig/harness.json` instead of selecting one silently.
+          DOC
+          fi
+
+          if ! grep -RIl --exclude-dir=node_modules --exclude-dir=.git -F 'canonfig secrets' README.md docs website 2>/dev/null | grep -q .; then
+            cat > docs/secret-synchronization.md <<'DOC'
+          # Secure secret synchronization
+
+          Store a source-owned secret without placing it in shell arguments:
+
+          ```sh
+          printf '%s' "$VALUE" | canonfig secrets set NAME
+          ```
+
+          Followers enrolled in the `canonfig:secrets` group receive authorized secrets
+          after a successful `canonfig sync --apply`; `canonfig secrets sync` retries the
+          secret step explicitly. `canonfig secrets list` shows names and origins only,
+          and `canonfig secrets remove NAME` removes a stored value.
+
+          Secret values require the native, noninteractive platform credential store.
+          They are not written to Canonfig JSON manifests, printed, or re-shared by
+          followers. Transfer uses the enrolled follower credential and pinned loopback
+          TLS. Source deletion or removal of the sharing grant purges source-owned
+          follower credentials on the next synchronization.
+          DOC
+          fi
+
+          cat > "docs/releases/$tag.md" <<DOC
+          # Canonfig $version
+
+          This minor release adds three focused capabilities:
+
+          - privacy-safe JSON Lines command lifecycle logging, including owner-only file
+            protection and signal completion records;
+          - first-class editable JSON harness configuration through
+            \`canonfig harness init --format json\`;
+          - authorized, pinned-TLS secret synchronization backed exclusively by native
+            platform credential stores.
+
+          ## Compatibility
+
+          YAML remains the default harness format. Existing commands and configuration
+          continue to work. Secret sharing is opt-in through the \`canonfig:secrets\`
+          enrollment group.
+
+          ## Security and correctness
+
+          The release rejects plaintext secret-store fallback, prevents local/source name
+          collisions, bounds aggregate secret payloads, retries durable credential cleanup,
+          normalizes loopback endpoints before dialing, handles interrupted responses, and
+          never logs command arguments or output.
+          DOC
+
+          if ! grep -qF 'docs/command-logging.md' README.md; then
+            cat >> README.md <<'DOC'
+
+          ## Feature documentation
+
+          - [Command logging](docs/command-logging.md)
+          - [JSON harness configuration](docs/json-configuration.md)
+          - [Secure secret synchronization](docs/secret-synchronization.md)
+          DOC
+          fi
+
+          RELEASE_VERSION="$version" node <<'NODE'
+          const fs = require('node:fs');
+          const version = process.env.RELEASE_VERSION;
+          for (const file of ['package.json', 'website/package.json']) {
+            if (!fs.existsSync(file)) continue;
+            const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+            data.version = version;
+            fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+          }
+          NODE
+          npm install --package-lock-only --ignore-scripts
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Validate release artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          if npm run | grep -qE '^  release:check'; then
+            npm run release:check
+          fi
+
+      - name: Build
+        run: npm run build
+
+      - name: Commit and tag
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name Microck
+          git config user.email contact@micr.dev
+          git add README.md docs package.json package-lock.json website/package.json
+          git commit -m "release: $TAG"
+          git tag -a "$TAG" -m "Canonfig $VERSION"
+          git push origin HEAD:main --follow-tags
