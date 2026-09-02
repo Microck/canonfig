@@ -1,0 +1,53 @@
+name: Temporary merge release baseline
+
+on:
+  push:
+    branches:
+      - feat/command-logging
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: feat/command-logging
+          fetch-depth: 0
+
+      - name: Merge v2.2.0 baseline and retain final logging fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Microck"
+          git config user.email "contact@micr.dev"
+          git fetch origin main
+          git merge --no-ff -X ours origin/main -m "chore: merge v2.2.0 release baseline"
+          python <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          result = subprocess.run(
+              ["git", "grep", "-Il", "2.1.1"],
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          for name in result.stdout.splitlines():
+              if name == "RELEASE_NOTES.md":
+                  continue
+              path = Path(name)
+              text = path.read_text()
+              updated = text.replace("2.1.1", "2.2.0")
+              if updated != text:
+                  path.write_text(updated)
+          PY
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: align command logging with v2.2.0"
+          fi
+          git push origin HEAD:feat/command-logging
