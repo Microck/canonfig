@@ -97,6 +97,8 @@ const environmentFor = (
 ): NodeJS.ProcessEnv => ({
   ...process.env,
   ...packedSchedulerEnvironment,
+  CANONFIG_TEST_SECRET_CLEAR_DELAY_SECONDS: "",
+  CANONFIG_TEST_SECRET_CLEAR_FAIL: "0",
   ...environment,
   HOME: home,
   USERPROFILE: home,
