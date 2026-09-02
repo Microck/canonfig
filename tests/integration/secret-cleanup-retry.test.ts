@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,10 +9,14 @@ import { describe, expect, it } from "vitest";
 
 import { CredentialReference } from "../../src/domain/brand.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
-import { nativeCredentialWriteCommand } from "../../src/secrets/native-secret-store.ts";
+import {
+  nativeCredentialWriteCommand,
+  nativeSecretStoreLayer,
+} from "../../src/secrets/native-secret-store.ts";
 import { applyTransferredSecrets } from "../../src/secrets/secret-store.ts";
 
 const ManifestSchema = Schema.Struct({
@@ -214,12 +219,58 @@ describe("shared-secret cleanup retry", () => {
     });
     const input = Buffer.from(command.standardInput).toString("utf8");
     expect(metadata).not.toContain(secret);
-    expect(command.arguments).toEqual([]);
+    expect(command.arguments).toEqual(["-i"]);
     expect(command.environment).toEqual([]);
     expect(input).not.toContain(secret);
     expect(input).toContain(Buffer.from(secret, "utf8").toString("hex"));
     expect(input.endsWith("\n")).toBe(true);
   });
+
+  it.runIf(process.platform === "darwin")(
+    "round-trips a multibyte secret through macOS Keychain stdin",
+    async () => {
+      const secret = "é🔐-macos-keychain-round-trip";
+      const name = `canonfig-native-secret-${randomUUID()}`;
+      const layer = nativeSecretStoreLayer(
+        macosMachineStateLayer({
+          credentialPolicy: { kind: "secure-store" },
+        }),
+      );
+      let reference: typeof CredentialReference.Type | undefined;
+
+      try {
+        reference = await Effect.runPromise(
+          Effect.gen(function*() {
+            const machine = yield* MachineState;
+            return yield* machine.storeCredential({
+              name,
+              value: Redacted.make(secret),
+            });
+          }).pipe(Effect.provide(layer)),
+        );
+        const loaded = await Effect.runPromise(
+          Effect.gen(function*() {
+            const machine = yield* MachineState;
+            return yield* machine.loadCredential({ reference: reference! });
+          }).pipe(Effect.provide(layer)),
+        );
+        expect(Redacted.value(loaded)).toBe(secret);
+      } finally {
+        if (reference !== undefined) {
+          try {
+            await Effect.runPromise(
+              Effect.gen(function*() {
+                const machine = yield* MachineState;
+                yield* machine.removeCredential(reference!);
+              }).pipe(Effect.provide(layer)),
+            );
+          } catch {
+            // Best-effort cleanup for the ephemeral CI credential.
+          }
+        }
+      }
+    },
+  );
 
   it("keeps multibyte Windows secret values out of process metadata", () => {
     const secret = "é🔐-windows-secret-value";
