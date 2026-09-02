@@ -36,6 +36,7 @@ const SecretManifestEntrySchema = Schema.Struct({
 const SecretManifestSchema = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   secrets: Schema.Array(SecretManifestEntrySchema),
+  retiredReferences: Schema.optional(Schema.Array(CredentialReference)),
 });
 
 export const TransferredSecretsSchema = Schema.Struct({
@@ -55,6 +56,7 @@ export interface SharedSecretSummary {
 
 type SecretManifest = typeof SecretManifestSchema.Type;
 type SecretManifestEntry = typeof SecretManifestEntrySchema.Type;
+type CredentialReferenceValue = typeof CredentialReference.Type;
 interface SecretValue {
   readonly name: string;
   readonly value: string;
@@ -86,7 +88,7 @@ interface SecretPaths {
   readonly manifest: MachinePath;
 }
 
-const requireSecureStorage = (
+export const requireSecureStorage = (
   operation: string,
 ): Effect.Effect<void, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
@@ -184,6 +186,11 @@ const validateUniqueNames = (
   return Effect.void;
 };
 
+const uniqueReferences = (
+  references: ReadonlyArray<CredentialReferenceValue>,
+): ReadonlyArray<CredentialReferenceValue> =>
+  [...new Map(references.map((reference) => [String(reference), reference])).values()];
+
 const validatePayloadBudget = (
   secrets: ReadonlyArray<SecretValue>,
   category: SecretTransferError["category"],
@@ -211,7 +218,7 @@ const readManifest = (): Effect.Effect<
     const machine = yield* MachineState;
     const paths = yield* secretPaths();
     if (!(yield* pathExists(paths.manifest.absolute))) {
-      return { schemaVersion: 1, secrets: [] };
+      return { schemaVersion: 1, secrets: [], retiredReferences: [] };
     }
     const bytes = yield* machine.readFile({
       path: paths.manifest,
@@ -237,11 +244,15 @@ const readManifest = (): Effect.Effect<
         secretError("state", "read secret manifest", "the secret manifest is invalid")
       ),
     );
-    return manifest;
+    return {
+      ...manifest,
+      retiredReferences: uniqueReferences(manifest.retiredReferences ?? []),
+    };
   });
 
 const writeManifest = (
   secrets: ReadonlyArray<SecretManifestEntry>,
+  retiredReferences: ReadonlyArray<CredentialReferenceValue> = [],
 ): Effect.Effect<void, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -249,16 +260,26 @@ const writeManifest = (
       secrets.map((secret) => secret.name),
       "write secret manifest",
     );
+    const activeReferences = new Set(secrets.map((secret) => String(secret.reference)));
+    const retired = uniqueReferences(retiredReferences).filter((reference) =>
+      !activeReferences.has(String(reference))
+    );
     const paths = yield* secretPaths();
     yield* machine.ensureDirectory({ path: paths.directory, mode: 0o700 }).pipe(
       Effect.mapError(() =>
         secretError("storage", "write secret manifest", "the Canonfig data directory cannot be secured")
       ),
     );
-    const manifest: SecretManifest = {
-      schemaVersion: 1,
-      secrets: [...secrets].sort((left, right) => left.name.localeCompare(right.name)),
-    };
+    const manifest: SecretManifest = retired.length === 0
+      ? {
+        schemaVersion: 1,
+        secrets: [...secrets].sort((left, right) => left.name.localeCompare(right.name)),
+      }
+      : {
+        schemaVersion: 1,
+        secrets: [...secrets].sort((left, right) => left.name.localeCompare(right.name)),
+        retiredReferences: retired,
+      };
     const content = new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`);
     if (content.byteLength > maximumManifestBytes) {
       return yield* secretError(
@@ -276,6 +297,32 @@ const writeManifest = (
         secretError("storage", "write secret manifest", "the secret manifest cannot be written safely")
       ),
     );
+  });
+
+const removeRetiredReferences = (
+  secrets: ReadonlyArray<SecretManifestEntry>,
+  references: ReadonlyArray<CredentialReferenceValue>,
+  operation: string,
+): Effect.Effect<void, SecretTransferError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const pending = uniqueReferences(references);
+    if (pending.length === 0) return;
+    const failed: CredentialReferenceValue[] = [];
+    for (const reference of pending) {
+      const removed = yield* machine.removeCredential(reference).pipe(
+        Effect.match({ onFailure: () => false, onSuccess: () => true }),
+      );
+      if (!removed) failed.push(reference);
+    }
+    yield* writeManifest(secrets, failed);
+    if (failed.length > 0) {
+      return yield* secretError(
+        "storage",
+        operation,
+        "obsolete secret credentials remain queued for automatic removal",
+      );
+    }
   });
 
 const decodeName = (
@@ -317,7 +364,7 @@ const storeValue = (
   name: string,
   value: string,
 ): Effect.Effect<
-  typeof CredentialReference.Type,
+  CredentialReferenceValue,
   SecretTransferError,
   MachineState
 > =>
@@ -352,7 +399,7 @@ const loadSecretValues = (
   });
 
 const cleanupReferences = (
-  references: ReadonlyArray<typeof CredentialReference.Type>,
+  references: ReadonlyArray<CredentialReferenceValue>,
 ): Effect.Effect<void, never, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -402,21 +449,14 @@ export const storeSecret = (
       ...current.secrets.filter((secret) => secret.name !== validName),
       { name: validName, reference, origin },
     ];
-    yield* writeManifest(next).pipe(
+    const retired = [
+      ...(current.retiredReferences ?? []),
+      ...(previous === undefined ? [] : [previous.reference]),
+    ];
+    yield* writeManifest(next, retired).pipe(
       Effect.tapError(() => cleanupReferences([reference])),
     );
-    if (previous !== undefined) {
-      const removed = yield* machine.removeCredential(previous.reference).pipe(
-        Effect.match({ onFailure: () => false, onSuccess: () => true }),
-      );
-      if (!removed) {
-        return yield* secretError(
-          "storage",
-          "replace secret",
-          "the secret was updated but its previous credential could not be removed",
-        );
-      }
-    }
+    yield* removeRetiredReferences(next, retired, "replace secret");
     return { name: validName, origin };
   });
 
@@ -424,24 +464,17 @@ export const removeSecret = (
   name: string,
 ): Effect.Effect<boolean, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
-    const machine = yield* MachineState;
     const validName = yield* decodeName(name);
     const current = yield* readManifest();
     const existing = current.secrets.find((secret) => secret.name === validName);
     if (existing === undefined) return false;
-    yield* writeManifest(
-      current.secrets.filter((secret) => secret.name !== validName),
-    );
-    const removed = yield* machine.removeCredential(existing.reference).pipe(
-      Effect.match({ onFailure: () => false, onSuccess: () => true }),
-    );
-    if (!removed) {
-      return yield* secretError(
-        "storage",
-        "remove secret",
-        "the secret was unlisted but its credential could not be removed",
-      );
-    }
+    const next = current.secrets.filter((secret) => secret.name !== validName);
+    const retired = [
+      ...(current.retiredReferences ?? []),
+      existing.reference,
+    ];
+    yield* writeManifest(next, retired);
+    yield* removeRetiredReferences(next, retired, "remove secret");
     return true;
   });
 
@@ -451,26 +484,20 @@ export const clearTransferredSecrets = (): Effect.Effect<
   MachineState
 > =>
   Effect.gen(function*() {
-    const machine = yield* MachineState;
     const current = yield* readManifest();
     const local = current.secrets.filter((secret) => secret.origin === "local");
     const source = current.secrets.filter((secret) => secret.origin === "source");
-    if (source.length === 0) return [];
-    yield* writeManifest(local);
-    let cleanupFailed = false;
-    for (const secret of source) {
-      const removed = yield* machine.removeCredential(secret.reference).pipe(
-        Effect.match({ onFailure: () => false, onSuccess: () => true }),
-      );
-      cleanupFailed ||= !removed;
-    }
-    if (cleanupFailed) {
-      return yield* secretError(
-        "storage",
-        "clear transferred secrets",
-        "secret sharing was revoked but some source-owned credentials could not be removed",
-      );
-    }
+    const retired = [
+      ...(current.retiredReferences ?? []),
+      ...source.map((secret) => secret.reference),
+    ];
+    if (source.length === 0 && retired.length === 0) return [];
+    yield* writeManifest(local, retired);
+    yield* removeRetiredReferences(
+      local,
+      retired,
+      "clear transferred secrets",
+    );
     return source.map((secret) => secret.name);
   });
 
@@ -482,6 +509,11 @@ export const loadSharedSecrets = (): Effect.Effect<
   Effect.gen(function*() {
     yield* requireSecureStorage("load shared secrets");
     const manifest = yield* readManifest();
+    yield* removeRetiredReferences(
+      manifest.secrets,
+      manifest.retiredReferences ?? [],
+      "clean retired secrets",
+    );
     const shared = manifest.secrets.filter((secret) => secret.origin === "local");
     const secrets = yield* loadSecretValues(shared, "load shared secrets");
     yield* validatePayloadBudget(secrets, "storage", "load shared secrets");
@@ -492,7 +524,6 @@ export const applyTransferredSecrets = (
   payload: TransferredSecrets,
 ): Effect.Effect<ReadonlyArray<string>, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
-    const machine = yield* MachineState;
     yield* requireSecureStorage("apply transferred secrets");
     const incoming = yield* Effect.forEach(payload.secrets, (secret) =>
       Effect.all({
@@ -531,8 +562,8 @@ export const applyTransferredSecrets = (
       );
     }
     const preserved = current.secrets.filter((secret) => secret.origin === "local");
-    const retired = current.secrets.filter((secret) => secret.origin === "source");
-    const created: Array<SecretManifestEntry> = [];
+    const replaced = current.secrets.filter((secret) => secret.origin === "source");
+    const created: SecretManifestEntry[] = [];
     for (const secret of incoming) {
       const reference = yield* storeValue(secret.name, secret.value).pipe(
         Effect.tapError(() =>
@@ -545,24 +576,16 @@ export const applyTransferredSecrets = (
         origin: "source",
       });
     }
-    yield* writeManifest([...preserved, ...created]).pipe(
+    const next = [...preserved, ...created];
+    const retired = [
+      ...(current.retiredReferences ?? []),
+      ...replaced.map((secret) => secret.reference),
+    ];
+    yield* writeManifest(next, retired).pipe(
       Effect.tapError(() =>
         cleanupReferences(created.map((entry) => entry.reference))
       ),
     );
-    let cleanupFailed = false;
-    for (const secret of retired) {
-      const removed = yield* machine.removeCredential(secret.reference).pipe(
-        Effect.match({ onFailure: () => false, onSuccess: () => true }),
-      );
-      cleanupFailed ||= !removed;
-    }
-    if (cleanupFailed) {
-      return yield* secretError(
-        "storage",
-        "replace shared secrets",
-        "shared secrets were updated but obsolete credentials could not all be removed",
-      );
-    }
+    yield* removeRetiredReferences(next, retired, "replace shared secrets");
     return created.map((secret) => secret.name);
   });
