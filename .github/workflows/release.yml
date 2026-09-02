@@ -1,6 +1,12 @@
 name: Publish release
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+      - RELEASE_NOTES.md
   workflow_dispatch:
     inputs:
       version:
@@ -18,7 +24,10 @@ concurrency:
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.head_commit.message, 'chore(release): prepare v'))
     runs-on: ubuntu-latest
     steps:
       - name: Check out main
@@ -32,14 +41,18 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Verify release input
+      - name: Resolve release version
+        id: release
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           node --input-type=module <<'NODE'
-          import { readFileSync } from "node:fs";
-          const version = process.env.RELEASE_VERSION;
+          import { appendFileSync, readFileSync } from "node:fs";
           const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+          const requested = process.env.REQUESTED_VERSION?.trim();
+          const version = requested === undefined || requested.length === 0
+            ? manifest.version
+            : requested;
           if (version !== manifest.version) {
             throw new Error(`requested ${version}; package.json contains ${manifest.version}`);
           }
@@ -50,7 +63,13 @@ jobs:
           if (!notes.includes(`v${version}`)) {
             throw new Error(`RELEASE_NOTES.md does not describe v${version}`);
           }
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
           NODE
+
+      - name: Verify unpublished version
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
           if git rev-parse --verify --quiet "refs/tags/v${RELEASE_VERSION}"; then
             echo "tag v${RELEASE_VERSION} already exists" >&2
             exit 1
@@ -80,7 +99,7 @@ jobs:
       - name: Create tag and GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           gh release create "v${RELEASE_VERSION}" \
             --target "${GITHUB_SHA}" \
@@ -90,7 +109,7 @@ jobs:
 
       - name: Verify published package
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           for attempt in 1 2 3 4 5; do
             published="$(npm view "@microck/canonfig@${RELEASE_VERSION}" version 2>/dev/null || true)"
