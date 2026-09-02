@@ -475,6 +475,27 @@ describe("packed Canonfig executable", () => {
       exitCode: 0,
       data: "deterministic-only",
     });
+
+    const leadingHarness = invoke(
+      followerHome,
+      ["--json", "harness", "targets"],
+    );
+    expect(leadingHarness).toMatchObject({ status: 0, stderr: "" });
+    expect(JSON.parse(leadingHarness.stdout)).toMatchObject({
+      command: "harness.targets",
+      exitCode: 0,
+    });
+
+    const leadingSecrets = invoke(
+      followerHome,
+      ["--json", "secrets", "list"],
+    );
+    expect(leadingSecrets).toMatchObject({ status: 0, stderr: "" });
+    expect(JSON.parse(leadingSecrets.stdout)).toMatchObject({
+      schema: "canonfig.secrets/v1",
+      ok: true,
+      command: "secrets.list",
+    });
   });
 
   it("maps invalid input to the stable usage exit code", () => {
