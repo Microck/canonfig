@@ -851,8 +851,12 @@ const runBoundedProcess = (
           }
           target.push(chunk);
         };
-        child.stdout.on("data", capture(output));
-        child.stderr.on("data", capture(errors));
+        if (child.stdout === null || child.stderr === null) {
+          terminate(new ProcessStartSignal("process output streams are unavailable"));
+        } else {
+          child.stdout.on("data", capture(output));
+          child.stderr.on("data", capture(errors));
+        }
         child.once("error", (cause) => {
           failure = new ProcessStartSignal(messageOf(cause));
         });
