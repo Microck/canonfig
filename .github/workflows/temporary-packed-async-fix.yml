@@ -1,0 +1,37 @@
+name: Temporary packed async fix
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'feat/command-logging'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: feat/command-logging
+          fetch-depth: 0
+
+      - name: Make convergence test async
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+          path = Path("tests/packed-cli.test.ts")
+          source = path.read_text()
+          old = '  it("converges a packed source across multiple isolated followers", () => {'
+          new = '  it("converges a packed source across multiple isolated followers", async () => {'
+          if old not in source:
+              raise SystemExit("packed convergence signature not found")
+          path.write_text(source.replace(old, new, 1))
+          PY
+          git config user.name "Microck"
+          git config user.email "contact@micr.dev"
+          git add tests/packed-cli.test.ts
+          git commit -m "test: await packed automatic phase regression"
+          git push origin HEAD:feat/command-logging
