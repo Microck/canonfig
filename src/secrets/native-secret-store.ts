@@ -12,12 +12,14 @@ import {
 import { MachineState } from "../machine/machine-state.service.ts";
 import type {
   CredentialStorageCapability,
+  LoadCredentialInput,
   ProcessEnvironmentEntry,
   StoreCredentialInput,
 } from "../machine/machine-state.types.ts";
 
 const maximumCredentialOutputBytes = 1024 * 1024;
 const credentialTimeoutMilliseconds = 5_000;
+const keychainHexPrefix = "keychain-hex:";
 const decode = Schema.decodeUnknownSync;
 
 export interface NativeCredentialWriteCommand {
@@ -69,6 +71,37 @@ const runNativeCredentialCommand = (
     return result.exitCode;
   });
 
+const keychainStorageReference = (
+  reference: typeof CredentialReference.Type,
+): typeof CredentialReference.Type | undefined => {
+  const text = String(reference);
+  if (!text.startsWith(keychainHexPrefix)) return undefined;
+  return decode(CredentialReference)(`keychain:${text.slice(keychainHexPrefix.length)}`);
+};
+
+const decodeKeychainValue = (
+  input: LoadCredentialInput,
+  value: Redacted.Redacted<string>,
+): Effect.Effect<Redacted.Redacted<string>, CredentialStorageError> =>
+  Effect.try({
+    try: () => {
+      const hexadecimal = Redacted.value(value);
+      if (!/^(?:[0-9a-f]{2})+$/u.test(hexadecimal)) {
+        throw new Error("invalid Keychain hex payload");
+      }
+      return Redacted.make(
+        new TextDecoder("utf-8", { fatal: true }).decode(
+          Buffer.from(hexadecimal, "hex"),
+        ),
+      );
+    },
+    catch: () => new CredentialStorageError({
+      operation: "load credential",
+      reference: String(input.reference),
+      message: "the versioned Keychain credential is invalid",
+    }),
+  });
+
 export const nativeCredentialWriteCommand = (
   capability: Extract<CredentialStorageCapability, {
     readonly kind: "secure-noninteractive";
@@ -90,7 +123,7 @@ export const nativeCredentialWriteCommand = (
       standardInput: new TextEncoder().encode(
         `add-generic-password -U -a canonfig -s dev.canonfig.${key} -X ${hexadecimalValue}\n`,
       ),
-      reference: decode(CredentialReference)(`keychain:${key}`),
+      reference: decode(CredentialReference)(`${keychainHexPrefix}${key}`),
     };
   }
 
@@ -164,5 +197,16 @@ export const nativeSecretStoreLayer = (
           if (exitCode !== 0) return yield* failure(command.provider);
           return command.reference;
         }),
+      loadCredential: (input: LoadCredentialInput) => {
+        const storageReference = keychainStorageReference(input.reference);
+        if (storageReference === undefined) return machine.loadCredential(input);
+        return machine.loadCredential({ reference: storageReference }).pipe(
+          Effect.flatMap((value) => decodeKeychainValue(input, value)),
+        );
+      },
+      removeCredential: (reference: typeof CredentialReference.Type) => {
+        const storageReference = keychainStorageReference(reference);
+        return machine.removeCredential(storageReference ?? reference);
+      },
     })),
   ).pipe(Layer.provide(base));
