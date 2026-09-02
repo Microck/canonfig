@@ -141,8 +141,8 @@ describe("shared-secret cleanup retry", () => {
     expect(input.endsWith("\n")).toBe(true);
   });
 
-  it("keeps Windows secret values out of arguments and environment", () => {
-    const secret = "windows-secret-value-not-process-metadata";
+  it("keeps multibyte Windows secret values out of process metadata", () => {
+    const secret = "é🔐-windows-secret-value";
     const command = nativeCredentialWriteCommand(
       { kind: "secure-noninteractive", provider: "credential-manager" },
       { name: "canonfig-secret", value: Redacted.make(secret) },
@@ -157,9 +157,11 @@ describe("shared-secret cleanup retry", () => {
       arguments: command.arguments,
       environment: command.environment,
     });
+    const script = command.arguments.join(" ");
     expect(metadata).not.toContain(secret);
     expect(metadata).not.toContain("CANONFIG_SECRET");
     expect(Buffer.from(command.standardInput).toString("utf8")).toBe(secret);
-    expect(command.arguments.join(" ")).toContain("[Console]::In.ReadToEnd()");
+    expect(script).toContain("[System.Text.UTF8Encoding]::new($false)");
+    expect(script).toContain("[Console]::In.ReadToEnd()");
   });
 });
