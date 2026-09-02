@@ -496,6 +496,40 @@ describe("packed Canonfig executable", () => {
       ok: true,
       command: "secrets.list",
     });
+
+    const globalSpecialVersion = invoke(
+      followerHome,
+      ["secrets", "--version"],
+    );
+    expect(globalSpecialVersion).toEqual({
+      status: 0,
+      stdout: "2.1.1\n",
+      stderr: "",
+    });
+
+    const leadingGlobalVersion = invoke(
+      followerHome,
+      ["--json", "harness", "--version"],
+    );
+    expect(leadingGlobalVersion).toEqual({
+      status: 0,
+      stdout: "2.1.1\n",
+      stderr: "",
+    });
+
+    const globalSpecialHelp = invoke(
+      followerHome,
+      ["harness", "--help"],
+    );
+    expect(globalSpecialHelp).toMatchObject({ status: 0, stderr: "" });
+    expect(globalSpecialHelp.stdout).toContain("Usage: canonfig");
+
+    const leadingGlobalHelp = invoke(
+      followerHome,
+      ["--json", "secrets", "--help"],
+    );
+    expect(leadingGlobalHelp).toMatchObject({ status: 0, stderr: "" });
+    expect(leadingGlobalHelp.stdout).toContain("Usage: canonfig");
   });
 
   it("maps invalid input to the stable usage exit code", () => {
