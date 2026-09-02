@@ -27,6 +27,7 @@ import {
   applyTransferredSecrets,
   loadSharedSecrets,
   maximumSecretBytes,
+  maximumSharedSecretPayloadBytes,
   removeSecret,
   SECRET_SHARE_GROUP,
   storeSecret,
@@ -335,6 +336,36 @@ describe("secure secret transfer", () => {
     expect(await storedValue(setup, "revoked-token")).toBeUndefined();
   });
 
+  it("clears source-owned secrets when the follower credential is revoked", async () => {
+    const setup = fixture();
+    await setup.runtime.runPromise(storeSecret("revoked-device-token", "remove-me-too"));
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server, [group(SECRET_SHARE_GROUP)]);
+    const fetched = await runFollower(setup, fetchSharedSecrets({
+      endpoint: server.endpoint,
+      tlsFingerprint: server.fingerprint,
+      credentialReference: enrolled.credentialReference,
+    }));
+    if (fetched.status !== "shared") throw new Error("expected shared secrets");
+    await runFollower(setup, applyTransferredSecrets(fetched.payload));
+
+    await setup.runtime.runPromise(Effect.gen(function*() {
+      const enrollment = yield* Enrollment;
+      yield* enrollment.revokeFollower(enrolled.follower.id);
+    }));
+    await expect(
+      runFollower(setup, fetchSharedSecrets({
+        endpoint: server.endpoint,
+        tlsFingerprint: server.fingerprint,
+        credentialReference: enrolled.credentialReference,
+      })),
+    ).rejects.toMatchObject({
+      category: "authentication",
+      operation: "authenticate secret transfer",
+    });
+    expect(await storedValue(setup, "revoked-device-token")).toBeUndefined();
+  });
+
   it("does not reveal whether secrets exist to unauthorized followers", async () => {
     const setup = fixture();
     await setup.runtime.runPromise(storeSecret("private-token", "do-not-transfer"));
@@ -356,6 +387,45 @@ describe("secure secret transfer", () => {
     await expect(
       access(join(setup.followerHome, ".canonfig", "secrets.json")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects source values that collide with a local secret", async () => {
+    const setup = fixture();
+    await runFollower(setup, storeSecret("collision", "local-value"));
+
+    await expect(
+      runFollower(setup, applyTransferredSecrets({
+        schemaVersion: 1,
+        secrets: [{ name: "collision", value: "source-value" }],
+      })),
+    ).rejects.toMatchObject({
+      category: "usage",
+      operation: "apply transferred secrets",
+    });
+    expect(await storedValue(setup, "collision")).toBe("local-value");
+  });
+
+  it("rejects an encoded payload that would exceed the transport ceiling", async () => {
+    const setup = fixture();
+    const value = "\u0001".repeat(maximumSecretBytes);
+    const accepted: Array<{ readonly name: string; readonly value: string }> = [];
+    while (
+      new TextEncoder().encode(JSON.stringify({
+        schemaVersion: 1,
+        secrets: [...accepted, { name: `secret-${accepted.length}`, value }],
+      })).byteLength <= maximumSharedSecretPayloadBytes
+    ) {
+      const secret = { name: `secret-${accepted.length}`, value };
+      await setup.runtime.runPromise(storeSecret(secret.name, secret.value));
+      accepted.push(secret);
+    }
+
+    await expect(
+      setup.runtime.runPromise(storeSecret(`secret-${accepted.length}`, value)),
+    ).rejects.toMatchObject({
+      category: "usage",
+      operation: "store secret",
+    });
   });
 
   it("rejects local-file credential mode on every platform seam", async () => {
