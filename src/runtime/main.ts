@@ -41,7 +41,6 @@ const nodeCliIo: CliIo = {
   writeStderr: (text) => process.stderr.write(text),
   setExitCode: (exitCode) => {
     process.exitCode = exitCode;
-    commandLog.complete(exitCode);
   },
 };
 
