@@ -22,13 +22,21 @@ jobs:
         run: |
           python <<'PY'
           from pathlib import Path
+
           path = Path("tests/packed-cli.test.ts")
           source = path.read_text()
-          anchor = '''    const firstApply = requireSuccess(
-              invoke(workstationHome, ["sync", "--apply", "--json"]),
-              "apply workstation revision one",
-            );'''
-          insertion = '''    const automaticSecretLog = resolve(
+          if "const automaticSecretLog = resolve(" in source:
+              raise SystemExit("packed runtime regression already present")
+          label = '"apply workstation revision one"'
+          label_index = source.index(label)
+          insertion_index = source.rfind(
+              "    const firstApply = requireSuccess(",
+              0,
+              label_index,
+          )
+          if insertion_index < 0:
+              raise SystemExit("first apply declaration not found")
+          regression = '''    const automaticSecretLog = resolve(
               workstationHome,
               "automatic-secret-failure.log",
             );
@@ -61,13 +69,12 @@ jobs:
               .toBeGreaterThan(0);
             rmSync(invalidSecretManifest, { force: true });
 
-            const firstApply = requireSuccess(
-              invoke(workstationHome, ["sync", "--apply", "--json"]),
-              "apply workstation revision one",
-            );'''
-          if anchor not in source:
-              raise SystemExit("first apply anchor not found")
-          path.write_text(source.replace(anchor, insertion, 1))
+          '''
+          path.write_text(
+              source[:insertion_index]
+              + regression
+              + source[insertion_index:]
+          )
           PY
           git config user.name "Microck"
           git config user.email "contact@micr.dev"
