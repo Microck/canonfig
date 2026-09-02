@@ -1,0 +1,66 @@
+name: Temporary leading JSON route tests
+
+on:
+  push:
+    branches:
+      - feat/command-logging
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: feat/command-logging
+          fetch-depth: 0
+
+      - name: Add packed leading JSON route coverage
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/packed-cli.test.ts")
+          source = path.read_text()
+          marker = '''    expect(JSON.parse(policy.stdout)).toMatchObject({
+              command: "agent.policy.set",
+              exitCode: 0,
+              data: "deterministic-only",
+            });
+          '''
+          if marker not in source:
+              raise SystemExit("policy assertion marker not found")
+          insertion = marker + '''
+            const leadingHarness = invoke(
+              followerHome,
+              ["--json", "harness", "targets"],
+            );
+            expect(leadingHarness).toMatchObject({ status: 0, stderr: "" });
+            expect(JSON.parse(leadingHarness.stdout)).toMatchObject({
+              command: "harness.targets",
+              exitCode: 0,
+            });
+
+            const leadingSecrets = invoke(
+              followerHome,
+              ["--json", "secrets", "list"],
+            );
+            expect(leadingSecrets).toMatchObject({ status: 0, stderr: "" });
+            expect(JSON.parse(leadingSecrets.stdout)).toMatchObject({
+              schema: "canonfig.secrets/v1",
+              ok: true,
+              command: "secrets.list",
+            });
+          '''
+          path.write_text(source.replace(marker, insertion, 1))
+          PY
+          git config user.name "Microck"
+          git config user.email "contact@micr.dev"
+          git add tests/packed-cli.test.ts
+          git commit -m "test: cover leading JSON special routes"
+          git push origin HEAD:feat/command-logging
