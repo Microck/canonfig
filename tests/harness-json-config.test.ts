@@ -10,7 +10,9 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { CliExitCode } from "../src/cli/exit-codes.ts";
 import { parseHarnessArguments } from "../src/harness-configuration/cli-arguments.ts";
+import { runHarnessConfigurationCli } from "../src/harness-configuration/cli.ts";
 import { HarnessConfigurationCompiler } from "../src/harness-configuration/core/compiler.ts";
 import { loadConfig } from "../src/harness-configuration/core/config.ts";
 import { scaffoldProject } from "../src/harness-configuration/core/scaffold.ts";
@@ -41,6 +43,28 @@ describe("JSON harness configuration", () => {
       .toThrowError(expect.objectContaining({
         code: "HARNESS_FORMAT_NOT_ALLOWED",
       }));
+  });
+
+  it("returns a usage exit code when --format is used outside init", async () => {
+    let stdout = "";
+    let stderr = "";
+    let exitCode = CliExitCode.success;
+
+    await runHarnessConfigurationCli(["apply", "--format", "json"], {
+      writeStdout: (text) => {
+        stdout += text;
+      },
+      writeStderr: (text) => {
+        stderr += text;
+      },
+      setExitCode: (value) => {
+        exitCode = value;
+      },
+    });
+
+    expect(stdout).toBe("");
+    expect(stderr).toContain("--format is only available for harness init");
+    expect(exitCode).toBe(CliExitCode.usageOrConfiguration);
   });
 
   it("scaffolds strict, editable JSON through the normal compiler path", async () =>
