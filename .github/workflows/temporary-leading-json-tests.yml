@@ -28,34 +28,34 @@ jobs:
           path = Path("tests/packed-cli.test.ts")
           source = path.read_text()
           marker = '''    expect(JSON.parse(policy.stdout)).toMatchObject({
-              command: "agent.policy.set",
-              exitCode: 0,
-              data: "deterministic-only",
-            });
+            command: "agent.policy.set",
+            exitCode: 0,
+            data: "deterministic-only",
+          });
           '''
           if marker not in source:
               raise SystemExit("policy assertion marker not found")
           insertion = marker + '''
-            const leadingHarness = invoke(
-              followerHome,
-              ["--json", "harness", "targets"],
-            );
-            expect(leadingHarness).toMatchObject({ status: 0, stderr: "" });
-            expect(JSON.parse(leadingHarness.stdout)).toMatchObject({
-              command: "harness.targets",
-              exitCode: 0,
-            });
+          const leadingHarness = invoke(
+            followerHome,
+            ["--json", "harness", "targets"],
+          );
+          expect(leadingHarness).toMatchObject({ status: 0, stderr: "" });
+          expect(JSON.parse(leadingHarness.stdout)).toMatchObject({
+            command: "harness.targets",
+            exitCode: 0,
+          });
 
-            const leadingSecrets = invoke(
-              followerHome,
-              ["--json", "secrets", "list"],
-            );
-            expect(leadingSecrets).toMatchObject({ status: 0, stderr: "" });
-            expect(JSON.parse(leadingSecrets.stdout)).toMatchObject({
-              schema: "canonfig.secrets/v1",
-              ok: true,
-              command: "secrets.list",
-            });
+          const leadingSecrets = invoke(
+            followerHome,
+            ["--json", "secrets", "list"],
+          );
+          expect(leadingSecrets).toMatchObject({ status: 0, stderr: "" });
+          expect(JSON.parse(leadingSecrets.stdout)).toMatchObject({
+            schema: "canonfig.secrets/v1",
+            ok: true,
+            command: "secrets.list",
+          });
           '''
           path.write_text(source.replace(marker, insertion, 1))
           PY
