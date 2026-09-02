@@ -11,6 +11,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { parseHarnessArguments } from "../src/harness-configuration/cli-arguments.ts";
+import { HarnessConfigurationCompiler } from "../src/harness-configuration/core/compiler.ts";
 import { loadConfig } from "../src/harness-configuration/core/config.ts";
 import { scaffoldProject } from "../src/harness-configuration/core/scaffold.ts";
 import { ampPluginSource } from "../src/harness-configuration/templates/runtime.ts";
@@ -42,7 +43,7 @@ describe("JSON harness configuration", () => {
       }));
   });
 
-  it("scaffolds strict, editable JSON that the compiler can load", async () =>
+  it("scaffolds strict, editable JSON through the normal compiler path", async () =>
     withTemporaryDirectory(async (root) => {
       const written = await scaffoldProject(root, { format: "json" });
       const configPath = path.join(root, ".canonfig", "harness.json");
@@ -56,6 +57,14 @@ describe("JSON harness configuration", () => {
       expect(loaded.path).toBe(configPath);
       expect(loaded.config.version).toBe(1);
       expect(loaded.config.project.name).toBe(path.basename(root));
+
+      const compiled = await new HarnessConfigurationCompiler().build({ root });
+      expect(compiled.configPath).toBe(configPath);
+      expect(compiled.targets.length).toBeGreaterThan(0);
+      expect(compiled.artifacts.length).toBeGreaterThan(0);
+      expect(
+        compiled.diagnostics.filter((diagnostic) => diagnostic.level === "error"),
+      ).toEqual([]);
     }));
 
   it("does not create a config that would be shadowed by another format", async () =>
