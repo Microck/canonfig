@@ -45,7 +45,10 @@ describe("JSON harness configuration", () => {
 
   it("scaffolds strict, editable JSON through the normal compiler path", async () =>
     withTemporaryDirectory(async (root) => {
-      const written = await scaffoldProject(root, { format: "json" });
+      const written = await scaffoldProject(root, {
+        format: "json",
+        targets: ["codex"],
+      });
       const configPath = path.join(root, ".canonfig", "harness.json");
       const raw = await readFile(configPath, "utf8");
 
@@ -60,8 +63,10 @@ describe("JSON harness configuration", () => {
 
       const compiled = await new HarnessConfigurationCompiler().build({ root });
       expect(compiled.configPath).toBe(configPath);
-      expect(compiled.targets.length).toBeGreaterThan(0);
-      expect(compiled.artifacts.length).toBeGreaterThan(0);
+      expect(compiled.targets).toEqual(["codex"]);
+      expect(compiled.artifacts.map((artifact) => artifact.path)).toContain(
+        ".codex/agents/reviewer.toml",
+      );
       expect(
         compiled.diagnostics.filter((diagnostic) => diagnostic.level === "error"),
       ).toEqual([]);
