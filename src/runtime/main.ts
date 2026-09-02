@@ -30,6 +30,11 @@ process.on("warning", (warning) => {
 
 const arguments_ = process.argv.slice(2);
 installCommandLog(arguments_);
+const json = arguments_.includes("--json");
+const commandArguments = arguments_.filter((argument) => argument !== "--json");
+const routedArguments = json
+  ? [...commandArguments, "--json"]
+  : commandArguments;
 
 const nodeCliIo: CliIo = {
   writeStdout: (text) => process.stdout.write(text),
@@ -61,16 +66,16 @@ const automaticSecretFailure = (
   nodeCliIo.setExitCode(exitCode);
 };
 
-if (isSecretsCommand(arguments_)) {
+if (isSecretsCommand(routedArguments)) {
   NodeRuntime.runMain(
-    runSecretsCli(arguments_.slice(1), nodeCliIo).pipe(
+    runSecretsCli(routedArguments.slice(1), nodeCliIo).pipe(
       Effect.provide(secretRuntimeLayer()),
     ),
   );
-} else if (isHarnessConfigurationCommand(arguments_)) {
+} else if (isHarnessConfigurationCommand(routedArguments)) {
   NodeRuntime.runMain(
     Effect.promise(() =>
-      runHarnessConfigurationCli(arguments_.slice(1), nodeCliIo)
+      runHarnessConfigurationCli(routedArguments.slice(1), nodeCliIo)
     ),
   );
 } else {
