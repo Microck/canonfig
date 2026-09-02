@@ -1,11 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const source = execFileSync(
   "git",
-  ["show", "HEAD^:tools/release/prepare-v2.2.0.mjs"],
+  [
+    "show",
+    "23fe2ebbc53c77e0631228980c20fe6e0008afcc:tools/release/prepare-v2.2.0.mjs",
+  ],
   { encoding: "utf8" },
 );
 const marker = 'const readmePath = "README.md";';
