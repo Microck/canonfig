@@ -6,6 +6,7 @@ import {
   readFile,
   rm,
   stat,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -47,11 +48,39 @@ const WINDOWS_ACL_INSPECTION_SCRIPT = [
   "$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name",
   "[Console]::Out.Write((ConvertTo-Json -Compress @{ protected = $acl.AreAccessRulesProtected; ruleCount = @($acl.Access).Count; identity = $rule.IdentityReference.Value; current = $current }))",
 ].join("; ");
+const WINDOWS_ACL_INHERITANCE_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  "$acl = Get-Acl -LiteralPath $env:CANONFIG_LOG_ACL_PATH",
+  "$acl.SetAccessRuleProtection($false, $true)",
+  "Set-Acl -LiteralPath $env:CANONFIG_LOG_ACL_PATH -AclObject $acl",
+].join("; ");
 
 const readEntries = async (logPath: string) => {
   const content = await readFile(logPath, "utf8");
   return content.trim().split("\n").map((line) =>
     Schema.decodeUnknownSync(CommandLogEntrySchema)(JSON.parse(line))
+  );
+};
+
+const inspectWindowsAcl = (logPath: string) => {
+  const inspected = spawnSync(
+    "powershell.exe",
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      WINDOWS_ACL_INSPECTION_SCRIPT,
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, CANONFIG_LOG_ACL_PATH: logPath },
+      windowsHide: true,
+    },
+  );
+  expect(inspected.status, inspected.stderr).toBe(0);
+  return Schema.decodeUnknownSync(WindowsAclSchema)(
+    JSON.parse(inspected.stdout),
   );
 };
 
@@ -141,6 +170,29 @@ describe("command logging", () => {
     expect(calls).toEqual(["directory", "file", "acl", "append"]);
   });
 
+  it("re-applies Windows access control before every append", () => {
+    let restrictions = 0;
+    const fileOperations: CommandLogFileOperations = {
+      platform: "win32",
+      ensureDirectory: () => undefined,
+      ensureFile: () => undefined,
+      restrictWindowsAccess: () => {
+        restrictions += 1;
+        return true;
+      },
+      restrictPosixAccess: () => undefined,
+      append: () => undefined,
+    };
+    const log = createCommandLog(["status"], {
+      environment: { CANONFIG_LOG_FILE: "/tmp/canonfig.log" },
+      fileOperations,
+    });
+
+    log.complete(0);
+
+    expect(restrictions).toBe(2);
+  });
+
   it.runIf(process.platform === "win32")(
     "uses a protected owner-only Windows ACL",
     async () => withTemporaryDirectory(async (root) => {
@@ -150,29 +202,48 @@ describe("command logging", () => {
       });
       log.complete(0);
 
-      const inspected = spawnSync(
-        "powershell.exe",
-        [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          WINDOWS_ACL_INSPECTION_SCRIPT,
-        ],
-        {
-          encoding: "utf8",
-          env: { ...process.env, CANONFIG_LOG_ACL_PATH: logPath },
-          windowsHide: true,
-        },
-      );
-      expect(inspected.status, inspected.stderr).toBe(0);
-      const acl = Schema.decodeUnknownSync(WindowsAclSchema)(
-        JSON.parse(inspected.stdout),
-      );
+      const acl = inspectWindowsAcl(logPath);
       expect(acl.protected).toBe(true);
       expect(acl.ruleCount).toBe(1);
       expect(acl.identity.toLowerCase()).toBe(acl.current.toLowerCase());
     }),
+  );
+
+  it.runIf(process.platform === "win32")(
+    "re-secures a replacement log file before completion", async () =>
+      withTemporaryDirectory(async (root) => {
+        const logPath = path.join(root, "canonfig.log");
+        const log = createCommandLog(["status"], {
+          environment: { CANONFIG_LOG_FILE: logPath },
+        });
+
+        await rm(logPath, { force: true });
+        await writeFile(logPath, "", "utf8");
+        const loosened = spawnSync(
+          "powershell.exe",
+          [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            WINDOWS_ACL_INHERITANCE_SCRIPT,
+          ],
+          {
+            encoding: "utf8",
+            env: { ...process.env, CANONFIG_LOG_ACL_PATH: logPath },
+            windowsHide: true,
+          },
+        );
+        expect(loosened.status, loosened.stderr).toBe(0);
+        expect(inspectWindowsAcl(logPath).protected).toBe(false);
+
+        log.complete(0);
+
+        const acl = inspectWindowsAcl(logPath);
+        expect(acl.protected).toBe(true);
+        expect(acl.ruleCount).toBe(1);
+        expect(acl.identity.toLowerCase()).toBe(acl.current.toLowerCase());
+      }),
   );
 
   for (
