@@ -11,12 +11,16 @@ Configure npm trusted publishing for `@microck/canonfig` with:
 - owner: `Microck`;
 - repository: `canonfig`;
 - workflow filename: `release.yml`;
-- allowed action: `npm publish`.
+- allowed action: `npm publish`;
+- environment: empty.
 
-The workflow runs on a GitHub-hosted runner with `id-token: write`, so npm can
-use short-lived OpenID Connect credentials and generate provenance. During a
-migration only, the workflow can fall back to the repository secret
-`NPM_TOKEN`; prefer trusted publishing and remove the token after verification.
+Every value is case-sensitive. The workflow runs on a GitHub-hosted runner with
+Node.js 24 and `id-token: write`, so npm can exchange the GitHub OpenID Connect
+identity for a short-lived publishing credential and attach provenance.
+
+The publish job intentionally does not set `registry-url`, `NODE_AUTH_TOKEN`,
+`NPM_TOKEN`, or an npm auth entry. An empty token entry can shadow npm's trusted
+publishing flow and produce `ENEEDAUTH` instead of requesting an OIDC token.
 
 ## 2. Select the version
 
@@ -62,9 +66,11 @@ findings before merge.
 
 ## 5. Publish
 
-Squash-merge the green release pull request using the required title. Because
-the merge changes `package.json` and `RELEASE_NOTES.md`, the `Publish release`
-workflow starts automatically on `main`. Other `main` pushes do not publish
+Squash-merge the green release pull request using the required title. A release
+preparation normally changes `package.json` and `RELEASE_NOTES.md`, causing the
+`Publish release` workflow to start automatically on `main`. The release
+workflow file is also a trigger path so an unpublished authentication repair can
+retry without editing package contents. Other `main` pushes do not publish
 unless their commit message begins with `chore(release): prepare v`.
 
 A manual workflow dispatch with the exact package version is available for an
@@ -76,7 +82,8 @@ The workflow performs the release in this order:
 1. resolve the package version and verify that the release notes describe it;
 2. verify that npm and Git do not already contain the version;
 3. install locked dependencies and rerun the complete validation matrix;
-4. publish `@microck/canonfig` publicly with provenance;
+4. publish `@microck/canonfig` through npm trusted publishing, which generates
+   provenance automatically;
 5. create the matching `vX.Y.Z` tag and GitHub release from
    `RELEASE_NOTES.md` only after npm accepts the package;
 6. install the published package and verify `canonfig --version`.
@@ -99,8 +106,12 @@ validated release commit.
 
 ## Failure handling
 
-Do not move or delete a published tag. If npm publication succeeded but the
-package is defective, deprecate the exact version with a recovery message and
-prepare a new patch release. If publication failed before npm accepted the
-version, fix the release pull request or publishing configuration and retry the
-same unpublished version.
+Do not move or delete a published tag. If npm returns `ENEEDAUTH`, confirm the
+trusted publisher exists on npmjs.com and exactly matches `Microck`, `canonfig`,
+`release.yml`, an empty environment, and the `npm publish` action. Also confirm
+the workflow has `id-token: write` and no npm token configuration.
+
+If npm publication succeeded but the package is defective, deprecate the exact
+version with a recovery message and prepare a new patch release. If publication
+failed before npm accepted the version, fix the release pull request or trusted
+publisher configuration and retry the same unpublished version.
