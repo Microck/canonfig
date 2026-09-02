@@ -37,6 +37,7 @@ describe("command log final-exit semantics", () => {
       const entries = (await readFile(logPath, "utf8"))
         .trim()
         .split("\n")
+        // SAFETY: Every line was emitted by createCommandLog as a JSON object.
         .map((line) => JSON.parse(line) as {
           readonly event: string;
           readonly command: string;
