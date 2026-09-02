@@ -15,6 +15,8 @@ import { StateRepository } from "../state/state-repository.service.ts";
 import {
   applyTransferredSecrets,
   clearTransferredSecrets,
+  requireSecureStorage,
+  SECRET_SHARE_GROUP,
   SecretTransferError,
   TransferredSecretsSchema,
   type TransferredSecrets,
@@ -22,6 +24,11 @@ import {
 
 const defaultTimeoutMilliseconds = 10_000;
 const maximumResponseBytes = 1024 * 1024;
+
+interface CheckedEndpoint {
+  readonly url: URL;
+  readonly hostname: string;
+}
 
 interface PinnedCertificate {
   readonly pem: string;
@@ -60,39 +67,42 @@ const failure = (
 
 const checkedEndpoint = (
   endpoint: string,
-): Effect.Effect<URL, SecretTransferError> =>
+): Effect.Effect<CheckedEndpoint, SecretTransferError> =>
   Effect.try({
     try: () => {
       const url = new URL(endpoint);
-      const hostname = url.hostname.startsWith("[") && url.hostname.endsWith("]")
+      const rawHostname = url.hostname.startsWith("[") && url.hostname.endsWith("]")
         ? url.hostname.slice(1, -1)
         : url.hostname;
+      const hostname = canonicalLoopbackHostname(rawHostname);
       if (
         url.protocol !== "https:"
-        || canonicalLoopbackHostname(hostname) === undefined
+        || hostname === undefined
+        || url.username.length > 0
+        || url.password.length > 0
       ) {
         throw new Error("not loopback HTTPS");
       }
-      return url;
+      return { url, hostname };
     },
     catch: () =>
       failure(
         "transport",
         "validate secret source",
-        "the secret source must use pinned loopback HTTPS",
+        "the secret source must use pinned loopback HTTPS without user information",
       ),
   });
 
 const inspectCertificate = (
-  endpoint: URL,
+  endpoint: CheckedEndpoint,
   timeoutMilliseconds: number,
 ): Effect.Effect<PinnedCertificate, SecretTransferError> =>
   Effect.tryPromise({
     try: () =>
       new Promise<PinnedCertificate>((resolveCertificate, rejectCertificate) => {
         const socket = tlsConnect({
-          host: endpoint.hostname.replaceAll("[", "").replaceAll("]", ""),
-          port: Number(endpoint.port),
+          host: endpoint.hostname,
+          port: Number(endpoint.url.port || "443"),
           rejectUnauthorized: false,
           minVersion: "TLSv1.2",
         });
@@ -128,7 +138,7 @@ const inspectCertificate = (
   });
 
 const requestSecrets = (
-  endpoint: URL,
+  endpoint: CheckedEndpoint,
   certificate: PinnedCertificate,
   credential: Redacted.Redacted<string>,
   timeoutMilliseconds: number,
@@ -142,8 +152,8 @@ const requestSecrets = (
         };
         const request = httpsRequest({
           protocol: "https:",
-          hostname: endpoint.hostname.replaceAll("[", "").replaceAll("]", ""),
-          port: endpoint.port,
+          hostname: endpoint.hostname,
+          port: Number(endpoint.url.port || "443"),
           path: "/v1/transport/secrets",
           method: "GET",
           ca: certificate.pem,
@@ -195,6 +205,7 @@ export const fetchSharedSecrets = (
 ): Effect.Effect<FetchSharedSecretsResult, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
+    yield* requireSecureStorage("fetch shared secrets");
     const endpoint = yield* checkedEndpoint(input.endpoint);
     const timeoutMilliseconds = input.timeoutMilliseconds
       ?? defaultTimeoutMilliseconds;
@@ -277,6 +288,14 @@ export const synchronizeSharedSecrets = (): Effect.Effect<
       );
     if (configuration === undefined) {
       return { status: "not-enrolled", secrets: [] };
+    }
+    if (
+      !configuration.follower.groups.some((group) =>
+        group === SECRET_SHARE_GROUP
+      )
+    ) {
+      const secrets = yield* clearTransferredSecrets();
+      return { status: "not-shared", secrets };
     }
     const fetched = yield* fetchSharedSecrets({
       endpoint: configuration.source.endpoint,
