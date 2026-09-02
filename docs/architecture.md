@@ -419,7 +419,7 @@ The live SQLite implementation uses `@effect/sql-sqlite-node`, rather than depen
 
 ```text
 canonfig source init
-canonfig source scan
+canonfig source scan --file AGENTS.md
 canonfig source publish
 canonfig source serve
 canonfig source invite
