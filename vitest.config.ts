@@ -5,6 +5,8 @@ export default defineProject({
     include: [
       "tests/agent-resolution.test.ts",
       "tests/cli.test.ts",
+      "tests/command-log.test.ts",
+      "tests/documentation-command-validation.test.ts",
       "tests/doctor.test.ts",
       "tests/foundation.test.ts",
       "tests/harness-configuration.test.ts",
