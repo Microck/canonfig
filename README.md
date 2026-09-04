@@ -64,8 +64,8 @@ canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group 
 ```
 
 Treat the returned invitation as temporary sensitive material.
-This example binds to loopback (`127.0.0.1`) for same-machine follower enrollment.
-If the follower is on a different machine, bind `--host` to a reachable address for both machines and pass the same address in `--endpoint`.
+`source serve` accepts only `127.0.0.1` or `::1`, and `source invite --endpoint` accepts only a loopback HTTPS origin, so both commands are limited to same-machine enrollment as shipped.
+To enroll a follower on another machine, forward the source port to the follower's loopback address yourself (for example over SSH) and keep the endpoint in the invitation as the loopback origin the follower will dial; the follower pins the source TLS certificate, so the tunnel must present it unchanged.
 
 ### 2. follower machine enrollment
 
