@@ -94,22 +94,33 @@ interface PackedInvocation {
 const environmentFor = (
   home: string,
   environment: NodeJS.ProcessEnv = {},
-): NodeJS.ProcessEnv => ({
-  ...process.env,
-  ...packedSchedulerEnvironment,
-  ...environment,
-  HOME: home,
-  USERPROFILE: home,
-  APPDATA: resolve(home, "AppData", "Roaming"),
-  LOCALAPPDATA: resolve(home, "AppData", "Local"),
-  CANONFIG_LOCAL_CREDENTIAL_ROOT: resolve(home, ".canonfig-credentials"),
-  PATH: [
-    fixtureBin,
-    resolve(installRoot, "node_modules", ".bin"),
-    process.env.PATH ?? "",
-  ].filter((entry) => entry.length > 0).join(delimiter),
-  DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/canonfig-packed-test-bus",
-});
+): NodeJS.ProcessEnv => {
+  const base: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...packedSchedulerEnvironment,
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: resolve(home, "AppData", "Roaming"),
+    LOCALAPPDATA: resolve(home, "AppData", "Local"),
+    CANONFIG_LOCAL_CREDENTIAL_ROOT: resolve(home, ".canonfig-credentials"),
+    PATH: [
+      fixtureBin,
+      resolve(installRoot, "node_modules", ".bin"),
+      process.env.PATH ?? "",
+    ].filter((entry) => entry.length > 0).join(delimiter),
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/canonfig-packed-test-bus",
+  };
+  // The caller's overrides win, including removing a variable by passing
+  // undefined. These defaults used to be applied last, so a test could not
+  // turn off the local-file credential policy or the Secret Service session,
+  // which is exactly what credential-policy coverage needs to do.
+  const merged: NodeJS.ProcessEnv = { ...base };
+  for (const [name, value] of Object.entries(environment)) {
+    if (value === undefined) delete merged[name];
+    else merged[name] = value;
+  }
+  return merged;
+};
 
 const invoke = (
   home: string,
@@ -601,6 +612,31 @@ describe("packed Canonfig executable", () => {
     expect(JSON.parse(plan.stdout).data).toMatchObject({
       revision: authoredRevision,
     });
+  });
+
+  it("resolves the enrolled credential policy without the environment", () => {
+    // A native scheduled job carries no environment, and the local-file policy
+    // used to be selected only by CANONFIG_LOCAL_CREDENTIAL_ROOT, so a follower
+    // enrolled under it had no credential during a scheduled run and every
+    // fire failed. The enrolled configuration is the authority now.
+    const withoutEnvironment = invoke(
+      authoredFollowerHome,
+      ["status", "--json"],
+      { CANONFIG_LOCAL_CREDENTIAL_ROOT: undefined },
+    );
+    expect(withoutEnvironment.status, withoutEnvironment.stderr).toBe(0);
+    expect(JSON.parse(withoutEnvironment.stdout).data.follower.name).toBe(
+      "packed-authored-follower",
+    );
+
+    // A plan needs the credential to authenticate to the source, so this is
+    // the assertion that actually exercises credential resolution.
+    const planned = invoke(
+      authoredFollowerHome,
+      ["sync", "--plan", "--json"],
+      { CANONFIG_LOCAL_CREDENTIAL_ROOT: undefined },
+    );
+    expect(planned.status, planned.stderr).toBe(0);
   });
 
   it("probes the agent policy the enrolled follower actually runs under", () => {

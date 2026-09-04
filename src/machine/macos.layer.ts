@@ -269,6 +269,22 @@ export const macosMachineStateLayer = (
             timeoutMilliseconds: 10_000,
             maximumOutputBytes: 1024 * 1024,
           }));
+      /**
+       * Whether the current process is one launchd started from this agent.
+       *
+       * `launchctl bootout` stops the service's processes, so booting out the
+       * agent that owns the running process kills it: a scheduled run that
+       * needed to change its own calendar would end Interrupted and block
+       * later fires. launchd sets XPC_SERVICE_NAME to the service label for
+       * the processes it starts, which is how the case is recognized.
+       */
+      const runsUnderAgent = (serviceName: string): boolean => {
+        const label = serviceName.endsWith(".plist")
+          ? serviceName.slice(0, -".plist".length)
+          : serviceName;
+        return environmentValue(environment, "XPC_SERVICE_NAME") === label;
+      };
+
       const queryLaunchctlActive = (
         label: string,
         action: string,
@@ -379,6 +395,10 @@ export const macosMachineStateLayer = (
               content: new TextEncoder().encode(definition.schedule),
               mode: 0o600,
             });
+            // Never bootout the agent running this process. The written plist
+            // is the new definition, and launchd loads it on the next login,
+            // which is strictly better than killing the run doing the update.
+            if (runsUnderAgent(definition.serviceName)) return;
             yield* runLaunchctl(["bootout", launchDomain, path]).pipe(Effect.ignore);
             const result = yield* runLaunchctl(["bootstrap", launchDomain, path]);
             if (result.exitCode !== 0) {
@@ -393,7 +413,11 @@ export const macosMachineStateLayer = (
         remove: (definition) => {
           const path = join(launchAgents, definition.serviceName);
           return Effect.gen(function*() {
-            yield* runLaunchctl(["bootout", launchDomain, path]).pipe(Effect.ignore);
+            // Removing the plist is enough when this process is the agent's
+            // own: booting it out would kill the process doing the removal.
+            if (!runsUnderAgent(definition.serviceName)) {
+              yield* runLaunchctl(["bootout", launchDomain, path]).pipe(Effect.ignore);
+            }
             yield* machine.removeFile({
               path: linuxPath({ platform: "macos", absolute: path }),
             });

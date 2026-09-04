@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -52,6 +52,77 @@ machineStateContract("macOS", {
 });
 
 describe("macOS native scheduler inspection", () => {
+  it("never boots out the launchd agent that started this process", async () => {
+    // launchctl bootout stops the service's processes, so booting out the agent
+    // that owns the running process kills it. A scheduled run changing its own
+    // calendar would end Interrupted and block later fires.
+    const root = await mkdtemp(join(tmpdir(), "canonfig-macos-bootout-"));
+    const home = join(root, "home");
+    const invocations: Array<ReadonlyArray<string>> = [];
+    const layerFor = (serviceLabel: string | undefined) =>
+      macosMachineStateLayer({
+        credentialPolicy: { kind: "local-file", path: join(root, "credentials") },
+        environment: serviceLabel === undefined
+          ? environment(root)
+          : [...environment(root), { name: "XPC_SERVICE_NAME", value: serviceLabel }],
+        launchctlRunner: (arguments_) => {
+          invocations.push(arguments_);
+          return Effect.succeed({
+            exitCode: 0,
+            signal: null,
+            standardOutput: new Uint8Array(),
+            standardError: new Uint8Array(),
+          });
+        },
+      });
+
+    const rendered = await runWith(
+      layerFor(undefined),
+      Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const executable = yield* machine.normalizePath({ path: process.execPath });
+        return yield* machine.renderSchedulerJob({
+          name: "canonfig-sync",
+          description: "Canonfig follower synchronization",
+          executable,
+          arguments: ["sync", "--apply", "--no-input"],
+          calendar: { kind: "daily", localTime: "00:00" },
+        });
+      }),
+    );
+    await mkdir(join(home, "Library", "LaunchAgents"), { recursive: true });
+    const label = rendered.serviceName.slice(0, -".plist".length);
+
+    // Running outside the agent: the usual bootout and bootstrap cycle.
+    invocations.length = 0;
+    await runWith(
+      layerFor(undefined),
+      Effect.flatMap(MachineState, (machine) => machine.installSchedulerJob(rendered)),
+    );
+    expect(invocations.map((argv) => argv[0])).toEqual(["bootout", "bootstrap"]);
+
+    // Running as the agent's own process: the plist is written and launchd
+    // picks it up on the next login, but nothing boots this process out.
+    invocations.length = 0;
+    await runWith(
+      layerFor(label),
+      Effect.flatMap(MachineState, (machine) => machine.installSchedulerJob(rendered)),
+    );
+    expect(invocations).toEqual([]);
+    expect(await readFile(
+      join(home, "Library", "LaunchAgents", rendered.serviceName),
+      "utf8",
+    )).toBe(rendered.schedule);
+
+    // Removal is the same hazard: dropping the plist is enough.
+    invocations.length = 0;
+    await runWith(
+      layerFor(label),
+      Effect.flatMap(MachineState, (machine) => machine.removeSchedulerJob(rendered)),
+    );
+    expect(invocations).toEqual([]);
+  });
+
   it("distinguishes an unloaded service from a launchctl inspection failure", async () => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-macos-scheduler-"));
     const home = join(root, "home");

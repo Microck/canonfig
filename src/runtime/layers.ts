@@ -5,6 +5,7 @@ import {
   verify as verifyPayload,
 } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -776,7 +777,9 @@ const followerCommandsLayer = (
             const enrolledCredentialPolicy:
               FollowerSynchronizationConfiguration["credentialPolicy"] =
                 capability.kind === "local-file"
-                  ? { kind: "local-file", path: String(capability.path) }
+                  // MachinePath is a struct, not a string: take its absolute
+                  // path rather than stringifying the object.
+                  ? { kind: "local-file", path: capability.path.absolute }
                   : { kind: "secure-store" };
             const configuration = {
               schemaVersion: 1 as const,
@@ -1165,8 +1168,60 @@ const credentialPolicyFromEnvironment = (): CredentialPolicy | undefined => {
     : { kind: "local-file", path: root };
 };
 
-const machineLayer = (): Layer.Layer<MachineState> => {
-  const credentialPolicy = credentialPolicyFromEnvironment();
+/**
+ * The credential policy this follower enrolled under, read from its own state.
+ *
+ * The policy used to be selected only by `CANONFIG_LOCAL_CREDENTIAL_ROOT` in
+ * the environment, and a native scheduled job carries no environment, so a
+ * follower enrolled under the local-file policy had no credential during a
+ * scheduled run and every fire failed. The enrolled configuration is the
+ * authority; the environment variable is enrollment input, not a runtime one.
+ *
+ * Read directly rather than through StateRepository because the machine layer
+ * is built before that service exists, and this is one row of one table.
+ */
+const enrolledCredentialPolicy = (
+  statePath: string,
+): CredentialPolicy | undefined => {
+  try {
+    const database = new DatabaseSync(statePath, { readOnly: true });
+    try {
+      const row = database
+        .prepare(
+          "SELECT configuration_json FROM follower_sync_configuration WHERE singleton = 1",
+        )
+        .get();
+      const parsedRow = Schema.decodeUnknownOption(
+        Schema.Struct({ configuration_json: Schema.String }),
+      )(row);
+      if (Option.isNone(parsedRow)) return undefined;
+      const decoded = Schema.decodeUnknownOption(
+        Schema.Struct({
+          credentialPolicy: Schema.optional(Schema.Union([
+            Schema.Struct({ kind: Schema.Literal("secure-store") }),
+            Schema.Struct({
+              kind: Schema.Literal("local-file"),
+              path: Schema.NonEmptyString,
+            }),
+          ])),
+        }),
+      )(JSON.parse(parsedRow.value.configuration_json));
+      return Option.isNone(decoded) ? undefined : decoded.value.credentialPolicy;
+    } finally {
+      database.close();
+    }
+  } catch {
+    // No state yet, an unreadable database, or a schema older than the field.
+    // Enrollment is what records the policy, so an unenrolled machine falls
+    // back to the environment below.
+    return undefined;
+  }
+};
+
+const machineLayer = (statePath: string): Layer.Layer<MachineState> => {
+  // The enrolled policy wins: it is what a scheduled run has to rely on.
+  const credentialPolicy = enrolledCredentialPolicy(statePath)
+    ?? credentialPolicyFromEnvironment();
   switch (process.platform) {
     case "darwin":
       return macosMachineStateLayer({ credentialPolicy });
@@ -1187,7 +1242,7 @@ export const runtimeLayer = (
       Effect.as(stateRepositoryLayer(statePath)),
     ),
   );
-  const machine = machineLayer();
+  const machine = machineLayer(statePath);
   const enrollment = EnrollmentLive.pipe(Layer.provide(Layer.merge(state, machine)));
   const profiles = runtimeProfileCatalogLayer.pipe(
     Layer.provide(Layer.mergeAll(state, machine, enrollment)),
