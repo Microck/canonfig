@@ -1,0 +1,4 @@
+interface:
+  display_name: "Set Up Canonfig"
+  short_description: "Guided, low-friction Canonfig setup"
+  default_prompt: "Use $setup-canonfig to inspect this environment, ask only necessary questions with brief explanations and recommended answers, then complete and verify the requested Canonfig setup."
