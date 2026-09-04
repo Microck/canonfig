@@ -44,7 +44,14 @@ reference, not the credential value. The platform seam uses:
 - a local file only when the operator explicitly selected that policy.
 
 Unavailable secure storage produces Human Action Required rather than silently
-writing plaintext.
+writing plaintext, and it is checked before an invitation is spent, so a
+machine that cannot keep a credential does not consume a single-use invitation
+discovering that.
+
+The policy a follower enrolled under is recorded in its own configuration and
+is what later runs read. A native scheduled job carries no environment, so a
+policy that only existed as an environment variable left a scheduled run with
+no credential at all.
 
 ## Opt-in shared secrets
 
