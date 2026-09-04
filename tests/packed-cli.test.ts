@@ -1176,7 +1176,11 @@ npm install --global canonfig-fixture@1.0.0
         "--json",
       ],
     );
-    expect(replay.status).toBe(6);
+    // Replaying a consumed invitation is an authorization refusal, not a
+    // transport failure: the request reached the Source Machine and was
+    // answered. It exited 6 only because the old categorizer matched the word
+    // "Invitation" in the error type name and filed it under transport.
+    expect(replay.status).toBe(5);
     expect(replay.stdout).toBe("");
 
     const workstationStatus = requireSuccess(

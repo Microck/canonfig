@@ -150,7 +150,13 @@ describe("typed CLI command boundary", () => {
       "developers",
     ], "source.invite"],
     [["source", "revoke", "follower-one"], "source.revoke"],
-    [["follower", "enroll", invitation, "--name", "workstation"], "follower.enroll"],
+    [
+      // --profile is required: the help text always showed it as required and
+      // the runtime always refused without it, but the parser used to accept
+      // its absence and hint at a usage line that omitted it.
+      ["follower", "enroll", invitation, "--name", "workstation", "--profile", "base"],
+      "follower.enroll",
+    ],
     [["sync", "--plan"], "sync"],
     [["sync", "--apply"], "sync"],
     [["recover"], "recover"],
@@ -229,6 +235,8 @@ describe("typed CLI command boundary", () => {
       invitation,
       "--name",
       "laptop",
+      "--profile",
+      "workstation",
     ]);
     expect(enrollment.invocations[0]?.input).toMatchObject({
       followerName: "laptop",
@@ -283,6 +291,99 @@ describe("typed CLI command boundary", () => {
       profilePath: "profile.jsonc",
       reviewer: "operator",
     });
+  });
+
+  it("emits a CLI envelope for a usage error when --json is requested", async () => {
+    // Every post-parse failure was already an envelope; parse failures printed
+    // two human lines whatever the output mode, so a program driving Canonfig
+    // with --json got unparseable text for the whole class.
+    const result = await execute(["sync", "--plan", "--apply", "--json"]);
+    expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toEqual({
+      schema: "canonfig.cli/v1",
+      command: "usage",
+      status: "error",
+      exitCode: CliExitCode.usageOrConfiguration,
+      message: "--plan and --apply are mutually exclusive",
+    });
+  });
+
+  it("keeps the help hint out of the envelope but in human output", async () => {
+    const human = await execute(["sync", "--plan", "--apply"]);
+    expect(human.stderr).toBe(
+      "--plan and --apply are mutually exclusive\nRun 'canonfig --help' for usage.\n",
+    );
+  });
+
+  it("reports a bare option list as a missing command", async () => {
+    // `canonfig --json` used to produce the empty message `Unknown argument: `.
+    const result = await execute(["--json"]);
+    expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      command: "usage",
+      status: "error",
+      message: "Missing command",
+    });
+  });
+
+  it("blames a stray argument rather than the command that received it", async () => {
+    // These reported `Unknown schedule command: status`, naming the action as
+    // unknown when the problem was the extra argument.
+    for (
+      const arguments_ of [
+        ["schedule", "status", "extra"],
+        ["schedule", "remove", "extra"],
+      ]
+    ) {
+      const result = await execute(arguments_);
+      expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
+      expect(result.stderr).toContain(
+        `canonfig schedule ${arguments_[1]} accepts no arguments`,
+      );
+      expect(result.stderr).not.toContain("Unknown schedule command");
+    }
+  });
+
+  it("reports an unknown option as an unknown option", async () => {
+    for (
+      const arguments_ of [
+        ["schedule", "status", "--executable", "/x"],
+        ["agent", "policy", "--no-input"],
+      ]
+    ) {
+      const result = await execute(arguments_);
+      expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
+      expect(result.stderr).toContain("Unknown option:");
+    }
+  });
+
+  it("requires the --profile the enroll usage line promises", async () => {
+    const result = await execute(["follower", "enroll", invitation, "--name", "laptop"]);
+    expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
+    expect(result.stderr).toContain("Missing required option: --profile");
+  });
+
+  it("reports the exit code it set, so source serve can wait only on success", async () => {
+    // `source serve` keeps the process alive; main.ts decides that from this
+    // result, because runCli turns every failure into an exit code rather than
+    // into a failed effect.
+    const succeeded = await Effect.runPromise(
+      runCli(["source", "serve"], {
+        writeStdout: () => {},
+        writeStderr: () => {},
+        setExitCode: () => {},
+      }).pipe(Effect.provide(recordingLayers([]))),
+    );
+    expect(succeeded).toBe(CliExitCode.success);
+    const failed = await Effect.runPromise(
+      runCli(["source", "serve"], {
+        writeStdout: () => {},
+        writeStderr: () => {},
+        setExitCode: () => {},
+      }).pipe(Effect.provide(recordingLayers([], "transport"))),
+    );
+    expect(failed).toBe(CliExitCode.transport);
   });
 
   it("rejects malformed and ambiguous inputs before selecting a service", async () => {

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import type { CliExitCode } from "./exit-codes.ts";
+import { CliExitCode } from "./exit-codes.ts";
 import type { CliPayload } from "./source-commands.ts";
 
 export type CliOutputFormat = "human" | "json";
@@ -61,6 +61,29 @@ const ordered = (value: CliPayload): CliPayload => {
 
 export const sanitizeCliData = (value: CliPayload): CliPayload =>
   ordered(redact(value));
+
+/**
+ * Renders a usage failure in the requested format.
+ *
+ * Usage failures used to print two human lines whatever the output mode, so a
+ * program driving Canonfig with `--json` got unparseable text for the whole
+ * class of parse errors while every post-parse failure was a proper envelope.
+ * The help hint is presentation, so it is added only for human output and never
+ * becomes part of the envelope's message.
+ */
+export const renderUsageFailure = (
+  message: string,
+  format: CliOutputFormat,
+): string => {
+  const rendered = renderCliResult({
+    command: "usage",
+    message,
+    exitCode: CliExitCode.usageOrConfiguration,
+  }, format);
+  return format === "json"
+    ? rendered
+    : `${rendered}Run 'canonfig --help' for usage.\n`;
+};
 
 export const renderCliResult = (
   result: CliResult,

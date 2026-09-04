@@ -50,7 +50,15 @@ Options:
 export const parseHarnessArguments = (
   arguments_: ReadonlyArray<string>,
 ): ParsedHarnessArguments => {
-  const [command = "help", ...rest] = arguments_;
+  // The first argument is the command only when it is not an option. Taking it
+  // unconditionally made `canonfig harness --help` report `--help` as an
+  // unknown harness command, while `canonfig harness` alone and
+  // `canonfig harness plan --help` both printed help. Leaving a leading option
+  // in the option list lets the loop below handle it, so `--help` still wins
+  // and flags such as `--json` are not swallowed with it.
+  const leadsWithOption = arguments_[0]?.startsWith("-") ?? false;
+  const command = leadsWithOption ? "help" : arguments_[0] ?? "help";
+  const rest = leadsWithOption ? arguments_ : arguments_.slice(1);
   let root = process.cwd();
   let json = false;
   let format: HarnessConfigFormat = "yaml";
