@@ -70,6 +70,7 @@ const recordingLayers = (
     enroll: (input) => invoke("follower.enroll", input),
     synchronize: (input) => invoke("sync", input),
     recover: (input) => invoke("recover", input),
+    abandon: () => invoke("abandon", {}),
     status: (input) => invoke("status", input),
     setLocalOverlay: (input) => invoke("overlay.set", input),
     listLocalOverlays: () => invoke("overlay.list"),
@@ -160,6 +161,7 @@ describe("typed CLI command boundary", () => {
     [["sync", "--plan"], "sync"],
     [["sync", "--apply"], "sync"],
     [["recover"], "recover"],
+    [["abandon"], "abandon"],
     [["status", "--follower", "follower-one"], "status"],
     [["overlay", "list"], "overlay.list"],
     [[

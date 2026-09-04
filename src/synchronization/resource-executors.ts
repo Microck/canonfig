@@ -519,6 +519,13 @@ const restoreStoredFiles = (
             : Effect.fail(error)
         ),
       );
+      // The captured state says the whole tree was absent, and it still is.
+      // Restoring entries inside it would be restoring them to absent, and
+      // every one of those goes through the managed root, which is opened with
+      // O_DIRECTORY: that threw ENOENT and left `canonfig recover` failing on
+      // repeat with the run still open, so the follower was stuck until the
+      // operator created the directory by hand.
+      if (currentKind === undefined && rootState === "absent") return;
       if (currentKind?.kind === "directory") {
         yield* machine.setPermissions({ path: root, mode: 0o700 });
       }

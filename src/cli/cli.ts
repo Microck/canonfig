@@ -61,6 +61,7 @@ Follower:
   follower enroll <invite> --name <name> --profile <id> [--replace]
   sync [--plan | --apply] [--no-input]
   recover [--no-input]
+  abandon
   status [--follower <id>]
   overlay list
   overlay set <resource-id> --target <path> --key <config.path> [--key <config.path>...]
@@ -125,6 +126,7 @@ export type CliCommand =
     readonly noInput: boolean;
   }
   | { readonly _tag: "Recover"; readonly noInput: boolean }
+  | { readonly _tag: "Abandon" }
   | { readonly _tag: "Status"; readonly follower?: typeof FollowerId.Type | undefined }
   | { readonly _tag: "OverlayList" }
   | {
@@ -350,6 +352,47 @@ const parseSchedule = (
   throw new Error(`Invalid schedule calendar: ${calendar}`);
 };
 
+/** Parses the `schedule` command area. Extracted to keep evaluateCommand simple. */
+const evaluateScheduleCommand = (
+  action: string | undefined,
+  rest: ReadonlyArray<string>,
+  format: CliOutputFormat,
+): CliOutcome => {
+      // Separate options from positionals before judging the argument count, so
+      // a stray argument is reported as the stray argument rather than making
+      // the action itself look unknown.
+      if (action === "status" || action === "remove") {
+        const options = parseOptions(rest, new Set(), new Set());
+        if (options.positionals.length > 0) {
+          return invalid(`canonfig schedule ${action} accepts no arguments`);
+        }
+        return command(
+          { _tag: action === "status" ? "ScheduleStatus" : "ScheduleRemove" },
+          format,
+        );
+      }
+      if (action === "set") {
+        const options = parseOptions(
+          rest,
+          new Set(["--timezone", "--executable"]),
+          new Set(),
+        );
+        if (options.positionals.length !== 1) {
+          return invalid("Usage: canonfig schedule set <calendar>");
+        }
+        const executable = one(options, "--executable");
+        const parsed: CliCommand = {
+          _tag: "ScheduleSet",
+          schedule: parseSchedule(options.positionals[0]!, one(options, "--timezone")),
+        };
+        return command(
+          executable === undefined ? parsed : { ...parsed, executable },
+          format,
+        );
+      }
+      return invalid(`Unknown schedule command: ${action ?? ""}`);
+};
+
 const evaluateCommand = (
   arguments_: ReadonlyArray<string>,
   format: CliOutputFormat,
@@ -502,6 +545,13 @@ const evaluateCommand = (
         mode: options.switches.has("--apply") ? "apply" : "plan",
         noInput: options.switches.has("--no-input"),
       }, format);
+    }
+    if (area === "abandon") {
+      const options = parseOptions(arguments_.slice(1), new Set(), new Set());
+      if (options.positionals.length > 0) {
+        return invalid("abandon accepts no arguments");
+      }
+      return command({ _tag: "Abandon" }, format);
     }
     if (area === "recover") {
       const options = parseOptions(arguments_.slice(1), new Set(), new Set(["--no-input"]));
@@ -674,39 +724,7 @@ const evaluateCommand = (
       }, format);
     }
     if (area === "schedule") {
-      // Separate options from positionals before judging the argument count, so
-      // a stray argument is reported as the stray argument rather than making
-      // the action itself look unknown.
-      if (action === "status" || action === "remove") {
-        const options = parseOptions(rest, new Set(), new Set());
-        if (options.positionals.length > 0) {
-          return invalid(`canonfig schedule ${action} accepts no arguments`);
-        }
-        return command(
-          { _tag: action === "status" ? "ScheduleStatus" : "ScheduleRemove" },
-          format,
-        );
-      }
-      if (action === "set") {
-        const options = parseOptions(
-          rest,
-          new Set(["--timezone", "--executable"]),
-          new Set(),
-        );
-        if (options.positionals.length !== 1) {
-          return invalid("Usage: canonfig schedule set <calendar>");
-        }
-        const executable = one(options, "--executable");
-        const parsed: CliCommand = {
-          _tag: "ScheduleSet",
-          schedule: parseSchedule(options.positionals[0]!, one(options, "--timezone")),
-        };
-        return command(
-          executable === undefined ? parsed : { ...parsed, executable },
-          format,
-        );
-      }
-      return invalid(`Unknown schedule command: ${action ?? ""}`);
+      return evaluateScheduleCommand(action, rest, format);
     }
     return invalid(`Unknown argument: ${area ?? ""}`);
   } catch (error) {
@@ -740,6 +758,7 @@ const commandName = (value: CliCommand): string => {
     case "FollowerEnroll": return "follower.enroll";
     case "Synchronize": return `sync.${value.mode}`;
     case "Recover": return "recover";
+    case "Abandon": return "abandon";
     case "Status": return "status";
     case "OverlayList": return "overlay.list";
     case "OverlaySet": return "overlay.set";
@@ -796,6 +815,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         noInput: value.noInput,
       });
     case "Recover": return yield* follower.recover({ noInput: value.noInput });
+    case "Abandon": return yield* follower.abandon();
     case "Status": return yield* follower.status(value.follower);
     case "OverlayList": return yield* follower.listLocalOverlays();
     case "OverlaySet":

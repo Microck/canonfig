@@ -45,6 +45,7 @@ canonfig sync --plan
 canonfig sync --apply
 canonfig sync --apply --no-input
 canonfig recover --no-input
+canonfig abandon
 canonfig status
 canonfig status --follower follower-one
 canonfig doctor --no-input --timeout-ms 5000
@@ -58,6 +59,13 @@ addressed by an id that a new identity does not use.
 `--plan` and `--apply` are mutually exclusive. With neither, `sync`
 plans. A successful apply also synchronizes shared secrets when the follower has
 the `canonfig:secrets` group. `recover` accepts only `--no-input`.
+
+`recover` resumes an interrupted run, which needs that run's source revision to
+still be authorized. `abandon` is the terminal close for a run `recover` cannot
+resolve, such as one whose revision is gone or whose follower was pointed at
+another profile. It is not a rollback: whatever the interrupted run already
+applied stays applied, and the next run reconciles it like any other follower
+state. Abandoning only stops the open run from blocking that.
 
 ## Shared secrets
 
