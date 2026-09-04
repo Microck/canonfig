@@ -760,6 +760,7 @@ const prepareConfig = (
   context: ResourceExecutionContext,
   target: string,
   keys: ReadonlyArray<string>,
+  removes: ReadonlyArray<string> = [],
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
     if (context.desired.kind !== "config") {
@@ -799,6 +800,12 @@ const prepareConfig = (
     for (const key of keys) {
       const value = getConfigPath(desired, key);
       if (value !== undefined) setConfigPath(current, key, value);
+    }
+    // Keys Canonfig owned that the revision no longer declares. The planner
+    // only asks for this while the file still holds what Canonfig wrote, so
+    // there is no local edit here to lose.
+    for (const key of removes) {
+      removeConfigPath(current, key);
     }
     const content = encoder.encode(
       serializeConfigDocument(config.format, current),
@@ -1457,7 +1464,7 @@ export const prepareResourceAction = (
     case "write-file":
       return prepareWrite(context, detail.target, detail.digest);
     case "write-config":
-      return prepareConfig(context, detail.target, detail.keys);
+      return prepareConfig(context, detail.target, detail.keys, detail.removes);
     case "mirror-directory":
       return prepareMirror(context, detail.target, detail.adds, detail.removes);
     case "remove-resource":

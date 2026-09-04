@@ -2483,7 +2483,7 @@ if (process.argv.slice(2).some((value) =>
     expect(readlinkSync(base.target)).toBe(destination);
   });
 
-  it("preserves a follower deletion of a previously applied replace-if-unmodified file", async () => {
+  it("reinstalls a follower deletion of a previously applied replace-if-unmodified file", async () => {
     const base = fileFixture(temporaryDirectory(), "run-missing-owned");
     const original = base.revision.resources[0]!;
     const resource: PublishedResource = {
@@ -2522,7 +2522,9 @@ if (process.argv.slice(2).some((value) =>
       localOverlay: [],
       appliedResources: [applied],
     }));
-    expect(plan.actions.map((action) => action.kind)).toEqual(["human-action"]);
+    // Absence is not a local edit, so Canonfig repairs it. Refusing meant a
+    // deleted managed target stopped every run forever and was never restored.
+    expect(plan.actions.map((action) => action.kind)).toEqual(["write-file"]);
     const outcome = await seedAndRun({
       ...base,
       revision,
@@ -2534,8 +2536,10 @@ if (process.argv.slice(2).some((value) =>
       },
     });
 
-    expect(outcome.outcome).toBe("HumanActionRequired");
-    expect(await readFile(base.target).catch(() => undefined)).toBeUndefined();
+    expect(outcome.outcome).toBe("Converged");
+    expect(await readFile(base.target, "utf8")).toBe(
+      new TextDecoder().decode(base.artifact.content),
+    );
   });
 
   it("runs the declared verification command instead of the tool id", async () => {

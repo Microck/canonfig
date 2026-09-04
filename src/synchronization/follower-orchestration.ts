@@ -678,6 +678,25 @@ const observe = (
   }
 };
 
+/**
+ * The verification a removed resource's own shape requires.
+ *
+ * Every removed resource used to be given `digest` verification, but the
+ * planner requires `symlink` verification for a symlink file and rejects the
+ * mismatch, so a follower that had applied a symlink and then stopped
+ * receiving it failed every plan and apply with a bare
+ * `PlannerVerificationKindMismatchError` before any action was planned. The
+ * record was never dropped, so the failure repeated forever and the follower
+ * could neither converge nor remove anything.
+ */
+const removedResourceVerification = (
+  applied: AppliedResourceRecord,
+  desired: DesiredResource,
+): VerificationInput =>
+  desired.kind === "file" && desired.symlinkTo !== undefined
+    ? { method: "symlink", target: desired.symlinkTo }
+    : { method: "digest", digest: Schema.decodeUnknownSync(ContentDigest)(applied.digest) };
+
 const removedResourceState = (
   applied: AppliedResourceRecord,
 ): {
@@ -840,17 +859,21 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
       const removed = removedResourceState(applied);
       if (removed === undefined) continue;
       removedResources.push(applied.resource);
+      const removedVerification = removedResourceVerification(
+        applied,
+        removed.desired,
+      );
       desired.push({
         resource: removed.resource.id,
         desired: removed.desired,
-        verification: { method: "digest", digest: applied.digest },
+        verification: removedVerification,
       });
       observations.push({
         resource: removed.resource.id,
         observed: yield* observe(
           { resource: removed.resource },
           removed.desired,
-          { method: "digest", digest: applied.digest },
+          removedVerification,
           applied,
           scheduleManager,
         ),

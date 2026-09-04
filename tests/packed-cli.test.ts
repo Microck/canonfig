@@ -1598,10 +1598,14 @@ esac
     expect(readFileSync(resolve(root, "mirror", "unowned.txt"), "utf8"))
       .toBe("local unowned\n");
     expect(() => statSync(resolve(root, "mirror", "remove.txt"))).toThrow();
+    // `canonical.removed` was declared in revision one and dropped in revision
+    // two, so it is gone. It used to stay behind with its old value while the
+    // plan read no-op, and only removing the whole resource ever removed an
+    // owned key. The Local Overlay is untouched.
     expect(JSON.parse(readFileSync(resolve(root, "settings.json"), "utf8")))
       .toEqual({
         local: { keep: "preserve" },
-        canonical: { existing: "preserve", enabled: false, removed: "v1" },
+        canonical: { existing: "preserve", enabled: false },
       });
     // The operator's own `schedule set daily@01:00` survives the apply. It used
     // to last exactly one run, because the plan reinstalled the profile default
