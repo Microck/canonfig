@@ -23,8 +23,20 @@ The Source Machine must serve the local endpoint to allow follower enrollment an
 canonfig source serve --host 127.0.0.1 --port 17342
 ```
 
-Keep this running. This example uses loopback (`127.0.0.1`) for same-machine enrollment.
-If you enroll from another machine, use a source-reachable host in `--host` and the same host in the invitation endpoint.
+Keep this running. `--host` accepts only `127.0.0.1` or `::1`, so the shipped server is
+reachable from the same machine only.
+
+To enroll a follower on another machine, forward this port to the follower's own loopback
+address yourself, then leave the invitation endpoint as the loopback origin the follower
+will dial. Run the forward on the follower machine:
+
+```bash
+ssh -N -L 17342:127.0.0.1:17342 <user>@<source-host>
+```
+
+The follower pins the source TLS certificate at enrollment, so the tunnel has to pass it
+through unchanged. The cross-platform reference states the same limit: remote exposure and
+public listeners are outside the shipped CLI contract.
 
 ## 3. Discover and publish a profile
 
