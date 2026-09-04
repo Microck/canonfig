@@ -1426,6 +1426,44 @@ describe("stable planning and bounded resolution", () => {
     ))).toThrow();
   });
 
+  it("routes a bun tarball recipe to Human Action Required at planning", () => {
+    // The executor always refuses this recipe, because bun has no guaranteed
+    // offline mode. Planning it as install-tool meant the refusal failed the
+    // whole run and rolled back every action before it, unlike every other
+    // unrunnable recipe, which becomes a human action at planning.
+    const subject = resource("tool", "tool", "ensure");
+    const plan = runPlan(plannerInput(
+      [subject],
+      {
+        desired: [{
+          kind: "tool",
+          toolId: "bun-tool",
+          recipes: [{
+            platform: "linux",
+            method: "bun",
+            package: "bun-tool",
+            version: "1.2.3",
+            source: {
+              source: "https://registry.npmjs.org/bun-tool/-/bun-tool-1.2.3.tgz",
+              integrity: "sha512-c2FtcGxl",
+            },
+          }],
+          loginRequired: false,
+        }],
+      },
+    ));
+    expect(plan.actions).toEqual([
+      expect.objectContaining({
+        kind: "human-action",
+        detail: expect.objectContaining({
+          kind: "human-action",
+          reason: "Installing bun-tool with bun requires Human Action Required",
+        }),
+      }),
+    ]);
+    expect(plan.actions.some((action) => action.kind === "install-tool")).toBe(false);
+  });
+
   it("routes Cargo scripts-disabled recipes to Human Action Required", () => {
     const subject = resource("tool", "tool", "ensure");
     const plan = runPlan(plannerInput(

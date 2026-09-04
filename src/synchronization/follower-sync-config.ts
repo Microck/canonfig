@@ -75,6 +75,11 @@ export const FollowerSynchronizationConfiguration = Schema.Struct({
   scheduleDefault: Schema.optional(ScheduleDefaultSchema),
   agentHarness: Schema.optional(FollowerAgentHarnessConfiguration),
   localOverlay: Schema.optional(Schema.Array(LocalOverlayEntrySchema)),
+  /**
+   * Bounds on requests to the Source Machine. `timeoutMilliseconds` is an HTTP
+   * timeout and belongs to the transport, not to work run on this machine; see
+   * `localExecution` for that.
+   */
   scheduledInvocation: Schema.Struct({
     mode: Schema.Literal("apply"),
     noInput: Schema.Literal(true),
@@ -85,11 +90,30 @@ export const FollowerSynchronizationConfiguration = Schema.Struct({
     maximumMetadataBytes: Schema.Int.check(Schema.isGreaterThan(0)),
     maximumBlobBytes: Schema.Int.check(Schema.isGreaterThan(0)),
   }),
+  /**
+   * Bounds on work Canonfig runs on this machine: package manager installers
+   * and `command` verifications. These routinely take minutes, so they cannot
+   * share the transport's timeout.
+   */
+  localExecution: Schema.optional(Schema.Struct({
+    processTimeoutMilliseconds: Schema.Int.check(
+      Schema.isGreaterThanOrEqualTo(1_000),
+      Schema.isLessThanOrEqualTo(60 * 60 * 1_000),
+    ),
+  })),
   updatedAt: Timestamp,
 });
 
 export type FollowerSynchronizationConfiguration =
   typeof FollowerSynchronizationConfiguration.Type;
+
+/**
+ * The default bound on a local process. It matches the executor's own default,
+ * which was previously overridden by the transport timeout on every run.
+ */
+export const defaultLocalExecution = {
+  processTimeoutMilliseconds: 10 * 60 * 1_000,
+} as const;
 
 export const defaultScheduledInvocation = {
   mode: "apply",

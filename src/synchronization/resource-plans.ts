@@ -757,6 +757,24 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     }];
   }
   const sourceDetails = recipeSourceDetails(recipe.source);
+  // A recipe the executor is guaranteed to refuse is not a usable recipe, so it
+  // becomes a human action here rather than failing the run and rolling back
+  // every action before it. bun has no guaranteed offline mode, so it cannot
+  // install a reviewed local tarball however good its integrity value is.
+  if (
+    recipe.method === "bun"
+    && sourceDetails.source?.startsWith("https://") === true
+  ) {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `Installing ${context.desired.toolId} with bun requires Human Action Required`,
+        instructions:
+          `bun cannot guarantee an offline installation of the reviewed tarball for ${recipe.package}@${recipe.version ?? "the declared version"}, so Canonfig will not run it. Install the package manually, or declare an npm or pnpm recipe, then run synchronization again.`,
+      },
+    }];
+  }
   if (
     (recipe.method === "npm" || recipe.method === "pnpm" || recipe.method === "bun")
     && sourceDetails.source?.startsWith("https://") === true
