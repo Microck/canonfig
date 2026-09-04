@@ -202,6 +202,45 @@ describe("harness configuration compiler", () => {
     });
   });
 
+  it("keeps operator text on both sides of a managed block", async () => {
+    // The block was removed and re-appended, so with placement "end" it always
+    // landed last and any text the operator had written after it was silently
+    // relocated above it. Nothing was lost, but the order changed, and for a
+    // file like AGENTS.md the order is the meaning.
+    const root = await fixture(["codex"]);
+    const compiler = new HarnessConfigurationCompiler(createDefaultRegistry());
+    await applyPlan(await compiler.plan({ root }));
+
+    const agents = path.join(root, "AGENTS.md");
+    const before = await readFile(agents, "utf8");
+    await writeFile(agents, `a note before\n\n${before}my own note after\n`, "utf8");
+
+    await applyPlan(await compiler.plan({ root }));
+
+    const after = await readFile(agents, "utf8");
+    expect(after.startsWith("a note before\n")).toBe(true);
+    expect(after.trimEnd().endsWith("my own note after")).toBe(true);
+    // Exactly one block, replaced where it stood rather than moved.
+    expect(after.match(/canonfig:begin instructions/gu)).toHaveLength(1);
+  });
+
+  it("reports an unmanaged block claiming a managed marker as a conflict", async () => {
+    // A block Canonfig does not own is still a conflict rather than something
+    // to overwrite.
+    const root = await fixture(["codex"]);
+    const compiler = new HarnessConfigurationCompiler(createDefaultRegistry());
+    await writeFile(
+      path.join(root, "AGENTS.md"),
+      "<!-- canonfig:begin instructions -->\nnot ours\n<!-- canonfig:end instructions -->\n",
+      "utf8",
+    );
+
+    const plan = await compiler.plan({ root });
+    const entry = plan.entries.find((candidate) => candidate.path === "AGENTS.md");
+    expect(entry?.action).toBe("conflict");
+    expect(entry?.reason).toContain("unmanaged block");
+  });
+
   it("reports a missing source as a diagnostic instead of a raw ENOENT", async () => {
     // Compilation read the canonical sources after validation without checking
     // whether validation had failed, so a harness.yaml naming a source that
