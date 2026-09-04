@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   open,
+  readdir,
   readFile,
   readlink,
   realpath,
@@ -62,6 +63,7 @@ import type {
   LinuxMachineStateOptions,
   LoadCredentialInput,
   MachinePath,
+  MachineDirectoryEntry,
   MachineObject,
   NormalizePathInput,
   ProcessEnvironmentEntry,
@@ -1506,6 +1508,65 @@ export const linuxMachineStateLayer = (
         },
       );
 
+      /**
+       * Every entry beneath a managed directory, relative to it and deepest
+       * last.
+       *
+       * A symlinked subdirectory is reported and never descended into, so a
+       * link cannot walk the listing out of the managed root. An absent root
+       * lists nothing rather than failing, because a caller asking what is
+       * inside a directory that does not exist wants "nothing", not an error.
+       */
+      const listDirectory = Effect.fn("MachineState.listDirectory")(
+        function*(
+          machinePath: MachinePath,
+        ): Effect.fn.Return<ReadonlyArray<MachineDirectoryEntry>, MachineStateError> {
+          const root = yield* checkLinuxPath(machinePath);
+          const entries: Array<MachineDirectoryEntry> = [];
+          const walk = Effect.fn("MachineState.listDirectory.walk")(
+            function*(
+              absolute: string,
+              relative: string,
+            ): Effect.fn.Return<void, MachineStateError> {
+              const found = yield* promiseEffect(
+                "list directory",
+                absolute,
+                () => readdir(absolute, { withFileTypes: true }),
+              ).pipe(
+                Effect.catchTag("MachineFilesystemError", (error) =>
+                  error.message.includes("ENOENT")
+                    ? Effect.succeed([])
+                    : Effect.fail(error)
+                ),
+              );
+              const ordered = [...found].sort((left, right) =>
+                left.name.localeCompare(right.name)
+              );
+              for (const entry of ordered) {
+                const childRelative = relative === ""
+                  ? entry.name
+                  : `${relative}/${entry.name}`;
+                const childAbsolute = join(absolute, entry.name);
+                const metadata = yield* promiseEffect(
+                  "inspect path",
+                  childAbsolute,
+                  () => lstat(childAbsolute),
+                );
+                const kind = objectKind(metadata);
+                entries.push({ path: childRelative, kind });
+                // Descending into a symlinked directory would leave the
+                // managed root, so a link is reported and left alone.
+                if (kind === "directory") {
+                  yield* walk(childAbsolute, childRelative);
+                }
+              }
+            },
+          );
+          yield* walk(root, "");
+          return entries;
+        },
+      );
+
       const setPermissions = Effect.fn("MachineState.setPermissions")(
         function*(input: SetPermissionsInput): Effect.fn.Return<void, MachineStateError> {
           const path = yield* checkLinuxPath(input.path);
@@ -1683,6 +1744,7 @@ export const linuxMachineStateLayer = (
         replaceSymlink,
         readSymlink,
         inspectPath,
+        listDirectory,
         setPermissions,
         permissions,
         findExecutable,

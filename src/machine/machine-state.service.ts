@@ -15,6 +15,7 @@ import type {
   FilePermissions,
   LoadCredentialInput,
   MachinePath,
+  MachineDirectoryEntry,
   MachineObject,
   NormalizePathInput,
   ProcessInvocation,
@@ -70,6 +71,17 @@ export class MachineState extends Context.Service<MachineState, {
   readonly inspectPath: (
     path: MachinePath,
   ) => Effect.Effect<MachineObject, MachineStateError>;
+  /**
+   * Every entry beneath a managed directory, deepest last, without following
+   * symlinks out of it.
+   *
+   * Observation otherwise inspects only owned and desired paths, so a file the
+   * operator added is never seen. `replace` needs to see it to remove it, or
+   * it is indistinguishable from `mirror-owned`.
+   */
+  readonly listDirectory: (
+    path: MachinePath,
+  ) => Effect.Effect<ReadonlyArray<MachineDirectoryEntry>, MachineStateError>;
   readonly setPermissions: (
     input: SetPermissionsInput,
   ) => Effect.Effect<void, MachineStateError>;

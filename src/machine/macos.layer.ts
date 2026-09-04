@@ -528,6 +528,8 @@ export const macosMachineStateLayer = (
           ),
         inspectPath: (path) =>
           requireMacosPath(path).pipe(Effect.flatMap(machine.inspectPath)),
+        listDirectory: (path) =>
+          requireMacosPath(path).pipe(Effect.flatMap(machine.listDirectory)),
         setPermissions: (input) =>
           requireMacosPath(input.path).pipe(
             Effect.flatMap((path) => machine.setPermissions({ ...input, path })),

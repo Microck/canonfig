@@ -100,6 +100,13 @@ export interface MachineObject {
   readonly kind: MachineObjectKind;
 }
 
+/** One entry found by listing a managed directory, relative to its root. */
+export interface MachineDirectoryEntry {
+  /** Path relative to the listed root, using forward slashes. */
+  readonly path: string;
+  readonly kind: MachineObjectKind;
+}
+
 export interface SetPermissionsInput {
   readonly path: MachinePath;
   readonly mode: number;

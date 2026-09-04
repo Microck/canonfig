@@ -511,7 +511,12 @@ const observeConfig = (
 
 const observe = (
   decoded: {
-    readonly resource: Pick<ProfileRevision["resources"][number], "kind" | "target">;
+    // `policy` is read so a `replace` directory can be listed in full; the
+    // other policies observe only owned and desired paths.
+    readonly resource: Pick<
+      ProfileRevision["resources"][number],
+      "kind" | "target" | "policy"
+    >;
   },
   desired: DesiredResource,
   verification: VerificationInput,
@@ -545,7 +550,32 @@ const observe = (
           } as const;
         }
         const rootPermissions = yield* machine.permissions(root);
+        // Under `replace` the managed subtree is the desired subtree exactly,
+        // so every entry has to be observed, including ones Canonfig never
+        // wrote. Observation otherwise inspects only owned and desired paths,
+        // which made a locally added file invisible and therefore
+        // unremovable: `replace` behaved like `mirror-owned` for anything
+        // foreign, and the two policies were the same thing.
+        const foreign = decoded.resource.policy === "replace"
+          ? yield* machine.listDirectory(root).pipe(
+            Effect.map((entries) =>
+              entries.map((entry) => {
+                const observed = {
+                  path: entry.path,
+                  digest: Schema.decodeUnknownSync(ContentDigest)(
+                    sha256Hex(`canonfig:observed-object:${entry.kind}`),
+                  ),
+                  executable: false,
+                };
+                return entry.kind === "directory"
+                  ? { ...observed, objectKind: "directory" as const }
+                  : observed;
+              })
+            ),
+          )
+          : [];
         const candidates = [...new Map([
+          ...foreign,
           ...(applied?.ownedFiles ?? []).map((file) => ({
             ...file,
             executable: file.executable ?? false,

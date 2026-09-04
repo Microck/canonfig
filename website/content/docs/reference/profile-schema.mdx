@@ -61,6 +61,11 @@ Under `merge`, a key Canonfig owned that the profile no longer declares is
 removed from the follower's file. A key the follower claimed through its Local
 Overlay stays, which is how an operator keeps a key the profile has dropped.
 
+`replace` on a directory is a true mirror: the whole directory is listed, and
+entries Canonfig never wrote are removed so the managed subtree ends up exactly
+the desired subtree. `mirror-owned` is the policy that preserves foreign
+entries.
+
 Under `replace-if-unmodified`, a missing target is reinstalled: absence is not a
 local edit, so there is nothing to overwrite. A target that exists but cannot be
 verified is reported rather than overwritten.

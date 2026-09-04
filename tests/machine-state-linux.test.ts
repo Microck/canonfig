@@ -48,6 +48,63 @@ machineStateContract("Linux", {
 });
 
 describe("portable safe-root mutation", () => {
+  it("lists every entry beneath a managed directory without following symlinks out", async () => {
+    // Observation only ever inspected owned and desired paths, so a file the
+    // operator added was invisible and therefore unremovable, which made
+    // `replace` behave exactly like `mirror-owned` for anything foreign.
+    const root = mkdtempSync(join(tmpdir(), "canonfig-list-directory-"));
+    const managed = join(root, "managed");
+    const outside = join(root, "outside");
+    mkdirSync(join(managed, "nested"), { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(managed, "owned.txt"), "owned");
+    writeFileSync(join(managed, "foreign.txt"), "foreign");
+    writeFileSync(join(managed, "nested", "deep.txt"), "deep");
+    writeFileSync(join(outside, "secret.txt"), "must not be listed");
+    symlinkSync(outside, join(managed, "link"));
+
+    const listed = await Effect.runPromise(
+      Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: managed });
+        return yield* machine.listDirectory(path);
+      }).pipe(Effect.provide(
+        linuxMachineStateLayer({
+          credentialPolicy: { kind: "local-file", path: join(root, "credentials") },
+          environment: environment(root),
+        }),
+      )),
+    );
+
+    expect(listed.map((entry) => `${entry.path}:${entry.kind}`)).toEqual([
+      "foreign.txt:regular",
+      "link:symlink",
+      "nested:directory",
+      "nested/deep.txt:regular",
+      "owned.txt:regular",
+    ]);
+    // The symlinked directory is reported but never descended into, so a link
+    // cannot walk the listing out of the managed root.
+    expect(listed.some((entry) => entry.path.includes("secret"))).toBe(false);
+  });
+
+  it("lists nothing for a directory that does not exist", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-list-absent-"));
+    const listed = await Effect.runPromise(
+      Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: join(root, "absent") });
+        return yield* machine.listDirectory(path);
+      }).pipe(Effect.provide(
+        linuxMachineStateLayer({
+          credentialPolicy: { kind: "local-file", path: join(root, "credentials") },
+          environment: environment(root),
+        }),
+      )),
+    );
+    expect(listed).toEqual([]);
+  });
+
   it("replaces an empty directory with a standalone symlink but preserves non-empty directories", async () => {
     const root = mkdtempSync(join(tmpdir(), "canonfig-standalone-symlink-"));
     try {
