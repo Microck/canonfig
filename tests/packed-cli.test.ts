@@ -826,6 +826,18 @@ describe("packed Canonfig executable", () => {
       exitCode: 2,
     });
 
+    // `abandon` is the terminal close for a run `recover` cannot resolve. It
+    // reports the same way when there is nothing open, so an operator can tell
+    // "nothing to abandon" from "abandoned it".
+    const abandon = invoke(followerHome, ["abandon", "--json"]);
+    expect(abandon.status).toBe(2);
+    expect(abandon.stdout).toBe("");
+    expect(JSON.parse(abandon.stderr)).toMatchObject({
+      command: "abandon",
+      status: "error",
+      exitCode: 2,
+    });
+
     const revoked = invoke(sourceHome, [
       "source",
       "revoke",

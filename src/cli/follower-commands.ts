@@ -48,6 +48,7 @@ export interface FollowerCommandsService {
   readonly enroll: (
     input: FollowerEnrollInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly abandon: () => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly synchronize: (
     input: SynchronizeInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;

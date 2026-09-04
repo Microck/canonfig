@@ -1393,6 +1393,53 @@ export const synchronizeFollower = Effect.fn(
   };
 });
 
+/**
+ * Closes an interrupted run without recovering it.
+ *
+ * `recover` needs the run's source revision to still be authorized, so a
+ * follower whose view changed, whose source is gone, or which was pointed at
+ * another profile could not close its run at all: `recover` failed and
+ * `sync --apply` was refused with `ActiveRunExistsError` on every attempt, with
+ * no way out short of editing the database.
+ *
+ * This is deliberately not a rollback. Whatever the interrupted run had already
+ * applied stays applied, and the next run reconciles it like any other
+ * follower state. Abandoning only stops the open run from blocking that.
+ */
+export const abandonFollowerRun = Effect.fn(
+  "FollowerOrchestration.abandon",
+)(function*(stateLocation: string) {
+  const repository = yield* StateRepository;
+  const configuration = yield* loadFollowerSynchronizationConfiguration(
+    stateLocation,
+  );
+  const recovery = yield* repository.loadRecovery(configuration.follower.id);
+  if (recovery === undefined) {
+    return yield* configurationError(
+      "stale",
+      "no durable interrupted synchronization run is available",
+    );
+  }
+  const appliedResources = yield* repository.loadAppliedResources(
+    configuration.follower.id,
+  );
+  yield* repository.completeRun({
+    run: recovery.run.id,
+    completedAt: new Date().toISOString(),
+    outcome: {
+      outcome: "Failed",
+      run: recovery.run.id,
+      reason: "the interrupted run was abandoned by the operator",
+    },
+    appliedResources,
+  });
+  return {
+    run: recovery.run.id,
+    revision: recovery.run.revision,
+    abandoned: true as const,
+  };
+});
+
 export const recoverFollower = Effect.fn(
   "FollowerOrchestration.recover",
 )(function*(stateLocation: string, signal?: AbortSignal) {

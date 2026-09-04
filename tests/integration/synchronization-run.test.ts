@@ -1262,6 +1262,49 @@ if (process.argv.slice(2).some((value) =>
     expect(await readFile(outsideFile, "utf8")).toBe("outside content");
   });
 
+  it("restores a tree that was absent without needing the root to exist", async () => {
+    // Interrupting a mirror-directory rolls the action back, which removes the
+    // tree, and then `canonfig recover` restored the same material again.
+    // Every non-root entry goes through the managed root, which is opened with
+    // O_DIRECTORY, so this threw ENOENT with the run still open: recover kept
+    // exiting 1 and apply kept exiting 4 until the operator created the
+    // directory by hand.
+    // The managed root does not exist yet, so the captured state records the
+    // whole tree as absent and the action is what creates it.
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    const context = mirrorContext(
+      root,
+      managed,
+      "nested/settings.json",
+      "desired content",
+    );
+
+    const prepared = await Effect.runPromise(
+      prepareResourceAction(context).pipe(Effect.provide(machineLayer(root))),
+    );
+    expect(prepared.rollbackReference).toBeDefined();
+    await Effect.runPromise(
+      prepared.execute.pipe(Effect.provide(machineLayer(root))),
+    );
+
+    // Roll back once, which takes the whole tree away because the captured
+    // state recorded it as absent.
+    await Effect.runPromise(
+      restoreRollbackReference(context, prepared.rollbackReference!).pipe(
+        Effect.provide(machineLayer(root)),
+      ),
+    );
+
+    // Restoring the same material again is what recovery does, and it has to
+    // succeed rather than trip over the root it just removed.
+    await Effect.runPromise(
+      restoreRollbackReference(context, prepared.rollbackReference!).pipe(
+        Effect.provide(machineLayer(root)),
+      ),
+    );
+  });
+
   it("writes nested mirror files in-root and replaces only a final symlink", async () => {
     const root = temporaryDirectory();
     const managed = join(root, "managed");

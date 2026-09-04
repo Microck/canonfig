@@ -63,6 +63,7 @@ import {
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
 import {
+  abandonFollowerRun,
   recoverFollower,
   synchronizeFollower,
 } from "../synchronization/follower-orchestration.ts";
@@ -871,6 +872,10 @@ const followerCommandsLayer = (
           Effect.provideService(AgentResolution, agentResolution),
           Effect.provideService(ScheduleManager, schedules),
         )).pipe(Effect.flatMap(outcomePayload)),
+      abandon: () =>
+        mapFailure(abandonFollowerRun(statePath).pipe(
+          Effect.provideService(StateRepository, repository),
+        )).pipe(Effect.map(payload)),
       recover: () =>
         mapFailure(recoverFollower(statePath).pipe(
           Effect.provideService(StateRepository, repository),
