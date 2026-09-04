@@ -80,9 +80,11 @@ import {
 import {
   prepareResourceAction,
   restoreRollbackReference,
+  verifyResource,
   type ResourceExecutionContext,
 } from "../../src/synchronization/resource-executors.ts";
 import type { NpmArtifactTransport } from "../../src/synchronization/npm-artifact.ts";
+import { defaultLocalExecution } from "../../src/synchronization/follower-sync-config.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 import { Synchronization } from "../../src/synchronization/synchronization.service.ts";
 import type {
@@ -1405,6 +1407,119 @@ if (process.argv.slice(2).some((value) =>
       "running",
       "succeeded",
     ]);
+  });
+
+  it("bounds a command verification by the local process limit, not the transport timeout", async () => {
+    // The follower used to pass scheduledInvocation.timeoutMilliseconds here,
+    // a 10 second HTTP timeout, so any installer or `command` verification that
+    // ran longer was killed and the run ended Failed.
+    const root = temporaryDirectory();
+    const context: ResourceExecutionContext = {
+      run: decode(RunId)("run-command-timeout"),
+      action: {
+        id: decode(ActionId)("action:slow-tool:0"),
+        resource: decode(ResourceId)("slow-tool"),
+        kind: "no-op",
+        detail: { kind: "no-op", reason: "tool already present" },
+        dependsOn: [],
+      },
+      resource: {
+        id: decode(ResourceId)("slow-tool"),
+        kind: "tool",
+        policy: "ensure",
+        target: "slow-tool",
+        dependsOn: [],
+        blobs: [],
+      },
+      desired: {
+        kind: "tool",
+        toolId: "slow-tool",
+        recipes: [],
+        loginRequired: false,
+      },
+      verification: { method: "command", command: ["/bin/sleep", "1.5"] },
+      artifacts: new Map(),
+      limits: defaultSynchronizationExecutionLimits,
+    };
+
+    const passed = await Effect.runPromise(
+      verifyResource(context).pipe(Effect.provide(machineLayer(root))),
+    );
+    expect(passed.passed).toBe(true);
+
+    // The limit is genuinely what bounds it: a limit below the runtime fails.
+    const timedOut = await Effect.runPromise(Effect.flip(
+      verifyResource({
+        ...context,
+        limits: { ...defaultSynchronizationExecutionLimits, processTimeoutMilliseconds: 200 },
+      }).pipe(Effect.provide(machineLayer(root))),
+    ));
+    expect(timedOut._tag).toBe("ProcessTimeoutError");
+  });
+
+  it("does not shorten the executor's process limit by default", () => {
+    // The follower's own default must not undercut the executor's, which is
+    // what passing the transport timeout did on every run.
+    expect(defaultLocalExecution.processTimeoutMilliseconds).toBe(
+      defaultSynchronizationExecutionLimits.processTimeoutMilliseconds,
+    );
+  });
+
+  it("verifies an executable-present check that names a path", async () => {
+    // Observation reports such a tool present by inspecting the path, so the
+    // planner plans a no-op. Verification called findExecutable, which searches
+    // PATH and refuses any name containing a separator, so the no-op could
+    // never pass and the run ended Failed.
+    const root = temporaryDirectory();
+    const toolPath = join(root, "opt", "vendor-tool");
+    await mkdir(dirname(toolPath), { recursive: true });
+    await writeFile(toolPath, "#!/bin/sh\nexit 0\n");
+    chmodSync(toolPath, 0o755);
+
+    const context: ResourceExecutionContext = {
+      run: decode(RunId)("run-executable-path"),
+      action: {
+        id: decode(ActionId)("action:vendor-tool:0"),
+        resource: decode(ResourceId)("vendor-tool"),
+        kind: "no-op",
+        detail: { kind: "no-op", reason: "tool already present" },
+        dependsOn: [],
+      },
+      resource: {
+        id: decode(ResourceId)("vendor-tool"),
+        kind: "tool",
+        policy: "ensure",
+        target: toolPath,
+        dependsOn: [],
+        blobs: [],
+      },
+      desired: {
+        kind: "tool",
+        toolId: "vendor-tool",
+        recipes: [],
+        loginRequired: false,
+      },
+      verification: { method: "executable-present", executable: toolPath },
+      artifacts: new Map(),
+      limits: defaultSynchronizationExecutionLimits,
+    };
+
+    const verification = await Effect.runPromise(
+      verifyResource(context).pipe(Effect.provide(machineLayer(root))),
+    );
+    expect(verification.passed).toBe(true);
+
+    // A path that exists but is not executable still fails.
+    const dataPath = join(root, "opt", "not-a-tool");
+    await writeFile(dataPath, "data\n");
+    chmodSync(dataPath, 0o644);
+    const rejected = await Effect.runPromise(
+      verifyResource({
+        ...context,
+        verification: { method: "executable-present", executable: dataPath },
+      }).pipe(Effect.provide(machineLayer(root))),
+    );
+    expect(rejected.passed).toBe(false);
   });
 
   it("does not follow an intermediate mirror symlink outside the managed root", async () => {

@@ -1764,11 +1764,25 @@ const verifyExecutable = (
 ): Effect.Effect<ResourceVerification, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
+    const method = `executable:${executable}`;
+    // A verification that names a path is checked by inspecting that path,
+    // which is what observation already does. findExecutable searches PATH and
+    // refuses any name containing a separator, so sending a path through it
+    // could never pass: observation reported the tool present, the planner
+    // planned a no-op, and the no-op then failed the whole run.
+    if (executable.includes("/") || executable.includes("\\")) {
+      return yield* machine.normalizePath({ path: executable }).pipe(
+        Effect.flatMap((path) => machine.permissions(path)),
+        Effect.map((permissions) => ({
+          passed: (permissions.mode & 0o111) !== 0,
+          method,
+        })),
+        Effect.catch(() => Effect.succeed({ passed: false, method })),
+      );
+    }
     return yield* machine.findExecutable({ name: executable }).pipe(
-      Effect.as({ passed: true, method: `executable:${executable}` }),
-      Effect.catch(() =>
-        Effect.succeed({ passed: false, method: `executable:${executable}` })
-      ),
+      Effect.as({ passed: true, method }),
+      Effect.catch(() => Effect.succeed({ passed: false, method })),
     );
   });
 

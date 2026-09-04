@@ -60,6 +60,7 @@ import {
   type ConfigDocument,
 } from "./config-codec.ts";
 import {
+  defaultLocalExecution,
   FollowerSynchronizationConfigurationError,
   type FollowerSynchronizationConfiguration,
   type FollowerAgentHarnessConfiguration,
@@ -87,6 +88,17 @@ const compareText = (left: string, right: string): number => {
 const isNotFoundFilesystemError = (
   error: MachineFilesystemError,
 ): boolean => /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message);
+
+/**
+ * The bound on a process Canonfig starts on this machine. Installers and
+ * `command` verifications routinely outlast an HTTP request, so this is
+ * deliberately not the transport timeout.
+ */
+const localProcessTimeout = (
+  configuration: FollowerSynchronizationConfiguration,
+): number =>
+  configuration.localExecution?.processTimeoutMilliseconds
+    ?? defaultLocalExecution.processTimeoutMilliseconds;
 
 const configurationError = (
   reason: "missing" | "stale" | "invalid-profile" | "invalid-reference",
@@ -1421,8 +1433,9 @@ export const synchronizeFollower = Effect.fn(
     agent: agentConfigurationFor(configuration, scheduled, signal),
     agentResolution: journaledAgentResolution,
     limits: {
-      processTimeoutMilliseconds:
-        configuration.scheduledInvocation.timeoutMilliseconds,
+      // The transport timeout used to be passed here, which killed any
+      // installer or `command` verification that ran longer than 10 seconds.
+      processTimeoutMilliseconds: localProcessTimeout(configuration),
     },
   });
   if (outcome.outcome === "Converged") {
@@ -1500,8 +1513,9 @@ export const recoverFollower = Effect.fn(
     agent: agentConfigurationFor(configuration, false, signal),
     agentResolution,
     limits: {
-      processTimeoutMilliseconds:
-        configuration.scheduledInvocation.timeoutMilliseconds,
+      // The transport timeout used to be passed here, which killed any
+      // installer or `command` verification that ran longer than 10 seconds.
+      processTimeoutMilliseconds: localProcessTimeout(configuration),
     },
   });
   if (outcome.outcome === "Converged") {
