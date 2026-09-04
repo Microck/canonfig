@@ -147,3 +147,12 @@ written to standard output.
 | `5` | Authentication or revocation |
 | `6` | Transport |
 | `7` | Verification or apply failure |
+
+Code `1` is reserved for defects: an unexpected failure Canonfig has no
+classification for. Every refusal Canonfig explains, including one it reports
+under `--json`, carries one of the other codes, so a script can tell a
+deliberate refusal from a crash.
+
+Usage errors are reported in the requested output format. With `--json` they
+arrive as a `canonfig.cli/v1` envelope with `status` `"error"` and `exitCode`
+`2`, the same shape as every other failure.

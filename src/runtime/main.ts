@@ -4,6 +4,8 @@ import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
 
 import { evaluateCli, runCli, type CliIo } from "../cli/cli.ts";
+import { CliExitCode } from "../cli/exit-codes.ts";
+import { renderUsageFailure } from "../cli/render.ts";
 import {
   isHarnessConfigurationCommand,
   runHarnessConfigurationCli,
@@ -15,9 +17,18 @@ import {
   secretExitCode,
 } from "../secrets/cli.ts";
 import { synchronizeSharedSecrets } from "../secrets/secret-client.ts";
-import { secretRuntimeLayer } from "../secrets/runtime-layer.ts";
 import { SecretTransferError } from "../secrets/secret-store.ts";
 
+/**
+ * Silences the `node:sqlite` experimental warning.
+ *
+ * This only works because nothing in this module's static import graph reaches
+ * `@effect/sql-sqlite-node`. Node emits that warning while it translates the
+ * module, which happens before any module body runs, so a warning filter
+ * cannot suppress a statically imported sqlite. Both the runtime layer and the
+ * secret runtime layer are therefore loaded with a dynamic import, which
+ * happens after this filter is installed.
+ */
 const warningListeners = process.listeners("warning");
 process.removeAllListeners("warning");
 process.on("warning", (warning) => {
@@ -30,6 +41,10 @@ process.on("warning", (warning) => {
 
 const arguments_ = process.argv.slice(2);
 installCommandLog(arguments_);
+
+/** The secret runtime layer, loaded late to keep sqlite out of the static graph. */
+const loadSecretRuntimeLayer = () =>
+  Effect.promise(() => import("../secrets/runtime-layer.ts"));
 
 const nodeCliIo: CliIo = {
   writeStdout: (text) => process.stdout.write(text),
@@ -63,8 +78,12 @@ const automaticSecretFailure = (
 
 if (isSecretsCommand(arguments_)) {
   NodeRuntime.runMain(
-    runSecretsCli(arguments_.slice(1), nodeCliIo).pipe(
-      Effect.provide(secretRuntimeLayer()),
+    loadSecretRuntimeLayer().pipe(
+      Effect.flatMap(({ secretRuntimeLayer }) =>
+        runSecretsCli(arguments_.slice(1), nodeCliIo).pipe(
+          Effect.provide(secretRuntimeLayer()),
+        )
+      ),
     ),
   );
 } else if (isHarnessConfigurationCommand(arguments_)) {
@@ -83,37 +102,47 @@ if (isSecretsCommand(arguments_)) {
       Effect.promise(() => import("./layers.ts")).pipe(
         Effect.flatMap(({ runtimeLayer }) =>
           runCli(arguments_, nodeCliIo).pipe(
-            Effect.andThen(
-              automaticSecretSync
-                ? Effect.suspend(() =>
-                  (process.exitCode ?? 0) === 0
-                    ? synchronizeSharedSecrets().pipe(
+            // Automatic shared-secret synchronization runs only after a
+            // successful command. It reads runCli's exit code directly now that
+            // there is one, rather than suspending to read the mutable
+            // process.exitCode that runCli had just set.
+            Effect.tap((exitCode) =>
+              automaticSecretSync && exitCode === CliExitCode.success
+                ? loadSecretRuntimeLayer().pipe(
+                  Effect.flatMap(({ secretRuntimeLayer }) =>
+                    synchronizeSharedSecrets().pipe(
                       Effect.provide(secretRuntimeLayer()),
-                      Effect.catch((cause) =>
-                        Effect.sync(() => {
-                          const error = cause instanceof SecretTransferError
-                            ? cause
-                            : new SecretTransferError({
-                              category: "state",
-                              operation: "synchronize shared secrets",
-                              message: "the secret synchronization state is unavailable",
-                            });
-                          automaticSecretFailure(
-                            error,
-                            outcome.format === "json",
-                          );
-                        })
-                      ),
-                      Effect.asVoid,
                     )
-                    : Effect.void
+                  ),
+                  Effect.catch((cause) =>
+                    Effect.sync(() => {
+                      const error = cause instanceof SecretTransferError
+                        ? cause
+                        : new SecretTransferError({
+                          category: "state",
+                          operation: "synchronize shared secrets",
+                          message: "the secret synchronization state is unavailable",
+                        });
+                      automaticSecretFailure(
+                        error,
+                        outcome.format === "json",
+                      );
+                    })
+                  ),
+                  Effect.asVoid,
                 )
-                : Effect.void,
+                : Effect.void
             ),
-            Effect.andThen(
+            // `source serve` is the one command that outlives its own effect:
+            // it returns once the loopback server is listening and the process
+            // must then stay up to serve. Waiting on the exit code rather than
+            // on the command name keeps a failed serve from blocking forever on
+            // a server that never came up.
+            Effect.flatMap((exitCode) =>
               outcome.command._tag === "SourceServe"
+                  && exitCode === CliExitCode.success
                 ? Effect.never
-                : Effect.void,
+                : Effect.void
             ),
             Effect.provide(runtimeLayer()),
           )
@@ -125,7 +154,11 @@ if (isSecretsCommand(arguments_)) {
       if (outcome._tag === "Help" || outcome._tag === "Version") {
         nodeCliIo.writeStdout(`${outcome.text}\n`);
       } else {
-        nodeCliIo.writeStderr(`${outcome.message}\n`);
+        // The same renderer as the in-layer path, so a usage failure caught
+        // before the runtime layer is built still honors --json.
+        nodeCliIo.writeStderr(
+          renderUsageFailure(outcome.message, outcome.format),
+        );
       }
       nodeCliIo.setExitCode(outcome.exitCode);
     }));

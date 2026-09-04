@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import type { FollowerNotFoundError } from "../state/state-repository.errors.ts";
 
 export class SourceNotInitializedError extends Schema.TaggedError<SourceNotInitializedError>()(
   "SourceNotInitializedError",
@@ -98,6 +99,9 @@ export class TransportInterruptedError extends Schema.TaggedError<TransportInter
 
 export type EnrollmentError =
   | SourceNotInitializedError
+  // Naming a follower the Source Machine never enrolled is an ordinary
+  // enrollment outcome, distinct from a credential that fails to authenticate.
+  | FollowerNotFoundError
   | EnrollmentConfigurationError
   | InvitationNotFoundError
   | InvitationExpiredError

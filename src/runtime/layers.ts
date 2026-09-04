@@ -66,6 +66,10 @@ import {
   type FollowerCommandsService,
 } from "../cli/follower-commands.ts";
 import {
+  describeRuntimeError,
+  type TaggedRuntimeError,
+} from "../cli/failure-taxonomy.ts";
+import {
   CliCommandFailure,
   SourceCommands,
   type CliPayload,
@@ -118,47 +122,25 @@ const payload = <Value>(value: Value): CliPayload =>
     JSON.parse(JSON.stringify(value)),
   );
 
-interface TaggedRuntimeError extends Error {
-  readonly _tag?: string | undefined;
-  readonly action?: string | undefined;
-  readonly recovery?: string | undefined;
-  readonly executable?: string | undefined;
-  readonly timeoutMilliseconds?: number | undefined;
-}
-
-const categoryForError = (error: TaggedRuntimeError): CliFailureCategory => {
-  const tag = error._tag ?? "";
-  if (/HumanAction/u.test(tag)) return "human-action-required";
-  if (/Drift|Conflict|Immutable|ActiveRun/u.test(tag)) return "conflict-or-drift";
-  if (/Credential|Revoked|Unauthorized|Fingerprint|SourceMismatch/u.test(tag)) {
-    return "authentication-or-revocation";
-  }
-  if (/Transport|Invitation/u.test(tag)) return "transport";
-  if (/Verification|Execution|Apply|Process/u.test(tag)) {
-    return "verification-or-apply-failure";
-  }
-  if (/Invalid|Configuration|NotConfigured|NotInitialized|NotFound/u.test(tag)) {
-    return "usage-or-configuration";
-  }
-  return "internal";
-};
-
-const runtimeErrorMessage = (error: TaggedRuntimeError): string => {
-  if (error.message.length > 0) return error.message;
-  if (error.action !== undefined && error.recovery !== undefined) {
-    return `${error.action}: ${error.recovery}`;
-  }
-  if (error.executable !== undefined && error.timeoutMilliseconds !== undefined) {
-    return `${error.executable} timed out after ${error.timeoutMilliseconds} ms`;
-  }
-  return String(error);
-};
-
-const commandFailure = (error: TaggedRuntimeError): CliCommandFailure =>
-  new CliCommandFailure({
-    category: categoryForError(error),
-    message: runtimeErrorMessage(error),
+/**
+ * Turns a leaf error into the terminal CLI failure, classified by the failure
+ * taxonomy rather than by matching words in the error's type name.
+ *
+ * `category` overrides the taxonomy's default for the leaf errors whose meaning
+ * depends on where they were raised: a process timeout is transport while
+ * fetching from the Source Machine and an apply failure while running an
+ * installer, and only the caller knows which.
+ */
+const commandFailure = (
+  error: TaggedRuntimeError,
+  category?: CliFailureCategory,
+): CliCommandFailure => {
+  const described = describeRuntimeError(error);
+  return new CliCommandFailure({
+    category: category ?? described.category,
+    message: described.message,
   });
+};
 
 const emptyDiscoveryProposal: DiscoveryScanResult = {
   resources: [],

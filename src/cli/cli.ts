@@ -31,6 +31,7 @@ import {
 import { FollowerCommands } from "./follower-commands.ts";
 import {
   renderCliResult,
+  renderUsageFailure,
   type CliOutputFormat,
 } from "./render.ts";
 import {
@@ -169,7 +170,12 @@ export type CliOutcome =
     readonly format: CliOutputFormat;
     readonly exitCode: CliExitCodeValue;
   }
-  | { readonly _tag: "InvalidInput"; readonly message: string; readonly exitCode: CliExitCodeValue };
+  | {
+    readonly _tag: "InvalidInput";
+    readonly message: string;
+    readonly format: CliOutputFormat;
+    readonly exitCode: CliExitCodeValue;
+  };
 
 export interface CliIo {
   readonly writeStdout: (text: string) => void;
@@ -185,7 +191,9 @@ interface Options {
 
 const invalid = (message: string): CliOutcome => ({
   _tag: "InvalidInput",
-  message: `${message}\nRun '${programName} --help' for usage.`,
+  message,
+  // Overwritten by evaluateCli, which is where the requested format is known.
+  format: "human",
   exitCode: CliExitCode.usageOrConfiguration,
 });
 
@@ -441,24 +449,20 @@ const evaluateCommand = (
         new Set(),
       );
       if (options.positionals.length !== 1) {
-        return invalid("Usage: canonfig follower enroll <invite> --name <name>");
+        return invalid(
+          "Usage: canonfig follower enroll <invite> --name <name> --profile <id>",
+        );
       }
-      const selectedProfile = one(options, "--profile");
-      const enrollment: CliCommand = {
+      return command({
         _tag: "FollowerEnroll",
         invitation: decodeInvitation(options.positionals[0]!),
         followerName: one(options, "--name", true)!,
-      };
-      return command(selectedProfile === undefined
-        ? enrollment
-        : {
-          ...enrollment,
-          selectedProfile: decodeOption(
-            Schema.decodeUnknownOption(ProfileId),
-            selectedProfile,
-            "profile id",
-          ),
-        }, format);
+        selectedProfile: decodeOption(
+          Schema.decodeUnknownOption(ProfileId),
+          one(options, "--profile", true)!,
+          "profile id",
+        ),
+      }, format);
     }
     if (area === "profile") {
       if (action === "list" && rest.length === 0) return command({ _tag: "ProfileList" }, format);
@@ -573,11 +577,18 @@ const evaluateCommand = (
       }, format);
     }
     if (area === "agent" && action === "policy") {
-      if (rest.length === 0) return command({ _tag: "AgentPolicyGet" }, format);
-      if (rest.length === 1) {
+      // Reject unknown options before reading the policy, so an option typo is
+      // reported as an unknown option rather than as an invalid policy name.
+      const options = parseOptions(rest, new Set(), new Set());
+      if (options.positionals.length === 0) return command({ _tag: "AgentPolicyGet" }, format);
+      if (options.positionals.length === 1) {
         return command({
           _tag: "AgentPolicySet",
-          policy: decodeOption(Schema.decodeUnknownOption(AgentPolicy), rest[0]!, "agent policy"),
+          policy: decodeOption(
+            Schema.decodeUnknownOption(AgentPolicy),
+            options.positionals[0]!,
+            "agent policy",
+          ),
         }, format);
       }
       return invalid("Usage: canonfig agent policy [policy]");
@@ -660,8 +671,19 @@ const evaluateCommand = (
       }, format);
     }
     if (area === "schedule") {
-      if (action === "status" && rest.length === 0) return command({ _tag: "ScheduleStatus" }, format);
-      if (action === "remove" && rest.length === 0) return command({ _tag: "ScheduleRemove" }, format);
+      // Separate options from positionals before judging the argument count, so
+      // a stray argument is reported as the stray argument rather than making
+      // the action itself look unknown.
+      if (action === "status" || action === "remove") {
+        const options = parseOptions(rest, new Set(), new Set());
+        if (options.positionals.length > 0) {
+          return invalid(`canonfig schedule ${action} accepts no arguments`);
+        }
+        return command(
+          { _tag: action === "status" ? "ScheduleStatus" : "ScheduleRemove" },
+          format,
+        );
+      }
       if (action === "set") {
         const options = parseOptions(
           rest,
@@ -696,8 +718,12 @@ export const evaluateCli = (arguments_: ReadonlyArray<string>): CliOutcome => {
   if (arguments_.includes("--version") || arguments_.includes("-V")) {
     return { _tag: "Version", text: programVersion, exitCode: CliExitCode.success };
   }
-  const format = arguments_.includes("--json") ? "json" : "human";
-  return evaluateCommand(arguments_.filter((argument) => argument !== "--json"), format);
+  const format: CliOutputFormat = arguments_.includes("--json") ? "json" : "human";
+  const rest = arguments_.filter((argument) => argument !== "--json");
+  const outcome = rest.length === 0
+    ? invalid("Missing command")
+    : evaluateCommand(rest, format);
+  return outcome._tag === "InvalidInput" ? { ...outcome, format } : outcome;
 };
 
 const commandName = (value: CliCommand): string => {
@@ -802,21 +828,21 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
 export const runCli = Effect.fn("runCli")(function*(
   arguments_: ReadonlyArray<string>,
   io: CliIo,
-): Effect.fn.Return<void, never, SourceCommands | FollowerCommands> {
+): Effect.fn.Return<CliExitCodeValue, never, SourceCommands | FollowerCommands> {
   const outcome = evaluateCli(arguments_);
   if (outcome._tag === "Help" || outcome._tag === "Version") {
     yield* Effect.sync(() => {
       io.writeStdout(`${outcome.text}\n`);
       io.setExitCode(outcome.exitCode);
     });
-    return;
+    return outcome.exitCode;
   }
   if (outcome._tag === "InvalidInput") {
     yield* Effect.sync(() => {
-      io.writeStderr(`${outcome.message}\n`);
+      io.writeStderr(renderUsageFailure(outcome.message, outcome.format));
       io.setExitCode(outcome.exitCode);
     });
-    return;
+    return outcome.exitCode;
   }
   const name = commandName(outcome.command);
   const result = yield* executeCommand(outcome.command).pipe(
@@ -848,4 +874,5 @@ export const runCli = Effect.fn("runCli")(function*(
     else io.writeStderr(rendered);
     io.setExitCode(result.exitCode);
   });
+  return result.exitCode;
 });

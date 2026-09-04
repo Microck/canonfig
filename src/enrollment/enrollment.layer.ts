@@ -239,11 +239,10 @@ const repositoryError = (
         });
     }
   }
-  if (error instanceof FollowerNotFoundError) {
-    return new InvalidFollowerCredentialError({
-      message: "the follower credential is invalid",
-    });
-  }
+  // A follower the Source Machine has never enrolled is not a credential
+  // problem: reporting one sent the operator looking for a revoked or corrupt
+  // credential when they had simply named an id that does not exist.
+  if (error instanceof FollowerNotFoundError) return error;
   return new EnrollmentConfigurationError({
     operation,
     message: "durable enrollment state is unavailable",

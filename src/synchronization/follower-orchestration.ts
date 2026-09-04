@@ -376,7 +376,7 @@ const desiredFor = (
           kind: "credential",
           reference: spec.reference,
           instructions:
-            `Store credential ${spec.reference} in MachineState secure storage, then rerun synchronization.`,
+            `Store credential ${spec.reference} in this machine's secure credential store, then run synchronization again.`,
         },
         artifacts: [],
       };
