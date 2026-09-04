@@ -11,6 +11,22 @@ const readProjectFile = (relativePath: string): string =>
   readFileSync(resolve(projectRoot, relativePath), "utf8");
 
 const installSkill = readProjectFile("skills/install-canonfig/SKILL.md");
+const setupSkill = readProjectFile("skills/setup-canonfig/SKILL.md");
+const setupQuestions = readProjectFile(
+  "skills/setup-canonfig/references/questions.md",
+);
+const setupSource = readProjectFile(
+  "skills/setup-canonfig/references/source-setup.md",
+);
+const setupFollower = readProjectFile(
+  "skills/setup-canonfig/references/follower-setup.md",
+);
+const setupHarness = readProjectFile(
+  "skills/setup-canonfig/references/harness-setup.md",
+);
+const setupCompletion = readProjectFile(
+  "skills/setup-canonfig/references/completion.md",
+);
 const operationsSkill = readProjectFile("skills/operate-canonfig/SKILL.md");
 const followerOperations = readProjectFile(
   "skills/operate-canonfig/references/follower-operations.md",
@@ -63,6 +79,54 @@ describe("Canonfig skill platform scenarios", () => {
       expect(operationsSkill).toContain("references/platform-boundaries.md");
     },
   );
+});
+
+describe("Canonfig guided setup experience", () => {
+  it("observes the environment before asking the operator", () => {
+    expect(setupSkill).toContain("Inspect before asking");
+    expect(setupSkill).toContain("Do not ask for facts already established");
+    expect(setupSkill).toContain("Ask no more than four related unresolved questions");
+    expect(setupSkill).toContain("If every remaining value has a safe, reversible default");
+  });
+
+  it("explains every question and recommends a justified answer", () => {
+    expect(setupQuestions).toContain("Question:");
+    expect(setupQuestions).toContain("Why it matters:");
+    expect(setupQuestions).toContain("Detected:");
+    expect(setupQuestions).toContain("Recommended:");
+    expect(setupQuestions).toContain("No automatic recommendation");
+    expect(setupQuestions).toContain("Never disguise an inference as a detected fact");
+  });
+
+  it("supports compact acceptance and targeted overrides", () => {
+    expect(setupSkill).toContain("Use recommendations");
+    expect(setupSkill).toContain("Skip optional");
+    expect(setupSkill).toContain("Show advanced options");
+    expect(setupQuestions).toContain("override answers by question number or field name");
+    expect(setupQuestions).toContain("Accept terse corrections");
+  });
+
+  it("keeps recommendations separate from security and mutation approval", () => {
+    expect(setupSkill).toContain("A recommendation is not approval");
+    expect(setupQuestions).toContain("never approves future publication");
+    expect(setupSource).toContain("Publication gate");
+    expect(setupFollower).toContain("Apply this exact synchronization plan?");
+    expect(setupHarness).toContain("Approval for one collision does not authorize blanket");
+  });
+
+  it("avoids optional-feature interrogation and secret collection", () => {
+    expect(setupSkill).toContain("Do not ask about optional shared secrets");
+    expect(setupHarness).toContain("Do not ask the user to define empty optional sections");
+    expect(setupSkill).toContain("Never request passwords, tokens, private keys");
+    expect(setupFollower).toContain("Do not ask for the invitation payload in chat");
+  });
+
+  it("requires evidence before reporting completion", () => {
+    expect(setupCompletion).toContain("A command completing is not proof");
+    expect(setupCompletion).toContain("complete");
+    expect(setupCompletion).toContain("incomplete — Human Action Required");
+    expect(setupCompletion).toContain("Do not call a degraded, partially applied");
+  });
 });
 
 describe("Canonfig skill safety scenarios", () => {
