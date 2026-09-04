@@ -1218,6 +1218,8 @@ export const windowsMachineStateLayer = (
           ),
         inspectPath: (path) =>
           requireWindowsPath(path).pipe(Effect.flatMap(machine.inspectPath)),
+        listDirectory: (path) =>
+          requireWindowsPath(path).pipe(Effect.flatMap(machine.listDirectory)),
         setPermissions: (input) =>
           requireWindowsPath(input.path).pipe(
             Effect.flatMap((path) =>

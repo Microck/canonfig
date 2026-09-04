@@ -153,7 +153,8 @@ Publishing converts JSONC into a canonical encoded Profile Revision. Comments an
 Apply Policies mean:
 
 - `replace`: atomically replace the target after recording rollback material.
-- `mirror-owned`: add and update desired files, then remove only files previously owned by Canonfig and still unmodified.
+- `mirror-owned`: add and update desired files, then remove only files previously owned by Canonfig and still unmodified. Files Canonfig never wrote are preserved.
+- `replace` on a directory: the managed subtree ends up exactly the desired subtree. The whole directory is listed, so entries Canonfig never wrote are removed too. Use `mirror-owned` to keep them.
 - `merge`: update declared keys through a format-specific codec while preserving the Local Overlay. A key Canonfig owned that the profile no longer declares is removed, unless the follower claimed it through its Local Overlay, which is how an operator keeps a key the profile has dropped.
 - `replace-if-unmodified`: replace only when current content equals the Applied Resource Record or already equals desired content. An absent target is reinstalled, because absence is not a local edit; a target that exists but cannot be verified is left alone and reported.
 - `ensure`: reach and verify a declared capability without removing unrelated software.
