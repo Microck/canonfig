@@ -615,6 +615,72 @@ describe("packed Canonfig executable", () => {
     });
   });
 
+  it("probes the agent policy the enrolled follower actually runs under", () => {
+    // `agent policy` writes to the follower configuration once enrolled, and a
+    // run reads it from there. The doctor probe read ~/.canonfig/policy.json,
+    // which enrollment stops using, so an enrolled follower with an agent
+    // policy and no harness reported a skipped probe instead of the failure a
+    // run would hit.
+    const policy = invoke(authoredFollowerHome, ["agent", "policy", "agent-apply", "--json"]);
+    expect(policy.status, policy.stderr).toBe(0);
+
+    const result = invoke(
+      authoredFollowerHome,
+      ["doctor", "--json", "--no-input", "--timeout-ms", "2000"],
+    );
+    const envelope = JSON.parse(result.status === 0 ? result.stdout : result.stderr);
+    const agentProbe = envelope.data.probes.find(
+      (probe: { readonly name: string }) => probe.name === "agent-adapter",
+    );
+    expect(agentProbe).toMatchObject({
+      name: "agent-adapter",
+      status: "fail",
+      details: { policy: "agent-apply", configured: false },
+    });
+
+    const restored = invoke(
+      authoredFollowerHome,
+      ["agent", "policy", "deterministic-only", "--json"],
+    );
+    expect(restored.status, restored.stderr).toBe(0);
+  });
+
+  it("refuses to replace a completed enrollment unless asked", () => {
+    const invitationResult = invoke(sourceHome, [
+      "source",
+      "invite",
+      "--endpoint",
+      sourceEndpoint,
+      "--expires",
+      "5m",
+      "--json",
+    ]);
+    expect(invitationResult.status, invitationResult.stderr).toBe(0);
+    // A completed enrollment is a singleton. Enrolling over it silently left
+    // the previous identity's records orphaned under an id nothing used.
+    const again = invoke(authoredFollowerHome, [
+      "follower",
+      "enroll",
+      JSON.parse(invitationResult.stdout).data.invite,
+      "--name",
+      "packed-second-name",
+      "--profile",
+      "packed-authored",
+      "--json",
+    ]);
+    expect(again.status).toBe(4);
+    const envelope = JSON.parse(again.stderr);
+    expect(envelope.message).toContain("already enrolled");
+    expect(envelope.message).toContain("--replace");
+
+    // The original identity is untouched.
+    const status = invoke(authoredFollowerHome, ["status", "--json"]);
+    expect(status.status, status.stderr).toBe(0);
+    expect(JSON.parse(status.stdout).data.follower.name).toBe(
+      "packed-authored-follower",
+    );
+  });
+
   it("runs doctor with bounded noninteractive probes and redaction", () => {
     const secret = "packed-doctor-secret-must-not-leak";
     const result = invoke(

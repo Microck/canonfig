@@ -26,6 +26,7 @@ import {
   CertificateFingerprint,
   CredentialReference,
 } from "../domain/brand.ts";
+import { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {
   DuplicateFollowerIdentityError,
@@ -299,6 +300,25 @@ export const enrollFollower = (
 ): Effect.Effect<FollowerEnrollment, EnrollmentError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
+    // Check that this machine can keep a credential before the invitation is
+    // spent. Storing it afterwards meant an unavailable credential store burned
+    // a single-use invitation and the operator had to ask for another one.
+    const capability = yield* machine.credentialCapability().pipe(
+      Effect.mapError(() =>
+        new CredentialStorageError({
+          operation: "store",
+          reference: "follower credential",
+          message: "this machine's credential storage could not be inspected",
+        })
+      ),
+    );
+    if (capability.kind === "unavailable") {
+      return yield* new CredentialStorageError({
+        operation: "store",
+        reference: "follower credential",
+        message: `secure follower credential storage is unavailable. ${capability.recovery}`,
+      });
+    }
     const endpoint = yield* checkedEndpoint(input.invitation.endpoint);
     const certificate = yield* inspectCertificate(endpoint);
     if (certificate.fingerprint !== input.invitation.tlsFingerprint) {
@@ -345,9 +365,10 @@ export const enrollFollower = (
       value: Redacted.make(enrolled.credential),
     }).pipe(
       Effect.mapError(() =>
-        new EnrollmentTransportError({
-          operation: "store follower credential",
-          message: "secure follower credential storage is unavailable",
+        new CredentialStorageError({
+          operation: "store",
+          reference: "follower credential",
+          message: "the follower credential could not be stored",
         })
       ),
     );

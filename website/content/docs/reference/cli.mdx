@@ -50,6 +50,11 @@ canonfig status --follower follower-one
 canonfig doctor --no-input --timeout-ms 5000
 ```
 
+One machine holds one enrollment. Re-enrolling under the same name rotates the
+credential and keeps the identity. Enrolling a different name needs
+`--replace`, because the previous identity's Applied Resource Records are
+addressed by an id that a new identity does not use.
+
 `--plan` and `--apply` are mutually exclusive. With neither, `sync`
 plans. A successful apply also synchronizes shared secrets when the follower has
 the `canonfig:secrets` group. `recover` accepts only `--no-input`.

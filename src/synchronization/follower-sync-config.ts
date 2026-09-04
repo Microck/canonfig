@@ -69,6 +69,22 @@ export const FollowerSynchronizationConfiguration = Schema.Struct({
   cacheDirectory: Schema.NonEmptyString,
   stateLocation: Schema.NonEmptyString,
   agentPolicy: AgentPolicy,
+  /**
+   * How this follower keeps its credential, recorded at enrollment.
+   *
+   * The policy was selected only by `CANONFIG_LOCAL_CREDENTIAL_ROOT` in the
+   * environment, which a native scheduled job does not carry, so a follower
+   * enrolled under the local-file policy had no credential during a scheduled
+   * run. Recording it here makes the enrolled configuration the authority
+   * rather than whatever environment happens to be present.
+   */
+  credentialPolicy: Schema.optional(Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("secure-store") }),
+    Schema.Struct({
+      kind: Schema.Literal("local-file"),
+      path: Schema.NonEmptyString,
+    }),
+  ])),
   /** Set only between source preparation and source finalization. */
   enrollmentPending: Schema.optional(Schema.Literal(true)),
   /** Last authorized profile-level default schedule, for durable status/recovery. */

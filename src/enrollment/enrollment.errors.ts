@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import type { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import type { FollowerNotFoundError } from "../state/state-repository.errors.ts";
 
 export class SourceNotInitializedError extends Schema.TaggedError<SourceNotInitializedError>()(
@@ -102,6 +103,9 @@ export type EnrollmentError =
   // Naming a follower the Source Machine never enrolled is an ordinary
   // enrollment outcome, distinct from a credential that fails to authenticate.
   | FollowerNotFoundError
+  // A follower cannot enroll without somewhere to keep its credential, and only
+  // a person can make the credential store usable.
+  | CredentialStorageError
   | EnrollmentConfigurationError
   | InvitationNotFoundError
   | InvitationExpiredError

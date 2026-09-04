@@ -7,6 +7,7 @@ import { connect as tlsConnect } from "node:tls";
 import { Effect, Option, Redacted, Schema } from "effect";
 
 import { programVersion } from "../cli/cli.ts";
+import { AgentPolicy } from "../domain/identity.ts";
 import type { CliFailureCategory } from "../cli/exit-codes.ts";
 import {
   CertificateFingerprint,
@@ -60,7 +61,19 @@ export interface DoctorInput {
   readonly noInput: boolean;
   readonly timeoutMilliseconds: number;
   readonly statePath: string;
+  /**
+   * Where an unenrolled machine keeps its agent policy. Enrollment stops using
+   * this file, so an enrolled machine passes `agentPolicy` instead and the file
+   * is not consulted.
+   */
   readonly policyPath: string;
+  /**
+   * The policy this machine actually synchronizes under, when it is enrolled.
+   * The probe used to read `policyPath` regardless, so an enrolled follower
+   * with policy `agent-apply` and no harness reported a skipped probe rather
+   * than the failure a run would hit.
+   */
+  readonly agentPolicy?: typeof AgentPolicy.Type | undefined;
   readonly source?: DoctorSourceConfiguration | undefined;
   readonly agent?: DoctorAgentConfiguration | undefined;
 }
@@ -401,9 +414,15 @@ const readPolicy = (
 const agentProbe = Effect.fn("Doctor.agentAdapter")(function*(
   machine: MachineState["Service"],
   policyPath: string,
+  enrolledPolicy: typeof AgentPolicy.Type | undefined,
   agent: DoctorAgentConfiguration | undefined,
 ): Effect.fn.Return<DoctorProbe> {
-  const configuredPolicy = yield* readPolicy(policyPath);
+  // An enrolled follower's policy lives in its follower configuration, which is
+  // what a run reads. Fall back to the policy file only when this machine is
+  // not enrolled and that file is still the authority.
+  const configuredPolicy = enrolledPolicy === undefined
+    ? yield* readPolicy(policyPath)
+    : { policy: enrolledPolicy };
   if (agent === undefined) {
     if (configuredPolicy?.policy === "deterministic-only") {
       return pass("agent-adapter", "deterministic-only policy requires no adapter", {
@@ -500,7 +519,7 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
     isolated(
       "agent-adapter",
       timeout,
-      agentProbe(machine, input.policyPath, input.agent),
+      agentProbe(machine, input.policyPath, input.agentPolicy, input.agent),
       () => failed("agent-adapter", "internal", "agent adapter capability check failed"),
       "internal",
     ),

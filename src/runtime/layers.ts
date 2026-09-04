@@ -595,6 +595,33 @@ const followerCommandsLayer = (
             const existing = yield* mapFailure(
               repository.getFollowerSynchronizationConfiguration(),
             );
+            // A completed enrollment is a singleton. Enrolling a different
+            // name over it silently left the previous identity's Applied
+            // Resource Records orphaned in the database under an id nothing
+            // used, and its credential in the store, so taking a new identity
+            // has to be asked for.
+            //
+            // Re-enrolling under the same name is credential rotation, which is
+            // a supported flow: the identity is unchanged, so there is nothing
+            // to orphan.
+            if (
+              existing !== undefined
+              && existing.enrollmentPending !== true
+              && existing.follower.name !== input.followerName
+            ) {
+              if (!input.replace) {
+                return yield* new CliCommandFailure({
+                  category: "conflict-or-drift",
+                  message:
+                    `this machine is already enrolled as ${existing.follower.name} (${existing.follower.id}); pass --replace to enroll it as ${input.followerName} instead`,
+                });
+              }
+              // Replacing is explicit, so the superseded credential goes with
+              // the identity that owned it rather than lingering in the store.
+              yield* machine.removeCredential(existing.credentialReference).pipe(
+                Effect.ignore,
+              );
+            }
             if (existing?.enrollmentPending === true) {
               const resumed = yield* finalizeFollowerEnrollment({
                 endpoint: existing.source.endpoint,
@@ -680,6 +707,12 @@ const followerCommandsLayer = (
               });
             }
             const source = prepared.source;
+            const capability = yield* mapFailure(machine.credentialCapability());
+            const enrolledCredentialPolicy:
+              FollowerSynchronizationConfiguration["credentialPolicy"] =
+                capability.kind === "local-file"
+                  ? { kind: "local-file", path: String(capability.path) }
+                  : { kind: "secure-store" };
             const configuration = {
               schemaVersion: 1 as const,
               follower,
@@ -693,6 +726,9 @@ const followerCommandsLayer = (
               cacheDirectory: join(dirname(statePath), "cache"),
               stateLocation: statePath,
               agentPolicy: "deterministic-only" as const,
+              // Record how this machine keeps its credential, so a later run
+              // does not have to rediscover it from the environment.
+              credentialPolicy: enrolledCredentialPolicy,
               enrollmentPending: true as const,
               scheduledInvocation: defaultScheduledInvocation,
               updatedAt: new Date().toISOString(),
@@ -994,13 +1030,27 @@ const followerCommandsLayer = (
       removeSchedule: () =>
         mapFailure(schedules.remove()).pipe(Effect.map(payload)),
       doctor: (input) =>
-        runDoctorProbes({
-          ...input,
-          statePath,
-          policyPath,
-          source: doctorSource,
-          agent: doctorAgent,
-        }).pipe(
+        // Probe the configuration a run would actually use. Enrollment moves
+        // the agent policy and harness into the follower configuration and
+        // stops writing the policy file, so reading that file reported an
+        // enrolled follower as unconfigured.
+        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+          Effect.flatMap((configuration) =>
+            runDoctorProbes({
+              ...input,
+              statePath,
+              policyPath,
+              agentPolicy: configuration?.agentPolicy,
+              source: doctorSource,
+              agent: configuration?.agentHarness === undefined
+                ? doctorAgent
+                : {
+                  adapter: configuration.agentHarness.kind,
+                  executable: configuration.agentHarness.executable,
+                },
+            })
+          ),
+        ).pipe(
           Effect.provideService(MachineState, machine),
           Effect.provideService(ScheduleManager, schedules),
           Effect.provideService(StateRepository, repository),
