@@ -42,7 +42,6 @@ import type {
   SynchronizationExecutionLimits,
   SynchronizationRunInput,
 } from "./synchronization.types.ts";
-import { captureScheduleRollback } from "./schedule-rollbacks.ts";
 
 export const defaultSynchronizationExecutionLimits: SynchronizationExecutionLimits = {
   maximumFileBytes: 16 * 1024 * 1024,
@@ -61,31 +60,6 @@ export interface ActionState {
   readonly action: PlannedAction;
   readonly context: ResourceExecutionContext;
 }
-
-const profileScheduleResourceId = Schema.decodeUnknownSync(ResourceId)(
-  "canonfig.schedule-default",
-);
-
-const profileScheduleResource: PublishedResource = {
-  id: profileScheduleResourceId,
-  kind: "schedule",
-  policy: "replace",
-  target: "canonfig.schedule-default",
-  dependsOn: [],
-  blobs: [],
-};
-
-const profileScheduleDesired = (
-  schedule: Extract<PlannedAction["detail"], { readonly kind: "schedule-default" }>["schedule"],
-) => ({
-  kind: "schedule" as const,
-  digest: Schema.decodeUnknownSync(ContentDigest)(
-    sha256Hex(canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(
-      JSON.parse(JSON.stringify(schedule)),
-    ))),
-  ),
-  schedule,
-});
 
 const now = (): Effect.Effect<string> =>
   Effect.map(Clock.currentTimeMillis, (milliseconds) =>
@@ -199,8 +173,6 @@ const verificationCompatibleWithDesired = (
       return method === "executable-present" || method === "command";
     case "credential":
       return method === "credential-present" || method === "command";
-    case "schedule":
-      return method === "command";
   }
 };
 
@@ -260,29 +232,6 @@ export const executionContexts = (
           message: `invalid or duplicate action ${action.id}`,
         });
       }
-      if (action.detail.kind === "schedule-default") {
-        if (action.resource !== profileScheduleResourceId) {
-          return yield* new InvalidExecutionPlanError({
-            message: `profile schedule action ${action.id} has an invalid resource`,
-          });
-        }
-        seen.add(action.id);
-        completed.add(action.id);
-        ordered.push({
-          action,
-          context: {
-            run: input.id,
-            action,
-            resource: profileScheduleResource,
-            desired: profileScheduleDesired(action.detail.schedule),
-            verification: { method: "command", command: [] },
-            artifacts,
-            limits,
-            previousSchedule: action.detail.previousSchedule,
-          },
-        });
-        continue;
-      }
       const resource = resources.get(action.resource);
       const desiredEntry = desired.get(action.resource);
       if (resource === undefined || desiredEntry === undefined) {
@@ -327,9 +276,6 @@ export const executionContexts = (
           verification: desiredEntry.verification,
           artifacts,
           limits,
-          previousSchedule: input.appliedResources?.find((record) =>
-            record.resource === action.resource
-          )?.schedule,
         },
       });
     }
@@ -433,7 +379,6 @@ const appliedResourceFor = (
     ownedFiles: ownedFilesFor(desired),
     ownedKeys: desired.kind === "config" ? desired.keys : undefined,
     configFormat: desired.kind === "config" ? desired.format : undefined,
-    schedule: desired.kind === "schedule" ? desired.schedule : undefined,
   };
 };
 
@@ -473,149 +418,6 @@ export const driftResult = (
   };
 };
 
-const executeScheduleDefaultAction = (
-  input: SynchronizationRunInput,
-  state: ActionState,
-  attempt: number,
-): Effect.Effect<ActionResult, never, StateRepository | MachineState> =>
-  Effect.gen(function*() {
-    const detail = state.action.detail;
-    if (detail.kind !== "schedule-default") {
-      return {
-        kind: "failed",
-        reason: `invalid profile schedule action ${state.action.id}`,
-      } satisfies ActionResult;
-    }
-    const scheduleManager = Option.getOrUndefined(
-      yield* Effect.serviceOption(ScheduleManager),
-    );
-    if (scheduleManager === undefined) {
-      yield* journal(
-        input.id,
-        state.action.id,
-        "failed",
-        { status: "not-run", method: "native-scheduler-unavailable" },
-        undefined,
-        attempt,
-      ).pipe(Effect.ignore);
-      return {
-        kind: "failed",
-        reason: "native scheduler is unavailable for the profile schedule default",
-      } satisfies ActionResult;
-    }
-
-    let rollback: Effect.Effect<void, unknown, MachineState> = Effect.void;
-    let rollbackReference: string | undefined;
-
-    const work = Effect.gen(function*() {
-      const captured = yield* captureScheduleRollback(
-        state.context,
-        scheduleManager,
-        { schedule: detail.schedule },
-      );
-      rollback = captured.restore;
-      rollbackReference = captured.reference;
-      yield* journal(
-        input.id,
-        state.action.id,
-        "running",
-        undefined,
-        rollbackReference,
-        attempt,
-      );
-      if (detail.operation === "remove") {
-        yield* scheduleManager.remove({ schedule: detail.schedule });
-      } else {
-        const change = yield* scheduleManager.update({ schedule: detail.schedule });
-        const verification = {
-          status: change.status.state === "current"
-            ? "passed" as const
-            : "failed" as const,
-          method: `native-scheduler:${change.status.platform}`,
-        };
-        if (verification.status === "failed") {
-          yield* rollback.pipe(Effect.ignore);
-          yield* journal(
-            input.id,
-            state.action.id,
-            "failed",
-            verification,
-            rollbackReference,
-            attempt,
-          );
-          return {
-            kind: "failed",
-            reason: "native scheduler did not verify the profile schedule default",
-          } satisfies ActionResult;
-        }
-      }
-      const verification = {
-        status: "passed" as const,
-        method: detail.operation === "remove"
-          ? "native-scheduler:removed"
-          : "native-scheduler:current",
-      };
-      yield* journal(
-        input.id,
-        state.action.id,
-        "succeeded",
-        verification,
-        rollbackReference,
-        attempt,
-      );
-      return {
-        kind: "verified",
-        rollback,
-        rollbackReference,
-      } satisfies ActionResult;
-    });
-
-    return yield* work.pipe(
-      Effect.onInterrupt(() =>
-        rollback.pipe(
-          Effect.catch(() => Effect.void),
-          Effect.andThen(journal(
-            input.id,
-            state.action.id,
-            "failed",
-            { status: "not-run", method: "interrupted" },
-            rollbackReference,
-            attempt,
-          )),
-          Effect.ignore,
-        )
-      ),
-      Effect.catch((error) =>
-        rollback.pipe(
-          Effect.catch(() => Effect.void),
-          Effect.andThen(journal(
-            input.id,
-            state.action.id,
-            "failed",
-            { status: "not-run", method: "action-failed" },
-            rollbackReference,
-            attempt,
-          )),
-          Effect.ignore,
-          Effect.andThen(Effect.succeed({
-            kind: "failed",
-            reason:
-              `native scheduler mutation failed for profile schedule default: ${redact(
-                error,
-                input.knownSecrets ?? [],
-              )}`,
-          } satisfies ActionResult)),
-        )
-      ),
-    );
-  }).pipe(
-    Effect.catch((error) =>
-      Effect.succeed({
-        kind: "failed",
-        reason: redact(error, input.knownSecrets ?? []),
-      } satisfies ActionResult)
-    ),
-  );
 
 const agentActionResult = (
   input: SynchronizationRunInput,
@@ -692,10 +494,7 @@ const agentActionResult = (
       } satisfies ActionResult;
     }
 
-    const scheduleManager = state.context.resource.kind === "schedule"
-      ? Option.getOrUndefined(yield* Effect.serviceOption(ScheduleManager))
-      : undefined;
-    const verification = yield* verifyResource(state.context, scheduleManager);
+    const verification = yield* verifyResource(state.context);
     const evidence = verificationEvidence(verification);
     if (!verification.passed) {
       yield* journal(
@@ -773,9 +572,6 @@ export const executeSynchronizationAction = (
     if (detail.kind === "agent-task") {
       return yield* agentActionResult(input, state, attempt);
     }
-    if (detail.kind === "schedule-default") {
-      return yield* executeScheduleDefaultAction(input, state, attempt);
-    }
     if (detail.kind === "drift-conflict") {
       const result = driftResult(input, state);
       if (result.drift !== undefined) {
@@ -791,11 +587,8 @@ export const executeSynchronizationAction = (
     }
 
     let prepared: PreparedResourceAction | undefined;
-    const scheduleManager = state.context.resource.kind === "schedule"
-      ? Option.getOrUndefined(yield* Effect.serviceOption(ScheduleManager))
-      : undefined;
     const work = Effect.gen(function*() {
-      prepared = yield* prepareResourceAction(state.context, scheduleManager);
+      prepared = yield* prepareResourceAction(state.context);
       yield* journal(
         input.id,
         state.action.id,
@@ -842,7 +635,7 @@ export const executeSynchronizationAction = (
           rollbackReference: prepared.rollbackReference,
         } satisfies ActionResult;
       }
-      const verification = yield* verifyResource(state.context, scheduleManager);
+      const verification = yield* verifyResource(state.context);
       const evidence = verificationEvidence(verification);
       if (!verification.passed) {
         yield* rollbackPrepared(prepared);
@@ -1088,9 +881,6 @@ export const executeSynchronizationPlan = (
             ownedFiles,
             ownedKeys: desired?.kind === "config" ? desired.keys : undefined,
             configFormat: desired?.kind === "config" ? desired.format : undefined,
-            schedule: desired?.kind === "schedule"
-              ? desired.schedule
-              : undefined,
           });
         }
       }

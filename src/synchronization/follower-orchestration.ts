@@ -41,7 +41,6 @@ import { MachineFilesystemError } from "../machine/machine-state.errors.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
   defaultSyncSchedule,
-  syncScheduleFromResourceSpec,
   syncScheduleFromDefault,
 } from "../schedule/schedule-manager.types.ts";
 import {
@@ -392,20 +391,6 @@ const desiredFor = (
         },
         artifacts: [],
       };
-    case "schedule": {
-      const content = encoder.encode(canonicalJson(
-        Schema.decodeUnknownSync(Schema.MutableJson)(spec),
-      ));
-      const digest = Schema.decodeUnknownSync(ContentDigest)(sha256BytesHex(content));
-      return {
-        desired: {
-          kind: "schedule",
-          digest,
-          schedule: syncScheduleFromResourceSpec(spec),
-        },
-        artifacts: [{ digest, content }],
-      };
-    }
   }
 };
 
@@ -538,30 +523,6 @@ const observe = (
       return observeFile(decoded.resource.target, desired);
     case "config":
       return observeConfig(decoded, desired);
-    case "schedule":
-      if (scheduleManager === undefined) {
-        return Effect.succeed({
-          state: "unverifiable",
-          reason: "ScheduleManager is unavailable",
-        });
-      }
-      return scheduleManager.status({ schedule: desired.schedule }).pipe(
-        Effect.map((status) =>
-          status.state === "current"
-            ? {
-              state: "present",
-              digest: desired.digest,
-              executable: false,
-            } as const
-            : { state: "absent" } as const
-        ),
-        Effect.catch(() =>
-          Effect.succeed({
-            state: "unverifiable",
-            reason: "native scheduler status is unavailable",
-          } as const)
-        ),
-      );
     case "directory":
     case "skill":
       return Effect.gen(function*() {
@@ -800,16 +761,6 @@ const removedResourceState = (
           digest,
           format: applied.configFormat,
           keys: applied.ownedKeys,
-        },
-      };
-    case "schedule":
-      if (applied.schedule === undefined) return undefined;
-      return {
-        resource,
-        desired: {
-          kind: "schedule",
-          digest,
-          schedule: applied.schedule,
         },
       };
     case "tool":
@@ -1100,73 +1051,6 @@ const recanonicalizePlan = (
   return { ...body, encoded, digest: sha256Hex(encoded) };
 };
 
-const profileScheduleDefaultResource = Schema.decodeUnknownSync(ResourceId)(
-  "canonfig.schedule-default",
-);
-
-const appendProfileScheduleDefaultAction = (
-  plan: PlannedSynchronization,
-  configuration: FollowerSynchronizationConfiguration,
-  scheduleDefault: RevisionMetadata["scheduleDefault"],
-): PlannedSynchronization => {
-  const previousSchedule = configuration.scheduleDefault === undefined
-    ? undefined
-    : syncScheduleFromDefault(configuration.scheduleDefault);
-  const operation = scheduleDefault === undefined ? "remove" as const : "upsert" as const;
-  const schedule = scheduleDefault === undefined
-    ? previousSchedule ?? defaultSyncSchedule
-    : syncScheduleFromDefault(scheduleDefault);
-  const action = {
-    id: Schema.decodeUnknownSync(ActionId)(
-      "action:canonfig.schedule-default:0:schedule-default",
-    ),
-    resource: profileScheduleDefaultResource,
-    kind: "schedule-default" as const,
-    detail: {
-      kind: "schedule-default" as const,
-      operation,
-      schedule,
-      previousSchedule,
-    },
-    before: plan.actions.map((candidate) => candidate.id),
-  };
-  return recanonicalizePlan(plan, [...plan.actions, action]);
-};
-
-const planProfileScheduleDefault = Effect.fn(
-  "FollowerOrchestration.planProfileScheduleDefault",
-)(function*(
-  plan: PlannedSynchronization,
-  configuration: FollowerSynchronizationConfiguration,
-  scheduleDefault: RevisionMetadata["scheduleDefault"],
-  scheduleManager: ScheduleManager["Service"] | undefined,
-) {
-  const previousSchedule = configuration.scheduleDefault === undefined
-    ? undefined
-    : syncScheduleFromDefault(configuration.scheduleDefault);
-  const operation = scheduleDefault === undefined ? "remove" as const : "upsert" as const;
-  const schedule = scheduleDefault === undefined
-    ? previousSchedule ?? defaultSyncSchedule
-    : syncScheduleFromDefault(scheduleDefault);
-  if (scheduleManager !== undefined) {
-    const status = yield* scheduleManager.status({ schedule }).pipe(
-      Effect.match({
-        onFailure: () => undefined,
-        onSuccess: (value) => value,
-      }),
-    );
-    const current = operation === "remove"
-      ? status?.state === "not-installed"
-      : status?.state === "current";
-    if (current) return plan;
-  }
-  return appendProfileScheduleDefaultAction(
-    plan,
-    configuration,
-    scheduleDefault,
-  );
-});
-
 const agentConfigurationFor = (
   configuration: FollowerSynchronizationConfiguration,
   scheduled: boolean,
@@ -1188,6 +1072,39 @@ const agentConfigurationFor = (
     },
   scheduled,
   signal,
+});
+
+/**
+ * Brings the native synchronization job in line with the follower's effective
+ * schedule, after a converged run.
+ *
+ * Deliberately outside the resource transaction, and deliberately failure
+ * tolerant. A scheduler that does not work is operational degradation on this
+ * machine, not a reason to undo configuration that applied correctly: the
+ * schedule used to be a planned action, so a host without a working user
+ * scheduler failed the whole run and rolled it back, and could never converge.
+ *
+ * A follower that set its own schedule keeps it. This only installs the
+ * inherited profile default, and only when the follower has not decided for
+ * itself.
+ */
+const reconcileInheritedSchedule = Effect.fn(
+  "FollowerOrchestration.reconcileInheritedSchedule",
+)(function*(
+  configuration: FollowerSynchronizationConfiguration,
+  scheduleDefault: RevisionMetadata["scheduleDefault"],
+  scheduleManager: ScheduleManager["Service"] | undefined,
+) {
+  if (scheduleManager === undefined) return;
+  const override = configuration.scheduleOverride;
+  if (override !== undefined && override.kind !== "inherit") return;
+  if (scheduleDefault === undefined) {
+    yield* scheduleManager.remove().pipe(Effect.ignore);
+    return;
+  }
+  yield* scheduleManager.update({
+    schedule: syncScheduleFromDefault(scheduleDefault),
+  }).pipe(Effect.ignore);
 });
 
 const persistProfileScheduleDefault = Effect.fn(
@@ -1384,22 +1301,16 @@ export const synchronizeFollower = Effect.fn(
     localOverlay: configuration.localOverlay ?? [],
     appliedResources,
   });
-  const planWithSchedule = yield* planProfileScheduleDefault(
-    plan,
-    configuration,
-    fetched.metadata.scheduleDefault,
-    scheduleManager,
-  );
   const noAgentResolutions: ReadonlyArray<AgentResolutionOutcome> = [];
   const planned = mode === "plan"
     ? yield* resolveAgentTasks(
       configuration,
-      planWithSchedule,
+      plan,
       scheduled,
       signal,
       true,
     )
-    : { plan: planWithSchedule, agentResolutions: noAgentResolutions };
+    : { plan: plan, agentResolutions: noAgentResolutions };
   const appliedAgentResolutions: Array<AgentResolutionOutcome> = [];
   const journaledAgentResolution = mode === "apply" && agentResolution !== undefined
     ? AgentResolution.of({
@@ -1442,6 +1353,11 @@ export const synchronizeFollower = Effect.fn(
     yield* persistProfileScheduleDefault(
       configuration,
       fetched.metadata.scheduleDefault,
+    );
+    yield* reconcileInheritedSchedule(
+      configuration,
+      fetched.metadata.scheduleDefault,
+      scheduleManager,
     );
   }
   return {

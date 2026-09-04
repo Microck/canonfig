@@ -379,17 +379,6 @@ esac
         }
       },
       {
-        "id": "authored-schedule",
-        "kind": "schedule",
-        "target": "packed-authored-schedule",
-        "spec": {
-          "kind": "schedule",
-          "calendar": { "type": "daily", "at": "04:30" },
-          "timezone": "UTC"
-        },
-        "verify": { "method": "command", "command": ["canonfig", "schedule", "status"] }
-      },
-      {
         "id": "authored-skill",
         "kind": "skill",
         "target": "~/.canonfig-packed/skills/authored",
@@ -506,7 +495,6 @@ describe("packed Canonfig executable", () => {
         "authored-credential",
         "authored-directory",
         "authored-file",
-        "authored-schedule",
         "authored-skill",
         "authored-tool",
       ]);
@@ -758,69 +746,37 @@ describe("packed Canonfig executable", () => {
     expect(overlays.status, overlays.stderr).toBe(0);
     expect(JSON.parse(overlays.stdout).data).toEqual({ overlays: [] });
 
+    // Every platform converges. This used to expect exit 7 on Linux, because
+    // the plan always appended a schedule-default action and that action failed
+    // without a systemd user session, so a container or headless host could
+    // never converge. The native job is no longer a planned action.
     const first = invoke(followerHome, ["sync", "--apply", "--json"]);
-    if (process.platform === "linux") {
-      expect(first.status).toBe(7);
-      expect(first.stdout).toBe("");
-      expect(JSON.parse(first.stderr)).toMatchObject({
-        command: "sync.apply",
-        status: "error",
-        exitCode: 7,
-        message: "synchronization failed",
-        data: {
-          revision: packedRevision,
-          downloadedBlobs: 1,
-          reusedBlobs: 0,
-          outcome: { outcome: "Failed" },
-        },
-      });
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.stderr).toBe("");
+    expect(JSON.parse(first.stdout)).toMatchObject({
+      command: "sync.apply",
+      status: "success",
+      exitCode: 0,
+      data: {
+        revision: packedRevision,
+        outcome: { outcome: "Converged" },
+      },
+    });
 
-      const second = invoke(
-        followerHome,
-        ["sync", "--apply", "--no-input", "--json"],
-      );
-      expect(second.status).toBe(7);
-      expect(second.stdout).toBe("");
-      expect(JSON.parse(second.stderr)).toMatchObject({
-        command: "sync.apply",
-        status: "error",
-        exitCode: 7,
-        message: "synchronization failed",
-        data: {
-          revision: packedRevision,
-          downloadedBlobs: 0,
-          reusedBlobs: 1,
-          outcome: { outcome: "Failed" },
-        },
-      });
-    } else {
-      expect(first.status, first.stderr).toBe(0);
-      expect(first.stderr).toBe("");
-      expect(JSON.parse(first.stdout)).toMatchObject({
-        command: "sync.apply",
-        status: "success",
-        exitCode: 0,
-        data: {
-          revision: packedRevision,
-          outcome: { outcome: "Converged" },
-        },
-      });
-
-      const second = invoke(
-        followerHome,
-        ["sync", "--apply", "--no-input", "--json"],
-      );
-      expect(second.status, second.stderr).toBe(0);
-      expect(JSON.parse(second.stdout)).toMatchObject({
-        command: "sync.apply",
-        status: "success",
-        exitCode: 0,
-        data: {
-          revision: packedRevision,
-          outcome: { outcome: "Converged" },
-        },
-      });
-    }
+    const second = invoke(
+      followerHome,
+      ["sync", "--apply", "--no-input", "--json"],
+    );
+    expect(second.status, second.stderr).toBe(0);
+    expect(JSON.parse(second.stdout)).toMatchObject({
+      command: "sync.apply",
+      status: "success",
+      exitCode: 0,
+      data: {
+        revision: packedRevision,
+        outcome: { outcome: "Converged" },
+      },
+    });
 
     const status = invoke(followerHome, ["status", "--json"]);
     expect(status.status, status.stderr).toBe(0);
@@ -1266,24 +1222,15 @@ npm install --global canonfig-fixture@1.0.0
     expect(statSync(resolve(workstationHome, ".canonfig", "state.sqlite")).isFile())
       .toBe(true);
 
-    const schedulerRendering = requireSuccess(
+    // The follower owns its native job, so it has none until it asks for one.
+    // `schedule status` used to render a built-in default whether or not
+    // anything was scheduled, which is why the only schedule that could ever
+    // read `current` was a daily 00:00 job installed from PATH.
+    const beforeAnySchedule = requireSuccess(
       invoke(workstationHome, ["schedule", "status", "--json"]),
-      "render native scheduler status",
+      "report no schedule before one is chosen",
     );
-    expect(schedulerRendering.data).toMatchObject({
-      platform: process.platform === "darwin"
-        ? "macos"
-        : process.platform === "win32"
-        ? "windows"
-        : "linux",
-      definition: {
-        mechanism: process.platform === "darwin"
-          ? "launchd-user-agent"
-          : process.platform === "win32"
-          ? "task-scheduler"
-          : "systemd-user-timer",
-      },
-    });
+    expect(beforeAnySchedule.data).toEqual({ state: "disabled" });
     const schedulerInstall = invoke(workstationHome, [
       "schedule",
       "set",
@@ -1346,6 +1293,20 @@ esac
       "verify installed native scheduler",
     );
     expect(schedulerState.data.state).toBe("current");
+    expect(schedulerState.data).toMatchObject({
+      platform: process.platform === "darwin"
+        ? "macos"
+        : process.platform === "win32"
+        ? "windows"
+        : "linux",
+      definition: {
+        mechanism: process.platform === "darwin"
+          ? "launchd-user-agent"
+          : process.platform === "win32"
+          ? "task-scheduler"
+          : "systemd-user-timer",
+      },
+    });
 
     const root = resolve(workstationHome, ".canonfig-packed-multi");
     mkdirSync(resolve(root, "mirror"), { recursive: true });
@@ -1573,6 +1534,10 @@ esac
       status: { state: "current" },
     });
 
+    // A broken native scheduler no longer fails the run. Scheduler
+    // reconciliation is not part of the resource transaction, so it cannot roll
+    // back configuration that applied correctly, and the follower converges on
+    // a host whose scheduler does not work at all.
     const failSystemctl = resolve(fixtureBin, "systemctl-fail");
     writeFileSync(failSystemctl, "#!/bin/sh\nexit 42\n");
     chmodSync(failSystemctl, 0o700);
@@ -1583,42 +1548,9 @@ esac
         ? { CANONFIG_SYSTEMCTL: failSystemctl }
         : {},
     );
-    if (process.platform === "linux") {
-      expect(failedApply.status).toBe(7);
-      expect(failedApply.stdout).toBe("");
-      expect(JSON.parse(failedApply.stderr).data).toMatchObject({
-        revision: revisionTwo,
-        downloadedBlobs: expect.any(Number),
-        reusedBlobs: expect.any(Number),
-        outcome: { outcome: "Failed" },
-      });
-      expect(readFileSync(resolve(root, "managed.txt"), "utf8"))
-        .toBe("version one\n");
-      expect(readFileSync(resolve(root, "mirror", "keep.txt"), "utf8"))
-        .toBe("directory v1\n");
-      expect(readFileSync(resolve(root, "mirror", "remove.txt"), "utf8"))
-        .toBe("owned v1\n");
-      expect(JSON.parse(readFileSync(resolve(root, "settings.json"), "utf8")))
-        .toEqual({
-          local: { keep: "preserve" },
-          canonical: { existing: "preserve", enabled: true, removed: "v1" },
-        });
-      expect(
-        requireSuccess(
-          invoke(workstationHome, ["schedule", "status", "--json"]),
-          "inspect schedule after failed apply rollback",
-        ).data.state,
-      ).toBe("drifted");
-    } else {
-      expect(failedApply.status).toBe(0);
-    }
+    expect(failedApply.status, failedApply.stderr).toBe(0);
 
-    const appliedRevisionTwo = process.platform === "linux"
-      ? requireSuccess(
-        invoke(workstationHome, ["sync", "--apply", "--json"]),
-        "apply workstation revision two after rollback",
-      )
-      : parseEnvelope(failedApply);
+    const appliedRevisionTwo = parseEnvelope(failedApply);
     expect(appliedRevisionTwo.data).toMatchObject({
       revision: revisionTwo,
       outcome: { outcome: "Converged" },
@@ -1635,10 +1567,13 @@ esac
         local: { keep: "preserve" },
         canonical: { existing: "preserve", enabled: false, removed: "v1" },
       });
+    // The operator's own `schedule set daily@01:00` survives the apply. It used
+    // to last exactly one run, because the plan reinstalled the profile default
+    // over it every time.
     expect(requireSuccess(
       invoke(workstationHome, ["schedule", "status", "--json"]),
-      "verify schedule remains active after revision two",
-    ).data.state).toBe("current");
+      "verify the follower's own schedule survives an apply",
+    ).data.schedule).toMatchObject({ kind: "daily", localTime: "01:00" });
 
     const restrictedPlan = requireSuccess(
       invoke(restrictedHome, ["sync", "--plan", "--json"]),

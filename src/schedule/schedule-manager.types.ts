@@ -172,35 +172,3 @@ export const normalizeSyncSchedule = (
     : { ...normalized, timezone: schedule.timezone };
 };
 
-export const syncScheduleFromResourceSpec = (
-  spec: Extract<ResourceSpecInput, { readonly kind: "schedule" }>,
-): NormalizedSyncSchedule => {
-  const timezone = spec.timezone === "local" ? undefined : spec.timezone;
-  switch (spec.calendar.type) {
-    case "daily":
-      return { kind: "daily", localTime: spec.calendar.at, timezone };
-    case "weekly": {
-      const weekdays = spec.calendar.days.map((value) => {
-        const weekday = `${value.slice(0, 1).toUpperCase()}${value.slice(1).toLowerCase()}`;
-        if (!isScheduleWeekday(weekday)) {
-          throw new Error(`unsupported schedule weekday: ${value}`);
-        }
-        return weekday;
-      });
-      const normalized = {
-        kind: "weekly" as const,
-        weekdays: [...new Set(weekdays)].sort(
-          (left, right) => weekdayIndex.get(left)! - weekdayIndex.get(right)!,
-        ),
-        localTime: spec.calendar.at,
-      };
-      return timezone === undefined ? normalized : { ...normalized, timezone };
-    }
-    case "custom":
-      return {
-        kind: "custom",
-        expression: spec.calendar.expression,
-        timezone,
-      };
-  }
-};

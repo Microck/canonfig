@@ -135,7 +135,7 @@ The Source Machine owns JSONC authoring files under its Canonfig source director
   tools.jsonc
 ```
 
-`profile.jsonc` declares groups, resources, policies, dependencies, and schedule defaults. `tools.jsonc` is an agent-readable catalog of every discovered CLI or tool, including invocation evidence, upstream URL, supported platforms, installation recipes, verification, configuration files, and login requirements.
+`profile.jsonc` declares groups, resources, policies, dependencies, and an optional inherited schedule default. A Machine Profile does not apply a schedule: the native synchronization job belongs to the Follower Machine, which either inherits the profile default or chooses its own with `canonfig schedule set`. Reconciling that job happens after a converged run rather than as part of one, so a follower whose native scheduler does not work still converges. `tools.jsonc` is an agent-readable catalog of every discovered CLI or tool, including invocation evidence, upstream URL, supported platforms, installation recipes, verification, configuration files, and login requirements.
 
 Publishing converts JSONC into a canonical encoded Profile Revision. Comments and authoring layout never affect the revision digest.
 
@@ -149,7 +149,6 @@ Publishing converts JSONC into a canonical encoded Profile Revision. Comments an
 | `skill` | Canonical skill tree | `replace-if-unmodified` |
 | `tool` | Installed executable and configuration | `ensure` |
 | `credential` | A usable local credential reference | `require-local` |
-| `schedule` | A native scheduled sync job | `replace` |
 
 Apply Policies mean:
 
@@ -162,8 +161,8 @@ Apply Policies mean:
 Policy compatibility is kind-specific: files support only `replace` and
 `replace-if-unmodified`; directories support `mirror-owned` and `replace`;
 configs support `merge` and `replace`; skills support `replace-if-unmodified`
-and `replace`; tools, credentials, and schedules support only their listed
-kind-specific policies. A file's verification is also shape-specific:
+and `replace`; tools and credentials support only their listed kind-specific
+policies. A file's verification is also shape-specific:
 symlink files require `symlink` verification, while regular files require
 digest verification. Exact numeric modes are part of file and directory
 convergence even when content is unchanged. Directory resources can declare
@@ -186,8 +185,6 @@ represented directory ancestry; every declared file path must otherwise be a
 unique, canonical relative leaf with no file/descendant overlap. Validation
 uses the follower platform's path and case rules and rejects names that are
 reserved or ambiguous on that platform.
-Schedules use their own target namespace, so a schedule target is not confused
-with a filesystem path.
 
 ## Tool discovery and installation
 

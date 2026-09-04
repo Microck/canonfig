@@ -101,8 +101,6 @@ const desiredForKind = (kind: ResourceKind): DesiredResource => {
         reference: "github-token",
         instructions: "Run canonfig credential set github-token, then retry.",
       };
-    case "schedule":
-      return { kind, digest: digestA };
   }
 };
 
@@ -123,8 +121,6 @@ const verificationFor = (
       return { method: "executable-present" as const, executable: desired.toolId };
     case "credential":
       return { method: "credential-present" as const, reference: desired.reference };
-    case "schedule":
-      return { method: "command" as const, command: ["true"] };
   }
 };
 
@@ -225,7 +221,6 @@ describe("resource and Apply Policy coverage", () => {
     { kind: "skill", policy: "replace", action: "mirror-directory" },
     { kind: "tool", policy: "ensure", action: "install-tool" },
     { kind: "credential", policy: "require-local", action: "human-action" },
-    { kind: "schedule", policy: "replace", action: "write-file" },
   ];
 
   for (const entry of cases) {

@@ -299,7 +299,6 @@ const declaredDigest = (spec: ResourceSpecInput): string => {
     }
     case "tool":
     case "credential":
-    case "schedule":
       return sha256Hex(spec.kind);
   }
 };
@@ -323,8 +322,6 @@ const resource = (
     ? { method: "executable-present", executable: target }
     : kind === "credential"
     ? { method: "credential-present", reference: spec.kind === "credential" ? spec.reference : target }
-    : kind === "schedule"
-    ? { method: "command", command: [process.execPath, "--version"] }
     : { method: "digest", digest: declaredDigest(spec) },
 });
 
@@ -475,17 +472,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
           "require-local",
           String(localCredential),
           { kind: "credential", reference: String(localCredential) },
-        ),
-        resource(
-          "g-schedule",
-          "schedule",
-          "replace",
-          scheduleFile,
-          {
-            kind: "schedule",
-            calendar: { type: "daily", at: "00:00" },
-            timezone: "local",
-          },
         ),
         resource(
           "y-hidden",
@@ -855,6 +841,10 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         manager.install({ executable: process.execPath })
       ).pipe(Effect.provide(scheduleLayer)),
     );
+    // The converged apply already reconciled the inherited profile default, so
+    // installing here updates that job rather than creating the first one. The
+    // difference from before is where the reconciliation happens: after the
+    // run, not as a planned action that could roll the run back.
     expect(installedSchedule.change).toBe("updated");
     expect(installedSchedule.status.platform).toBe(platform);
     expect(installedSchedule.status.definition.mechanism).toBe(

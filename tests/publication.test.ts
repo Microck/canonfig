@@ -523,17 +523,7 @@ describe("reviewed profile publication", () => {
         spec: { kind: "credential", reference: "secure-store://authored" },
         verify: { method: "credential-present", reference: "secure-store://authored" },
       },
-      {
-        id: "authored-schedule",
-        kind: "schedule",
-        target: "canonfig-sync",
-        spec: {
-          kind: "schedule",
-          calendar: { type: "daily", at: "04:30" },
-          timezone: "local",
-        },
-        verify: { method: "command", command: ["canonfig", "schedule", "status"] },
-      },
+      
     ];
     const published = await runCatalog(
       fixture.database,
@@ -560,7 +550,6 @@ describe("reviewed profile publication", () => {
       "authored-credential",
       "authored-directory",
       "authored-file",
-      "authored-schedule",
       "authored-skill",
       "authored-tool",
       "fixture-tool",
@@ -581,7 +570,6 @@ describe("reviewed profile publication", () => {
       "credential",
       "directory",
       "file",
-      "schedule",
       "skill",
       "tool",
       "tool",

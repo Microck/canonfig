@@ -34,7 +34,6 @@ import {
   FollowerSynchronizationConfiguration,
   LocalOverlayEntrySchema,
 } from "../synchronization/follower-sync-config.ts";
-import { SyncScheduleSchema } from "../schedule/schedule-manager.types.ts";
 import {
   ActionNotInPlanError,
   ActiveRunExistsError,
@@ -116,7 +115,6 @@ const AppliedResourceRow = Schema.Struct({
   digest: ContentDigest,
   applied_at: Schema.String,
   owned_files_json: Schema.NullOr(Schema.String),
-  schedule_json: Schema.NullOr(Schema.String),
   kind: Schema.NullOr(Schema.String),
   policy: Schema.NullOr(Schema.String),
   target: Schema.NullOr(Schema.String),
@@ -135,7 +133,6 @@ const OwnedFilesSchema = Schema.Array(Schema.Struct({
   symlinkTo: Schema.optional(Schema.NonEmptyString),
 }));
 const OwnedKeysSchema = Schema.Array(Schema.NonEmptyString);
-const StoredScheduleSchema = SyncScheduleSchema;
 const FollowerRow = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -1392,7 +1389,7 @@ const makeRepository = Effect.gen(function*() {
     StateRepositoryError
   > {
     const rows = yield* sql`
-      SELECT resource_id, revision_id, digest, applied_at, owned_files_json, schedule_json,
+      SELECT resource_id, revision_id, digest, applied_at, owned_files_json,
         kind, policy, target, owned_keys_json, config_format
         , executable, mode, symlink_target
       FROM applied_resources
@@ -1413,14 +1410,6 @@ const makeRepository = Effect.gen(function*() {
             OwnedFilesSchema,
             row.owned_files_json,
             "applied resource owned files",
-            row.resource_id,
-          );
-        const schedule = row.schedule_json === null
-          ? undefined
-          : yield* parseJson(
-            StoredScheduleSchema,
-            row.schedule_json,
-            "applied resource schedule",
             row.resource_id,
           );
         const ownedKeys = row.owned_keys_json === null
@@ -1447,7 +1436,6 @@ const makeRepository = Effect.gen(function*() {
           ownedFiles,
           ownedKeys,
           configFormat: row.config_format ?? undefined,
-          schedule,
         }).pipe(
           Effect.mapError(decodeError("applied resource", row.resource_id)),
         );
@@ -1648,7 +1636,6 @@ const makeRepository = Effect.gen(function*() {
               digest,
               applied_at,
               owned_files_json,
-              schedule_json,
               kind,
               policy,
               target,
@@ -1666,9 +1653,6 @@ const makeRepository = Effect.gen(function*() {
               ${record.ownedFiles === undefined
                 ? null
                 : encodeJson(JSON.parse(JSON.stringify(record.ownedFiles)))}
-              , ${record.schedule === undefined
-                ? null
-                : encodeJson(JSON.parse(JSON.stringify(record.schedule)))}
               , ${record.kind ?? null}
               , ${record.policy ?? null}
               , ${record.target ?? null}
@@ -1687,7 +1671,6 @@ const makeRepository = Effect.gen(function*() {
               digest = excluded.digest,
               applied_at = excluded.applied_at,
               owned_files_json = excluded.owned_files_json
-              , schedule_json = excluded.schedule_json
               , kind = excluded.kind
               , policy = excluded.policy
               , target = excluded.target
@@ -1788,7 +1771,6 @@ const makeRepository = Effect.gen(function*() {
               digest,
               applied_at,
               owned_files_json,
-              schedule_json,
               kind,
               policy,
               target,
@@ -1806,9 +1788,6 @@ const makeRepository = Effect.gen(function*() {
               ${record.ownedFiles === undefined
                 ? null
                 : encodeJson(JSON.parse(JSON.stringify(record.ownedFiles)))}
-              , ${record.schedule === undefined
-                ? null
-                : encodeJson(JSON.parse(JSON.stringify(record.schedule)))}
               , ${record.kind ?? null}
               , ${record.policy ?? null}
               , ${record.target ?? null}
@@ -1827,7 +1806,6 @@ const makeRepository = Effect.gen(function*() {
               digest = excluded.digest,
               applied_at = excluded.applied_at,
               owned_files_json = excluded.owned_files_json
-              , schedule_json = excluded.schedule_json
               , kind = excluded.kind
               , policy = excluded.policy
               , target = excluded.target

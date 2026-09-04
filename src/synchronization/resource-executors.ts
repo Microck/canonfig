@@ -23,9 +23,7 @@ import {
   sha256BytesHex,
   sha256Hex,
 } from "../profile/profile-codec.ts";
-import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
-  syncScheduleFromResourceSpec,
   type SetScheduleInput,
   type SyncSchedule,
 } from "../schedule/schedule-manager.types.ts";
@@ -64,7 +62,6 @@ import {
   type NpmArtifactTransport,
 } from "./npm-artifact.ts";
 import { relativePathAncestors } from "./resource-plans.ts";
-import { captureScheduleRollback } from "./schedule-rollbacks.ts";
 
 const isUnboundedNonNpmPackage = (value: string): boolean =>
   /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
@@ -163,53 +160,6 @@ export interface ResourceVerification {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-const scheduleInputFromSpec = (
-  spec: Extract<ResourceSpecInput, { readonly kind: "schedule" }>,
-): SetScheduleInput => ({
-  schedule: syncScheduleFromResourceSpec(spec),
-});
-
-export const scheduleInputFor = (
-  context: ResourceExecutionContext,
-): Effect.Effect<
-  SetScheduleInput,
-  SynchronizationExecutionInputError | MachineStateError,
-  MachineState
-> =>
-  Effect.gen(function*() {
-    if (context.desired.kind !== "schedule") {
-      return yield* new InvalidExecutionPlanError({
-        message: `schedule action targets non-schedule resource ${context.resource.id}`,
-      });
-    }
-    if (context.action.detail.kind === "remove-resource") {
-      if (context.action.detail.schedule === undefined) {
-        return yield* new InvalidExecutionPlanError({
-          message: `schedule removal ${context.action.id} lacks its persisted schedule`,
-        });
-      }
-      return { schedule: context.action.detail.schedule };
-    }
-    const digest = context.desired.digest;
-    const bytes = yield* artifact(context.artifacts, digest);
-    return yield* Effect.try({
-      try: () => {
-        const spec = Schema.decodeUnknownSync(ResourceSpecInputSchema)(
-          JSON.parse(decoder.decode(bytes)),
-        );
-        if (spec.kind !== "schedule") {
-          throw new Error("schedule artifact does not contain a schedule specification");
-        }
-        return scheduleInputFromSpec(spec);
-      },
-      catch: (cause) =>
-        new InvalidArtifactError({
-          digest,
-          message: String(cause),
-        }),
-    });
-  });
 
 const artifact = (
   artifacts: ReadonlyMap<string, SynchronizationArtifact>,
@@ -770,33 +720,6 @@ const targetPath = (
     return yield* machine.normalizePath({ path: target });
   });
 
-const prepareSchedule = (
-  context: ResourceExecutionContext,
-  scheduleManager: ScheduleManager["Service"] | undefined,
-): Effect.Effect<
-  PreparedResourceAction,
-  SynchronizationExecutionInputError | MachineStateError,
-  MachineState
-> =>
-  Effect.gen(function*() {
-    if (scheduleManager === undefined) {
-      return yield* new InvalidExecutionPlanError({
-        message: `schedule resource ${context.resource.id} requires ScheduleManager`,
-      });
-    }
-    const input = yield* scheduleInputFor(context);
-    const captured = yield* captureScheduleRollback(context, scheduleManager, input);
-    const execute = (context.previousSchedule === undefined
-      ? scheduleManager.install(input)
-      : scheduleManager.update(input)
-    ).pipe(Effect.asVoid);
-    return {
-      rollbackReference: captured.reference,
-      execute,
-      rollback: captured.restore,
-    };
-  });
-
 const prepareWrite = (
   context: ResourceExecutionContext,
   target: string,
@@ -1050,7 +973,6 @@ const prepareMirror = (
 const prepareRemoval = (
   context: ResourceExecutionContext,
   detail: Extract<PlannedAction["detail"], { readonly kind: "remove-resource" }>,
-  scheduleManager: ScheduleManager["Service"] | undefined,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
     switch (context.resource.kind) {
@@ -1202,24 +1124,6 @@ const prepareRemoval = (
           }
         });
         return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
-      }
-      case "schedule": {
-        if (
-          scheduleManager === undefined
-          || detail.schedule === undefined
-          || context.desired.kind !== "schedule"
-        ) {
-          return yield* new InvalidExecutionPlanError({
-            message: `removal action requires a schedule manager for ${context.resource.id}`,
-          });
-        }
-        const input = yield* scheduleInputFor(context);
-        const captured = yield* captureScheduleRollback(context, scheduleManager, input);
-        return {
-          rollbackReference: captured.reference,
-          execute: scheduleManager.remove(input).pipe(Effect.asVoid),
-          rollback: captured.restore,
-        };
       }
       case "tool":
       case "credential":
@@ -1547,21 +1451,17 @@ const installInvocation = (
 /** Prepare deterministic work. Preparation stores rollback material before owned-file mutation. */
 export const prepareResourceAction = (
   context: ResourceExecutionContext,
-  scheduleManager?: ScheduleManager["Service"] | undefined,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> => {
   const detail = context.action.detail;
   switch (detail.kind) {
     case "write-file":
-      if (context.resource.kind === "schedule") {
-        return prepareSchedule(context, scheduleManager);
-      }
       return prepareWrite(context, detail.target, detail.digest);
     case "write-config":
       return prepareConfig(context, detail.target, detail.keys);
     case "mirror-directory":
       return prepareMirror(context, detail.target, detail.adds, detail.removes);
     case "remove-resource":
-      return prepareRemoval(context, detail, scheduleManager);
+      return prepareRemoval(context, detail);
     case "install-tool":
       return Effect.succeed({
         execute: installInvocation(
@@ -1588,7 +1488,6 @@ export const prepareResourceAction = (
     case "no-op":
     case "verify-only":
       return Effect.succeed({ execute: Effect.void });
-    case "schedule-default":
     case "human-action":
     case "agent-task":
     case "drift-conflict":
@@ -1620,38 +1519,11 @@ const verifyDigest = (
     };
   });
 
-const verifySchedule = (
-  context: ResourceExecutionContext,
-  scheduleManager: ScheduleManager["Service"] | undefined,
-): Effect.Effect<
-  ResourceVerification,
-  SynchronizationExecutionInputError | MachineStateError,
-  MachineState
-> =>
-  Effect.gen(function*() {
-    if (scheduleManager === undefined || context.desired.kind !== "schedule") {
-      return yield* new InvalidExecutionPlanError({
-        message: `schedule resource ${context.resource.id} requires ScheduleManager verification`,
-      });
-    }
-    const input = yield* scheduleInputFor(context);
-    const status = yield* scheduleManager.status(input);
-    return {
-      passed: status.state === "current",
-      method: `native-scheduler:${status.platform}`,
-    };
-  });
-
-/** Observe required postconditions independently from action execution. */
 export const verifyResource = (
   context: ResourceExecutionContext,
-  scheduleManager?: ScheduleManager["Service"] | undefined,
 ): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> => {
   const desired = context.desired;
   const verification = context.verification;
-  if (desired.kind === "schedule") {
-    return verifySchedule(context, scheduleManager);
-  }
   if (verification.method === "command") {
     return verifyCommand(context, verification.command, verification.expectContains);
   }

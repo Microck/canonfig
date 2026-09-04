@@ -59,7 +59,15 @@ export interface MachineProfile {
   readonly name: string;
   readonly groups: ReadonlyArray<ProfileGroup>;
   readonly resources: ReadonlyArray<ProfileResourceInput>;
-  readonly scheduleDefault: ScheduleDefault;
+  /**
+   * The cadence a follower inherits when it has not chosen its own.
+   *
+   * Optional: a profile may decline to schedule anything. A default used to be
+   * filled in when none was authored, so every follower got one whether or not
+   * the operator wanted scheduled synchronization, and a host with no working
+   * user scheduler could never converge.
+   */
+  readonly scheduleDefault?: ScheduleDefault | undefined;
 }
 
 export interface ProfileGroup {
@@ -90,8 +98,7 @@ export type ResourceSpecInput =
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: string | number | boolean | ReadonlyArray<string> }> }
   | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
   | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined }
-  | { readonly kind: "credential"; readonly reference: string }
-  | { readonly kind: "schedule"; readonly calendar: { readonly type: "daily"; readonly at: string } | { readonly type: "weekly"; readonly days: ReadonlyArray<string>; readonly at: string } | { readonly type: "custom"; readonly expression: string }; readonly timezone: string };
+  | { readonly kind: "credential"; readonly reference: string };
 
 export type VerificationInput =
   | { readonly method: "digest"; readonly digest: string }
@@ -217,22 +224,6 @@ export const ResourceSpecInputSchema = Schema.Union([
     kind: Schema.Literal("credential"),
     reference: CredentialReferenceSchema,
   }),
-  Schema.Struct({
-    kind: Schema.Literal("schedule"),
-    calendar: Schema.Union([
-      Schema.Struct({ type: Schema.Literal("daily"), at: Schema.NonEmptyString }),
-      Schema.Struct({
-        type: Schema.Literal("weekly"),
-        days: Schema.Array(Schema.NonEmptyString),
-        at: Schema.NonEmptyString,
-      }),
-      Schema.Struct({
-        type: Schema.Literal("custom"),
-        expression: Schema.NonEmptyString,
-      }),
-    ]),
-    timezone: Schema.NonEmptyString,
-  }),
 ]);
 
 export const VerificationInputSchema = Schema.Union([
@@ -343,7 +334,7 @@ export const MachineProfileSchema = Schema.Struct({
   name: Schema.NonEmptyString,
   groups: Schema.Array(ProfileGroupSchema),
   resources: Schema.Array(ProfileResourceInputSchema),
-  scheduleDefault: ScheduleDefaultSchema,
+  scheduleDefault: Schema.optional(ScheduleDefaultSchema),
 });
 
 /** Authoring schema permits only documented fields and fills omissions in normalization. */
@@ -556,7 +547,9 @@ export const validateMachineProfile = (
     groups.add(group.name);
   }
   errors.push(...validateProfileResources(profile.resources, groups, platform));
-  const scheduleError = validateScheduleDefault(profile.scheduleDefault);
+  const scheduleError = profile.scheduleDefault === undefined
+    ? null
+    : validateScheduleDefault(profile.scheduleDefault);
   if (scheduleError !== null) errors.push(scheduleError);
   return errors;
 };
@@ -600,10 +593,6 @@ export const validateProfileResources = (
     const policy = resource.policy ?? defaultPolicy(kind);
     if (!policyAllowed(kind, policy)) {
       errors.push(new PolicyKindMismatchError({ id: resource.id, kind, policy }));
-    }
-    if (resource.spec.kind === "schedule") {
-      const scheduleError = validateSchedule(resource);
-      if (scheduleError !== null) errors.push(scheduleError);
     }
     errors.push(...validateRecipes(resource));
     errors.push(...validateVerificationContent(resource));
@@ -665,7 +654,6 @@ const validateFilesystemModes = (
     case "config":
     case "tool":
     case "credential":
-    case "schedule":
       break;
   }
   return errors;
@@ -778,8 +766,6 @@ const verificationAllowed = (
       return method === "executable-present" || method === "command";
     case "credential":
       return method === "credential-present" || method === "command";
-    case "schedule":
-      return method === "command";
   }
 };
 
@@ -966,17 +952,15 @@ export const validateResourcePathConflicts = (
         && resource.kind !== "directory"
         && resource.kind !== "config"
         && resource.kind !== "skill"
-        && resource.kind !== "schedule"
       ) return [];
       const root: ResourceTargetClaim = {
         resource,
         path: normalizedTargetPath(resource.target, platform),
         rawPath: resource.target,
-        namespace: resource.kind === "schedule" ? "schedule" : "filesystem",
+        namespace: "filesystem",
         isRoot: true,
         isDirectory: resource.kind === "directory" || resource.kind === "skill",
       };
-      if (resource.kind === "schedule") return [root];
       return [
         root,
         ...(claimsByResource.get(resource.id) ?? []).map((claim) => ({
@@ -1106,31 +1090,6 @@ const validateScheduleDefault = (
   return null;
 };
 
-const validateSchedule = (resource: ProfileResourceInput): InvalidScheduleError | null => {
-  const spec = resource.spec;
-  if (spec.kind !== "schedule") return null;
-  const calendar = spec.calendar;
-  if (calendar.type === "daily" && !timePattern.test(calendar.at)) {
-    return new InvalidScheduleError({ id: resource.id, reason: `invalid daily time ${calendar.at}` });
-  }
-  if (calendar.type === "weekly") {
-    if (!timePattern.test(calendar.at)) {
-      return new InvalidScheduleError({ id: resource.id, reason: `invalid weekly time ${calendar.at}` });
-    }
-    if (calendar.days.length === 0) {
-      return new InvalidScheduleError({ id: resource.id, reason: "weekly schedule needs at least one day" });
-    }
-    for (const day of calendar.days) {
-      if (!dayNames.has(day)) {
-        return new InvalidScheduleError({ id: resource.id, reason: `unknown day ${day}` });
-      }
-    }
-  }
-  if (calendar.type === "custom" && calendar.expression.trim().length === 0) {
-    return new InvalidScheduleError({ id: resource.id, reason: "empty custom expression" });
-  }
-  return null;
-};
 
 /** Detect a dependency cycle; returns one cycle path or null. */
 export const findDependencyCycle = (
@@ -1298,24 +1257,6 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
       };
     case "credential":
       return { kind: spec.kind, reference: spec.reference };
-    case "schedule": {
-      if (spec.calendar.type !== "weekly") {
-        return {
-          kind: spec.kind,
-          calendar: spec.calendar,
-          timezone: spec.timezone,
-        };
-      }
-      const dayOrder = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-      const days = [...new Set(spec.calendar.days)].sort(
-        (left, right) => dayOrder.indexOf(left) - dayOrder.indexOf(right),
-      );
-      return {
-        kind: spec.kind,
-        calendar: { ...spec.calendar, days },
-        timezone: spec.timezone,
-      };
-    }
   }
 };
 
@@ -1345,22 +1286,24 @@ export const normalizeMachineProfile = (
   const resources = (profile.resources ?? [])
     .map(normalizeResource)
     .sort((left, right) => compareText(left.id, right.id));
-  const scheduleDefault = profile.scheduleDefault ?? {
-    type: "daily",
-    at: "00:00",
-    timezone: "local",
-  };
-  const normalizedSchedule = scheduleDefault.type === "weekly"
+  // An absent schedule default stays absent: it means this profile schedules
+  // nothing, which is different from scheduling daily at midnight.
+  const scheduleDefault = profile.scheduleDefault;
+  const normalizedSchedule = scheduleDefault === undefined
+    ? undefined
+    : scheduleDefault.type === "weekly"
     ? { ...scheduleDefault, days: uniqueSorted(scheduleDefault.days) }
     : scheduleDefault;
-  return {
+  const base = {
     id: profile.id,
-    version: 2,
+    version: 2 as const,
     name: profile.name,
     groups,
     resources,
-    scheduleDefault: normalizedSchedule,
   };
+  return normalizedSchedule === undefined
+    ? base
+    : { ...base, scheduleDefault: normalizedSchedule };
 };
 
 /** Decode strict JSONC authoring input, normalize it, then reject invalid graphs. */

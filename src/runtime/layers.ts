@@ -47,6 +47,10 @@ import {
   type ProfileRevisionSigner,
 } from "../profile/publication.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
+import {
+  syncScheduleFromDefault,
+  type SyncSchedule,
+} from "../schedule/schedule-manager.types.ts";
 import { scheduleManagerLayer } from "../schedule/schedule-manager.layer.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
@@ -176,6 +180,67 @@ const mapFailure = <Success, Failure extends TaggedRuntimeError, Requirements>(
   effect: Effect.Effect<Success, Failure, Requirements>,
 ): Effect.Effect<Success, CliCommandFailure, Requirements> =>
   effect.pipe(Effect.mapError(commandFailure));
+
+/**
+ * The follower's own decision about the native synchronization job, written to
+ * its configuration so it outlives a run.
+ *
+ * A no-op on a machine that is not enrolled: there is nowhere durable to record
+ * it, and the schedule commands still act on the native job directly.
+ */
+const persistScheduleOverride = (
+  repository: StateRepository["Service"],
+  scheduleOverride: FollowerSynchronizationConfiguration["scheduleOverride"],
+): Effect.Effect<void, CliCommandFailure> =>
+  mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+    Effect.flatMap((configuration) => {
+      if (configuration === undefined) return Effect.void;
+      return mapFailure(repository.loadState(configuration.follower.id)).pipe(
+        Effect.flatMap((state) =>
+          state.sourceIdentity === undefined ? Effect.void : mapFailure(
+            repository.saveFollowerSynchronizationConfiguration({
+              sourceIdentity: state.sourceIdentity,
+              configuration: {
+                ...configuration,
+                scheduleOverride,
+                updatedAt: new Date().toISOString(),
+              },
+            }),
+          )
+        ),
+      );
+    }),
+  );
+
+/**
+ * What this follower's native job should be, or undefined when it should have
+ * none.
+ *
+ * The follower's own override wins, and the profile's default is inherited
+ * otherwise. `schedule status` and the doctor scheduler probe both read this,
+ * so neither compares the installed job against a built-in constant.
+ */
+const effectiveScheduleInput = (
+  repository: StateRepository["Service"],
+): Effect.Effect<
+  { readonly schedule: SyncSchedule; readonly executable?: string | undefined } | undefined,
+  CliCommandFailure
+> =>
+  mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+    Effect.map((configuration) => {
+      const override = configuration?.scheduleOverride;
+      if (override?.kind === "disabled") return undefined;
+      if (override?.kind === "schedule") {
+        return override.executable === undefined
+          ? { schedule: override.schedule }
+          : { schedule: override.schedule, executable: override.executable };
+      }
+      const inherited = configuration?.scheduleDefault;
+      return inherited === undefined
+        ? undefined
+        : { schedule: syncScheduleFromDefault(inherited) };
+    }),
+  );
 
 const sourceCommandsLayer: Layer.Layer<
   SourceCommands,
@@ -1024,23 +1089,46 @@ const followerCommandsLayer = (
           }),
         ),
       setSchedule: (input) =>
-        mapFailure(schedules.update(input)).pipe(Effect.map(payload)),
+        // Record the decision before installing it, so the schedule survives
+        // the next apply and `schedule status` compares against it rather than
+        // against a built-in default.
+        persistScheduleOverride(repository, {
+          kind: "schedule",
+          schedule: input.schedule,
+          executable: input.executable,
+        }).pipe(
+          Effect.andThen(mapFailure(schedules.update(input))),
+          Effect.map(payload),
+        ),
       scheduleStatus: () =>
-        mapFailure(schedules.status()).pipe(Effect.map(payload)),
+        effectiveScheduleInput(repository).pipe(
+          Effect.flatMap((input) =>
+            input === undefined
+              ? Effect.succeed(payload({ state: "disabled" }))
+              : mapFailure(schedules.status(input)).pipe(Effect.map(payload))
+          ),
+        ),
       removeSchedule: () =>
-        mapFailure(schedules.remove()).pipe(Effect.map(payload)),
+        persistScheduleOverride(repository, { kind: "disabled" }).pipe(
+          Effect.andThen(mapFailure(schedules.remove())),
+          Effect.map(payload),
+        ),
       doctor: (input) =>
         // Probe the configuration a run would actually use. Enrollment moves
         // the agent policy and harness into the follower configuration and
         // stops writing the policy file, so reading that file reported an
         // enrolled follower as unconfigured.
-        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-          Effect.flatMap((configuration) =>
+        Effect.all([
+          mapFailure(repository.getFollowerSynchronizationConfiguration()),
+          effectiveScheduleInput(repository),
+        ]).pipe(
+          Effect.flatMap(([configuration, schedule]) =>
             runDoctorProbes({
               ...input,
               statePath,
               policyPath,
               agentPolicy: configuration?.agentPolicy,
+              schedule,
               source: doctorSource,
               agent: configuration?.agentHarness === undefined
                 ? doctorAgent

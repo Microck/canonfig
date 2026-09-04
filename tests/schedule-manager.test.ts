@@ -1,12 +1,12 @@
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { describe, expect, it } from "vitest";
 
-import type { ResourceSpecInput } from "../src/domain/profile.ts";
+import type { ScheduleDefault } from "../src/domain/profile.ts";
 import { macosMachineStateLayer } from "../src/machine/macos.layer.ts";
 import type { SchedulerBackend } from "../src/machine/machine-state.types.ts";
 import { windowsMachineStateLayer } from "../src/machine/windows.layer.ts";
 import { scheduleManagerContract } from "./contract/schedule-manager.contract.ts";
-import { syncScheduleFromResourceSpec } from "../src/schedule/schedule-manager.types.ts";
+import { syncScheduleFromDefault } from "../src/schedule/schedule-manager.types.ts";
 
 const linuxEnvironment = [
   { name: "HOME", value: "/home/follower" },
@@ -61,17 +61,17 @@ scheduleManagerContract("Windows", {
 
 describe("schedule normalization", () => {
   it("preserves, deduplicates, and orders every weekly day", () => {
-    const spec = {
-      kind: "schedule",
-      calendar: {
-        type: "weekly",
-        days: ["fri", "mon", "fri", "wed"],
-        at: "09:15",
-      },
+    // The profile's inherited default is now the only place a schedule is
+    // authored, so this covers its normalization rather than the deleted
+    // schedule resource spec.
+    const authored = {
+      type: "weekly",
+      days: ["fri", "mon", "fri", "wed"],
+      at: "09:15",
       timezone: "UTC",
-    } satisfies Extract<ResourceSpecInput, { readonly kind: "schedule" }>;
+    } satisfies ScheduleDefault;
 
-    expect(syncScheduleFromResourceSpec(spec)).toEqual({
+    expect(syncScheduleFromDefault(authored)).toEqual({
       kind: "weekly",
       weekdays: ["Mon", "Wed", "Fri"],
       localTime: "09:15",

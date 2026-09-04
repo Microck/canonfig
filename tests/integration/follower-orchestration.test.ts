@@ -896,6 +896,9 @@ describe("production follower orchestration", () => {
       ),
     );
     expect(ownershipApplied).toMatchObject({ outcome: { outcome: "Converged" } });
+    // The inherited default is reconciled after the run, not as a planned
+    // action, so a scheduler failure cannot roll back configuration that
+    // applied correctly.
     expect(profileScheduleCalls.at(-1)).toEqual({
       kind: "daily",
       localTime: "01:15",

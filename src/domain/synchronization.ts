@@ -50,7 +50,6 @@ export type PlannedActionKind =
   | "write-config"
   | "mirror-directory"
   | "remove-resource"
-  | "schedule-default"
   | "install-tool"
   | "verify-only"
   | "human-action"
@@ -70,13 +69,7 @@ export type ActionDetail =
   }
   | { readonly kind: "write-config"; readonly target: string; readonly keys: ReadonlyArray<string> }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
-  | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string>; readonly schedule?: SyncSchedule | undefined }
-  | {
-    readonly kind: "schedule-default";
-    readonly operation: "upsert" | "remove";
-    readonly schedule: SyncSchedule;
-    readonly previousSchedule?: SyncSchedule | undefined;
-  }
+  | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }
   | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined }
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
@@ -202,7 +195,7 @@ export interface AppliedResourceRecord {
   readonly revision: string;
   readonly digest: string;
   readonly appliedAt: string;
-  readonly kind?: "file" | "directory" | "config" | "skill" | "tool" | "credential" | "schedule" | undefined;
+  readonly kind?: "file" | "directory" | "config" | "skill" | "tool" | "credential" | undefined;
   readonly policy?: "replace" | "mirror-owned" | "merge" | "replace-if-unmodified" | "ensure" | "require-local" | undefined;
   readonly target?: string | undefined;
   readonly executable?: boolean | undefined;
@@ -218,7 +211,6 @@ export interface AppliedResourceRecord {
   }> | undefined;
   readonly ownedKeys?: ReadonlyArray<string> | undefined;
   readonly configFormat?: "toml" | "json" | "yaml" | undefined;
-  readonly schedule?: SyncSchedule | undefined;
 }
 
 export const PlannedActionKindSchema = Schema.Literals([
@@ -228,7 +220,6 @@ export const PlannedActionKindSchema = Schema.Literals([
   "write-config",
   "mirror-directory",
   "remove-resource",
-  "schedule-default",
   "install-tool",
   "verify-only",
   "human-action",
@@ -290,13 +281,6 @@ export const ActionDetailSchema = Schema.Union([
     target: Schema.NonEmptyString,
     paths: Schema.Array(Schema.NonEmptyString),
     keys: Schema.Array(Schema.NonEmptyString),
-    schedule: Schema.optional(SyncScheduleSchema),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("schedule-default"),
-    operation: Schema.Literals(["upsert", "remove"]),
-    schedule: SyncScheduleSchema,
-    previousSchedule: Schema.optional(SyncScheduleSchema),
   }),
   InstallToolActionDetailSchema,
   Schema.Struct({
@@ -463,7 +447,6 @@ export const AppliedResourceRecordSchema = Schema.Struct({
     "skill",
     "tool",
     "credential",
-    "schedule",
   ])),
   policy: Schema.optional(Schema.Literals([
     "replace",
@@ -487,7 +470,6 @@ export const AppliedResourceRecordSchema = Schema.Struct({
   }))),
   ownedKeys: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   configFormat: Schema.optional(Schema.Literals(["toml", "json", "yaml"])),
-  schedule: Schema.optional(SyncScheduleSchema),
 });
 
 /** Runtime schema aliases share names with their corresponding domain types. */
