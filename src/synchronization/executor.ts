@@ -547,9 +547,22 @@ const agentActionResult = (
         attempt,
       ).pipe(
         Effect.ignore,
+        // A refusal by the bounds, a timeout, an output-limit overrun or
+        // unusable output is work a person has to finish, like every other
+        // "a person must do this" case. It used to end the run Failed and roll
+        // back every action before it, which punished the rest of the profile
+        // for the harness declining one task, and the harness declining is a
+        // normal outcome rather than a broken run.
         Effect.andThen(Effect.succeed({
-          kind: "failed",
-          reason: redact(error, input.knownSecrets ?? []),
+          kind: "human",
+          human: {
+            reason: `The configured agent harness could not resolve the task: ${
+              redact(error, input.knownSecrets ?? [])
+            }`,
+            instructions:
+              "Resolve the task manually or adjust the agent harness bounds, then run synchronization again.",
+            resource: state.action.resource,
+          },
         } satisfies ActionResult)),
       )
     ),

@@ -1220,11 +1220,14 @@ export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTa
         }),
       );
       if ("error" in resolution) {
+        const reason =
+          `Configured agent harness could not safely resolve the task: ${resolution.error.message.slice(0, 1024)}`;
         replacements.set(task.id, "human");
-        reasons.set(
-          task.id,
-          `Configured agent harness could not safely resolve the task: ${resolution.error.message.slice(0, 1024)}`,
-        );
+        reasons.set(task.id, reason);
+        // Report the refusal rather than dropping it. A plan used to compute
+        // this and discard it, so the agent task showed unchanged with an
+        // empty agentResolutions and no reason at all.
+        resolutions.push({ outcome: "refused", task: bounded, reason });
         continue;
       }
       resolutions.push(resolution.outcome);
@@ -1325,13 +1328,24 @@ export const synchronizeFollower = Effect.fn(
     appliedResources,
   });
   const noAgentResolutions: ReadonlyArray<AgentResolutionOutcome> = [];
-  const planned = mode === "plan"
+  // `agent-propose` records a proposal and stops, which is what the operator
+  // documentation and the glossary describe. Apply used to skip resolution
+  // entirely and turn every Agent Task straight into a human action without
+  // ever invoking the harness, so no proposal was ever recorded.
+  //
+  // Resolving here is safe for both cases this covers: planning asks the
+  // harness to propose, and `agent-propose` proposes by definition, so neither
+  // mutates the machine before the run begins. `agent-apply` still resolves
+  // inside the run, where its mutation is journaled for recovery.
+  const resolveBeforeRun = mode === "plan"
+    || configuration.agentPolicy === "agent-propose";
+  const planned = resolveBeforeRun
     ? yield* resolveAgentTasks(
       configuration,
       plan,
       scheduled,
       signal,
-      true,
+      mode === "plan",
     )
     : { plan: plan, agentResolutions: noAgentResolutions };
   const appliedAgentResolutions: Array<AgentResolutionOutcome> = [];
