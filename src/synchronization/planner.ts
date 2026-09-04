@@ -91,6 +91,39 @@ const indexUnique = <Value>(
   return indexed;
 };
 
+/**
+ * Indexes content-addressed blobs, collapsing legitimate repeats.
+ *
+ * A blob's id is the digest of its content, so two resources whose published
+ * specifications are identical name one blob by design: sharing is the point of
+ * a content-addressed store. Rejecting the repeat made every plan fail for a
+ * profile that declared, for instance, two files with the same contents, and
+ * the follower could never converge.
+ *
+ * A repeat that disagrees about its size is a different matter. Two different
+ * contents cannot share a digest, so that is an integrity problem rather than
+ * sharing, and it is still rejected.
+ */
+const indexBlobs = (
+  entries: ReadonlyArray<AvailableBlob>,
+): ReadonlyMap<string, AvailableBlob> | DuplicatePlannerInputError => {
+  const indexed = new Map<string, AvailableBlob>();
+  for (const blob of entries) {
+    const existing = indexed.get(blob.id);
+    if (existing !== undefined) {
+      if (existing.bytes !== blob.bytes) {
+        return new DuplicatePlannerInputError({
+          collection: "revision.blobs",
+          id: blob.id,
+        });
+      }
+      continue;
+    }
+    indexed.set(blob.id, blob);
+  }
+  return indexed;
+};
+
 const isDuplicateInputError = (
   value: ReadonlyMap<string, unknown> | DuplicatePlannerInputError,
 ): value is DuplicatePlannerInputError => value instanceof DuplicatePlannerInputError;
@@ -126,10 +159,7 @@ const indexInput = (input: SynchronizationPlannerInput): IndexResult => {
     input.appliedResources.map((entry) => [entry.resource, entry] as const),
   );
   if (isDuplicateInputError(applied)) return { ok: false, error: applied };
-  const blobs = indexUnique(
-    "revision.blobs",
-    input.revision.blobs.map((entry) => [entry.id, entry] as const),
-  );
+  const blobs = indexBlobs(input.revision.blobs);
   if (isDuplicateInputError(blobs)) return { ok: false, error: blobs };
   return {
     ok: true,

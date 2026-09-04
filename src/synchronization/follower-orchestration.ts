@@ -828,6 +828,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
     const observations = [];
     const artifacts: Array<SynchronizationArtifact> = [];
     const blobs: Array<AvailableBlob> = [];
+    const announcedBlobs = new Set<string>();
     const removedResources = [];
     const appliedByResource = new Map(appliedResources.map((record) => [
       record.resource,
@@ -854,10 +855,17 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
         { digest: entry.blob.id, content: entry.blobBytes },
         ...hydration.artifacts,
       );
-      blobs.push({
-        id: Schema.decodeUnknownSync(BlobId)(entry.blob.id),
-        bytes: entry.blobBytes.byteLength,
-      });
+      // Two resources with identical published specifications share one blob,
+      // because a blob's id is the digest of its content. Emit it once: the
+      // list describes what is available to transfer, not which resource asked
+      // for it.
+      if (!announcedBlobs.has(entry.blob.id)) {
+        announcedBlobs.add(entry.blob.id);
+        blobs.push({
+          id: Schema.decodeUnknownSync(BlobId)(entry.blob.id),
+          bytes: entry.blobBytes.byteLength,
+        });
+      }
     }
     const currentIds = new Set(fetched.metadata.resources.map((resource) => resource.id));
     for (
