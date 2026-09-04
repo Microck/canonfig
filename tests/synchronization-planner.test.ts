@@ -949,6 +949,55 @@ describe("transfer and apply separation", () => {
     expect(plan.actions.filter((action) => action.kind === "write-file")).toHaveLength(2);
   });
 
+  it("plans two resources whose content is identical", () => {
+    // A blob's id is the digest of its content, so two resources with the same
+    // published specification share one blob. The planner rejected the repeat,
+    // which made every plan fail for such a profile and left the follower
+    // unable to converge or to remove anything.
+    const resources = [
+      resource("a-file", "file", "replace", [], [blobA]),
+      resource("c-file", "file", "replace", [], [blobA]),
+    ];
+    const input = plannerInput(resources);
+    const planned = Effect.runSync(planSynchronization({
+      ...input,
+      revision: {
+        ...input.revision,
+        blobs: [
+          { id: blobA, bytes: 100 },
+          { id: blobA, bytes: 100 },
+          { id: blobB, bytes: 200 },
+        ],
+      },
+    }));
+
+    // The shared blob transfers once and both files are written from it, which
+    // is the point of addressing a blob by its content.
+    expect(planned.actions.map((action) => `${action.resource}:${action.kind}`)).toEqual([
+      "a-file:transfer-blob",
+      "a-file:write-file",
+      "c-file:write-file",
+    ]);
+  });
+
+  it("rejects one blob id claiming two different sizes", () => {
+    // Two different contents cannot share a digest, so this is an integrity
+    // problem rather than the sharing above.
+    const input = plannerInput([resource("a-file", "file", "replace", [], [blobA])]);
+    const error = Effect.runSync(Effect.flip(planSynchronization({
+      ...input,
+      revision: {
+        ...input.revision,
+        blobs: [
+          { id: blobA, bytes: 100 },
+          { id: blobA, bytes: 101 },
+        ],
+      },
+    })));
+
+    expect(error._tag).toBe("DuplicatePlannerInputError");
+  });
+
   it("reuses cached blobs without changing Apply Policy behavior", () => {
     const subject = resource("file", "file", "replace", [], [blobA]);
     const plan = runPlan(plannerInput(
