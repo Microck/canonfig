@@ -358,6 +358,39 @@ describe("typed CLI command boundary", () => {
     }
   });
 
+  it("routes --replace through to enrollment", async () => {
+    const result = await execute([
+      "follower",
+      "enroll",
+      invitation,
+      "--name",
+      "laptop",
+      "--profile",
+      "workstation",
+      "--replace",
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(CliExitCode.success);
+    expect(result.invocations[0]?.input).toMatchObject({
+      followerName: "laptop",
+      replace: true,
+    });
+  });
+
+  it("defaults --replace to false", async () => {
+    const result = await execute([
+      "follower",
+      "enroll",
+      invitation,
+      "--name",
+      "laptop",
+      "--profile",
+      "workstation",
+      "--json",
+    ]);
+    expect(result.invocations[0]?.input).toMatchObject({ replace: false });
+  });
+
   it("requires the --profile the enroll usage line promises", async () => {
     const result = await execute(["follower", "enroll", invitation, "--name", "laptop"]);
     expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);

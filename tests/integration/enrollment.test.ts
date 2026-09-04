@@ -367,6 +367,38 @@ describe("loopback HTTPS enrollment", () => {
     expect(stillAuthenticated.follower.id).toBe(primary.follower.id);
   });
 
+  it("refuses enrollment before spending the invitation when no credential store is usable", async () => {
+    const setup = fixture();
+    const server = await start(setup);
+    const grant = await invitation(setup, server);
+
+    // A machine with the secure-store policy and no Secret Service session has
+    // nowhere to keep a credential. This used to be discovered only after the
+    // source had already consumed the invitation, so the operator lost it and
+    // got exit 6, which blamed the transport although the transport worked.
+    const noCredentialStore = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(setup.root, "home") },
+        { name: "PATH", value: join(setup.root, "bin") },
+      ],
+      credentialPolicy: { kind: "secure-store" },
+    });
+    const refused = await Effect.runPromise(Effect.flip(
+      enrollFollower({ invitation: grant, followerName: "No Store Host" }).pipe(
+        Effect.provide(noCredentialStore),
+      ),
+    ));
+    expect(refused._tag).toBe("CredentialStorageError");
+
+    // The invitation was never spent, so the same grant still enrolls once the
+    // machine can keep a credential.
+    const enrolled = await runFollower(
+      setup,
+      enrollFollower({ invitation: grant, followerName: "No Store Host" }),
+    );
+    expect(enrolled.follower.name).toBe("No Store Host");
+  });
+
   it("rejects TLS pin and intended source identity mismatches before enrollment", async () => {
     const setup = fixture();
     const server = await start(setup);

@@ -58,7 +58,7 @@ Source:
   source revoke <follower-id>
 
 Follower:
-  follower enroll <invite> --name <name> --profile <id>
+  follower enroll <invite> --name <name> --profile <id> [--replace]
   sync [--plan | --apply] [--no-input]
   recover [--no-input]
   status [--follower <id>]
@@ -116,6 +116,8 @@ export type CliCommand =
     readonly invitation: EnrollmentInvitationGrant;
     readonly followerName: string;
     readonly selectedProfile?: typeof ProfileId.Type | undefined;
+    /** Replace a completed enrollment instead of refusing. */
+    readonly replace: boolean;
   }
   | {
     readonly _tag: "Synchronize";
@@ -446,7 +448,7 @@ const evaluateCommand = (
       const options = parseOptions(
         rest,
         new Set(["--name", "--profile"]),
-        new Set(),
+        new Set(["--replace"]),
       );
       if (options.positionals.length !== 1) {
         return invalid(
@@ -462,6 +464,7 @@ const evaluateCommand = (
           one(options, "--profile", true)!,
           "profile id",
         ),
+        replace: options.switches.has("--replace"),
       }, format);
     }
     if (area === "profile") {
@@ -785,6 +788,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         invitation: value.invitation,
         followerName: value.followerName,
         selectedProfile: value.selectedProfile,
+        replace: value.replace,
       });
     case "Synchronize":
       return yield* follower.synchronize({

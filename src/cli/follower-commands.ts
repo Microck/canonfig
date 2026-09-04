@@ -15,6 +15,8 @@ export interface FollowerEnrollInput {
   readonly invitation: EnrollmentInvitationGrant;
   readonly followerName: string;
   readonly selectedProfile?: ProfileId | undefined;
+  /** Replace a completed enrollment instead of refusing. */
+  readonly replace: boolean;
 }
 
 export interface SynchronizeInput {
