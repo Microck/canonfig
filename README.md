@@ -36,30 +36,11 @@ managing agent setups across multiple machines usually breaks because machines d
 requires Node.js 24+ and npm.
 
 ```bash
-npm install --global @microck/canonfig@2.2.0
+npm install --global @microck/canonfig
 canonfig --version
 ```
 
 the npm package is `@microck/canonfig`; the installed binary is `canonfig`.
-
-## local command log
-
-Canonfig writes privacy-safe JSON Lines lifecycle records to
-`~/.canonfig/canonfig.log`. Each record contains only the normalized command,
-timestamp, process ID, duration, and exit code. Arguments, stdout, stderr,
-invitation payloads, and secret values are never logged.
-
-The file is restricted to the current user on POSIX and Windows. Disable it or
-select another path when needed:
-
-```bash
-CANONFIG_LOG=off canonfig status
-CANONFIG_LOG_FILE=/tmp/canonfig.jsonl canonfig doctor --no-input
-```
-
-`SIGINT` and `SIGTERM` write a completion event before the signal is
-re-raised. `SIGKILL` cannot be observed by the process and therefore cannot
-produce one.
 
 ## quickstart
 
