@@ -10,7 +10,7 @@ profile. JSONC authoring layout and comments do not affect the canonical digest.
 ## Profile shape
 
 The v2 authoring contract contains a stable profile ID, display name, Follower
-Groups, Profile Resources, and a default schedule:
+Groups, Profile Resources, and an optional default schedule:
 
 ```jsonc
 {
@@ -29,6 +29,19 @@ Groups, Profile Resources, and a default schedule:
 }
 ```
 
+`scheduleDefault` is optional and is a default a Follower Machine *inherits*,
+not a resource a profile applies. A profile that omits it schedules nothing.
+Only daily and weekly calendars are accepted, because those are the only shapes
+every follower backend can render; a follower that wants a backend-specific
+calendar sets one locally with `canonfig schedule set`.
+
+A Follower Machine owns its own native synchronization job. `canonfig schedule
+set` and `canonfig schedule remove` decide it, and that decision outlives an
+apply. Canonfig installs the inherited default only when the follower has not
+decided for itself, and it reconciles that job after a converged run rather
+than as part of one, so a machine whose scheduler does not work still
+converges.
+
 Canonfig normalizes omitted defaults and unordered collections before hashing.
 It rejects duplicate IDs, missing dependencies, dependency cycles, undeclared
 groups, invalid targets, incompatible policies, and incompatible verification.
@@ -43,7 +56,6 @@ groups, invalid targets, incompatible policies, and incompatible verification.
 | `skill` | A canonical skill tree | `replace-if-unmodified` |
 | `tool` | Installed and verified executable capability | `ensure` |
 | `credential` | Usable local credential reference | `require-local` |
-| `schedule` | Native scheduled synchronization | `replace` |
 
 Every Profile Resource has a unique ID, kind, target, kind-specific
 specification, verification contract, optional groups, and optional

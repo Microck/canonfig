@@ -15,6 +15,7 @@ import {
 } from "../domain/brand.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
+import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 
 export const doctorProbeNames = [
@@ -57,6 +58,11 @@ export interface DoctorAgentConfiguration {
   readonly executable: string;
 }
 
+export interface DoctorScheduleConfiguration {
+  readonly schedule: SyncSchedule;
+  readonly executable?: string | undefined;
+}
+
 export interface DoctorInput {
   readonly noInput: boolean;
   readonly timeoutMilliseconds: number;
@@ -74,6 +80,14 @@ export interface DoctorInput {
    * than the failure a run would hit.
    */
   readonly agentPolicy?: typeof AgentPolicy.Type | undefined;
+  /**
+   * The native job this follower should have, or undefined when it should have
+   * none. The probe used to compare the installed job against the built-in
+   * default and its own script path, so the only schedule that could ever read
+   * `current` was a daily 00:00 job installed from the copy of canonfig on
+   * PATH.
+   */
+  readonly schedule?: DoctorScheduleConfiguration | undefined;
   readonly source?: DoctorSourceConfiguration | undefined;
   readonly agent?: DoctorAgentConfiguration | undefined;
 }
@@ -348,8 +362,16 @@ const sourceProbe = (
 
 const schedulerProbe = (
   schedules: ScheduleManager["Service"],
-): Effect.Effect<DoctorProbe, object> =>
-  schedules.status({ executable: process.argv[1] }).pipe(
+  schedule: DoctorScheduleConfiguration | undefined,
+): Effect.Effect<DoctorProbe, object> => {
+  // Nothing to compare against when this follower runs no scheduled
+  // synchronization.
+  if (schedule === undefined) {
+    return Effect.succeed(
+      skipped("scheduler", "this follower runs no scheduled synchronization"),
+    );
+  }
+  return schedules.status(schedule).pipe(
     Effect.map((status) => {
       const details = {
         state: status.state,
@@ -361,6 +383,7 @@ const schedulerProbe = (
         : warning("scheduler", `scheduler state is ${status.state}`, details);
     }),
   );
+};
 
 const packageManagerProbe = Effect.fn("Doctor.packageManagers")(function*(
   machine: MachineState["Service"],
@@ -505,7 +528,7 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
     isolated(
       "scheduler",
       timeout,
-      schedulerProbe(schedules),
+      schedulerProbe(schedules, input.schedule),
       () => failed("scheduler", "verification-or-apply-failure", "scheduler state check failed"),
       "verification-or-apply-failure",
     ),

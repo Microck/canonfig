@@ -40,7 +40,6 @@ import {
 import { desiredResourceDigest } from "./resource-plans.ts";
 import {
   restoreRollbackReference,
-  scheduleInputFor,
   verifyResource,
   type ResourceExecutionContext,
   type ResourceVerification,
@@ -299,26 +298,7 @@ const latestRollbackReference = (
 const restoreResourceRollbackReference = (
   context: ResourceExecutionContext,
   reference: string,
-  scheduleManager: ScheduleManager["Service"] | undefined,
-) =>
-  Effect.gen(function*() {
-    if (context.resource.kind !== "schedule") {
-      return yield* restoreRollbackReference(context, reference);
-    }
-    if (scheduleManager === undefined) {
-      return yield* new RecoveryIntegrityError({
-        run: context.run,
-        message: `cannot restore schedule action ${context.action.id}: native scheduler is unavailable`,
-      });
-    }
-    const input = yield* scheduleInputFor(context);
-    yield* restoreScheduleRollbackReference(
-      context,
-      reference,
-      scheduleManager,
-      input,
-    );
-  });
+) => restoreRollbackReference(context, reference);
 
 const preservedOutcome = (
   input: SynchronizationRunInput,
@@ -485,51 +465,12 @@ export const recoverSynchronizationPlan = (
     for (const state of states) {
       const last = latest.get(state.action.id)!;
       const attempt = Math.max(1, last.attempt + 1);
-      const scheduleManager = state.context.resource.kind === "schedule"
-        ? Option.getOrUndefined(yield* Effect.serviceOption(ScheduleManager))
-        : undefined;
       let result: ActionResult;
       let rollbackOwnership: {
         readonly resource: ResourceId;
         readonly previousApplied?: AppliedResourceRecord | undefined;
       } | undefined;
-      if (state.action.detail.kind === "schedule-default") {
-        // Replaying from the applied schedule would replace the original
-        // rollback baseline. Restore persisted native state before every
-        // resumed attempt so a later failure still unwinds the whole run.
-        const rollbackReference = latestRollbackReference(
-          recovery.actions,
-          state.action.id,
-        );
-        if (last.state === "succeeded" && rollbackReference === undefined) {
-          return yield* integrityError(
-            recovery,
-            `completed schedule action ${state.action.id} lacks rollback material`,
-          );
-        }
-        if (last.state !== "pending" && rollbackReference !== undefined) {
-          if (scheduleManager === undefined) {
-            return yield* integrityError(
-              recovery,
-              `cannot restore schedule action ${state.action.id}: native scheduler is unavailable`,
-            );
-          }
-          yield* restoreScheduleRollbackReference(
-            state.context,
-            rollbackReference,
-            scheduleManager,
-            { schedule: state.action.detail.schedule },
-          ).pipe(
-            Effect.mapError((error) =>
-              integrityError(
-                recovery,
-                `cannot restore schedule action ${state.action.id}: ${String(error)}`,
-              )
-            ),
-          );
-        }
-        result = yield* executeSynchronizationAction(input, state, attempt);
-      } else if (last.state === "skipped") {
+      if (last.state === "skipped") {
         result = preservedOutcome(input, state.action);
       } else if (
         last.state === "succeeded"
@@ -559,7 +500,6 @@ export const recoverSynchronizationPlan = (
         yield* restoreResourceRollbackReference(
           state.context,
           last.rollbackReference,
-          scheduleManager,
         ).pipe(
           Effect.mapError((error) =>
             integrityError(recovery, `cannot restore ${state.action.id}: ${String(error)}`)
@@ -571,18 +511,7 @@ export const recoverSynchronizationPlan = (
         };
         result = yield* executeSynchronizationAction(input, state, attempt);
       } else if (last.state === "succeeded") {
-        if (
-          last.rollbackReference === undefined
-          && state.context.resource.kind === "schedule"
-          && state.action.detail.kind !== "no-op"
-          && state.action.detail.kind !== "verify-only"
-        ) {
-          return yield* integrityError(
-            recovery,
-            `completed schedule action ${state.action.id} lacks rollback material`,
-          );
-        }
-        const verification = yield* verifyResource(state.context, scheduleManager).pipe(
+        const verification = yield* verifyResource(state.context).pipe(
           Effect.mapError((error) =>
             integrityError(recovery, `cannot reverify ${state.action.id}: ${String(error)}`)
           ),
@@ -593,7 +522,6 @@ export const recoverSynchronizationPlan = (
             : restoreResourceRollbackReference(
               state.context,
               last.rollbackReference,
-              scheduleManager,
             );
           result = {
             kind: "verified",
@@ -621,7 +549,6 @@ export const recoverSynchronizationPlan = (
           yield* restoreResourceRollbackReference(
             state.context,
             last.rollbackReference,
-            scheduleManager,
           ).pipe(
             Effect.mapError((error) =>
               integrityError(recovery, `cannot restore ${state.action.id}: ${String(error)}`)
@@ -646,7 +573,6 @@ export const recoverSynchronizationPlan = (
           yield* restoreResourceRollbackReference(
             state.context,
             rollbackReference,
-            scheduleManager,
           ).pipe(
             Effect.mapError((error) =>
               integrityError(recovery, `cannot restore ${state.action.id}: ${String(error)}`)
@@ -776,9 +702,6 @@ export const recoverSynchronizationPlan = (
             ownedFiles,
             ownedKeys: value?.kind === "config" ? value.keys : undefined,
             configFormat: value?.kind === "config" ? value.format : undefined,
-            schedule: value?.kind === "schedule"
-              ? value.schedule
-              : undefined,
           });
         }
       }

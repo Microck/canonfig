@@ -330,4 +330,15 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       ADD COLUMN mode INTEGER
     `;
   }),
+  // The `schedule` resource kind is gone: the native synchronization job is
+  // owned by the follower's own schedule state, not by a Profile Resource, so
+  // no applied record can carry a schedule any more.
+  "0013_drop_applied_resource_schedule": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      ALTER TABLE applied_resources
+      DROP COLUMN schedule_json
+    `;
+  }),
 });

@@ -191,8 +191,6 @@ const verificationCompatibleWithDesired = (
       return method === "executable-present" || method === "command";
     case "credential":
       return method === "credential-present" || method === "command";
-    case "schedule":
-      return method === "command";
   }
 };
 

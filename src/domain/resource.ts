@@ -28,7 +28,6 @@ export const ResourceKind = Schema.Literals([
   "skill",
   "tool",
   "credential",
-  "schedule",
 ]);
 export type ResourceKind = Schema.Schema.Type<typeof ResourceKind>;
 
@@ -50,7 +49,6 @@ export const defaultPolicyForKind = {
   skill: "replace-if-unmodified",
   tool: "ensure",
   credential: "require-local",
-  schedule: "replace",
 } satisfies Readonly<Record<ResourceKind, ApplyPolicy>>;
 
 /** Which policies are compatible with which kinds. `ensure` and `require-local` are kind-specific. */
@@ -61,7 +59,6 @@ const compatiblePolicies = {
   skill: ["replace-if-unmodified", "replace"],
   tool: ["ensure"],
   credential: ["require-local"],
-  schedule: ["replace"],
 } satisfies Readonly<Record<ResourceKind, ReadonlyArray<ApplyPolicy>>>;
 
 export const policyCompatibleWithKind = (kind: ResourceKind, policy: ApplyPolicy): boolean =>
@@ -245,6 +242,15 @@ export const CredentialResourceSpec = Schema.Struct({
 });
 export type CredentialResourceSpec = Schema.Schema.Type<typeof CredentialResourceSpec>;
 
+/**
+ * The calendar grammar a Machine Profile may declare.
+ *
+ * Only shapes every follower backend can render are allowed. A `custom`
+ * expression was accepted at publication and then refused at apply time by
+ * launchd and Windows Task Scheduler, which left a macOS or Windows follower
+ * unable to converge at all. A follower that wants a backend-specific calendar
+ * sets one locally, where it is that machine's business.
+ */
 export const ScheduleCalendar = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("daily"),
@@ -255,19 +261,8 @@ export const ScheduleCalendar = Schema.Union([
     days: Schema.Array(Schema.NonEmptyString),
     at: Schema.NonEmptyString,
   }),
-  Schema.Struct({
-    type: Schema.Literal("custom"),
-    expression: Schema.NonEmptyString,
-  }),
 ]);
 export type ScheduleCalendar = Schema.Schema.Type<typeof ScheduleCalendar>;
-
-export const ScheduleResourceSpec = Schema.Struct({
-  kind: Schema.Literal("schedule"),
-  calendar: ScheduleCalendar,
-  timezone: Schema.NonEmptyString,
-});
-export type ScheduleResourceSpec = Schema.Schema.Type<typeof ScheduleResourceSpec>;
 
 export const ResourceSpec = Schema.Union([
   FileResourceSpec,
@@ -276,7 +271,6 @@ export const ResourceSpec = Schema.Union([
   SkillResourceSpec,
   ToolResourceSpec,
   CredentialResourceSpec,
-  ScheduleResourceSpec,
 ]);
 export type ResourceSpec = Schema.Schema.Type<typeof ResourceSpec>;
 

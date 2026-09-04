@@ -72,11 +72,6 @@ export type DesiredResource =
     readonly kind: "credential";
     readonly reference: string;
     readonly instructions: string;
-  }
-  | {
-    readonly kind: "schedule";
-    readonly digest: ContentDigest;
-    readonly schedule: SyncSchedule;
   };
 
 export interface DesiredFile {

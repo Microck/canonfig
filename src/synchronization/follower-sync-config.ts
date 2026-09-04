@@ -9,6 +9,7 @@ import {
 } from "../domain/brand.ts";
 import { AgentPolicy, FollowerIdentity } from "../domain/identity.ts";
 import { ScheduleDefaultSchema } from "../domain/profile.ts";
+import { SyncScheduleSchema } from "../schedule/schedule-manager.types.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 
 export const SupportedAgentHarness = Schema.Literals([
@@ -87,8 +88,29 @@ export const FollowerSynchronizationConfiguration = Schema.Struct({
   ])),
   /** Set only between source preparation and source finalization. */
   enrollmentPending: Schema.optional(Schema.Literal(true)),
-  /** Last authorized profile-level default schedule, for durable status/recovery. */
+  /** Last authorized profile-level default schedule, inherited when no override is set. */
   scheduleDefault: Schema.optional(ScheduleDefaultSchema),
+  /**
+   * This follower's own decision about the native synchronization job.
+   *
+   * The follower owns `canonfig-sync`. `inherit` follows the profile's
+   * `scheduleDefault`, `disabled` means this machine runs no scheduled
+   * synchronization, and `schedule` pins a calendar this machine chose.
+   *
+   * A Machine Profile used to fight over the same job: every plan appended a
+   * `schedule-default` action, so `canonfig schedule set` lasted exactly one
+   * run and a profile declaring both a schedule resource and a different
+   * default made the follower alternate calendars while reporting Converged.
+   */
+  scheduleOverride: Schema.optional(Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("inherit") }),
+    Schema.Struct({ kind: Schema.Literal("disabled") }),
+    Schema.Struct({
+      kind: Schema.Literal("schedule"),
+      schedule: SyncScheduleSchema,
+      executable: Schema.optional(Schema.NonEmptyString),
+    }),
+  ])),
   agentHarness: Schema.optional(FollowerAgentHarnessConfiguration),
   localOverlay: Schema.optional(Schema.Array(LocalOverlayEntrySchema)),
   /**

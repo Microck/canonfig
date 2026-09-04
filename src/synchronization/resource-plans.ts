@@ -140,7 +140,6 @@ export const desiredResourceDigest = (desired: DesiredResource): ContentDigest |
   switch (desired.kind) {
     case "file":
     case "config":
-    case "schedule":
       return desired.digest;
     case "skill":
     case "directory":
@@ -227,7 +226,6 @@ const observedMatchesDesired = (
               && (observedObjectKind === undefined || observedObjectKind === "symlink")
         );
     case "config":
-    case "schedule":
       return observed.state === "present"
         && observed.digest === desired.digest
         && (observedObjectKind === undefined || observedObjectKind === "regular");
@@ -920,20 +918,6 @@ const planRemovedResource = (
           target: applied.target,
           paths: sortedUnique(applied.ownedFiles.map((file) => file.path)),
           keys: [],
-        },
-      }];
-    case "schedule":
-      if (context.resource.policy !== "replace" || applied.schedule === undefined) {
-        return [];
-      }
-      return [{
-        kind: "remove-resource",
-        detail: {
-          kind: "remove-resource",
-          target: applied.target,
-          paths: [],
-          keys: [],
-          schedule: applied.schedule,
         },
       }];
     case "tool":
