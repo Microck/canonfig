@@ -21,7 +21,26 @@ export function renderArtifacts(
   force = false,
 ): RenderResult {
   const conflicts: string[] = [];
-  const output = unapplyPrevious(current, previous, force, conflicts);
+  // Markers this render will write again are left in place by the cleanup pass
+  // so they can be replaced where they stand, which keeps text on both sides of
+  // a block where the operator put it.
+  const rerenderedMarkers = new Set(
+    artifacts
+      .filter((artifact) => artifact.kind === "managed-text")
+      .map((artifact) => artifact.marker),
+  );
+  const ownedBlockHashes = new Map(
+    (previous?.cleanup ?? [])
+      .filter((cleanup) => cleanup.kind === "managed-text")
+      .map((cleanup) => [cleanup.marker, cleanup.blockHash] as const),
+  );
+  const output = unapplyPrevious(
+    current,
+    previous,
+    force,
+    conflicts,
+    rerenderedMarkers,
+  );
   const cleanup: CleanupInstruction[] = [];
   if (artifacts.length === 0) return { content: output, cleanup, conflicts };
 
@@ -54,7 +73,13 @@ export function renderArtifacts(
   let text = output ?? "";
   for (const artifact of artifacts) {
     if (artifact.kind === "managed-text") {
-      const result = appendManagedText(text, artifact, force, conflicts);
+      const result = appendManagedText(
+        text,
+        artifact,
+        force,
+        conflicts,
+        ownedBlockHashes.get(artifact.marker),
+      );
       text = result.text;
       cleanup.push(result.cleanup);
     } else if (artifact.kind === "json") {

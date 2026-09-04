@@ -17,16 +17,45 @@ export function appendManagedText(
   artifact: ManagedTextArtifact,
   force: boolean,
   conflicts: string[],
+  /**
+   * The hash of the block Canonfig last wrote for this marker, when it owns
+   * one in this file. Used to tell its own block apart from an unmanaged block
+   * that happens to claim the same marker.
+   */
+  ownedBlockHash?: string | undefined,
 ): { text: string; cleanup: CleanupInstruction } {
   const markers = commentMarkers(artifact.marker, artifact.comments);
   const existing = locateBlock(text, markers.begin, markers.end);
-  if (existing !== undefined) {
-    if (!force) {
-      conflicts.push(`An unmanaged block already uses marker ${artifact.marker}.`);
-    }
-    text = `${text.slice(0, existing.start)}${text.slice(existing.end)}`;
-  }
   const block = `${markers.begin}\n${artifact.content.trim()}\n${markers.end}\n`;
+  const cleanup: CleanupInstruction = {
+    kind: "managed-text",
+    marker: artifact.marker,
+    comments: artifact.comments,
+    blockHash: sha256(block),
+  };
+
+  if (existing !== undefined) {
+    const owned = ownedBlockHash !== undefined
+      && sha256(existing.block) === ownedBlockHash;
+    // Canonfig's own block is replaced where it stands. Removing it and
+    // re-appending moved it to the end of the file, which silently relocated
+    // anything the operator had written after it to before it.
+    if (owned || force) {
+      return {
+        text: `${text.slice(0, existing.start)}${block}${text.slice(existing.end)}`,
+        cleanup,
+      };
+    }
+    // A block Canonfig does not own, or one edited since it was written, is a
+    // conflict rather than something to overwrite.
+    conflicts.push(
+      ownedBlockHash === undefined
+        ? `An unmanaged block already uses marker ${artifact.marker}.`
+        : `Managed block ${artifact.marker} was edited outside Canonfig.`,
+    );
+    return { text, cleanup };
+  }
+
   const separator = text.trim() === ""
     ? ""
     : text.endsWith("\n\n")
@@ -38,12 +67,7 @@ export function appendManagedText(
     text: artifact.placement === "start"
       ? `${block}${separator}${text}`
       : `${text}${separator}${block}`,
-    cleanup: {
-      kind: "managed-text",
-      marker: artifact.marker,
-      comments: artifact.comments,
-      blockHash: sha256(block),
-    },
+    cleanup,
   };
 }
 

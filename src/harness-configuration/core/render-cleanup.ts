@@ -75,6 +75,16 @@ export function unapplyPrevious(
   previous: ArtifactState | undefined,
   force: boolean,
   conflicts: string[],
+  /**
+   * Markers that are about to be rendered again into this same file.
+   *
+   * Their blocks are left where they are so the renderer can replace them in
+   * place. Removing a block and re-appending it moved the block to the end of
+   * the file, which silently relocated any text the operator had written after
+   * it to before it. Nothing was lost, but the order changed, and for a file
+   * like AGENTS.md the order is the meaning.
+   */
+  rerenderedMarkers: ReadonlySet<string> = new Set(),
 ): string | Uint8Array | undefined {
   if (previous === undefined) return current;
   let output = current;
@@ -112,6 +122,7 @@ export function unapplyPrevious(
     }
     const text = output ?? "";
     if (cleanup.kind === "managed-text") {
+      if (rerenderedMarkers.has(cleanup.marker)) continue;
       output = removeManagedText(text, cleanup, force, conflicts);
     } else if (cleanup.kind === "toml-block") {
       output = removeTomlBlock(text, cleanup, force, conflicts);
