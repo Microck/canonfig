@@ -86,3 +86,10 @@ Native schedules invoke Canonfig with `--no-input`. Scheduled runs never wait
 for approval. `deterministic-only` records human action for unresolved work;
 `agent-propose` can record a proposal but does not apply it; `agent-apply`
 executes only pre-authorized, bounded actions.
+
+A harness that declines is a normal outcome, not a broken run. When the bounds
+refuse a proposal, the harness times out, it overruns its output limit, or it
+returns output Canonfig cannot use, that task becomes Human Action Required and
+the rest of the profile still converges. `sync --plan` reports the same refusal
+against the task it would have attempted, so the reason is visible before an
+apply rather than only after one.

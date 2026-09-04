@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentResolutionLive } from "../../src/agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../../src/agent/agent-resolution.service.ts";
+import { DeniedAgentCapabilityError } from "../../src/agent/agent-resolution.errors.ts";
 import {
   ActionId,
   AgentTaskId,
@@ -286,6 +287,36 @@ describe("production follower orchestration", () => {
       },
     });
     expect(launcherClassified.agentResolutions).toHaveLength(0);
+
+    // A harness that refuses is reported rather than dropped. `sync --plan`
+    // used to compute this and discard it, so the agent task showed unchanged
+    // with an empty agentResolutions and no reason at all, while the same
+    // failure during apply ended the run.
+    const refusingAgent = AgentResolution.of({
+      resolve: () =>
+        Effect.fail(
+          new DeniedAgentCapabilityError({
+            capability: "path",
+            value: "/tmp/canonfig-agent",
+          }),
+        ),
+      proposeProfileChange: () => Effect.die("unused"),
+    });
+    const refused = await Effect.runPromise(
+      resolveAgentTasks(baseConfiguration, plan, false, undefined, true).pipe(
+        Effect.provideService(AgentResolution, refusingAgent),
+      ),
+    );
+    expect(refused.agentResolutions).toEqual([
+      expect.objectContaining({
+        outcome: "refused",
+        reason: expect.stringContaining("could not safely resolve"),
+      }),
+    ]);
+    // A plan still shows the agent task, because a plan describes what would
+    // be attempted; the refusal is reported alongside it rather than silently
+    // dropped.
+    expect(refused.plan.actions[0]).toMatchObject({ kind: "agent-task" });
   });
 
   it("persists enrollment config, transfers a selected revision, converges, reuses cache, detects drift, and rejects revocation", async () => {

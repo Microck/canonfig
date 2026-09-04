@@ -202,6 +202,24 @@ describe("harness configuration compiler", () => {
     });
   });
 
+  it("reports a missing source as a diagnostic instead of a raw ENOENT", async () => {
+    // Compilation read the canonical sources after validation without checking
+    // whether validation had failed, so a harness.yaml naming a source that
+    // does not exist produced `ENOENT: no such file or directory, open '...'`
+    // and exit 1, throwing away the SOURCE_MISSING diagnostic that validation
+    // had just produced for exactly that case.
+    const root = await fixture(["codex"]);
+    await rm(path.join(root, ".canonfig", "instructions", "AGENTS.md"));
+
+    const compiler = new HarnessConfigurationCompiler(createDefaultRegistry());
+    const plan = await compiler.plan({ root });
+
+    expect(plan.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "SOURCE_MISSING", level: "error" }),
+    ]));
+    expect(plan.entries).toEqual([]);
+  });
+
   it("rejects extension-backed shims in strict mode", async () => {
     const root = await fixture(["pi"]);
     const plan = await new HarnessConfigurationCompiler().plan({

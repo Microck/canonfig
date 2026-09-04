@@ -164,6 +164,22 @@ export class HarnessConfigurationCompiler {
     if (targets.length === 0) throw new CanonfigError("TARGET_EMPTY", "No enabled targets were selected.");
 
     const diagnostics = await validateProject(root, loaded.config);
+    // Stop before building anything when validation already failed. Building
+    // reads the canonical sources, so a `harness.yaml` naming a source that
+    // does not exist produced a raw `ENOENT ... open '...'` and exit 1,
+    // throwing away the SOURCE_MISSING diagnostic that validation had just
+    // produced for exactly that case. Returning the diagnostics with no
+    // artifacts lets plan and status report them, and blocks apply, because
+    // an error-level diagnostic already blocks a plan.
+    if (diagnostics.some((diagnostic) => diagnostic.level === "error")) {
+      return {
+        root,
+        configPath: loaded.path,
+        targets,
+        artifacts: [],
+        diagnostics,
+      };
+    }
     const artifacts: DesiredArtifact[] = [];
     const commonContext: BuildContext = {
       root,

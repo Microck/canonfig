@@ -104,6 +104,20 @@ export type AgentResolutionOutcome =
     readonly task: AgentTask;
     readonly reason: string;
   }
+  /**
+   * The harness was invoked and did not produce a usable proposal: it was
+   * denied by the bounds, timed out, overran its output limit, or returned
+   * output Canonfig cannot use.
+   *
+   * A plan used to compute this and throw it away, so `sync --plan` showed the
+   * agent task unchanged with an empty `agentResolutions` and no reason at all,
+   * while the same failure during apply ended the run.
+   */
+  | {
+    readonly outcome: "refused";
+    readonly task: AgentTask;
+    readonly reason: string;
+  }
   | {
     readonly outcome: "proposed";
     readonly task: AgentTask;
