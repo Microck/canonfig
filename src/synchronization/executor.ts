@@ -414,6 +414,10 @@ export const driftResult = (
       lastAppliedDigest: previous?.digest ?? detail.desiredDigest,
       desiredExecutable: detail.desiredExecutable,
       observedExecutable: detail.observedExecutable,
+      // Carried through so a mode-only conflict says which modes differ
+      // instead of showing two identical digests.
+      desiredMode: detail.desiredMode,
+      observedMode: detail.observedMode,
     },
   };
 };

@@ -58,6 +58,8 @@ interface DriftConflictActionDetail {
   readonly observedDigest: ContentDigest;
   desiredExecutable?: boolean;
   observedExecutable?: boolean;
+  desiredMode?: number;
+  observedMode?: number;
 }
 
 const compareText = (left: string, right: string): number => {
@@ -360,8 +362,38 @@ const driftConflict = (
   };
   if (desiredExecutable !== undefined) detail.desiredExecutable = desiredExecutable;
   if (observedExecutable !== undefined) detail.observedExecutable = observedExecutable;
+  // Modes are part of convergence, so drift can be mode-only. Reporting two
+  // identical digests and nothing else left the operator with no way to see
+  // that the modes were the difference, which is exactly what happens when a
+  // managed tree is recreated by hand with default shell modes.
+  const desiredMode = desiredResourceMode(context.desired);
+  const observedMode = observedResourceMode(context.observed);
+  if (desiredMode !== undefined) detail.desiredMode = desiredMode;
+  if (observedMode !== undefined) detail.observedMode = observedMode;
   return { kind: "drift-conflict", detail };
 };
+
+/** The mode a resource's desired state declares for its own target. */
+const desiredResourceMode = (desired: DesiredResource): number | undefined => {
+  switch (desired.kind) {
+    case "file":
+    case "directory":
+    case "skill":
+      return desired.mode;
+    case "config":
+    case "tool":
+    case "credential":
+      return undefined;
+  }
+};
+
+/** The mode observed on a resource's own target, when one was observed. */
+const observedResourceMode = (
+  observed: ResourcePlanningContext["observed"],
+): number | undefined =>
+  observed.state === "present" || observed.state === "directory"
+    ? observed.mode
+    : undefined;
 
 const directoryRootConflict = (
   context: ResourcePlanningContext,
@@ -490,6 +522,31 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
       },
     }];
   }
+  // Keys Canonfig owned that this revision no longer declares. Merge is a
+  // three-way operation: leaving them behind meant a key dropped from the
+  // profile kept its old value forever and the plan read `no-op`, so only
+  // removing the whole resource ever removed a key.
+  const declared = new Set(context.desired.keys);
+  const dropped = sortedUnique(
+    (context.applied?.ownedKeys ?? []).filter((key) => !declared.has(key)),
+  );
+  // A key the follower claimed through its Local Overlay is the follower's,
+  // not Canonfig's, so it stays even though the profile stopped declaring it.
+  // Comparing values per key would need the applied value of each owned key,
+  // which the Applied Resource Record does not store; the Local Overlay is the
+  // mechanism this product already gives an operator to say "this key is mine".
+  const prunable = dropped.filter((key) => !context.overlayKeys.includes(key));
+  if (prunable.length > 0) {
+    return [{
+      kind: "write-config",
+      detail: {
+        kind: "write-config",
+        target: context.resource.target,
+        keys: sortedUnique(context.desired.keys),
+        removes: prunable,
+      },
+    }];
+  }
   if (observedMatchesDesired(context.desired, context.observed)) return [noOp()];
   return [{
     kind: "write-config",
@@ -569,21 +626,22 @@ const planReplaceIfUnmodified = (
   if (desiredDigest === undefined) {
     return [unresolvedAgentTask(context, `Resolve ${context.resource.kind} ${context.resource.id}`)];
   }
-  if (
-    context.observed.state === "unverifiable"
-    || (
-      context.applied !== undefined
-      && context.observed.state === "absent"
-    )
-  ) {
+  // Absence is not a local edit, so it is safe to repair. Treating a missing
+  // owned target as a human action meant deleting a managed skill stopped every
+  // run forever with `is missing or unverifiable` and Canonfig would never
+  // reinstall it. There is no local change to overwrite when nothing is there.
+  //
+  // A target that exists but cannot be verified is different: something is
+  // present and Canonfig cannot tell what, so it still refuses to overwrite it.
+  if (context.observed.state === "unverifiable") {
     return [{
       kind: "human-action",
       detail: {
         kind: "human-action",
         reason:
-          `Previously applied ${context.resource.kind} ${context.resource.id} is missing or unverifiable`,
+          `Previously applied ${context.resource.kind} ${context.resource.id} cannot be verified`,
         instructions:
-          `Restore ${context.resource.target} or explicitly review and remove the local change, then rerun synchronization. Canonfig will not rewrite this target under replace-if-unmodified.`,
+          `Inspect ${context.resource.target} and either restore it or explicitly review and remove the local change, then run synchronization again. Canonfig will not rewrite a target it cannot read under replace-if-unmodified.`,
       },
     }];
   }

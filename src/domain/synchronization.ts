@@ -67,7 +67,20 @@ export type ActionDetail =
     readonly executable?: boolean | undefined;
     readonly mode?: number | undefined;
   }
-  | { readonly kind: "write-config"; readonly target: string; readonly keys: ReadonlyArray<string> }
+  | {
+    readonly kind: "write-config";
+    readonly target: string;
+    readonly keys: ReadonlyArray<string>;
+    /**
+     * Keys Canonfig owned that the revision no longer declares.
+     *
+     * A dropped key used to stay on the follower with its old value and the
+     * plan read `no-op`, so only removing the whole resource ever removed a
+     * key. These are pruned, and only when the file still holds exactly what
+     * Canonfig wrote, so a local edit is never silently discarded.
+     */
+    readonly removes?: ReadonlyArray<string> | undefined;
+  }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
   | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }
   | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined }
@@ -81,6 +94,15 @@ export type ActionDetail =
     readonly observedDigest: string;
     readonly desiredExecutable?: boolean | undefined;
     readonly observedExecutable?: boolean | undefined;
+    /**
+     * Filesystem modes are part of convergence, so drift can be mode-only.
+     * A conflict that reported digests alone left the operator comparing two
+     * identical hashes with nothing to say the modes were the difference,
+     * which is what happens when a managed tree is recreated by hand with
+     * default shell modes.
+     */
+    readonly desiredMode?: number | undefined;
+    readonly observedMode?: number | undefined;
   };
 
 /** A full, deterministic Synchronization Plan for one follower against one revision. */
@@ -138,9 +160,11 @@ export interface DriftConflict {
   readonly target: string;
   readonly desiredDigest: string;
   readonly observedDigest: string;
-  readonly lastAppliedDigest: string;
+  readonly lastAppliedDigest: string
   readonly desiredExecutable?: boolean | undefined;
   readonly observedExecutable?: boolean | undefined;
+  readonly desiredMode?: number | undefined;
+  readonly observedMode?: number | undefined;
 }
 
 /** Observed state of one resource target on the follower. */
@@ -269,6 +293,7 @@ export const ActionDetailSchema = Schema.Union([
     kind: Schema.Literal("write-config"),
     target: Schema.NonEmptyString,
     keys: Schema.Array(Schema.NonEmptyString),
+    removes: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   }),
   Schema.Struct({
     kind: Schema.Literal("mirror-directory"),
@@ -304,6 +329,8 @@ export const ActionDetailSchema = Schema.Union([
     observedDigest: ContentDigest,
     desiredExecutable: Schema.optional(Schema.Boolean),
     observedExecutable: Schema.optional(Schema.Boolean),
+    desiredMode: Schema.optional(Schema.Int),
+    observedMode: Schema.optional(Schema.Int),
   }),
 ]);
 
@@ -374,6 +401,8 @@ export const DriftConflictSchema = Schema.Struct({
   lastAppliedDigest: ContentDigest,
   desiredExecutable: Schema.optional(Schema.Boolean),
   observedExecutable: Schema.optional(Schema.Boolean),
+  desiredMode: Schema.optional(Schema.Int),
+  observedMode: Schema.optional(Schema.Int),
 });
 
 export const SynchronizationOutcomeSchema = Schema.Union([

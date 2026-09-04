@@ -655,8 +655,11 @@ describe("resource and Apply Policy coverage", () => {
     ["file", "file"],
     ["skill", "skill"],
   ] as const)(
-    "reports a missing previously applied %s as local intent under replace-if-unmodified",
+    "reinstalls a missing previously applied %s under replace-if-unmodified",
     (_name, kind) => {
+      // Absence is not a local edit. Refusing to reinstall meant deleting a
+      // managed skill stopped every run forever with `is missing or
+      // unverifiable`, and Canonfig would never put it back.
       const subject = resource(kind, kind, "replace-if-unmodified");
       const plan = runPlan(plannerInput([subject], {
         desired: [desiredForKind(kind)],
@@ -671,7 +674,40 @@ describe("resource and Apply Policy coverage", () => {
           target: subject.target,
         }],
       }));
-      expect(plan.actions.map((action) => action.kind)).toEqual(["human-action"]);
+      expect(plan.actions.some((action) =>
+        action.kind === "write-file" || action.kind === "mirror-directory"
+      )).toBe(true);
+      expect(plan.actions.some((action) => action.kind === "human-action")).toBe(false);
+    },
+  );
+
+  it.each([
+    ["file", "file"],
+    ["skill", "skill"],
+  ] as const)(
+    "still refuses to overwrite an unverifiable %s under replace-if-unmodified",
+    (_name, kind) => {
+      // Something is there and Canonfig cannot read it, which is a different
+      // case from nothing being there at all.
+      const subject = resource(kind, kind, "replace-if-unmodified");
+      const plan = runPlan(plannerInput([subject], {
+        desired: [desiredForKind(kind)],
+        observed: [{ state: "unverifiable", reason: "permission denied" }],
+        applied: [{
+          resource: subject.id,
+          revision: "previous",
+          digest: digestA,
+          appliedAt: "2026-08-15T00:00:00Z",
+          kind,
+          policy: "replace-if-unmodified",
+          target: subject.target,
+        }],
+      }));
+      // A skill reports this as drift, a file as a human action. Either way
+      // Canonfig refuses to write over something it cannot read.
+      expect(plan.actions.map((action) => action.kind)).toEqual([
+        kind === "skill" ? "drift-conflict" : "human-action",
+      ]);
       expect(plan.actions.some((action) =>
         action.kind === "write-file" || action.kind === "mirror-directory"
       )).toBe(false);
@@ -942,6 +978,74 @@ describe("transfer and apply separation", () => {
     expect(plan.requiredBlobs).toEqual([blobA, blobB]);
     expect(plan.actions.filter((action) => action.kind === "transfer-blob")).toHaveLength(2);
     expect(plan.actions.filter((action) => action.kind === "write-file")).toHaveLength(2);
+  });
+
+  it("prunes a config key the revision no longer declares", () => {
+    // A merge config that declared canonical.removed and then dropped it left
+    // the key on the follower with its old value, and the plan read no-op.
+    // Only removing the whole resource ever removed an owned key.
+    const subject = resource("settings", "config", "merge");
+    const desired = desiredForKind("config");
+    const plan = runPlan(plannerInput([subject], {
+      desired: [desired],
+      observed: [{
+        state: "present",
+        digest: digestB,
+        executable: false,
+      }],
+      applied: [{
+        resource: subject.id,
+        revision: "previous",
+        digest: digestB,
+        appliedAt: "2026-08-15T00:00:00Z",
+        kind: "config",
+        policy: "merge",
+        target: subject.target,
+        ownedKeys: [...(desired.kind === "config" ? desired.keys : []), "canonical.removed"],
+      }],
+    }));
+
+    expect(plan.actions.map((action) => action.kind)).toEqual(["write-config"]);
+    expect(plan.actions[0]?.detail).toMatchObject({
+      kind: "write-config",
+      removes: ["canonical.removed"],
+    });
+  });
+
+  it("keeps a dropped config key the follower claimed in its Local Overlay", () => {
+    // A key the follower claimed is the follower's, not Canonfig's, so it
+    // survives the profile dropping it.
+    const subject = resource("settings", "config", "merge");
+    const desired = desiredForKind("config");
+    const input = plannerInput([subject], {
+      desired: [desired],
+      observed: [{
+        state: "present",
+        digest: digestB,
+        executable: false,
+      }],
+      applied: [{
+        resource: subject.id,
+        revision: "previous",
+        digest: digestB,
+        appliedAt: "2026-08-15T00:00:00Z",
+        kind: "config",
+        policy: "merge",
+        target: subject.target,
+        ownedKeys: [...(desired.kind === "config" ? desired.keys : []), "canonical.removed"],
+      }],
+    });
+    const plan = runPlan({
+      ...input,
+      localOverlay: [{ resource: subject.id, keys: ["canonical.removed"] }],
+    });
+
+    // The write still happens for the declared keys, but the claimed key is
+    // not pruned.
+    expect(plan.actions.map((action) => action.kind)).toEqual(["write-config"]);
+    expect(plan.actions[0]?.detail).not.toMatchObject({
+      removes: expect.arrayContaining(["canonical.removed"]),
+    });
   });
 
   it("plans two resources whose content is identical", () => {
