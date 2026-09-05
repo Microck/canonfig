@@ -114,7 +114,7 @@ Use documented, low-risk defaults without asking when they do not change
 authority or overwrite data:
 
 - user-level operation;
-- exact package `@microck/canonfig@3.0.0`;
+- exact package `@microck/canonfig@3.0.1`;
 - executable name `canonfig`;
 - `deterministic-only` agent policy;
 - no shared-secret transfer;
@@ -171,7 +171,7 @@ because state already exists.
 Canonfig requires Node.js 24 or newer and npm:
 
 ```bash
-npm install --global @microck/canonfig@3.0.0
+npm install --global @microck/canonfig@3.0.1
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

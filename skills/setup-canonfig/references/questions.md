@@ -88,7 +88,7 @@ Detected
 - Secret Service and the systemd user session are available
 
 Defaults
-- install @microck/canonfig@3.0.0 for the current user
+- install @microck/canonfig@3.0.1 for the current user
 - deterministic-only
 - no shared secrets
 - review the first apply
