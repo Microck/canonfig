@@ -228,11 +228,60 @@ export const LoginRequirement = Schema.Union([
 ]);
 export type LoginRequirement = Schema.Schema.Type<typeof LoginRequirement>;
 
+/**
+ * Where a bounded Configuration Agent may install this tool, and from where.
+ *
+ * Declared, never inferred. An Agent Task used to be given the resource target
+ * as its only writable path, which for a tool is the bare executable name
+ * rather than a path, and no origins at all: the controlled executor could
+ * authorize no install action, so the task could only "succeed" if the tool
+ * turned out to be present already.
+ *
+ * A tool that omits this is simply not installable by an agent, and says so as
+ * a human action rather than dispatching a task that cannot be satisfied.
+ */
+/**
+ * An exact HTTPS origin, with no path, query, credentials or trailing slash.
+ *
+ * Checked here rather than only where the agent runs: an `http://` origin in a
+ * profile can never authorize anything, because the harness filters it out
+ * before execution, so accepting it at publication only defers the discovery
+ * to a follower that then reports bounds it does not have.
+ */
+const isExactHttpsOrigin = (value: string): boolean => {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return parsed.protocol === "https:" && parsed.origin === value;
+};
+
+export const AgentInstallBounds = Schema.Struct({
+  /** Paths or roots the agent may write, as authored targets. */
+  paths: Schema.Array(Schema.NonEmptyString).check(Schema.isMinLength(1)),
+  /** Exact HTTPS origins the agent may fetch from. */
+  origins: Schema.optional(
+    Schema.Array(Schema.NonEmptyString).check(
+      Schema.makeFilter((origins) => {
+        const rejected = origins.find((origin) => !isExactHttpsOrigin(origin));
+        return rejected === undefined ? undefined : {
+          path: ["origins"],
+          issue: `agent install origin must be an exact HTTPS origin: ${rejected}`,
+        };
+      }),
+    ),
+  ),
+});
+export type AgentInstallBounds = Schema.Schema.Type<typeof AgentInstallBounds>;
+
 export const ToolResourceSpec = Schema.Struct({
   kind: Schema.Literal("tool"),
   toolId: ToolId,
   recipes: Schema.Array(ToolRecipeRef),
   login: LoginRequirement,
+  agentInstall: Schema.optional(AgentInstallBounds),
 });
 export type ToolResourceSpec = Schema.Schema.Type<typeof ToolResourceSpec>;
 

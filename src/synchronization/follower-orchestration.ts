@@ -378,6 +378,7 @@ const desiredFor = (
           loginInstructions: spec.login?.required === true
             ? spec.login.howTo
             : undefined,
+          agentInstall: spec.agentInstall,
         },
         artifacts: [],
       };

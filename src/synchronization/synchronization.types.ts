@@ -67,6 +67,15 @@ export type DesiredResource =
     readonly recipes: ReadonlyArray<ToolRecipe>;
     readonly loginRequired: boolean;
     readonly loginInstructions?: string | undefined;
+    /**
+     * Declared bounds for installing this tool with a bounded agent. Absent
+     * means an agent may not install it, and an unresolvable tool becomes a
+     * human action rather than a task with bounds nothing can satisfy.
+     */
+    readonly agentInstall?: {
+      readonly paths: ReadonlyArray<string>;
+      readonly origins?: ReadonlyArray<string> | undefined;
+    } | undefined;
   }
   | {
     readonly kind: "credential";

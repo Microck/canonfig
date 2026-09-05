@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -156,6 +156,54 @@ describe("filesystem authoring fidelity", () => {
       })).toThrow();
     },
   );
+});
+
+describe("agent install bounds", () => {
+  interface CandidateBounds {
+    readonly paths: ReadonlyArray<string>;
+    readonly origins?: ReadonlyArray<string> | undefined;
+  }
+
+  /** Builds decoder input, including shapes the decoder must reject. */
+  const toolWith = (agentInstall: CandidateBounds) => ({
+    kind: "tool",
+    toolId: "example",
+    recipes: [],
+    agentInstall,
+  });
+
+  it("accepts exact HTTPS origins", () => {
+    const decoded = Schema.decodeUnknownOption(ResourceSpecInputSchema)(
+      toolWith({
+        paths: ["~/.local/share/canonfig/tools/example"],
+        origins: ["https://registry.npmjs.org"],
+      }),
+    );
+    expect(Option.isSome(decoded)).toBe(true);
+  });
+
+  it.each([
+    ["http://registry.npmjs.org", "cleartext"],
+    ["https://registry.npmjs.org/", "trailing slash"],
+    ["https://registry.npmjs.org/path", "path"],
+    ["https://user:pass@registry.npmjs.org", "credentials"],
+    ["registry.npmjs.org", "no scheme"],
+  ])("rejects %s (%s)", (origin) => {
+    // An origin the harness would filter out before execution cannot
+    // authorize anything, so accepting it at publication only defers the
+    // discovery to a follower that then reports bounds it does not have.
+    const decoded = Schema.decodeUnknownOption(ResourceSpecInputSchema)(
+      toolWith({ paths: ["~/.local/bin/example"], origins: [origin] }),
+    );
+    expect(Option.isNone(decoded)).toBe(true);
+  });
+
+  it("requires at least one path", () => {
+    const decoded = Schema.decodeUnknownOption(ResourceSpecInputSchema)(
+      toolWith({ paths: [] }),
+    );
+    expect(Option.isNone(decoded)).toBe(true);
+  });
 });
 
 describe("resource graph validation", () => {
