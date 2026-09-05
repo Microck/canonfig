@@ -90,7 +90,9 @@ enrollment pins the source TLS and signing fingerprints. subsequent sync runs ve
 
 ### 3. native schedule
 
-set up automatic background synchronization using the native user scheduler:
+set up automatic background synchronization using the native user scheduler. the
+follower owns this job: it inherits the profile's optional `scheduleDefault` or
+picks its own, and that choice survives an apply.
 
 ```bash
 canonfig schedule set daily@00:00
@@ -121,12 +123,11 @@ Canonfig rejects projects containing more than one of
 | resource | default policy | outcome |
 | --- | --- | --- |
 | `file` | `replace` | exact owned file content and mode, or raw symlink target |
-| `directory` | `mirror-owned` | source-owned tree with exact modes; only unchanged owned entries are removed |
-| `config` | `merge` | declared TOML, JSON, or YAML keys merged while preserving local keys |
+| `directory` | `mirror-owned` | source-owned tree with exact modes; only unchanged owned entries are removed. `replace` is a true mirror and removes foreign entries too |
+| `config` | `merge` | declared TOML, JSON, or YAML keys merged while preserving local keys; keys dropped from the profile are removed unless the follower claimed them |
 | `skill` | `replace-if-unmodified` | canonical skill tree without overwriting follower edits |
-| `tool` | `ensure` | platform-specific recipe installation and independent verification |
+| `tool` | `ensure` | platform-specific recipe installation and independent verification; declares `agentInstall` bounds to permit bounded agent installation |
 | `credential` | `require-local` | validated local credential reference, never a copied secret |
-| `schedule` | `replace` | native user-level synchronization schedule |
 
 transfers are content-addressed and incremental. transfer and apply remain separate steps: a downloaded blob is not proof of convergence.
 

@@ -48,7 +48,7 @@ requested or discovered. Their defaults are disabled and `deterministic-only`.
 After approval:
 
 ```bash
-npm install --global @microck/canonfig@2.2.0
+npm install --global @microck/canonfig@3.0.0
 canonfig --version
 canonfig source init
 canonfig doctor --no-input --timeout-ms 5000
