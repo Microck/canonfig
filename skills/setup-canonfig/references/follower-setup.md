@@ -48,7 +48,7 @@ enrollment without displaying values.
 After approval:
 
 ```bash
-npm install --global @microck/canonfig@3.0.0
+npm install --global @microck/canonfig@3.0.1
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```
