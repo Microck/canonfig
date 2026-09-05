@@ -66,6 +66,27 @@ entries Canonfig never wrote are removed so the managed subtree ends up exactly
 the desired subtree. `mirror-owned` is the policy that preserves foreign
 entries.
 
+A `tool` may declare `agentInstall`, which is what permits a bounded
+Configuration Agent to install it:
+
+```jsonc
+{
+  "kind": "tool",
+  "toolId": "example",
+  "recipes": [],
+  "agentInstall": {
+    "paths": ["~/.local/share/canonfig/tools/example"],
+    "origins": ["https://registry.npmjs.org"]
+  }
+}
+```
+
+`paths` says where the agent may write and `origins` which exact HTTPS origins
+it may fetch from. Both are authored and never inferred. A tool with no usable
+recipe and no `agentInstall` is reported as Human Action Required rather than
+handed to an agent, because an Agent Task with no writable path and no origin
+cannot install anything.
+
 Under `replace-if-unmodified`, a missing target is reinstalled: absence is not a
 local edit, so there is nothing to overwrite. A target that exists but cannot be
 verified is reported rather than overwritten.

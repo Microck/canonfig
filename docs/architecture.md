@@ -150,6 +150,12 @@ Publishing converts JSONC into a canonical encoded Profile Revision. Comments an
 | `tool` | Installed executable and configuration | `ensure` |
 | `credential` | A usable local credential reference | `require-local` |
 
+A `tool` declares `agentInstall` paths and origins to permit a bounded
+Configuration Agent to install it. Those bounds are authored, never inferred
+from the target, and a tool with no usable recipe and no `agentInstall` is
+Human Action Required rather than an Agent Task, because a task with no
+writable path and no origin cannot install anything.
+
 Apply Policies mean:
 
 - `replace`: atomically replace the target after recording rollback material.

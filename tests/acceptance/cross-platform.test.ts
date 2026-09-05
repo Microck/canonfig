@@ -491,6 +491,18 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
             toolId: "agent-installed-tool",
             recipes: [],
             login: { required: false },
+            // A tool an agent may install says so, and says where. Without
+            // this the planner refuses to invent bounds and reports a human
+            // action instead of dispatching a task nothing can satisfy.
+            //
+            // The path is inside the harness's own allowed root so the two
+            // agree and the bounded task keeps it. A path outside that root
+            // would be filtered away, which is what an empty allowedPaths
+            // means and why asserting one proves nothing.
+            agentInstall: {
+              paths: [join(followerMachine.home, ".local", "bin", "agent-installed-tool")],
+              origins: ["https://packages.example.test"],
+            },
           },
         ),
       ],
@@ -607,7 +619,10 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
               maximumInputBytes: 16_384,
               allowedPaths: [followerMachine.home],
               allowedExecutables: [],
-              allowedOrigins: [],
+              // The follower grants the origin the profile asks for. Both
+              // sides have to agree: `agentInstall` says what would be
+              // acceptable, the harness says what is actually permitted.
+              allowedOrigins: ["https://packages.example.test"],
               allowedCapabilities: [],
             },
             scheduledInvocation: {
@@ -709,9 +724,11 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     expect(initial.agentResolutions).toHaveLength(1);
     expect(agentInputs[0]?.scheduled).toBe(false);
     expect(agentInputs[0]?.task).toMatchObject({
-      allowedPaths: [],
+      // The declared install path survived the harness bounds, which is what
+      // makes this task capable of installing anything at all.
+      allowedPaths: [join(followerMachine.home, ".local", "bin", "agent-installed-tool")],
       allowedExecutables: [],
-      allowedOrigins: [],
+      allowedOrigins: ["https://packages.example.test"],
       forbidden: ["elevation", "login", "restart", "reboot"],
       timeLimitSeconds: 300,
       outputLimitBytes: 65_536,

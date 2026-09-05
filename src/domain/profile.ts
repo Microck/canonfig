@@ -13,6 +13,7 @@ import {
   BuildPolicy as BuildPolicySchema,
   FilesystemMode as FilesystemModeSchema,
   ResourceKind as ResourceKindSchema,
+  AgentInstallBounds,
   ToolRecipeRef,
   policyCompatibleWithKind,
   type Platform,
@@ -97,7 +98,7 @@ export type ResourceSpecInput =
   | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: string | number | boolean | ReadonlyArray<string> }> }
   | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
-  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined }
+  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined; readonly agentInstall?: { readonly paths: ReadonlyArray<string>; readonly origins?: ReadonlyArray<string> | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string };
 
 export type VerificationInput =
@@ -219,6 +220,7 @@ export const ResourceSpecInputSchema = Schema.Union([
     toolId: ToolId,
     recipes: Schema.Array(ToolRecipeRef),
     login: Schema.optional(AuthoringLoginSchema),
+    agentInstall: Schema.optional(AgentInstallBounds),
   }),
   Schema.Struct({
     kind: Schema.Literal("credential"),

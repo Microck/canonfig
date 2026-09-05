@@ -429,11 +429,39 @@ const observedDigestForDirectoryRoot = (
     ? Schema.decodeUnknownSync(ContentDigestSchema)(context.observed.digest)
     : sha256Hex("canonfig:unverifiable-directory-root");
 
+/**
+ * A tool that cannot be installed by an agent because nothing says where it
+ * may install.
+ *
+ * The alternative was a task whose only writable path was the resource target,
+ * which for a tool is the bare executable name, and whose origins were empty:
+ * the controlled executor could authorize no install action, so the task could
+ * only "succeed" if the tool turned out to be present already. Widening the
+ * bounds to make such a task work would grant an agent more than the profile
+ * ever asked for, so the task is not created at all.
+ */
+const missingAgentInstallBounds = (
+  context: ResourcePlanningContext,
+): ResourceActionDraft => ({
+  kind: "human-action",
+  detail: {
+    kind: "human-action",
+    reason:
+      `No usable installation recipe for ${context.resource.id}, and no declared agent installation bounds`,
+    instructions:
+      `Declare a recipe for this platform, add an \`agentInstall\` block to ${context.resource.id} saying where a bounded agent may install it and from which origins, or install ${context.resource.target} manually, then run synchronization again.`,
+  },
+});
+
 const unresolvedAgentTask = (
   context: ResourcePlanningContext,
   summary: string,
 ): ResourceActionDraft => {
   const tool = context.desired.kind === "tool" ? context.desired : undefined;
+  // Bounds are authored, never inferred from the target.
+  if (tool !== undefined && tool.agentInstall === undefined) {
+    return missingAgentInstallBounds(context);
+  }
   const allowedExecutables = tool === undefined
     ? []
     : sortedUnique([
@@ -459,12 +487,12 @@ const unresolvedAgentTask = (
       summary,
       desiredOutcome: `Converge ${context.resource.kind} ${context.resource.id}`,
       observedEvidence: [`Observed state: ${context.observed.state}`],
-      allowedPaths: [context.resource.target],
+      allowedPaths: tool?.agentInstall?.paths ?? [context.resource.target],
       allowedExecutables,
       executableAuthorizations: verifiable === undefined
         ? []
         : [{ executable: verifiable.toolId, behavior: "leaf" }],
-      allowedOrigins: [],
+      allowedOrigins: tool?.agentInstall?.origins ?? [],
       forbidden: ["elevation", "login", "restart", "reboot"],
       timeLimitSeconds: 300,
       outputLimitBytes: 65_536,

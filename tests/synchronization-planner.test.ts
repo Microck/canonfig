@@ -1349,6 +1349,32 @@ describe("stable planning and bounded resolution", () => {
     expect(first.digest).toBe(sha256Hex(first.encoded));
   });
 
+  it("refuses to invent bounds for a tool that declares none", () => {
+    // The task used to be given the resource target as its only writable path,
+    // which for a tool is the bare executable name, and no origins at all, so
+    // the controlled executor could authorize no install action and the task
+    // could only succeed if the tool was already present.
+    const subject: PublishedResource = {
+      ...resource("mac-only", "tool", "ensure"),
+      target: "mac-only",
+    };
+    const plan = runPlan(plannerInput([subject], {
+      desired: [{
+        kind: "tool",
+        toolId: "mac-only",
+        recipes: [],
+        loginRequired: false,
+      }],
+      observed: [{ state: "absent" }],
+    }));
+
+    expect(plan.actions.map((action) => action.kind)).toEqual(["human-action"]);
+    expect(plan.agentTasks).toEqual([]);
+    expect(plan.actions[0]?.detail).toMatchObject({
+      reason: expect.stringContaining("no declared agent installation bounds"),
+    });
+  });
+
   it("creates a stable bounded Agent Task only when deterministic installation is unavailable", () => {
     const subject = resource("tool", "tool", "ensure");
     const input = plannerInput(
@@ -1359,6 +1385,12 @@ describe("stable planning and bounded resolution", () => {
           toolId: "custom-tool",
           recipes: [],
           loginRequired: false,
+          // Bounds are authored. Without them there is nowhere the agent may
+          // install, so no task is created.
+          agentInstall: {
+            paths: ["~/.local/share/canonfig/tools/custom-tool"],
+            origins: ["https://registry.npmjs.org"],
+          },
         }],
       },
     );
@@ -1370,13 +1402,13 @@ describe("stable planning and bounded resolution", () => {
       summary: "Find an installation recipe for custom-tool",
       desiredOutcome: "Converge tool tool",
       observedEvidence: ["Observed state: absent"],
-      allowedPaths: ["~/.canonfig/tool"],
+      allowedPaths: ["~/.local/share/canonfig/tools/custom-tool"],
       allowedExecutables: ["custom-tool"],
       executableAuthorizations: [{
         executable: "custom-tool",
         behavior: "leaf",
       }],
-      allowedOrigins: [],
+      allowedOrigins: ["https://registry.npmjs.org"],
       forbidden: ["elevation", "login", "restart", "reboot"],
       timeLimitSeconds: 300,
       outputLimitBytes: 65_536,
