@@ -150,6 +150,11 @@ Publishing converts JSONC into a canonical encoded Profile Revision. Comments an
 | `tool` | Installed executable and configuration | `ensure` |
 | `credential` | A usable local credential reference | `require-local` |
 
+A Machine Profile's `scheduleDefault` accepts only daily and weekly calendars
+in the follower's own timezone, because those are the only shapes every
+follower backend renders. A follower sets a backend-specific calendar or a
+named timezone locally instead.
+
 A `tool` declares `agentInstall` paths and origins to permit a bounded
 Configuration Agent to install it. Those bounds are authored, never inferred
 from the target, and a tool with no usable recipe and no `agentInstall` is

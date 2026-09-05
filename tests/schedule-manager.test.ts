@@ -64,18 +64,19 @@ describe("schedule normalization", () => {
     // The profile's inherited default is now the only place a schedule is
     // authored, so this covers its normalization rather than the deleted
     // schedule resource spec.
+    // A profile default is always in the follower's own timezone, because a
+    // named one cannot be rendered by launchd or Task Scheduler.
     const authored = {
       type: "weekly",
       days: ["fri", "mon", "fri", "wed"],
       at: "09:15",
-      timezone: "UTC",
+      timezone: "local",
     } satisfies ScheduleDefault;
 
     expect(syncScheduleFromDefault(authored)).toEqual({
       kind: "weekly",
       weekdays: ["Mon", "Wed", "Fri"],
       localTime: "09:15",
-      timezone: "UTC",
     });
   });
 });

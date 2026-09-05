@@ -76,10 +76,24 @@ export interface ProfileGroup {
   readonly description?: string | undefined;
 }
 
+/**
+ * The cadence a Follower Machine inherits from its Machine Profile.
+ *
+ * Deliberately narrower than what a follower may set for itself. A profile is
+ * applied by every follower, so it may only declare what every backend can
+ * render: daily or weekly, in the follower's own timezone. A `custom`
+ * expression or a named timezone published here was accepted and then refused
+ * at apply by launchd and Windows Task Scheduler, so those followers ended up
+ * with no scheduled synchronization and, before the reconciliation moved out
+ * of the resource transaction, could not converge at all.
+ *
+ * A follower that wants a backend-specific calendar or a named timezone sets
+ * one locally with `canonfig schedule set`, where it is that machine's
+ * business and only that machine has to be able to render it.
+ */
 export type ScheduleDefault =
-  | { readonly type: "daily"; readonly at: string; readonly timezone: string }
-  | { readonly type: "weekly"; readonly days: ReadonlyArray<string>; readonly at: string; readonly timezone: string }
-  | { readonly type: "custom"; readonly expression: string; readonly timezone: string };
+  | { readonly type: "daily"; readonly at: string; readonly timezone: "local" }
+  | { readonly type: "weekly"; readonly days: ReadonlyArray<string>; readonly at: string; readonly timezone: "local" };
 
 /** A resource as authored (before content addressing). */
 export interface ProfileResourceInput {
@@ -314,18 +328,13 @@ export const ScheduleDefaultSchema = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("daily"),
     at: Schema.NonEmptyString,
-    timezone: Schema.NonEmptyString,
+    timezone: Schema.Literal("local"),
   }),
   Schema.Struct({
     type: Schema.Literal("weekly"),
     days: Schema.Array(Schema.NonEmptyString),
     at: Schema.NonEmptyString,
-    timezone: Schema.NonEmptyString,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("custom"),
-    expression: Schema.NonEmptyString,
-    timezone: Schema.NonEmptyString,
+    timezone: Schema.Literal("local"),
   }),
 ]);
 

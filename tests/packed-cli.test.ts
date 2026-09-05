@@ -347,7 +347,7 @@ esac
     "version": 2,
     "name": "Packed authored profile",
     "groups": [{ "name": "base" }],
-    "scheduleDefault": { "type": "daily", "at": "04:30", "timezone": "UTC" },
+    "scheduleDefault": { "type": "daily", "at": "04:30", "timezone": "local" },
     "resources": [
       {
         "id": "authored-file",
@@ -498,7 +498,7 @@ describe("packed Canonfig executable", () => {
       id: authoredRevision,
       profileId: "packed-authored",
       signature: expect.stringMatching(/^ed25519:/u),
-      scheduleDefault: { type: "daily", at: "04:30", timezone: "UTC" },
+      scheduleDefault: { type: "daily", at: "04:30", timezone: "local" },
     });
     expect(envelope.data.resources.map((resource: { id: string }) => resource.id))
       .toEqual([
