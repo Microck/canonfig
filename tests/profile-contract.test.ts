@@ -158,6 +158,45 @@ describe("filesystem authoring fidelity", () => {
   );
 });
 
+describe("profile schedule default portability", () => {
+  interface CandidateScheduleDefault {
+    readonly type: string;
+    readonly at?: string | undefined;
+    readonly days?: ReadonlyArray<string> | undefined;
+    readonly expression?: string | undefined;
+    readonly timezone: string;
+  }
+
+  /** Builds authoring input, including shapes the decoder must reject. */
+  const profileWith = (scheduleDefault: CandidateScheduleDefault) => JSON.stringify({
+    id: "workstation",
+    version: 2,
+    name: "Workstation",
+    groups: [],
+    resources: [],
+    scheduleDefault,
+  });
+
+  it("accepts a daily default in the follower timezone", () => {
+    expect(() =>
+      decodeMachineProfileJsonc(
+        profileWith({ type: "daily", at: "03:30", timezone: "local" }),
+      )
+    ).not.toThrow();
+  });
+
+  it.each([
+    [{ type: "custom", expression: "*-*-* 03:30:00", timezone: "local" }, "custom calendar"],
+    [{ type: "daily", at: "03:30", timezone: "Europe/Paris" }, "named timezone"],
+  ])("rejects a default no follower backend can render: %s", (scheduleDefault) => {
+    // launchd and Windows Task Scheduler refuse both at apply time. Accepting
+    // them at publication only moved the discovery to a follower that then
+    // silently ended up with no scheduled synchronization. A follower that
+    // wants either sets it locally with `canonfig schedule set`.
+    expect(() => decodeMachineProfileJsonc(profileWith(scheduleDefault))).toThrow();
+  });
+});
+
 describe("agent install bounds", () => {
   interface CandidateBounds {
     readonly paths: ReadonlyArray<string>;

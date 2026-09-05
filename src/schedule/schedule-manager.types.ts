@@ -129,10 +129,6 @@ export const syncScheduleFromDefault = (
       };
       return timezone === undefined ? normalized : { ...normalized, timezone };
     }
-    case "custom":
-      return timezone === undefined
-        ? { kind: "custom", expression: schedule.expression }
-        : { kind: "custom", expression: schedule.expression, timezone };
   }
 };
 

@@ -31,9 +31,14 @@ Groups, Profile Resources, and an optional default schedule:
 
 `scheduleDefault` is optional and is a default a Follower Machine *inherits*,
 not a resource a profile applies. A profile that omits it schedules nothing.
-Only daily and weekly calendars are accepted, because those are the only shapes
-every follower backend can render; a follower that wants a backend-specific
-calendar sets one locally with `canonfig schedule set`.
+
+Only daily and weekly calendars in the follower's own timezone are accepted,
+written as `"timezone": "local"`. Those are the only shapes every follower
+backend can render: launchd and Windows Task Scheduler refuse a custom
+expression and cannot bind a named timezone, so publishing either left those
+followers with no scheduled synchronization at all. A follower that wants a
+backend-specific calendar or a named timezone sets one locally with
+`canonfig schedule set --timezone`, where only that machine has to render it.
 
 A Follower Machine owns its own native synchronization job. `canonfig schedule
 set` and `canonfig schedule remove` decide it, and that decision outlives an
