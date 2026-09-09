@@ -345,6 +345,11 @@ const latestPlan = (
 };
 
 describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
+  // One end-to-end convergence, not a unit test: it publishes, enrolls, serves
+  // blobs over TLS, converges and then recovers an interrupted run. The suite
+  // default of 30s is sized for the ~1000 fast tests. This scenario has taken
+  // 2.7s to 6.8s on windows-latest, and that lane has been seen stalling a
+  // subprocess past ten times its usual duration, so bound it for a hang.
   it("converges one authenticated revision with deterministic cross-platform evidence", async () => {
     const platform = acceptancePlatform();
     const root = mkdtempSync(join(tmpdir(), `canonfig-acceptance-${platform}-`));
@@ -956,5 +961,5 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
       "# locally modified\n",
     );
     expect(await readFile(managedFile, "utf8")).toBe("canonical acceptance\n");
-  });
+  }, 60_000);
 });
