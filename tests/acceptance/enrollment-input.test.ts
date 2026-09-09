@@ -23,6 +23,15 @@ describe("private enrollment input", () => {
     expect(argv[2]).toBe("--stdin");
   });
 
+  it("treats --json as a global option at any position", () => {
+    const leading = ["--json", ...argv];
+    expect(isPrivateEnrollmentCommand(leading)).toBe(true);
+    expect(isPrivateEnrollmentCommand(["follower", "--json", "enroll", "--stdin"])).toBe(true);
+    expect(privateEnrollmentArguments(leading)).toEqual([
+      "--json", "follower", "enroll", "--name", "laptop", "--profile", "workstation",
+    ]);
+  });
+
   it.each([
     ["follower", "enroll", "--stdin"],
     [...argv, "--stdin"],

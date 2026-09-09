@@ -927,15 +927,14 @@ const prepareConfig = (
             message: `cannot merge non-object config ${target}: ${String(error)}`,
           }),
       });
+    // Prune old ownership before writing new values: a dropped child must not
+    // delete part of the newly written parent (or an old parent its new child).
+    for (const key of removes) {
+      removeConfigPath(current, key);
+    }
     for (const key of keys) {
       const value = getConfigPath(desired, key);
       if (value !== undefined) setConfigPath(current, key, value);
-    }
-    // Keys Canonfig owned that the revision no longer declares. The planner
-    // only asks for this while the file still holds what Canonfig wrote, so
-    // there is no local edit here to lose.
-    for (const key of removes) {
-      removeConfigPath(current, key);
     }
     const content = encoder.encode(
       serializeConfigDocument(config.format, current),

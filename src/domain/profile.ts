@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { sourceTextIssue } from "./text-composition.ts";
+import { configPathIssue, configPathsOverlap } from "./config-path.ts";
 
 import type {
   ContentDigest,
@@ -15,6 +16,7 @@ import {
   FilesystemMode as FilesystemModeSchema,
   ResourceKind as ResourceKindSchema,
   AgentInstallBounds,
+  ConfigValue,
   ToolRecipeRef,
   policyCompatibleWithKind,
   type Platform,
@@ -111,7 +113,7 @@ export interface ProfileResourceInput {
 export type ResourceSpecInput =
   | { readonly kind: "file"; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }
   | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
-  | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: string | number | boolean | ReadonlyArray<string> }> }
+  | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }> }
   | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
   | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined; readonly agentInstall?: { readonly paths: ReadonlyArray<string>; readonly origins?: ReadonlyArray<string> | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string };
@@ -171,12 +173,8 @@ export interface CredentialDescriptor {
   readonly loginRequired: boolean;
 }
 
-const ConfigValueInputSchema = Schema.Union([
-  Schema.String,
-  Schema.Number,
-  Schema.Boolean,
-  Schema.Array(Schema.String),
-]);
+// Authoring and follower decoding must accept the exact same portable values.
+const ConfigValueInputSchema = ConfigValue;
 
 const AuthoringFileSchema = Schema.Struct({
   kind: Schema.Literal("file"),
@@ -527,6 +525,11 @@ export class InvalidRecipeError extends Schema.TaggedError<InvalidRecipeError>()
   { id: Schema.String, reason: Schema.String },
 ) {}
 
+export class InvalidConfigKeyError extends Schema.TaggedError<InvalidConfigKeyError>()(
+  "InvalidConfigKeyError",
+  { id: Schema.String, path: Schema.String, reason: Schema.String },
+) {}
+
 export class InvalidTextCompositionError extends Schema.TaggedError<InvalidTextCompositionError>()(
   "InvalidTextCompositionError",
   { id: Schema.String, reason: Schema.String },
@@ -548,6 +551,7 @@ export type ProfileValidationError =
   | UnmanageableFilesystemModeError
   | InvalidBuildPolicyError
   | InvalidTextCompositionError
+  | InvalidConfigKeyError
   | InvalidRecipeError;
 
 /** Aggregate contract failure preserving all precise tagged graph errors. */
@@ -622,6 +626,7 @@ export const validateProfileResources = (
       errors.push(new PolicyKindMismatchError({ id: resource.id, kind, policy }));
     }
     errors.push(...validateRecipes(resource));
+    errors.push(...validateConfigKeys(resource));
     const compositionIssue = appendLocalIssue(resource);
     if (compositionIssue !== undefined) {
       errors.push(new InvalidTextCompositionError({ id: resource.id, reason: compositionIssue }));
@@ -640,6 +645,25 @@ export const validateProfileResources = (
   errors.push(...validateResourceTargetConflicts(resources, platform));
   const cycle = findDependencyCycle(resources);
   if (cycle !== null) errors.push(new DependencyCycleError({ cycle }));
+  return errors;
+};
+
+const validateConfigKeys = (resource: ProfileResourceInput): ReadonlyArray<InvalidConfigKeyError> => {
+  if (resource.spec.kind !== "config") return [];
+  const errors: Array<InvalidConfigKeyError> = [];
+  const keys = resource.spec.keys.map((entry) => entry.path).sort(compareText);
+  for (let index = 0; index < keys.length; index += 1) {
+    const path = keys[index]!;
+    const reason = configPathIssue(path);
+    if (reason !== undefined) errors.push(new InvalidConfigKeyError({ id: resource.id, path, reason }));
+    for (const previous of keys.slice(0, index)) {
+      if (configPathsOverlap(previous, path)) {
+        errors.push(new InvalidConfigKeyError({
+          id: resource.id, path, reason: `config path overlaps declared path ${previous}`,
+        }));
+      }
+    }
+  }
   return errors;
 };
 
@@ -1259,8 +1283,8 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
           .map(normalizeManagedFile)
           .sort((left, right) => compareText(left.path, right.path)),
       };
-    case "tool":
-      return {
+    case "tool": {
+      const normalized = {
         kind: spec.kind,
         toolId: spec.toolId,
         recipes: [...spec.recipes].sort((left, right) =>
@@ -1286,6 +1310,13 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
         }),
         login: spec.login ?? { required: false },
       };
+      if (spec.agentInstall === undefined) return normalized;
+      const paths = uniqueSorted(spec.agentInstall.paths);
+      const agentInstall = spec.agentInstall.origins === undefined
+        ? { paths }
+        : { paths, origins: uniqueSorted(spec.agentInstall.origins) };
+      return { ...normalized, agentInstall };
+    }
     case "credential":
       return { kind: spec.kind, reference: spec.reference };
   }

@@ -1,10 +1,21 @@
 import type { Readable } from "node:stream";
 
+/**
+ * `--json` is a global option that `evaluateCli` accepts at any position, so it
+ * never identifies a command. Drop it before matching, or a wrapper that writes
+ * `canonfig --json follower enroll --stdin ...` would miss the private path and
+ * then fail on an unknown `--stdin` option.
+ */
+const withoutGlobalJson = (arguments_: ReadonlyArray<string>): ReadonlyArray<string> =>
+  arguments_.filter((argument) => argument !== "--json");
+
 /** Enrollment is the only CLI argument replaced from this private input path. */
-export const isPrivateEnrollmentCommand = (arguments_: ReadonlyArray<string>): boolean =>
-  arguments_[0] === "follower"
-  && arguments_[1] === "enroll"
-  && arguments_.slice(2).includes("--stdin");
+export const isPrivateEnrollmentCommand = (arguments_: ReadonlyArray<string>): boolean => {
+  const command = withoutGlobalJson(arguments_);
+  return command[0] === "follower"
+    && command[1] === "enroll"
+    && command.slice(2).includes("--stdin");
+};
 
 export const privateEnrollmentHelp = "  follower enroll --stdin --name <name> --profile <id> [--replace]";
 
@@ -118,20 +129,21 @@ export const privateEnrollmentArguments = (arguments_: ReadonlyArray<string>): R
   if (!isPrivateEnrollmentCommand(arguments_)) {
     throw new EnrollmentInputError("Not a private enrollment command");
   }
+  const command = withoutGlobalJson(arguments_);
   let stdinCount = 0;
   const seen = new Set<string>();
-  for (let index = 2; index < arguments_.length; index += 1) {
-    const argument = arguments_[index]!;
+  for (let index = 2; index < command.length; index += 1) {
+    const argument = command[index]!;
     if (argument === "--stdin") {
       stdinCount += 1;
       continue;
     }
-    if (!["--name", "--profile", "--replace", "--json"].includes(argument) || seen.has(argument)) {
-      throw new EnrollmentInputError("Private enrollment accepts --stdin, --name, --profile, --replace, and --json once each");
+    if (!["--name", "--profile", "--replace"].includes(argument) || seen.has(argument)) {
+      throw new EnrollmentInputError("Private enrollment accepts --stdin, --name, --profile, and --replace once each");
     }
     seen.add(argument);
     if (argument === "--name" || argument === "--profile") {
-      const value = arguments_[++index];
+      const value = command[++index];
       if (value === undefined || value.trim().length === 0 || value.startsWith("-") || /[\0\r\n]/u.test(value)) {
         throw new EnrollmentInputError("Private enrollment requires nonempty --name and --profile values");
       }

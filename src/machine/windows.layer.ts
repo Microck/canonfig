@@ -34,6 +34,7 @@ import {
   type MachineStateError,
 } from "./machine-state.errors.ts";
 import { MachineState } from "./machine-state.service.ts";
+import { windowsCredentialScript } from "./windows-credentials.ts";
 import { relocateFileContent, writeFileContent } from "./file-content.ts";
 import { linuxMachineStateLayer } from "./linux.layer.ts";
 import type {
@@ -517,26 +518,6 @@ const localCredentialPath = (
   return Effect.succeed(path);
 };
 
-const credentialScript = {
-  store: [
-    "$vault = New-Object Windows.Security.Credentials.PasswordVault",
-    "$credential = New-Object Windows.Security.Credentials.PasswordCredential("
-      + "$env:CANONFIG_TARGET,'canonfig',$env:CANONFIG_SECRET)",
-    "$vault.Add($credential)",
-  ].join(";"),
-  load: [
-    "$vault = New-Object Windows.Security.Credentials.PasswordVault",
-    "$credential = $vault.Retrieve($env:CANONFIG_TARGET,'canonfig')",
-    "$credential.RetrievePassword()",
-    "[Console]::Out.Write($credential.Password)",
-  ].join(";"),
-  remove: [
-    "$vault = New-Object Windows.Security.Credentials.PasswordVault",
-    "$credential = $vault.Retrieve($env:CANONFIG_TARGET,'canonfig')",
-    "$vault.Remove($credential)",
-  ].join(";"),
-} as const;
-
 export const windowsMachineStateLayer = (
   options: WindowsMachineStateOptions = {},
 ): Layer.Layer<MachineState> => {
@@ -1003,6 +984,7 @@ export const windowsMachineStateLayer = (
         script: string,
         timeoutMilliseconds: number,
         additions?: ReadonlyArray<ProcessEnvironmentEntry> | undefined,
+        standardInput?: Uint8Array | undefined,
       ) =>
         machine.runProcess({
           executable: { platform: "linux", absolute: powershell },
@@ -1014,13 +996,15 @@ export const windowsMachineStateLayer = (
             script,
           ],
           environment: additions,
+          standardInput,
           timeoutMilliseconds,
           maximumOutputBytes: 1024 * 1024,
         });
       const runCredentialScript = (
         script: string,
         additions: ReadonlyArray<ProcessEnvironmentEntry>,
-      ) => runPowerShell(script, 5_000, additions);
+        standardInput?: Uint8Array | undefined,
+      ) => runPowerShell(script, 5_000, additions, standardInput);
       const permissionSections = "[Security.AccessControl.AccessControlSections]'Access,Owner,Group'";
       const restoreNativePermissions = Effect.fn("MachineState.restoreNativePermissions")(
         function*(path: string, snapshot: FilePermissionSnapshot, directory: boolean) {
@@ -1512,10 +1496,9 @@ export const windowsMachineStateLayer = (
           const key = createHash("sha256").update(input.name).digest("hex");
           return requirePowerShell.pipe(
             Effect.flatMap(() =>
-              runCredentialScript(credentialScript.store, [
+              runCredentialScript(windowsCredentialScript("store"), [
                 { name: "CANONFIG_TARGET", value: `dev.canonfig.${key}` },
-                { name: "CANONFIG_SECRET", value: Redacted.value(input.value) },
-              ])
+              ], new TextEncoder().encode(Redacted.value(input.value)))
             ),
             Effect.flatMap((result) =>
               result.exitCode === 0
@@ -1559,7 +1542,7 @@ export const windowsMachineStateLayer = (
           return Effect.gen(function*() {
             const key = yield* credentialKey(input.reference);
             yield* requirePowerShell;
-            const result = yield* runCredentialScript(credentialScript.load, [
+            const result = yield* runCredentialScript(windowsCredentialScript("load"), [
               { name: "CANONFIG_TARGET", value: `dev.canonfig.${key}` },
             ]);
             if (result.exitCode !== 0) {
@@ -1586,7 +1569,7 @@ export const windowsMachineStateLayer = (
           return Effect.gen(function*() {
             const key = yield* credentialKey(reference);
             yield* requirePowerShell;
-            const result = yield* runCredentialScript(credentialScript.remove, [
+            const result = yield* runCredentialScript(windowsCredentialScript("remove"), [
               { name: "CANONFIG_TARGET", value: `dev.canonfig.${key}` },
             ]);
             if (result.exitCode !== 0) {
