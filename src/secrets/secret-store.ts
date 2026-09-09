@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 
 import { Effect, Redacted, Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 
 import { CredentialReference } from "../domain/brand.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
@@ -62,7 +63,7 @@ interface SecretValue {
   readonly value: string;
 }
 
-export class SecretTransferError extends Schema.TaggedError<SecretTransferError>()(
+export class SecretTransferError extends TaggedError<SecretTransferError>()(
   "SecretTransferError",
   {
     category: Schema.Literals([

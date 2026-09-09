@@ -1,13 +1,14 @@
 import { Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 import type { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import type { FollowerNotFoundError } from "../state/state-repository.errors.ts";
 
-export class SourceNotInitializedError extends Schema.TaggedError<SourceNotInitializedError>()(
+export class SourceNotInitializedError extends TaggedError<SourceNotInitializedError>()(
   "SourceNotInitializedError",
   { operation: Schema.String },
 ) {}
 
-export class EnrollmentConfigurationError extends Schema.TaggedError<EnrollmentConfigurationError>()(
+export class EnrollmentConfigurationError extends TaggedError<EnrollmentConfigurationError>()(
   "EnrollmentConfigurationError",
   {
     operation: Schema.String,
@@ -15,52 +16,52 @@ export class EnrollmentConfigurationError extends Schema.TaggedError<EnrollmentC
   },
 ) {}
 
-export class InvitationNotFoundError extends Schema.TaggedError<InvitationNotFoundError>()(
+export class InvitationNotFoundError extends TaggedError<InvitationNotFoundError>()(
   "InvitationNotFoundError",
   { message: Schema.String },
 ) {}
 
-export class InvitationExpiredError extends Schema.TaggedError<InvitationExpiredError>()(
+export class InvitationExpiredError extends TaggedError<InvitationExpiredError>()(
   "InvitationExpiredError",
   { message: Schema.String },
 ) {}
 
-export class InvitationReplayError extends Schema.TaggedError<InvitationReplayError>()(
+export class InvitationReplayError extends TaggedError<InvitationReplayError>()(
   "InvitationReplayError",
   { message: Schema.String },
 ) {}
 
-export class EnrollmentSourceMismatchError extends Schema.TaggedError<EnrollmentSourceMismatchError>()(
+export class EnrollmentSourceMismatchError extends TaggedError<EnrollmentSourceMismatchError>()(
   "EnrollmentSourceMismatchError",
   { message: Schema.String },
 ) {}
 
-export class EnrollmentFingerprintMismatchError extends Schema.TaggedError<EnrollmentFingerprintMismatchError>()(
+export class EnrollmentFingerprintMismatchError extends TaggedError<EnrollmentFingerprintMismatchError>()(
   "EnrollmentFingerprintMismatchError",
   { message: Schema.String },
 ) {}
 
-export class MalformedEnrollmentRequestError extends Schema.TaggedError<MalformedEnrollmentRequestError>()(
+export class MalformedEnrollmentRequestError extends TaggedError<MalformedEnrollmentRequestError>()(
   "MalformedEnrollmentRequestError",
   { message: Schema.String },
 ) {}
 
-export class DuplicateFollowerIdentityError extends Schema.TaggedError<DuplicateFollowerIdentityError>()(
+export class DuplicateFollowerIdentityError extends TaggedError<DuplicateFollowerIdentityError>()(
   "DuplicateFollowerIdentityError",
   { message: Schema.String },
 ) {}
 
-export class InvalidFollowerCredentialError extends Schema.TaggedError<InvalidFollowerCredentialError>()(
+export class InvalidFollowerCredentialError extends TaggedError<InvalidFollowerCredentialError>()(
   "InvalidFollowerCredentialError",
   { message: Schema.String },
 ) {}
 
-export class RevokedFollowerCredentialError extends Schema.TaggedError<RevokedFollowerCredentialError>()(
+export class RevokedFollowerCredentialError extends TaggedError<RevokedFollowerCredentialError>()(
   "RevokedFollowerCredentialError",
   { message: Schema.String },
 ) {}
 
-export class EnrollmentTransportError extends Schema.TaggedError<EnrollmentTransportError>()(
+export class EnrollmentTransportError extends TaggedError<EnrollmentTransportError>()(
   "EnrollmentTransportError",
   {
     operation: Schema.String,
@@ -68,32 +69,32 @@ export class EnrollmentTransportError extends Schema.TaggedError<EnrollmentTrans
   },
 ) {}
 
-export class TransportResourceNotFoundError extends Schema.TaggedError<TransportResourceNotFoundError>()(
+export class TransportResourceNotFoundError extends TaggedError<TransportResourceNotFoundError>()(
   "TransportResourceNotFoundError",
   { resource: Schema.String },
 ) {}
 
-export class TransportUnauthorizedError extends Schema.TaggedError<TransportUnauthorizedError>()(
+export class TransportUnauthorizedError extends TaggedError<TransportUnauthorizedError>()(
   "TransportUnauthorizedError",
   { resource: Schema.String },
 ) {}
 
-export class TransportMalformedResponseError extends Schema.TaggedError<TransportMalformedResponseError>()(
+export class TransportMalformedResponseError extends TaggedError<TransportMalformedResponseError>()(
   "TransportMalformedResponseError",
   { operation: Schema.String, message: Schema.String },
 ) {}
 
-export class TransportIntegrityError extends Schema.TaggedError<TransportIntegrityError>()(
+export class TransportIntegrityError extends TaggedError<TransportIntegrityError>()(
   "TransportIntegrityError",
   { artifact: Schema.String, message: Schema.String },
 ) {}
 
-export class TransportSizeLimitError extends Schema.TaggedError<TransportSizeLimitError>()(
+export class TransportSizeLimitError extends TaggedError<TransportSizeLimitError>()(
   "TransportSizeLimitError",
   { artifact: Schema.String, limit: Schema.Number },
 ) {}
 
-export class TransportInterruptedError extends Schema.TaggedError<TransportInterruptedError>()(
+export class TransportInterruptedError extends TaggedError<TransportInterruptedError>()(
   "TransportInterruptedError",
   { operation: Schema.String },
 ) {}

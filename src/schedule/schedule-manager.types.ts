@@ -6,6 +6,7 @@ import type {
   RenderedSchedulerJob,
   SchedulerSnapshot,
 } from "../machine/machine-state.types.ts";
+import type { FollowerSynchronizationConfiguration } from "../synchronization/follower-sync-config.ts";
 
 export const scheduleWeekdays = [
   "Mon",
@@ -79,6 +80,11 @@ export interface SetScheduleInput {
   readonly executable?: string | undefined;
 }
 
+/** A schedule input whose calendar is already decided: what status and doctor probe against. */
+export interface ResolvedScheduleInput extends SetScheduleInput {
+  readonly schedule: SyncSchedule;
+}
+
 export interface ScheduleStatus {
   readonly state: "not-installed" | "current" | "drifted" | "disabled";
   readonly platform: MachinePlatform;
@@ -130,6 +136,33 @@ export const syncScheduleFromDefault = (
       return timezone === undefined ? normalized : { ...normalized, timezone };
     }
   }
+};
+
+/**
+ * What this follower's native job should be, or undefined when it should have
+ * none. The follower's own override wins and the profile default is inherited
+ * otherwise.
+ *
+ * `schedule status`, the doctor scheduler probe, and the reconciler that runs
+ * after a converged apply all resolve the job through this, so they cannot
+ * disagree about what "drifted" means. A `schedule` override pins the calendar
+ * this machine chose, not the rendered binding: the runtime and entrypoint
+ * still belong to canonfig, so a renderer change is drift here too and the
+ * next apply re-renders the job with the operator's cadence intact.
+ */
+export const desiredScheduleInput = (
+  override: FollowerSynchronizationConfiguration["scheduleOverride"],
+  scheduleDefault: ScheduleDefault | undefined,
+): ResolvedScheduleInput | undefined => {
+  if (override?.kind === "disabled") return undefined;
+  if (override?.kind === "schedule") {
+    return override.executable === undefined
+      ? { schedule: override.schedule }
+      : { schedule: override.schedule, executable: override.executable };
+  }
+  return scheduleDefault === undefined
+    ? undefined
+    : { schedule: syncScheduleFromDefault(scheduleDefault) };
 };
 
 const weekdayIndex = new Map(

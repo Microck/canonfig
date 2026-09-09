@@ -38,6 +38,11 @@ import { startSourceServer } from "../../src/enrollment/source-server.ts";
 import type { SourceServerHandle } from "../../src/enrollment/enrollment.types.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
+import type {
+  RenderedSchedulerJob,
+  SchedulerBackend,
+} from "../../src/machine/machine-state.types.ts";
+import { scheduleManagerLayer } from "../../src/schedule/schedule-manager.layer.ts";
 import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
 import {
   SyncScheduleSchema,
@@ -321,6 +326,114 @@ describe("production follower orchestration", () => {
     await unlink(target);
     expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
     expect(await text()).toEqual({ kind: "managed", source: "Source three", local: "" });
+  });
+
+  it("re-renders a follower-local schedule override's binding and keeps its cadence", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-schedule-override-"));
+    directories.push(root);
+    const followerRoot = join(root, "follower");
+    const followerDatabase = join(root, "follower.sqlite");
+    const sourceLayer = EnrollmentLive.pipe(
+      Layer.provideMerge(stateRepositoryLayer(join(root, "source.sqlite"))),
+      Layer.provideMerge(machineLayer(join(root, "source"))),
+    );
+    const sourceRuntime = ManagedRuntime.make(sourceLayer);
+    runtimes.push(sourceRuntime);
+    const profileId = decode(ProfileId)("schedule-override");
+    await sourceRuntime.runPromise(Effect.gen(function*() {
+      const source = yield* (yield* Enrollment).initializeSource();
+      const privateKey = createPrivateKey(Redacted.value(yield* (yield* MachineState).loadCredential({ reference: source.signingKeyReference })));
+      // The profile default differs from the override, so a reconciler that
+      // reached for the inherited cadence would show up in the timer.
+      const profile: MachineProfile = {
+        id: profileId, version: 2, name: "Schedule override", groups: [], resources: [],
+        scheduleDefault: { type: "daily", at: "04:30", timezone: "local" },
+      };
+      const canonicalBytes = canonicalJson(asJson(profile));
+      const digest = sha256Hex(canonicalBytes);
+      const unsigned = {
+        id: decode(ProfileRevisionId)(`${profileId}:${digest}`), profileId, sequence: 1,
+        canonicalBytes, digest, publishedAt: "2026-09-09T00:00:00Z",
+        groups: [], signingKeyId: source.source.keyId, resources: [],
+      };
+      yield* (yield* StateRepository).publishRevision({
+        revision: { ...unsigned, signature: decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(revisionSigningPayload(unsigned)), privateKey).toString("base64url")}`) },
+      });
+    }));
+    const server = await sourceRuntime.runPromise(startSourceServer().pipe(Effect.provide(sourceLayer)));
+    servers.push(server);
+    const invitation = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.createInvitation({
+      endpoint: server.endpoint, expiresInMilliseconds: 60_000,
+    })));
+    // An in-memory native scheduler: the real ScheduleManager renders and
+    // compares against it, and the test can seed a job whose binding the
+    // current renderer no longer produces.
+    let installedJob: RenderedSchedulerJob | undefined;
+    let installs = 0;
+    const scheduler: SchedulerBackend = {
+      inspect: (expected) => Effect.sync(() => ({
+        installed: installedJob !== undefined, enabled: installedJob !== undefined,
+        matches: installedJob?.service === expected.service && installedJob.schedule === expected.schedule,
+      })),
+      snapshot: (expected) => Effect.sync(() => installedJob === undefined
+        ? { state: "absent" as const, platform: expected.platform, mechanism: expected.mechanism, serviceName: expected.serviceName }
+        : {
+          state: "present" as const, platform: expected.platform, mechanism: expected.mechanism, serviceName: expected.serviceName,
+          enabled: true, servicePresent: true, schedulePresent: true, service: installedJob.service, schedule: installedJob.schedule,
+        }),
+      install: (definition) => Effect.sync(() => { installedJob = definition; installs += 1; }),
+      remove: () => Effect.sync(() => { installedJob = undefined; }),
+      restore: () => Effect.die("unused"),
+    };
+    const followerMachine = linuxMachineStateLayer({
+      environment: [{ name: "HOME", value: join(followerRoot, "home") }, { name: "PATH", value: join(followerRoot, "bin") }],
+      credentialPolicy: { kind: "local-file", path: join(followerRoot, "credentials") },
+      schedulerBackend: scheduler,
+    });
+    const schedules = scheduleManagerLayer.pipe(Layer.provide(followerMachine));
+    const enrolled = await Effect.runPromise(enrollFollower({ invitation, followerName: "Schedule follower" }).pipe(Effect.provide(followerMachine)));
+    const followerRepository = stateRepositoryLayer(followerDatabase);
+    const operatorSchedule: SyncSchedule = { kind: "weekly", weekdays: ["Mon"], localTime: "12:30" };
+    await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.saveFollowerSynchronizationConfiguration({
+      sourceIdentity: enrolled.source,
+      configuration: {
+        schemaVersion: 1, follower: { ...enrolled.follower, credentialReference: enrolled.credentialReference },
+        selectedProfile: profileId,
+        source: { endpoint: server.endpoint, tlsFingerprint: enrolled.tlsFingerprint, signingFingerprint: enrolled.source.publicKeyFingerprint },
+        credentialReference: enrolled.credentialReference,
+        cacheDirectory: join(root, "cache"), stateLocation: followerDatabase,
+        agentPolicy: "deterministic-only", scheduledInvocation: defaultScheduledInvocation,
+        scheduleOverride: { kind: "schedule", schedule: operatorSchedule },
+        updatedAt: "2026-09-09T00:00:00Z",
+      },
+    })).pipe(Effect.provide(followerRepository)));
+    const withSchedules = <Value, Error>(effect: Effect.Effect<Value, Error, ScheduleManager>) =>
+      Effect.runPromise(effect.pipe(Effect.provide(schedules)));
+    // The job as an earlier renderer bound it: the operator's cadence, but a
+    // binding the current renderer no longer produces.
+    await withSchedules(Effect.flatMap(ScheduleManager, (manager) => manager.install({ schedule: operatorSchedule, executable: "/opt/old-canonfig/canonfig" })));
+    const staleJob = installedJob!;
+    const status = () => withSchedules(Effect.flatMap(ScheduleManager, (manager) => manager.status({ schedule: operatorSchedule })));
+    const drifted = await status();
+    expect(drifted.state).toBe("drifted");
+    const application = Layer.mergeAll(followerRepository, followerMachine, AgentResolutionLive, schedules,
+      SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, followerMachine))));
+    const apply = () => Effect.runPromise(synchronizeFollower(followerDatabase, "apply").pipe(Effect.provide(application)));
+
+    expect((await apply()).outcome).toMatchObject({ outcome: "Converged" });
+    // Re-rendered to exactly the job `schedule status` was comparing against:
+    // same timer as the operator's cadence, new binding.
+    expect(installs).toBe(2);
+    expect(installedJob).toEqual(drifted.definition);
+    expect(installedJob!.schedule).toBe(staleJob.schedule);
+    expect(installedJob!.service).not.toBe(staleJob.service);
+    expect((await status()).state).toBe("current");
+    const configuration = await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.getFollowerSynchronizationConfiguration()).pipe(Effect.provide(followerRepository)));
+    expect(configuration?.scheduleOverride).toEqual({ kind: "schedule", schedule: operatorSchedule });
+    expect(configuration?.scheduleDefault).toEqual({ type: "daily", at: "04:30", timezone: "local" });
+
+    expect((await apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(installs).toBe(2);
   });
 
   it("separates authorization-filtered views of one source revision", () => {

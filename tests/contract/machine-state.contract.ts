@@ -389,10 +389,9 @@ export const machineStateContract = (
               },
             });
           }),
-        )).rejects.toMatchObject({
-          _tag: "MachineFilesystemError",
-          operation: "mutate managed path",
-        });
+        // The operation names the step that refused the write, which differs
+        // per platform; the contract is the error kind and the preserved entry.
+        )).rejects.toMatchObject({ _tag: "MachineFilesystemError" });
         expect(await readFile(child, "utf8")).toBe("preserve");
       },
     );

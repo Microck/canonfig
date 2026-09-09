@@ -1,8 +1,9 @@
 import { Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 
 import type { ScheduleManagerError } from "../schedule/schedule-manager.errors.ts";
 
-export class DuplicatePlannerInputError extends Schema.TaggedError<DuplicatePlannerInputError>()(
+export class DuplicatePlannerInputError extends TaggedError<DuplicatePlannerInputError>()(
   "DuplicatePlannerInputError",
   {
     collection: Schema.String,
@@ -10,17 +11,17 @@ export class DuplicatePlannerInputError extends Schema.TaggedError<DuplicatePlan
   },
 ) {}
 
-export class MissingDesiredResourceError extends Schema.TaggedError<MissingDesiredResourceError>()(
+export class MissingDesiredResourceError extends TaggedError<MissingDesiredResourceError>()(
   "MissingDesiredResourceError",
   { resource: Schema.String },
 ) {}
 
-export class MissingObservedResourceError extends Schema.TaggedError<MissingObservedResourceError>()(
+export class MissingObservedResourceError extends TaggedError<MissingObservedResourceError>()(
   "MissingObservedResourceError",
   { resource: Schema.String },
 ) {}
 
-export class PlannerResourceKindMismatchError extends Schema.TaggedError<PlannerResourceKindMismatchError>()(
+export class PlannerResourceKindMismatchError extends TaggedError<PlannerResourceKindMismatchError>()(
   "PlannerResourceKindMismatchError",
   {
     resource: Schema.String,
@@ -29,7 +30,7 @@ export class PlannerResourceKindMismatchError extends Schema.TaggedError<Planner
   },
 ) {}
 
-export class PlannerPolicyKindMismatchError extends Schema.TaggedError<PlannerPolicyKindMismatchError>()(
+export class PlannerPolicyKindMismatchError extends TaggedError<PlannerPolicyKindMismatchError>()(
   "PlannerPolicyKindMismatchError",
   {
     resource: Schema.String,
@@ -38,7 +39,7 @@ export class PlannerPolicyKindMismatchError extends Schema.TaggedError<PlannerPo
   },
 ) {}
 
-export class PlannerVerificationKindMismatchError extends Schema.TaggedError<PlannerVerificationKindMismatchError>()(
+export class PlannerVerificationKindMismatchError extends TaggedError<PlannerVerificationKindMismatchError>()(
   "PlannerVerificationKindMismatchError",
   {
     resource: Schema.String,
@@ -47,12 +48,12 @@ export class PlannerVerificationKindMismatchError extends Schema.TaggedError<Pla
   },
 ) {}
 
-export class PlannerTextCompositionError extends Schema.TaggedError<PlannerTextCompositionError>()(
+export class PlannerTextCompositionError extends TaggedError<PlannerTextCompositionError>()(
   "PlannerTextCompositionError",
   { resource: Schema.String, reason: Schema.String },
 ) {}
 
-export class PlannerVerificationContentMismatchError extends Schema.TaggedError<PlannerVerificationContentMismatchError>()(
+export class PlannerVerificationContentMismatchError extends TaggedError<PlannerVerificationContentMismatchError>()(
   "PlannerVerificationContentMismatchError",
   {
     resource: Schema.String,
@@ -62,7 +63,7 @@ export class PlannerVerificationContentMismatchError extends Schema.TaggedError<
   },
 ) {}
 
-export class PlannerInvalidRecipeError extends Schema.TaggedError<PlannerInvalidRecipeError>()(
+export class PlannerInvalidRecipeError extends TaggedError<PlannerInvalidRecipeError>()(
   "PlannerInvalidRecipeError",
   {
     resource: Schema.String,
@@ -72,7 +73,7 @@ export class PlannerInvalidRecipeError extends Schema.TaggedError<PlannerInvalid
   },
 ) {}
 
-export class PlannerInvalidResourcePathError extends Schema.TaggedError<PlannerInvalidResourcePathError>()(
+export class PlannerInvalidResourcePathError extends TaggedError<PlannerInvalidResourcePathError>()(
   "PlannerInvalidResourcePathError",
   {
     resource: Schema.String,
@@ -81,7 +82,7 @@ export class PlannerInvalidResourcePathError extends Schema.TaggedError<PlannerI
   },
 ) {}
 
-export class PlannerConflictingResourcePathError extends Schema.TaggedError<PlannerConflictingResourcePathError>()(
+export class PlannerConflictingResourcePathError extends TaggedError<PlannerConflictingResourcePathError>()(
   "PlannerConflictingResourcePathError",
   {
     resource: Schema.String,
@@ -91,7 +92,7 @@ export class PlannerConflictingResourcePathError extends Schema.TaggedError<Plan
   },
 ) {}
 
-export class PlannerMissingDependencyError extends Schema.TaggedError<PlannerMissingDependencyError>()(
+export class PlannerMissingDependencyError extends TaggedError<PlannerMissingDependencyError>()(
   "PlannerMissingDependencyError",
   {
     resource: Schema.String,
@@ -99,12 +100,12 @@ export class PlannerMissingDependencyError extends Schema.TaggedError<PlannerMis
   },
 ) {}
 
-export class PlannerDependencyCycleError extends Schema.TaggedError<PlannerDependencyCycleError>()(
+export class PlannerDependencyCycleError extends TaggedError<PlannerDependencyCycleError>()(
   "PlannerDependencyCycleError",
   { cycle: Schema.Array(Schema.String) },
 ) {}
 
-export class MissingBlobMetadataError extends Schema.TaggedError<MissingBlobMetadataError>()(
+export class MissingBlobMetadataError extends TaggedError<MissingBlobMetadataError>()(
   "MissingBlobMetadataError",
   {
     resource: Schema.String,
@@ -112,7 +113,7 @@ export class MissingBlobMetadataError extends Schema.TaggedError<MissingBlobMeta
   },
 ) {}
 
-export class InvalidObservedStateError extends Schema.TaggedError<InvalidObservedStateError>()(
+export class InvalidObservedStateError extends TaggedError<InvalidObservedStateError>()(
   "InvalidObservedStateError",
   {
     resource: Schema.String,
@@ -121,22 +122,22 @@ export class InvalidObservedStateError extends Schema.TaggedError<InvalidObserve
   },
 ) {}
 
-export class InvalidExecutionPlanError extends Schema.TaggedError<InvalidExecutionPlanError>()(
+export class InvalidExecutionPlanError extends TaggedError<InvalidExecutionPlanError>()(
   "InvalidExecutionPlanError",
   { message: Schema.String },
 ) {}
 
-export class MissingExecutionResourceError extends Schema.TaggedError<MissingExecutionResourceError>()(
+export class MissingExecutionResourceError extends TaggedError<MissingExecutionResourceError>()(
   "MissingExecutionResourceError",
   { resource: Schema.String },
 ) {}
 
-export class MissingArtifactError extends Schema.TaggedError<MissingArtifactError>()(
+export class MissingArtifactError extends TaggedError<MissingArtifactError>()(
   "MissingArtifactError",
   { digest: Schema.String },
 ) {}
 
-export class InvalidArtifactError extends Schema.TaggedError<InvalidArtifactError>()(
+export class InvalidArtifactError extends TaggedError<InvalidArtifactError>()(
   "InvalidArtifactError",
   {
     digest: Schema.String,
@@ -144,7 +145,7 @@ export class InvalidArtifactError extends Schema.TaggedError<InvalidArtifactErro
   },
 ) {}
 
-export class ActionExecutionError extends Schema.TaggedError<ActionExecutionError>()(
+export class ActionExecutionError extends TaggedError<ActionExecutionError>()(
   "ActionExecutionError",
   {
     action: Schema.String,
@@ -152,12 +153,12 @@ export class ActionExecutionError extends Schema.TaggedError<ActionExecutionErro
   },
 ) {}
 
-export class RecoveryRunNotFoundError extends Schema.TaggedError<RecoveryRunNotFoundError>()(
+export class RecoveryRunNotFoundError extends TaggedError<RecoveryRunNotFoundError>()(
   "RecoveryRunNotFoundError",
   { follower: Schema.String },
 ) {}
 
-export class RecoveryIntegrityError extends Schema.TaggedError<RecoveryIntegrityError>()(
+export class RecoveryIntegrityError extends TaggedError<RecoveryIntegrityError>()(
   "RecoveryIntegrityError",
   {
     run: Schema.String,
@@ -165,7 +166,7 @@ export class RecoveryIntegrityError extends Schema.TaggedError<RecoveryIntegrity
   },
 ) {}
 
-export class RollbackCleanupError extends Schema.TaggedError<RollbackCleanupError>()(
+export class RollbackCleanupError extends TaggedError<RollbackCleanupError>()(
   "RollbackCleanupError",
   {
     run: Schema.String,

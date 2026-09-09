@@ -355,7 +355,7 @@ export const failureTaxonomy = {
         ? `the profile revision could not be signed (${text(error.reason)}); run 'canonfig source init' first`
         : `the profile revision signature could not be verified: ${text(error.reason)}`,
   ),
-  SourceNotInitializedError: declared(
+  SourceNotInitializedError: describe(
     "usage-or-configuration",
     (error) =>
       `${text(error.operation)} needs an initialized Source Machine; run 'canonfig source init' first`,

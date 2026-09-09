@@ -209,16 +209,17 @@ const validateSingleLine = (
 const powershellLiteral = (value: string): string =>
   `'${value.replaceAll("'", "''")}'`;
 
-// Permission restore is the one PowerShell invocation that compiles C# at run
-// time: Add-Type below hands the source to csc.exe, which writes a temporary
-// assembly and loads it. Measured on an idle windows-latest runner, six
-// samples each: bare powershell.exe startup 184-227ms, a plain .NET call such
-// as snapshotPermissions 197-235ms, an Add-Type of a trivial class 395-891ms.
+// Permission restore is the one PowerShell invocation that can compile C# at
+// run time: the first restore on a machine hands the helper source to csc.exe
+// (see restoreNativePermissions for the on-disk cache that makes it the only
+// one). Measured on an idle windows-latest runner, six samples each: bare
+// powershell.exe startup 184-227ms, a plain .NET call such as
+// snapshotPermissions 197-235ms, an Add-Type of a trivial class 395-891ms.
 // The compile both costs the most and swings the widest, and the swing is the
 // host's - csc.exe cold start and the antimalware scan of a fresh unsigned DLL
-// in %TEMP% - not a function of the work canonfig asked for. The old 10s bound
-// kept firing on GitHub's runners. This bound is here to catch a hung process,
-// so it matches the 60s this layer already allows its scheduler PowerShell
+// - not a function of the work canonfig asked for. The old 10s bound kept
+// firing on GitHub's runners. This bound is here to catch a hung process, so
+// it matches the 60s this layer already allows its scheduler PowerShell
 // scripts rather than tracking the operation's typical cost.
 const nativePermissionTimeoutMilliseconds = 60_000;
 
@@ -259,6 +260,13 @@ public static class CanonfigPermissionRestore {
   }
 }
 `;
+
+// Names the cached helper assembly after its source, so a change to the C#
+// above lands in a new file instead of loading a stale build.
+const nativePermissionRestoreDigest = createHash("sha256")
+  .update(nativePermissionRestore)
+  .digest("hex")
+  .slice(0, 16);
 
 const weekdayXmlNames = {
   Sun: "Sunday",
@@ -562,6 +570,8 @@ export const windowsMachineStateLayer = (
       "System32",
       "schtasks.exe",
     );
+  const localAppData = environmentValue(environment, "LOCALAPPDATA")
+    ?? win32.join(home, "AppData", "Local");
   const currentUser = windowsAccountPrincipal(environment, home);
   const schedulerTimeoutMilliseconds = options.schedulerTimeoutMilliseconds ?? 60_000;
   const base = linuxMachineStateLayer({
@@ -825,41 +835,55 @@ export const windowsMachineStateLayer = (
             filesystemFailure("validate managed path containment", path, cause),
         });
       };
-      const applyGuardedMutation = async (
+      // Runs one filesystem step of a managed-root mutation. Only raw fs calls
+      // go through here: the typed effects the mutation composes (ACL restore,
+      // process timeouts, containment checks) are yielded directly so their
+      // tags reach the caller instead of being rewrapped as filesystem errors.
+      const mutationStep = <A>(
+        path: string,
+        run: () => Promise<A>,
+      ): Effect.Effect<A, MachineFilesystemError> =>
+        Effect.tryPromise({
+          try: run,
+          catch: (cause) => filesystemFailure("mutate managed path", path, cause),
+        });
+      const applyGuardedMutation = (
         mutation: SafeRootMutationInput["mutation"],
+        path: string,
         guardedTarget: string,
         nested: boolean,
-      ): Promise<boolean> => {
+      ): Effect.Effect<boolean, MachineStateError> => {
         if (mutation.kind === "remove") {
-          await removeWindowsManagedLeaf(guardedTarget);
-          return nested;
+          return mutationStep(path, () => removeWindowsManagedLeaf(guardedTarget)).pipe(
+            Effect.as(nested),
+          );
         }
         if (mutation.kind === "directory") {
-          await prepareWindowsManagedLeafKind(guardedTarget, "directory");
-          await Effect.runPromise(secureDirectory(guardedTarget, mutation));
-          return true;
+          return mutationStep(path, () => prepareWindowsManagedLeafKind(guardedTarget, "directory")).pipe(
+            Effect.andThen(secureDirectory(guardedTarget, mutation)),
+            Effect.as(true),
+          );
         }
         if (mutation.kind === "write") {
-          await Effect.runPromise(secureAtomicWrite(
-            guardedTarget,
-            mutation.content,
-            mutation,
-          ));
+          return secureAtomicWrite(guardedTarget, mutation.content, mutation).pipe(
+            Effect.as(true),
+          );
+        }
+        return mutationStep(path, async () => {
+          await prepareWindowsManagedLeafKind(guardedTarget, "non-directory");
+          await mkdir(win32.dirname(guardedTarget), { recursive: true });
+          const temporary = win32.join(
+            win32.dirname(guardedTarget),
+            `.${win32.basename(guardedTarget)}.canonfig-${randomBytes(12).toString("hex")}`,
+          );
+          try {
+            await symlink(mutation.target, temporary);
+            await rename(temporary, guardedTarget);
+          } finally {
+            await unlink(temporary).catch(() => undefined);
+          }
           return true;
-        }
-        await prepareWindowsManagedLeafKind(guardedTarget, "non-directory");
-        await mkdir(win32.dirname(guardedTarget), { recursive: true });
-        const temporary = win32.join(
-          win32.dirname(guardedTarget),
-          `.${win32.basename(guardedTarget)}.canonfig-${randomBytes(12).toString("hex")}`,
-        );
-        try {
-          await symlink(mutation.target, temporary);
-          await rename(temporary, guardedTarget);
-        } finally {
-          await unlink(temporary).catch(() => undefined);
-        }
-        return true;
+        });
       };
       const mutateWithinRoot = (
         input: SafeRootMutationInput,
@@ -888,96 +912,98 @@ export const windowsMachineStateLayer = (
               message: `path is not a descendant of managed root ${root}`,
             });
           }
-          yield* Effect.tryPromise({
-            try: async () => {
-              const rootBefore = await lstat(root);
-              if (rootBefore.isSymbolicLink()) {
-                throw new Error("managed root must not be a reparse point");
-              }
-              await options.beforeSafeRootMutation?.();
-              const rootAfter = await lstat(root);
-              if (
-                rootAfter.isSymbolicLink()
-                || rootBefore.dev !== rootAfter.dev
-                || rootBefore.ino !== rootAfter.ino
-              ) {
-                throw new Error("managed root identity changed before mutation");
-              }
-
-              const relativePath = win32.relative(root, path);
-              const [topName, ...tail] = relativePath.split(/[\\/]/u);
-              const guard = win32.join(
-                root,
-                `.canonfig-guard-${randomBytes(12).toString("hex")}`,
-              );
-              const visibleTop = win32.join(root, topName!);
-              const heldTop = win32.join(guard, topName!);
-              let held = false;
-              await mkdir(guard);
-              try {
-                try {
-                  try {
-                    const top = await lstat(visibleTop);
-                    if (tail.length > 0 && top.isSymbolicLink()) {
-                      throw new Error(`managed ancestor is a reparse point: ${visibleTop}`);
-                    }
-                    await rename(visibleTop, heldTop);
-                    held = true;
-                    if (tail.length > 0 && (await lstat(heldTop)).isSymbolicLink()) {
-                      throw new Error(`managed ancestor is a reparse point: ${visibleTop}`);
-                    }
-                  } catch (cause) {
-                    if (errorCode(cause) !== "ENOENT") throw cause;
-                    if (input.mutation.kind === "remove") return;
-                    if (tail.length > 0) {
-                      await mkdir(heldTop, { recursive: true });
-                      held = true;
-                    }
-                  }
-                  const guardedTarget = tail.length === 0
-                    ? heldTop
-                    : win32.join(heldTop, ...tail);
-                  if (tail.length > 0) {
-                    await Effect.runPromise(
-                      validatePathWithinRoot(heldTop, guardedTarget),
-                    );
-                  }
-                  held = await applyGuardedMutation(
-                    input.mutation.kind === "write"
-                      ? { ...input.mutation, content: relocateFileContent(input.mutation.content, visibleTop, heldTop) }
-                      : input.mutation,
-                    guardedTarget,
-                    tail.length > 0,
-                  );
-
-                  const visibleRoot = await lstat(root);
-                  if (
-                    visibleRoot.isSymbolicLink()
-                    || visibleRoot.dev !== rootBefore.dev
-                    || visibleRoot.ino !== rootBefore.ino
-                  ) {
-                    throw new Error("managed root identity changed during mutation");
-                  }
-                  if (held) {
-                    await rename(heldTop, visibleTop);
-                    held = false;
-                  }
-                } catch (cause) {
-                  if (held) {
-                    await rename(heldTop, visibleTop);
-                    held = false;
-                  }
-                  throw cause;
-                }
-              } finally {
-                if (!held) {
-                  await rm(guard, { recursive: true, force: true }).catch(() => undefined);
-                }
-              }
-            },
-            catch: (cause) =>
-              filesystemFailure("mutate managed path", path, cause),
+          const step = <A>(run: () => Promise<A>) => mutationStep(path, run);
+          const rootBefore = yield* step(async () => {
+            const before = await lstat(root);
+            if (before.isSymbolicLink()) {
+              throw new Error("managed root must not be a reparse point");
+            }
+            await options.beforeSafeRootMutation?.();
+            const after = await lstat(root);
+            if (
+              after.isSymbolicLink()
+              || before.dev !== after.dev
+              || before.ino !== after.ino
+            ) {
+              throw new Error("managed root identity changed before mutation");
+            }
+            return before;
           });
+
+          const relativePath = win32.relative(root, path);
+          const [topName, ...tail] = relativePath.split(/[\\/]/u);
+          const guard = win32.join(
+            root,
+            `.canonfig-guard-${randomBytes(12).toString("hex")}`,
+          );
+          const visibleTop = win32.join(root, topName!);
+          const heldTop = win32.join(guard, topName!);
+          // True while the top-level entry lives under the guard. The mutation
+          // moves it back on success and on failure; if even that fails the
+          // guard directory stays behind so the content is not lost.
+          let held = false;
+          const releaseHeld = step(async () => {
+            await rename(heldTop, visibleTop);
+            held = false;
+          });
+          yield* step(() => mkdir(guard));
+          yield* Effect.gen(function*() {
+            const present = yield* step(async () => {
+              try {
+                const top = await lstat(visibleTop);
+                if (tail.length > 0 && top.isSymbolicLink()) {
+                  throw new Error(`managed ancestor is a reparse point: ${visibleTop}`);
+                }
+                await rename(visibleTop, heldTop);
+                held = true;
+                if (tail.length > 0 && (await lstat(heldTop)).isSymbolicLink()) {
+                  throw new Error(`managed ancestor is a reparse point: ${visibleTop}`);
+                }
+              } catch (cause) {
+                if (errorCode(cause) !== "ENOENT") throw cause;
+                if (input.mutation.kind === "remove") return false;
+                if (tail.length > 0) {
+                  await mkdir(heldTop, { recursive: true });
+                  held = true;
+                }
+              }
+              return true;
+            });
+            if (!present) return;
+            const guardedTarget = tail.length === 0
+              ? heldTop
+              : win32.join(heldTop, ...tail);
+            if (tail.length > 0) {
+              yield* validatePathWithinRoot(heldTop, guardedTarget);
+            }
+            held = yield* applyGuardedMutation(
+              input.mutation.kind === "write"
+                ? { ...input.mutation, content: relocateFileContent(input.mutation.content, visibleTop, heldTop) }
+                : input.mutation,
+              path,
+              guardedTarget,
+              tail.length > 0,
+            );
+            yield* step(async () => {
+              const visibleRoot = await lstat(root);
+              if (
+                visibleRoot.isSymbolicLink()
+                || visibleRoot.dev !== rootBefore.dev
+                || visibleRoot.ino !== rootBefore.ino
+              ) {
+                throw new Error("managed root identity changed during mutation");
+              }
+            });
+            if (held) yield* releaseHeld;
+          }).pipe(
+            // A failed move back keeps the guard and reports the move failure.
+            Effect.tapCause(() => held ? releaseHeld : Effect.void),
+            Effect.ensuring(Effect.suspend(() =>
+              held
+                ? Effect.void
+                : Effect.promise(() => rm(guard, { recursive: true, force: true }).catch(() => undefined))
+            )),
+          );
         }).pipe(Effect.uninterruptible);
       const secureStoreAvailable = Effect.promise(() =>
         options.credentialStoreAccess !== "unavailable"
@@ -1019,6 +1045,25 @@ export const windowsMachineStateLayer = (
         standardInput?: Uint8Array | undefined,
       ) => runPowerShell(script, 5_000, additions, standardInput);
       const permissionSections = "[Security.AccessControl.AccessControlSections]'Access,Owner,Group'";
+      // The executor restores one path per MachineState call, so each restore
+      // is its own powershell.exe. Compiling the helper in every one of them
+      // cost 395-891ms per path; a mirror rollback with N owned paths paid it
+      // N times. Instead the first restore on a machine compiles the helper
+      // into the data directory and every later restore, in this process or
+      // the next, loads that DLL. Assembly.LoadFrom is the loader on purpose:
+      // measured on an idle Windows 11 VM, five samples each, it added 25-100ms
+      // over a bare powershell.exe where Add-Type -LiteralPath added 170-290ms
+      // and the compile 250-350ms. Compile into a random sibling and rename it
+      // into place so a concurrent canonfig never loads a half-written file;
+      // losing that race means the winner's identical build is already there.
+      // A corrupt cached file fails the restore with the file named in the
+      // error; deleting it is the recovery.
+      const nativePermissionRestoreAssembly = win32.join(
+        localAppData,
+        "canonfig",
+        "native",
+        `CanonfigPermissionRestore-${nativePermissionRestoreDigest}.dll`,
+      );
       const restoreNativePermissions = Effect.fn("MachineState.restoreNativePermissions")(
         function*(path: string, snapshot: FilePermissionSnapshot, directory: boolean) {
           if (snapshot.platform !== "windows") {
@@ -1030,7 +1075,16 @@ export const windowsMachineStateLayer = (
             `$path=${powershellLiteral(path)}`,
             `$sections=${permissionSections}`,
             `$expected=${powershellLiteral(snapshot.securityDescriptor)}`,
-            `Add-Type -TypeDefinition ${powershellLiteral(nativePermissionRestore)}`,
+            `$assembly=${powershellLiteral(nativePermissionRestoreAssembly)}`,
+            "if(-not (Test-Path -LiteralPath $assembly)){"
+              + "$directory=Split-Path -Parent $assembly;"
+              + "$null=New-Item -ItemType Directory -Force -Path $directory;"
+              + "$staging=Join-Path $directory ([IO.Path]::GetRandomFileName()+'.dll');"
+              + `Add-Type -TypeDefinition ${powershellLiteral(nativePermissionRestore)} -OutputAssembly $staging;`
+              + "try{Move-Item -LiteralPath $staging -Destination $assembly}"
+              + "catch{Remove-Item -LiteralPath $staging -Force;if(-not (Test-Path -LiteralPath $assembly)){throw}}"
+              + "}",
+            "$null=[Reflection.Assembly]::LoadFrom($assembly)",
             "$security=New-Object Security.AccessControl.RawSecurityDescriptor($expected)",
             "$binary=New-Object byte[] $security.BinaryLength",
             "$security.GetBinaryForm($binary,0)",
@@ -1282,14 +1336,8 @@ export const windowsMachineStateLayer = (
             environmentValue(environment, "APPDATA")
               ?? win32.join(home, "AppData", "Roaming"),
           ),
-          data: windowsPath(
-            environmentValue(environment, "LOCALAPPDATA")
-              ?? win32.join(home, "AppData", "Local"),
-          ),
-          cache: windowsPath(
-            environmentValue(environment, "LOCALAPPDATA")
-              ?? win32.join(home, "AppData", "Local"),
-          ),
+          data: windowsPath(localAppData),
+          cache: windowsPath(localAppData),
         }),
         ensureDirectory: (input) =>
           requireWindowsPath(input.path).pipe(

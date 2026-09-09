@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { TaggedError } from "./tagged-error.ts";
 
 import {
   ActionId,
@@ -521,22 +522,22 @@ export const SynchronizationOutcome = SynchronizationOutcomeSchema;
 export const ObservedResourceState = ObservedResourceStateSchema;
 export const AppliedResourceRecord = AppliedResourceRecordSchema;
 
-export class DuplicateActionError extends Schema.TaggedError<DuplicateActionError>()(
+export class DuplicateActionError extends TaggedError<DuplicateActionError>()(
   "DuplicateActionError",
   { id: Schema.String },
 ) {}
 
-export class MissingActionReferenceError extends Schema.TaggedError<MissingActionReferenceError>()(
+export class MissingActionReferenceError extends TaggedError<MissingActionReferenceError>()(
   "MissingActionReferenceError",
   { id: Schema.String, before: Schema.String },
 ) {}
 
-export class ActionCycleError extends Schema.TaggedError<ActionCycleError>()(
+export class ActionCycleError extends TaggedError<ActionCycleError>()(
   "ActionCycleError",
   { cycle: Schema.Array(Schema.String) },
 ) {}
 
-export class ActionKindMismatchError extends Schema.TaggedError<ActionKindMismatchError>()(
+export class ActionKindMismatchError extends TaggedError<ActionKindMismatchError>()(
   "ActionKindMismatchError",
   { id: Schema.String, kind: Schema.String, detailKind: Schema.String },
 ) {}

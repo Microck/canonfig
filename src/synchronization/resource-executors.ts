@@ -932,10 +932,21 @@ const prepareConfig = (
     for (const key of removes) {
       removeConfigPath(current, key);
     }
-    for (const key of keys) {
-      const value = getConfigPath(desired, key);
-      if (value !== undefined) setConfigPath(current, key, value);
-    }
+    // An owned key that crosses a scalar on disk (`mcp.server` over
+    // `{"mcp":"disabled"}`) is the operator's config shape, not a defect. Fail
+    // the action like the non-object document above instead of dying.
+    yield* Effect.try({
+      try: () => {
+        for (const key of keys) {
+          const value = getConfigPath(desired, key);
+          if (value !== undefined) setConfigPath(current, key, value);
+        }
+      },
+      catch: (error) =>
+        new InvalidExecutionPlanError({
+          message: `cannot merge config ${target}: ${error instanceof Error ? error.message : String(error)}`,
+        }),
+    });
     const content = encoder.encode(
       serializeConfigDocument(config.format, current),
     );

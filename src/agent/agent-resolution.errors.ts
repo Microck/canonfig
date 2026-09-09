@@ -1,6 +1,7 @@
 import { Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 
-export class InvalidAgentTaskError extends Schema.TaggedError<InvalidAgentTaskError>()(
+export class InvalidAgentTaskError extends TaggedError<InvalidAgentTaskError>()(
   "InvalidAgentTaskError",
   {
     task: Schema.String,
@@ -8,12 +9,12 @@ export class InvalidAgentTaskError extends Schema.TaggedError<InvalidAgentTaskEr
   },
 ) {}
 
-export class UnsupportedHarnessError extends Schema.TaggedError<UnsupportedHarnessError>()(
+export class UnsupportedHarnessError extends TaggedError<UnsupportedHarnessError>()(
   "UnsupportedHarnessError",
   { harness: Schema.String },
 ) {}
 
-export class DeniedAgentCapabilityError extends Schema.TaggedError<DeniedAgentCapabilityError>()(
+export class DeniedAgentCapabilityError extends TaggedError<DeniedAgentCapabilityError>()(
   "DeniedAgentCapabilityError",
   {
     capability: Schema.String,
@@ -21,7 +22,7 @@ export class DeniedAgentCapabilityError extends Schema.TaggedError<DeniedAgentCa
   },
 ) {}
 
-export class AgentInputLimitError extends Schema.TaggedError<AgentInputLimitError>()(
+export class AgentInputLimitError extends TaggedError<AgentInputLimitError>()(
   "AgentInputLimitError",
   {
     actualBytes: Schema.Number,
@@ -29,7 +30,7 @@ export class AgentInputLimitError extends Schema.TaggedError<AgentInputLimitErro
   },
 ) {}
 
-export class AgentExecutionTimeoutError extends Schema.TaggedError<AgentExecutionTimeoutError>()(
+export class AgentExecutionTimeoutError extends TaggedError<AgentExecutionTimeoutError>()(
   "AgentExecutionTimeoutError",
   {
     executable: Schema.String,
@@ -37,12 +38,12 @@ export class AgentExecutionTimeoutError extends Schema.TaggedError<AgentExecutio
   },
 ) {}
 
-export class AgentExecutionCancelledError extends Schema.TaggedError<AgentExecutionCancelledError>()(
+export class AgentExecutionCancelledError extends TaggedError<AgentExecutionCancelledError>()(
   "AgentExecutionCancelledError",
   { executable: Schema.String },
 ) {}
 
-export class AgentOutputLimitError extends Schema.TaggedError<AgentOutputLimitError>()(
+export class AgentOutputLimitError extends TaggedError<AgentOutputLimitError>()(
   "AgentOutputLimitError",
   {
     executable: Schema.String,
@@ -50,7 +51,7 @@ export class AgentOutputLimitError extends Schema.TaggedError<AgentOutputLimitEr
   },
 ) {}
 
-export class AgentProcessError extends Schema.TaggedError<AgentProcessError>()(
+export class AgentProcessError extends TaggedError<AgentProcessError>()(
   "AgentProcessError",
   {
     executable: Schema.String,
@@ -58,12 +59,12 @@ export class AgentProcessError extends Schema.TaggedError<AgentProcessError>()(
   },
 ) {}
 
-export class InvalidAgentResponseError extends Schema.TaggedError<InvalidAgentResponseError>()(
+export class InvalidAgentResponseError extends TaggedError<InvalidAgentResponseError>()(
   "InvalidAgentResponseError",
   { message: Schema.String },
 ) {}
 
-export class AgentVerificationError extends Schema.TaggedError<AgentVerificationError>()(
+export class AgentVerificationError extends TaggedError<AgentVerificationError>()(
   "AgentVerificationError",
   {
     command: Schema.Array(Schema.String),
