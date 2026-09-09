@@ -1,0 +1,37 @@
+name: Audit validation environment
+
+on:
+  push:
+    branches:
+      - chore/audit-validation-environment
+
+permissions:
+  contents: read
+
+jobs:
+  validation-environment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Install only locked public dependencies
+        run: npm ci
+      - name: Package isolated validation tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p audit-tools/bin
+          cp "$(node -p process.execPath)" audit-tools/bin/node
+          tar --exclude='*.woff' --exclude='*.woff2' --exclude='*.ttf' --exclude='*.otf' --exclude='*.eot' --exclude='.npmrc' --exclude='.env' -czf audit-tools/dependencies.tar.gz node_modules
+          sha256sum audit-tools/bin/node audit-tools/dependencies.tar.gz > audit-tools/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: audit-node24-linux-validation
+          path: audit-tools/
+          retention-days: 1
+          if-no-files-found: error
