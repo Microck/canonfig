@@ -189,6 +189,15 @@ const requestJson = (
         }, (response) => {
           const chunks: Array<Buffer> = [];
           let bytes = 0;
+          response.once("error", (cause) => {
+            request.destroy();
+            rejectResponse(cause);
+          });
+          response.once("close", () => {
+            if (response.complete) return;
+            request.destroy();
+            rejectResponse(new Error("source enrollment response was incomplete"));
+          });
           response.on("data", (chunk: Buffer) => {
             bytes += chunk.byteLength;
             if (bytes > maximumResponseBytes) {
@@ -199,6 +208,7 @@ const requestJson = (
           });
           response.on("end", () => {
             try {
+              if (!response.complete) throw new Error("source enrollment response was incomplete");
               resolveResponse({
                 status: response.statusCode ?? 500,
                 body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
@@ -558,6 +568,16 @@ const transportRequest = (
         }, (response) => {
           const chunks: Array<Buffer> = [];
           let bytes = 0;
+          const incomplete = (): void => {
+            rejectOnce(new TransportInterruptedError({
+              operation: "receive source transport response",
+            }));
+            request.destroy();
+          };
+          response.once("error", incomplete);
+          response.once("close", () => {
+            if (!response.complete) incomplete();
+          });
           response.on("data", (chunk: Buffer) => {
             bytes += chunk.byteLength;
             if (bytes > maximumBytes) {
@@ -572,6 +592,10 @@ const transportRequest = (
             chunks.push(chunk);
           });
           response.on("end", () => {
+            if (!response.complete) {
+              incomplete();
+              return;
+            }
             const body = Buffer.concat(chunks);
             if ((response.statusCode ?? 500) >= 400) {
               try {
