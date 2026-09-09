@@ -5,8 +5,10 @@ records with `enabled: false` or `disabled: true` before collecting command
 arguments, nested entries, or tool evidence. A disabled ancestor excludes its
 whole subtree; a descendant cannot reenable itself. Either disabled declaration
 wins when both flags are present. Omitted flags preserve existing discovery.
-Invalid enablement values on otherwise active structured records fail parsing
-without including the value or command in the diagnostic.
+Invalid enablement values on an active record that declares its own command or
+executable fail parsing without including the value or command in the
+diagnostic. Elsewhere `enabled` and `disabled` are legal entry names, so a
+nonboolean value there is a nested entry and scanning continues.
 
 MCP `command` fields are executable identities, not shell programs. Spaces and
 Windows path separators are preserved. Arguments belong in `args`. Hooks retain

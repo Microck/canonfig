@@ -79,6 +79,38 @@ describe("discovery enablement and executable identity", () => {
     expect(JSON.stringify(failure)).not.toContain("hidden-mcp");
   });
 
+  it("treats enabled and disabled as entry names when they are not boolean flags", async () => {
+    const result = await scan("mcp.json", JSON.stringify({ mcpServers: {
+      enabled: { command: "server-named-enabled" },
+      disabled: { command: "server-named-disabled" },
+    } }));
+    expect(result.evidence.map((entry) => entry.invocation[0]).sort()).toEqual([
+      "server-named-disabled",
+      "server-named-enabled",
+    ]);
+  });
+
+  it("keeps scanning a package that depends on a package named enabled", async () => {
+    const result = await scan("package.json", JSON.stringify({
+      name: "visible-pkg", version: "1.2.3", bin: { "visible-bin": "./cli.js" },
+      dependencies: { enabled: "^2.0.0" },
+    }));
+    expect(result.evidence.map((entry) => entry.invocation[0])).toEqual(["visible-bin"]);
+  });
+
+  it("excludes explicit tools and bin entries under a disabled ancestor", async () => {
+    const disabledCanonfig = await scan("package.json", JSON.stringify({ canonfig: { disabled: true, tools: [
+      { ecosystem: "npm", name: "hidden-cli", version: "1.2.3" },
+    ] } }));
+    expect(disabledCanonfig.evidence).toEqual([]);
+    expect(JSON.stringify(disabledCanonfig)).not.toContain("hidden-cli");
+    const disabledRoot = await scan("package.json", JSON.stringify({
+      enabled: false, name: "hidden-pkg", version: "1.2.3", bin: { "hidden-bin": "./cli.js" },
+    }));
+    expect(disabledRoot.evidence).toEqual([]);
+    expect(JSON.stringify(disabledRoot)).not.toContain("hidden-");
+  });
+
   it("keeps an MCP executable path as data rather than applying shell tokenization", async () => {
     const executable = "C:\\Program Files\\Example Tool\\server.exe";
     const result = await scan("mcp.json", JSON.stringify({ mcpServers: {
