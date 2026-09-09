@@ -162,6 +162,11 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
         expect(await Promise.all(ownedPaths.map(inspectAcl))).toEqual(originalAcls);
         expect(await inspectAcl(root)).toBe(parentAcl);
       }
+      // The restore helper is compiled once into the data directory and loaded
+      // from there by every later restore, including the second process above.
+      expect(await readdir(join(root, "cache", "canonfig", "native"))).toEqual([
+        expect.stringMatching(/^CanonfigPermissionRestore-[0-9a-f]{16}\.dll$/u),
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

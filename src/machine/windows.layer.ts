@@ -209,16 +209,17 @@ const validateSingleLine = (
 const powershellLiteral = (value: string): string =>
   `'${value.replaceAll("'", "''")}'`;
 
-// Permission restore is the one PowerShell invocation that compiles C# at run
-// time: Add-Type below hands the source to csc.exe, which writes a temporary
-// assembly and loads it. Measured on an idle windows-latest runner, six
-// samples each: bare powershell.exe startup 184-227ms, a plain .NET call such
-// as snapshotPermissions 197-235ms, an Add-Type of a trivial class 395-891ms.
+// Permission restore is the one PowerShell invocation that can compile C# at
+// run time: the first restore on a machine hands the helper source to csc.exe
+// (see restoreNativePermissions for the on-disk cache that makes it the only
+// one). Measured on an idle windows-latest runner, six samples each: bare
+// powershell.exe startup 184-227ms, a plain .NET call such as
+// snapshotPermissions 197-235ms, an Add-Type of a trivial class 395-891ms.
 // The compile both costs the most and swings the widest, and the swing is the
 // host's - csc.exe cold start and the antimalware scan of a fresh unsigned DLL
-// in %TEMP% - not a function of the work canonfig asked for. The old 10s bound
-// kept firing on GitHub's runners. This bound is here to catch a hung process,
-// so it matches the 60s this layer already allows its scheduler PowerShell
+// - not a function of the work canonfig asked for. The old 10s bound kept
+// firing on GitHub's runners. This bound is here to catch a hung process, so
+// it matches the 60s this layer already allows its scheduler PowerShell
 // scripts rather than tracking the operation's typical cost.
 const nativePermissionTimeoutMilliseconds = 60_000;
 
@@ -259,6 +260,13 @@ public static class CanonfigPermissionRestore {
   }
 }
 `;
+
+// Names the cached helper assembly after its source, so a change to the C#
+// above lands in a new file instead of loading a stale build.
+const nativePermissionRestoreDigest = createHash("sha256")
+  .update(nativePermissionRestore)
+  .digest("hex")
+  .slice(0, 16);
 
 const weekdayXmlNames = {
   Sun: "Sunday",
@@ -562,6 +570,8 @@ export const windowsMachineStateLayer = (
       "System32",
       "schtasks.exe",
     );
+  const localAppData = environmentValue(environment, "LOCALAPPDATA")
+    ?? win32.join(home, "AppData", "Local");
   const currentUser = windowsAccountPrincipal(environment, home);
   const schedulerTimeoutMilliseconds = options.schedulerTimeoutMilliseconds ?? 60_000;
   const base = linuxMachineStateLayer({
@@ -1019,6 +1029,22 @@ export const windowsMachineStateLayer = (
         standardInput?: Uint8Array | undefined,
       ) => runPowerShell(script, 5_000, additions, standardInput);
       const permissionSections = "[Security.AccessControl.AccessControlSections]'Access,Owner,Group'";
+      // The executor restores one path per MachineState call, so each restore
+      // is its own powershell.exe. Compiling the helper in every one of them
+      // cost 395-891ms per path; a mirror rollback with N owned paths paid it
+      // N times. Instead the first restore on a machine compiles the helper
+      // into the data directory and every later restore, in this process or
+      // the next, loads that DLL in a few milliseconds. Compile into a random
+      // sibling and rename it into place so a concurrent canonfig never loads
+      // a half-written file; losing that race means the winner's identical
+      // build is already there. A corrupt cached file fails the restore with
+      // the file named in the error; deleting it is the recovery.
+      const nativePermissionRestoreAssembly = win32.join(
+        localAppData,
+        "canonfig",
+        "native",
+        `CanonfigPermissionRestore-${nativePermissionRestoreDigest}.dll`,
+      );
       const restoreNativePermissions = Effect.fn("MachineState.restoreNativePermissions")(
         function*(path: string, snapshot: FilePermissionSnapshot, directory: boolean) {
           if (snapshot.platform !== "windows") {
@@ -1030,7 +1056,16 @@ export const windowsMachineStateLayer = (
             `$path=${powershellLiteral(path)}`,
             `$sections=${permissionSections}`,
             `$expected=${powershellLiteral(snapshot.securityDescriptor)}`,
-            `Add-Type -TypeDefinition ${powershellLiteral(nativePermissionRestore)}`,
+            `$assembly=${powershellLiteral(nativePermissionRestoreAssembly)}`,
+            "if(-not (Test-Path -LiteralPath $assembly)){"
+              + "$directory=Split-Path -Parent $assembly;"
+              + "$null=New-Item -ItemType Directory -Force -Path $directory;"
+              + "$staging=Join-Path $directory ([IO.Path]::GetRandomFileName()+'.dll');"
+              + `Add-Type -TypeDefinition ${powershellLiteral(nativePermissionRestore)} -OutputAssembly $staging;`
+              + "try{Move-Item -LiteralPath $staging -Destination $assembly}"
+              + "catch{Remove-Item -LiteralPath $staging -Force;if(-not (Test-Path -LiteralPath $assembly)){throw}}"
+              + "}",
+            "Add-Type -LiteralPath $assembly",
             "$security=New-Object Security.AccessControl.RawSecurityDescriptor($expected)",
             "$binary=New-Object byte[] $security.BinaryLength",
             "$security.GetBinaryForm($binary,0)",
@@ -1282,14 +1317,8 @@ export const windowsMachineStateLayer = (
             environmentValue(environment, "APPDATA")
               ?? win32.join(home, "AppData", "Roaming"),
           ),
-          data: windowsPath(
-            environmentValue(environment, "LOCALAPPDATA")
-              ?? win32.join(home, "AppData", "Local"),
-          ),
-          cache: windowsPath(
-            environmentValue(environment, "LOCALAPPDATA")
-              ?? win32.join(home, "AppData", "Local"),
-          ),
+          data: windowsPath(localAppData),
+          cache: windowsPath(localAppData),
         }),
         ensureDirectory: (input) =>
           requireWindowsPath(input.path).pipe(
