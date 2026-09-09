@@ -1,0 +1,35 @@
+name: Materialize reviewed uv patch
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - .github/workflows/apply-reviewed-uv.yml
+      - .github/audit/uv.patch
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/audit-installer-contracts'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Publish the exact tested tree to this PR branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch=.github/audit/uv.patch
+          echo "cec5a8129082dbeb9efdc6c5f85b048481f55d260a87ae38146182f901dcbf9b  $patch" | sha256sum --check
+          git apply --check "$patch"
+          git apply --index "$patch"
+          git rm .github/audit/uv.patch .github/workflows/apply-reviewed-uv.yml
+          test "$(git write-tree)" = b990a9333c2448893c0cc2ccd3d43bdcdb6b4a3a
+          git -c user.name='Canonfig audit' -c user.email='audit@users.noreply.github.com' commit -m 'fix(install): use the uv tool no-build contract and test native CLI parsing'
+          git push origin HEAD:refs/heads/fix/audit-installer-contracts
