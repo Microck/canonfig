@@ -1,3 +1,7 @@
+import { Schema } from "effect";
+
+import type { CliPayload } from "../cli/source-commands.ts";
+
 /**
  * Redact credential-shaped diagnostic data before it crosses an output boundary.
  * This is defense in depth, not a way to make arbitrary secret-bearing files safe
@@ -28,8 +32,8 @@ export const redactDiagnosticText = (text: string): string => text
   .replace(argument, "$1[REDACTED]");
 
 /** True only for a complete, separate long option whose next token is a secret. */
-export const isSecretDiagnosticOption = (value: unknown): boolean => {
-  if (typeof value !== "string") return false;
+export const isSecretDiagnosticOption = (value: CliPayload | undefined): boolean => {
+  if (!Schema.is(Schema.String)(value)) return false;
   const match = /^--([A-Za-z][A-Za-z0-9_-]*)$/u.exec(value);
   return match !== null && isSecretDiagnosticField(match[1]!);
 };
