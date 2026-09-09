@@ -994,7 +994,20 @@ const systemdQuote = (
       message: "systemd command values must be single-line and contain no NUL bytes",
     }));
   }
-  return Effect.succeed(`"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`);
+  // systemd applies three passes to ExecStart=, so three escapes are needed:
+  // "%" specifiers (%h, %i, ...) expand on the raw line before word splitting,
+  // then the shell-like unquoting removes "\\" and "\"" escapes, and at start
+  // time "$VAR" / "${VAR}" expand inside argv words, quoted or not. A literal
+  // "%" survives only as "%%" and a literal "$" only as "$$" (systemd.unit(5)
+  // "Specifiers", systemd.service(5) "Command lines"). Home-directory runtime
+  // paths from nvm or an npm prefix land here, so both characters are real.
+  return Effect.succeed(`"${
+    value
+      .replaceAll("\\", "\\\\")
+      .replaceAll("\"", "\\\"")
+      .replaceAll("%", "%%")
+      .replaceAll("$", () => "$$")
+  }"`);
 };
 
 const renderSystemdJob = (
