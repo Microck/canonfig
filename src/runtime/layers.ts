@@ -1243,6 +1243,16 @@ const machineLayer = (statePath: string): Layer.Layer<MachineState> => {
   }
 };
 
+/**
+ * The machine alone, for commands that only touch this machine's filesystem and
+ * bounded processes. Building the full runtime layer would open the state
+ * database and the source and follower command graphs for no reason.
+ */
+export const runtimeMachineLayer = (
+  options: RuntimeLayerOptions = {},
+): Layer.Layer<MachineState> =>
+  machineLayer(options.statePath ?? join(homedir(), ".canonfig", "state.sqlite"));
+
 export const runtimeLayer = (
   options: RuntimeLayerOptions = {},
 ) => {

@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 
 import { evaluateCli } from "../../src/cli/cli.ts";
 import { parseHarnessArguments } from "../../src/harness-configuration/cli-arguments.ts";
+import { installerArguments, parseInstallerArguments } from "../../src/runtime/installer-cli.ts";
 
 const projectRoot = resolve(import.meta.dirname, "../..");
 export const defaultDocumentationRoots: ReadonlyArray<string> = [
@@ -113,6 +114,17 @@ const validHarnessCommand = (arguments_: ReadonlyArray<string>): boolean => {
   }
 };
 
+/** The installer command is handled before evaluateCli, like secrets and harness. */
+const validInstallerCommand = (arguments_: ReadonlyArray<string>): boolean => {
+  if (arguments_.includes("--help") || arguments_.includes("-h")) return true;
+  try {
+    parseInstallerArguments(installerArguments(arguments_));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export interface DocumentationValidationResult {
   readonly checked: number;
   readonly files: ReadonlyArray<string>;
@@ -142,6 +154,10 @@ export const validateDocumentation = async (
         }
       } else if (arguments_[0] === "harness") {
         if (!validHarnessCommand(arguments_)) {
+          throw new Error(`${path} contains an invalid CLI example: ${example}`);
+        }
+      } else if (arguments_[0] === "installer") {
+        if (!validInstallerCommand(arguments_)) {
           throw new Error(`${path} contains an invalid CLI example: ${example}`);
         }
       } else {

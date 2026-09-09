@@ -18,6 +18,7 @@ import {
 } from "../secrets/cli.ts";
 import { synchronizeSharedSecrets } from "../secrets/secret-client.ts";
 import { SecretTransferError } from "../secrets/secret-store.ts";
+import { installerArguments, installerHelp, isInstallerCommand, runInstallerCli } from "./installer-cli.ts";
 import {
   EnrollmentInputError,
   isPrivateEnrollmentCommand,
@@ -98,6 +99,14 @@ if (isSecretsCommand(arguments_)) {
   NodeRuntime.runMain(
     Effect.promise(() =>
       runHarnessConfigurationCli(arguments_.slice(1), nodeCliIo)
+    ),
+  );
+} else if (isInstallerCommand(arguments_)) {
+  NodeRuntime.runMain(
+    Effect.promise(() => import("./layers.ts")).pipe(
+      Effect.flatMap(({ runtimeMachineLayer }) =>
+        runInstallerCli(installerArguments(arguments_), nodeCliIo).pipe(Effect.provide(runtimeMachineLayer()))
+      ),
     ),
   );
 } else if (
@@ -210,7 +219,7 @@ if (isSecretsCommand(arguments_)) {
         const extraHelp = outcome._tag === "Help"
           ? `\nPrivate enrollment (bounded pipe input):\n${privateEnrollmentHelp}\n`
           : "";
-        nodeCliIo.writeStdout(`${outcome.text}${extraHelp}\n`);
+        nodeCliIo.writeStdout(`${outcome.text}${extraHelp}${outcome._tag === "Help" ? `\nLocal installer bindings:\n${installerHelp}\n` : ""}\n`);
       } else {
         // The same renderer as the in-layer path, so a usage failure caught
         // before the runtime layer is built still honors --json.
