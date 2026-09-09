@@ -41,6 +41,7 @@ const tamperedFollowerHome = resolve(packedRoot, "tampered-follower-home");
 const workstationHome = resolve(packedRoot, "workstation-home");
 const restrictedHome = resolve(packedRoot, "restricted-home");
 const rotatedHome = resolve(packedRoot, "rotated-home");
+const compileCache = resolve(packedRoot, "compile-cache");
 let executable = "";
 let packedEntry = "";
 let sourceProcess: ChildProcessWithoutNullStreams | undefined;
@@ -105,6 +106,12 @@ const environmentFor = (
     APPDATA: resolve(home, "AppData", "Roaming"),
     LOCALAPPDATA: resolve(home, "AppData", "Local"),
     CANONFIG_LOCAL_CREDENTIAL_ROOT: resolve(home, ".canonfig-credentials"),
+    // This file spawns the packed CLI around a hundred times, and each cold
+    // start spends most of its ~1.4s compiling the same modules. Node's
+    // on-disk compile cache keeps the bytecode between spawns (about 25% off
+    // every invocation, 200s to 155s for the file) without changing what the
+    // CLI does. The directory lives under packedRoot so afterAll removes it.
+    NODE_COMPILE_CACHE: compileCache,
     PATH: [
       fixtureBin,
       resolve(installRoot, "node_modules", ".bin"),

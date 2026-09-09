@@ -49,8 +49,8 @@ import {
 } from "../profile/publication.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
-  syncScheduleFromDefault,
-  type SyncSchedule,
+  desiredScheduleInput,
+  type ResolvedScheduleInput,
 } from "../schedule/schedule-manager.types.ts";
 import { scheduleManagerLayer } from "../schedule/schedule-manager.layer.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
@@ -216,32 +216,20 @@ const persistScheduleOverride = (
 
 /**
  * What this follower's native job should be, or undefined when it should have
- * none.
- *
- * The follower's own override wins, and the profile's default is inherited
- * otherwise. `schedule status` and the doctor scheduler probe both read this,
- * so neither compares the installed job against a built-in constant.
+ * none. See `desiredScheduleInput`: `schedule status`, doctor, and the
+ * post-apply reconciler share it, so none of them compares the installed job
+ * against a built-in constant or against a different notion of drift.
  */
 const effectiveScheduleInput = (
   repository: StateRepository["Service"],
-): Effect.Effect<
-  { readonly schedule: SyncSchedule; readonly executable?: string | undefined } | undefined,
-  CliCommandFailure
-> =>
+): Effect.Effect<ResolvedScheduleInput | undefined, CliCommandFailure> =>
   mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-    Effect.map((configuration) => {
-      const override = configuration?.scheduleOverride;
-      if (override?.kind === "disabled") return undefined;
-      if (override?.kind === "schedule") {
-        return override.executable === undefined
-          ? { schedule: override.schedule }
-          : { schedule: override.schedule, executable: override.executable };
-      }
-      const inherited = configuration?.scheduleDefault;
-      return inherited === undefined
-        ? undefined
-        : { schedule: syncScheduleFromDefault(inherited) };
-    }),
+    Effect.map((configuration) =>
+      desiredScheduleInput(
+        configuration?.scheduleOverride,
+        configuration?.scheduleDefault,
+      )
+    ),
   );
 
 const sourceCommandsLayer: Layer.Layer<
