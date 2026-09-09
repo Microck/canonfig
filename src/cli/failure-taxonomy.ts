@@ -236,6 +236,10 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) => `resource ${text(error.id)} declares an invalid target path`,
   ),
+  InvalidConfigKeyError: describe(
+    "usage-or-configuration",
+    (error) => `invalid config key ${text(error.path)} for ${text(error.id)}: ${text(error.reason)}`,
+  ),
   InvalidTextCompositionError: describe(
     "usage-or-configuration",
     (error) => `resource ${text(error.id)} cannot use append-local: ${text(error.reason)}. Correct its file specification before publishing.`,

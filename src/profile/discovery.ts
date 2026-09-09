@@ -404,6 +404,31 @@ const jsonString = (value: JsonValue | undefined): string | undefined =>
 const JsonStringArray = Schema.Array(Schema.String);
 const JsonCommandArray = Schema.Array(JsonStringArray);
 
+/**
+ * Inspect enablement before commands, nested records, or credential-shaped data.
+ *
+ * Discovery walks schema-less configuration, so an object is either a record
+ * with known fields or a dictionary keyed by names the author chose. "enabled"
+ * and "disabled" are legal names for an MCP server and for an npm dependency,
+ * so a nonboolean value at those keys is only a parse failure on a record that
+ * declares a command or executable of its own. Everywhere else the key is an
+ * ordinary child entry and the caller keeps walking it.
+ */
+const entryIsEnabled = (
+  entry: { readonly [key: string]: JsonValue },
+  strict: boolean,
+): boolean => {
+  if (entry.enabled === false || entry.disabled === true) return false;
+  if (!strict) return true;
+  for (const key of ["enabled", "disabled"]) {
+    if (entry[key] !== undefined && !Schema.is(Schema.Boolean)(entry[key])) {
+      // Do not include the entry, field value, or command in a parse failure.
+      throw new Error("enabled and disabled fields must be booleans");
+    }
+  }
+  return true;
+};
+
 const lineForField = (text: string, field: string): number | undefined => {
   const quoted = `"${field.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
   const index = text.indexOf(quoted);
@@ -466,7 +491,9 @@ const scanPackageJson = (
   value: JsonValue,
 ): ReadonlyArray<ToolDiscoveryEvidence> => {
   const object = jsonObject(value);
-  if (object === undefined) return [];
+  // A disabled ancestor excludes its whole subtree, including bin entries that
+  // the recursive command walker never reaches.
+  if (object === undefined || !entryIsEnabled(object, false)) return [];
   const records: Array<ToolDiscoveryEvidence> = [];
   const name = jsonString(object.name);
   const version = jsonString(object.version);
@@ -503,12 +530,14 @@ const scanPackageJson = (
     });
   }
   const canonfig = object.canonfig === undefined ? undefined : jsonObject(object.canonfig);
-  const tools = canonfig?.tools;
+  // canonfig owns this record, so its enablement is strict and gates every tool.
+  const tools = canonfig !== undefined && entryIsEnabled(canonfig, true) ? canonfig.tools : undefined;
   if (Array.isArray(tools)) {
     for (let index = 0; index < tools.length; index += 1) {
-      const metadata = explicitMetadata(tools[index]!, context.sourcePath);
       const tool = jsonObject(tools[index]!);
-      if (metadata === undefined || tool === undefined) continue;
+      if (tool === undefined || !entryIsEnabled(tool, true)) continue;
+      const metadata = explicitMetadata(tools[index]!, context.sourcePath);
+      if (metadata === undefined) continue;
       const executable = jsonString(tool.executable) ?? metadata.name;
       records.push({
         sourcePath: context.sourcePath,
@@ -593,7 +622,8 @@ const collectJsonCommands = (
     return value.flatMap((entry, index) => collectJsonCommands(entry, `${path}[${index}]`, inheritedKind));
   }
   const object = jsonObject(value);
-  if (object === undefined) return [];
+  const isRecord = object?.command !== undefined || object?.executable !== undefined;
+  if (object === undefined || !entryIsEnabled(object, isRecord)) return [];
   const lowered = path.toLowerCase();
   const kind: DiscoverySourceKind = lowered.includes("hook")
     ? "hook"
@@ -607,7 +637,10 @@ const collectJsonCommands = (
   const direct: Array<CommandField> = [];
   const commandString = jsonString(commandValue);
   if (commandString !== undefined) {
-    direct.push({ command: [...tokenize(commandString), ...args], field: `${path}.command`, kind });
+    // MCP command is an executable, not a shell program. Preserve Windows
+    // separators and spaces even when discovery runs on another platform.
+    const command = kind === "mcp" ? [commandString, ...args] : [...tokenize(commandString), ...args];
+    direct.push({ command, field: `${path}.command`, kind });
   } else if (Schema.is(JsonStringArray)(commandValue)) {
     direct.push({ command: commandValue, field: `${path}.command`, kind });
   }
