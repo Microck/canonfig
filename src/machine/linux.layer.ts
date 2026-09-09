@@ -987,6 +987,7 @@ const schedulerExpression = (
 const systemdQuote = (
   value: string,
   field: string,
+  role: "executable" | "argument",
 ): Effect.Effect<string, InvalidSchedulerJobError> => {
   if (/[\n\r\0]/u.test(value)) {
     return Effect.fail(new InvalidSchedulerJobError({
@@ -994,7 +995,23 @@ const systemdQuote = (
       message: "systemd command values must be single-line and contain no NUL bytes",
     }));
   }
-  return Effect.succeed(`"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`);
+  // systemd applies three passes to ExecStart=, so three escapes are needed:
+  // "%" specifiers (%h, %i, ...) expand on the raw line before word splitting,
+  // then the shell-like unquoting removes "\\" and "\"" escapes, and at start
+  // time "$VAR" / "${VAR}" expand inside argument words, quoted or not. A
+  // literal "%" survives only as "%%" and a literal "$" only as "$$"
+  // (systemd.unit(5) "Specifiers", systemd.service(5) "Command lines"). The
+  // first word is exempt from the last pass: systemd never expands variables
+  // in the program path, so "$$" there names a file that does not exist.
+  // Home-directory runtime paths from nvm or an npm prefix land here, so both
+  // characters are real.
+  const quoted = value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("\"", "\\\"")
+    .replaceAll("%", "%%");
+  return Effect.succeed(
+    `"${role === "argument" ? quoted.replaceAll("$", () => "$$") : quoted}"`,
+  );
 };
 
 const renderSystemdJob = (
@@ -1015,10 +1032,10 @@ const renderSystemdJob = (
     }
     const executable = yield* checkLinuxPath(job.executable);
     const command = [
-      yield* systemdQuote(executable, "executable"),
+      yield* systemdQuote(executable, "executable", "executable"),
       ...yield* Effect.forEach(
         job.arguments,
-        (argument, index) => systemdQuote(argument, `arguments[${index}]`),
+        (argument, index) => systemdQuote(argument, `arguments[${index}]`, "argument"),
       ),
     ].join(" ");
     const calendar = yield* schedulerExpression(job.calendar);

@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { win32 } from "node:path";
 
 import { describe, expect, it } from "vitest";
-import { Effect, Redacted } from "effect";
+import { Cause, Effect, Redacted } from "effect";
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { ActionId, ResourceId, RunId } from "../src/domain/brand.ts";
 import { sha256BytesHex } from "../src/profile/profile-codec.ts";
@@ -162,6 +162,11 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
         expect(await Promise.all(ownedPaths.map(inspectAcl))).toEqual(originalAcls);
         expect(await inspectAcl(root)).toBe(parentAcl);
       }
+      // The restore helper is compiled once into the data directory and loaded
+      // from there by every later restore, including the second process above.
+      expect(await readdir(join(root, "cache", "canonfig", "native"))).toEqual([
+        expect.stringMatching(/^CanonfigPermissionRestore-[0-9a-f]{16}\.dll$/u),
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -225,6 +230,36 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
     },
     30_000,
   );
+
+  it("surfaces the tagged error of a failing guarded mutation step", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-guarded-mutation-error-"));
+    try {
+      // A missing icacls makes the ACL step inside the guarded write fail with
+      // ProcessStartError. That tag must reach the caller as is, not rewrapped
+      // as a filesystem error about the managed path.
+      const failingAclEnvironment = Object.entries(process.env).flatMap(([name, value]) =>
+        value === undefined || name === "CANONFIG_ICACLS" ? [] : [{ name, value }]
+      );
+      failingAclEnvironment.push({ name: "CANONFIG_ICACLS", value: join(root, "missing-icacls.exe") });
+      const exit = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const managedRoot = yield* machine.normalizePath({ path: root });
+        const path = yield* machine.normalizePath({ path: join(root, "nested", "settings.json") });
+        return yield* machine.mutateWithinRoot({
+          root: managedRoot,
+          path,
+          mutation: { kind: "write", content: Buffer.from("must not be written") },
+        }).pipe(Effect.exit);
+      }).pipe(Effect.provide(windowsMachineStateLayer({ environment: failingAclEnvironment }))));
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag !== "Failure") return;
+      expect(Cause.squash(exit.cause)).toMatchObject({ _tag: "ProcessStartError" });
+      // The guarded parent is moved back into place; the content never lands.
+      expect(await readdir(join(root, "nested"))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("protects a new local credential directory without changing its parent", async () => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-credential-permissions-"));
