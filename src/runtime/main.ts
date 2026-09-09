@@ -18,6 +18,13 @@ import {
 } from "../secrets/cli.ts";
 import { synchronizeSharedSecrets } from "../secrets/secret-client.ts";
 import { SecretTransferError } from "../secrets/secret-store.ts";
+import {
+  EnrollmentInputError,
+  isPrivateEnrollmentCommand,
+  privateEnrollmentArguments,
+  privateEnrollmentHelp,
+  readEnrollmentInput,
+} from "./enrollment-input.ts";
 
 /**
  * Silences the `node:sqlite` experimental warning.
@@ -40,6 +47,7 @@ process.on("warning", (warning) => {
 });
 
 const arguments_ = process.argv.slice(2);
+// Capture only the original non-secret command line, before reading stdin.
 installCommandLog(arguments_);
 
 /** The secret runtime layer, loaded late to keep sqlite out of the static graph. */
@@ -90,6 +98,53 @@ if (isSecretsCommand(arguments_)) {
   NodeRuntime.runMain(
     Effect.promise(() =>
       runHarnessConfigurationCli(arguments_.slice(1), nodeCliIo)
+    ),
+  );
+} else if (
+  isPrivateEnrollmentCommand(arguments_)
+  && !arguments_.some((argument) => ["--help", "-h", "--version", "-V"].includes(argument))
+) {
+  NodeRuntime.runMain(
+    Effect.tryPromise({
+      try: async (signal) => {
+        const nonSecretArguments = privateEnrollmentArguments(arguments_);
+        const invitation = await readEnrollmentInput(process.stdin, { signal });
+        // This in-memory argv goes through the existing invitation validation,
+        // TLS pinning, enrollment, and recovery contract. process.argv is never
+        // modified and no child process receives the invitation in its argv.
+        return [...nonSecretArguments, invitation];
+      },
+      catch: (cause) => cause instanceof EnrollmentInputError
+        ? cause
+        : new EnrollmentInputError("Private enrollment input could not be read"),
+    }).pipe(
+      Effect.catch((error) => Effect.sync(() => {
+        nodeCliIo.writeStderr(renderUsageFailure(
+          error.message,
+          arguments_.includes("--json") ? "json" : "human",
+        ));
+        nodeCliIo.setExitCode(CliExitCode.usageOrConfiguration);
+        return undefined;
+      })),
+      Effect.flatMap((invocation) => {
+        if (invocation === undefined) return Effect.void;
+        const checked = evaluateCli(invocation);
+        if (checked._tag !== "Command") {
+          return Effect.sync(() => {
+            nodeCliIo.writeStderr(renderUsageFailure(
+              checked._tag === "InvalidInput" ? checked.message : "Invalid private enrollment command",
+              arguments_.includes("--json") ? "json" : "human",
+            ));
+            nodeCliIo.setExitCode(CliExitCode.usageOrConfiguration);
+          });
+        }
+        return Effect.promise(() => import("./layers.ts")).pipe(
+          Effect.flatMap(({ runtimeLayer }) =>
+            runCli(invocation, nodeCliIo).pipe(Effect.provide(runtimeLayer()))
+          ),
+          Effect.asVoid,
+        );
+      }),
     ),
   );
 } else {
@@ -152,7 +207,10 @@ if (isSecretsCommand(arguments_)) {
   } else {
     NodeRuntime.runMain(Effect.sync(() => {
       if (outcome._tag === "Help" || outcome._tag === "Version") {
-        nodeCliIo.writeStdout(`${outcome.text}\n`);
+        const extraHelp = outcome._tag === "Help"
+          ? `\nPrivate enrollment (bounded pipe input):\n${privateEnrollmentHelp}\n`
+          : "";
+        nodeCliIo.writeStdout(`${outcome.text}${extraHelp}\n`);
       } else {
         // The same renderer as the in-layer path, so a usage failure caught
         // before the runtime layer is built still honors --json.
