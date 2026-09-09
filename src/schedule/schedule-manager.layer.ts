@@ -25,8 +25,8 @@ import {
   type SyncSchedule,
 } from "./schedule-manager.types.ts";
 import { windowsCalendar } from "./windows-schedule.ts";
+import { scheduleCommand } from "./schedule-command.ts";
 
-const syncArguments = ["sync", "--apply", "--no-input"] as const;
 const validLocalTime = /^([01]\d|2[0-3]):[0-5]\d$/u;
 
 const validateSchedule = (
@@ -143,15 +143,14 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           ScheduleManagerError
         > {
           const schedule = yield* validateSchedule(input.schedule ?? defaultSyncSchedule);
-          const executable = input.executable === undefined
-            ? (yield* machine.findExecutable({ name: "canonfig" })).path
-            : yield* machine.normalizePath({ path: input.executable });
+          const command = scheduleCommand(input.executable);
+          const executable = yield* machine.normalizePath({ path: command.executable });
           const calendar = yield* calendarFor(executable.platform, schedule);
           const rendered = yield* machine.renderSchedulerJob({
             name: "canonfig-sync",
             description: "Canonfig follower synchronization",
             executable,
-            arguments: syncArguments,
+            arguments: command.arguments,
             calendar,
           });
           return { schedule, definition: rendered };
