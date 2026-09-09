@@ -1,0 +1,35 @@
+name: Materialize reviewed configuration patch
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - .github/workflows/apply-reviewed-config.yml
+      - .github/audit/config.patch
+
+permissions:
+  contents: read
+
+jobs:
+  materialize:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/audit-recursive-config'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Publish only the exact locally tested tree to this PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch=.github/audit/config.patch
+          echo "2be4abcc5ecccdc20260ca9c3cf66084b384e85fe0c9e5fd7753a8df6a093cf5  $patch" | sha256sum --check
+          git apply --check "$patch"
+          git apply --index "$patch"
+          git rm .github/audit/config.patch .github/workflows/apply-reviewed-config.yml
+          test "$(git write-tree)" = b123d1ee67327e1f15c525c0196338ceb6d8fbc3
+          git -c user.name='Canonfig audit' -c user.email='audit@users.noreply.github.com' commit -m 'fix(config): support recursive values and preserve subtree ownership'
+          git push origin HEAD:refs/heads/fix/audit-recursive-config

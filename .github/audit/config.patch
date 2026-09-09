@@ -1,0 +1,289 @@
+diff --git a/src/cli/failure-taxonomy.ts b/src/cli/failure-taxonomy.ts
+index a0f97a9..1ff14a4 100644
+--- a/src/cli/failure-taxonomy.ts
++++ b/src/cli/failure-taxonomy.ts
+@@ -236,6 +236,10 @@ export const failureTaxonomy = {
+     "usage-or-configuration",
+     (error) => `resource ${text(error.id)} declares an invalid target path`,
+   ),
++  InvalidConfigKeyError: describe(
++    "usage-or-configuration",
++    (error) => `invalid config key ${text(error.path)} for ${text(error.id)}: ${text(error.reason)}`,
++  ),
+   InvalidTextCompositionError: describe(
+     "usage-or-configuration",
+     (error) => `resource ${text(error.id)} cannot use append-local: ${text(error.reason)}. Correct its file specification before publishing.`,
+diff --git a/src/domain/profile.ts b/src/domain/profile.ts
+index d69fa97..3c83f01 100644
+--- a/src/domain/profile.ts
++++ b/src/domain/profile.ts
+@@ -1,5 +1,6 @@
+ import { Schema } from "effect";
+ import { sourceTextIssue } from "./text-composition.ts";
++import { configPathIssue, configPathsOverlap } from "./config-path.ts";
+ 
+ import type {
+   ContentDigest,
+@@ -15,6 +16,7 @@ import {
+   FilesystemMode as FilesystemModeSchema,
+   ResourceKind as ResourceKindSchema,
+   AgentInstallBounds,
++  ConfigValue,
+   ToolRecipeRef,
+   policyCompatibleWithKind,
+   type Platform,
+@@ -111,7 +113,7 @@ export interface ProfileResourceInput {
+ export type ResourceSpecInput =
+   | { readonly kind: "file"; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }
+   | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
+-  | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: string | number | boolean | ReadonlyArray<string> }> }
++  | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }> }
+   | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
+   | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined; readonly agentInstall?: { readonly paths: ReadonlyArray<string>; readonly origins?: ReadonlyArray<string> | undefined } | undefined }
+   | { readonly kind: "credential"; readonly reference: string };
+@@ -171,12 +173,8 @@ export interface CredentialDescriptor {
+   readonly loginRequired: boolean;
+ }
+ 
+-const ConfigValueInputSchema = Schema.Union([
+-  Schema.String,
+-  Schema.Number,
+-  Schema.Boolean,
+-  Schema.Array(Schema.String),
+-]);
++// Authoring and follower decoding must accept the exact same portable values.
++const ConfigValueInputSchema = ConfigValue;
+ 
+ const AuthoringFileSchema = Schema.Struct({
+   kind: Schema.Literal("file"),
+@@ -527,6 +525,11 @@ export class InvalidRecipeError extends Schema.TaggedError<InvalidRecipeError>()
+   { id: Schema.String, reason: Schema.String },
+ ) {}
+ 
++export class InvalidConfigKeyError extends Schema.TaggedError<InvalidConfigKeyError>()(
++  "InvalidConfigKeyError",
++  { id: Schema.String, path: Schema.String, reason: Schema.String },
++) {}
++
+ export class InvalidTextCompositionError extends Schema.TaggedError<InvalidTextCompositionError>()(
+   "InvalidTextCompositionError",
+   { id: Schema.String, reason: Schema.String },
+@@ -548,6 +551,7 @@ export type ProfileValidationError =
+   | UnmanageableFilesystemModeError
+   | InvalidBuildPolicyError
+   | InvalidTextCompositionError
++  | InvalidConfigKeyError
+   | InvalidRecipeError;
+ 
+ /** Aggregate contract failure preserving all precise tagged graph errors. */
+@@ -622,6 +626,7 @@ export const validateProfileResources = (
+       errors.push(new PolicyKindMismatchError({ id: resource.id, kind, policy }));
+     }
+     errors.push(...validateRecipes(resource));
++    errors.push(...validateConfigKeys(resource));
+     const compositionIssue = appendLocalIssue(resource);
+     if (compositionIssue !== undefined) {
+       errors.push(new InvalidTextCompositionError({ id: resource.id, reason: compositionIssue }));
+@@ -643,6 +648,25 @@ export const validateProfileResources = (
+   return errors;
+ };
+ 
++const validateConfigKeys = (resource: ProfileResourceInput): ReadonlyArray<InvalidConfigKeyError> => {
++  if (resource.spec.kind !== "config") return [];
++  const errors: Array<InvalidConfigKeyError> = [];
++  const keys = resource.spec.keys.map((entry) => entry.path).sort(compareText);
++  for (let index = 0; index < keys.length; index += 1) {
++    const path = keys[index]!;
++    const reason = configPathIssue(path);
++    if (reason !== undefined) errors.push(new InvalidConfigKeyError({ id: resource.id, path, reason }));
++    for (const previous of keys.slice(0, index)) {
++      if (configPathsOverlap(previous, path)) {
++        errors.push(new InvalidConfigKeyError({
++          id: resource.id, path, reason: `config path overlaps declared path ${previous}`,
++        }));
++      }
++    }
++  }
++  return errors;
++};
++
+ const validateFilesystemModes = (
+   resource: ProfileResourceInput,
+ ): ReadonlyArray<UnmanageableFilesystemModeError> => {
+@@ -1259,8 +1283,8 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
+           .map(normalizeManagedFile)
+           .sort((left, right) => compareText(left.path, right.path)),
+       };
+-    case "tool":
+-      return {
++    case "tool": {
++      const normalized = {
+         kind: spec.kind,
+         toolId: spec.toolId,
+         recipes: [...spec.recipes].sort((left, right) =>
+@@ -1286,6 +1310,13 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
+         }),
+         login: spec.login ?? { required: false },
+       };
++      if (spec.agentInstall === undefined) return normalized;
++      const paths = uniqueSorted(spec.agentInstall.paths);
++      const agentInstall = spec.agentInstall.origins === undefined
++        ? { paths }
++        : { paths, origins: uniqueSorted(spec.agentInstall.origins) };
++      return { ...normalized, agentInstall };
++    }
+     case "credential":
+       return { kind: spec.kind, reference: spec.reference };
+   }
+diff --git a/src/domain/resource.ts b/src/domain/resource.ts
+index cd01f0a..240695d 100644
+--- a/src/domain/resource.ts
++++ b/src/domain/resource.ts
+@@ -164,13 +164,29 @@ export type DirectoryResourceSpec = Schema.Schema.Type<typeof DirectoryResourceS
+ export const ConfigFormat = Schema.Literals(["toml", "json", "yaml"]);
+ export type ConfigFormat = Schema.Schema.Type<typeof ConfigFormat>;
+ 
+-export const ConfigValue = Schema.Union([
++/** The portable JSON/YAML/TOML value subset. Array order is always semantic. */
++export type ConfigValue =
++  | string
++  | number
++  | boolean
++  | ReadonlyArray<ConfigValue>
++  | { readonly [key: string]: ConfigValue };
++
++// Null is deliberately excluded because TOML has no null value. Never coerce it.
++export const ConfigValue: Schema.Codec<ConfigValue> = Schema.suspend(() => Schema.Union([
+   Schema.String,
+-  Schema.Number,
++  Schema.Finite,
+   Schema.Boolean,
+-  Schema.Array(Schema.String),
+-]);
+-export type ConfigValue = Schema.Schema.Type<typeof ConfigValue>;
++  Schema.Array(ConfigValue),
++  Schema.Record(Schema.String, ConfigValue).check(Schema.makeFilter((value) => {
++    const reserved = Object.keys(value).find((key) =>
++      ["__proto__", "constructor", "prototype"].includes(key)
++    );
++    return reserved === undefined
++      ? undefined
++      : { path: [reserved], issue: "config value contains a reserved prototype field" };
++  })),
++]));
+ 
+ export const ConfigKey = Schema.Struct({
+   path: Schema.NonEmptyString,
+diff --git a/src/synchronization/config-codec.ts b/src/synchronization/config-codec.ts
+index 2b3d625..b8cfa28 100644
+--- a/src/synchronization/config-codec.ts
++++ b/src/synchronization/config-codec.ts
+@@ -3,6 +3,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+ import { Option, Schema } from "effect";
+ 
+ import type { ResourceSpecInput } from "../domain/profile.ts";
++import { configPathIssue } from "../domain/config-path.ts";
+ 
+ export type ConfigFormat =
+   Extract<ResourceSpecInput, { readonly kind: "config" }>["format"];
+@@ -53,11 +54,9 @@ export const serializeConfigDocument = (
+ };
+ 
+ const pathSegments = (path: string): ReadonlyArray<string> => {
+-  const segments = path.split(".");
+-  if (segments.some((segment) => segment.length === 0)) {
+-    throw new TypeError(`config key path contains an empty segment: ${path}`);
+-  }
+-  return segments;
++  const issue = configPathIssue(path);
++  if (issue !== undefined) throw new TypeError(`${issue}: ${path}`);
++  return path.split(".");
+ };
+ 
+ export const setConfigPath = (
+diff --git a/src/synchronization/resource-executors.ts b/src/synchronization/resource-executors.ts
+index a79ffb4..6fb9028 100644
+--- a/src/synchronization/resource-executors.ts
++++ b/src/synchronization/resource-executors.ts
+@@ -926,16 +926,15 @@ const prepareConfig = (
+             message: `cannot merge non-object config ${target}: ${String(error)}`,
+           }),
+       });
++    // Prune old ownership before writing new values: a dropped child must not
++    // delete part of the newly written parent (or an old parent its new child).
++    for (const key of removes) {
++      removeConfigPath(current, key);
++    }
+     for (const key of keys) {
+       const value = getConfigPath(desired, key);
+       if (value !== undefined) setConfigPath(current, key, value);
+     }
+-    // Keys Canonfig owned that the revision no longer declares. The planner
+-    // only asks for this while the file still holds what Canonfig wrote, so
+-    // there is no local edit here to lose.
+-    for (const key of removes) {
+-      removeConfigPath(current, key);
+-    }
+     const content = encoder.encode(
+       serializeConfigDocument(config.format, current),
+     );
+diff --git a/src/synchronization/resource-plans.ts b/src/synchronization/resource-plans.ts
+index 6cfb520..7386a35 100644
+--- a/src/synchronization/resource-plans.ts
++++ b/src/synchronization/resource-plans.ts
+@@ -1,4 +1,5 @@
+ import { Schema } from "effect";
++import { configPathsOverlap } from "../domain/config-path.ts";
+ 
+ import {
+   AgentTaskId,
+@@ -591,7 +592,9 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
+       },
+     }];
+   }
+-  const conflicts = context.desired.keys.filter((key) => context.overlayKeys.includes(key));
++  const conflicts = context.desired.keys.filter((key) =>
++    context.overlayKeys.some((local) => configPathsOverlap(key, local))
++  );
+   if (conflicts.length > 0) {
+     const keys = sortedUnique(conflicts);
+     return [{
+@@ -616,7 +619,9 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
+   // Comparing values per key would need the applied value of each owned key,
+   // which the Applied Resource Record does not store; the Local Overlay is the
+   // mechanism this product already gives an operator to say "this key is mine".
+-  const prunable = dropped.filter((key) => !context.overlayKeys.includes(key));
++  const prunable = dropped.filter((key) =>
++    !context.overlayKeys.some((local) => configPathsOverlap(key, local))
++  );
+   if (prunable.length > 0) {
+     return [{
+       kind: "write-config",
+diff --git a/website/content/docs/reference/profile-schema.mdx b/website/content/docs/reference/profile-schema.mdx
+index eed6623..9c047a4 100644
+--- a/website/content/docs/reference/profile-schema.mdx
++++ b/website/content/docs/reference/profile-schema.mdx
+@@ -214,3 +214,23 @@ mode, raw symlink target, and owned tree entries that Canonfig last applied.
+ This record enables safe mirror deletion, mode-aware drift detection, audit,
+ and recovery. It is not a Local Overlay and does not confer source authority on
+ the follower.
++
++## Structured configuration ownership
++
++A `config` value may contain strings, finite numbers, booleans, arrays of these
++values, and nested objects. Arrays preserve their order, including arrays of hook
++objects. Null is not supported by the portable contract because TOML cannot
++represent it. Unsupported values and reserved prototype fields are rejected,
++not converted or silently dropped.
++
++Each dotted key owns the entire value at that path. A profile cannot claim both
++`mcpServers.example` and `mcpServers.example.command`, or declare the same path
++twice. Empty path segments, NUL bytes, and prototype traversal segments are
++invalid. Source and Local Overlay paths conflict when either is an ancestor of
++the other; similar sibling names do not conflict.
++
++When ownership changes between a parent object and one of its children, dropped
++Source keys are removed before the new values are written. Unrelated settings
++remain untouched. An old parent that contains a newly local child is retained
++rather than deleting local state; review that retained subtree when changing
++ownership. Normal rollback restores the exact previous file.
