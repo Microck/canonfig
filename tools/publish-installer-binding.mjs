@@ -16,20 +16,22 @@ const patches = [
     replacements: [
       ['import { relativePathAncestors } from "./resource-plans.ts";', 'import { relativePathAncestors } from "./resource-plans.ts";\nimport { resolveInstallerInvocation } from "./installer-bindings.ts";'],
       ['    const executableName = method === "apt"\n      ? "apt-get"\n      : method === "homebrew"\n      ? "brew"\n      : method;\n    const executable = yield* machine.findExecutable({ name: executableName });', '    const installer = yield* resolveInstallerInvocation(method);'],
-      ['    const result = yield* machine.runProcess({\n      executable: executable.path,\n      arguments: arguments_,\n      timeoutMilliseconds: context.limits.processTimeoutMilliseconds,', '    const result = yield* machine.runProcess({\n      executable: installer.executable,\n      arguments: [...installer.arguments, ...arguments_],\n      timeoutMilliseconds: context.limits.processTimeoutMilliseconds,']
+      ['    const result = yield* machine.runProcess({\n      executable: executable.path,\n      arguments: arguments_,\n      timeoutMilliseconds: context.limits.processTimeoutMilliseconds,\n      maximumOutputBytes: context.limits.maximumProcessOutputBytes,\n      environment: packageEnvironment,', '    const result = yield* machine.runProcess({\n      executable: installer.executable,\n      arguments: [...installer.arguments, ...arguments_],\n      timeoutMilliseconds: context.limits.processTimeoutMilliseconds,\n      maximumOutputBytes: context.limits.maximumProcessOutputBytes,\n      environment: packageEnvironment,']
     ]
   }
 ];
+const prepared = [];
 for (const patch of patches) {
   const bytes = readFileSync(patch.path);
   const digest = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
   if (digest !== patch.sha) throw new Error(`Refusing changed input: ${patch.path}`);
   let text = bytes.toString("utf8");
-  for (const [before, after] of patch.replacements) {
-    if (text.split(before).length !== 2) throw new Error(`Non-unique patch anchor: ${patch.path}`);
+  for (const [index, [before, after]] of patch.replacements.entries()) {
+    if (text.split(before).length !== 2) throw new Error(`Non-unique patch anchor ${index}: ${patch.path}`);
     text = text.replace(before, after);
   }
-  writeFileSync(patch.path, text);
+  prepared.push({ path: patch.path, text });
 }
+for (const patch of prepared) writeFileSync(patch.path, patch.text);
 unlinkSync("tools/publish-installer-binding.mjs");
 unlinkSync(".github/workflows/publish-installer-binding.yml");
