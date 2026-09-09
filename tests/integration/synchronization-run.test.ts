@@ -2319,10 +2319,11 @@ if (process.argv.slice(2).some((value) =>
 
     const outcome = await seedAndRun({ ...fixture, input });
 
-    // A tagged error without a message field renders its fields as the message.
+    // A tagged error without a message field renders its fields as the message,
+    // and the reason keeps the tag in front of it.
     expect(outcome).toMatchObject({
       outcome: "Failed",
-      reason: `digest="${fixture.artifact.digest}"`,
+      reason: `MissingArtifactError: digest="${fixture.artifact.digest}"`,
     });
     const applied = await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>
@@ -3058,7 +3059,7 @@ if (process.argv.slice(2).some((value) =>
     // the reason, which the CLI maps to verification-or-apply-failure.
     expect(outcome).toMatchObject({
       outcome: "Failed",
-      reason: `cannot merge config ${base.target}: config key path crosses a non-object value: mcp.server`,
+      reason: `InvalidExecutionPlanError: cannot merge config ${base.target}: config key path crosses a non-object value: mcp.server`,
     });
     expect(await readFile(base.target, "utf8")).toBe(current);
   });
