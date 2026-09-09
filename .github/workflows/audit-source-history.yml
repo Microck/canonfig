@@ -1,0 +1,23 @@
+name: Audit source history
+on:
+  push:
+    branches: [chore/audit-validation-environment]
+permissions:
+  contents: read
+jobs:
+  source-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export tracked Git objects without credentials or local configuration
+        run: git bundle create audit-source-history.bundle --all
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: audit-public-source-history
+          path: audit-source-history.bundle
+          retention-days: 1
+          if-no-files-found: error
