@@ -2997,6 +2997,72 @@ if (process.argv.slice(2).some((value) =>
     expect(getConfigPath(document, "agent.model")).toBe("review-model");
   });
 
+  it("fails the action when an owned config key crosses a scalar on disk", async () => {
+    const base = fileFixture(temporaryDirectory(), "run-config-scalar");
+    mkdirSync(dirname(base.target), { recursive: true });
+    const current = '{"mcp":"disabled"}\n';
+    writeFileSync(base.target, current);
+    const desiredDocument = {};
+    setConfigPath(desiredDocument, "mcp.server", "review-server");
+    const desiredBytes = new TextEncoder().encode(
+      serializeConfigDocument("json", desiredDocument),
+    );
+    const digest = sha256BytesHex(desiredBytes);
+    const resource: PublishedResource = {
+      ...base.revision.resources[0]!,
+      kind: "config",
+      policy: "merge",
+    };
+    const desired: DesiredResource = {
+      kind: "config",
+      digest,
+      format: "json",
+      keys: ["mcp.server"],
+    };
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      resources: [resource],
+      desired: [{
+        resource: resource.id,
+        desired,
+        verification: { method: "digest", digest },
+      }],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{
+          resource: resource.id,
+          observed: {
+            state: "present",
+            digest: sha256BytesHex(new TextEncoder().encode(current)),
+            executable: false,
+          },
+        }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const artifact = { digest, content: desiredBytes };
+    const outcome = await seedAndRun({
+      ...base,
+      revision,
+      artifact,
+      input: { ...base.input, plan, revision, artifacts: [artifact] },
+    });
+
+    // A typed action failure rather than a defect: the run reports Failed with
+    // the reason, which the CLI maps to verification-or-apply-failure.
+    expect(outcome).toMatchObject({
+      outcome: "Failed",
+      reason: `cannot merge config ${base.target}: config key path crosses a non-object value: mcp.server`,
+    });
+    expect(await readFile(base.target, "utf8")).toBe(current);
+  });
+
   it.each([8, 17 * 1024 * 1024])("returns Failed and restores %i owned bytes when verification fails", async (size) => {
     const fixture = fileFixture(temporaryDirectory(), "run-verification");
     mkdirSync(dirname(fixture.target), { recursive: true });
