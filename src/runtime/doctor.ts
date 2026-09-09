@@ -295,6 +295,17 @@ const sourceProbe = (
               },
             }, (response) => {
               response.resume();
+              // A Source that dies mid-response never emits "end", and the
+              // request-level "error" listener below does not fire once the
+              // response has begun. Node only emits "error" on an
+              // IncomingMessage that has a listener, so without this the probe
+              // stalls until its outer timeout and reports a timeout instead
+              // of the transport failure that actually happened.
+              response.once("error", () => {
+                signal.removeEventListener("abort", abortRequest);
+                request.destroy();
+                rejectProbe(new DoctorSourceProbeError("transport"));
+              });
               response.once("end", () => {
                 signal.removeEventListener("abort", abortRequest);
                 if (response.statusCode === 200) resolveProbe();
