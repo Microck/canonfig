@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { Schema } from "effect";
 
 export interface BuildFile {
   readonly path: string;
@@ -56,10 +57,9 @@ const gitIdentity = (root: string): BuildReceipt["git"] => {
 
 /** The digests describe actual bytes; a clean Git label alone is never build identity. */
 export const createBuildReceipt = (root: string): BuildReceipt => {
-  const manifest: unknown = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  if (typeof manifest !== "object" || manifest === null || !("version" in manifest) || typeof manifest.version !== "string") {
-    throw new Error("Cannot identify the package version for the build receipt");
-  }
+  const manifest = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.NonEmptyString }))(
+    JSON.parse(readFileSync(join(root, "package.json"), "utf8")),
+  );
   const sourceFiles = describeFiles(root, [
     ...filesUnder(root, "src"),
     ...filesUnder(root, "tools/release"),
