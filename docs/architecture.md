@@ -296,7 +296,7 @@ local tarball command has no guaranteed offline mode.
 
 Every recipe also carries a reviewed `buildPolicy`. The backward-compatible
 default is `{ "mode": "scripts-disabled" }`; npm installs use
-`--ignore-scripts` and uv installs use `--only-binary=:all:`. A package that
+`--ignore-scripts` and `uv tool install` uses `--no-build`. A package that
 requires lifecycle hooks or an sdist must publish
 `{ "mode": "required", "reviewedBy", "reviewedAt", "executables", "paths",
 "origins", "capabilities", "steps" }`. Those bounds are part of the signed
@@ -329,7 +329,7 @@ private path is retained when explicitly reviewed; origins are never substituted
 for a reviewed simple-index path. Index URLs reject credentials, fragments,
 non-HTTPS schemes, and non-simple paths before executable lookup. The uv action
 always supplies `--no-config`, the approved full `--default-index`, an exact
-version, and `--only-binary=:all:` under the default build policy.
+version, and `--no-build` under the default build policy.
 
 When no recipe is unambiguous, Canonfig creates an Agent Task containing the upstream URL and discovery evidence. The Configuration Agent may propose a recipe. The controlled executor applies it only under the configured agent policy, and verification must pass before the tool converges.
 
