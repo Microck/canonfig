@@ -1,0 +1,27 @@
+name: Publish reviewed scheduled-runtime patch
+on:
+  push:
+    branches: [fix/audit-scheduled-runtime]
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.repository == 'Microck/canonfig' && github.ref == 'refs/heads/fix/audit-scheduled-runtime'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Publish exactly the locally tested tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode .github/scheduled-runtime.patch.gz.b64 | gzip --decompress > "$RUNNER_TEMP/reviewed.patch"
+          echo "723d980bda40ba287eecbc9a2c90816cef33e269c0cc81461611bb473375fdc5  $RUNNER_TEMP/reviewed.patch" | sha256sum --check
+          git apply --check "$RUNNER_TEMP/reviewed.patch"
+          git apply --index "$RUNNER_TEMP/reviewed.patch"
+          git rm .github/scheduled-runtime.patch.gz.b64 .github/workflows/publish-scheduled-runtime.yml
+          test "$(git write-tree)" = 27df43840bb01c6855c0d0423677139ab6c3f07a
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(schedule): pin the packaged runtime and preserve explicit cadence'
+          git push origin HEAD:refs/heads/fix/audit-scheduled-runtime
