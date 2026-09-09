@@ -4,6 +4,8 @@ import { CliExitCode } from "../../src/cli/exit-codes.ts";
 import { isSecretField, redactArguments, redactText } from "../../src/cli/redaction.ts";
 import { renderCliResult, renderUsageFailure, sanitizeCliData } from "../../src/cli/render.ts";
 
+const secret = "disposable-redaction-fixture";
+
 describe("credential-safe CLI output", () => {
   it("redacts equals-style and separate argv values without changing other arguments", () => {
     expect(redactArguments([
@@ -17,6 +19,8 @@ describe("credential-safe CLI output", () => {
     expect(isSecretField("SERVICE_API_KEY")).toBe(true);
     expect(isSecretField("clientSecret")).toBe(true);
     expect(isSecretField("credentialReference")).toBe(false);
+    expect(isSecretField("maximumSecretBytes")).toBe(false);
+    expect(isSecretField("TOKEN_BUDGET")).toBe(false);
     expect(sanitizeCliData({
       credentialReference: "keychain:reference-only",
       env: { SERVICE_API_KEY: "test-only-key", PATH: "/usr/bin" },
@@ -37,6 +41,24 @@ describe("credential-safe CLI output", () => {
       .toBe('{"password":"[REDACTED]","port":9000}');
   });
 
+  it.each([
+    `--password=${secret}`,
+    `--password ${secret}`,
+    `--api-key '${secret} with spaces'`,
+    `GITHUB_TOKEN=${secret}`,
+    `https://user:${secret}@example.invalid/path`,
+    `https://user:${secret}@mail@example.invalid/path`,
+    `https://example.invalid/path?api_key=${secret}&limit=1`,
+    `Authorization: Bearer ${secret}`,
+    `Proxy-Authorization: Basic ${secret}`,
+    `-----BEGIN PRIVATE KEY-----\n${secret}\n-----END PRIVATE KEY-----`,
+  ])("redacts text and remains idempotent: %s", (input) => {
+    const result = redactText(input);
+    expect(result).not.toContain(secret);
+    expect(result).toContain("[REDACTED]");
+    expect(redactText(result)).toBe(result);
+  });
+
   it("redacts nested commands and discovery excerpts", () => {
     expect(sanitizeCliData({
       resources: [{ args: ["--password=test-only-argument"] }],
@@ -49,9 +71,7 @@ describe("credential-safe CLI output", () => {
 
   it.each(["human", "json"] as const)("redacts %s result and usage messages", (format) => {
     const message = "Unknown argument: --password=test-only-message";
-    const output = renderCliResult({
-      command: "usage", message, exitCode: CliExitCode.usageOrConfiguration,
-    }, format);
+    const output = renderCliResult({ command: "usage", message, exitCode: CliExitCode.usageOrConfiguration }, format);
     expect(output).not.toContain("test-only-message");
     expect(output).toContain("[REDACTED]");
     expect(renderUsageFailure(message, format)).not.toContain("test-only-message");
@@ -64,5 +84,13 @@ describe("credential-safe CLI output", () => {
     expect(input.args).toEqual(["--password=test-only-input"]);
     const text = "password=[REDACTED] https://[REDACTED]@example.test/";
     expect(redactText(text)).toBe(text);
+  });
+
+  it("preserves literal object keys without invoking inherited setters", () => {
+    const input = JSON.parse('{"__proto__":{"password":"test-only-key"},"constructor":"ordinary"}');
+    const result = sanitizeCliData(input);
+    expect(Object.hasOwn(result as object, "__proto__")).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("test-only-key");
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
   });
 });

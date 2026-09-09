@@ -35,12 +35,17 @@ const redact = (value: CliPayload): CliPayload => {
     || Schema.is(Schema.Boolean)(value)
   ) return value;
   const result: { [key: string]: CliPayload | undefined } = {};
-  const namedSecret = typeof value.name === "string" && isSecretField(value.name);
+  const namedSecret = "name" in value && typeof value.name === "string" && isSecretField(value.name);
   for (const [key, entry] of Object.entries(value)) {
     if (entry === undefined) continue;
-    result[key] = isSecretField(key) || (namedSecret && key === "value")
-      ? "[REDACTED]"
-      : redact(entry);
+    Object.defineProperty(result, key, {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: isSecretField(key) || (namedSecret && key === "value")
+        ? "[REDACTED]"
+        : redact(entry),
+    });
   }
   return result;
 };
@@ -59,7 +64,12 @@ const ordered = (value: CliPayload): CliPayload => {
       .sort(([left], [right]) => left.localeCompare(right))
   ) {
     if (entry === undefined) continue;
-    result[key] = ordered(entry);
+    Object.defineProperty(result, key, {
+      enumerable: true,
+      configurable: true,
+      writable: true,
+      value: ordered(entry),
+    });
   }
   return result;
 };

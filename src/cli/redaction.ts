@@ -1,6 +1,6 @@
 /** Redact recognizable credential syntax before text crosses a CLI output boundary. */
-const sensitiveName = /(?:^|[-_])(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?token|refresh[-_]?token|private[-_]?key|signing[-_]?key|tls[-_]?key|authorization|cookie|credential)(?:$|[-_])/iu;
-const exactSensitiveName = /^(?:credentialValue|privateKey|signingKey|tlsKey|accessToken|refreshToken|apiKey|clientSecret|setCookie)$/iu;
+const sensitiveName = /(?:^|[-_])(?:password|passwd|pwd|secret|token|api[-_]?key|access[-_]?token|refresh[-_]?token|private[-_]?key|signing[-_]?key|tls[-_]?key|authorization|cookie|credential)$/iu;
+const exactSensitiveName = /^(?:credentialValue|privateKey|signingKey|tlsKey|accessToken|refreshToken|apiKey|clientSecret|setCookie|proxyAuthorization)$/iu;
 const referenceName = /^(?:credential|secret|signingKey|tlsKey)(?:Reference|References|Ref|Name|Names)$/iu;
 const replacement = "[REDACTED]";
 
@@ -12,8 +12,9 @@ export const isSecretField = (name: string): boolean =>
  * Callers must still avoid collecting raw authentication files or process output.
  */
 export const redactText = (text: string): string => text
-  .replace(/\b(https?:\/\/)[^\s/@]+@/giu, "$1[REDACTED]@")
-  .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/giu, "$1 [REDACTED]")
+  .replace(/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----/gu, replacement)
+  .replace(/\b(https?:\/\/)[^\s/]*@/giu, "$1[REDACTED]@")
+  .replace(/(\b(?:authorization|proxy-authorization)\s*[:=]\s*)(?:Bearer|Basic)\s+[^\s"',;}\]]+/giu, "$1[REDACTED]")
   .replace(
     /((?:--)?[A-Za-z_][A-Za-z0-9_-]*)(\s*[=:]\s*)(\[REDACTED\]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s&,;\]}]+)/gu,
     (match: string, name: string, separator: string) =>
