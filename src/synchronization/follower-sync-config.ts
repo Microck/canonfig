@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 
 import {
   CertificateFingerprint,
@@ -162,7 +163,7 @@ export const defaultScheduledInvocation = {
 } as const;
 
 export class FollowerSynchronizationConfigurationError extends
-  Schema.TaggedError<FollowerSynchronizationConfigurationError>()(
+  TaggedError<FollowerSynchronizationConfigurationError>()(
     "FollowerSynchronizationConfigurationError",
     {
       reason: Schema.Literals([

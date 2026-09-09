@@ -1,8 +1,9 @@
 import { Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 
-export class InvalidScheduleError extends Schema.TaggedError<InvalidScheduleError>()(
+export class InvalidScheduleError extends TaggedError<InvalidScheduleError>()(
   "InvalidScheduleError",
   {
     field: Schema.String,
@@ -11,7 +12,7 @@ export class InvalidScheduleError extends Schema.TaggedError<InvalidScheduleErro
 ) {}
 
 export class ScheduleHumanActionRequiredError
-  extends Schema.TaggedError<ScheduleHumanActionRequiredError>()(
+  extends TaggedError<ScheduleHumanActionRequiredError>()(
     "ScheduleHumanActionRequiredError",
     {
       action: Schema.String,
@@ -20,7 +21,7 @@ export class ScheduleHumanActionRequiredError
   ) {}
 
 export class ScheduleVerificationError
-  extends Schema.TaggedError<ScheduleVerificationError>()(
+  extends TaggedError<ScheduleVerificationError>()(
     "ScheduleVerificationError",
     {
       operation: Schema.String,

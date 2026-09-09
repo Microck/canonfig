@@ -1,6 +1,7 @@
 import { Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 
-export class RepositorySqlError extends Schema.TaggedError<RepositorySqlError>()(
+export class RepositorySqlError extends TaggedError<RepositorySqlError>()(
   "RepositorySqlError",
   {
     operation: Schema.String,
@@ -8,7 +9,7 @@ export class RepositorySqlError extends Schema.TaggedError<RepositorySqlError>()
   },
 ) {}
 
-export class RepositoryDecodeError extends Schema.TaggedError<RepositoryDecodeError>()(
+export class RepositoryDecodeError extends TaggedError<RepositoryDecodeError>()(
   "RepositoryDecodeError",
   {
     entity: Schema.String,
@@ -17,7 +18,7 @@ export class RepositoryDecodeError extends Schema.TaggedError<RepositoryDecodeEr
   },
 ) {}
 
-export class RevisionImmutableError extends Schema.TaggedError<RevisionImmutableError>()(
+export class RevisionImmutableError extends TaggedError<RevisionImmutableError>()(
   "RevisionImmutableError",
   {
     revision: Schema.String,
@@ -25,35 +26,35 @@ export class RevisionImmutableError extends Schema.TaggedError<RevisionImmutable
   },
 ) {}
 
-export class ActiveRunExistsError extends Schema.TaggedError<ActiveRunExistsError>()(
+export class ActiveRunExistsError extends TaggedError<ActiveRunExistsError>()(
   "ActiveRunExistsError",
   {
     follower: Schema.String,
   },
 ) {}
 
-export class FollowerNotFoundError extends Schema.TaggedError<FollowerNotFoundError>()(
+export class FollowerNotFoundError extends TaggedError<FollowerNotFoundError>()(
   "FollowerNotFoundError",
   {
     follower: Schema.String,
   },
 ) {}
 
-export class RevisionNotFoundError extends Schema.TaggedError<RevisionNotFoundError>()(
+export class RevisionNotFoundError extends TaggedError<RevisionNotFoundError>()(
   "RevisionNotFoundError",
   {
     revision: Schema.String,
   },
 ) {}
 
-export class RunNotFoundError extends Schema.TaggedError<RunNotFoundError>()(
+export class RunNotFoundError extends TaggedError<RunNotFoundError>()(
   "RunNotFoundError",
   {
     run: Schema.String,
   },
 ) {}
 
-export class ActionNotInPlanError extends Schema.TaggedError<ActionNotInPlanError>()(
+export class ActionNotInPlanError extends TaggedError<ActionNotInPlanError>()(
   "ActionNotInPlanError",
   {
     run: Schema.String,
@@ -61,7 +62,7 @@ export class ActionNotInPlanError extends Schema.TaggedError<ActionNotInPlanErro
   },
 ) {}
 
-export class InvalidRunTransitionError extends Schema.TaggedError<InvalidRunTransitionError>()(
+export class InvalidRunTransitionError extends TaggedError<InvalidRunTransitionError>()(
   "InvalidRunTransitionError",
   {
     run: Schema.String,
@@ -69,7 +70,7 @@ export class InvalidRunTransitionError extends Schema.TaggedError<InvalidRunTran
   },
 ) {}
 
-export class EnrollmentStateConflictError extends Schema.TaggedError<EnrollmentStateConflictError>()(
+export class EnrollmentStateConflictError extends TaggedError<EnrollmentStateConflictError>()(
   "EnrollmentStateConflictError",
   {
     reason: Schema.Literals([

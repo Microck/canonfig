@@ -2319,9 +2319,10 @@ if (process.argv.slice(2).some((value) =>
 
     const outcome = await seedAndRun({ ...fixture, input });
 
+    // A tagged error without a message field renders its fields as the message.
     expect(outcome).toMatchObject({
       outcome: "Failed",
-      reason: "MissingArtifactError",
+      reason: `digest="${fixture.artifact.digest}"`,
     });
     const applied = await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>

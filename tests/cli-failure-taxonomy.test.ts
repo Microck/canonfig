@@ -1,6 +1,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { inspect } from "node:util";
+import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { exitCodeForFailure } from "../src/cli/exit-codes.ts";
@@ -8,6 +10,11 @@ import {
   classifiedErrorTags,
   describeRuntimeError,
 } from "../src/cli/failure-taxonomy.ts";
+import { SourceNotInitializedError } from "../src/enrollment/enrollment.errors.ts";
+import {
+  MachineFilesystemError,
+  ProcessTimeoutError,
+} from "../src/machine/machine-state.errors.ts";
 
 // fileURLToPath rather than URL.pathname: pathname keeps the leading slash on
 // a Windows drive path and leaves percent-encoded characters encoded, either of
@@ -38,7 +45,7 @@ const declaredErrorTags = async (): Promise<ReadonlySet<string>> => {
     const source = await readFile(path, "utf8");
     for (
       const match of source.matchAll(
-        /extends\s+(?:Schema|Data)\.TaggedError<\w+>\(\)\(\s*"(?<tag>\w+)"/gu,
+        /extends\s+(?:Schema\.|Data\.)?TaggedError<\w+>\(\)\(\s*"(?<tag>\w+)"/gu,
       )
     ) {
       const tag = match.groups?.tag;
@@ -144,5 +151,71 @@ describe("CLI failure taxonomy", () => {
       const described = describeRuntimeError(Object.assign(new Error(""), { _tag: tag }));
       expect(exitCodeForFailure(described.category)).not.toBe(1);
     }
+  });
+});
+
+describe("tagged error rendering", () => {
+  it("declares every tagged error through the shared factory", async () => {
+    // The factory is the one place that gives every error a printable message
+    // and Node's native inspection. A class built on `Schema.TaggedError`
+    // directly would silently lose both.
+    const direct: Array<string> = [];
+    for (const path of await typescriptFiles(sourceRoot)) {
+      if (path.endsWith(join("domain", "tagged-error.ts"))) continue;
+      if (/Schema\.TaggedError</u.test(await readFile(path, "utf8"))) direct.push(path);
+    }
+    expect(direct).toEqual([]);
+  });
+
+  it("renders the declared fields as the message when a class declares none", () => {
+    const error = new ProcessTimeoutError({
+      executable: "powershell.exe",
+      timeoutMilliseconds: 10_000,
+    });
+    const header = 'ProcessTimeoutError: executable="powershell.exe" timeoutMilliseconds=10000';
+    expect(String(error)).toBe(header);
+    expect(error.stack?.split("\n")[0]).toBe(header);
+    // Node's native error rendering: header, stack frames, then the fields.
+    expect(inspect(error)).toContain(header);
+    expect(inspect(error)).toContain("\n    at ");
+    expect(inspect(error)).toContain("timeoutMilliseconds: 10000");
+  });
+
+  it("keeps a declared message verbatim", () => {
+    const error = new MachineFilesystemError({
+      operation: "mutate managed path",
+      path: "/managed/settings.json",
+      message: "EACCES: permission denied",
+    });
+    expect(error.message).toBe("EACCES: permission denied");
+    expect(String(error)).toBe("MachineFilesystemError: EACCES: permission denied");
+    expect(inspect(error)).toContain("MachineFilesystemError: EACCES: permission denied");
+  });
+
+  it("leaves tag matching and the encoded fields unchanged", async () => {
+    const error = new ProcessTimeoutError({ executable: "pwsh", timeoutMilliseconds: 1 });
+    const encoded = { _tag: "ProcessTimeoutError", executable: "pwsh", timeoutMilliseconds: 1 };
+    const caught = await Effect.runPromise(
+      Effect.fail(error).pipe(
+        Effect.catchTag("ProcessTimeoutError", (timeout) => Effect.succeed(timeout.executable)),
+      ),
+    );
+    expect(caught).toBe("pwsh");
+    expect(Schema.encodeSync(ProcessTimeoutError)(error)).toEqual(encoded);
+    expect(JSON.parse(JSON.stringify(error))).toEqual(encoded);
+    expect(Schema.decodeUnknownSync(ProcessTimeoutError)(encoded).message).toBe(
+      'executable="pwsh" timeoutMilliseconds=1',
+    );
+  });
+
+  it("keeps the taxonomy wording for a class that declares no message", () => {
+    // The synthetic message must not displace the operator guidance the
+    // taxonomy builds from `operation` for this error.
+    const described = describeRuntimeError(
+      new SourceNotInitializedError({ operation: "publish" }),
+    );
+    expect(described.message).toBe(
+      "publish needs an initialized Source Machine; run 'canonfig source init' first",
+    );
   });
 });

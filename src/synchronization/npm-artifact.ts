@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 
 import { Effect, Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 import type { JsonValue } from "../profile/profile-codec.ts";
 
 const defaultMaximumBytes = 32 * 1024 * 1024;
@@ -23,7 +24,7 @@ const maximumArchiveBytes = 128 * 1024 * 1024;
 const maximumManifestBytes = 1 * 1024 * 1024;
 const tarBlockBytes = 512;
 
-export class NpmArtifactError extends Schema.TaggedError<NpmArtifactError>()(
+export class NpmArtifactError extends TaggedError<NpmArtifactError>()(
   "NpmArtifactError",
   {
     operation: Schema.String,

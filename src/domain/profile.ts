@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { TaggedError } from "./tagged-error.ts";
 import { sourceTextIssue } from "./text-composition.ts";
 import { configPathIssue, configPathsOverlap } from "./config-path.ts";
 
@@ -434,32 +435,32 @@ export const CredentialDescriptor = CredentialDescriptorSchema;
 /**
  * Validation failures as tagged errors.
  */
-export class DuplicateResourceError extends Schema.TaggedError<DuplicateResourceError>()(
+export class DuplicateResourceError extends TaggedError<DuplicateResourceError>()(
   "DuplicateResourceError",
   { id: Schema.String },
 ) {}
 
-export class MissingDependencyError extends Schema.TaggedError<MissingDependencyError>()(
+export class MissingDependencyError extends TaggedError<MissingDependencyError>()(
   "MissingDependencyError",
   { id: Schema.String, dependsOn: Schema.String },
 ) {}
 
-export class DependencyCycleError extends Schema.TaggedError<DependencyCycleError>()(
+export class DependencyCycleError extends TaggedError<DependencyCycleError>()(
   "DependencyCycleError",
   { cycle: Schema.Array(Schema.String) },
 ) {}
 
-export class PolicyKindMismatchError extends Schema.TaggedError<PolicyKindMismatchError>()(
+export class PolicyKindMismatchError extends TaggedError<PolicyKindMismatchError>()(
   "PolicyKindMismatchError",
   { id: Schema.String, kind: Schema.String, policy: Schema.String },
 ) {}
 
-export class InvalidTargetError extends Schema.TaggedError<InvalidTargetError>()(
+export class InvalidTargetError extends TaggedError<InvalidTargetError>()(
   "InvalidTargetError",
   { id: Schema.String, target: Schema.String, reason: Schema.String },
 ) {}
 
-export class ConflictingResourceTargetError extends Schema.TaggedError<ConflictingResourceTargetError>()(
+export class ConflictingResourceTargetError extends TaggedError<ConflictingResourceTargetError>()(
   "ConflictingResourceTargetError",
   {
     id: Schema.String,
@@ -480,57 +481,57 @@ export interface ResourcePathResource {
   }>;
 }
 
-export class InvalidScheduleError extends Schema.TaggedError<InvalidScheduleError>()(
+export class InvalidScheduleError extends TaggedError<InvalidScheduleError>()(
   "InvalidScheduleError",
   { id: Schema.String, reason: Schema.String },
 ) {}
 
-export class DuplicateGroupError extends Schema.TaggedError<DuplicateGroupError>()(
+export class DuplicateGroupError extends TaggedError<DuplicateGroupError>()(
   "DuplicateGroupError",
   { name: Schema.String },
 ) {}
 
-export class MissingGroupReferenceError extends Schema.TaggedError<MissingGroupReferenceError>()(
+export class MissingGroupReferenceError extends TaggedError<MissingGroupReferenceError>()(
   "MissingGroupReferenceError",
   { id: Schema.String, group: Schema.String },
 ) {}
 
-export class ResourceSpecKindMismatchError extends Schema.TaggedError<ResourceSpecKindMismatchError>()(
+export class ResourceSpecKindMismatchError extends TaggedError<ResourceSpecKindMismatchError>()(
   "ResourceSpecKindMismatchError",
   { id: Schema.String, kind: Schema.String, specKind: Schema.String },
 ) {}
 
-export class VerificationKindMismatchError extends Schema.TaggedError<VerificationKindMismatchError>()(
+export class VerificationKindMismatchError extends TaggedError<VerificationKindMismatchError>()(
   "VerificationKindMismatchError",
   { id: Schema.String, kind: Schema.String, method: Schema.String },
 ) {}
 
-export class VerificationContentMismatchError extends Schema.TaggedError<VerificationContentMismatchError>()(
+export class VerificationContentMismatchError extends TaggedError<VerificationContentMismatchError>()(
   "VerificationContentMismatchError",
   { id: Schema.String, method: Schema.String, reason: Schema.String },
 ) {}
 
-export class UnmanageableFilesystemModeError extends Schema.TaggedError<UnmanageableFilesystemModeError>()(
+export class UnmanageableFilesystemModeError extends TaggedError<UnmanageableFilesystemModeError>()(
   "UnmanageableFilesystemModeError",
   { id: Schema.String, path: Schema.String, mode: Schema.Int, reason: Schema.String },
 ) {}
 
-export class InvalidBuildPolicyError extends Schema.TaggedError<InvalidBuildPolicyError>()(
+export class InvalidBuildPolicyError extends TaggedError<InvalidBuildPolicyError>()(
   "InvalidBuildPolicyError",
   { id: Schema.String, reason: Schema.String },
 ) {}
 
-export class InvalidRecipeError extends Schema.TaggedError<InvalidRecipeError>()(
+export class InvalidRecipeError extends TaggedError<InvalidRecipeError>()(
   "InvalidRecipeError",
   { id: Schema.String, reason: Schema.String },
 ) {}
 
-export class InvalidConfigKeyError extends Schema.TaggedError<InvalidConfigKeyError>()(
+export class InvalidConfigKeyError extends TaggedError<InvalidConfigKeyError>()(
   "InvalidConfigKeyError",
   { id: Schema.String, path: Schema.String, reason: Schema.String },
 ) {}
 
-export class InvalidTextCompositionError extends Schema.TaggedError<InvalidTextCompositionError>()(
+export class InvalidTextCompositionError extends TaggedError<InvalidTextCompositionError>()(
   "InvalidTextCompositionError",
   { id: Schema.String, reason: Schema.String },
 ) {}

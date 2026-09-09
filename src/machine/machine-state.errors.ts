@@ -1,6 +1,7 @@
 import { Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 
-export class InvalidMachinePathError extends Schema.TaggedError<InvalidMachinePathError>()(
+export class InvalidMachinePathError extends TaggedError<InvalidMachinePathError>()(
   "InvalidMachinePathError",
   {
     path: Schema.String,
@@ -8,7 +9,7 @@ export class InvalidMachinePathError extends Schema.TaggedError<InvalidMachinePa
   },
 ) {}
 
-export class MachineFilesystemError extends Schema.TaggedError<MachineFilesystemError>()(
+export class MachineFilesystemError extends TaggedError<MachineFilesystemError>()(
   "MachineFilesystemError",
   {
     operation: Schema.String,
@@ -17,7 +18,7 @@ export class MachineFilesystemError extends Schema.TaggedError<MachineFilesystem
   },
 ) {}
 
-export class FileSizeLimitError extends Schema.TaggedError<FileSizeLimitError>()(
+export class FileSizeLimitError extends TaggedError<FileSizeLimitError>()(
   "FileSizeLimitError",
   {
     path: Schema.String,
@@ -25,14 +26,14 @@ export class FileSizeLimitError extends Schema.TaggedError<FileSizeLimitError>()
   },
 ) {}
 
-export class ExecutableNotFoundError extends Schema.TaggedError<ExecutableNotFoundError>()(
+export class ExecutableNotFoundError extends TaggedError<ExecutableNotFoundError>()(
   "ExecutableNotFoundError",
   {
     name: Schema.String,
   },
 ) {}
 
-export class ProcessStartError extends Schema.TaggedError<ProcessStartError>()(
+export class ProcessStartError extends TaggedError<ProcessStartError>()(
   "ProcessStartError",
   {
     executable: Schema.String,
@@ -40,7 +41,7 @@ export class ProcessStartError extends Schema.TaggedError<ProcessStartError>()(
   },
 ) {}
 
-export class ProcessTimeoutError extends Schema.TaggedError<ProcessTimeoutError>()(
+export class ProcessTimeoutError extends TaggedError<ProcessTimeoutError>()(
   "ProcessTimeoutError",
   {
     executable: Schema.String,
@@ -48,7 +49,7 @@ export class ProcessTimeoutError extends Schema.TaggedError<ProcessTimeoutError>
   },
 ) {}
 
-export class ProcessOutputLimitError extends Schema.TaggedError<ProcessOutputLimitError>()(
+export class ProcessOutputLimitError extends TaggedError<ProcessOutputLimitError>()(
   "ProcessOutputLimitError",
   {
     executable: Schema.String,
@@ -56,7 +57,7 @@ export class ProcessOutputLimitError extends Schema.TaggedError<ProcessOutputLim
   },
 ) {}
 
-export class HumanActionRequiredError extends Schema.TaggedError<HumanActionRequiredError>()(
+export class HumanActionRequiredError extends TaggedError<HumanActionRequiredError>()(
   "HumanActionRequiredError",
   {
     action: Schema.String,
@@ -64,7 +65,7 @@ export class HumanActionRequiredError extends Schema.TaggedError<HumanActionRequ
   },
 ) {}
 
-export class CredentialStorageError extends Schema.TaggedError<CredentialStorageError>()(
+export class CredentialStorageError extends TaggedError<CredentialStorageError>()(
   "CredentialStorageError",
   {
     operation: Schema.String,
@@ -73,7 +74,7 @@ export class CredentialStorageError extends Schema.TaggedError<CredentialStorage
   },
 ) {}
 
-export class InvalidSchedulerJobError extends Schema.TaggedError<InvalidSchedulerJobError>()(
+export class InvalidSchedulerJobError extends TaggedError<InvalidSchedulerJobError>()(
   "InvalidSchedulerJobError",
   {
     field: Schema.String,

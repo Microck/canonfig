@@ -1,9 +1,10 @@
 import { Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 
 import type { ProfileValidationError } from "../domain/profile.ts";
 import type { StateRepositoryError } from "../state/state-repository.errors.ts";
 
-export class DiscoveryFilesystemError extends Schema.TaggedError<DiscoveryFilesystemError>()(
+export class DiscoveryFilesystemError extends TaggedError<DiscoveryFilesystemError>()(
   "DiscoveryFilesystemError",
   {
     path: Schema.String,
@@ -12,7 +13,7 @@ export class DiscoveryFilesystemError extends Schema.TaggedError<DiscoveryFilesy
   },
 ) {}
 
-export class DiscoveryParseError extends Schema.TaggedError<DiscoveryParseError>()(
+export class DiscoveryParseError extends TaggedError<DiscoveryParseError>()(
   "DiscoveryParseError",
   {
     path: Schema.String,
@@ -21,7 +22,7 @@ export class DiscoveryParseError extends Schema.TaggedError<DiscoveryParseError>
   },
 ) {}
 
-export class InvalidDiscoveryInputError extends Schema.TaggedError<InvalidDiscoveryInputError>()(
+export class InvalidDiscoveryInputError extends TaggedError<InvalidDiscoveryInputError>()(
   "InvalidDiscoveryInputError",
   {
     reason: Schema.String,
@@ -33,21 +34,21 @@ export type ProfileCatalogScanError =
   | DiscoveryParseError
   | InvalidDiscoveryInputError;
 
-export class PublicationNotConfiguredError extends Schema.TaggedError<PublicationNotConfiguredError>()(
+export class PublicationNotConfiguredError extends TaggedError<PublicationNotConfiguredError>()(
   "PublicationNotConfiguredError",
   {
     operation: Schema.Literals(["publish", "getRevision"]),
   },
 ) {}
 
-export class PublicationReviewRequiredError extends Schema.TaggedError<PublicationReviewRequiredError>()(
+export class PublicationReviewRequiredError extends TaggedError<PublicationReviewRequiredError>()(
   "PublicationReviewRequiredError",
   {
     decision: Schema.String,
   },
 ) {}
 
-export class UnresolvedPublicationProposalError extends Schema.TaggedError<UnresolvedPublicationProposalError>()(
+export class UnresolvedPublicationProposalError extends TaggedError<UnresolvedPublicationProposalError>()(
   "UnresolvedPublicationProposalError",
   {
     reasons: Schema.Array(Schema.String),
@@ -64,14 +65,14 @@ export class InvalidPublicationResourcesError extends Error {
   }
 }
 
-export class InvalidPublicationInputError extends Schema.TaggedError<InvalidPublicationInputError>()(
+export class InvalidPublicationInputError extends TaggedError<InvalidPublicationInputError>()(
   "InvalidPublicationInputError",
   {
     reason: Schema.String,
   },
 ) {}
 
-export class PublicationSigningError extends Schema.TaggedError<PublicationSigningError>()(
+export class PublicationSigningError extends TaggedError<PublicationSigningError>()(
   "PublicationSigningError",
   {
     operation: Schema.Literals(["sign", "verify"]),
@@ -79,7 +80,7 @@ export class PublicationSigningError extends Schema.TaggedError<PublicationSigni
   },
 ) {}
 
-export class InvalidPublicationSignatureError extends Schema.TaggedError<InvalidPublicationSignatureError>()(
+export class InvalidPublicationSignatureError extends TaggedError<InvalidPublicationSignatureError>()(
   "InvalidPublicationSignatureError",
   {
     keyId: Schema.String,
