@@ -42,7 +42,7 @@ import { MachineFilesystemError } from "../machine/machine-state.errors.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
   defaultSyncSchedule,
-  syncScheduleFromDefault,
+  desiredScheduleInput,
 } from "../schedule/schedule-manager.types.ts";
 import {
   canonicalJson,
@@ -1154,27 +1154,28 @@ const agentConfigurationFor = (
  * schedule used to be a planned action, so a host without a working user
  * scheduler failed the whole run and rolled it back, and could never converge.
  *
- * A follower that set its own schedule keeps it. This only installs the
- * inherited profile default, and only when the follower has not decided for
- * itself.
+ * A follower that set its own schedule keeps its cadence, but the rendered
+ * binding (runtime, entrypoint, argv) is canonfig's and is converged like any
+ * other drift. Skipping overrides here used to leave a job pointing at a stale
+ * binding after a renderer change: `schedule status` reported it drifted and
+ * nothing ever re-rendered it until the operator reran `schedule set`.
+ * `desiredScheduleInput` is the single answer to "what job should exist", so
+ * this and the CLI cannot disagree.
  */
-const reconcileInheritedSchedule = Effect.fn(
-  "FollowerOrchestration.reconcileInheritedSchedule",
+const reconcileSchedule = Effect.fn(
+  "FollowerOrchestration.reconcileSchedule",
 )(function*(
   configuration: FollowerSynchronizationConfiguration,
   scheduleDefault: RevisionMetadata["scheduleDefault"],
   scheduleManager: ScheduleManager["Service"] | undefined,
 ) {
   if (scheduleManager === undefined) return;
-  const override = configuration.scheduleOverride;
-  if (override !== undefined && override.kind !== "inherit") return;
-  if (scheduleDefault === undefined) {
+  const desired = desiredScheduleInput(configuration.scheduleOverride, scheduleDefault);
+  if (desired === undefined) {
     yield* scheduleManager.remove().pipe(Effect.ignore);
     return;
   }
-  yield* scheduleManager.update({
-    schedule: syncScheduleFromDefault(scheduleDefault),
-  }).pipe(Effect.ignore);
+  yield* scheduleManager.update(desired).pipe(Effect.ignore);
 });
 
 const persistProfileScheduleDefault = Effect.fn(
@@ -1438,7 +1439,7 @@ export const synchronizeFollower = Effect.fn(
       configuration,
       fetched.metadata.scheduleDefault,
     );
-    yield* reconcileInheritedSchedule(
+    yield* reconcileSchedule(
       configuration,
       fetched.metadata.scheduleDefault,
       scheduleManager,
