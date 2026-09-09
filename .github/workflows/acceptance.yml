@@ -48,30 +48,6 @@ jobs:
       - name: Run packed CLI E2E
         run: npx vitest run tests/packed-cli.test.ts
 
-      # TEMPORARY measurement for the windows flake investigation on this PR.
-      # It separates plain Windows PowerShell startup from the csc.exe compile
-      # that Add-Type performs, so the permission-restore timeout can be sized
-      # from data. Delete this step before the PR is reviewed.
-      - name: Measure Windows PowerShell startup and Add-Type compile
-        if: matrix.platform == 'windows'
-        shell: pwsh
-        run: |
-          $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-          function Measure-Run($label, $script) {
-            $samples = @()
-            for ($i = 0; $i -lt 6; $i++) {
-              $sw = [Diagnostics.Stopwatch]::StartNew()
-              & $ps -NoLogo -NoProfile -NonInteractive -Command $script | Out-Null
-              $sw.Stop()
-              $samples += $sw.Elapsed.TotalMilliseconds
-            }
-            $sorted = $samples | Sort-Object
-            "{0}: min={1:N0}ms max={2:N0}ms samples={3}" -f $label, $sorted[0], $sorted[-1], (($samples | ForEach-Object { "{0:N0}" -f $_ }) -join ",")
-          }
-          Measure-Run "startup only" "exit 0"
-          Measure-Run "GetAccessControl (snapshotPermissions shape)" "[IO.File]::GetAccessControl('$env:SystemRoot\\notepad.exe',[Security.AccessControl.AccessControlSections]'Access,Owner,Group').GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]'Access,Owner,Group') | Out-Null"
-          Measure-Run "Add-Type compile (restoreNativePermissions shape)" "Add-Type -TypeDefinition 'public static class CanonfigProbe { public static int Value() { return 1; } }'; [CanonfigProbe]::Value() | Out-Null"
-
       - name: Run native platform contract
         run: npx vitest run ${{ matrix.native_test }}
 
