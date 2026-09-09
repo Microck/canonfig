@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { Schema } from "effect";
 
@@ -24,14 +24,20 @@ const compare = (left: string, right: string): number => left < right ? -1 : lef
 const hash = (bytes: string | Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 const digestFiles = (files: ReadonlyArray<BuildFile>): string => hash(JSON.stringify(files));
 
-/** Do not follow links into files outside the reviewed build inputs. */
+/**
+ * Do not follow links into files outside the reviewed build inputs. A missing
+ * input rejects: a receipt that silently skipped the lockfile or tsconfig would
+ * report a source digest narrower than the identity it claims to describe.
+ */
 const filesUnder = (root: string, directory: string): ReadonlyArray<string> => {
   const absolute = join(root, directory);
   let metadata;
   try {
     metadata = lstatSync(absolute);
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new Error(`Missing build input: ${directory}`);
+    }
     throw error;
   }
   if (metadata.isSymbolicLink()) throw new Error(`Build input is a symlink: ${directory}`);
@@ -65,7 +71,10 @@ export const createBuildReceipt = (root: string): BuildReceipt => {
     ...filesUnder(root, "tools/release"),
     ...["package.json", "package-lock.json", "tsconfig.json"].flatMap((path) => filesUnder(root, path)),
   ]);
-  const compiledFiles = describeFiles(root, filesUnder(root, "dist").filter((path) => path.endsWith(".js")));
+  // An absent or empty `dist` means the same thing, and says so more usefully
+  // than a missing-input rejection would.
+  const compiled = existsSync(join(root, "dist")) ? filesUnder(root, "dist") : [];
+  const compiledFiles = describeFiles(root, compiled.filter((path) => path.endsWith(".js")));
   if (compiledFiles.length === 0) throw new Error("Cannot create a build receipt before compiling the CLI");
   return {
     schema: "canonfig.build/v1",

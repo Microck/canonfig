@@ -5,6 +5,6 @@ website/.source/
 *.tsbuildinfo
 .residue/
 *.tgz
-build-receipt.json
+/build-receipt.json
 .DS_Store
 .vercel/
