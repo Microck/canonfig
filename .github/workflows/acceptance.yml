@@ -39,14 +39,15 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Build CLI
-        run: npm run build:cli
-
-      - name: Package npm artifact
-        run: npm pack --ignore-scripts
-
+      # The E2E test packs the CLI itself and its prepack builds dist and
+      # build-receipt.json in the checkout, so the workflow builds exactly once.
       - name: Run packed CLI E2E
         run: npx vitest run tests/packed-cli.test.ts
+
+      # Pack the dist the E2E test just exercised, without rebuilding, so the
+      # preserved tarball is byte-for-byte the tested package.
+      - name: Package tested npm artifact
+        run: npm pack --ignore-scripts
 
       - name: Run native platform contract
         run: npx vitest run ${{ matrix.native_test }}
