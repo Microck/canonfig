@@ -63,6 +63,7 @@ import {
   type NpmArtifactTransport,
 } from "./npm-artifact.ts";
 import { relativePathAncestors } from "./resource-plans.ts";
+import { resolveInstallerInvocation } from "./installer-bindings.ts";
 
 const isUnboundedNonNpmPackage = (value: string): boolean =>
   /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
@@ -1468,12 +1469,7 @@ const installInvocation = (
       }
       verifiedArtifactPath = artifactPath.absolute;
     }
-    const executableName = method === "apt"
-      ? "apt-get"
-      : method === "homebrew"
-      ? "brew"
-      : method;
-    const executable = yield* machine.findExecutable({ name: executableName });
+    const installer = yield* resolveInstallerInvocation(method);
     const packageSpecifier = npmFamily && verifiedArtifactPath !== undefined
       ? verifiedArtifactPath
       : effectiveVersion === undefined
@@ -1565,8 +1561,8 @@ const installInvocation = (
       ? ["install", packageName, "--version", version, "--locked"]
       : ["install", packageName];
     const result = yield* machine.runProcess({
-      executable: executable.path,
-      arguments: arguments_,
+      executable: installer.executable,
+      arguments: [...installer.arguments, ...arguments_],
       timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
       maximumOutputBytes: context.limits.maximumProcessOutputBytes,
       environment: packageEnvironment,
