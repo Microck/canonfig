@@ -1555,7 +1555,7 @@ const installInvocation = (
         "tool",
         "install",
         version === undefined ? packageName : `${packageName}==${version}`,
-        ...(buildPolicy.mode === "scripts-disabled" ? ["--only-binary=:all:"] : []),
+        ...(buildPolicy.mode === "scripts-disabled" ? ["--no-build"] : []),
         "--no-config",
         `--default-index=${pythonIndex!}`,
       ]

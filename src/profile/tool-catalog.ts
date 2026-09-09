@@ -346,7 +346,7 @@ const recipeFromPackage = (
             "tool",
             "install",
             specification,
-            "--only-binary=:all:",
+            "--no-build",
             "--no-config",
             `--default-index=${index}`,
           ]
