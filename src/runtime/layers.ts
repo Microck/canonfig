@@ -1137,7 +1137,13 @@ const followerCommandsLayer = (
               policyPath,
               agentPolicy: configuration?.agentPolicy,
               schedule,
-              source: doctorSource,
+              source: configuration === undefined
+                ? doctorSource
+                : {
+                  endpoint: configuration.source.endpoint,
+                  tlsFingerprint: configuration.source.tlsFingerprint,
+                  credentialReference: configuration.credentialReference,
+                },
               agent: configuration?.agentHarness === undefined
                 ? doctorAgent
                 : {
