@@ -66,7 +66,7 @@ jobs:
           name: canonfig-tested-package-${{ matrix.platform }}-${{ github.sha }}
           path: |
             microck-canonfig-*.tgz
-            dist/build-receipt.json
+            build-receipt.json
           if-no-files-found: warn
           retention-days: 7
 

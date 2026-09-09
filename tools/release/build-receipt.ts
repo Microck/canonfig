@@ -78,8 +78,15 @@ export const createBuildReceipt = (root: string): BuildReceipt => {
   };
 };
 
+/**
+ * The receipt stays out of `dist` on purpose: the published package ships only
+ * compiled JavaScript, and a per-file hash manifest is build evidence for CI,
+ * not payload for every install. CI preserves this file as a workflow artifact.
+ */
+export const buildReceiptPath = (root: string): string => join(root, "build-receipt.json");
+
 export const writeBuildReceipt = (root: string): BuildReceipt => {
   const receipt = createBuildReceipt(root);
-  writeFileSync(join(root, "dist", "build-receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o644 });
+  writeFileSync(buildReceiptPath(root), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o644 });
   return receipt;
 };

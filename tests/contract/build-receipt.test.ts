@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createBuildReceipt, writeBuildReceipt } from "../../tools/release/build-receipt.ts";
+import { buildReceiptPath, createBuildReceipt, writeBuildReceipt } from "../../tools/release/build-receipt.ts";
 
 const roots: string[] = [];
 const fixture = (): string => {
@@ -27,7 +27,7 @@ describe("build receipts", () => {
     const receipt = writeBuildReceipt(first);
     expect(writeBuildReceipt(first)).toEqual(receipt);
     expect(createBuildReceipt(second)).toEqual(receipt);
-    expect(JSON.parse(readFileSync(join(first, "dist", "build-receipt.json"), "utf8"))).toEqual(receipt);
+    expect(JSON.parse(readFileSync(buildReceiptPath(first), "utf8"))).toEqual(receipt);
     expect(JSON.stringify(receipt)).not.toContain(first);
     expect(receipt.git).toBeNull();
   });
