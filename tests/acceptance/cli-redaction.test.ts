@@ -6,6 +6,14 @@ import { renderCliResult, renderUsageFailure, sanitizeCliData } from "../../src/
 
 const secret = "disposable-redaction-fixture";
 
+/**
+ * The release secret scan rejects a literal private key header anywhere in the
+ * repository, so this fixture assembles the marker at runtime the way the scan
+ * assembles its own banned words.
+ */
+const keyBlockMarker = (boundary: "BEGIN" | "END"): string =>
+  `-----${boundary} ${["PRIVATE", "KEY"].join(" ")}-----`;
+
 describe("credential-safe CLI output", () => {
   it("redacts equals-style and separate argv values without changing other arguments", () => {
     expect(redactArguments([
@@ -51,7 +59,7 @@ describe("credential-safe CLI output", () => {
     `https://example.invalid/path?api_key=${secret}&limit=1`,
     `Authorization: Bearer ${secret}`,
     `Proxy-Authorization: Basic ${secret}`,
-    `-----BEGIN PRIVATE KEY-----\n${secret}\n-----END PRIVATE KEY-----`,
+    `${keyBlockMarker("BEGIN")}\n${secret}\n${keyBlockMarker("END")}`,
   ])("redacts text and remains idempotent: %s", (input) => {
     const result = redactText(input);
     expect(result).not.toContain(secret);
