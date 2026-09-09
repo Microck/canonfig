@@ -1,16 +1,17 @@
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
-import { decodeInstallerBinding, isLocalInstallerPath } from "../../src/domain/installer-binding.ts";
+import { isLocalInstallerPath, parseInstallerBinding } from "../../src/domain/installer-binding.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import { checkInstallerBinding, loadInstallerBinding, removeInstallerBinding, resolveInstallerInvocation, saveInstallerBinding } from "../../src/synchronization/installer-bindings.ts";
 import { prepareResourceAction } from "../../src/synchronization/resource-executors.ts";
-import { runInstallerCli } from "../../src/runtime/installer-cli.ts";
+import { installerArguments, isInstallerCommand, runInstallerCli } from "../../src/runtime/installer-cli.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -47,14 +48,14 @@ describe("local installer binding contract", () => {
       { ...linuxBinding, platform: "windows", executable: "C:\\node\\npm.cmd", arguments: [] },
       { ...linuxBinding, platform: "windows", executable: "C:node.exe", arguments: [] },
       { ...linuxBinding, platform: "windows", executable: "\\\\server\\share\\npm.exe", arguments: [] },
-    ]) expect(() => decodeInstallerBinding(value)).toThrow();
+    ]) expect(() => parseInstallerBinding(JSON.stringify(value))).toThrow();
     expect(isLocalInstallerPath("relative/node", "linux")).toBe(false);
     expect(isLocalInstallerPath("C:node.exe", "windows")).toBe(false);
   });
 
   it("accepts explicit Windows Node entrypoints without Unix mode bits", () => {
-    expect(decodeInstallerBinding({ ...linuxBinding, platform: "windows", executable: "C:\\Program Files\\nodejs\\node.exe", arguments: ["C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js"] }).method).toBe("npm");
-    expect(decodeInstallerBinding({ ...linuxBinding, method: "homebrew", executable: "/opt/homebrew/bin/brew", arguments: [] }).method).toBe("brew");
+    expect(parseInstallerBinding(JSON.stringify({ ...linuxBinding, platform: "windows", executable: "C:\\Program Files\\nodejs\\node.exe", arguments: ["C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js"] })).method).toBe("npm");
+    expect(parseInstallerBinding(JSON.stringify({ ...linuxBinding, method: "homebrew", executable: "/opt/homebrew/bin/brew", arguments: [] })).method).toBe("brew");
   });
 
   it("persists the exact tested binding and executes a deterministic recipe with an empty PATH", async () => {
@@ -125,5 +126,29 @@ describe("local installer binding contract", () => {
     expect((await invoke(["check", "npm"])).output.data.scope).toBe("current-process");
     expect((await invoke(["remove", "npm"])).output.data.removed).toBe(true);
     expect((await invoke(["check", "npm"])).exitCode).toBe(3);
+  }, 30_000);
+
+  it("treats --json as a global option at any position", () => {
+    expect(isInstallerCommand(["--json", "installer", "list"])).toBe(true);
+    expect(isInstallerCommand(["source", "publish"])).toBe(false);
+    expect(installerArguments(["--json", "installer", "list"])).toEqual(["--json", "list"]);
+    expect(installerArguments(["installer", "set", "npm", "--executable", "/opt/installer"]))
+      .toEqual(["set", "npm", "--executable", "/opt/installer"]);
+  });
+
+  // The shipped entrypoint has to provide the installer CLI its machine layer.
+  // Calling runInstallerCli with a test layer cannot catch that wiring.
+  it("reaches the installer CLI through the real entrypoint", () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-installer-entrypoint-"));
+    roots.push(home);
+    const result = spawnSync(process.execPath, [
+      "--import", "tsx", resolve(import.meta.dirname, "../../src/runtime/main.ts"),
+      "installer", "list", "--json",
+    ], {
+      encoding: "utf8", timeout: 20_000,
+      env: { ...process.env, HOME: home, USERPROFILE: home },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).data.bindings).toEqual([]);
   }, 30_000);
 });

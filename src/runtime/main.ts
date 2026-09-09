@@ -18,7 +18,7 @@ import {
 } from "../secrets/cli.ts";
 import { synchronizeSharedSecrets } from "../secrets/secret-client.ts";
 import { SecretTransferError } from "../secrets/secret-store.ts";
-import { installerHelp, isInstallerCommand, runInstallerCli } from "./installer-cli.ts";
+import { installerArguments, installerHelp, isInstallerCommand, runInstallerCli } from "./installer-cli.ts";
 import {
   EnrollmentInputError,
   isPrivateEnrollmentCommand,
@@ -104,8 +104,8 @@ if (isSecretsCommand(arguments_)) {
 } else if (isInstallerCommand(arguments_)) {
   NodeRuntime.runMain(
     Effect.promise(() => import("./layers.ts")).pipe(
-      Effect.flatMap(({ runtimeLayer }) =>
-        runInstallerCli(arguments_.slice(1), nodeCliIo).pipe(Effect.provide(runtimeLayer()))
+      Effect.flatMap(({ runtimeMachineLayer }) =>
+        runInstallerCli(installerArguments(arguments_), nodeCliIo).pipe(Effect.provide(runtimeMachineLayer()))
       ),
     ),
   );

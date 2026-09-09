@@ -1,10 +1,11 @@
 import { realpath } from "node:fs/promises";
 import { Effect } from "effect";
 import {
-  decodeInstallerBinding,
+  installerBindingFor,
   installerMethods,
   isLocalInstallerPath,
   normalizeInstallerMethod,
+  parseInstallerBinding,
   type InstallerBinding,
 } from "../domain/installer-binding.ts";
 import { HumanActionRequiredError, type MachineStateError } from "../machine/machine-state.errors.ts";
@@ -26,7 +27,9 @@ const pathsFor = (method: string) => Effect.gen(function*() {
   const directories = yield* machine.userDirectories();
   const root = yield* machine.normalizePath({ path: ".canonfig/installers", base: directories.home });
   const path = yield* machine.normalizePath({ path: `${normalized}.json`, base: root });
-  yield* machine.validatePathWithinRoot({ root: directories.home, path });
+  // Every segment below the home directory is a literal, so containment is
+  // structural. Checking it would also lstat a home that need not exist yet,
+  // which is the normal state of a machine that has bound no installer.
   return { root, path, method: normalized, platform: directories.home.platform };
 });
 
@@ -49,7 +52,7 @@ export const loadInstallerBinding = (method: string): Effect.Effect<InstallerBin
     if (kind.kind !== "regular") return yield* unavailable("The installer binding must be a regular file.");
     const bytes = yield* machine.readFile({ path: paths.path, maximumBytes: 16 * 1024 });
     const binding = yield* Effect.try({
-      try: () => decodeInstallerBinding(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes))),
+      try: () => parseInstallerBinding(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
       catch: () => unavailable("The local installer binding is invalid; review and replace it with installer set."),
     });
     if (binding.method !== paths.method || binding.platform !== paths.platform) {
@@ -103,9 +106,7 @@ export const saveInstallerBinding = (
     catch: () => unavailable("The selected installer executable or entrypoint cannot be resolved."),
   });
   const binding = yield* Effect.try({
-    try: () => decodeInstallerBinding({
-      schema: "canonfig.installer/v1", method: paths.method, platform: paths.platform, ...resolved,
-    }),
+    try: () => installerBindingFor(paths.method, paths.platform, resolved.executable, resolved.arguments),
     catch: () => unavailable("Use an absolute native installer path, or Node with an absolute npm-cli.js/pnpm.cjs entrypoint. Shell expressions and shims are not bindings."),
   });
   yield* checkInstallerBinding(binding);
@@ -148,8 +149,16 @@ export const removeInstallerBinding = (method: string) => Effect.gen(function*()
   return true;
 });
 
+/** One bounded local program plus the fixed prefix it must always be given. */
+export interface InstallerInvocation {
+  readonly executable: MachinePath;
+  readonly arguments: ReadonlyArray<string>;
+}
+
 /** Resolve every deterministic installer through the same follower-owned data. */
-export const resolveInstallerInvocation = (method: string) => Effect.gen(function*() {
+export const resolveInstallerInvocation = (
+  method: string,
+): Effect.Effect<InstallerInvocation, MachineStateError, MachineState> => Effect.gen(function*() {
   const machine = yield* MachineState;
   const normalized = yield* methodFor(method);
   const binding = yield* loadInstallerBinding(normalized);
@@ -162,5 +171,5 @@ export const resolveInstallerInvocation = (method: string) => Effect.gen(functio
   if (found.path.platform === "windows" && /\.(?:cmd|bat)$/iu.test(found.path.absolute)) {
     return yield* unavailable("Windows command shims cannot run with shell:false. Bind npm to node.exe plus npm-cli.js (or pnpm to pnpm.cjs), then retry. Do not enable a shell.");
   }
-  return { executable: found.path, arguments: [] as ReadonlyArray<string> };
+  return { executable: found.path, arguments: [] };
 });

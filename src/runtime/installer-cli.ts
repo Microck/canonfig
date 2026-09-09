@@ -17,13 +17,27 @@ export const installerHelp = [
   "  installer remove <method>",
 ].join("\n");
 
-export const isInstallerCommand = (arguments_: ReadonlyArray<string>): boolean => arguments_[0] === "installer";
+/**
+ * `--json` is a global option that `evaluateCli` accepts at any position, so it
+ * never names the command. Match past it, or `canonfig --json installer list`
+ * would miss this branch and fail as an unknown command.
+ */
+export const isInstallerCommand = (arguments_: ReadonlyArray<string>): boolean =>
+  arguments_.filter((value) => value !== "--json")[0] === "installer";
+
+/** Drop the command head, keeping any global option that came before it. */
+export const installerArguments = (arguments_: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const head = arguments_.indexOf("installer");
+  return arguments_.filter((value, index) => index !== head);
+};
 
 type Command = { readonly kind: "list" }
   | { readonly kind: "check" | "remove"; readonly method: string }
   | { readonly kind: "set"; readonly method: string; readonly executable: string; readonly arguments: ReadonlyArray<string> };
 
-const parse = (arguments_: ReadonlyArray<string>): Command => {
+/** Parse the non-secret installer command shape. Exported so documentation
+ * examples are checked against the same parser the CLI runs. */
+export const parseInstallerArguments = (arguments_: ReadonlyArray<string>): Command => {
   if (arguments_.filter((value) => value === "--json").length > 1) throw new Error("--json may be specified only once");
   const [action, method, ...rest] = arguments_.filter((value) => value !== "--json");
   if (action === "list" && method === undefined) return { kind: "list" };
@@ -54,7 +68,7 @@ export const runInstallerCli = (
     io.setExitCode(CliExitCode.success);
     return;
   }
-  const parsed = yield* Effect.try({ try: () => parse(arguments_), catch: (cause) => cause }).pipe(
+  const parsed = yield* Effect.try({ try: () => parseInstallerArguments(arguments_), catch: (cause) => cause }).pipe(
     Effect.match({ onFailure: () => undefined, onSuccess: (value) => value }),
   );
   if (parsed === undefined) {
