@@ -132,6 +132,22 @@ describe("local installer binding contract", () => {
     expect((await invoke(["check", "npm"])).exitCode).toBe(3);
   }, 30_000);
 
+  // The deterministic executor owns the uv recipe flags, including --no-build.
+  // A binding may only replace the program, never prepend to its arguments, so
+  // routing uv through a persisted binding cannot alter that policy.
+  it("keeps a uv binding free of any argument prefix", () => {
+    const uvBinding = { schema: "canonfig.installer/v1", method: "uv", platform: "linux" };
+    expect(parseInstallerBinding(JSON.stringify({ ...uvBinding, executable: "/runtime/uv", arguments: [] })).arguments)
+      .toEqual([]);
+    // Only npm and pnpm may name a JavaScript entrypoint, and only that one.
+    for (const arguments_ of [["/runtime/uv.js"], ["--no-build"], ["--build"]]) {
+      expect(() => parseInstallerBinding(JSON.stringify({ ...uvBinding, executable: "/runtime/node", arguments: arguments_ })))
+        .toThrow();
+      expect(() => parseInstallerBinding(JSON.stringify({ ...uvBinding, executable: "/runtime/uv", arguments: arguments_ })))
+        .toThrow();
+    }
+  });
+
   it("treats --json as a global option at any position", () => {
     expect(isInstallerCommand(["--json", "installer", "list"])).toBe(true);
     expect(isInstallerCommand(["source", "publish"])).toBe(false);
