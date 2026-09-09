@@ -8,6 +8,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { Effect, Layer, Option, Redacted, Schema } from "effect";
 
@@ -52,7 +53,7 @@ import {
   syncScheduleFromDefault,
   type SyncSchedule,
 } from "../schedule/schedule-manager.types.ts";
-import { scheduleManagerLayer } from "../schedule/schedule-manager.layer.ts";
+import { makeScheduleManagerLayer } from "../schedule/schedule-manager.layer.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
 import { SynchronizationLive } from "../synchronization/synchronization.layer.ts";
@@ -1252,7 +1253,12 @@ export const runtimeLayer = (
   const profiles = runtimeProfileCatalogLayer.pipe(
     Layer.provide(Layer.mergeAll(state, machine, enrollment)),
   );
-  const schedule = scheduleManagerLayer.pipe(Layer.provide(machine));
+  const schedule = makeScheduleManagerLayer({
+    defaultCommand: {
+      executable: process.execPath,
+      arguments: [fileURLToPath(new URL("./main.js", import.meta.url))],
+    },
+  }).pipe(Layer.provide(machine));
   const synchronization = SynchronizationLive.pipe(
     Layer.provide(Layer.merge(state, machine)),
   );

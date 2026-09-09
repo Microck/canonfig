@@ -702,3 +702,25 @@ describe("reviewed profile publication", () => {
     expect(result.missing).toBeInstanceOf(RevisionNotFoundError);
   });
 });
+
+it("publishes no schedule unless a reviewed profile explicitly declares one", async () => {
+  const fixture = workspace();
+  const discovery = await proposal(fixture.directory);
+  const signing = makeSigner();
+  const input = inputFor(discovery);
+  const manual = await runCatalog(fixture.database, signing.signer, Effect.gen(function*() {
+    return yield* (yield* ProfileCatalog).publish(input);
+  }));
+  expect(manual.scheduleDefault).toBeUndefined();
+  expect(JSON.parse(manual.canonicalBytes)).not.toHaveProperty("scheduleDefault");
+  const scheduleDefault = { type: "daily", at: "04:00", timezone: "local" } as const;
+  const scheduled = await runCatalog(fixture.database, signing.signer, Effect.gen(function*() {
+    return yield* (yield* ProfileCatalog).publish({
+      ...input,
+      profile: { ...input.profile, scheduleDefault },
+    });
+  }));
+  expect(scheduled.scheduleDefault).toEqual(scheduleDefault);
+  expect(JSON.parse(scheduled.canonicalBytes).scheduleDefault).toEqual(scheduleDefault);
+  expect(scheduled.id).not.toBe(manual.id);
+});

@@ -128,8 +128,17 @@ const snapshotsEqual = (
   right: ScheduleSnapshot,
 ): boolean => JSON.stringify(left) === JSON.stringify(right);
 
-export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineState> =
-  Layer.effect(
+export interface ScheduleManagerOptions {
+  /** Local runtime authority, never a command supplied by a published profile. */
+  readonly defaultCommand?: {
+    readonly executable: string;
+    readonly arguments: ReadonlyArray<string>;
+  } | undefined;
+}
+
+export const makeScheduleManagerLayer = (
+  options: ScheduleManagerOptions = {},
+): Layer.Layer<ScheduleManager, never, MachineState> => Layer.effect(
     ScheduleManager,
     Effect.gen(function*() {
       const machine = yield* MachineState;
@@ -143,15 +152,19 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           ScheduleManagerError
         > {
           const schedule = yield* validateSchedule(input.schedule ?? defaultSyncSchedule);
-          const executable = input.executable === undefined
+          // A packaged runtime supplies Node and the compiled CLI explicitly.
+          // An operator's --executable remains an executable, not a Node script.
+          const command = input.executable === undefined ? options.defaultCommand : undefined;
+          const executablePath = input.executable ?? command?.executable;
+          const executable = executablePath === undefined
             ? (yield* machine.findExecutable({ name: "canonfig" })).path
-            : yield* machine.normalizePath({ path: input.executable });
+            : yield* machine.normalizePath({ path: executablePath });
           const calendar = yield* calendarFor(executable.platform, schedule);
           const rendered = yield* machine.renderSchedulerJob({
             name: "canonfig-sync",
             description: "Canonfig follower synchronization",
             executable,
-            arguments: syncArguments,
+            arguments: [...(command?.arguments ?? []), ...syncArguments],
             calendar,
           });
           return { schedule, definition: rendered };
@@ -289,3 +302,6 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
       });
     }),
   );
+
+/** Default embedding behavior; the packaged CLI supplies its exact runtime. */
+export const scheduleManagerLayer = makeScheduleManagerLayer();

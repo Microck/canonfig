@@ -342,11 +342,7 @@ const machineProfileFor = (
     name: input.profile.name,
     groups: input.profile.groups ?? [],
     resources: [...resources.values()],
-    scheduleDefault: input.profile.scheduleDefault ?? {
-      type: "daily",
-      at: "00:00",
-      timezone: "local",
-    },
+    scheduleDefault: input.profile.scheduleDefault,
   });
 };
 
