@@ -6,6 +6,8 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { doctorProbeNames } from "../src/runtime/doctor.ts";
+import { credentialReadiness, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
+import type { ScheduleStatus } from "../src/schedule/schedule-manager.types.ts";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const runtimeEntrypoint = resolve(projectRoot, "src/runtime/main.ts");
@@ -111,4 +113,47 @@ describe("doctor probes", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("Invalid doctor timeout: 0");
   });
+});
+
+
+describe("readiness evidence", () => {
+  it.each(["secret-service", "keychain", "credential-manager"] as const)(
+    "does not equate %s presence with usable unattended storage",
+    (provider) => {
+      const result = credentialReadiness({ kind: "secure-noninteractive", provider });
+      expect(result.status).toBe("warning");
+      expect(result.details).toMatchObject({
+        verification: "provider-presence",
+        writeAccessVerified: false,
+        unattendedAccessVerified: false,
+      });
+    },
+  );
+
+  it("does not expose credential storage paths or untrusted recovery text", () => {
+    const result = credentialReadiness({ kind: "unavailable", recovery: "secret fixture" });
+    expect(JSON.stringify(result)).not.toContain("secret fixture");
+    const local = credentialReadiness({
+      kind: "local-file", path: { platform: "linux", absolute: "/private/fixture" },
+    });
+    expect(JSON.stringify(local)).not.toContain("/private/fixture");
+  });
+
+  it.each(["current", "not-installed", "disabled", "drifted"] as const)(
+    "reports the requested %s schedule without inventing an execution receipt",
+    (state) => {
+      const status: ScheduleStatus = {
+        state, platform: "linux", schedule: { kind: "daily", localTime: "04:00" },
+        definition: {
+          platform: "linux", mechanism: "systemd-user-timer",
+          serviceName: "canonfig", service: "fixture", schedule: "fixture",
+        },
+      };
+      const result = scheduledDefinitionReadiness(status);
+      expect(result.status).toBe(state === "current" ? "pass" : "fail");
+      expect(result.details?.scheduledExecutionVerified).toBe(false);
+      expect(result.details?.definitionVerified).toBe(state === "current");
+      if (state !== "current") expect(result.category).toBe("verification-or-apply-failure");
+    },
+  );
 });
