@@ -3,6 +3,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { Option, Schema } from "effect";
 
 import type { ResourceSpecInput } from "../domain/profile.ts";
+import { configPathIssue } from "../domain/config-path.ts";
 
 export type ConfigFormat =
   Extract<ResourceSpecInput, { readonly kind: "config" }>["format"];
@@ -53,11 +54,9 @@ export const serializeConfigDocument = (
 };
 
 const pathSegments = (path: string): ReadonlyArray<string> => {
-  const segments = path.split(".");
-  if (segments.some((segment) => segment.length === 0)) {
-    throw new TypeError(`config key path contains an empty segment: ${path}`);
-  }
-  return segments;
+  const issue = configPathIssue(path);
+  if (issue !== undefined) throw new TypeError(`${issue}: ${path}`);
+  return path.split(".");
 };
 
 export const setConfigPath = (

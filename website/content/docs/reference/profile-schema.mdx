@@ -214,3 +214,23 @@ mode, raw symlink target, and owned tree entries that Canonfig last applied.
 This record enables safe mirror deletion, mode-aware drift detection, audit,
 and recovery. It is not a Local Overlay and does not confer source authority on
 the follower.
+
+## Structured configuration ownership
+
+A `config` value may contain strings, finite numbers, booleans, arrays of these
+values, and nested objects. Arrays preserve their order, including arrays of hook
+objects. Null is not supported by the portable contract because TOML cannot
+represent it. Unsupported values and reserved prototype fields are rejected,
+not converted or silently dropped.
+
+Each dotted key owns the entire value at that path. A profile cannot claim both
+`mcpServers.example` and `mcpServers.example.command`, or declare the same path
+twice. Empty path segments, NUL bytes, and prototype traversal segments are
+invalid. Source and Local Overlay paths conflict when either is an ancestor of
+the other; similar sibling names do not conflict.
+
+When ownership changes between a parent object and one of its children, dropped
+Source keys are removed before the new values are written. Unrelated settings
+remain untouched. An old parent that contains a newly local child is retained
+rather than deleting local state; review that retained subtree when changing
+ownership. Normal rollback restores the exact previous file.
