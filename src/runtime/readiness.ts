@@ -36,18 +36,26 @@ export const credentialReadiness = (capability: CredentialStorageCapability): Do
 };
 
 /** A requested job must exist and match; even then its execution is unproven. */
-export const scheduledDefinitionReadiness = (status: ScheduleStatus): DoctorProbe => ({
-  name: "scheduler",
-  status: status.state === "current" ? "pass" : "fail",
-  ...(status.state === "current" ? {} : { category: "verification-or-apply-failure" as const }),
-  message: status.state === "current"
-    ? "scheduler definition is current; scheduled execution is not verified"
-    : `requested scheduler definition is ${status.state}`,
-  details: {
+export const scheduledDefinitionReadiness = (status: ScheduleStatus): DoctorProbe => {
+  const details = {
     state: status.state,
     platform: status.platform,
     mechanism: status.definition.mechanism,
     definitionVerified: status.state === "current",
     scheduledExecutionVerified: false,
-  },
-});
+  };
+  return status.state === "current"
+    ? {
+      name: "scheduler",
+      status: "pass",
+      message: "scheduler definition is current; scheduled execution is not verified",
+      details,
+    }
+    : {
+      name: "scheduler",
+      status: "fail",
+      category: "verification-or-apply-failure",
+      message: `requested scheduler definition is ${status.state}`,
+      details,
+    };
+};

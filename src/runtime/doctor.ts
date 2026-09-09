@@ -105,14 +105,6 @@ const pass = (
   ? { name, status: "pass", message }
   : { name, status: "pass", message, details };
 
-const warning = (
-  name: DoctorProbeName,
-  message: string,
-  details?: DoctorProbe["details"],
-): DoctorProbe => details === undefined
-  ? { name, status: "warning", message }
-  : { name, status: "warning", message, details };
-
 const skipped = (
   name: DoctorProbeName,
   message: string,
