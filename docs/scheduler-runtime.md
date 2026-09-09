@@ -14,8 +14,9 @@ definition as drifted; an approved `schedule set` updates it. Removing a runtime
 or moving an installation can still invalidate an existing job. Install schedules
 from the built, installed CLI, not a development TypeScript entrypoint.
 
-The acceptance regression launches the compiled CLI with an empty PATH and an
-unrelated working directory. It does not install a native job, access credentials,
+The packed-CLI regression installs the packaged tarball, then launches the
+installed CLI through the rendered command with an empty PATH and an unrelated
+working directory. It does not install a native job, access credentials,
 or demonstrate a scheduled apply. A current job definition is not evidence of
 Source availability, usable unattended credentials, or successful scheduled
 Convergence. Those outcomes must be verified separately.

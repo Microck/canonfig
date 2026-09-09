@@ -20,6 +20,7 @@ import {
   resolve,
 } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 
 import { Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -31,6 +32,7 @@ import {
 const projectRoot = resolve(import.meta.dirname, "..");
 const packedRoot = mkdtempSync(resolve(tmpdir(), "canonfig-packed-"));
 const installRoot = resolve(packedRoot, "install");
+const packageRoot = resolve(installRoot, "node_modules", "@microck", "canonfig");
 const fixtureBin = resolve(packedRoot, "bin");
 const sourceHome = resolve(packedRoot, "source-home");
 const followerHome = resolve(packedRoot, "follower-home");
@@ -751,6 +753,44 @@ describe("packed Canonfig executable", () => {
     );
     expect(second).toEqual(first);
     expect(first.stderr).not.toContain("completed");
+  });
+
+  // The installed CLI is JavaScript, so a native scheduled job has to name both
+  // a Node runtime and the entrypoint. Prove the shipped layout resolves both
+  // from the package itself, with no PATH and an unrelated working directory.
+  it("binds the scheduled command to an absolute runtime and shipped entrypoint", () => {
+    const moduleUrl = pathToFileURL(
+      resolve(packageRoot, "dist", "schedule", "schedule-command.js"),
+    ).href;
+    const entrypoint = resolve(packageRoot, "dist", "runtime", "main.js");
+    // The package root can sit behind a symlinked temporary directory, so the
+    // entrypoint comparison has to go through realpath on both sides.
+    const script = `
+      const { realpathSync } = await import("node:fs");
+      const { spawnSync } = await import("node:child_process");
+      const { scheduleCommand } = await import(${JSON.stringify(moduleUrl)});
+      const command = scheduleCommand();
+      if (command.executable !== process.execPath) process.exit(90);
+      if (realpathSync(command.arguments[0]) !== realpathSync(${JSON.stringify(entrypoint)})) {
+        process.exit(91);
+      }
+      if (JSON.stringify(command.arguments.slice(1)) !==
+          JSON.stringify(["sync", "--apply", "--no-input"])) process.exit(92);
+      const started = spawnSync(command.executable, [command.arguments[0], "--version"], {
+        shell: false, encoding: "utf8", timeout: 30000, env: { ...process.env, PATH: "" },
+      });
+      if (started.error || started.status !== 0) process.exit(93);
+      process.stdout.write(started.stdout);
+    `;
+    const result = spawnSync(executable, ["--input-type=module", "--eval", script], {
+      cwd: packedRoot,
+      encoding: "utf8",
+      timeout: 60_000,
+      env: { ...process.env, PATH: "" },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/u);
   });
 
   it("runs an authenticated source-to-follower lifecycle across packed processes", () => {

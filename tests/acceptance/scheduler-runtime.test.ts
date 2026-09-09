@@ -1,8 +1,3 @@
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -58,34 +53,5 @@ describe("scheduler runtime binding", () => {
     expect(result.state).toBe("not-installed");
     expect(result.definition.service).toContain("main.js");
     expect(result.definition.service).toContain("--no-input");
-  });
-
-  it("starts the built CLI with an empty PATH and unrelated working directory", () => {
-    // The existing acceptance workflow builds dist before running this suite.
-    const module = resolve("dist/schedule/schedule-command.js");
-    expect(existsSync(module), "build the CLI before native acceptance").toBe(true);
-    const script = `
-      const { scheduleCommand } = await import(${JSON.stringify(pathToFileURL(module).href)});
-      const { spawnSync } = await import("node:child_process");
-      const command = scheduleCommand();
-      if (command.executable !== process.execPath ||
-          JSON.stringify(command.arguments.slice(1)) !==
-          JSON.stringify(["sync", "--apply", "--no-input"])) process.exit(90);
-      const result = spawnSync(command.executable, [command.arguments[0], "--version"], {
-        shell: false, encoding: "utf8", timeout: 10000,
-        cwd: ${JSON.stringify(resolve("tests"))}, env: { ...process.env, PATH: "" }
-      });
-      if (result.error || result.status !== 0) process.exit(91);
-      process.stdout.write(result.stdout);
-    `;
-    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
-      shell: false,
-      encoding: "utf8",
-      timeout: 15_000,
-      env: { ...process.env, PATH: "" },
-    });
-    expect(result.error).toBeUndefined();
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/u);
   });
 });
