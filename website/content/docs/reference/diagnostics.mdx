@@ -25,14 +25,21 @@ The report schema is `canonfig.doctor/v1`. Its overall status is `healthy`,
 | --- | --- |
 | `runtime` | Node version, Canonfig version, platform, and architecture |
 | `state` | SQLite header, current migrations, readability, and writability |
-| `credentials` | Secure noninteractive, explicit local-file, or unavailable capability |
+| `credentials` | Which credential provider is present, never whether it is writable |
 | `source` | Configuration, reachability, TLS pin, and follower authentication |
-| `scheduler` | Native job state and rendered mechanism |
+| `scheduler` | Whether the requested native job is installed and current |
 | `package-managers` | Availability of npm, pnpm, or yarn |
 | `agent-adapter` | Policy, supported adapter, and executable availability |
 
 `warning` and `skipped` produce a degraded report. `fail` produces an unhealthy
 report and maps to a CLI failure category.
+
+The `credentials` probe reads provider presence, which does not prove that the
+current session can write to the vault or reach it unattended, so it reports a
+warning rather than a pass. Every report is therefore at least `degraded`; read
+each probe rather than the overall status. A requested scheduler job that is
+missing, disabled, or drifted is a failure, and a current one proves only its
+installed definition, not that it has ever fired.
 
 ## Diagnose by symptom
 
