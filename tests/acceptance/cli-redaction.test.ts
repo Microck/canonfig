@@ -89,6 +89,8 @@ describe("credential-safe CLI output", () => {
   it("preserves literal object keys without invoking inherited setters", () => {
     const input = JSON.parse('{"__proto__":{"password":"test-only-key"},"constructor":"ordinary"}');
     const result = sanitizeCliData(input);
+    // SAFETY: sanitizeCliData preserves the shape of its input, so an object in
+    // yields an object out.
     expect(Object.hasOwn(result as object, "__proto__")).toBe(true);
     expect(JSON.stringify(result)).not.toContain("test-only-key");
     expect(Object.getPrototypeOf(result)).toBe(Object.prototype);

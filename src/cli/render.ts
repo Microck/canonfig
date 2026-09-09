@@ -22,9 +22,12 @@ interface RenderEnvelope {
   data?: CliPayload | undefined;
 }
 
+/** An argv-shaped array: every entry is a string, so flag pairs stay recognizable. */
+const StringArray = Schema.Array(Schema.String);
+
 const redact = (value: CliPayload): CliPayload => {
   if (Array.isArray(value)) {
-    return value.every((entry): entry is string => typeof entry === "string")
+    return Schema.is(StringArray)(value)
       ? redactArguments(value)
       : value.map(redact);
   }
@@ -35,7 +38,9 @@ const redact = (value: CliPayload): CliPayload => {
     || Schema.is(Schema.Boolean)(value)
   ) return value;
   const result: { [key: string]: CliPayload | undefined } = {};
-  const namedSecret = "name" in value && typeof value.name === "string" && isSecretField(value.name);
+  const namedSecret = "name" in value
+    && Schema.is(Schema.String)(value.name)
+    && isSecretField(value.name);
   for (const [key, entry] of Object.entries(value)) {
     if (entry === undefined) continue;
     Object.defineProperty(result, key, {
