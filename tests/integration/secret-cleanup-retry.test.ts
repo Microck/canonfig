@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,6 +13,7 @@ import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
+import { windowsCredentialScript } from "../../src/machine/windows-credentials.ts";
 import {
   nativeCredentialWriteCommand,
   nativeSecretStoreLayer,
@@ -348,4 +349,61 @@ describe("shared-secret cleanup retry", () => {
       expect(Buffer.from(result.standardError).toString("utf8")).toBe("");
     },
   );
+});
+
+describe("Windows native credential contract", () => {
+  it.each(["store", "load", "remove"] as const)("activates WinRT and fixes UTF-8 for %s", (operation) => {
+    const script = windowsCredentialScript(operation);
+    expect(script).toContain("Add-Type -AssemblyName System.Runtime.WindowsRuntime");
+    expect(script).toContain("PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new()");
+    expect(script).toContain("[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)");
+    expect(script).not.toContain("CANONFIG_SECRET");
+    expect(script).not.toContain("New-Object Windows.Security.Credentials.PasswordVault");
+  });
+
+  it("shares the same fixed write program with secret transfer", () => {
+    const command = nativeCredentialWriteCommand(
+      { kind: "secure-noninteractive", provider: "credential-manager" },
+      { name: "round-trip-fixture", value: Redacted.make("synthetic-value") },
+    );
+    expect(command?.arguments.at(-1)).toBe(windowsCredentialScript("store"));
+  });
+
+  for (const path of ["machine", "secret-transfer"] as const) {
+    it.runIf(process.platform === "win32").each([
+      { label: "ASCII", secret: "native-vault-fixture" },
+      { label: "Unicode", secret: "é🔐日本語-native-vault" },
+      { label: "quoted multiline", secret: "quote \"; slash \\ and newline\nsecond line\n" },
+    ])(`round-trips and removes $label through ${path}`, async ({ secret }) => {
+      const name = `canonfig-vault-test-${randomUUID()}`;
+      const reference = Schema.decodeUnknownSync(CredentialReference)(
+        `credential-manager:${createHash("sha256").update(name).digest("hex")}`,
+      );
+      const base = windowsMachineStateLayer({ credentialPolicy: { kind: "secure-store" } });
+      const layer = path === "machine" ? base : nativeSecretStoreLayer(base);
+      let removed = false;
+      try {
+        await Effect.runPromise(Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const stored = yield* machine.storeCredential({ name, value: Redacted.make(secret) });
+          expect(stored).toBe(reference);
+          const loaded = yield* machine.loadCredential({ reference });
+          expect(Redacted.value(loaded)).toBe(secret);
+          yield* machine.removeCredential(reference);
+          removed = true;
+          const missing = yield* machine.loadCredential({ reference }).pipe(Effect.exit);
+          expect(missing._tag).toBe("Failure");
+        }).pipe(Effect.provide(layer)));
+      } finally {
+        // A failed store may have created its item before reporting an error.
+        // Only the independently generated reference from this test is removed.
+        if (!removed) {
+          await Effect.runPromise(Effect.gen(function*() {
+            const machine = yield* MachineState;
+            yield* machine.removeCredential(reference);
+          }).pipe(Effect.provide(layer))).catch(() => undefined);
+        }
+      }
+    }, 30_000);
+  }
 });
