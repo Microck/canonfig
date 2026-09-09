@@ -1050,11 +1050,14 @@ export const windowsMachineStateLayer = (
       // cost 395-891ms per path; a mirror rollback with N owned paths paid it
       // N times. Instead the first restore on a machine compiles the helper
       // into the data directory and every later restore, in this process or
-      // the next, loads that DLL in a few milliseconds. Compile into a random
-      // sibling and rename it into place so a concurrent canonfig never loads
-      // a half-written file; losing that race means the winner's identical
-      // build is already there. A corrupt cached file fails the restore with
-      // the file named in the error; deleting it is the recovery.
+      // the next, loads that DLL. Assembly.LoadFrom is the loader on purpose:
+      // measured on an idle Windows 11 VM, five samples each, it added 25-100ms
+      // over a bare powershell.exe where Add-Type -LiteralPath added 170-290ms
+      // and the compile 250-350ms. Compile into a random sibling and rename it
+      // into place so a concurrent canonfig never loads a half-written file;
+      // losing that race means the winner's identical build is already there.
+      // A corrupt cached file fails the restore with the file named in the
+      // error; deleting it is the recovery.
       const nativePermissionRestoreAssembly = win32.join(
         localAppData,
         "canonfig",
@@ -1081,7 +1084,7 @@ export const windowsMachineStateLayer = (
               + "try{Move-Item -LiteralPath $staging -Destination $assembly}"
               + "catch{Remove-Item -LiteralPath $staging -Force;if(-not (Test-Path -LiteralPath $assembly)){throw}}"
               + "}",
-            "Add-Type -LiteralPath $assembly",
+            "$null=[Reflection.Assembly]::LoadFrom($assembly)",
             "$security=New-Object Security.AccessControl.RawSecurityDescriptor($expected)",
             "$binary=New-Object byte[] $security.BinaryLength",
             "$security.GetBinaryForm($binary,0)",
