@@ -1,0 +1,30 @@
+name: Publish reviewed doctor fixes
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/audit-doctor.yml
+      - .github/audit-doctor.patch
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.event.pull_request.head.repo.full_name == 'Microck/canonfig' && github.head_ref == 'fix/audit-truthful-doctor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Apply exact reviewed changes and remove publication scaffolding
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '65f9de72039caf4ba88c95ece6e9a189f1da5229ac8707c155652412ecc14d2c  .github/audit-doctor.patch' | sha256sum --check --strict
+          git apply --index --whitespace=error-all .github/audit-doctor.patch
+          git rm .github/audit-doctor.patch .github/workflows/audit-doctor.yml
+          test "$(git write-tree)" = 'a85c1d56a70e7a6e43330455947c082b5a94d919'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(doctor): use enrolled authority and distinguish readiness evidence'
+          git push origin HEAD:refs/heads/fix/audit-truthful-doctor

@@ -1,0 +1,260 @@
+diff --git a/docs/doctor-readiness.md b/docs/doctor-readiness.md
+new file mode 100644
+index 0000000..4354ef4
+--- /dev/null
++++ b/docs/doctor-readiness.md
+@@ -0,0 +1,24 @@
++# Doctor readiness evidence
++
++`doctor` now diagnoses the saved Source endpoint, TLS pin, and credential reference
++of an enrolled Follower Machine. Environment hints remain a fallback only before
++enrollment; they cannot silently replace its selected authority.
++
++A native provider executable is not proof that the current SSH, GUI, or scheduler
++session can use its vault. The credentials probe therefore reports a warning and
++labels its evidence `provider-presence`, even when the legacy machine capability
++is named `secure-noninteractive`. It performs no test writes, creates no keychain
++items, and makes no changes to credential access controls. A successful Source
++probe independently demonstrates a usable saved read credential in the current
++process, not write permission or logged-out/reboot persistence.
++
++A requested but absent, disabled, or drifted native job is a verification failure,
++not a pass. A current job proves only its installed definition; the result marks
++scheduled execution unverified. An intentionally unscheduled follower remains
++skipped. Run a separately approved native scheduled execution before claiming
++unattended setup complete.
++
++This diagnosis does not automatically unlock a keychain, weaken permissions,
++provision a headless secret service, or configure a GUI session. Those operations
++have distinct authorization and lifecycle requirements. No unknown state is
++converted into a success merely to make an installation appear complete.
+diff --git a/src/runtime/doctor.ts b/src/runtime/doctor.ts
+index da796ff..ba4cb74 100644
+--- a/src/runtime/doctor.ts
++++ b/src/runtime/doctor.ts
+@@ -7,6 +7,7 @@ import { connect as tlsConnect } from "node:tls";
+ import { Effect, Option, Redacted, Schema } from "effect";
+ 
+ import { programVersion } from "../cli/cli.ts";
++import { credentialReadiness, scheduledDefinitionReadiness } from "./readiness.ts";
+ import { AgentPolicy } from "../domain/identity.ts";
+ import type { CliFailureCategory } from "../cli/exit-codes.ts";
+ import {
+@@ -223,30 +224,7 @@ const stateProbe = (
+ const credentialProbe = (
+   machine: MachineState["Service"],
+ ): Effect.Effect<DoctorProbe, object> =>
+-  machine.credentialCapability().pipe(
+-    Effect.map((capability) => {
+-      switch (capability.kind) {
+-        case "secure-noninteractive":
+-          return pass(
+-            "credentials",
+-            "noninteractive credential storage is available",
+-            { kind: capability.kind, provider: capability.provider },
+-          );
+-        case "local-file":
+-          return warning(
+-            "credentials",
+-            "credential storage uses an explicitly configured local file",
+-            { kind: capability.kind },
+-          );
+-        case "unavailable":
+-          return warning(
+-            "credentials",
+-            "noninteractive credential storage is unavailable",
+-            { kind: capability.kind },
+-          );
+-      }
+-    }),
+-  );
++  machine.credentialCapability().pipe(Effect.map(credentialReadiness));
+ 
+ const sourceProbe = (
+   machine: MachineState["Service"],
+@@ -371,18 +349,7 @@ const schedulerProbe = (
+       skipped("scheduler", "this follower runs no scheduled synchronization"),
+     );
+   }
+-  return schedules.status(schedule).pipe(
+-    Effect.map((status) => {
+-      const details = {
+-        state: status.state,
+-        platform: status.platform,
+-        mechanism: status.definition.mechanism,
+-      };
+-      return status.state === "current" || status.state === "not-installed"
+-        ? pass("scheduler", `scheduler state is ${status.state}`, details)
+-        : warning("scheduler", `scheduler state is ${status.state}`, details);
+-    }),
+-  );
++  return schedules.status(schedule).pipe(Effect.map(scheduledDefinitionReadiness));
+ };
+ 
+ const packageManagerProbe = Effect.fn("Doctor.packageManagers")(function*(
+diff --git a/src/runtime/layers.ts b/src/runtime/layers.ts
+index ef04e83..d8bdbf9 100644
+--- a/src/runtime/layers.ts
++++ b/src/runtime/layers.ts
+@@ -1137,7 +1137,13 @@ const followerCommandsLayer = (
+               policyPath,
+               agentPolicy: configuration?.agentPolicy,
+               schedule,
+-              source: doctorSource,
++              source: configuration === undefined
++                ? doctorSource
++                : {
++                  endpoint: configuration.source.endpoint,
++                  tlsFingerprint: configuration.source.tlsFingerprint,
++                  credentialReference: configuration.credentialReference,
++                },
+               agent: configuration?.agentHarness === undefined
+                 ? doctorAgent
+                 : {
+diff --git a/src/runtime/readiness.ts b/src/runtime/readiness.ts
+new file mode 100644
+index 0000000..2203ff4
+--- /dev/null
++++ b/src/runtime/readiness.ts
+@@ -0,0 +1,53 @@
++import type { CredentialStorageCapability } from "../machine/machine-state.types.ts";
++import type { ScheduleStatus } from "../schedule/schedule-manager.types.ts";
++import type { DoctorProbe } from "./doctor.ts";
++
++/** Presence is not permission: never turn an executable check into a vault test. */
++export const credentialReadiness = (capability: CredentialStorageCapability): DoctorProbe => {
++  switch (capability.kind) {
++    case "secure-noninteractive":
++      return {
++        name: "credentials",
++        status: "warning",
++        message: "native credential provider is present; write and unattended access are not verified",
++        details: {
++          kind: capability.kind,
++          provider: capability.provider,
++          verification: "provider-presence",
++          writeAccessVerified: false,
++          unattendedAccessVerified: false,
++        },
++      };
++    case "local-file":
++      return {
++        name: "credentials",
++        status: "warning",
++        message: "credential storage uses an explicitly configured local file",
++        details: { kind: capability.kind, verification: "configuration" },
++      };
++    case "unavailable":
++      return {
++        name: "credentials",
++        status: "warning",
++        message: "noninteractive credential storage is unavailable",
++        details: { kind: capability.kind, verification: "provider-presence" },
++      };
++  }
++};
++
++/** A requested job must exist and match; even then its execution is unproven. */
++export const scheduledDefinitionReadiness = (status: ScheduleStatus): DoctorProbe => ({
++  name: "scheduler",
++  status: status.state === "current" ? "pass" : "fail",
++  ...(status.state === "current" ? {} : { category: "verification-or-apply-failure" as const }),
++  message: status.state === "current"
++    ? "scheduler definition is current; scheduled execution is not verified"
++    : `requested scheduler definition is ${status.state}`,
++  details: {
++    state: status.state,
++    platform: status.platform,
++    mechanism: status.definition.mechanism,
++    definitionVerified: status.state === "current",
++    scheduledExecutionVerified: false,
++  },
++});
+diff --git a/tests/doctor.test.ts b/tests/doctor.test.ts
+index 4c94202..14f6cdf 100644
+--- a/tests/doctor.test.ts
++++ b/tests/doctor.test.ts
+@@ -6,6 +6,8 @@ import { resolve } from "node:path";
+ import { describe, expect, it } from "vitest";
+ 
+ import { doctorProbeNames } from "../src/runtime/doctor.ts";
++import { credentialReadiness, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
++import type { ScheduleStatus } from "../src/schedule/schedule-manager.types.ts";
+ 
+ const projectRoot = resolve(import.meta.dirname, "..");
+ const runtimeEntrypoint = resolve(projectRoot, "src/runtime/main.ts");
+@@ -112,3 +114,46 @@ describe("doctor probes", () => {
+     expect(result.stderr).toContain("Invalid doctor timeout: 0");
+   });
+ });
++
++
++describe("readiness evidence", () => {
++  it.each(["secret-service", "keychain", "credential-manager"] as const)(
++    "does not equate %s presence with usable unattended storage",
++    (provider) => {
++      const result = credentialReadiness({ kind: "secure-noninteractive", provider });
++      expect(result.status).toBe("warning");
++      expect(result.details).toMatchObject({
++        verification: "provider-presence",
++        writeAccessVerified: false,
++        unattendedAccessVerified: false,
++      });
++    },
++  );
++
++  it("does not expose credential storage paths or untrusted recovery text", () => {
++    const result = credentialReadiness({ kind: "unavailable", recovery: "secret fixture" });
++    expect(JSON.stringify(result)).not.toContain("secret fixture");
++    const local = credentialReadiness({
++      kind: "local-file", path: { platform: "linux", absolute: "/private/fixture" },
++    });
++    expect(JSON.stringify(local)).not.toContain("/private/fixture");
++  });
++
++  it.each(["current", "not-installed", "disabled", "drifted"] as const)(
++    "reports the requested %s schedule without inventing an execution receipt",
++    (state) => {
++      const status: ScheduleStatus = {
++        state, platform: "linux", schedule: { kind: "daily", localTime: "04:00" },
++        definition: {
++          platform: "linux", mechanism: "systemd-user-timer",
++          serviceName: "canonfig", service: "fixture", schedule: "fixture",
++        },
++      };
++      const result = scheduledDefinitionReadiness(status);
++      expect(result.status).toBe(state === "current" ? "pass" : "fail");
++      expect(result.details?.scheduledExecutionVerified).toBe(false);
++      expect(result.details?.definitionVerified).toBe(state === "current");
++      if (state !== "current") expect(result.category).toBe("verification-or-apply-failure");
++    },
++  );
++});
+diff --git a/tests/packed-cli.test.ts b/tests/packed-cli.test.ts
+index 8ad3252..8bfe01a 100644
+--- a/tests/packed-cli.test.ts
++++ b/tests/packed-cli.test.ts
+@@ -637,6 +637,23 @@ describe("packed Canonfig executable", () => {
+       { CANONFIG_LOCAL_CREDENTIAL_ROOT: undefined },
+     );
+     expect(planned.status, planned.stderr).toBe(0);
++
++    // Conflicting environment hints must not replace the enrolled authority.
++    const diagnosed = invoke(authoredFollowerHome, [
++      "doctor", "--no-input", "--timeout-ms", "5000", "--json",
++    ], {
++      CANONFIG_LOCAL_CREDENTIAL_ROOT: undefined,
++      CANONFIG_SOURCE_ENDPOINT: "https://127.0.0.1:9",
++      CANONFIG_SOURCE_TLS_FINGERPRINT: "0".repeat(64),
++      CANONFIG_SOURCE_CREDENTIAL_REFERENCE: "local-file:/missing-doctor-fixture",
++    });
++    const diagnosis = JSON.parse(diagnosed.stdout || diagnosed.stderr);
++    expect(diagnosis.data.probes).toEqual(expect.arrayContaining([
++      expect.objectContaining({
++        name: "source", status: "pass",
++        details: { reachable: true, tlsPinned: true, authenticated: true },
++      }),
++    ]));
+   });
+ 
+   it("probes the agent policy the enrolled follower actually runs under", () => {
