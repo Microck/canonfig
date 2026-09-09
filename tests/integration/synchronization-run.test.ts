@@ -1133,7 +1133,7 @@ if (process.argv.slice(2).some((value) =>
         "tool",
         "install",
         "uv-tool==1.2.3",
-        "--only-binary=:all:",
+        "--no-build",
         "--no-config",
         `--default-index=${expectedIndex}`,
       ]);
@@ -3385,7 +3385,7 @@ if (process.argv.slice(2).some((value) =>
       "tool",
       "install",
       "tool==1.2.3",
-      "--only-binary=:all:",
+      "--no-build",
       "--no-config",
       "--default-index=https://pypi.org/simple",
     ]],

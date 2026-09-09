@@ -2139,10 +2139,15 @@ const packageManagerPolicy = (
     command === "tool"
     && unambiguous[commandIndex! + 1]?.toLowerCase() === "install"
   ) {
-    if (hasNonCanonicalBinaryOption(unambiguous)) {
-      return { kind: "denied" };
-    }
-    const canonical = "--only-binary=:all:";
+    // `--only-binary` belongs to the pip interface, not `uv tool install`.
+    // Keep the no-source-build guarantee without accepting conflicting flags.
+    if (unambiguous.some((argument) => {
+      const lower = argument.toLowerCase();
+      const name = lower.split("=", 1)[0]!;
+      return ["--only-binary", "--no-binary", "--no-binary-package", "--build"].includes(name)
+        || lower.startsWith("--no-build=");
+    })) return { kind: "denied" };
+    const canonical = "--no-build";
     if (
       hasDisabledOption(unambiguous, "--no-config")
       || hasSeparateOptionValue(unambiguous, "--no-config")
@@ -2153,7 +2158,7 @@ const packageManagerPolicy = (
       kind: "scripts-disabled",
       arguments: [
         ...(
-          hasOnlyBinaryAll(unambiguous)
+          unambiguous.includes(canonical)
             ? arguments_
             : [...arguments_, canonical]
         ),

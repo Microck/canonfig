@@ -91,7 +91,8 @@ HTTPS simple-index URL with `reviewedBy` and `reviewedAt`. Private simple-index
 subpaths remain intact. Without that policy, Canonfig uses the fixed
 `https://pypi.org/simple` index. Deterministic uv actions use `--no-config`,
 the full approved `--default-index`, exact package versions, and
-`--only-binary=:all:` under the default build policy.
+`uv tool install --no-build` under the default build policy. `--only-binary`
+belongs to the pip interface and is not a valid `uv tool install` option.
 
 ## npm configuration isolation
 
