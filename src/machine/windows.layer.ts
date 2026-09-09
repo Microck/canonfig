@@ -209,6 +209,16 @@ const validateSingleLine = (
 const powershellLiteral = (value: string): string =>
   `'${value.replaceAll("'", "''")}'`;
 
+// Permission restore is the one PowerShell invocation that compiles C# at run
+// time: Add-Type below hands the source to csc.exe and loads the result. That
+// cost belongs to the machine, not to the amount of work canonfig asked for,
+// and a cold or contended Windows host can stall it far past its typical
+// duration. The bound exists to catch a hung process, so it matches the 60s
+// this layer already allows its other PowerShell invocations rather than the
+// 10s that sat about twelve times above the measured cost and kept firing on
+// GitHub's windows-latest runners.
+const nativePermissionTimeoutMilliseconds = 60_000;
+
 // BackupWrite restores captured ACLs verbatim. SetAccessControl recalculates
 // inheritance from the temporary guard parent and propagates changes to children.
 // Open only the permission rights needed for restoration; do not enable privileges.
@@ -1024,7 +1034,7 @@ export const windowsMachineStateLayer = (
             "[CanonfigPermissionRestore]::Restore($path,$binary)",
             `$actual=[IO.${nativeType}]::GetAccessControl($path,$sections).GetSecurityDescriptorSddlForm($sections)`,
             "if($actual -cne $expected){throw 'Restored owner, group or access rules differ from the permission snapshot'}",
-          ].join(";"), 10_000);
+          ].join(";"), nativePermissionTimeoutMilliseconds);
           if (restored.exitCode !== 0) {
             return yield* filesystemFailure(
               "restore Windows permissions", path,
