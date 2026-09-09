@@ -404,6 +404,18 @@ const jsonString = (value: JsonValue | undefined): string | undefined =>
 const JsonStringArray = Schema.Array(Schema.String);
 const JsonCommandArray = Schema.Array(JsonStringArray);
 
+/** Inspect enablement before commands, nested records, or credential-shaped data. */
+const entryIsEnabled = (entry: { readonly [key: string]: JsonValue }): boolean => {
+  if (entry.enabled === false || entry.disabled === true) return false;
+  for (const key of ["enabled", "disabled"]) {
+    if (entry[key] !== undefined && !Schema.is(Schema.Boolean)(entry[key])) {
+      // Do not include the entry, field value, or command in a parse failure.
+      throw new Error("enabled and disabled fields must be booleans");
+    }
+  }
+  return true;
+};
+
 const lineForField = (text: string, field: string): number | undefined => {
   const quoted = `"${field.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
   const index = text.indexOf(quoted);
@@ -506,9 +518,10 @@ const scanPackageJson = (
   const tools = canonfig?.tools;
   if (Array.isArray(tools)) {
     for (let index = 0; index < tools.length; index += 1) {
-      const metadata = explicitMetadata(tools[index]!, context.sourcePath);
       const tool = jsonObject(tools[index]!);
-      if (metadata === undefined || tool === undefined) continue;
+      if (tool === undefined || !entryIsEnabled(tool)) continue;
+      const metadata = explicitMetadata(tools[index]!, context.sourcePath);
+      if (metadata === undefined) continue;
       const executable = jsonString(tool.executable) ?? metadata.name;
       records.push({
         sourcePath: context.sourcePath,
@@ -593,7 +606,7 @@ const collectJsonCommands = (
     return value.flatMap((entry, index) => collectJsonCommands(entry, `${path}[${index}]`, inheritedKind));
   }
   const object = jsonObject(value);
-  if (object === undefined) return [];
+  if (object === undefined || !entryIsEnabled(object)) return [];
   const lowered = path.toLowerCase();
   const kind: DiscoverySourceKind = lowered.includes("hook")
     ? "hook"
@@ -607,7 +620,10 @@ const collectJsonCommands = (
   const direct: Array<CommandField> = [];
   const commandString = jsonString(commandValue);
   if (commandString !== undefined) {
-    direct.push({ command: [...tokenize(commandString), ...args], field: `${path}.command`, kind });
+    // MCP command is an executable, not a shell program. Preserve Windows
+    // separators and spaces even when discovery runs on another platform.
+    const command = kind === "mcp" ? [commandString, ...args] : [...tokenize(commandString), ...args];
+    direct.push({ command, field: `${path}.command`, kind });
   } else if (Schema.is(JsonStringArray)(commandValue)) {
     direct.push({ command: commandValue, field: `${path}.command`, kind });
   }
