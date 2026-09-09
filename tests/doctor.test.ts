@@ -13,7 +13,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { doctorProbeNames, runDoctorProbes } from "../src/runtime/doctor.ts";
+import { credentialReadiness, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { scheduleManagerLayer } from "../src/schedule/schedule-manager.layer.ts";
+import type { ScheduleStatus } from "../src/schedule/schedule-manager.types.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 
 const projectRoot = resolve(import.meta.dirname, "..");
@@ -219,4 +221,46 @@ describe("doctor source probe response lifecycle", () => {
     // "source probe timed out" after the full 10 seconds.
     expect(elapsed).toBeLessThan(timeoutMilliseconds / 2);
   });
+});
+
+describe("readiness evidence", () => {
+  it.each(["secret-service", "keychain", "credential-manager"] as const)(
+    "does not equate %s presence with usable unattended storage",
+    (provider) => {
+      const result = credentialReadiness({ kind: "secure-noninteractive", provider });
+      expect(result.status).toBe("warning");
+      expect(result.details).toMatchObject({
+        verification: "provider-presence",
+        writeAccessVerified: false,
+        unattendedAccessVerified: false,
+      });
+    },
+  );
+
+  it("does not expose credential storage paths or untrusted recovery text", () => {
+    const result = credentialReadiness({ kind: "unavailable", recovery: "secret fixture" });
+    expect(JSON.stringify(result)).not.toContain("secret fixture");
+    const local = credentialReadiness({
+      kind: "local-file", path: { platform: "linux", absolute: "/private/fixture" },
+    });
+    expect(JSON.stringify(local)).not.toContain("/private/fixture");
+  });
+
+  it.each(["current", "not-installed", "disabled", "drifted"] as const)(
+    "reports the requested %s schedule without inventing an execution receipt",
+    (state) => {
+      const status: ScheduleStatus = {
+        state, platform: "linux", schedule: { kind: "daily", localTime: "04:00" },
+        definition: {
+          platform: "linux", mechanism: "systemd-user-timer",
+          serviceName: "canonfig", service: "fixture", schedule: "fixture",
+        },
+      };
+      const result = scheduledDefinitionReadiness(status);
+      expect(result.status).toBe(state === "current" ? "pass" : "fail");
+      expect(result.details?.scheduledExecutionVerified).toBe(false);
+      expect(result.details?.definitionVerified).toBe(state === "current");
+      if (state !== "current") expect(result.category).toBe("verification-or-apply-failure");
+    },
+  );
 });

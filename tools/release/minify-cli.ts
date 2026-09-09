@@ -1,6 +1,7 @@
 import { globSync } from "node:fs";
 
 import { build } from "esbuild";
+import { writeBuildReceipt } from "./build-receipt.ts";
 
 await build({
   entryPoints: globSync("dist/**/*.js").sort(),
@@ -15,3 +16,5 @@ await build({
   platform: "node",
   target: "node24",
 });
+
+writeBuildReceipt(process.cwd());

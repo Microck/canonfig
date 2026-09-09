@@ -637,6 +637,23 @@ describe("packed Canonfig executable", () => {
       { CANONFIG_LOCAL_CREDENTIAL_ROOT: undefined },
     );
     expect(planned.status, planned.stderr).toBe(0);
+
+    // Conflicting environment hints must not replace the enrolled authority.
+    const diagnosed = invoke(authoredFollowerHome, [
+      "doctor", "--no-input", "--timeout-ms", "5000", "--json",
+    ], {
+      CANONFIG_LOCAL_CREDENTIAL_ROOT: undefined,
+      CANONFIG_SOURCE_ENDPOINT: "https://127.0.0.1:9",
+      CANONFIG_SOURCE_TLS_FINGERPRINT: "0".repeat(64),
+      CANONFIG_SOURCE_CREDENTIAL_REFERENCE: "local-file:/missing-doctor-fixture",
+    });
+    const diagnosis = JSON.parse(diagnosed.stdout || diagnosed.stderr);
+    expect(diagnosis.data.probes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "source", status: "pass",
+        details: { reachable: true, tlsPinned: true, authenticated: true },
+      }),
+    ]));
   });
 
   it("probes the agent policy the enrolled follower actually runs under", () => {

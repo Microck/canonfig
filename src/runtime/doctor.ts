@@ -7,6 +7,7 @@ import { connect as tlsConnect } from "node:tls";
 import { Effect, Option, Redacted, Schema } from "effect";
 
 import { programVersion } from "../cli/cli.ts";
+import { credentialReadiness, scheduledDefinitionReadiness } from "./readiness.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import type { CliFailureCategory } from "../cli/exit-codes.ts";
 import {
@@ -103,14 +104,6 @@ const pass = (
 ): DoctorProbe => details === undefined
   ? { name, status: "pass", message }
   : { name, status: "pass", message, details };
-
-const warning = (
-  name: DoctorProbeName,
-  message: string,
-  details?: DoctorProbe["details"],
-): DoctorProbe => details === undefined
-  ? { name, status: "warning", message }
-  : { name, status: "warning", message, details };
 
 const skipped = (
   name: DoctorProbeName,
@@ -223,30 +216,7 @@ const stateProbe = (
 const credentialProbe = (
   machine: MachineState["Service"],
 ): Effect.Effect<DoctorProbe, object> =>
-  machine.credentialCapability().pipe(
-    Effect.map((capability) => {
-      switch (capability.kind) {
-        case "secure-noninteractive":
-          return pass(
-            "credentials",
-            "noninteractive credential storage is available",
-            { kind: capability.kind, provider: capability.provider },
-          );
-        case "local-file":
-          return warning(
-            "credentials",
-            "credential storage uses an explicitly configured local file",
-            { kind: capability.kind },
-          );
-        case "unavailable":
-          return warning(
-            "credentials",
-            "noninteractive credential storage is unavailable",
-            { kind: capability.kind },
-          );
-      }
-    }),
-  );
+  machine.credentialCapability().pipe(Effect.map(credentialReadiness));
 
 const sourceProbe = (
   machine: MachineState["Service"],
@@ -382,18 +352,7 @@ const schedulerProbe = (
       skipped("scheduler", "this follower runs no scheduled synchronization"),
     );
   }
-  return schedules.status(schedule).pipe(
-    Effect.map((status) => {
-      const details = {
-        state: status.state,
-        platform: status.platform,
-        mechanism: status.definition.mechanism,
-      };
-      return status.state === "current" || status.state === "not-installed"
-        ? pass("scheduler", `scheduler state is ${status.state}`, details)
-        : warning("scheduler", `scheduler state is ${status.state}`, details);
-    }),
-  );
+  return schedules.status(schedule).pipe(Effect.map(scheduledDefinitionReadiness));
 };
 
 const packageManagerProbe = Effect.fn("Doctor.packageManagers")(function*(
