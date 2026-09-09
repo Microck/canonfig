@@ -164,13 +164,29 @@ export type DirectoryResourceSpec = Schema.Schema.Type<typeof DirectoryResourceS
 export const ConfigFormat = Schema.Literals(["toml", "json", "yaml"]);
 export type ConfigFormat = Schema.Schema.Type<typeof ConfigFormat>;
 
-export const ConfigValue = Schema.Union([
+/** The portable JSON/YAML/TOML value subset. Array order is always semantic. */
+export type ConfigValue =
+  | string
+  | number
+  | boolean
+  | ReadonlyArray<ConfigValue>
+  | { readonly [key: string]: ConfigValue };
+
+// Null is deliberately excluded because TOML has no null value. Never coerce it.
+export const ConfigValue: Schema.Codec<ConfigValue> = Schema.suspend(() => Schema.Union([
   Schema.String,
-  Schema.Number,
+  Schema.Finite,
   Schema.Boolean,
-  Schema.Array(Schema.String),
-]);
-export type ConfigValue = Schema.Schema.Type<typeof ConfigValue>;
+  Schema.Array(ConfigValue),
+  Schema.Record(Schema.String, ConfigValue).check(Schema.makeFilter((value) => {
+    const reserved = Object.keys(value).find((key) =>
+      ["__proto__", "constructor", "prototype"].includes(key)
+    );
+    return reserved === undefined
+      ? undefined
+      : { path: [reserved], issue: "config value contains a reserved prototype field" };
+  })),
+]));
 
 export const ConfigKey = Schema.Struct({
   path: Schema.NonEmptyString,

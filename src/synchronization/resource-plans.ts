@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { configPathsOverlap } from "../domain/config-path.ts";
 
 import {
   AgentTaskId,
@@ -591,7 +592,9 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
       },
     }];
   }
-  const conflicts = context.desired.keys.filter((key) => context.overlayKeys.includes(key));
+  const conflicts = context.desired.keys.filter((key) =>
+    context.overlayKeys.some((local) => configPathsOverlap(key, local))
+  );
   if (conflicts.length > 0) {
     const keys = sortedUnique(conflicts);
     return [{
@@ -616,7 +619,9 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
   // Comparing values per key would need the applied value of each owned key,
   // which the Applied Resource Record does not store; the Local Overlay is the
   // mechanism this product already gives an operator to say "this key is mine".
-  const prunable = dropped.filter((key) => !context.overlayKeys.includes(key));
+  const prunable = dropped.filter((key) =>
+    !context.overlayKeys.some((local) => configPathsOverlap(key, local))
+  );
   if (prunable.length > 0) {
     return [{
       kind: "write-config",
