@@ -10,6 +10,7 @@ import {
   type MachineStateError,
 } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import { windowsCredentialScript } from "../machine/windows-credentials.ts";
 import type {
   CredentialStorageCapability,
   LoadCredentialInput,
@@ -166,15 +167,7 @@ export const nativeCredentialWriteCommand = (
       "v1.0",
       "powershell.exe",
     );
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    "[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false)",
-    "$secret=[Console]::In.ReadToEnd()",
-    "$vault=New-Object Windows.Security.Credentials.PasswordVault",
-    "$credential=New-Object Windows.Security.Credentials.PasswordCredential("
-      + "$env:CANONFIG_TARGET,'canonfig',$secret)",
-    "$vault.Add($credential)",
-  ].join(";");
+  const script = windowsCredentialScript("store");
   return {
     provider: "credential-manager",
     executable: powershell,
