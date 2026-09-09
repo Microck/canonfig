@@ -1,5 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+// The binding stores what fs/promises.realpath returns, which on Windows
+// expands 8.3 short names that fs.realpathSync leaves alone. Resolve the
+// expected paths the same way, or the two spellings of one file disagree.
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Effect, Schema } from "effect";
@@ -63,8 +67,8 @@ describe("local installer binding contract", () => {
     await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
     // Resolve in a new Effect run: success cannot depend on an in-memory cache.
     const loaded = await Effect.runPromise(loadInstallerBinding("npm").pipe(Effect.provide(f.layer)));
-    expect(loaded?.executable).toBe(realpathSync(process.execPath));
-    expect(loaded?.arguments).toEqual([realpathSync(f.entry)]);
+    expect(loaded?.executable).toBe(await realpath(process.execPath));
+    expect(loaded?.arguments).toEqual([await realpath(f.entry)]);
     const resource = Schema.decodeUnknownSync(ResourceId)("fixture-npm");
     await Effect.runPromise(Effect.gen(function*() {
       const prepared = yield* prepareResourceAction({
