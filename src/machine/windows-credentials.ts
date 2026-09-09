@@ -17,7 +17,7 @@ export const windowsCredentialScript = (
     case "store":
       return [...prelude,
         "$secret=[Console]::In.ReadToEnd()",
-        "$credential=New-Object -TypeName Windows.Security.Credentials.PasswordCredential -ArgumentList @($env:CANONFIG_TARGET,'canonfig',$secret)",
+        "$credential=[Windows.Security.Credentials.PasswordCredential,Windows.Security.Credentials,ContentType=WindowsRuntime]::new($env:CANONFIG_TARGET,'canonfig',$secret)",
         "$vault.Add($credential)",
       ].join(";");
     case "load":

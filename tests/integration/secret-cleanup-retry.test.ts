@@ -358,7 +358,7 @@ describe("Windows native credential contract", () => {
     expect(script).toContain("PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new()");
     expect(script).toContain("[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)");
     expect(script).not.toContain("CANONFIG_SECRET");
-    expect(script).not.toContain("New-Object Windows.Security.Credentials.PasswordVault");
+    expect(script).not.toContain("New-Object");
   });
 
   it("shares the same fixed write program with secret transfer", () => {

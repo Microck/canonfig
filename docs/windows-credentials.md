@@ -1,8 +1,8 @@
 # Windows native credential execution
 
 Both enrollment's MachineState path and shared-secret transfer use the same
-fixed PowerShell program. It explicitly activates the Windows Runtime vault,
-constructs credentials with an argument list, and sets UTF-8 input and output.
+fixed PowerShell program. It explicitly activates both Windows Runtime types it
+needs, the vault and the credential, and sets UTF-8 input and output.
 Secret values travel through standard input, not command arguments or environment
 variables. Names are hashed into Canonfig-owned native credential references.
 
