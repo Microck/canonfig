@@ -391,8 +391,9 @@ describe("portable safe-root mutation", () => {
 describe("systemd unit rendering", () => {
   // Checked against systemd 249 with a real user unit: "%%" collapses to "%" at
   // load time and "$$" to "$" at start time, inside double quotes too, while a
-  // bare "%h" or "${HOME}" expands to the home directory. The asserted line is
-  // the one that parses back to the original argv.
+  // bare "%h" or "${HOME}" expands to the home directory. The program path is
+  // the exception: systemd leaves "$" alone there and "$$" fails to start. The
+  // asserted line is the one that parses back to the original argv.
   it("escapes specifier and variable characters so ExecStart parses back to the argv", async () => {
     const root = mkdtempSync(join(tmpdir(), "canonfig-systemd-render-"));
     try {
@@ -402,7 +403,7 @@ describe("systemd unit rendering", () => {
           return yield* machine.renderSchedulerJob({
             name: "canonfig-sync",
             description: "Canonfig follower synchronization",
-            executable: { platform: "linux", absolute: "/home/user/.nvm/v24%h/bin/node" },
+            executable: { platform: "linux", absolute: "/home/user/.nvm/v24%h$1/bin/node" },
             arguments: ["sync", "--path", 'a "100%" ${HOME} $HOME \\ value'],
             calendar: { kind: "daily", localTime: "00:00" },
           });
@@ -410,7 +411,7 @@ describe("systemd unit rendering", () => {
       );
 
       expect(rendered.service).toContain(
-        'ExecStart="/home/user/.nvm/v24%%h/bin/node" "sync" "--path" '
+        'ExecStart="/home/user/.nvm/v24%%h$1/bin/node" "sync" "--path" '
           + '"a \\"100%%\\" $${HOME} $$HOME \\\\ value"',
       );
     } finally {
