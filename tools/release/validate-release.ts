@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
@@ -332,6 +333,19 @@ try {
     HOME: homeRoot,
     npm_config_cache: npmCacheRoot,
   };
+  // npm only honors overrides of the root project it installs into, and a
+  // bare --prefix target has none: without the closure pins the floating
+  // transitive @effect ranges can drift into an upstream release whose
+  // peers reference an unpublished effect version.
+  // SAFETY: the repository package.json declares the overrides field, so
+  // the parsed root manifest has exactly that shape.
+  const { overrides } = JSON.parse(
+    readFileSync(resolve(projectRoot, "package.json"), "utf8"),
+  ) as { overrides: Record<string, string> };
+  writeFileSync(
+    resolve(installRoot, "package.json"),
+    `${JSON.stringify({ private: true, overrides })}\n`,
+  );
   const installed = run({
     command: "npm",
     arguments_: [
