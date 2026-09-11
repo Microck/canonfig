@@ -113,9 +113,7 @@ const localProcessTimeout = (
  */
 export const assertUpgradeGate = Effect.fn(
   "FollowerOrchestration.upgradeGate",
-)(function*(
-  follower: string,
-): Effect.fn.Return<void, UpgradeGateError | StateRepositoryError> {
+(function*(follower: string): Effect.fn.Return<void, UpgradeGateError | StateRepositoryError, StateRepository> {
   const repository = yield* StateRepository;
   const open = yield* repository.loadOpenRunIdentity(follower);
   if (open === undefined) return;
