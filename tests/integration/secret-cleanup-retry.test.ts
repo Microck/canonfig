@@ -247,6 +247,8 @@ describe("shared-secret cleanup retry", () => {
       // the real keychain work still happens in the store and load below.
       const probeRunner: SecurityRunner = (invocation) =>
         Effect.sync(() => {
+          // SAFETY: the probe runner is only fed by keychainSessionProbe,
+          // whose stdin is always the JSON with an operation field.
           const payload = JSON.parse(
             new TextDecoder().decode(invocation.standardInput),
           ) as { operation: string };
