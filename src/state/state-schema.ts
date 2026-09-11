@@ -341,4 +341,37 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       DROP COLUMN schedule_json
     `;
   }),
+  // Runs record which build created them, and every completed run leaves a
+  // deployment receipt, so an upgrade can tell a foreign unfinished run from
+  // its own and audits can say which sources produced the deployed state.
+  "0014_deployment_receipts": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      ALTER TABLE synchronization_runs
+      ADD COLUMN creating_version TEXT
+    `;
+    yield* sql`
+      ALTER TABLE synchronization_runs
+      ADD COLUMN creating_identity TEXT
+    `;
+    yield* sql`
+      ALTER TABLE synchronization_runs
+      ADD COLUMN state_format INTEGER
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS deployment_receipts (
+        run_id TEXT PRIMARY KEY REFERENCES synchronization_runs(id),
+        follower_id TEXT NOT NULL,
+        package_version TEXT NOT NULL,
+        build_identity TEXT NOT NULL,
+        state_format INTEGER NOT NULL,
+        outcome TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      )
+    `;
+  }),
 });
+
+/** Bumped by every migration that changes what a stored run means. */
+export const stateFormatVersion = 2;

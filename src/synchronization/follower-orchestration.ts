@@ -51,6 +51,9 @@ import {
   sha256Hex,
 } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
+import { UpgradeGateError } from "../state/state-repository.errors.ts";
+import { buildIdentity } from "../runtime/build-identity.ts";
+import { stateFormatVersion } from "../state/state-schema.ts";
 import { Synchronization } from "./synchronization.service.ts";
 import {
   getConfigPath,
@@ -100,6 +103,33 @@ const localProcessTimeout = (
 ): number =>
   configuration.localExecution?.processTimeoutMilliseconds
     ?? defaultLocalExecution.processTimeoutMilliseconds;
+
+/**
+ * An upgrade must not change executable or state underneath a run that an
+ * earlier build left unfinished: that run can only be finished or recovered
+ * by the build that created it, because the journal and codec behavior of a
+ * foreign build are unknown. The operator can accept the upgrade explicitly,
+ * which is the migration path.
+ */
+export const assertUpgradeGate = Effect.fn(
+  "FollowerOrchestration.upgradeGate",
+)(function*(
+  follower: string,
+): Effect.fn.Return<void, UpgradeGateError | StateRepositoryError> {
+  const repository = yield* StateRepository;
+  const open = yield* repository.loadOpenRunIdentity(follower);
+  if (open === undefined) return;
+  const compatible = open.creatingIdentity === buildIdentity.sourceDigest
+    && open.stateFormat === stateFormatVersion;
+  if (compatible || process.env.CANONFIG_ACCEPT_FOREIGN_BUILD === "1") return;
+  return yield* new UpgradeGateError({
+    run: open.run,
+    creatingVersion: open.creatingVersion,
+    creatingIdentity: open.creatingIdentity,
+    currentVersion: buildIdentity.packageVersion,
+    currentIdentity: buildIdentity.sourceDigest,
+  });
+});
 
 const configurationError = (
   reason: "missing" | "stale" | "invalid-profile" | "invalid-reference",
@@ -1340,6 +1370,9 @@ export const synchronizeFollower = Effect.fn(
   const configuration = yield* loadFollowerSynchronizationConfiguration(
     stateLocation,
   );
+  if (mode === "apply") {
+    yield* assertUpgradeGate(configuration.follower.id);
+  }
   const selected = yield* selectedRevision(configuration, undefined, signal);
   const fetched = yield* fetchRevision({
     ...transportInput(configuration, signal),
@@ -1482,6 +1515,7 @@ export const abandonFollowerRun = Effect.fn(
       "no durable interrupted synchronization run is available",
     );
   }
+  yield* assertUpgradeGate(configuration.follower.id);
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
   );
@@ -1524,6 +1558,7 @@ export const recoverFollower = Effect.fn(
       "no durable interrupted synchronization run is available",
     );
   }
+  yield* assertUpgradeGate(configuration.follower.id);
   const sourceRevision = recovery.run.revision.replace(
     /:view:[a-f0-9]{64}$/u,
     "",

@@ -158,6 +158,16 @@ export class RecoveryRunNotFoundError extends TaggedError<RecoveryRunNotFoundErr
   { follower: Schema.String },
 ) {}
 
+
+export class InsufficientDiskError extends TaggedError<InsufficientDiskError>()(
+  "InsufficientDiskError",
+  {
+    path: Schema.String,
+    requiredBytes: Schema.BigIntFromNumber,
+    availableBytes: Schema.BigIntFromNumber,
+  },
+})
+
 export class RecoveryIntegrityError extends TaggedError<RecoveryIntegrityError>()(
   "RecoveryIntegrityError",
   {
@@ -199,6 +209,7 @@ export type SynchronizationExecutionInputError =
   | InvalidArtifactError
   | ActionExecutionError
   | RollbackCleanupError
+  | InsufficientDiskError
   | ScheduleManagerError;
 
 export type SynchronizationRecoveryError =

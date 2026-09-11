@@ -74,6 +74,8 @@ import type {
   StoredEnrollmentInvitation,
   VerificationEvidence,
 } from "./state-repository.types.ts";
+import { stateFormatVersion, stateMigrations } from "./state-schema.ts";
+import { buildIdentity } from "../runtime/build-identity.ts";
 import type { LocalOverlayEntry } from "../synchronization/synchronization.types.ts";
 
 const CountRow = Schema.Struct({ count: Schema.Number });
@@ -1485,14 +1487,20 @@ const makeRepository = Effect.gen(function*() {
             revision_id,
             status,
             plan_json,
-            started_at
+            started_at,
+            creating_version,
+            creating_identity,
+            state_format
           ) VALUES (
             ${input.id},
             ${input.follower},
             ${input.revision},
             'applying',
             ${encodeJson(input.plan)},
-            ${input.startedAt}
+            ${input.startedAt},
+            ${buildIdentity.packageVersion},
+            ${buildIdentity.sourceDigest},
+            ${stateFormatVersion}
           )
         `;
         for (let ordinal = 0; ordinal < input.plan.actions.length; ordinal += 1) {
@@ -1816,6 +1824,28 @@ const makeRepository = Effect.gen(function*() {
               , symlink_target = excluded.symlink_target
           `;
         }
+        // Every completed run leaves a receipt naming the build that applied
+        // it, so audits and upgrade decisions can say which sources produced
+        // the deployed state.
+        yield* sql`
+          INSERT INTO deployment_receipts (
+            run_id,
+            follower_id,
+            package_version,
+            build_identity,
+            state_format,
+            outcome,
+            recorded_at
+          ) VALUES (
+            ${input.run},
+            ${run.follower_id},
+            ${buildIdentity.packageVersion},
+            ${buildIdentity.sourceDigest},
+            ${stateFormatVersion},
+            ${input.outcome.outcome},
+            ${input.completedAt}
+          )
+        `;
       });
       yield* sql.withTransaction(transaction).pipe(
         Effect.mapError((error) =>
@@ -1982,6 +2012,44 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
+  /**
+   * What the still-open run of this follower knows about the build that
+   * created it. An undefined answer means no open run: nothing blocks an
+   * upgrade. A null identity means a run created before builds recorded
+   * their identity, which the upgrade gate treats as foreign.
+   */
+  const loadOpenRunIdentity = Effect.fn("StateRepository.loadOpenRunIdentity")(
+    function*(
+      follower: FollowerIdType,
+    ): Effect.fn.Return<{
+      readonly run: string;
+      readonly creatingVersion: string | null;
+      readonly creatingIdentity: string | null;
+      readonly stateFormat: number | null;
+    } | undefined, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT
+          id,
+          creating_version,
+          creating_identity,
+          state_format
+        FROM synchronization_runs
+        WHERE follower_id = ${follower}
+          AND status IN ('applying', 'Interrupted')
+        ORDER BY started_at DESC
+        LIMIT 1
+      `.pipe(Effect.mapError(sqlError("load open run identity")));
+      const row = rows[0];
+      if (row === undefined) return undefined;
+      return {
+        run: row.id,
+        creatingVersion: row.creating_version,
+        creatingIdentity: row.creating_identity,
+        stateFormat: row.state_format,
+      };
+    },
+  );
+
   const loadState = Effect.fn("StateRepository.loadState")(
     function*(follower: FollowerIdType): Effect.fn.Return<StateSnapshot, StateRepositoryError> {
       const followerRows = yield* sql`
@@ -2079,6 +2147,7 @@ const makeRepository = Effect.gen(function*() {
     recordDrift,
     completeRun,
     loadRecovery,
+    loadOpenRunIdentity,
     loadState,
   });
 });

@@ -525,6 +525,11 @@ export const failureTaxonomy = {
     (error) =>
       `follower ${text(error.follower)} has a run still open; run 'canonfig recover' first`,
   ),
+  UpgradeGateError: describe(
+    "conflict-or-drift",
+    (error) =>
+      `run ${text(error.run)} was created by canonfig ${text(error.creatingVersion ?? "unknown")} (source ${text(error.creatingIdentity ?? "unknown")}); this is canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}). finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`,
+  ),
   DuplicateFollowerIdentityError: declared(
     "conflict-or-drift",
     () => "this machine is already enrolled",
@@ -624,6 +629,11 @@ export const failureTaxonomy = {
     "verification-or-apply-failure",
     (error) =>
       `rollback material for run ${text(error.run)} could not be cleaned up (${text(error.outcome)})`,
+  ),
+  InsufficientDiskError: declared(
+    "verification-or-apply-failure",
+    (error) =>
+      `${text(error.path)} needs ${error.requiredBytes.toString()} free bytes for this run but only ${error.availableBytes.toString()} are available; nothing was changed`,
   ),
   ScheduleVerificationError: declared(
     "verification-or-apply-failure",
