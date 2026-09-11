@@ -39,6 +39,7 @@ import type {
 } from "./machine-state.types.ts";
 
 export interface MacosMachineStateOptions {
+  readonly credentialPolicy?: CredentialPolicy | undefined;
   readonly credentialStoreAccess?:
     | "auto"
     | "available"

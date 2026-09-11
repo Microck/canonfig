@@ -318,6 +318,8 @@ describe.skipIf(!qualification)("gui LaunchAgent keychain qualification", () => 
       while (!existsSync(outcomePath) && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
+      // SAFETY: the agent writes the outcome file before exiting, so the file
+      // exists here and holds exactly the one JSON outcome object.
       const outcome = JSON.parse(await readFile(outcomePath, "utf8")) as {
         ok: boolean;
         stage?: string;
