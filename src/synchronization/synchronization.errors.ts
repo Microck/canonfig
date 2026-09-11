@@ -166,7 +166,7 @@ export class InsufficientDiskError extends TaggedError<InsufficientDiskError>()(
     requiredBytes: Schema.BigIntFromNumber,
     availableBytes: Schema.BigIntFromNumber,
   },
-})
+});
 
 export class RecoveryIntegrityError extends TaggedError<RecoveryIntegrityError>()(
   "RecoveryIntegrityError",
