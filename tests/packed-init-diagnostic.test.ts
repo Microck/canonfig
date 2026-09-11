@@ -35,6 +35,8 @@ it("initializes a source from a clean packed install", () => {
     // The install stub is the root project of this install and carries
     // canonfig's effect closure overrides; npm would ignore the overrides
     // inside the tarball dependency itself.
+    // SAFETY: the repository package.json declares the closure pins in its
+    // overrides field, so the parsed root manifest has exactly that shape.
     const { overrides } = JSON.parse(
       readFileSync(resolve(projectRoot, "package.json"), "utf8"),
     ) as { overrides: Record<string, string> };
