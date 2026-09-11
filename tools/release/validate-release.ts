@@ -333,6 +333,7 @@ try {
     HOME: homeRoot,
     npm_config_cache: npmCacheRoot,
   };
+  mkdirSync(installRoot, { recursive: true });
   // npm only honors overrides of the root project it installs into, and a
   // bare --prefix target has none: without the closure pins the floating
   // transitive @effect ranges can drift into an upstream release whose
