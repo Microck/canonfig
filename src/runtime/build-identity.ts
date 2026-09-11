@@ -24,9 +24,14 @@ export interface BuildIdentity {
 }
 
 const embedded: { readonly sourceDigest: string; readonly commit: string | null } =
-  typeof __CANONFIG_BUILD_IDENTITY__ === "string"
-    ? JSON.parse(__CANONFIG_BUILD_IDENTITY__)
-    : { sourceDigest: "unbuilt", commit: null };
+  __CANONFIG_BUILD_IDENTITY__ === undefined
+    ? { sourceDigest: "unbuilt", commit: null }
+    // SAFETY: the minifier substitutes this constant with the JSON text of
+    // exactly this shape; anything else failed to go through build:cli.
+    : (JSON.parse(__CANONFIG_BUILD_IDENTITY__) as {
+      sourceDigest: string;
+      commit: string | null;
+    });
 
 export const buildIdentity: BuildIdentity = {
   packageVersion,
