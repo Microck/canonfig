@@ -32,15 +32,18 @@ it("initializes a source from a clean packed install", () => {
     });
     expect(packed.status, packed.stderr).toBe(0);
     const tarball = resolve(root, (JSON.parse(packed.stdout) as Array<{ filename: string }>)[0]!.filename);
-    writeFileSync(resolve(installRoot, "package.json"), "{\"private\":true}\n");
+    // The install stub is the root project of this install and carries
+    // canonfig's effect closure overrides; npm would ignore the overrides
+    // inside the tarball dependency itself.
+    const { overrides } = JSON.parse(
+      readFileSync(resolve(projectRoot, "package.json"), "utf8"),
+    ) as { overrides: Record<string, string> };
+    writeFileSync(resolve(installRoot, "package.json"), `${JSON.stringify({ private: true, overrides })}\n`);
     const installed = spawnSync(npmExecutable, [
       "install",
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
-      // See tests/packed-cli.test.ts: floating transitive @effect ranges and
-      // npm's CI strict peer deps disagree with upstream release skew.
-      "--strict-peer-deps=false",
       tarball,
     ], {
       ...commandOptions,

@@ -289,9 +289,17 @@ esac
     JSON.parse(packed.stdout),
   );
   const tarball = resolve(packedRoot, packedResult[0]!.filename);
+  // npm only honors overrides of the root project: a tarball dependency's
+  // own overrides are ignored. The install stub is the root project of this
+  // install, so it carries canonfig's effect closure pins; without them a
+  // floating transitive @effect range can drift into an upstream release
+  // whose peers reference an unpublished effect version.
+  const { overrides } = JSON.parse(
+    readFileSync(resolve(projectRoot, "package.json"), "utf8"),
+  ) as { overrides: Record<string, string> };
   writeFileSync(
     resolve(installRoot, "package.json"),
-    `${JSON.stringify({ private: true })}\n`,
+    `${JSON.stringify({ private: true, overrides })}\n`,
   );
   const installed = runNpm(
     installRoot,
@@ -300,12 +308,6 @@ esac
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
-      // The packed tarball pins an exact effect release while its transitive
-      // @effect ranges float; when the effect org publishes skewed releases
-      // the floating peers cannot resolve. npm makes that fatal under CI's
-      // strict peer deps, and this test is about packaging, not the upstream
-      // peer matrix.
-      "--strict-peer-deps=false",
       tarball,
     ],
   );
