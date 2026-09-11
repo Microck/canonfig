@@ -48,7 +48,6 @@ import {
   type StateRepositoryError,
 } from "./state-repository.errors.ts";
 import { StateRepository } from "./state-repository.service.ts";
-import { stateMigrations } from "./state-schema.ts";
 import type {
   ActionJournalRecord,
   CancelPendingEnrollmentInput,
