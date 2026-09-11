@@ -38,6 +38,9 @@ it("initializes a source from a clean packed install", () => {
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
+      // See tests/packed-cli.test.ts: floating transitive @effect ranges and
+      // npm's CI strict peer deps disagree with upstream release skew.
+      "--strict-peer-deps=false",
       tarball,
     ], {
       ...commandOptions,

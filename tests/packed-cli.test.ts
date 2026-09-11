@@ -300,6 +300,12 @@ esac
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
+      // The packed tarball pins an exact effect release while its transitive
+      // @effect ranges float; when the effect org publishes skewed releases
+      // the floating peers cannot resolve. npm makes that fatal under CI's
+      // strict peer deps, and this test is about packaging, not the upstream
+      // peer matrix.
+      "--strict-peer-deps=false",
       tarball,
     ],
   );
