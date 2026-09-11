@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import "./compile-cache.ts";
 import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
 
