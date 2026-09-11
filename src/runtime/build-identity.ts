@@ -4,14 +4,28 @@
  * A package version names a release, not a build: two checkouts can report
  * the same version while compiling different sources. `npm run build:cli`
  * computes a SHA-256 over every build input (see tools/release/build-receipt.ts)
- * and the minifier substitutes it for __CANONFIG_BUILD_IDENTITY__ below, so the
- * compiled CLI can say exactly which sources it was built from without the
- * receipt file, which stays out of the published package.
+ * and the minifier substitutes it for the __CANONFIG_BUILD_IDENTITY__ global
+ * below, so the compiled CLI can say exactly which sources it was built from
+ * without the receipt file, which stays out of the published package.
  *
  * A checkout run straight from source (tsx, the test suite) has no compiled
  * identity and says so with "unbuilt" rather than inventing one.
  */
-declare const __CANONFIG_BUILD_IDENTITY__: string | undefined;
+
+const globalWithIdentity = globalThis as {
+  __CANONFIG_BUILD_IDENTITY__?: string;
+};
+
+// SAFETY: the minifier substitutes this global with the JSON text of the
+// identity; a source checkout reads undefined from the global object and
+// reports itself as unbuilt.
+const substituted = globalWithIdentity.__CANONFIG_BUILD_IDENTITY__;
+
+// SAFETY: the substituted text was written by tools/release/minify-cli.ts
+// with exactly this shape.
+const embedded = substituted === undefined
+  ? { sourceDigest: "unbuilt", commit: null }
+  : (JSON.parse(substituted) as { sourceDigest: string; commit: string | null });
 
 export const packageVersion = "3.1.5";
 
@@ -22,16 +36,6 @@ export interface BuildIdentity {
   /** Git commit the build was made from, when Git was available at build time. */
   readonly commit: string | null;
 }
-
-const embedded: { readonly sourceDigest: string; readonly commit: string | null } =
-  __CANONFIG_BUILD_IDENTITY__ === undefined
-    ? { sourceDigest: "unbuilt", commit: null }
-    // SAFETY: the minifier substitutes this constant with the JSON text of
-    // exactly this shape; anything else failed to go through build:cli.
-    : (JSON.parse(__CANONFIG_BUILD_IDENTITY__) as {
-      sourceDigest: string;
-      commit: string | null;
-    });
 
 export const buildIdentity: BuildIdentity = {
   packageVersion,
