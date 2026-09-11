@@ -76,9 +76,11 @@ const redact = (
     | SynchronizationExecutionInputError,
   secrets: ReadonlyArray<string>,
 ): string => {
-  let message = value instanceof Error
-    ? value.message || value.constructor.name
-    : String(value);
+  // `String(error)` renders `Tag: message` for tagged errors. Since every
+  // tagged error now has a message (message-less classes render their fields),
+  // using the message alone would drop the tag from reasons such as
+  // `MissingArtifactError: digest="..."`.
+  let message = String(value);
   for (const secret of secrets) {
     if (secret.length > 0) message = message.replaceAll(secret, "[REDACTED]");
   }

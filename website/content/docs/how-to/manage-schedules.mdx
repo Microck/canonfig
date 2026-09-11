@@ -60,3 +60,5 @@ canonfig schedule remove
 ```
 
 Setting the same schedule is idempotent. Removing a schedule that is already absent is also an unchanged result.
+
+A cadence set with `schedule set` survives `sync --apply`: the apply re-renders the job's binding (runtime, entrypoint, and arguments) but keeps your schedule. `schedule remove` records a disabled override, and every apply re-asserts it, so the profile default does not reinstall the job.
