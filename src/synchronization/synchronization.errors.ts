@@ -163,8 +163,8 @@ export class InsufficientDiskError extends TaggedError<InsufficientDiskError>()(
   "InsufficientDiskError",
   {
     path: Schema.String,
-    requiredBytes: Schema.BigIntFromNumber,
-    availableBytes: Schema.BigIntFromNumber,
+    requiredBytes: Schema.BigInt,
+    availableBytes: Schema.BigInt,
   },
 ) {}
 

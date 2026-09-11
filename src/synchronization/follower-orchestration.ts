@@ -10,10 +10,10 @@ import {
 } from "../agent/agent-resolution.service.ts";
 import type { AgentResolutionOutcome } from "../agent/agent-resolution.types.ts";
 import {
-  ActionId,
   BlobId,
   ContentDigest,
   CredentialReference,
+  type FollowerId,
   ProfileId,
   ProfileRevisionId,
   ResourceId,
@@ -113,7 +113,7 @@ const localProcessTimeout = (
  */
 export const assertUpgradeGate = Effect.fn(
   "FollowerOrchestration.upgradeGate",
-)(function*(follower: string): Effect.fn.Return<void, UpgradeGateError | StateRepositoryError, StateRepository> {
+)(function*(follower: FollowerId): Effect.fn.Return<void, UpgradeGateError | StateRepositoryError, StateRepository> {
   const repository = yield* StateRepository;
   const open = yield* repository.loadOpenRunIdentity(follower);
   if (open === undefined) return;
