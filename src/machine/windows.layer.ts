@@ -1518,6 +1518,7 @@ export const windowsMachineStateLayer = (
               ? {
                 kind: "secure-noninteractive" as const,
                 provider: "credential-manager" as const,
+                verification: "provider-presence" as const,
               }
               : {
                 kind: "unavailable" as const,

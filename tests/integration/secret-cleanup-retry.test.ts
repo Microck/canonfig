@@ -12,6 +12,7 @@ import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
+import type { SecurityRunner } from "../../src/machine/keychain-session-probe.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { windowsCredentialScript } from "../../src/machine/windows-credentials.ts";
 import {
@@ -57,6 +58,7 @@ describe("shared-secret cleanup retry", () => {
           Effect.succeed({
             kind: "secure-noninteractive" as const,
             provider: "secret-service" as const,
+            verification: "provider-presence" as const,
           }),
       })),
     ).pipe(Layer.provide(base));
@@ -208,7 +210,7 @@ describe("shared-secret cleanup retry", () => {
   it("keeps macOS secret values out of arguments and environment", () => {
     const secret = "mac-secret-value-not-process-metadata";
     const command = nativeCredentialWriteCommand(
-      { kind: "secure-noninteractive", provider: "keychain" },
+      { kind: "secure-noninteractive", provider: "keychain", verification: "provider-presence" },
       { name: "canonfig-secret", value: Redacted.make(secret) },
     );
 
@@ -239,9 +241,31 @@ describe("shared-secret cleanup retry", () => {
     "round-trips a $label secret through macOS Keychain stdin",
     async ({ secret }) => {
       const name = `canonfig-native-secret-${randomUUID()}`;
+      // This test proves the native stdin codec round-trip, so the capability
+      // must not depend on whether this particular session passes the live
+      // probe: the probe runner is a fixture that answers the lifecycle, and
+      // the real keychain work still happens in the store and load below.
+      const probeRunner: SecurityRunner = (invocation) =>
+        Effect.sync(() => {
+          // SAFETY: the probe runner is only fed by keychainSessionProbe,
+          // whose stdin is always the JSON with an operation field.
+          const payload = JSON.parse(
+            new TextDecoder().decode(invocation.standardInput),
+          ) as { operation: string };
+          return {
+            exitCode: 0,
+            signal: null,
+            standardOutput: payload.operation === "probe-load"
+              ? new TextEncoder().encode("canonfig-session-probe write check")
+              : new Uint8Array(),
+            standardError: new Uint8Array(),
+          };
+        });
       const layer = nativeSecretStoreLayer(
         macosMachineStateLayer({
           credentialPolicy: { kind: "secure-store" },
+          credentialStoreAccess: "available",
+          securityRunner: probeRunner,
         }),
       );
       let reference: typeof CredentialReference.Type | undefined;
@@ -283,7 +307,7 @@ describe("shared-secret cleanup retry", () => {
   it("keeps multibyte Windows secret values out of process metadata", () => {
     const secret = "é🔐-windows-secret-value";
     const command = nativeCredentialWriteCommand(
-      { kind: "secure-noninteractive", provider: "credential-manager" },
+      { kind: "secure-noninteractive", provider: "credential-manager", verification: "provider-presence" },
       { name: "canonfig-secret", value: Redacted.make(secret) },
       { SystemRoot: "C:\\Windows" },
     );
@@ -363,7 +387,7 @@ describe("Windows native credential contract", () => {
 
   it("shares the same fixed write program with secret transfer", () => {
     const command = nativeCredentialWriteCommand(
-      { kind: "secure-noninteractive", provider: "credential-manager" },
+      { kind: "secure-noninteractive", provider: "credential-manager", verification: "provider-presence" },
       { name: "round-trip-fixture", value: Redacted.make("synthetic-value") },
     );
     expect(command?.arguments.at(-1)).toBe(windowsCredentialScript("store"));

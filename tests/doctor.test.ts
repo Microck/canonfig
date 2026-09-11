@@ -227,12 +227,29 @@ describe("readiness evidence", () => {
   it.each(["secret-service", "keychain", "credential-manager"] as const)(
     "does not equate %s presence with usable unattended storage",
     (provider) => {
-      const result = credentialReadiness({ kind: "secure-noninteractive", provider });
+      const result = credentialReadiness({
+        kind: "secure-noninteractive", provider, verification: "provider-presence",
+      });
       expect(result.status).toBe("warning");
       expect(result.details).toMatchObject({
         verification: "provider-presence",
         writeAccessVerified: false,
         unattendedAccessVerified: false,
+      });
+    },
+  );
+
+  it.each(["secret-service", "keychain", "credential-manager"] as const)(
+    "reports %s as verified when a session probe proved the write",
+    (provider) => {
+      const result = credentialReadiness({
+        kind: "secure-noninteractive", provider, verification: "session-probe",
+      });
+      expect(result.status).toBe("pass");
+      expect(result.details).toMatchObject({
+        verification: "session-probe",
+        writeAccessVerified: true,
+        unattendedAccessVerified: true,
       });
     },
   );

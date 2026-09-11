@@ -181,6 +181,11 @@ export type CredentialStorageCapability =
   | {
     readonly kind: "secure-noninteractive";
     readonly provider: "secret-service" | "keychain" | "credential-manager";
+    /**
+     * How the capability was established: a disposable write probe in the
+     * current session, or only provider presence. Presence is not permission.
+     */
+    readonly verification: "session-probe" | "provider-presence";
   }
   | {
     readonly kind: "local-file";
