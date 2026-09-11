@@ -12,6 +12,7 @@ import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
+import type { SecurityRunner } from "../../src/machine/keychain-session-probe.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { windowsCredentialScript } from "../../src/machine/windows-credentials.ts";
 import {
@@ -240,9 +241,29 @@ describe("shared-secret cleanup retry", () => {
     "round-trips a $label secret through macOS Keychain stdin",
     async ({ secret }) => {
       const name = `canonfig-native-secret-${randomUUID()}`;
+      // This test proves the native stdin codec round-trip, so the capability
+      // must not depend on whether this particular session passes the live
+      // probe: the probe runner is a fixture that answers the lifecycle, and
+      // the real keychain work still happens in the store and load below.
+      const probeRunner: SecurityRunner = (invocation) =>
+        Effect.sync(() => {
+          const payload = JSON.parse(
+            new TextDecoder().decode(invocation.standardInput),
+          ) as { operation: string };
+          return {
+            exitCode: 0,
+            signal: null,
+            standardOutput: payload.operation === "probe-load"
+              ? new TextEncoder().encode("canonfig-session-probe write check")
+              : new Uint8Array(),
+            standardError: new Uint8Array(),
+          };
+        });
       const layer = nativeSecretStoreLayer(
         macosMachineStateLayer({
           credentialPolicy: { kind: "secure-store" },
+          credentialStoreAccess: "available",
+          securityRunner: probeRunner,
         }),
       );
       let reference: typeof CredentialReference.Type | undefined;
