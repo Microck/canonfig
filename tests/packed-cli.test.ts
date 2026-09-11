@@ -289,9 +289,19 @@ esac
     JSON.parse(packed.stdout),
   );
   const tarball = resolve(packedRoot, packedResult[0]!.filename);
+  // npm only honors overrides of the root project: a tarball dependency's
+  // own overrides are ignored. The install stub is the root project of this
+  // install, so it carries canonfig's effect closure pins; without them a
+  // floating transitive range can drift into an upstream release whose
+  // peers reference an unpublished effect version.
+  // SAFETY: the repository package.json declares the closure pins in its
+  // overrides field, so the parsed root manifest has exactly that shape.
+  const { overrides } = JSON.parse(
+    readFileSync(resolve(projectRoot, "package.json"), "utf8"),
+  ) as { overrides: Record<string, string> };
   writeFileSync(
     resolve(installRoot, "package.json"),
-    `${JSON.stringify({ private: true })}\n`,
+    `${JSON.stringify({ private: true, overrides })}\n`,
   );
   const installed = runNpm(
     installRoot,

@@ -67,5 +67,14 @@
     "tsx": "4.20.6",
     "typescript": "5.9.3",
     "vitest": "4.1.10"
+  },
+  "overrides": {
+    "effect": "4.0.0-rc.112",
+    "@effect/platform": "4.0.0-rc.112",
+    "@effect/platform-node": "4.0.0-rc.112",
+    "@effect/platform-node-shared": "4.0.0-rc.112",
+    "@effect/sql": "4.0.0-rc.112",
+    "@effect/sql-sqlite-node": "4.0.0-rc.112",
+    "@effect/vitest": "4.0.0-rc.112"
   }
 }
