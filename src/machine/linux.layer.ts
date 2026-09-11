@@ -1649,7 +1649,11 @@ export const linuxMachineStateLayer = (
             recovery:
               "Configure a Secret Service session for noninteractive access, or explicitly select the local-file credential policy.",
             }
-            : { kind: "secure-noninteractive", provider: "secret-service" };
+            : {
+              kind: "secure-noninteractive",
+              provider: "secret-service",
+              verification: "provider-presence",
+            };
         },
       );
 

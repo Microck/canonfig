@@ -125,6 +125,7 @@ const secureTestMachineLayer = (
         Effect.succeed({
           kind: "secure-noninteractive" as const,
           provider: "secret-service" as const,
+          verification: "provider-presence" as const,
         }),
     })),
   ).pipe(Layer.provide(layer));

@@ -1,4 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -202,6 +205,128 @@ describe("macOS native scheduler inspection", () => {
       expect(failures.inspection).toBeInstanceOf(HumanActionRequiredError);
       expect(failures.snapshot).toBeInstanceOf(HumanActionRequiredError);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.skipIf(process.platform !== "darwin")("macOS keychain session probe", () => {
+  it("verifies the real login keychain from this process context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-keychain-probe-"));
+    const layer = macosMachineStateLayer({
+      credentialPolicy: { kind: "secure-store" },
+      environment: environment(root),
+    });
+    const capability = await runWith(
+      layer,
+      Effect.flatMap(MachineState, (machine) => machine.credentialCapability()),
+    );
+    expect(capability).toEqual({
+      kind: "secure-noninteractive",
+      provider: "keychain",
+      verification: "session-probe",
+    });
+  });
+});
+
+// Manual qualification for the supported execution context: a per-user
+// LaunchAgent in the logged-in graphical domain. Run with
+// CANONFIG_KEYCHAIN_QUALIFICATION=1 on a logged-in macOS host.
+const qualification = process.platform === "darwin"
+  && process.env.CANONFIG_KEYCHAIN_QUALIFICATION === "1";
+describe.skipIf(!qualification)("gui LaunchAgent keychain qualification", () => {
+  it("runs the keychain write probe from a bootstrapped gui/<uid> agent", async () => {
+    const identifier = randomUUID();
+    const label = `dev.canonfig.qualification.${identifier}`;
+    const root = await mkdtemp(join(tmpdir(), "canonfig-qualification-"));
+    const plist = join(root, `${label}.plist`);
+    const outcomePath = join(root, "outcome.json");
+    const childScript = `
+      const { spawnSync } = require("node:child_process");
+      const { writeFileSync } = require("node:fs");
+      const sentinel = "canonfig-session-probe write check";
+      const service = "dev.canonfig.session-probe.${identifier}";
+      const script = [
+        "ObjC.import('Foundation');",
+        "ObjC.import('Security');",
+        "function run() {",
+        "  const bytes = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;",
+        "  const payload = JSON.parse(ObjC.unwrap($.NSString.alloc.initWithDataEncoding(bytes, $.NSUTF8StringEncoding)));",
+        "  const query = $.NSMutableDictionary.dictionary;",
+        "  query.setObjectForKey(ObjC.castRefToObject($.kSecClassGenericPassword), ObjC.castRefToObject($.kSecClass));",
+        "  query.setObjectForKey($(payload.service), ObjC.castRefToObject($.kSecAttrService));",
+        "  query.setObjectForKey($('canonfig-session-probe'), ObjC.castRefToObject($.kSecAttrAccount));",
+        "  if (payload.operation === 'add') {",
+        "    const attributes = $.NSMutableDictionary.dictionary;",
+        "    attributes.setObjectForKey($(payload.hexadecimal).dataUsingEncoding($.NSUTF8StringEncoding), ObjC.castRefToObject($.kSecValueData));",
+        "    const status = $.SecItemAdd(query, null);",
+        "    if (status !== 0) throw Error('add failed: ' + status);",
+        "    return '';",
+        "  }",
+        "  if (payload.operation === 'load') {",
+        "    query.setObjectForKey($.NSNumber.numberWithBool(true), ObjC.castRefToObject($.kSecReturnData));",
+        "    const output = Ref();",
+        "    const status = $.SecItemCopyMatching(query, output);",
+        "    if (status !== 0) throw Error('load failed: ' + status);",
+        "    return ObjC.unwrap($.NSString.alloc.initWithDataEncoding(ObjC.castRefToObject(output[0]), $.NSUTF8StringEncoding));",
+        "  }",
+        "  const status = $.SecItemDelete(query);",
+        "  if (status !== 0) throw Error('delete failed: ' + status);",
+        "  return '';",
+        "}",
+      ].join("\\n");
+      const input = (operation) => JSON.stringify({
+        operation,
+        service,
+        hexadecimal: Buffer.from(sentinel, "utf8").toString("hex"),
+      });
+      const outcome = { ok: false, stage: "add" };
+      try {
+        const add = spawnSync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script], { input: input("add") });
+        if (add.status !== 0) throw new Error(String(add.stderr));
+        const load = spawnSync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script], { input: input("load") });
+        if (load.status !== 0 || load.stdout.toString().trim() !== sentinel) {
+          outcome.stage = "load";
+          throw new Error(String(load.stderr) + load.stdout.toString());
+        }
+        const remove = spawnSync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script], { input: input("delete") });
+        if (remove.status !== 0) throw new Error(String(remove.stderr));
+        outcome.ok = true;
+      } catch (error) {
+        outcome.error = String(error);
+      } finally {
+        writeFileSync(${JSON.stringify(outcomePath)}, JSON.stringify(outcome));
+      }
+    `;
+    const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key><array>
+    <string>${process.execPath}</string><string>-e</string><string>${childScript.replaceAll("<", "\\u003c")}</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+</dict></plist>`;
+    await writeFile(plist, plistContent);
+    const uid = process.getuid?.() ?? 0;
+    const launchctl = spawnSync("/bin/launchctl", ["bootstrap", `gui/${uid}`, plist]);
+    try {
+      // launchd exposes no completion signal for a RunAtLoad agent, so the
+      // only way to await the run is polling its outcome file. A fixed sleep
+      // would just guess at agent startup time.
+      const deadline = Date.now() + 30_000;
+      while (!existsSync(outcomePath) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      const outcome = JSON.parse(await readFile(outcomePath, "utf8")) as {
+        ok: boolean;
+        stage?: string;
+        error?: string;
+      };
+      expect(outcome.error ?? outcome.stage).toBeUndefined();
+      expect(outcome.ok).toBe(true);
+    } finally {
+      spawnSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`]);
       await rm(root, { recursive: true, force: true });
     }
   });

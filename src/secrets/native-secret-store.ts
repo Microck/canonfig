@@ -76,8 +76,8 @@ const failure = (
 ): HumanActionRequiredError =>
   provider === "keychain"
     ? new HumanActionRequiredError({
-      action: "unlock macOS Keychain",
-      recovery: "Unlock the login Keychain for this user session, then retry.",
+      action: "access the macOS Keychain from this session",
+      recovery: `The Keychain refused the native credential write from this execution session. SSH and other background sessions cannot use the login Keychain: run canonfig in the logged-in graphical session, or from its gui/${process.getuid?.() ?? 0} LaunchAgent.`,
     })
     : new HumanActionRequiredError({
       action: "unlock Windows Credential Manager",

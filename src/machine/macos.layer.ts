@@ -18,6 +18,10 @@ import {
   type MachineStateError,
 } from "./machine-state.errors.ts";
 import { MachineState } from "./machine-state.service.ts";
+import {
+  keychainSessionProbe,
+  type SecurityRunner,
+} from "./keychain-session-probe.ts";
 import { linuxMachineStateLayer } from "./linux.layer.ts";
 import type {
   CredentialPolicy,
@@ -35,8 +39,11 @@ import type {
 } from "./machine-state.types.ts";
 
 export interface MacosMachineStateOptions {
-  readonly credentialPolicy?: CredentialPolicy | undefined;
-  readonly credentialStoreAccess?: "auto" | "unavailable" | undefined;
+  readonly credentialStoreAccess?:
+    | "auto"
+    | "available"
+    | "unavailable"
+    | undefined;
   readonly environment?: ReadonlyArray<ProcessEnvironmentEntry> | undefined;
   readonly schedulerBackend?: SchedulerBackend | undefined;
   /** Test seam invoked after the managed root is opened but before traversal. */
@@ -45,6 +52,8 @@ export interface MacosMachineStateOptions {
   readonly launchctlRunner?: ((
     arguments_: ReadonlyArray<string>,
   ) => Effect.Effect<ProcessResult, MachineStateError>) | undefined;
+  /** Test seam for the Keychain session-probe process results. */
+  readonly securityRunner?: SecurityRunner | undefined;
 }
 
 const decode = Schema.decodeUnknownSync;
@@ -237,17 +246,19 @@ export const macosMachineStateLayer = (
     Effect.gen(function*() {
       const machine = yield* MachineState;
       const secureStoreAvailable = Effect.promise(() =>
-        options.credentialStoreAccess !== "unavailable"
-          && process.platform === "darwin"
-          ? access(security).then(() => true).catch(() => false)
-          : Promise.resolve(false)
+        options.credentialStoreAccess === "available"
+          ? Promise.resolve(true)
+          : options.credentialStoreAccess !== "unavailable"
+            && process.platform === "darwin"
+            ? access(security).then(() => true).catch(() => false)
+            : Promise.resolve(false)
       );
       const requireSecurity = Effect.gen(function*() {
         if (yield* secureStoreAvailable) return security;
         return yield* new HumanActionRequiredError({
           action: "configure macOS credential storage",
           recovery:
-            "Run on macOS with an unlocked login Keychain, or explicitly select the local-file credential policy.",
+            `canonfig could not find the macOS Keychain tools. ${sessionGuidance} Alternatively, explicitly select the local-file credential policy.`,
         });
       });
       const runSecurity = (
@@ -258,9 +269,25 @@ export const macosMachineStateLayer = (
         timeoutMilliseconds: 5_000,
         maximumOutputBytes: 1024 * 1024,
       });
+      /**
+       * The session probe runs the Keychain lifecycle in THIS process
+       * context: its result is only meaningful if nothing re-executes the
+       * work in a different session.
+       */
+      const runSessionProbe: SecurityRunner = options.securityRunner
+        ?? ((invocation) =>
+          machine.runProcess({
+            executable: { platform: "linux", absolute: "/usr/bin/osascript" },
+            arguments: invocation.arguments,
+            standardInput: invocation.standardInput,
+            timeoutMilliseconds: 5_000,
+            maximumOutputBytes: 1024 * 1024,
+          }));
       const launchAgents = join(home, "Library", "LaunchAgents");
       const launchctl = "/bin/launchctl";
       const launchDomain = `gui/${process.getuid?.() ?? 0}`;
+      const sessionGuidance =
+        `SSH and other background sessions cannot use the login Keychain: run canonfig in the logged-in graphical session, or from its ${launchDomain} LaunchAgent.`;
       const runLaunchctl = options.launchctlRunner
         ?? ((arguments_: ReadonlyArray<string>) =>
           machine.runProcess({
@@ -569,15 +596,30 @@ export const macosMachineStateLayer = (
               path: macosPath(resolve(policy.path)),
             });
           }
-          return secureStoreAvailable.pipe(Effect.map((available) =>
-            available
-              ? { kind: "secure-noninteractive" as const, provider: "keychain" as const }
-              : {
+          return Effect.gen(function*() {
+            if (!(yield* secureStoreAvailable)) {
+              return {
                 kind: "unavailable" as const,
                 recovery:
-                  "Run on macOS with an unlocked login Keychain, or explicitly select the local-file credential policy.",
-              }
-          ));
+                  `canonfig could not find the macOS Keychain tools. ${sessionGuidance} Alternatively, explicitly select the local-file credential policy.`,
+              };
+            }
+            // Presence is not permission: only a successful disposable
+            // add/read-back/delete in this very session proves that a native
+            // credential write will work unattended here.
+            const probe = yield* keychainSessionProbe(runSessionProbe);
+            if (probe.ok) {
+              return {
+                kind: "secure-noninteractive" as const,
+                provider: "keychain" as const,
+                verification: "session-probe" as const,
+              };
+            }
+            return {
+              kind: "unavailable" as const,
+              recovery: `Keychain access is unavailable from this execution session: the session probe failed at ${probe.stage} with exit code ${probe.exitCode ?? "signal"}. ${sessionGuidance}`,
+            };
+          });
         },
         storeCredential: (input) => {
           if (policy.kind === "local-file") return machine.storeCredential(input);
@@ -608,8 +650,8 @@ export const macosMachineStateLayer = (
                   decode(CredentialReference)(`keychain:${key}`),
                 )
                 : Effect.fail(new HumanActionRequiredError({
-                  action: "unlock macOS Keychain",
-                  recovery: "Unlock the login Keychain for this user session, then retry.",
+                  action: "access the macOS Keychain from this session",
+                  recovery: `The Keychain refused the credential write from this execution session. ${sessionGuidance}`,
                 }))
             ),
           );
@@ -630,7 +672,7 @@ export const macosMachineStateLayer = (
             if (result.exitCode !== 0) {
               return yield* new HumanActionRequiredError({
                 action: "provide macOS Keychain credential",
-                recovery: "Store the required credential in the unlocked login Keychain, then retry.",
+                recovery: `The credential could not be read from this execution session. ${sessionGuidance}`,
               });
             }
             return Redacted.make(

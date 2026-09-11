@@ -57,6 +57,7 @@ describe("shared-secret cleanup retry", () => {
           Effect.succeed({
             kind: "secure-noninteractive" as const,
             provider: "secret-service" as const,
+            verification: "provider-presence" as const,
           }),
       })),
     ).pipe(Layer.provide(base));
@@ -208,7 +209,7 @@ describe("shared-secret cleanup retry", () => {
   it("keeps macOS secret values out of arguments and environment", () => {
     const secret = "mac-secret-value-not-process-metadata";
     const command = nativeCredentialWriteCommand(
-      { kind: "secure-noninteractive", provider: "keychain" },
+      { kind: "secure-noninteractive", provider: "keychain", verification: "provider-presence" },
       { name: "canonfig-secret", value: Redacted.make(secret) },
     );
 
@@ -283,7 +284,7 @@ describe("shared-secret cleanup retry", () => {
   it("keeps multibyte Windows secret values out of process metadata", () => {
     const secret = "é🔐-windows-secret-value";
     const command = nativeCredentialWriteCommand(
-      { kind: "secure-noninteractive", provider: "credential-manager" },
+      { kind: "secure-noninteractive", provider: "credential-manager", verification: "provider-presence" },
       { name: "canonfig-secret", value: Redacted.make(secret) },
       { SystemRoot: "C:\\Windows" },
     );
@@ -363,7 +364,7 @@ describe("Windows native credential contract", () => {
 
   it("shares the same fixed write program with secret transfer", () => {
     const command = nativeCredentialWriteCommand(
-      { kind: "secure-noninteractive", provider: "credential-manager" },
+      { kind: "secure-noninteractive", provider: "credential-manager", verification: "provider-presence" },
       { name: "round-trip-fixture", value: Redacted.make("synthetic-value") },
     );
     expect(command?.arguments.at(-1)).toBe(windowsCredentialScript("store"));

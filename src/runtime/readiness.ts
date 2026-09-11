@@ -6,6 +6,20 @@ import type { DoctorProbe } from "./doctor.ts";
 export const credentialReadiness = (capability: CredentialStorageCapability): DoctorProbe => {
   switch (capability.kind) {
     case "secure-noninteractive":
+      if (capability.verification === "session-probe") {
+        return {
+          name: "credentials",
+          status: "pass",
+          message: "native credential provider verified with a disposable write probe in this session",
+          details: {
+            kind: capability.kind,
+            provider: capability.provider,
+            verification: "session-probe",
+            writeAccessVerified: true,
+            unattendedAccessVerified: true,
+          },
+        };
+      }
       return {
         name: "credentials",
         status: "warning",
@@ -30,7 +44,7 @@ export const credentialReadiness = (capability: CredentialStorageCapability): Do
         name: "credentials",
         status: "warning",
         message: "noninteractive credential storage is unavailable",
-        details: { kind: capability.kind, verification: "provider-presence" },
+        details: { kind: capability.kind, verification: "not-verified" },
       };
   }
 };
