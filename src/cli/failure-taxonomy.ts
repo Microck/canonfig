@@ -639,7 +639,7 @@ export const failureTaxonomy = {
   InsufficientDiskError: declared(
     "verification-or-apply-failure",
     (error) =>
-      `${text(error.path)} needs ${error.requiredBytes.toString()} free bytes for this run but only ${error.availableBytes.toString()} are available; nothing was changed`,
+      `${text(error.path)} needs ${error.requiredBytes?.toString() ?? "unknown"} free bytes for this run but only ${error.availableBytes?.toString() ?? "unknown"} are available; nothing was changed`,
   ),
   ScheduleVerificationError: declared(
     "verification-or-apply-failure",

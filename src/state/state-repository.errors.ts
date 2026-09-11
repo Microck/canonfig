@@ -38,8 +38,8 @@ export class UpgradeGateError extends TaggedError<UpgradeGateError>()(
   "UpgradeGateError",
   {
     run: Schema.String,
-    creatingVersion: Schema.String | null,
-    creatingIdentity: Schema.String | null,
+    creatingVersion: Schema.NullOr(Schema.String),
+    creatingIdentity: Schema.NullOr(Schema.String),
     currentVersion: Schema.String,
     currentIdentity: Schema.String,
   },
