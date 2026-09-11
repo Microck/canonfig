@@ -11,18 +11,17 @@
  * A checkout run straight from source (tsx, the test suite) has no compiled
  * identity and says so with "unbuilt" rather than inventing one.
  */
-
+// SAFETY: the minifier replaces this global with the JSON text of the
+// identity; a source checkout reads undefined from the global object.
 const globalWithIdentity = globalThis as {
   __CANONFIG_BUILD_IDENTITY__?: string;
 };
 
-// SAFETY: the minifier substitutes this global with the JSON text of the
-// identity; a source checkout reads undefined from the global object and
-// reports itself as unbuilt.
+// The substituted text was written by tools/release/minify-cli.ts with
+// exactly this shape.
 const substituted = globalWithIdentity.__CANONFIG_BUILD_IDENTITY__;
 
-// SAFETY: the substituted text was written by tools/release/minify-cli.ts
-// with exactly this shape.
+// SAFETY: parsing that text cannot produce another shape.
 const embedded = substituted === undefined
   ? { sourceDigest: "unbuilt", commit: null }
   : (JSON.parse(substituted) as { sourceDigest: string; commit: string | null });
