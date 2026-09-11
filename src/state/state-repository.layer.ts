@@ -75,7 +75,6 @@ import type {
   VerificationEvidence,
 } from "./state-repository.types.ts";
 import { stateFormatVersion, stateMigrations } from "./state-schema.ts";
-import { buildIdentity } from "../runtime/build-identity.ts";
 import type { LocalOverlayEntry } from "../synchronization/synchronization.types.ts";
 
 const CountRow = Schema.Struct({ count: Schema.Number });
@@ -95,6 +94,12 @@ const ActiveRunRow = Schema.Struct({
   revision_id: ProfileRevisionId,
   plan_json: Schema.String,
   started_at: Schema.String,
+});
+const OpenRunIdentityRow = Schema.Struct({
+  id: Schema.String,
+  creating_version: Schema.NullOr(Schema.String),
+  creating_identity: Schema.NullOr(Schema.String),
+  state_format: Schema.NullOr(Schema.Number),
 });
 const ActionJournalRow = Schema.Struct({
   action_id: ActionId,
@@ -2039,7 +2044,13 @@ const makeRepository = Effect.gen(function*() {
         ORDER BY started_at DESC
         LIMIT 1
       `.pipe(Effect.mapError(sqlError("load open run identity")));
-      const row = rows[0];
+      const decoded = yield* decodeRows(
+        OpenRunIdentityRow,
+        rows,
+        "open run identity",
+        follower,
+      );
+      const row = decoded[0];
       if (row === undefined) return undefined;
       return {
         run: row.id,
