@@ -51,7 +51,7 @@ import {
   sha256Hex,
 } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
-import { UpgradeGateError } from "../state/state-repository.errors.ts";
+import { UpgradeGateError, type StateRepositoryError } from "../state/state-repository.errors.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import { stateFormatVersion } from "../state/state-schema.ts";
 import { Synchronization } from "./synchronization.service.ts";

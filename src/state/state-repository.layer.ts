@@ -74,6 +74,7 @@ import type {
   VerificationEvidence,
 } from "./state-repository.types.ts";
 import { stateFormatVersion, stateMigrations } from "./state-schema.ts";
+import { buildIdentity } from "../runtime/build-identity.ts";
 import type { LocalOverlayEntry } from "../synchronization/synchronization.types.ts";
 
 const CountRow = Schema.Struct({ count: Schema.Number });
