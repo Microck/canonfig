@@ -786,7 +786,7 @@ const diskRequirementBytes = (input: SynchronizationRunInput): bigint =>
 export const preflightDisk = (
   input: SynchronizationRunInput,
   statfsImpl: typeof statfs = statfs,
-): Effect.Effect<void, InsufficientDiskError, MachineState> =>
+): Effect.Effect<void, InsufficientDiskError | MachineStateError, MachineState> =>
   Effect.flatMap(MachineState, (machine) =>
     Effect.flatMap(machine.userDirectories(), (directories) =>
       Effect.flatMap(

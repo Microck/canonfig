@@ -102,21 +102,26 @@ const runWithRepository = <A, E>(
   effect: Effect.Effect<A, E, StateRepository>,
 ): Promise<A> =>
   Effect.runPromise(effect.pipe(Effect.provide(stateRepositoryLayer(path))));
-
 const gateFailureAfterMutation = async (
   mutate?: (database: DatabaseSync) => void,
 ): Promise<UpgradeGateError | undefined> => {
   const path = join(temporaryDirectory("canonfig-gate-"), "state.sqlite");
-  return await Effect.runPromise(Effect.gen(function*() {
+  let failure: UpgradeGateError | undefined;
+  await Effect.runPromise(Effect.gen(function*() {
     yield* seed;
     const repository = yield* StateRepository;
     yield* startOpenRun(repository);
     if (mutate !== undefined) mutate(new DatabaseSync(path));
-    const outcome = yield* Effect.either(assertUpgradeGate(follower.id));
-    return outcome._tag === "Left" ? outcome.left : undefined;
+    yield* assertUpgradeGate(follower.id).pipe(
+      Effect.catch((error) =>
+        Effect.sync(() => {
+          failure = error;
+        })
+      ),
+    );
   }).pipe(Effect.provide(stateRepositoryLayer(path))));
+  return failure;
 };
-
 describe("build identity", () => {
   it("reports an unbuilt source identity through --version --json", () => {
     const outcome = evaluateCli(["--version", "--json"]);
@@ -293,6 +298,8 @@ describe("disk preflight", () => {
         ),
       ),
     );
+    expect(failure._tag).toBe("InsufficientDiskError");
+    if (failure._tag !== "InsufficientDiskError") return;
     expect(failure.requiredBytes).toBe(BigInt(2 * 100 + 4 * 1024 * 1024));
     expect(failure.availableBytes).toBe(0n);
   });
