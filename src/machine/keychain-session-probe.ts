@@ -36,8 +36,10 @@ export type KeychainSessionProbeResult =
   | {
     readonly ok: false;
     /** Which lifecycle step failed; "cleanup" means a probe item may remain. */
-    readonly stage: "add" | "read-back" | "cleanup";
+    readonly stage: "add" | "read-back" | "cleanup" | "error";
     readonly exitCode: number | null;
+    /** Set when the probe infrastructure itself failed (stage "error"). */
+    readonly detail?: string | undefined;
   };
 
 // SecurityTool's interactive input is limited to 4 KiB and the CLI takes the

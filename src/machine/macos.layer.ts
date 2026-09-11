@@ -607,8 +607,18 @@ export const macosMachineStateLayer = (
             }
             // Presence is not permission: only a successful disposable
             // add/read-back/delete in this very session proves that a native
-            // credential write will work unattended here.
-            const probe = yield* keychainSessionProbe(runSessionProbe);
+            // credential write will work unattended here. A probe whose
+            // process cannot run at all (a locked keychain makes osascript
+            // wait on a dialog until it times out, for example) is an
+            // unavailable session, not a defect.
+            const probe = yield* keychainSessionProbe(runSessionProbe).pipe(
+              Effect.catchAll((error) => Effect.succeed({
+                ok: false as const,
+                stage: "error" as const,
+                exitCode: null,
+                detail: error instanceof Error ? error.message : String(error),
+              })),
+            );
             if (probe.ok) {
               return {
                 kind: "secure-noninteractive" as const,
@@ -616,9 +626,12 @@ export const macosMachineStateLayer = (
                 verification: "session-probe" as const,
               };
             }
+            const probeEvidence = probe.stage === "error"
+              ? `the session probe could not run: ${probe.detail ?? "unknown error"}`
+              : `the session probe failed at ${probe.stage} with exit code ${probe.exitCode ?? "signal"}`;
             return {
               kind: "unavailable" as const,
-              recovery: `Keychain access is unavailable from this execution session: the session probe failed at ${probe.stage} with exit code ${probe.exitCode ?? "signal"}. ${sessionGuidance}`,
+              recovery: `Keychain access is unavailable from this execution session: ${probeEvidence}. ${sessionGuidance}`,
             };
           });
         },

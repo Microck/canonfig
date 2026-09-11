@@ -6,6 +6,7 @@ import { Effect, Layer, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
+import { CredentialStorageError } from "../src/machine/machine-state.errors.ts";
 import {
   keychainSessionProbe,
   probeServicePrefix,
@@ -160,6 +161,24 @@ describe("macOS credential capability", () => {
       expect(capability.recovery).toContain("graphical session");
       expect(capability.recovery).toContain("gui/");
       expect(capability.recovery.toLowerCase()).not.toContain("unlock the login keychain");
+    }
+  });
+
+  it("reports unavailable instead of failing when the probe cannot run", async () => {
+    const brokenRunner: SecurityRunner = () =>
+      Effect.fail(new CredentialStorageError({
+        operation: "run probe",
+        reference: "fixture",
+        message: "osascript vanished",
+      }));
+    const capability = await Effect.runPromise(
+      Effect.flatMap(MachineState, (machine) => machine.credentialCapability())
+        .pipe(Effect.provide(layerWith(brokenRunner))),
+    );
+    expect(capability.kind).toBe("unavailable");
+    if (capability.kind === "unavailable") {
+      expect(capability.recovery).toContain("could not run");
+      expect(capability.recovery).toContain("osascript vanished");
     }
   });
 
