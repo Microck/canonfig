@@ -12,6 +12,7 @@ import {
 } from "../domain/brand.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
+import { buildIdentity } from "../runtime/build-identity.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 import {
@@ -737,7 +738,13 @@ export const evaluateCli = (arguments_: ReadonlyArray<string>): CliOutcome => {
     return { _tag: "Help", text: helpText, exitCode: CliExitCode.success };
   }
   if (arguments_.includes("--version") || arguments_.includes("-V")) {
-    return { _tag: "Version", text: programVersion, exitCode: CliExitCode.success };
+    // The plain form stays the user-facing release version; --json adds the
+    // immutable build identity so two installs of the same release can be
+    // told apart by the sources that produced them.
+    const text = arguments_.includes("--json")
+      ? JSON.stringify(buildIdentity)
+      : programVersion;
+    return { _tag: "Version", text, exitCode: CliExitCode.success };
   }
   const format: CliOutputFormat = arguments_.includes("--json") ? "json" : "human";
   const rest = arguments_.filter((argument) => argument !== "--json");
