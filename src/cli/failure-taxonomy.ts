@@ -17,9 +17,14 @@ export interface TaggedRuntimeError extends Error {
   readonly blob?: string | undefined;
   readonly capability?: string | undefined;
   readonly category?: string | undefined;
+  readonly availableBytes?: bigint | undefined;
   readonly collection?: string | undefined;
   readonly command?: ReadonlyArray<string> | undefined;
   readonly conflictsWith?: string | undefined;
+  readonly creatingIdentity?: string | null | undefined;
+  readonly creatingVersion?: string | null | undefined;
+  readonly currentIdentity?: string | undefined;
+  readonly currentVersion?: string | undefined;
   readonly cycle?: ReadonlyArray<string> | undefined;
   readonly decision?: string | undefined;
   readonly dependency?: string | undefined;
@@ -47,6 +52,7 @@ export interface TaggedRuntimeError extends Error {
   readonly outcome?: string | undefined;
   readonly package?: string | undefined;
   readonly path?: string | undefined;
+  readonly requiredBytes?: bigint | undefined;
   readonly policy?: string | undefined;
   readonly publishedKind?: string | undefined;
   readonly reason?: string | undefined;
