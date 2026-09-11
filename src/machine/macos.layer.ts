@@ -612,7 +612,7 @@ export const macosMachineStateLayer = (
             // wait on a dialog until it times out, for example) is an
             // unavailable session, not a defect.
             const probe = yield* keychainSessionProbe(runSessionProbe).pipe(
-              Effect.catchAll((error) => Effect.succeed({
+              Effect.catch((error) => Effect.succeed({
                 ok: false as const,
                 stage: "error" as const,
                 exitCode: null,
