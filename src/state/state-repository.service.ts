@@ -32,8 +32,8 @@ import type {
   RegisterFollowerInput,
   RemoveLocalOverlayInput,
   RevisionApprovalRecord,
+  RunEvidenceSummary,
   SaveLocalOverlayInput,
-  StartRunInput,
   StateSnapshot,
   RevisionBlobCandidate,
   StoredEnrollmentInvitation,
@@ -149,6 +149,9 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly loadRevisionApproval: (
     revision: ProfileRevisionId,
   ) => Effect.Effect<RevisionApprovalRecord | undefined, StateRepositoryError>;
+  readonly loadRunEvidence: (
+    run: RunId,
+  ) => Effect.Effect<RunEvidenceSummary | undefined, StateRepositoryError>;
   readonly loadRecovery: (
     follower: FollowerId,
   ) => Effect.Effect<RecoveryState | undefined, StateRepositoryError>;

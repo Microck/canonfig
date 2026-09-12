@@ -69,6 +69,7 @@ import type {
   RevisionApprovalRecord,
   RevisionBlobCandidate,
   RemoveLocalOverlayInput,
+  RunEvidenceSummary,
   SaveFollowerSynchronizationConfigurationInput,
   SaveLocalOverlayInput,
   StartRunInput,
@@ -121,6 +122,13 @@ const RevisionApprovalRow = Schema.Struct({
   reviewer: Schema.String,
   reviewed_at: Schema.String,
   recorded_at: Schema.String,
+});
+const CompletedRunRow = Schema.Struct({
+  id: RunId,
+  revision_id: ProfileRevisionId,
+  status: Schema.String,
+  completed_at: Schema.String,
+  plan_json: Schema.String,
 });
 const ActionJournalRow = Schema.Struct({
   action_id: ActionId,
@@ -2030,6 +2038,66 @@ const makeRepository = Effect.gen(function*() {
       };
     },
   );
+  const loadRunEvidence = Effect.fn("StateRepository.loadRunEvidence")(
+    function*(run: RunIdType): Effect.fn.Return<RunEvidenceSummary | undefined, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT id, revision_id, status, completed_at, plan_json
+        FROM synchronization_runs
+        WHERE id = ${run}
+          AND status NOT IN ('applying', 'Interrupted')
+          AND completed_at IS NOT NULL
+      `.pipe(Effect.mapError(sqlError("load completed synchronization run")));
+      const decoded = yield* decodeRows(CompletedRunRow, rows, "completed synchronization run", run);
+      const row = decoded[0];
+      if (row === undefined) return undefined;
+      const outcome = receiptOutcomes.find((candidate) => candidate === row.status);
+      if (outcome === undefined) {
+        return yield* new RepositoryDecodeError({
+          entity: "completed synchronization run",
+          id: run,
+          message: `unknown run outcome: ${row.status}`,
+        });
+      }
+      const plan = yield* parseJson(
+        SynchronizationPlanSchema,
+        row.plan_json,
+        "synchronization plan",
+        row.id,
+      );
+      const verificationRows = yield* sql`
+        SELECT verification_json
+        FROM action_journal
+        WHERE run_id = ${run}
+          AND verification_json IS NOT NULL
+      `.pipe(Effect.mapError(sqlError("load run verification evidence")));
+      const encoded = yield* decodeRows(
+        Schema.Struct({ verification_json: Schema.String }),
+        verificationRows,
+        "run verification evidence",
+        run,
+      );
+      let passedVerifications = 0;
+      for (const [index, stored] of encoded.entries()) {
+        const evidence = yield* parseJson(
+          VerificationEvidenceSchema,
+          stored.verification_json,
+          "run verification evidence",
+          `${run}:${index}`,
+        );
+        if (evidence.status === "passed") passedVerifications += 1;
+      }
+      return {
+        run: row.id,
+        revision: row.revision_id,
+        outcome,
+        completedAt: row.completed_at,
+        totalActions: plan.actions.length,
+        mutatingActions: plan.actions.filter((action) => action.kind !== "no-op").length,
+        verifiedActions: encoded.length,
+        passedVerifications,
+      };
+    },
+  );
 
   const loadRecovery = Effect.fn("StateRepository.loadRecovery")(
     function*(follower: FollowerIdType): Effect.fn.Return<RecoveryState | undefined, StateRepositoryError> {
@@ -2331,6 +2399,7 @@ const makeRepository = Effect.gen(function*() {
     latestDeploymentReceipt,
     recordRevisionApproval,
     loadRevisionApproval,
+    loadRunEvidence,
     loadRecovery,
     loadOpenRunIdentity,
     loadState,

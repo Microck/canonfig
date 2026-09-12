@@ -71,6 +71,23 @@ export interface RecordRevisionApprovalInput {
   readonly recordedAt: string;
 }
 
+/**
+ * Lean evidence for one finished run, backing the completion receipt without
+ * replaying the full journal. Verification counts come from journaled
+ * verification evidence; the mutating action count comes from the persisted
+ * plan, so a clean second run reads as a no-op (zero mutating actions).
+ */
+export interface RunEvidenceSummary {
+  readonly run: RunId;
+  readonly revision: ProfileRevisionId;
+  readonly outcome: SynchronizationOutcome["outcome"];
+  readonly completedAt: string;
+  readonly totalActions: number;
+  readonly mutatingActions: number;
+  readonly verifiedActions: number;
+  readonly passedVerifications: number;
+}
+
 export interface RegisterFollowerInput {
   readonly follower: FollowerIdentity;
 }
