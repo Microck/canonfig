@@ -809,7 +809,7 @@ describe("packed Canonfig executable", () => {
         process.exit(91);
       }
       if (JSON.stringify(command.arguments.slice(1)) !==
-          JSON.stringify(["sync", "--apply", "--no-input"])) process.exit(92);
+          JSON.stringify(["sync", "--apply", "--no-input", "--scheduled"])) process.exit(92);
       const started = spawnSync(command.executable, [command.arguments[0], "--version"], {
         shell: false, encoding: "utf8", timeout: 30000, env: { ...process.env, PATH: "" },
       });
