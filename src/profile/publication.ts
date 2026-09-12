@@ -19,10 +19,10 @@ import {
   type ScheduleDefault,
   validateMachineProfile,
 } from "../domain/profile.ts";
-import { encodeMachineProfile, digestMachineProfile } from "../domain/profile.ts";
 import type { Platform } from "../domain/resource.ts";
 import { RevisionImmutableError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
+import { compileProfileCandidate } from "./compiler.ts";
 import type { DiscoveryScanResult } from "./discovery.ts";
 import {
   InvalidPublicationInputError,
@@ -422,10 +422,7 @@ export const makePublication = (
       }
 
       const encoded = yield* Effect.try({
-        try: () => ({
-          canonicalBytes: encodeMachineProfile(profile),
-          digest: digestMachineProfile(profile),
-        }),
+        try: () => compileProfileCandidate(profile),
         catch: (cause) => new InvalidPublicationInputError({
           reason: `profile cannot be canonically encoded: ${String(cause)}`,
         }),

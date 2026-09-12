@@ -51,6 +51,23 @@ Canonfig normalizes omitted defaults and unordered collections before hashing.
 It rejects duplicate IDs, missing dependencies, dependency cycles, undeclared
 groups, invalid targets, incompatible policies, and incompatible verification.
 
+## Public compiler
+
+Automation can import the supported compiler without reaching into `dist`:
+
+```ts
+import { compileProfileJsonc } from "@microck/canonfig/profile-compiler";
+
+const candidate = compileProfileJsonc(profileJsonc);
+```
+
+`candidate.canonicalBytes` and `candidate.digest` are the exact normalized
+candidate used by publication. `candidate.projections` contains deterministic
+Linux, macOS, and Windows profiles with tool recipes filtered to each platform;
+common resources remain byte-identical. Pass `{ platforms: ["linux"] }` to
+request a bounded subset. Invalid ownership, paths, recipes, or recursive
+configuration values fail before any candidate bytes are returned.
+
 ## Resource kinds and defaults
 
 | Kind | Desired outcome | Default Apply Policy |
