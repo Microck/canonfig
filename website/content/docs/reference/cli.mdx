@@ -29,18 +29,23 @@ canonfig source init
 canonfig source scan --file AGENTS.md --file package.json
 canonfig source publish --proposal package.json --profile workstation --name Workstation --reviewer operator
 canonfig source serve --host 127.0.0.1 --port 17342
-canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m --group developers
 canonfig source revoke follower-one
 ```
 
-`source serve` defaults to `127.0.0.1:17342`. Invitation duration uses a
-positive integer plus `ms`, `s`, `m`, or `h` and cannot exceed 24
-hours. Repeat `--group` to add Follower Groups.
+`source serve` defaults to `127.0.0.1:17342`. `source invite` requires an
+output path, writes a mode-`0600` bounded envelope with an explicit EOF marker,
+and reports only its path and non-secret metadata. Invitation duration uses a
+positive integer plus `ms`, `s`, `m`, or `h` and cannot exceed 24 hours. Repeat
+`--group` to add Follower Groups.
 
 ## Follower enrollment and synchronization
 
 ```text
-canonfig follower enroll "$INVITE" --name laptop --profile workstation
+canonfig tunnel start --invitation ./canonfig-invite --ssh-host source.example --ssh-user operator --ssh-host-key-file ./source-host-key.pub
+canonfig tunnel status
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
+canonfig tunnel stop
 canonfig sync --plan
 canonfig sync --apply
 canonfig sync --apply --no-input
@@ -55,6 +60,12 @@ One machine holds one enrollment. Re-enrolling under the same name rotates the
 credential and keeps the identity. Enrolling a different name needs
 `--replace`, because the previous identity's Applied Resource Records are
 addressed by an id that a new identity does not use.
+
+The managed tunnel accepts only a verified SSH host public key and a loopback
+forward. It rejects host-key bypass and extra-forwarding flags. Readiness
+requires both the invitation's TLS fingerprint and Source signing fingerprint.
+`tunnel status` reports SSH, TLS, and signing evidence separately; a stale PID
+that does not match the recorded SSH command is never signaled.
 
 `--plan` and `--apply` are mutually exclusive. With neither, `sync`
 plans. A successful apply also synchronizes shared secrets when the follower has

@@ -1,6 +1,7 @@
 import { Schema } from "effect";
+import { TaggedError } from "../domain/tagged-error.ts";
 
-export class TunnelConfigurationError extends Schema.TaggedError<TunnelConfigurationError>()(
+export class TunnelConfigurationError extends TaggedError<TunnelConfigurationError>()(
   "TunnelConfigurationError",
   {
     operation: Schema.String,
@@ -8,7 +9,7 @@ export class TunnelConfigurationError extends Schema.TaggedError<TunnelConfigura
   },
 ) {}
 
-export class TunnelHostKeyError extends Schema.TaggedError<TunnelHostKeyError>()(
+export class TunnelHostKeyError extends TaggedError<TunnelHostKeyError>()(
   "TunnelHostKeyError",
   {
     host: Schema.String,
@@ -16,7 +17,7 @@ export class TunnelHostKeyError extends Schema.TaggedError<TunnelHostKeyError>()
   },
 ) {}
 
-export class TunnelHostKeyBypassError extends Schema.TaggedError<TunnelHostKeyBypassError>()(
+export class TunnelHostKeyBypassError extends TaggedError<TunnelHostKeyBypassError>()(
   "TunnelHostKeyBypassError",
   {
     flag: Schema.String,
@@ -24,7 +25,7 @@ export class TunnelHostKeyBypassError extends Schema.TaggedError<TunnelHostKeyBy
   },
 ) {}
 
-export class TunnelReadinessError extends Schema.TaggedError<TunnelReadinessError>()(
+export class TunnelReadinessError extends TaggedError<TunnelReadinessError>()(
   "TunnelReadinessError",
   {
     endpoint: Schema.String,
@@ -32,7 +33,7 @@ export class TunnelReadinessError extends Schema.TaggedError<TunnelReadinessErro
   },
 ) {}
 
-export class TunnelProcessError extends Schema.TaggedError<TunnelProcessError>()(
+export class TunnelProcessError extends TaggedError<TunnelProcessError>()(
   "TunnelProcessError",
   {
     operation: Schema.String,
