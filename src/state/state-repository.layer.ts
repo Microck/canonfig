@@ -54,6 +54,7 @@ import type {
   CompleteRunInput,
   ConsumeEnrollmentInvitationInput,
   CreateEnrollmentInvitationInput,
+  DeploymentReceipt,
   DriftRecord,
   EnrollmentSourceRecord,
   FinalizeEnrollmentInput,
@@ -62,8 +63,10 @@ import type {
   PendingEnrollmentRecord,
   PublishRevisionInput,
   RecordDriftInput,
+  RecordRevisionApprovalInput,
   RecoveryState,
   RegisterFollowerInput,
+  RevisionApprovalRecord,
   RevisionBlobCandidate,
   RemoveLocalOverlayInput,
   SaveFollowerSynchronizationConfigurationInput,
@@ -100,6 +103,24 @@ const OpenRunIdentityRow = Schema.Struct({
   creating_version: Schema.NullOr(Schema.String),
   creating_identity: Schema.NullOr(Schema.String),
   state_format: Schema.NullOr(Schema.Number),
+});
+const DeploymentReceiptRow = Schema.Struct({
+  run_id: RunId,
+  follower_id: FollowerId,
+  revision_id: ProfileRevisionId,
+  package_version: Schema.String,
+  build_identity: Schema.String,
+  state_format: Schema.Number,
+  outcome: Schema.String,
+  recorded_at: Schema.String,
+});
+const RevisionApprovalRow = Schema.Struct({
+  revision_id: ProfileRevisionId,
+  proposal_digest: ContentDigest,
+  revision_digest: ContentDigest,
+  reviewer: Schema.String,
+  reviewed_at: Schema.String,
+  recorded_at: Schema.String,
 });
 const ActionJournalRow = Schema.Struct({
   action_id: ActionId,
@@ -1880,6 +1901,135 @@ const makeRepository = Effect.gen(function*() {
       );
     },
   );
+  const receiptOutcomes = [
+    "Converged",
+    "HumanActionRequired",
+    "FollowerDrift",
+    "Failed",
+    "Interrupted",
+  ] as const;
+
+  const decodeReceipt = (
+    row: Schema.Schema.Type<typeof DeploymentReceiptRow>,
+    entity: string,
+  ): Effect.Effect<DeploymentReceipt, RepositoryDecodeError> => {
+    const outcome = receiptOutcomes.find((candidate) => candidate === row.outcome);
+    if (outcome === undefined) {
+      return Effect.fail(new RepositoryDecodeError({
+        entity,
+        id: row.run_id,
+        message: `unknown deployment receipt outcome: ${row.outcome}`,
+      }));
+    }
+    return Effect.succeed({
+      run: row.run_id,
+      follower: row.follower_id,
+      revision: row.revision_id,
+      packageVersion: row.package_version,
+      buildIdentity: row.build_identity,
+      stateFormat: row.state_format,
+      outcome,
+      recordedAt: row.recorded_at,
+    });
+  };
+
+  const loadDeploymentReceipt = Effect.fn("StateRepository.loadDeploymentReceipt")(
+    function*(run: RunIdType): Effect.fn.Return<DeploymentReceipt | undefined, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT
+          receipts.run_id,
+          receipts.follower_id,
+          runs.revision_id,
+          receipts.package_version,
+          receipts.build_identity,
+          receipts.state_format,
+          receipts.outcome,
+          receipts.recorded_at
+        FROM deployment_receipts AS receipts
+        JOIN synchronization_runs AS runs ON runs.id = receipts.run_id
+        WHERE receipts.run_id = ${run}
+      `.pipe(Effect.mapError(sqlError("load deployment receipt")));
+      const decoded = yield* decodeRows(DeploymentReceiptRow, rows, "deployment receipt", run);
+      const row = decoded[0];
+      if (row === undefined) return undefined;
+      return yield* decodeReceipt(row, "deployment receipt");
+    },
+  );
+
+  const latestDeploymentReceipt = Effect.fn("StateRepository.latestDeploymentReceipt")(
+    function*(follower: FollowerIdType): Effect.fn.Return<DeploymentReceipt | undefined, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT
+          receipts.run_id,
+          receipts.follower_id,
+          runs.revision_id,
+          receipts.package_version,
+          receipts.build_identity,
+          receipts.state_format,
+          receipts.outcome,
+          receipts.recorded_at
+        FROM deployment_receipts AS receipts
+        JOIN synchronization_runs AS runs ON runs.id = receipts.run_id
+        WHERE receipts.follower_id = ${follower}
+        ORDER BY receipts.recorded_at DESC
+        LIMIT 1
+      `.pipe(Effect.mapError(sqlError("load latest deployment receipt")));
+      const decoded = yield* decodeRows(DeploymentReceiptRow, rows, "deployment receipt", follower);
+      const row = decoded[0];
+      if (row === undefined) return undefined;
+      return yield* decodeReceipt(row, "deployment receipt");
+    },
+  );
+
+  const recordRevisionApproval = Effect.fn("StateRepository.recordRevisionApproval")(
+    function*(input: RecordRevisionApprovalInput): Effect.fn.Return<void, StateRepositoryError> {
+      yield* sql`
+        INSERT INTO revision_approvals (
+          revision_id,
+          proposal_digest,
+          revision_digest,
+          reviewer,
+          reviewed_at,
+          recorded_at
+        ) VALUES (
+          ${input.revision},
+          ${input.proposalDigest},
+          ${input.revisionDigest},
+          ${input.reviewer},
+          ${input.reviewedAt},
+          ${input.recordedAt}
+        )
+        ON CONFLICT(revision_id) DO NOTHING
+      `.pipe(Effect.mapError(sqlError("record revision approval")));
+    },
+  );
+
+  const loadRevisionApproval = Effect.fn("StateRepository.loadRevisionApproval")(
+    function*(revision: ProfileRevisionIdType): Effect.fn.Return<RevisionApprovalRecord | undefined, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT
+          revision_id,
+          proposal_digest,
+          revision_digest,
+          reviewer,
+          reviewed_at,
+          recorded_at
+        FROM revision_approvals
+        WHERE revision_id = ${revision}
+      `.pipe(Effect.mapError(sqlError("load revision approval")));
+      const decoded = yield* decodeRows(RevisionApprovalRow, rows, "revision approval", revision);
+      const row = decoded[0];
+      if (row === undefined) return undefined;
+      return {
+        revision: row.revision_id,
+        proposalDigest: row.proposal_digest,
+        revisionDigest: row.revision_digest,
+        reviewer: row.reviewer,
+        reviewedAt: row.reviewed_at,
+        recordedAt: row.recorded_at,
+      };
+    },
+  );
 
   const loadRecovery = Effect.fn("StateRepository.loadRecovery")(
     function*(follower: FollowerIdType): Effect.fn.Return<RecoveryState | undefined, StateRepositoryError> {
@@ -2177,6 +2327,10 @@ const makeRepository = Effect.gen(function*() {
     journalAction,
     recordDrift,
     completeRun,
+    loadDeploymentReceipt,
+    latestDeploymentReceipt,
+    recordRevisionApproval,
+    loadRevisionApproval,
     loadRecovery,
     loadOpenRunIdentity,
     loadState,

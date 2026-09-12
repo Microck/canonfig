@@ -9,6 +9,7 @@ import type {
   GroupName,
   ProfileId,
   ProfileRevisionId,
+  RunId,
 } from "../domain/brand.ts";
 import type { SourceIdentity } from "../domain/identity.ts";
 import type { ProfileRevision } from "../domain/profile.ts";
@@ -18,6 +19,7 @@ import type {
   CancelPendingEnrollmentInput,
   ConsumeEnrollmentInvitationInput,
   CreateEnrollmentInvitationInput,
+  DeploymentReceipt,
   EnrollmentSourceRecord,
   FollowerCredentialRecord,
   FinalizeEnrollmentInput,
@@ -25,9 +27,11 @@ import type {
   PendingEnrollmentRecord,
   PublishRevisionInput,
   RecordDriftInput,
+  RecordRevisionApprovalInput,
   RecoveryState,
   RegisterFollowerInput,
   RemoveLocalOverlayInput,
+  RevisionApprovalRecord,
   SaveLocalOverlayInput,
   StartRunInput,
   StateSnapshot,
@@ -133,6 +137,18 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly completeRun: (
     input: CompleteRunInput,
   ) => Effect.Effect<void, StateRepositoryError>;
+  readonly loadDeploymentReceipt: (
+    run: RunId,
+  ) => Effect.Effect<DeploymentReceipt | undefined, StateRepositoryError>;
+  readonly latestDeploymentReceipt: (
+    follower: FollowerId,
+  ) => Effect.Effect<DeploymentReceipt | undefined, StateRepositoryError>;
+  readonly recordRevisionApproval: (
+    input: RecordRevisionApprovalInput,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  readonly loadRevisionApproval: (
+    revision: ProfileRevisionId,
+  ) => Effect.Effect<RevisionApprovalRecord | undefined, StateRepositoryError>;
   readonly loadRecovery: (
     follower: FollowerId,
   ) => Effect.Effect<RecoveryState | undefined, StateRepositoryError>;

@@ -31,6 +31,46 @@ export interface RevisionBlobCandidate {
   readonly resource: ResourceId;
 }
 
+/**
+ * A deployment receipt names the build that applied one completed run. It is
+ * the durable half of the completion receipt: audits can say which sources
+ * produced the deployed state on each machine.
+ */
+export interface DeploymentReceipt {
+  readonly run: RunId;
+  readonly follower: FollowerId;
+  readonly revision: ProfileRevisionId;
+  readonly packageVersion: string;
+  readonly buildIdentity: string;
+  readonly stateFormat: number;
+  readonly outcome: SynchronizationOutcome["outcome"];
+  readonly recordedAt: string;
+}
+
+/**
+ * The approval that authorized a revision, persisted at publish time. It
+ * binds the reviewer's accepted proposal digest to the exact revision digest
+ * publish produced, so the plan and approval stay bound to the revision the
+ * fleet applies instead of living only in the publish call.
+ */
+export interface RevisionApprovalRecord {
+  readonly revision: ProfileRevisionId;
+  readonly proposalDigest: ContentDigest;
+  readonly revisionDigest: ContentDigest;
+  readonly reviewer: string;
+  readonly reviewedAt: string;
+  readonly recordedAt: string;
+}
+
+export interface RecordRevisionApprovalInput {
+  readonly revision: ProfileRevisionId;
+  readonly proposalDigest: ContentDigest;
+  readonly revisionDigest: ContentDigest;
+  readonly reviewer: string;
+  readonly reviewedAt: string;
+  readonly recordedAt: string;
+}
+
 export interface RegisterFollowerInput {
   readonly follower: FollowerIdentity;
 }

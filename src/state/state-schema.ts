@@ -359,7 +359,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       ALTER TABLE synchronization_runs
       ADD COLUMN state_format INTEGER
     `;
-    yield* sql`
+  yield* sql`
       CREATE TABLE IF NOT EXISTS deployment_receipts (
         run_id TEXT PRIMARY KEY REFERENCES synchronization_runs(id),
         follower_id TEXT NOT NULL,
@@ -367,6 +367,27 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         build_identity TEXT NOT NULL,
         state_format INTEGER NOT NULL,
         outcome TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      )
+    `;
+  }),
+  // Publication binds its approval to the exact proposal digest at publish
+  // time, but the approval used to be consumed there and never persisted, so
+  // no later reader could prove which review authorized a revision. Approvals
+  // name both the proposal digest the reviewer accepted and the revision
+  // digest that publish produced, which keeps the plan and approval bound to
+  // the exact revision the fleet applies. First write wins: re-publishing an
+  // identical revision keeps its original approval.
+  "0015_revision_approvals": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS revision_approvals (
+        revision_id TEXT PRIMARY KEY REFERENCES profile_revisions(id),
+        proposal_digest TEXT NOT NULL,
+        revision_digest TEXT NOT NULL,
+        reviewer TEXT NOT NULL,
+        reviewed_at TEXT NOT NULL,
         recorded_at TEXT NOT NULL
       )
     `;
