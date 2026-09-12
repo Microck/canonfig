@@ -198,8 +198,8 @@ const validatePackageContents = (
   }
   // The public compiler ships its transitive declaration graph so consumers
   // get the same recursive profile contract without private dist imports. The
-  // CLI also includes byte-resource publication, transport, and hydration.
-  if (artifact.size > 340_000 || artifact.unpackedSize > 1_625_000) {
+  // CLI also includes byte-resource transport and staged MCP qualification.
+  if (artifact.size > 340_000 || artifact.unpackedSize > 1_700_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );

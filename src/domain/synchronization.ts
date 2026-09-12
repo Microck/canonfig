@@ -30,6 +30,10 @@ import {
   RecipeSourceMetadata,
   recipeValidationError,
 } from "./recipe-versions.ts";
+import {
+  InstallerRecipeProvenance,
+  type InstallerRecipeProvenance as InstallerRecipeProvenanceType,
+} from "./mcp-qualification.ts";
 /**
  * Synchronization domain types: plans, actions, outcomes, drift, agent tasks,
  * and human action records.
@@ -58,7 +62,7 @@ export type PlannedActionKind =
   | "drift-conflict";
 
 export type ActionDetail =
-  | { readonly kind: "no-op" }
+  | { readonly kind: "no-op"; readonly provenance?: InstallerRecipeProvenanceType | undefined }
   | { readonly kind: "transfer-blob"; readonly blob: string; readonly bytes: number }
   | {
     readonly kind: "write-file";
@@ -94,7 +98,7 @@ export type ActionDetail =
   }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
   | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }
-  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined }
+  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined; readonly provenance?: InstallerRecipeProvenanceType | undefined }
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
   | { readonly kind: "agent-task"; readonly taskId: AgentTaskId; readonly summary: string }
@@ -248,6 +252,8 @@ export interface AppliedResourceRecord {
   }> | undefined;
   readonly ownedKeys?: ReadonlyArray<string> | undefined;
   readonly configFormat?: "toml" | "json" | "yaml" | undefined;
+  /** Exact qualified recipe retained so a PATH discovery cannot impersonate it. */
+  readonly installerRecipe?: InstallerRecipeProvenanceType | undefined;
 }
 
 export const PlannedActionKindSchema = Schema.Literals([
@@ -276,6 +282,7 @@ const InstallToolActionDetailSchema = Schema.Struct({
     RecipeSourceMetadata,
   ])),
   buildPolicy: Schema.optional(BuildPolicySchema),
+  provenance: Schema.optional(InstallerRecipeProvenance),
 }).check(
   Schema.makeFilter((detail) => {
     const reason = recipeValidationError(detail);
@@ -289,7 +296,10 @@ const InstallToolActionDetailSchema = Schema.Struct({
 );
 
 export const ActionDetailSchema = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("no-op") }),
+  Schema.Struct({
+    kind: Schema.Literal("no-op"),
+    provenance: Schema.optional(InstallerRecipeProvenance),
+  }),
   Schema.Struct({
     kind: Schema.Literal("transfer-blob"),
     blob: BlobId,
@@ -516,6 +526,7 @@ export const AppliedResourceRecordSchema = Schema.Struct({
   }))),
   ownedKeys: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   configFormat: Schema.optional(Schema.Literals(["toml", "json", "yaml"])),
+  installerRecipe: Schema.optional(InstallerRecipeProvenance),
 });
 
 /** Runtime schema aliases share names with their corresponding domain types. */

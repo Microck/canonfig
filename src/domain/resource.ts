@@ -224,6 +224,12 @@ const ToolRecipeRefSchema = Schema.Struct({
     Schema.NonEmptyString,
     RecipeSourceMetadataSchema,
   ])),
+  upstream: Schema.optional(Schema.NonEmptyString),
+  architecture: Schema.optional(Schema.NonEmptyString),
+  artifactDigest: Schema.optional(Schema.NonEmptyString),
+  entrypoint: Schema.optional(Schema.NonEmptyString),
+  dependencyPolicy: Schema.optional(Schema.NonEmptyString),
+  executionContext: Schema.optional(Schema.NonEmptyString),
 });
 
 export const ToolRecipeRef = ToolRecipeRefSchema.check(

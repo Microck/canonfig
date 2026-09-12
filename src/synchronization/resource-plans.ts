@@ -17,6 +17,10 @@ import {
   isMissingAutomaticRecipeVersion,
   recipeSourceDetails,
 } from "../domain/recipe-versions.ts";
+import {
+  installerRecipeProvenance,
+  type InstallerRecipeProvenance,
+} from "../domain/mcp-qualification.ts";
 import { InvalidObservedStateError } from "./synchronization.errors.ts";
 import type {
   DesiredResource,
@@ -42,6 +46,7 @@ interface InstallToolActionDetail {
   indexPolicy?: ToolRecipe["indexPolicy"];
   source?: ToolRecipe["source"];
   buildPolicy?: BuildPolicy;
+  provenance?: InstallerRecipeProvenance;
 }
 
 interface WriteFileActionDetail {
@@ -224,9 +229,11 @@ export const detectSkillDrift = (input: SkillDriftInput): SkillDriftState => {
   return "conflicting";
 };
 
-const noOp = (): ResourceActionDraft => ({
+const noOp = (provenance?: InstallerRecipeProvenance): ResourceActionDraft => ({
   kind: "no-op",
-  detail: { kind: "no-op" },
+  detail: provenance === undefined
+    ? { kind: "no-op" }
+    : { kind: "no-op", provenance },
 });
 
 const observedMatchesDesired = (
@@ -847,6 +854,39 @@ const planReplaceIfUnmodified = (
   }
 };
 
+const qualifiedRecipeProvenance = (
+  context: ResourcePlanningContext,
+  recipe: ToolRecipe,
+): InstallerRecipeProvenance | undefined => {
+  const qualification = context.desired.kind === "tool"
+    ? context.desired.qualification
+    : undefined;
+  if (
+    qualification === undefined
+    || recipe.version === undefined
+    || recipe.upstream === undefined
+    || recipe.architecture === undefined
+    || recipe.artifactDigest === undefined
+    || recipe.entrypoint === undefined
+    || recipe.dependencyPolicy === undefined
+    || recipe.executionContext === undefined
+  ) return undefined;
+  return installerRecipeProvenance({
+    upstream: recipe.upstream,
+    version: recipe.version,
+    platform: recipe.platform,
+    architecture: recipe.architecture,
+    artifactDigest: recipe.artifactDigest,
+    entrypoint: recipe.entrypoint,
+    dependencyPolicy: recipe.dependencyPolicy,
+    executionContext: recipe.executionContext,
+    method: recipe.method,
+    package: recipe.package,
+    compatibility: qualification.compatibility,
+    target: qualification.target,
+  });
+};
+
 const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
   if (context.desired.kind !== "tool") {
     throw new InvalidObservedStateError({
@@ -855,12 +895,21 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
       observedState: context.observed.state,
     });
   }
-  if (context.observed.state === "present") return [noOp()];
+  const qualification = context.desired.qualification;
   if (context.observed.state === "unverifiable") {
     return [unresolvedAgentTask(context, `Verify or install tool ${context.desired.toolId}`)];
   }
+  if (qualification === undefined && context.observed.state === "present") {
+    return [noOp()];
+  }
   const recipe = [...context.desired.recipes]
-    .filter((candidate) => candidate.platform === context.platform)
+    .filter((candidate) =>
+      candidate.platform === context.platform
+      && (
+        qualification === undefined
+        || candidate.architecture === process.arch
+      )
+    )
     .sort((left, right) =>
       compareText(
         `${left.method}\0${left.package}\0${left.version ?? ""}\0${JSON.stringify(left.source)}`,
@@ -869,6 +918,29 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     )[0];
   if (recipe === undefined) {
     return [unresolvedAgentTask(context, `Find an installation recipe for ${context.desired.toolId}`)];
+  }
+  const provenance = qualifiedRecipeProvenance(context, recipe);
+  if (context.desired.qualification !== undefined && provenance === undefined) {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `Qualified recipe metadata for ${context.desired.toolId} is incomplete`,
+        instructions:
+          `Declare upstream, exact version, architecture ${process.arch}, artifact digest, exact entrypoint, dependency policy, and execution context before qualifying this MCP integration.`,
+      },
+    }];
+  }
+  if (context.desired.qualification?.exclusion !== undefined) {
+    return [noOp(provenance)];
+  }
+  if (context.observed.state === "present") {
+    if (provenance === undefined) return [noOp()];
+    if (context.applied?.installerRecipe?.fingerprint === provenance.fingerprint) {
+      return [noOp(provenance)];
+    }
+    // A PATH hit without this exact qualified binding is not evidence that the
+    // pinned recipe is installed. Continue to the deterministic install.
   }
   if (isMissingAutomaticRecipeVersion(recipe)) {
     return [{
@@ -950,6 +1022,7 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   if (recipe.indexPolicy !== undefined) detail.indexPolicy = recipe.indexPolicy;
   if (recipe.source !== undefined) detail.source = recipe.source;
   if (recipe.buildPolicy !== undefined) detail.buildPolicy = recipe.buildPolicy;
+  if (provenance !== undefined) detail.provenance = provenance;
   if (detail.buildPolicy?.mode === "required") {
     return [{
       kind: "human-action",

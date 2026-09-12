@@ -9,12 +9,13 @@ import { join, resolve } from "node:path";
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
+import { installerRecipeProvenance } from "../../src/domain/mcp-qualification.ts";
 import { isLocalInstallerPath, parseInstallerBinding } from "../../src/domain/installer-binding.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import { checkInstallerBinding, loadInstallerBinding, removeInstallerBinding, resolveInstallerInvocation, saveInstallerBinding } from "../../src/synchronization/installer-bindings.ts";
-import { prepareResourceAction } from "../../src/synchronization/resource-executors.ts";
+import { prepareResourceAction, verifyResource } from "../../src/synchronization/resource-executors.ts";
 import { installerArguments, isInstallerCommand, runInstallerCli } from "../../src/runtime/installer-cli.ts";
 
 const roots: string[] = [];
@@ -70,19 +71,81 @@ describe("local installer binding contract", () => {
     expect(loaded?.executable).toBe(await realpath(process.execPath));
     expect(loaded?.arguments).toEqual([await realpath(f.entry)]);
     const resource = Schema.decodeUnknownSync(ResourceId)("fixture-npm");
-    await Effect.runPromise(Effect.gen(function*() {
-      const prepared = yield* prepareResourceAction({
-        run: Schema.decodeUnknownSync(RunId)("fixture-installer-run"),
-        action: { id: Schema.decodeUnknownSync(ActionId)("fixture-install"), resource, kind: "install-tool", before: [],
-          detail: { kind: "install-tool", toolId: "fixture", method: "npm", package: "fixture-package", version: "1.2.3", buildPolicy: { mode: "scripts-disabled" } } },
-        resource: { id: resource, kind: "tool", policy: "ensure", target: "fixture", dependsOn: [], blobs: [] },
-        desired: { kind: "tool", toolId: "fixture", recipes: [], loginRequired: false },
-        verification: { method: "command", command: [process.execPath, f.entry, "--version"] },
-        artifacts: new Map(),
-        limits: { maximumFileBytes: 1024, processTimeoutMilliseconds: 10_000, maximumProcessOutputBytes: 16_384, verificationConcurrency: 1 },
-      });
+    const platform = process.platform === "win32"
+      ? "windows" as const
+      : process.platform === "darwin" ? "macos" as const : "linux" as const;
+    const provenance = installerRecipeProvenance({
+      upstream: "https://registry.npmjs.org/fixture-package",
+      version: "1.2.3",
+      platform,
+      architecture: process.arch,
+      artifactDigest: "sha512-Zml4dHVyZQ==",
+      entrypoint: process.execPath,
+      dependencyPolicy: "scripts-disabled",
+      executionContext: "follower-local",
+      method: "npm",
+      package: "fixture-package",
+      compatibility: "mcp-fixture",
+      target: "fixture-client",
+    });
+    const probe = {
+      command: [process.execPath, f.entry, "--version"],
+      expectContains: "1.0.0-fixture",
+      operation: "read fixture version",
+    };
+    const context = {
+      run: Schema.decodeUnknownSync(RunId)("fixture-installer-run"),
+      action: {
+        id: Schema.decodeUnknownSync(ActionId)("fixture-install"),
+        resource,
+        kind: "install-tool" as const,
+        before: [],
+        detail: {
+          kind: "install-tool" as const,
+          toolId: "fixture",
+          method: "npm" as const,
+          package: "fixture-package",
+          version: "1.2.3",
+          buildPolicy: { mode: "scripts-disabled" as const },
+          provenance,
+        },
+      },
+      resource: { id: resource, kind: "tool" as const, policy: "ensure" as const, target: "fixture", dependsOn: [], blobs: [] },
+      desired: {
+        kind: "tool" as const,
+        toolId: "fixture",
+        recipes: [],
+        loginRequired: false,
+        qualification: {
+          method: "mcp-qualification" as const,
+          target: "fixture-client",
+          compatibility: "mcp-fixture",
+          launches: probe,
+          protocolCompatible: probe,
+          authenticated: probe,
+          functional: probe,
+          clientLoaded: probe,
+        },
+      },
+      verification: {
+        method: "mcp-qualification" as const,
+        target: "fixture-client",
+        compatibility: "mcp-fixture",
+        launches: probe,
+        protocolCompatible: probe,
+        authenticated: probe,
+        functional: probe,
+        clientLoaded: probe,
+      },
+      artifacts: new Map(),
+      limits: { maximumFileBytes: 1024, processTimeoutMilliseconds: 10_000, maximumProcessOutputBytes: 16_384, verificationConcurrency: 1 },
+    };
+    const qualification = await Effect.runPromise(Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(context);
       yield* prepared.execute;
+      return yield* verifyResource(context);
     }).pipe(Effect.provide(f.layer)));
+    expect(qualification.qualification?.ready).toBe(true);
     const result = JSON.parse(readFileSync(f.output, "utf8"));
     expect(result).toEqual({ argv: ["install", "--global", "fixture-package@1.2.3", "--ignore-scripts"], path: "" });
   }, 30_000);

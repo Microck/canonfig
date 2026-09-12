@@ -332,6 +332,7 @@ export const authorizationViewIdentity = (
 const desiredFor = (
   spec: PublishedResourceSpec,
   contentByBlob: ReadonlyMap<string, Uint8Array>,
+  verification: VerificationInput,
 ): HydratedDesiredResource => {
   switch (spec.kind) {
     case "file": {
@@ -410,6 +411,9 @@ const desiredFor = (
             ? spec.login.howTo
             : undefined,
           agentInstall: spec.agentInstall,
+          qualification: verification.method === "mcp-qualification"
+            ? verification
+            : undefined,
         },
         artifacts: [],
       };
@@ -712,9 +716,16 @@ const observe = (
     case "tool":
       return Effect.gen(function*() {
         const machine = yield* MachineState;
-        const executable = verification.method === "executable-present"
-          ? verification.executable
-          : decoded.resource.target;
+        const platform = (yield* machine.userDirectories()).home.platform;
+        const qualifiedEntrypoint = desired.qualification === undefined
+          ? undefined
+          : desired.recipes.find((recipe) =>
+            recipe.platform === platform && recipe.architecture === process.arch
+          )?.entrypoint;
+        const executable = qualifiedEntrypoint
+          ?? (verification.method === "executable-present"
+            ? verification.executable
+            : decoded.resource.target);
         if (executable.includes("/") || executable.includes("\\")) {
           return yield* machine.normalizePath({ path: executable }).pipe(
             Effect.flatMap((path) => machine.permissions(path)),
@@ -730,7 +741,11 @@ const observe = (
           Effect.as({ state: "present", digest: sha256Hex(executable), executable: true } as const),
           Effect.catch(() => Effect.succeed({ state: "absent" } as const)),
         );
-      });
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.succeed({ state: "unverifiable", reason: String(error) } as const)
+        ),
+      );
     case "credential":
       return Effect.gen(function*() {
         const machine = yield* MachineState;
@@ -893,7 +908,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
       record,
     ]));
     for (const entry of decoded) {
-      const hydration = desiredFor(entry.spec, entry.content);
+      const hydration = desiredFor(entry.spec, entry.content, entry.resource.verify);
       desired.push({
         resource: entry.resource.id,
         desired: hydration.desired,
