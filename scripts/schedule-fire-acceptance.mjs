@@ -63,9 +63,11 @@ if (platform === "linux") {
   // canonfig registers under the Canonfig task folder: name is folder-qualified.
   trigger = run("schtasks", ["/run", "/tn", `Canonfig\\${jobName}`]);
 }
+// A nonzero trigger exit does not mean the scheduler failed to start the
+// job: the scheduled invocation itself is expected to fail fast on this
+// scratch machine (not enrolled), and the fire marker below is the evidence.
 if (trigger.status !== 0) {
-  console.error(`scheduler trigger failed: ${trigger.stderr}`);
-  process.exit(1);
+  console.error(`scheduler trigger exited ${trigger.status}: ${String(trigger.stderr).trim().slice(0, 300)}`);
 }
 
 const fired = await waitUntil(() => existsSync(markerPath));
