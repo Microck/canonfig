@@ -74,12 +74,55 @@ printf %s "$GITHUB_TOKEN" | canonfig secrets set github-token
 canonfig secrets list
 canonfig secrets sync
 canonfig secrets remove github-token
+canonfig secrets bootstrap
 ```
 
 `secrets set` reads the value from standard input only. Secret values require
 the native noninteractive credential store and are never accepted in argv,
 printed, or written to JSON. `secrets sync` is an explicit retry; normal
 successful `sync --apply` runs synchronize automatically.
+
+On headless Linux, choose storage before bootstrapping. Secure storage is the
+default:
+
+```text
+dbus-run-session -- canonfig secrets bootstrap
+```
+
+An intentionally unencrypted local file is an explicit operator choice:
+
+```text
+CANONFIG_LOCAL_CREDENTIAL_ROOT="$HOME/.canonfig/credentials" canonfig secrets bootstrap
+```
+
+The command runs as the current user and never invokes `sudo`. Install
+`libsecret-tools` and a Secret Service provider such as `gnome-keyring` with
+the distribution's package manager before running Canonfig when those packages
+are absent. The secure path checks `secret-tool`, starts an installed
+user-session provider when required, waits for D-Bus registration, and uses
+disposable credentials to verify storage, lookup, and owned-provider restart.
+Canonfig never replaces a provider it did not start. When logout or reboot
+persistence cannot be proven without disrupting the current session, the
+result says `manual` and asks for a restart followed by the same command.
+
+The completion result names the selected `secure-store` or `local-file` policy.
+It reports local-file backup storage as unencrypted and does not claim that a
+provider collection is encrypted when the provider cannot attest it.
+
+Bind a shared secret to an agent harness without writing its value into the
+follower configuration:
+
+```text
+canonfig agent harness codex --executable /opt/codex --bind-secret MCP_TOKEN=shared-mcp-token
+```
+
+Canonfig persists only `MCP_TOKEN` and `shared-mcp-token`. It resolves the
+current native-store reference immediately before spawning the harness, adds
+the value only to that process environment, and includes it in output
+redaction. Rotating the stored `shared-mcp-token` value therefore takes effect
+on the next launch. MCP projections that use `{ "fromEnv": "MCP_TOKEN" }`
+consume the same binding for environment-backed headers; unrelated secret
+names are not loaded.
 
 ## Harness configuration
 

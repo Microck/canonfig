@@ -127,7 +127,10 @@ export function antigravityMcpMap(context: BuildContext): Record<string, unknown
 }
 
 export function openCodeMcpMap(context: BuildContext): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(context.config.mcp.servers).map(([name, server]) => {
+  // Disabled servers carry no profile material. Their env and header values
+  // must not reach generated files even though this target models an
+  // explicit enabled flag for the servers it does receive.
+  return Object.fromEntries(enabledMcpServerEntries(context).map(([name, server]) => {
     if (server.transport === "stdio") {
       return [name, {
         type: "local",

@@ -20,6 +20,11 @@ export interface AgentHarnessConfiguration {
     readonly name: string;
     readonly value: string;
   }> | undefined;
+  /** Symbolic shared-secret names resolved only for the harness process. */
+  readonly secretBindings?: ReadonlyArray<{
+    readonly name: string;
+    readonly secret: string;
+  }> | undefined;
   readonly maximumInputBytes: number;
   readonly allowedPaths: ReadonlyArray<string>;
   readonly allowedExecutables: ReadonlyArray<string>;

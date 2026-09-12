@@ -410,7 +410,6 @@ const cleanupReferences = (
       { discard: true },
     );
   });
-
 export const listSecrets = (): Effect.Effect<
   ReadonlyArray<SharedSecretSummary>,
   SecretTransferError,
@@ -419,6 +418,24 @@ export const listSecrets = (): Effect.Effect<
   readManifest().pipe(
     Effect.map((manifest) =>
       manifest.secrets.map(({ name, origin }) => ({ name, origin }))
+    ),
+  );
+
+/**
+ * Resolve a shared secret name to its current native credential reference.
+ * Rotation replaces the reference behind the name, so launchers that bind by
+ * name keep working while direct reference holders must re-resolve.
+ */
+export const findSecretReference = (
+  name: string,
+): Effect.Effect<
+  CredentialReferenceValue | undefined,
+  SecretTransferError,
+  MachineState
+> =>
+  readManifest().pipe(
+    Effect.map((manifest) =>
+      manifest.secrets.find((secret) => secret.name === name)?.reference
     ),
   );
 

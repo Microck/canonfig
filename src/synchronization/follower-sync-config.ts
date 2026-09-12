@@ -33,6 +33,11 @@ export const FollowerAgentHarnessConfiguration = Schema.Struct({
     name: Schema.NonEmptyString,
     value: Schema.String,
   }))),
+  /** Values stay in native storage; only these symbolic names are persisted. */
+  secretBindings: Schema.optional(Schema.Array(Schema.Struct({
+    name: Schema.NonEmptyString,
+    secret: Schema.NonEmptyString,
+  }))),
   maximumInputBytes: Schema.Int.check(
     Schema.isGreaterThan(0),
     Schema.isLessThanOrEqualTo(1024 * 1024),

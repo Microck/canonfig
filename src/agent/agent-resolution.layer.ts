@@ -1,5 +1,13 @@
 import { Effect, Layer } from "effect";
 
+import type { ProcessEnvironmentEntry } from "../machine/machine-state.types.ts";
+import { MachineState } from "../machine/machine-state.service.ts";
+import {
+  resolveSecretBindings,
+  type SecretProcessBinding,
+} from "../secrets/secret-bindings.ts";
+import { SecretTransferError } from "../secrets/secret-store.ts";
+
 import {
   failedVerification,
   AgentResolution,
@@ -47,6 +55,10 @@ export type ControlledExecutor = (
   input: ControlledProcessInput,
 ) => Effect.Effect<CapturedProcess, AgentResolutionError>;
 
+export type SecretBindingResolver = (
+  bindings: ReadonlyArray<SecretProcessBinding>,
+) => Effect.Effect<ReadonlyArray<ProcessEnvironmentEntry>, SecretTransferError>;
+
 const redactCaptured = (
   process: CapturedProcess,
   secrets: ReadonlyArray<string>,
@@ -75,17 +87,18 @@ const ensureOutputBudget = (
 
 const runResolution = (
   executor: ControlledExecutor,
+  resolveBindings: SecretBindingResolver,
   input: AgentResolutionInput,
 ): Effect.Effect<AgentResolutionOutcome, AgentResolutionError> =>
   Effect.gen(function*() {
     yield* validateAgentTask(input.task);
-    const secrets = input.secrets ?? [];
-    const recordedTask = redactAgentTask(input.task, secrets);
+    const baseSecrets = input.secrets ?? [];
+    const baseRecordedTask = redactAgentTask(input.task, baseSecrets);
     switch (input.policy) {
       case "deterministic-only":
         return {
           outcome: "deterministic-only",
-          task: recordedTask,
+          task: baseRecordedTask,
           reason: input.scheduled === true
             ? "scheduled deterministic-only policy requires human action"
             : "deterministic-only policy does not invoke an agent",
@@ -94,13 +107,44 @@ const runResolution = (
       case "agent-apply":
         break;
     }
+    const configuredBindings = input.harness.secretBindings ?? [];
+    const literalEnvironmentNames = new Set(
+      (input.harness.environment ?? []).map((entry) => entry.name),
+    );
+    const collision = configuredBindings.find((binding) =>
+      literalEnvironmentNames.has(binding.name)
+    );
+    if (collision !== undefined) {
+      return yield* new InvalidAgentTaskError({
+        task: input.task.id,
+        message:
+          `secret binding ${collision.name} collides with a literal harness environment entry`,
+      });
+    }
+    const boundEnvironment = yield* resolveBindings(configuredBindings).pipe(
+      Effect.mapError(() =>
+        new InvalidAgentTaskError({
+          task: input.task.id,
+          message: "a configured harness secret binding is unavailable",
+        })
+      ),
+    );
+    const secrets = [
+      ...baseSecrets,
+      ...boundEnvironment.map((entry) => entry.value),
+    ];
+    const recordedTask = redactAgentTask(input.task, secrets);
 
     const deadline = Date.now() + input.task.timeLimitSeconds * 1_000;
     const invocation = adaptHarnessInvocation(input.harness, input.task);
+    const harnessEnvironment = [
+      ...(invocation.environment ?? []),
+      ...boundEnvironment,
+    ];
     const harnessExecutable = yield* Effect.promise(() =>
       resolvedExecutableIdentity(
         invocation.executable,
-        invocation.environment,
+        harnessEnvironment,
         process.cwd(),
       )
     );
@@ -113,7 +157,7 @@ const runResolution = (
     const rawHarness = yield* executor({
       executable: harnessExecutable,
       arguments: invocation.arguments,
-      environment: invocation.environment,
+      environment: harnessEnvironment,
       standardInput: invocation.input,
       timeoutMilliseconds: remainingTime(deadline),
       maximumInputBytes: input.harness.maximumInputBytes,
@@ -335,15 +379,45 @@ const redactResolutionError = (
   }
 };
 
-export const makeAgentResolutionLayer = (
+const makeAgentResolution = (
   executor: ControlledExecutor,
-) => Layer.succeed(
-  AgentResolution,
+  resolveBindings: SecretBindingResolver,
+): AgentResolution["Service"] =>
   AgentResolution.of({
-    resolve: (input) => runResolution(executor, input).pipe(
+    resolve: (input) => runResolution(executor, resolveBindings, input).pipe(
       Effect.mapError((error) => redactResolutionError(error, input.secrets ?? [])),
     ),
     proposeProfileChange: profileChangeProposalFromResolution,
+  });
+
+const noSecretBindings: SecretBindingResolver = (bindings) =>
+  bindings.length === 0
+    ? Effect.succeed([])
+    : Effect.fail(new SecretTransferError({
+      category: "storage",
+      operation: "resolve harness secret bindings",
+      message: "secret bindings require a configured machine credential store",
+    }));
+
+export const makeAgentResolutionLayer = (
+  executor: ControlledExecutor,
+  resolveBindings: SecretBindingResolver = noSecretBindings,
+) => Layer.succeed(
+  AgentResolution,
+  makeAgentResolution(executor, resolveBindings),
+);
+
+export const AgentResolutionWithSecretsLive = Layer.effect(
+  AgentResolution,
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    return makeAgentResolution(
+      executeControlledProcess,
+      (bindings) =>
+        resolveSecretBindings(bindings).pipe(
+          Effect.provideService(MachineState, machine),
+        ),
+    );
   }),
 );
 
