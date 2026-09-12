@@ -1050,6 +1050,10 @@ const renderSystemdJob = (
         "",
         "[Service]",
         "Type=oneshot",
+        // The scheduled run must not depend on the user session's PATH or on
+        // any shell startup file: the unit pins the minimal search path and
+        // ExecStart is absolute.
+        `Environment="PATH=/usr/bin:/bin"`,
         `ExecStart=${command}`,
         "",
       ].join("\n"),

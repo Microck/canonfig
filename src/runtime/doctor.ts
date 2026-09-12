@@ -8,6 +8,7 @@ import { Effect, Option, Redacted, Schema } from "effect";
 
 import { programVersion } from "../cli/cli.ts";
 import { credentialReadiness, scheduledDefinitionReadiness } from "./readiness.ts";
+import type { ScheduleFireEvidence } from "./readiness.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import type { CliFailureCategory } from "../cli/exit-codes.ts";
 import {
@@ -89,6 +90,7 @@ export interface DoctorInput {
    * PATH.
    */
   readonly schedule?: DoctorScheduleConfiguration | undefined;
+  readonly lastFire?: ScheduleFireEvidence | undefined;
   readonly source?: DoctorSourceConfiguration | undefined;
   readonly agent?: DoctorAgentConfiguration | undefined;
 }
@@ -344,6 +346,7 @@ const sourceProbe = (
 const schedulerProbe = (
   schedules: ScheduleManager["Service"],
   schedule: DoctorScheduleConfiguration | undefined,
+  lastFire: ScheduleFireEvidence | undefined,
 ): Effect.Effect<DoctorProbe, object> => {
   // Nothing to compare against when this follower runs no scheduled
   // synchronization.
@@ -498,7 +501,7 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
     isolated(
       "scheduler",
       timeout,
-      schedulerProbe(schedules, input.schedule),
+      schedulerProbe(schedules, input.schedule, input.lastFire),
       () => failed("scheduler", "verification-or-apply-failure", "scheduler state check failed"),
       "verification-or-apply-failure",
     ),

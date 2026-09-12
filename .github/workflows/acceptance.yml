@@ -67,6 +67,12 @@ jobs:
         env:
           CANONFIG_ACCEPTANCE_PLATFORM: ${{ matrix.acceptance_platform || matrix.platform }}
 
+      # One real scheduled fire per platform: the installed native job is
+      # triggered through the scheduler's own run-now mechanism and must
+      # record its fire in the follower state directory.
+      - name: Fire the installed native job
+        run: node scripts/schedule-fire-acceptance.mjs
+
       - name: Preserve tested package and build identity
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

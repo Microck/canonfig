@@ -49,27 +49,50 @@ export const credentialReadiness = (capability: CredentialStorageCapability): Do
   }
 };
 
-/** A requested job must exist and match; even then its execution is unproven. */
-export const scheduledDefinitionReadiness = (status: ScheduleStatus): DoctorProbe => {
+export interface ScheduleFireEvidence {
+  readonly at: string;
+  readonly outcome: string;
+}
+
+/**
+ * A rendered definition proves intent, not execution: only recorded evidence
+ * that the native scheduler actually started the job marks the schedule as
+ * verified. A green renderer check alone stays at warning.
+ */
+export const scheduledDefinitionReadiness = (
+  status: ScheduleStatus,
+  lastFire?: ScheduleFireEvidence | undefined,
+): DoctorProbe => {
   const details = {
     state: status.state,
     platform: status.platform,
     mechanism: status.definition.mechanism,
     definitionVerified: status.state === "current",
-    scheduledExecutionVerified: false,
+    scheduledExecutionVerified: status.state === "current" && lastFire !== undefined,
+    ...(lastFire === undefined
+      ? {}
+      : { lastFiredAt: lastFire.at, lastFiredOutcome: lastFire.outcome }),
   };
-  return status.state === "current"
-    ? {
-      name: "scheduler",
-      status: "pass",
-      message: "scheduler definition is current; scheduled execution is not verified",
-      details,
-    }
-    : {
+  if (status.state !== "current") {
+    return {
       name: "scheduler",
       status: "fail",
       category: "verification-or-apply-failure",
       message: `requested scheduler definition is ${status.state}`,
+      details,
+    };
+  }
+  return lastFire === undefined
+    ? {
+      name: "scheduler",
+      status: "warning",
+      message: "scheduler definition is current; the native scheduler has not been observed firing it yet",
+      details,
+    }
+    : {
+      name: "scheduler",
+      status: "pass",
+      message: "scheduler definition is current and the native scheduler has fired it",
       details,
     };
 };
