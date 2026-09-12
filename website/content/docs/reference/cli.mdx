@@ -92,8 +92,7 @@ dbus-run-session -- canonfig secrets bootstrap
 An intentionally unencrypted local file is an explicit operator choice:
 
 ```text
-CANONFIG_LOCAL_CREDENTIAL_ROOT="$HOME/.canonfig/credentials" \
-  canonfig secrets bootstrap
+CANONFIG_LOCAL_CREDENTIAL_ROOT="$HOME/.canonfig/credentials" canonfig secrets bootstrap
 ```
 
 The command runs as the current user and never invokes `sudo`. Install
@@ -114,8 +113,7 @@ Bind a shared secret to an agent harness without writing its value into the
 follower configuration:
 
 ```text
-canonfig agent harness codex --executable /opt/codex \
-  --bind-secret MCP_TOKEN=shared-mcp-token
+canonfig agent harness codex --executable /opt/codex --bind-secret MCP_TOKEN=shared-mcp-token
 ```
 
 Canonfig persists only `MCP_TOKEN` and `shared-mcp-token`. It resolves the
