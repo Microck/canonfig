@@ -238,6 +238,42 @@ const requireSuccess = (
   expect(result.stderr, label).toBe("");
   return parseEnvelope(result);
 };
+let invitationSequence = 0;
+
+const issueInvitation = (
+  home: string,
+  options: {
+    readonly expires?: string | undefined;
+    readonly groups?: ReadonlyArray<string> | undefined;
+    readonly label?: string | undefined;
+  } = {},
+): string => {
+  invitationSequence += 1;
+  const output = resolve(home, `invitation-${String(invitationSequence)}.txt`);
+  const groups = (options.groups ?? []).flatMap((group) => ["--group", group]);
+  const result = requireSuccess(
+    invoke(home, [
+      "source",
+      "invite",
+      "--endpoint",
+      sourceEndpoint,
+      "--expires",
+      options.expires ?? "5m",
+      "--output",
+      output,
+      ...groups,
+      "--json",
+    ]),
+    options.label ?? "issue invitation",
+  );
+  expect(result.data?.["path"]).toBe(output);
+  const [invitation, eof, trailing] = readFileSync(output, "utf8").split("\n");
+  expect(eof).toBe("CANONFIG-INVITE-EOF");
+  expect(trailing).toBe("");
+  expect(invitation).toBeTruthy();
+  rmSync(output);
+  return invitation!;
+};
 
 beforeAll(async () => {
   mkdirSync(installRoot, { recursive: true });
@@ -601,20 +637,11 @@ describe("packed Canonfig executable", () => {
   });
 
   it("exposes the authored revision through signed follower transport", () => {
-    const invitationResult = invoke(sourceHome, [
-      "source",
-      "invite",
-      "--endpoint",
-      sourceEndpoint,
-      "--expires",
-      "5m",
-      "--json",
-    ]);
-    expect(invitationResult.status, invitationResult.stderr).toBe(0);
+    const invitation = issueInvitation(sourceHome);
     const enrolled = invoke(authoredFollowerHome, [
       "follower",
       "enroll",
-      JSON.parse(invitationResult.stdout).data.invite,
+      invitation,
       "--name",
       "packed-authored-follower",
       "--profile",
@@ -706,22 +733,13 @@ describe("packed Canonfig executable", () => {
   });
 
   it("refuses to replace a completed enrollment unless asked", () => {
-    const invitationResult = invoke(sourceHome, [
-      "source",
-      "invite",
-      "--endpoint",
-      sourceEndpoint,
-      "--expires",
-      "5m",
-      "--json",
-    ]);
-    expect(invitationResult.status, invitationResult.stderr).toBe(0);
+    const invitation = issueInvitation(sourceHome);
     // A completed enrollment is a singleton. Enrolling over it silently left
     // the previous identity's records orphaned under an id nothing used.
     const again = invoke(authoredFollowerHome, [
       "follower",
       "enroll",
-      JSON.parse(invitationResult.stdout).data.invite,
+      invitation,
       "--name",
       "packed-second-name",
       "--profile",
@@ -828,17 +846,7 @@ describe("packed Canonfig executable", () => {
   });
 
   it("runs an authenticated source-to-follower lifecycle across packed processes", () => {
-    const invitationResult = invoke(sourceHome, [
-      "source",
-      "invite",
-      "--endpoint",
-      sourceEndpoint,
-      "--expires",
-      "5m",
-      "--json",
-    ]);
-    expect(invitationResult.status, invitationResult.stderr).toBe(0);
-    const invitation = JSON.parse(invitationResult.stdout).data.invite;
+    const invitation = issueInvitation(sourceHome);
     const enrolled = invoke(followerHome, [
       "follower",
       "enroll",
@@ -925,20 +933,11 @@ describe("packed Canonfig executable", () => {
   }, 180_000);
 
   it("rejects a tampered TLS fingerprint from the packed executable", () => {
-    const secondInvitation = invoke(sourceHome, [
-      "source",
-      "invite",
-      "--endpoint",
-      sourceEndpoint,
-      "--expires",
-      "5m",
-      "--json",
-    ]);
-    expect(secondInvitation.status, secondInvitation.stderr).toBe(0);
+    const invitation = issueInvitation(sourceHome);
     const tamperedEnrollment = invoke(tamperedFollowerHome, [
       "follower",
       "enroll",
-      JSON.parse(secondInvitation.stdout).data.invite,
+      invitation,
       "--name",
       "tampered-follower",
       "--profile",
@@ -1250,23 +1249,12 @@ npm install --global canonfig-fixture@1.0.0
 
     const invitationFor = (
       group: "base" | "restricted",
-    ): string => {
-      const invitation = requireSuccess(
-        invoke(sourceHome, [
-          "source",
-          "invite",
-          "--endpoint",
-          sourceEndpoint,
-          "--expires",
-          "15m",
-          "--group",
-          group,
-          "--json",
-        ]),
-        `issue ${group} invitation`,
-      );
-      return String(invitation.data.invite);
-    };
+    ): string =>
+      issueInvitation(sourceHome, {
+        expires: "15m",
+        groups: [group],
+        label: `issue ${group} invitation`,
+      });
     const enroll = (
       home: string,
       invitation: string,
