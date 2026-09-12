@@ -16,7 +16,10 @@ async function write(root: string, relative: string, content: string): Promise<v
   await writeFile(target, content, "utf8");
 }
 
-async function fixture(targets: readonly TargetId[]): Promise<string> {
+async function fixture(
+  targets: readonly TargetId[],
+  mcpEnabled = true,
+): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "canonfig-new-targets-"));
   roots.push(root);
   const config = {
@@ -40,7 +43,7 @@ async function fixture(targets: readonly TargetId[]): Promise<string> {
     mcp: {
       servers: {
         local: {
-          enabled: true,
+          enabled: mcpEnabled,
           transport: "stdio",
           command: "node",
           args: ["tools/server.mjs"],
@@ -51,7 +54,7 @@ async function fixture(targets: readonly TargetId[]): Promise<string> {
           disabledTools: ["delete"],
         },
         docs: {
-          enabled: true,
+          enabled: mcpEnabled,
           transport: "streamable-http",
           url: "https://example.invalid/mcp",
           headers: { Authorization: { fromEnv: "DOCS_TOKEN" } },
@@ -181,6 +184,15 @@ describe("Kimi, Kilo, Hermes, and Qwen harness adapters", () => {
     const second = await compiler.plan({ root });
     expect(second.entries.filter((entry) => entry.action !== "unchanged"))
       .toEqual([]);
+  });
+
+  it("stages no MCP material when every server is disabled", async () => {
+    const root = await fixture(["kimi", "kilo"], false);
+    const plan = await new HarnessConfigurationCompiler().plan({ root });
+    const paths = plan.entries.map((entry) => entry.path);
+
+    expect(paths).not.toContain(".kimi-code/mcp.json");
+    expect(paths).not.toContain("kilo.json");
   });
 
   it("rejects Hermes profile-scoped losses in strict mode", async () => {

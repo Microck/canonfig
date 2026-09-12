@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 import type { McpServer } from "../core/schema.ts";
 import type {
   BuildContext,
@@ -17,56 +19,94 @@ import {
   skillArtifacts,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
+const SecretReferenceSchema = Schema.Struct({
+  fromEnv: Schema.NonEmptyString,
+  default: Schema.optional(Schema.String),
+});
+
+interface KimiRemoteHeaders {
+  headers?: Record<string, string>;
+  bearerTokenEnvVar?: string;
+}
+
+interface KimiMcpCommon {
+  enabled: boolean;
+  startupTimeoutMs?: number;
+  toolTimeoutMs?: number;
+  enabledTools?: ReadonlyArray<string>;
+  disabledTools?: ReadonlyArray<string>;
+}
+
+type KimiMcpProjection = KimiMcpCommon & (
+  | {
+    transport: "stdio";
+    command: string;
+    args?: ReadonlyArray<string>;
+    env?: Record<string, string>;
+    cwd?: string;
+  }
+  | {
+    transport: "sse" | "http";
+    url: string;
+    headers?: Record<string, string>;
+    bearerTokenEnvVar?: string;
+  }
+);
 
 function remoteHeaders(
   server: Extract<McpServer, { transport: "streamable-http" | "sse" }>,
-): { headers?: Record<string, string>; bearerTokenEnvVar?: string } {
+): KimiRemoteHeaders {
+  const result: KimiRemoteHeaders = {};
   const headers: Record<string, string> = {};
-  let bearerTokenEnvVar: string | undefined;
   for (const [name, value] of Object.entries(server.headers)) {
     if (
       name.toLowerCase() === "authorization"
-      && typeof value !== "string"
+      && Schema.is(SecretReferenceSchema)(value)
       && value.default === undefined
     ) {
-      bearerTokenEnvVar = value.fromEnv;
+      result.bearerTokenEnvVar = value.fromEnv;
       continue;
     }
     headers[name] = secretValue(value);
   }
-  return {
-    ...(Object.keys(headers).length > 0 ? { headers } : {}),
-    ...(bearerTokenEnvVar === undefined ? {} : { bearerTokenEnvVar }),
-  };
+  if (Object.keys(headers).length > 0) result.headers = headers;
+  return result;
 }
 
-function kimiMcpServer(server: McpServer): Record<string, unknown> {
-  const common = {
-    enabled: server.enabled,
-    ...(server.timeoutMs === undefined
-      ? {}
-      : {
-          startupTimeoutMs: server.timeoutMs,
-          toolTimeoutMs: server.timeoutMs,
-        }),
-    ...(server.enabledTools?.length ? { enabledTools: server.enabledTools } : {}),
-    ...(server.disabledTools?.length ? { disabledTools: server.disabledTools } : {}),
-  };
+function commonMcpFields(server: McpServer): KimiMcpCommon {
+  const common: KimiMcpCommon = { enabled: server.enabled };
+  if (server.timeoutMs !== undefined) {
+    common.startupTimeoutMs = server.timeoutMs;
+    common.toolTimeoutMs = server.timeoutMs;
+  }
+  if (server.enabledTools !== undefined && server.enabledTools.length > 0) {
+    common.enabledTools = server.enabledTools;
+  }
+  if (server.disabledTools !== undefined && server.disabledTools.length > 0) {
+    common.disabledTools = server.disabledTools;
+  }
+  return common;
+}
+
+function kimiMcpServer(server: McpServer): KimiMcpProjection {
+  const common = commonMcpFields(server);
   if (server.transport === "stdio") {
-    return {
+    const projection: KimiMcpProjection = {
       transport: "stdio",
       command: server.command,
-      ...(server.args.length ? { args: server.args } : {}),
-      ...(Object.keys(server.env).length
-        ? {
-            env: Object.fromEntries(
-              Object.entries(server.env).map(([key, value]) => [key, secretValue(value)]),
-            ),
-          }
-        : {}),
-      ...(server.cwd ? { cwd: server.cwd } : {}),
       ...common,
     };
+    if (server.args.length > 0) projection.args = server.args;
+    if (Object.keys(server.env).length > 0) {
+      projection.env = Object.fromEntries(
+        Object.entries(server.env).map(([key, value]) => [
+          key,
+          secretValue(value),
+        ]),
+      );
+    }
+    if (server.cwd !== undefined) projection.cwd = server.cwd;
+    return projection;
   }
   return {
     transport: server.transport === "sse" ? "sse" : "http",
@@ -76,7 +116,7 @@ function kimiMcpServer(server: McpServer): Record<string, unknown> {
   };
 }
 
-function kimiMcpMap(context: BuildContext): Record<string, unknown> {
+function kimiMcpMap(context: BuildContext): Record<string, KimiMcpProjection> {
   // Disabled servers carry no profile material, including the secrets in
   // their env and header maps. See openCodeMcpMap for the same boundary.
   return Object.fromEntries(
@@ -135,19 +175,29 @@ export const kimiAdapter: HarnessAdapter = {
 
     for (const { agent, content } of await agentDocuments(context)) {
       const tools = nativeTools("kimi", agent);
+      const frontmatter: {
+        name: string;
+        description: string;
+        tools: ReadonlyArray<string>;
+        model?: string;
+        disallowedTools?: ReadonlyArray<string>;
+      } = {
+        name: agent.id,
+        description: agent.description,
+        tools,
+      };
+      if (agent.model !== "inherit") frontmatter.model = agent.model;
+      if (
+        !agent.writable
+        && tools.some((tool) => tool === "Edit" || tool === "Write")
+      ) {
+        frontmatter.disallowedTools = ["Edit", "Write"];
+      }
       artifacts.push({
         kind: "replace",
         path: `.kimi-code/agents/${agent.id}.md`,
         owner: "kimi",
-        content: markdownWithFrontmatter({
-          name: agent.id,
-          description: agent.description,
-          ...(agent.model === "inherit" ? {} : { model: agent.model }),
-          tools,
-          ...(!agent.writable && tools.some((tool) => tool === "Edit" || tool === "Write")
-            ? { disallowedTools: ["Edit", "Write"] }
-            : {}),
-        }, content),
+        content: markdownWithFrontmatter(frontmatter, content),
       });
     }
 

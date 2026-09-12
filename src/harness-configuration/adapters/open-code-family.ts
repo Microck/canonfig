@@ -118,16 +118,22 @@ export function createOpenCodeFamilyAdapter(
         for (const serverName of mcpServerNames) {
           permissions[`${serverName}_*`] = agent.tools.includes("mcp") ? "allow" : "deny";
         }
+        const frontmatter: {
+          description: string;
+          mode: "subagent";
+          permission: Record<string, string>;
+          model?: string;
+        } = {
+          description: agent.description,
+          mode: "subagent",
+          permission: permissions,
+        };
+        if (agent.model !== "inherit") frontmatter.model = agent.model;
         artifacts.push({
           kind: "replace",
           path: `${root}/agents/${agent.id}.md`,
           owner: definition.id,
-          content: markdownWithFrontmatter({
-            description: agent.description,
-            mode: "subagent",
-            ...(agent.model === "inherit" ? {} : { model: agent.model }),
-            permission: permissions,
-          }, content),
+          content: markdownWithFrontmatter(frontmatter, content),
         });
       }
 

@@ -283,9 +283,14 @@ const parsePositiveInteger = (
   return number;
 };
 
+interface ParsedSecretBinding {
+  readonly name: string;
+  readonly secret: string;
+}
+
 const parseSecretBinding = (
   value: string,
-): { readonly name: string; readonly secret: string } => {
+): ParsedSecretBinding => {
   const separator = value.indexOf("=");
   const name = separator < 0 ? "" : value.slice(0, separator);
   const secret = separator < 0 ? "" : value.slice(separator + 1);

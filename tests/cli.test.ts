@@ -187,6 +187,8 @@ describe("typed CLI command boundary", () => {
       "codex",
       "--executable",
       "/opt/codex",
+      "--bind-secret",
+      "MCP_TOKEN=shared-mcp-token",
       "--allow-path",
       "/tmp/canonfig",
       "--allow-leaf-executable",
@@ -209,6 +211,28 @@ describe("typed CLI command boundary", () => {
       status: "success",
       exitCode: 0,
     });
+  });
+
+  it("decodes symbolic secret bindings into harness configuration", async () => {
+    const result = await execute([
+      "agent",
+      "harness",
+      "codex",
+      "--bind-secret",
+      "MCP_TOKEN=shared-mcp-token",
+      "--json",
+    ]);
+
+    expect(result.exitCode).toBe(CliExitCode.success);
+    expect(result.invocations).toEqual([{
+      route: "agent.harness.set",
+      input: expect.objectContaining({
+        secretBindings: [{
+          name: "MCP_TOKEN",
+          secret: "shared-mcp-token",
+        }],
+      }),
+    }]);
   });
 
   it("decodes schedule, identifiers, and enrollment invitation before dispatch", async () => {
