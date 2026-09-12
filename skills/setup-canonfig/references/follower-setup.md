@@ -52,6 +52,20 @@ canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```
 
+Create and review the follower bootstrap plan before enrollment:
+
+```bash
+canonfig setup plan --role follower --intent "prepare follower"
+canonfig setup approve --approver operator
+canonfig setup apply
+canonfig setup status --json
+```
+
+Use the actual operator identity and add only explicitly approved discovery
+files. The setup journal records optional integration exclusions separately, so
+an unavailable optional recipe does not block independent follower preparation.
+Resume the unchanged journal instead of repeating discovery or approval.
+
 Required secure noninteractive storage uses Secret Service, Keychain, or Credential
 Manager. Do not silently downgrade to a plaintext policy. Missing required storage
 remains Human Action Required.

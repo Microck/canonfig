@@ -19,6 +19,7 @@ export default defineProject({
       "tests/profile-contract.test.ts",
       "tests/discovery.test.ts",
       "tests/publication.test.ts",
+      "tests/setup-controller.test.ts",
       "tests/state-repository.test.ts",
       "tests/machine-state-linux.test.ts",
       "tests/machine-state-macos.test.ts",

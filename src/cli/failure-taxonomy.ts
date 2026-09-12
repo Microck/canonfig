@@ -462,6 +462,21 @@ export const failureTaxonomy = {
     () => "the enrollment request is malformed",
   ),
 
+  SetupError: classified(
+    (error) => {
+      switch (error.category) {
+        case "usage":
+          return "usage-or-configuration";
+        case "prerequisite":
+          return "human-action-required";
+        case "state":
+        default:
+          return "internal";
+      }
+    },
+    (error) => declaredMessage(error) ?? `${text(error.operation)} failed`,
+  ),
+
   SecretTransferError: classified(
     (error) => {
       switch (error.category) {

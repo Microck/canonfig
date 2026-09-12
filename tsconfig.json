@@ -24,6 +24,7 @@
     "src/runtime/**/*.ts",
     "src/schedule/**/*.ts",
     "src/state/**/*.ts",
+    "src/setup/**/*.ts",
     "src/synchronization/**/*.ts"
   ],
   "exclude": ["src/index.ts"]

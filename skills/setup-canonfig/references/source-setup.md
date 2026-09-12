@@ -35,18 +35,24 @@ proposals must show their timezone and remain editable.
 
 ## Install and initialize
 
-After the displayed stage is approved, install only if necessary:
+Install only when necessary, then create the Source bootstrap plan from approved
+discovery files:
 
 ```bash
 npm install --global @microck/canonfig@3.1.5
 canonfig --version
-canonfig source init
+canonfig setup plan --role source --file AGENTS.md --intent "prepare source"
+canonfig setup approve --approver operator
+canonfig setup apply
+canonfig setup status --json
 canonfig doctor --no-input --timeout-ms 5000
 ```
 
-Initialization establishes signing/TLS authority, not a published profile.
-Report its owner and location without displaying key material. Preserve existing
-compatible installations and identities rather than rerunning initialization.
+Show the exact setup digest before approval; use actual approved file paths and
+operator identity, or omit `--file` when none was selected. Source preflight
+must prove signing and TLS key storage before initialization. The journaled
+apply is resumable and initialization is idempotent. Report the Source owner and
+location without displaying key material.
 
 ## Discover and author
 

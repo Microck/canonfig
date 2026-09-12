@@ -454,9 +454,30 @@ Canonfig uses matching, exactly pinned Effect v4 packages. Until Effect v4 is st
 
 The live SQLite implementation uses `@effect/sql-sqlite-node`, rather than depending directly on the experimental `node:sqlite` interface.
 
+## Setup controller
+
+`canonfig setup` is a typed, journaled controller rather than an agent adapter.
+It establishes `source` or `follower` before role-specific inspection, then
+performs a bounded preflight and inventory of OS identity, account, loopback
+transport, Node runtime, native installers, and declared discovery files.
+Source preflight requires usable signing and TLS key storage before source
+initialization.
+
+The plan digest covers intent, exclusions, inventory, and exact per-resource
+steps. Approval is valid only for that digest. Apply uses structured executable
+and argv fields, verifies installed tools, records qualified provenance, and
+persists item evidence. The dependency graph isolates optional integrations;
+restart resumes at the next required stage without repeating unchanged
+discovery or approval.
+
 ## CLI contract
 
 ```text
+canonfig setup plan --role source --file AGENTS.md --intent "prepare source"
+canonfig setup approve --approver operator
+canonfig setup apply
+canonfig setup status
+
 canonfig source init
 canonfig source scan --file AGENTS.md
 canonfig source publish --proposal proposal.json --profile workstation --name Workstation --reviewer operator
@@ -490,6 +511,7 @@ src/
   agent/                  AgentResolution service, harness adapters, and executor policy
   state/                  StateRepository service, SQLite layer, and migrations
   schedule/               native scheduler adapters
+  setup/                  typed setup controller, plan journal, and recipe executor
   cli/                    command parsing and output rendering
   runtime/                production layer graph and entrypoint
 tests/

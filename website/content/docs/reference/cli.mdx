@@ -22,6 +22,24 @@ Canonfig writes privacy-safe JSON Lines command lifecycle records to
 `CANONFIG_LOG_FILE` to select another path. Arguments and command output are
 never recorded.
 
+## Journaled machine setup
+
+```text
+canonfig setup plan --role source --file AGENTS.md --file package.json --intent "prepare source"
+canonfig setup plan --role follower
+canonfig setup approve --approver operator
+canonfig setup apply
+canonfig setup status
+```
+
+`setup plan` requires the machine role before any role-specific inspection.
+It records a bounded OS, account, loopback transport, Node runtime, native
+installer, and discovery inventory. A Source plan fails before initialization
+when signing and TLS key storage is unavailable. Approval binds the plan
+digest; apply runs only structured native argv recipes and journals evidence
+and qualified provenance. Re-running apply resumes the next eligible stage.
+An unavailable optional integration excludes only its dependent branch.
+
 ## Source Machine
 
 ```text
