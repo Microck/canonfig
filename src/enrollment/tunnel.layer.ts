@@ -122,15 +122,67 @@ const buildSshArguments = (
 const processArgumentFingerprint = (argv: ReadonlyArray<string>): string =>
   createHash("sha256").update(argv.join("\0")).digest("hex");
 
+const readProcessCommandLine = (
+  executable: string,
+  argv: ReadonlyArray<string>,
+): Promise<string | undefined> =>
+  new Promise((resolve) => {
+    const child = spawn(executable, [...argv], {
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const chunks: Array<Buffer> = [];
+    let bytes = 0;
+    child.stdout?.on("data", (chunk: Buffer) => {
+      bytes += chunk.byteLength;
+      if (bytes > 16 * 1024) {
+        child.kill();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    child.once("error", () => resolve(undefined));
+    child.once("close", (code) => {
+      resolve(code === 0 ? Buffer.concat(chunks).toString("utf8") : undefined);
+    });
+  });
+
 const ownsTunnelProcess = async (state: TunnelStateFile): Promise<boolean> => {
-  if (!isAlive(state.pid) || process.platform !== "linux") return false;
-  try {
-    const commandLine = await readFile(`/proc/${state.pid}/cmdline`);
-    const argv = commandLine.toString("utf8").split("\0").filter(Boolean).slice(1);
-    return processArgumentFingerprint(argv) === state.processArgumentFingerprint;
-  } catch {
-    return false;
+  if (!isAlive(state.pid)) return false;
+  if (process.platform === "linux") {
+    try {
+      const commandLine = await readFile(`/proc/${state.pid}/cmdline`);
+      const argv = commandLine.toString("utf8").split("\0").filter(Boolean).slice(1);
+      return processArgumentFingerprint(argv) === state.processArgumentFingerprint;
+    } catch {
+      return false;
+    }
   }
+  const commandLine = process.platform === "darwin"
+    ? await readProcessCommandLine("/bin/ps", [
+      "-p",
+      String(state.pid),
+      "-o",
+      "command=",
+    ])
+    : process.platform === "win32"
+    ? await readProcessCommandLine(
+      `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${state.pid}').CommandLine`,
+      ],
+    )
+    : undefined;
+  if (commandLine === undefined) return false;
+  const forward =
+    `${localBind(state.local.host)}:${state.local.port}:${state.remote.host}:${state.remote.port}`;
+  return commandLine.includes(state.knownHostsPath)
+    && commandLine.includes(`${state.ssh.user}@${state.ssh.host}`)
+    && commandLine.includes(forward);
 };
 
 const stateFilePath = (directory: string): string => join(directory, stateFileName);
@@ -398,8 +450,7 @@ const statusOf = (
   reconnected: boolean,
 ): Effect.Effect<TunnelStatusReport, TunnelError> =>
   Effect.gen(function*() {
-    const pidAlive = isAlive(state.pid);
-    const owned = yield* Effect.promise(() => ownsTunnelProcess(state));
+    const alive = isAlive(state.pid);
     const endpoint =
       `https://${state.local.host === "::1" ? "[::1]" : state.local.host}:${state.local.port}`;
     const baseIdentity = {
@@ -407,7 +458,7 @@ const statusOf = (
       tlsPinnedFingerprint: state.tlsFingerprint,
       sourcePinnedFingerprint: state.sourceFingerprint,
     };
-    if (!owned) {
+    if (!alive) {
       return {
         lifecycle: "down",
         pid: state.pid,
@@ -415,9 +466,7 @@ const statusOf = (
         endpoint,
         reconnected,
         identity: baseIdentity,
-        detail: pidAlive
-          ? `process ${state.pid} does not match the recorded tunnel and was left untouched`
-          : `tunnel process ${state.pid} is not running`,
+        detail: `tunnel process ${state.pid} is not running`,
       } satisfies TunnelStatusReport;
     }
     const probe = yield* probeSourceDescriptor({
@@ -469,7 +518,7 @@ const statusOf = (
     } satisfies TunnelStatusReport;
   });
 
-const makeTunnel = Effect.gen(function*() {
+const makeTunnel = Effect.sync(() => {
   const startTunnel = Effect.fn("Tunnel.startTunnel")(function*(
     rawInput: TunnelStartInput,
   ): Effect.fn.Return<TunnelStatusReport, TunnelError> {

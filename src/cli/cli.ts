@@ -438,6 +438,68 @@ const evaluateScheduleCommand = (
       return invalid(`Unknown schedule command: ${action ?? ""}`);
 };
 
+const evaluateTunnelCommand = (
+  action: string | undefined,
+  rest: ReadonlyArray<string>,
+  format: CliOutputFormat,
+): CliOutcome => {
+  if (action === "status" && rest.length === 0) {
+    return command({ _tag: "TunnelStatus" }, format);
+  }
+  if (action === "stop" && rest.length === 0) {
+    return command({ _tag: "TunnelStop" }, format);
+  }
+  if (action !== "start") return invalid(`Unknown tunnel command: ${action ?? ""}`);
+  const options = parseOptions(
+    rest,
+    new Set([
+      "--invitation",
+      "--ssh-host",
+      "--ssh-port",
+      "--ssh-user",
+      "--ssh-host-key-file",
+      "--local-host",
+      "--local-port",
+      "--ssh-executable",
+      "--ssh-argument",
+      "--timeout-ms",
+    ]),
+    new Set(),
+  );
+  if (options.positionals.length > 0) {
+    return invalid("tunnel start accepts only named options");
+  }
+  const localHost = one(options, "--local-host") ?? "127.0.0.1";
+  if (localHost !== "127.0.0.1" && localHost !== "::1") {
+    return invalid(`Invalid tunnel local host: ${localHost}`);
+  }
+  return command({
+    _tag: "TunnelStart",
+    invitationPath: one(options, "--invitation", true)!,
+    sshHost: one(options, "--ssh-host", true)!,
+    sshPort: parsePositiveInteger(
+      one(options, "--ssh-port") ?? "22",
+      "SSH port",
+      65_535,
+    ),
+    sshUser: one(options, "--ssh-user", true)!,
+    sshHostKeyPath: one(options, "--ssh-host-key-file", true)!,
+    localHost,
+    localPort: parsePositiveInteger(
+      one(options, "--local-port") ?? "17342",
+      "tunnel local port",
+      65_535,
+    ),
+    sshExecutable: one(options, "--ssh-executable"),
+    sshArguments: options.values.get("--ssh-argument") ?? [],
+    timeoutMilliseconds: parsePositiveInteger(
+      one(options, "--timeout-ms") ?? "30000",
+      "tunnel timeout",
+      300_000,
+    ),
+  }, format);
+};
+
 const evaluateCommand = (
   arguments_: ReadonlyArray<string>,
   format: CliOutputFormat,
@@ -666,65 +728,7 @@ const evaluateCommand = (
       }
       return invalid(`Unknown overlay command: ${action ?? ""}`);
     }
-    if (area === "tunnel") {
-      if (action === "status" && rest.length === 0) {
-        return command({ _tag: "TunnelStatus" }, format);
-      }
-      if (action === "stop" && rest.length === 0) {
-        return command({ _tag: "TunnelStop" }, format);
-      }
-      if (action === "start") {
-        const options = parseOptions(
-          rest,
-          new Set([
-            "--invitation",
-            "--ssh-host",
-            "--ssh-port",
-            "--ssh-user",
-            "--ssh-host-key-file",
-            "--local-host",
-            "--local-port",
-            "--ssh-executable",
-            "--ssh-argument",
-            "--timeout-ms",
-          ]),
-          new Set(),
-        );
-        if (options.positionals.length > 0) {
-          return invalid("tunnel start accepts only named options");
-        }
-        const localHost = one(options, "--local-host") ?? "127.0.0.1";
-        if (localHost !== "127.0.0.1" && localHost !== "::1") {
-          return invalid(`Invalid tunnel local host: ${localHost}`);
-        }
-        return command({
-          _tag: "TunnelStart",
-          invitationPath: one(options, "--invitation", true)!,
-          sshHost: one(options, "--ssh-host", true)!,
-          sshPort: parsePositiveInteger(
-            one(options, "--ssh-port") ?? "22",
-            "SSH port",
-            65_535,
-          ),
-          sshUser: one(options, "--ssh-user", true)!,
-          sshHostKeyPath: one(options, "--ssh-host-key-file", true)!,
-          localHost,
-          localPort: parsePositiveInteger(
-            one(options, "--local-port") ?? "17342",
-            "tunnel local port",
-            65_535,
-          ),
-          sshExecutable: one(options, "--ssh-executable"),
-          sshArguments: options.values.get("--ssh-argument") ?? [],
-          timeoutMilliseconds: parsePositiveInteger(
-            one(options, "--timeout-ms") ?? "30000",
-            "tunnel timeout",
-            300_000,
-          ),
-        }, format);
-      }
-      return invalid(`Unknown tunnel command: ${action ?? ""}`);
-    }
+    if (area === "tunnel") return evaluateTunnelCommand(action, rest, format);
     if (area === "doctor") {
       const options = parseOptions(
         arguments_.slice(1),
