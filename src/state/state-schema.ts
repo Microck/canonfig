@@ -401,7 +401,24 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       )
     `;
   }),
+  "0017_mcp_qualification_receipts": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      ALTER TABLE applied_resources
+      ADD COLUMN installer_recipe_json TEXT
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS mcp_qualification_receipts (
+        run_id TEXT NOT NULL REFERENCES synchronization_runs(id),
+        action_id TEXT NOT NULL,
+        attempt INTEGER NOT NULL,
+        receipt_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, action_id, attempt)
+      )
+    `;
+  }),
 });
 
 /** Bumped by every migration that changes what a stored run means. */
-export const stateFormatVersion = 3;
+export const stateFormatVersion = 4;

@@ -18,6 +18,7 @@ import type {
   SynchronizationPlan,
 } from "../domain/synchronization.ts";
 import type { LocalOverlayEntry } from "../synchronization/synchronization.types.ts";
+import type { McpQualificationReceipt } from "../domain/mcp-qualification.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
 
@@ -101,6 +102,7 @@ export interface RunEvidenceSummary {
   readonly verifiedActions: number;
   readonly passedVerifications: number;
   readonly passedVerificationMethods: ReadonlyArray<string>;
+  readonly mcpQualifications: ReadonlyArray<McpQualificationReceipt>;
 }
 
 export interface RegisterFollowerInput {
@@ -216,6 +218,7 @@ export interface JournalActionInput {
   readonly recordedAt: string;
   readonly attempt: number;
   readonly verification?: VerificationEvidence | undefined;
+  readonly qualification?: McpQualificationReceipt | undefined;
   readonly rollbackReference?: string | undefined;
   /**
    * A successful action may update the durable ownership baseline in the

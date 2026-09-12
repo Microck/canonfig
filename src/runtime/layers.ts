@@ -713,6 +713,7 @@ const followerCommandsLayer = (
             clientLoaded: notReached("no completed synchronization run"),
             scheduled: notReached("first apply has not completed"),
             independentlyVerified: notReached("no completed synchronization run"),
+            mcpQualifications: [],
             secondRunNoOp: false,
           };
         }
@@ -728,8 +729,18 @@ const followerCommandsLayer = (
           status: verified ? "verified" as const : "not-verified" as const,
           detail,
         });
-        const clientMethods = runEvidence?.passedVerificationMethods
-          .filter((method) => method.startsWith("client-load:")) ?? [];
+        const qualifiedClientMethods = runEvidence?.mcpQualifications
+          .filter((receipt) =>
+            receipt.stages.some((stage) =>
+              stage.stage === "client-loaded" && stage.status === "passed"
+            )
+          )
+          .map((receipt) => `mcp-qualification:${receipt.target}`) ?? [];
+        const clientMethods = [
+          ...(runEvidence?.passedVerificationMethods
+            .filter((method) => method.startsWith("client-load:")) ?? []),
+          ...qualifiedClientMethods,
+        ];
         const scheduleInput = desiredScheduleInput(
           configuration.scheduleOverride,
           configuration.scheduleDefault,
@@ -762,7 +773,8 @@ const followerCommandsLayer = (
           );
         const allVerificationsPassed = runEvidence !== undefined
           && runEvidence.outcome === "Converged"
-          && runEvidence.verifiedActions === runEvidence.passedVerifications;
+          && runEvidence.verifiedActions === runEvidence.passedVerifications
+          && runEvidence.mcpQualifications.every((receipt) => receipt.ready);
         const approvalBound = revision !== undefined
           && approval?.revisionDigest === revision.digest;
         return {
@@ -793,6 +805,7 @@ const followerCommandsLayer = (
               ? "completed-run verification evidence is unavailable"
               : `${runEvidence.passedVerifications}/${runEvidence.verifiedActions} journaled verifications passed`,
           ),
+          mcpQualifications: runEvidence?.mcpQualifications ?? [],
           secondRunNoOp: runEvidence?.mutatingActions === 0,
           build: {
             packageVersion: deployment.packageVersion,

@@ -29,6 +29,7 @@ import {
   verifyResource,
   type PreparedResourceAction,
   type ResourceExecutionContext,
+  type ResourceVerification,
 } from "./resource-executors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
@@ -188,7 +189,7 @@ const verificationCompatibleWithDesired = (
     case "skill":
       return method === "digest" || method === "command";
     case "tool":
-      return method === "executable-present" || method === "command";
+      return method === "executable-present" || method === "command" || method === "mcp-qualification";
     case "credential":
       return method === "credential-present" || method === "command";
   }
@@ -333,6 +334,7 @@ const journal = (
   appliedResource?: AppliedResourceRecord | undefined,
   removedResource?: ResourceId | undefined,
   removedResourceRecord?: AppliedResourceRecord | undefined,
+  qualification?: ResourceVerification["qualification"],
 ) =>
   Effect.gen(function*() {
     const repository = yield* StateRepository;
@@ -351,6 +353,7 @@ const journal = (
       appliedResource,
       removedResource,
       removedResourceRecord,
+      qualification,
     });
   });
 
@@ -378,8 +381,15 @@ const appliedResourceFor = (
   state: ActionState,
   appliedAt: string,
 ): AppliedResourceRecord | undefined => {
+  const previous = input.appliedResources?.find((record) =>
+    record.resource === state.action.resource
+  );
   const desired = state.context.desired;
-  const digest = desiredResourceDigest(desired);
+  const detail = state.action.detail;
+  const installerRecipe = detail.kind === "install-tool" || detail.kind === "no-op"
+    ? detail.provenance ?? previous?.installerRecipe
+    : undefined;
+  const digest = desiredResourceDigest(desired) ?? installerRecipe?.fingerprint;
   if (digest === undefined) return undefined;
   return {
     resource: state.action.resource,
@@ -397,6 +407,7 @@ const appliedResourceFor = (
     ownedFiles: ownedFilesFor(desired),
     ownedKeys: desired.kind === "config" ? desired.keys : undefined,
     configFormat: desired.kind === "config" ? desired.format : undefined,
+    installerRecipe,
   };
 };
 
@@ -683,6 +694,10 @@ export const executeSynchronizationAction = (
           evidence,
           prepared.rollbackReference,
           attempt,
+          undefined,
+          undefined,
+          undefined,
+          verification.qualification,
         );
         return {
           kind: "failed",
@@ -703,6 +718,7 @@ export const executeSynchronizationAction = (
         appliedResource,
         undefined,
         previousAppliedResource,
+        verification.qualification,
       );
       return {
         kind: "verified",

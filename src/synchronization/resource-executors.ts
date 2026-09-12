@@ -16,6 +16,13 @@ import {
 } from "../domain/resource.ts";
 import type { PlannedAction } from "../domain/synchronization.ts";
 import { composeTextFile, parseTextComposition, sourceTextIssue } from "../domain/text-composition.ts";
+import {
+  McpQualificationReceipt,
+  mcpQualificationReady,
+  type McpQualificationProbe,
+  type McpQualificationStage,
+  type McpQualificationStageEvidence,
+} from "../domain/mcp-qualification.ts";
 import { MachineFilesystemError, type MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { FilePermissionSnapshot, type MachinePath } from "../machine/machine-state.types.ts";
@@ -138,6 +145,7 @@ export interface ResourceVerification {
   readonly method: string;
   readonly observedDigest?: string | undefined;
   readonly exitCode?: number | undefined;
+  readonly qualification?: McpQualificationReceipt | undefined;
 }
 
 const encoder = new TextEncoder();
@@ -1683,6 +1691,9 @@ export const verifyResource = (
 ): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> => {
   const desired = context.desired;
   const verification = context.verification;
+  if (verification.method === "mcp-qualification") {
+    return verifyMcpQualification(context, verification);
+  }
   if (verification.method === "command") {
     return verifyCommand(
       context,
@@ -1808,6 +1819,152 @@ const verifyCommand = (
     };
   });
 
+const qualificationProbe = (
+  context: ResourceExecutionContext,
+  stage: McpQualificationStage,
+  probe: McpQualificationProbe,
+): Effect.Effect<McpQualificationStageEvidence, never, MachineState> =>
+  verifyCommand(context, probe.command, probe.expectContains).pipe(
+    Effect.match({
+      onFailure: () => ({
+        stage,
+        status: "failed" as const,
+        method: `command:${probe.command[0] ?? "missing"}`,
+        operation: probe.operation,
+      }),
+      onSuccess: (result) => ({
+        stage,
+        status: result.passed ? "passed" as const : "failed" as const,
+        method: result.method,
+        operation: probe.operation,
+        exitCode: result.exitCode,
+      }),
+    }),
+  );
+
+const verifyMcpQualification = (
+  context: ResourceExecutionContext,
+  qualification: Extract<VerificationInput, { readonly method: "mcp-qualification" }>,
+): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError, MachineState> =>
+  Effect.gen(function*() {
+    if (context.desired.kind !== "tool") {
+      return yield* new InvalidExecutionPlanError({
+        message: `MCP qualification targets non-tool resource ${context.resource.id}`,
+      });
+    }
+    const detail = context.action.detail;
+    const recipe = detail.kind === "install-tool" || detail.kind === "no-op"
+      ? detail.provenance
+      : undefined;
+    if (recipe === undefined) {
+      return yield* new InvalidExecutionPlanError({
+        message: `MCP qualification for ${context.resource.id} has no pinned recipe provenance`,
+      });
+    }
+
+    const exclusion = qualification.exclusion;
+    const excludedStages = exclusion === undefined
+      ? undefined
+      : ([
+        "installed",
+        "launches",
+        "protocol-compatible",
+        "authenticated",
+        "functional",
+        "client-loaded",
+        "canonfig-managed",
+      ] as const).map((stage) => ({
+        stage,
+        status: "excluded" as const,
+        method: "profile-exclusion",
+        operation: exclusion.reason,
+      }));
+    let stages: ReadonlyArray<McpQualificationStageEvidence>;
+    if (excludedStages !== undefined) {
+      stages = excludedStages;
+    } else {
+      const installedResult = yield* verifyExecutable(context, recipe.entrypoint);
+      const installed: McpQualificationStageEvidence = {
+        stage: "installed",
+        status: installedResult.passed ? "passed" : "failed",
+        method: installedResult.method,
+        operation: "inspect exact qualified entrypoint",
+      };
+      const launches = yield* qualificationProbe(context, "launches", qualification.launches);
+      const protocol = yield* qualificationProbe(
+        context,
+        "protocol-compatible",
+        qualification.protocolCompatible,
+      );
+      const prerequisiteByStage = new Map(
+        (qualification.prerequisites ?? []).map((value) => [value.stage, value]),
+      );
+      const optionalStage = (
+        stage: "authenticated" | "functional" | "client-loaded",
+        probe: McpQualificationProbe | undefined,
+      ) => {
+        if (probe !== undefined) return qualificationProbe(context, stage, probe);
+        const prerequisite = prerequisiteByStage.get(stage);
+        const status = prerequisite?.disposition === "excluded"
+          ? "excluded" as const
+          : stage === "authenticated" && prerequisite === undefined
+          ? "not-required" as const
+          : "unresolved" as const;
+        return Effect.succeed({
+          stage,
+          status,
+          method: prerequisite === undefined ? "not-declared" : `local-${prerequisite.kind}`,
+          operation: prerequisite?.instructions ?? `${stage} verification is not required`,
+        });
+      };
+      const authenticated = yield* optionalStage("authenticated", qualification.authenticated);
+      const functional = yield* optionalStage("functional", qualification.functional);
+      const clientLoaded = yield* optionalStage("client-loaded", qualification.clientLoaded);
+      stages = [
+        installed,
+        launches,
+        protocol,
+        authenticated,
+        functional,
+        clientLoaded,
+        {
+          stage: "canonfig-managed",
+          status: "passed",
+          method: "recipe-fingerprint",
+          operation: recipe.fingerprint,
+        },
+      ];
+    }
+    const prerequisites = (qualification.prerequisites ?? []).map((prerequisite) => {
+      const stage = stages.find((candidate) => candidate.stage === prerequisite.stage);
+      return {
+        kind: prerequisite.kind,
+        stage: prerequisite.stage,
+        status: prerequisite.disposition === "excluded"
+          ? "excluded" as const
+          : stage?.status === "passed"
+          ? "satisfied" as const
+          : "unresolved" as const,
+        instructions: prerequisite.instructions,
+      };
+    });
+    const receipt = McpQualificationReceipt.make({
+      schema: "canonfig.mcp-qualification/v1",
+      resource: context.resource.id,
+      target: qualification.target,
+      recipe,
+      stages,
+      prerequisites,
+      ready: mcpQualificationReady(stages),
+      recordedAt: new Date().toISOString(),
+    });
+    return {
+      passed: stages.every((stage) => stage.status !== "failed"),
+      method: `mcp-qualification:${qualification.target}`,
+      qualification: receipt,
+    };
+  });
+
 const verifyExecutable = (
   context: ResourceExecutionContext,
   executable: string,
@@ -1822,11 +1979,22 @@ const verifyExecutable = (
     // planned a no-op, and the no-op then failed the whole run.
     if (executable.includes("/") || executable.includes("\\")) {
       return yield* machine.normalizePath({ path: executable }).pipe(
-        Effect.flatMap((path) => machine.permissions(path)),
-        Effect.map((permissions) => ({
-          passed: (permissions.mode & 0o111) !== 0,
-          method,
-        })),
+        Effect.flatMap((path) =>
+          machine.inspectPath(path).pipe(
+            Effect.flatMap((kind) =>
+              kind.kind !== "regular"
+                ? Effect.succeed({ passed: false, method })
+                : path.platform === "windows"
+                ? Effect.succeed({ passed: true, method })
+                : machine.permissions(path).pipe(
+                  Effect.map((permissions) => ({
+                    passed: (permissions.mode & 0o111) !== 0,
+                    method,
+                  })),
+                )
+            ),
+          )
+        ),
         Effect.catch(() => Effect.succeed({ passed: false, method })),
       );
     }

@@ -23,6 +23,7 @@ import type {
   RecipeMethod,
   RecipeSource,
 } from "../domain/resource.ts";
+import type { McpQualificationInput } from "../domain/mcp-qualification.ts";
 import type { AgentHarnessConfiguration } from "../agent/agent-resolution.types.ts";
 import type { AgentResolution } from "../agent/agent-resolution.service.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
@@ -67,6 +68,7 @@ export type DesiredResource =
     readonly recipes: ReadonlyArray<ToolRecipe>;
     readonly loginRequired: boolean;
     readonly loginInstructions?: string | undefined;
+    readonly qualification?: McpQualificationInput | undefined;
     /**
      * Declared bounds for installing this tool with a bounded agent. Absent
      * means an agent may not install it, and an unresolvable tool becomes a
@@ -104,6 +106,12 @@ export interface ToolRecipe {
   readonly indexPolicy?: RecipeIndexPolicy | undefined;
   readonly source?: RecipeSource | undefined;
   readonly buildPolicy?: BuildPolicy | undefined;
+  readonly upstream?: string | undefined;
+  readonly architecture?: string | undefined;
+  readonly artifactDigest?: string | undefined;
+  readonly entrypoint?: string | undefined;
+  readonly dependencyPolicy?: string | undefined;
+  readonly executionContext?: string | undefined;
 }
 
 export interface DesiredResourceEntry {

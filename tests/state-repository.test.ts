@@ -32,6 +32,10 @@ import {
   type SynchronizationPlan,
 } from "../src/domain/synchronization.ts";
 import {
+  installerRecipeProvenance,
+  McpQualificationReceipt,
+} from "../src/domain/mcp-qualification.ts";
+import {
   ActiveRunExistsError,
   RepositoryDecodeError,
   RepositorySqlError,
@@ -830,6 +834,43 @@ describe("StateRepository SQLite adapter", () => {
           revision().id,
           firstPlan,
         );
+        const recipe = installerRecipeProvenance({
+          upstream: "https://registry.npmjs.org/example-mcp",
+          version: "1.2.3",
+          platform: "linux",
+          architecture: process.arch,
+          artifactDigest: digestA,
+          entrypoint: "/opt/example/bin/example-mcp",
+          dependencyPolicy: "scripts-disabled",
+          executionContext: "follower-local",
+          method: "npm",
+          package: "example-mcp",
+          compatibility: "mcp-2025-11-25",
+          target: "codex",
+        });
+        const qualification = McpQualificationReceipt.make({
+          schema: "canonfig.mcp-qualification/v1",
+          resource: "resource-load",
+          target: "codex",
+          recipe,
+          stages: ([
+            "installed",
+            "launches",
+            "protocol-compatible",
+            "authenticated",
+            "functional",
+            "client-loaded",
+            "canonfig-managed",
+          ] as const).map((stage) => ({
+            stage,
+            status: stage === "authenticated" ? "not-required" : "passed",
+            method: "fixture",
+            operation: "harmless fixture probe",
+          })),
+          prerequisites: [],
+          ready: true,
+          recordedAt: "2026-08-15T12:01:30Z",
+        });
         for (const [action, method] of [
           ["write", "sha256"],
           ["load", "client-load:codex"],
@@ -842,6 +883,7 @@ describe("StateRepository SQLite adapter", () => {
             recordedAt: "2026-08-15T12:02:00Z",
             attempt: 1,
             verification: { status: "passed", method },
+            qualification: action === "load" ? qualification : undefined,
           });
         }
         yield* repository.completeRun({
@@ -925,6 +967,17 @@ describe("StateRepository SQLite adapter", () => {
         "sha256-and-size",
       ],
     });
+    expect(result.firstEvidence?.mcpQualifications).toEqual([
+      expect.objectContaining({
+        target: "codex",
+        ready: true,
+        recipe: expect.objectContaining({
+          version: "1.2.3",
+          architecture: process.arch,
+          entrypoint: "/opt/example/bin/example-mcp",
+        }),
+      }),
+    ]);
     expect(result.latestReceipt?.run).toBe("run-noop");
     expect(result.secondEvidence).toMatchObject({
       totalActions: 1,

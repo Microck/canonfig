@@ -32,6 +32,10 @@ import {
 } from "../domain/synchronization.ts";
 import { sha256BytesHex } from "../profile/profile-codec.ts";
 import {
+  InstallerRecipeProvenance,
+  McpQualificationReceipt,
+} from "../domain/mcp-qualification.ts";
+import {
   FollowerSynchronizationConfiguration,
   LocalOverlayEntrySchema,
 } from "../synchronization/follower-sync-config.ts";
@@ -139,6 +143,9 @@ const CompletedRunRow = Schema.Struct({
   completed_at: Schema.String,
   plan_json: Schema.String,
 });
+const McpQualificationReceiptRow = Schema.Struct({
+  receipt_json: Schema.String,
+});
 const ActionJournalRow = Schema.Struct({
   action_id: ActionId,
   sequence: Schema.Number,
@@ -168,6 +175,7 @@ const AppliedResourceRow = Schema.Struct({
   executable: Schema.NullOr(Schema.Number),
   mode: Schema.NullOr(Schema.Number),
   symlink_target: Schema.NullOr(Schema.String),
+  installer_recipe_json: Schema.NullOr(Schema.String),
 });
 const OwnedFilesSchema = Schema.Array(Schema.Struct({
   path: Schema.NonEmptyString,
@@ -281,6 +289,8 @@ type RepositoryJson =
   | DriftConflict
   | VerificationEvidence
   | AppliedResourceRecord
+  | McpQualificationReceipt
+  | InstallerRecipeProvenance
   | ReadonlyArray<string>;
 
 const encodeJson = <Value extends RepositoryJson>(value: Value): string =>
@@ -1554,8 +1564,8 @@ const makeRepository = Effect.gen(function*() {
   > {
     const rows = yield* sql`
       SELECT resource_id, revision_id, digest, applied_at, owned_files_json,
-        kind, policy, target, owned_keys_json, config_format
-        , executable, mode, symlink_target
+        kind, policy, target, owned_keys_json, config_format,
+        executable, mode, symlink_target, installer_recipe_json
       FROM applied_resources
       WHERE follower_id = ${follower}
       ORDER BY resource_id
@@ -1584,6 +1594,14 @@ const makeRepository = Effect.gen(function*() {
             "applied resource owned keys",
             row.resource_id,
           );
+        const installerRecipe = row.installer_recipe_json === null
+          ? undefined
+          : yield* parseJson(
+            InstallerRecipeProvenance,
+            row.installer_recipe_json,
+            "applied resource installer recipe",
+            row.resource_id,
+          );
         return yield* Schema.decodeUnknownEffect(AppliedResourceRecordSchema)({
           resource: row.resource_id,
           revision: row.revision_id,
@@ -1599,6 +1617,7 @@ const makeRepository = Effect.gen(function*() {
           symlinkTo: row.symlink_target ?? undefined,
           ownedFiles,
           ownedKeys,
+          installerRecipe,
           configFormat: row.config_format ?? undefined,
         }).pipe(
           Effect.mapError(decodeError("applied resource", row.resource_id)),
@@ -1787,6 +1806,20 @@ const makeRepository = Effect.gen(function*() {
               : encodeJson(input.removedResourceRecord)}
           )
         `;
+        if (input.qualification !== undefined) {
+          yield* sql`
+            INSERT INTO mcp_qualification_receipts (
+              run_id, action_id, attempt, receipt_json
+            ) VALUES (
+              ${input.run},
+              ${input.action},
+              ${input.attempt},
+              ${encodeJson(input.qualification)}
+            )
+            ON CONFLICT(run_id, action_id, attempt) DO UPDATE SET
+              receipt_json = excluded.receipt_json
+          `;
+        }
         const removedResource = input.removedResourceRecord?.resource
           ?? input.removedResource;
         if (removedResource !== undefined) {
@@ -1813,7 +1846,8 @@ const makeRepository = Effect.gen(function*() {
               config_format,
               executable,
               mode,
-              symlink_target
+              symlink_target,
+              installer_recipe_json
             ) VALUES (
               ${run.follower_id},
               ${record.resource},
@@ -1835,6 +1869,9 @@ const makeRepository = Effect.gen(function*() {
                 : record.executable ? 1 : 0}
               , ${record.mode ?? null}
               , ${record.symlinkTo ?? null}
+              , ${record.installerRecipe === undefined
+                ? null
+                : encodeJson(record.installerRecipe)}
             )
             ON CONFLICT(follower_id, resource_id) DO UPDATE SET
               revision_id = excluded.revision_id,
@@ -1849,6 +1886,7 @@ const makeRepository = Effect.gen(function*() {
               , executable = excluded.executable
               , mode = excluded.mode
               , symlink_target = excluded.symlink_target
+              , installer_recipe_json = excluded.installer_recipe_json
           `;
         }
       });
@@ -1948,7 +1986,8 @@ const makeRepository = Effect.gen(function*() {
               config_format,
               executable,
               mode,
-              symlink_target
+              symlink_target,
+              installer_recipe_json
             ) VALUES (
               ${run.follower_id},
               ${record.resource},
@@ -1970,6 +2009,9 @@ const makeRepository = Effect.gen(function*() {
                 : record.executable ? 1 : 0}
               , ${record.mode ?? null}
               , ${record.symlinkTo ?? null}
+              , ${record.installerRecipe === undefined
+                ? null
+                : encodeJson(record.installerRecipe)}
             )
             ON CONFLICT(follower_id, resource_id) DO UPDATE SET
               revision_id = excluded.revision_id,
@@ -1984,6 +2026,7 @@ const makeRepository = Effect.gen(function*() {
               , executable = excluded.executable
               , mode = excluded.mode
               , symlink_target = excluded.symlink_target
+              , installer_recipe_json = excluded.installer_recipe_json
           `;
         }
         // Every completed run leaves a receipt naming the build that applied
@@ -2184,6 +2227,33 @@ const makeRepository = Effect.gen(function*() {
           passedVerificationMethods.push(evidence.method);
         }
       }
+      const qualificationRows = yield* sql`
+        SELECT receipt_json
+        FROM mcp_qualification_receipts AS receipt
+        WHERE receipt.run_id = ${run}
+          AND receipt.attempt = (
+            SELECT MAX(latest.attempt)
+            FROM mcp_qualification_receipts AS latest
+            WHERE latest.run_id = receipt.run_id
+              AND latest.action_id = receipt.action_id
+          )
+        ORDER BY receipt.action_id
+      `.pipe(Effect.mapError(sqlError("load MCP qualification receipts")));
+      const encodedQualifications = yield* decodeRows(
+        McpQualificationReceiptRow,
+        qualificationRows,
+        "MCP qualification receipts",
+        run,
+      );
+      const mcpQualifications = yield* Effect.forEach(
+        encodedQualifications,
+        (stored, index) => parseJson(
+          McpQualificationReceipt,
+          stored.receipt_json,
+          "MCP qualification receipt",
+          `${run}:${index}`,
+        ),
+      );
       return {
         run: row.id,
         revision: row.revision_id,
@@ -2202,6 +2272,7 @@ const makeRepository = Effect.gen(function*() {
         verifiedActions: encoded.length,
         passedVerifications,
         passedVerificationMethods: [...new Set(passedVerificationMethods)].sort(),
+        mcpQualifications,
       };
     },
   );

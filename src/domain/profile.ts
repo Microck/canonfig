@@ -28,6 +28,10 @@ import {
   type ApplyPolicy,
 } from "./resource.ts";
 import {
+  McpQualificationInput as McpQualificationInputSchema,
+  type McpQualificationInput,
+} from "./mcp-qualification.ts";
+import {
   canonicalRecipeIndexUrl,
   recipeValidationError,
 } from "./recipe-versions.ts";
@@ -129,7 +133,7 @@ export type ResourceSpecInput =
   | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<ManagedFileInput> }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }> }
   | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<ManagedFileInput> }
-  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined; readonly agentInstall?: { readonly paths: ReadonlyArray<string>; readonly origins?: ReadonlyArray<string> | undefined } | undefined }
+  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined; readonly upstream?: string | undefined; readonly architecture?: string | undefined; readonly artifactDigest?: string | undefined; readonly entrypoint?: string | undefined; readonly dependencyPolicy?: string | undefined; readonly executionContext?: string | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined; readonly agentInstall?: { readonly paths: ReadonlyArray<string>; readonly origins?: ReadonlyArray<string> | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string };
 
 export type VerificationInput =
@@ -137,7 +141,8 @@ export type VerificationInput =
   | { readonly method: "command"; readonly command: ReadonlyArray<string>; readonly expectContains?: string | undefined; readonly proves?: "client-load" | undefined }
   | { readonly method: "executable-present"; readonly executable: string }
   | { readonly method: "credential-present"; readonly reference: string }
-  | { readonly method: "symlink"; readonly target: string };
+  | { readonly method: "symlink"; readonly target: string }
+  | McpQualificationInput;
 
 /** An immutable, authenticated publication of a Machine Profile. */
 export interface ProfileRevision {
@@ -313,6 +318,7 @@ export const VerificationInputSchema = Schema.Union([
     reference: CredentialReferenceSchema,
   }),
   Schema.Struct({ method: Schema.Literal("symlink"), target: Schema.NonEmptyString }),
+  McpQualificationInputSchema,
 ]);
 
 const verificationAllowedForSpec = (
@@ -866,7 +872,26 @@ const validateRecipes = (
 ): ReadonlyArray<InvalidRecipeError> => {
   if (resource.spec.kind !== "tool") return [];
   return resource.spec.recipes.flatMap((recipe) => {
-    const reason = recipeValidationError(recipe);
+    const genericReason = recipeValidationError(recipe);
+    const qualificationReason = resource.verify.method !== "mcp-qualification"
+      ? undefined
+      : recipe.version === undefined
+      ? "qualified MCP recipes require an exact version"
+      : recipe.upstream === undefined
+      ? "qualified MCP recipes require an upstream identity"
+      : recipe.architecture === undefined
+      ? "qualified MCP recipes require a target architecture"
+      : recipe.artifactDigest === undefined
+      ? "qualified MCP recipes require an artifact digest"
+      : recipe.entrypoint === undefined
+        || !/^(?:\/|[A-Za-z]:[\\/])/u.test(recipe.entrypoint)
+      ? "qualified MCP recipes require an exact absolute entrypoint"
+      : recipe.dependencyPolicy === undefined
+      ? "qualified MCP recipes require an explicit dependency policy"
+      : recipe.executionContext === undefined
+      ? "qualified MCP recipes require an execution context"
+      : undefined;
+    const reason = genericReason ?? qualificationReason;
     return reason === undefined
       ? []
       : [new InvalidRecipeError({
@@ -965,7 +990,7 @@ const verificationAllowed = (
     case "skill":
       return method === "digest" || method === "command";
     case "tool":
-      return method === "executable-present" || method === "command";
+      return method === "executable-present" || method === "command" || method === "mcp-qualification";
     case "credential":
       return method === "credential-present" || method === "command";
   }
@@ -1443,8 +1468,8 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
         toolId: spec.toolId,
         recipes: [...spec.recipes].sort((left, right) =>
           compareText(
-            `${left.platform}\0${left.method}\0${left.package}\0${left.version ?? ""}\0${JSON.stringify(left.indexPolicy)}\0${JSON.stringify(left.source)}`,
-            `${right.platform}\0${right.method}\0${right.package}\0${right.version ?? ""}\0${JSON.stringify(right.indexPolicy)}\0${JSON.stringify(right.source)}`,
+            JSON.stringify(left),
+            JSON.stringify(right),
           )
         ).map((recipe) => {
           const indexPolicy = recipe.indexPolicy === undefined
