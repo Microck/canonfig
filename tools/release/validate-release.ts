@@ -42,7 +42,12 @@ const PackageMetadata = Schema.Struct({
   engines: Schema.Struct({ node: Schema.String }),
   dependencies: Schema.Record(Schema.String, Schema.String),
   devDependencies: Schema.Record(Schema.String, Schema.String),
-  exports: Schema.optional(Schema.Unknown),
+  exports: Schema.Struct({
+    "./profile-compiler": Schema.Struct({
+      types: Schema.Literal("./dist/profile/compiler.d.ts"),
+      import: Schema.Literal("./dist/profile/compiler.js"),
+    }),
+  }),
 });
 
 interface Invocation {
@@ -165,9 +170,6 @@ const validatePackageMetadata = (metadataPath: string): void => {
   if (metadata.bin.canonfig !== "dist/runtime/main.js") {
     fail("package bin must map canonfig to dist/runtime/main.js");
   }
-  if (metadata.exports !== undefined) {
-    fail("the CLI-only package must not expose an unsupported library export");
-  }
   const runtimeDependencies = Object.keys(metadata.dependencies).sort();
   const expectedRuntimeDependencies = [
     "@effect/platform-node",
@@ -194,7 +196,9 @@ const validatePackageContents = (
   if (artifact.name !== "@microck/canonfig" || artifact.version !== "3.1.5") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
-  if (artifact.size > 250_000 || artifact.unpackedSize > 1_125_000) {
+  // The public compiler ships its transitive declaration graph so consumers
+  // get the same recursive profile contract without private dist imports.
+  if (artifact.size > 340_000 || artifact.unpackedSize > 1_600_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -205,6 +209,8 @@ const validatePackageContents = (
     "README.md",
     "package.json",
     "dist/runtime/main.js",
+    "dist/profile/compiler.js",
+    "dist/profile/compiler.d.ts",
   ]) {
     if (!paths.includes(required)) fail(`package omits required file: ${required}`);
   }
@@ -213,12 +219,9 @@ const validatePackageContents = (
       path === "LICENSE"
       || path === "README.md"
       || path === "package.json"
-      || /^dist\/.+\.js$/u.test(path)
+      || /^dist\/.+\.(?:js|d\.ts)$/u.test(path)
     ) continue;
     fail(`package contains unintended file: ${path}`);
-  }
-  if (paths.some((path) => /\.(?:d\.ts|map)$/u.test(path))) {
-    fail("CLI package unexpectedly includes declarations or source maps");
   }
   const shippedModules = paths.filter((path) => /^dist\/.+\.js$/u.test(path));
   for (const modulePath of shippedModules) {
@@ -296,6 +299,54 @@ const validateBinary = (executable: string): void => {
   ) fail("packed executable no-input route was not quiet and truthful");
 };
 
+const validateProfileCompiler = (root: string): void => {
+  const script = resolve(root, "profile-compiler-smoke.mjs");
+  writeFileSync(script, `import { compileProfile } from "@microck/canonfig/profile-compiler";
+const compiled = compileProfile({
+  id: "release-smoke",
+  name: "Release smoke",
+  resources: []
+});
+process.stdout.write(compiled.digest);
+`);
+  const result = run({
+    command: process.execPath,
+    arguments_: [script],
+    cwd: root,
+  });
+  requireSuccess("public profile compiler import", result);
+  if (!/^[a-f0-9]{64}$/u.test(result.stdout)) {
+    fail("public profile compiler returned an invalid digest");
+  }
+  const typeScript = resolve(root, "profile-compiler-smoke.ts");
+  writeFileSync(typeScript, `import { compileProfile } from "@microck/canonfig/profile-compiler";
+const digest: string = compileProfile({
+  id: "release-type-smoke",
+  name: "Release type smoke",
+  resources: []
+}).digest;
+void digest;
+`);
+  const typecheck = run({
+    command: process.execPath,
+    arguments_: [
+      resolve(projectRoot, "node_modules/typescript/bin/tsc"),
+      "--noEmit",
+      "--strict",
+      "--skipLibCheck",
+      "--module",
+      "NodeNext",
+      "--moduleResolution",
+      "NodeNext",
+      "--target",
+      "ES2022",
+      typeScript,
+    ],
+    cwd: root,
+  });
+  requireSuccess("public profile compiler types", typecheck);
+};
+
 try {
   mkdirSync(tarballRoot, { recursive: true });
   mkdirSync(homeRoot, { recursive: true });
@@ -309,6 +360,7 @@ try {
       tarballRoot,
     ],
     cwd: projectRoot,
+    timeoutMilliseconds: 300_000,
   });
   requireSuccess("npm pack", packed);
   const [artifact] = Schema.decodeUnknownSync(PackOutput)(JSON.parse(packed.stdout));
@@ -363,6 +415,7 @@ try {
   });
   requireSuccess("clean tarball install", installed);
   validateBinary(resolve(installRoot, "node_modules/.bin/canonfig"));
+  validateProfileCompiler(installRoot);
 
   const repositoryRoots = [
     "CONTEXT.md",

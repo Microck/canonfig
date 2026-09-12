@@ -1203,7 +1203,9 @@ export const topologicalOrder = (
   return ordered;
 };
 
-type MachineProfileAuthoring = Schema.Schema.Type<typeof MachineProfileAuthoringSchema>;
+export type MachineProfileAuthoring = Schema.Schema.Type<
+  typeof MachineProfileAuthoringSchema
+>;
 
 const compareText = (left: string, right: string): number => {
   if (left < right) return -1;

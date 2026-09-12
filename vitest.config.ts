@@ -17,6 +17,7 @@ export default defineProject({
       "tests/packed-cli.test.ts",
       "tests/packed-init-diagnostic.test.ts",
       "tests/profile-contract.test.ts",
+      "tests/profile-compiler.test.ts",
       "tests/discovery.test.ts",
       "tests/publication.test.ts",
       "tests/setup-controller.test.ts",
