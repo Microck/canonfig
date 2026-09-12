@@ -63,17 +63,23 @@ export const scheduledDefinitionReadiness = (
   status: ScheduleStatus,
   lastFire?: ScheduleFireEvidence | undefined,
 ): DoctorProbe => {
-  const details: Record<string, boolean | number | string> = {
-    state: status.state,
-    platform: status.platform,
-    mechanism: status.definition.mechanism,
-    definitionVerified: status.state === "current",
-    scheduledExecutionVerified: status.state === "current" && lastFire !== undefined,
-  };
-  if (lastFire !== undefined) {
-    details.lastFiredAt = lastFire.at;
-    details.lastFiredOutcome = lastFire.outcome;
-  }
+  const details = lastFire === undefined
+    ? {
+      state: status.state,
+      platform: status.platform,
+      mechanism: status.definition.mechanism,
+      definitionVerified: status.state === "current",
+      scheduledExecutionVerified: false,
+    }
+    : {
+      state: status.state,
+      platform: status.platform,
+      mechanism: status.definition.mechanism,
+      definitionVerified: status.state === "current",
+      scheduledExecutionVerified: true,
+      lastFiredAt: lastFire.at,
+      lastFiredOutcome: lastFire.outcome,
+    };
   if (status.state !== "current") {
     return {
       name: "scheduler",

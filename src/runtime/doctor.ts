@@ -355,7 +355,9 @@ const schedulerProbe = (
       skipped("scheduler", "this follower runs no scheduled synchronization"),
     );
   }
-  return schedules.status(schedule).pipe(Effect.map(scheduledDefinitionReadiness));
+  return schedules.status(schedule).pipe(
+    Effect.map((status) => scheduledDefinitionReadiness(status, lastFire)),
+  );
 };
 
 const packageManagerProbe = Effect.fn("Doctor.packageManagers")(function*(
