@@ -266,7 +266,7 @@ const issueInvitation = (
     ]),
     options.label ?? "issue invitation",
   );
-  expect(result.data?.["path"]).toBe(output);
+  expect(result.data?.["outputPath"]).toBe(output);
   const [invitation, eof, trailing] = readFileSync(output, "utf8").split("\n");
   expect(eof).toBe("CANONFIG-INVITE-EOF");
   expect(trailing).toBe("");
