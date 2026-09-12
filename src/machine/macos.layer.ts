@@ -199,6 +199,11 @@ const renderLaunchdJob = (
       "<plist version=\"1.0\"><dict>",
       `<key>Label</key><string>${xml(label)}</string>`,
       `<key>ProgramArguments</key><array>${programArguments}</array>`,
+      // The scheduled run must not depend on the user session's PATH: the
+      // plist pins the minimal search path and ProgramArguments is absolute.
+      "<key>EnvironmentVariables</key><dict>"
+        + "<key>PATH</key><string>/usr/bin:/bin:/usr/local/bin</string>"
+        + "</dict>",
       "<key>ProcessType</key><string>Background</string>",
       `<key>StartCalendarInterval</key>${calendar}`,
       "</dict></plist>",

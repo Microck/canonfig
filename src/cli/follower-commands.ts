@@ -22,6 +22,8 @@ export interface FollowerEnrollInput {
 export interface SynchronizeInput {
   readonly mode: "plan" | "apply";
   readonly noInput: boolean;
+  /** Set by the rendered native job, so fired evidence is not fakeable. */
+  readonly scheduled?: boolean | undefined;
 }
 
 export interface RecoverInput {

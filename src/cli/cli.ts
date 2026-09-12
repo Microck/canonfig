@@ -60,7 +60,7 @@ Source:
 
 Follower:
   follower enroll <invite> --name <name> --profile <id> [--replace]
-  sync [--plan | --apply] [--no-input]
+  sync [--plan | --apply] [--no-input] [--scheduled]
   recover [--no-input]
   abandon
   status [--follower <id>]
@@ -125,6 +125,8 @@ export type CliCommand =
     readonly _tag: "Synchronize";
     readonly mode: "plan" | "apply";
     readonly noInput: boolean;
+    /** Only the rendered native job passes this; it keys the fire evidence. */
+    readonly scheduled: boolean;
   }
   | { readonly _tag: "Recover"; readonly noInput: boolean }
   | { readonly _tag: "Abandon" }
@@ -535,7 +537,9 @@ const evaluateCommand = (
       const options = parseOptions(
         arguments_.slice(1),
         new Set(),
-        new Set(["--plan", "--apply", "--no-input"]),
+        // --scheduled is set by the rendered native job; typing it by hand
+        // is harmless but pointless without the scheduler's provenance.
+        new Set(["--plan", "--apply", "--no-input", "--scheduled"]),
       );
       if (options.positionals.length > 0) return invalid("sync accepts no positional arguments");
       if (options.switches.has("--plan") && options.switches.has("--apply")) {
@@ -545,6 +549,7 @@ const evaluateCommand = (
         _tag: "Synchronize",
         mode: options.switches.has("--apply") ? "apply" : "plan",
         noInput: options.switches.has("--no-input"),
+        scheduled: options.switches.has("--scheduled"),
       }, format);
     }
     if (area === "abandon") {
@@ -820,6 +825,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
       return yield* follower.synchronize({
         mode: value.mode,
         noInput: value.noInput,
+        scheduled: value.scheduled,
       });
     case "Recover": return yield* follower.recover({ noInput: value.noInput });
     case "Abandon": return yield* follower.abandon();

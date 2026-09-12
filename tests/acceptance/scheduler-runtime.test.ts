@@ -13,19 +13,16 @@ describe("scheduler runtime binding", () => {
   it("uses the current absolute Node runtime without inheriting Node flags", () => {
     const command = scheduleCommand();
     expect(command.executable).toBe(process.execPath);
-    expect(command.arguments.slice(1)).toEqual(["sync", "--apply", "--no-input"]);
+    expect(command.arguments.slice(1)).toEqual(["sync", "--apply", "--no-input", "--scheduled"]);
     expect(command.arguments[0]).toMatch(/[\\/]runtime[\\/]main\.js$/u);
-    expect(command.arguments).not.toContain("--eval");
-    expect(command.arguments).not.toContain("--import");
   });
-
   it("retains an explicitly selected standalone executable", () => {
     const executable = process.platform === "win32"
       ? "C:\\Program Files\\Canonfig\\standalone.exe"
       : "/opt/Canonfig Tools/standalone";
     expect(scheduleCommand(executable)).toEqual({
       executable,
-      arguments: ["sync", "--apply", "--no-input"],
+      arguments: ["sync", "--apply", "--no-input", "--scheduled"],
     });
   });
 

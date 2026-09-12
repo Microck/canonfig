@@ -451,13 +451,18 @@ describe("typed CLI command boundary", () => {
     const apply = await execute(["sync", "--apply", "--no-input"]);
     expect(apply.invocations).toEqual([{
       route: "sync",
-      input: { mode: "apply", noInput: true },
+      input: { mode: "apply", noInput: true, scheduled: false },
     }]);
     expect(apply.stdout).toBe("");
     const recover = await execute(["recover", "--no-input"]);
     expect(recover.invocations).toEqual([{
       route: "recover",
       input: { noInput: true },
+    }]);
+    const scheduled = await execute(["sync", "--apply", "--no-input", "--scheduled"]);
+    expect(scheduled.invocations).toEqual([{
+      route: "sync",
+      input: { mode: "apply", noInput: true, scheduled: true },
     }]);
   });
 

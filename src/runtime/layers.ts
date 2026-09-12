@@ -5,6 +5,7 @@ import {
   verify as verifyPayload,
 } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -190,6 +191,46 @@ const mapFailure = <Success, Failure extends TaggedRuntimeError, Requirements>(
  * A no-op on a machine that is not enrolled: there is nowhere durable to record
  * it, and the schedule commands still act on the native job directly.
  */
+export interface ScheduleFireRecord {
+  readonly at: string;
+  readonly outcome: string;
+}
+
+export const scheduleFirePath = (statePath: string): string =>
+  join(dirname(statePath), "schedule-fires.json");
+
+const readScheduleFires = (statePath: string): ReadonlyArray<ScheduleFireRecord> => {
+  try {
+    // SAFETY: only this process family writes the file, with this exact shape.
+    const parsed = JSON.parse(readFileSync(scheduleFirePath(statePath), "utf8")) as {
+      fires?: ReadonlyArray<ScheduleFireRecord>;
+    };
+    return Array.isArray(parsed.fires) ? parsed.fires : [];
+  } catch {
+    return [];
+  }
+};
+
+const recordScheduleFire = (
+  statePath: string,
+  outcome: string,
+): Effect.Effect<void, never> =>
+  Effect.tryPromise({
+    try: async () => {
+      const path = scheduleFirePath(statePath);
+      const fires = [...readScheduleFires(statePath).slice(-9), {
+        at: new Date().toISOString(),
+        outcome,
+      }];
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(
+        path,
+        `${JSON.stringify({ schema: "canonfig.schedule-fire/v1", fires }, null, 2)}\n`,
+      );
+    },
+    catch: () => undefined,
+  }).pipe(Effect.ignore);
+
 const persistScheduleOverride = (
   repository: StateRepository["Service"],
   scheduleOverride: FollowerSynchronizationConfiguration["scheduleOverride"],
@@ -847,19 +888,33 @@ const followerCommandsLayer = (
               source: prepared.source,
             });
           }),
-      synchronize: (input) =>
-        mapFailure(synchronizeFollower(
-          statePath,
-          input.mode,
-          undefined,
-          input.noInput,
-        ).pipe(
-          Effect.provideService(StateRepository, repository),
-          Effect.provideService(MachineState, machine),
-          Effect.provideService(Synchronization, synchronization),
-          Effect.provideService(AgentResolution, agentResolution),
-          Effect.provideService(ScheduleManager, schedules),
-        )).pipe(Effect.flatMap(outcomePayload)),
+      synchronize: (input) => {
+        // Only the rendered native job passes --scheduled, so the fire
+        // record is evidence the real scheduler started this process.
+        const scheduled = input.scheduled === true;
+        const record = (outcome: string) =>
+          scheduled ? recordScheduleFire(statePath, outcome) : Effect.void;
+        return record("started").pipe(
+          Effect.andThen(mapFailure(synchronizeFollower(
+            statePath,
+            input.mode,
+            undefined,
+            scheduled || input.noInput,
+          ).pipe(
+            Effect.provideService(StateRepository, repository),
+            Effect.provideService(MachineState, machine),
+            Effect.provideService(Synchronization, synchronization),
+            Effect.provideService(AgentResolution, agentResolution),
+            Effect.provideService(ScheduleManager, schedules),
+          )).pipe(Effect.flatMap(outcomePayload))),
+          Effect.flatMap((result) =>
+            record("completed").pipe(Effect.as(result))
+          ),
+          Effect.catch((error) =>
+            record("failed").pipe(Effect.flatMap(() => Effect.fail(error)))
+          ),
+        );
+      },
       abandon: () =>
         mapFailure(abandonFollowerRun(statePath).pipe(
           Effect.provideService(StateRepository, repository),
@@ -1101,7 +1156,15 @@ const followerCommandsLayer = (
           Effect.flatMap((input) =>
             input === undefined
               ? Effect.succeed(payload({ state: "disabled" }))
-              : mapFailure(schedules.status(input)).pipe(Effect.map(payload))
+              : mapFailure(schedules.status(input)).pipe(
+                Effect.map((status) => {
+                  const fires = readScheduleFires(statePath);
+                  const lastFire = fires[fires.length - 1];
+                  return payload(lastFire === undefined
+                    ? { ...status, lastFire: undefined }
+                    : { ...status, lastFire });
+                }),
+              )
           ),
         ),
       removeSchedule: () =>
@@ -1125,6 +1188,7 @@ const followerCommandsLayer = (
               policyPath,
               agentPolicy: configuration?.agentPolicy,
               schedule,
+              lastFire: readScheduleFires(statePath).at(-1),
               source: configuration === undefined
                 ? doctorSource
                 : {

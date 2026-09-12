@@ -274,10 +274,40 @@ describe("readiness evidence", () => {
         },
       };
       const result = scheduledDefinitionReadiness(status);
-      expect(result.status).toBe(state === "current" ? "pass" : "fail");
+      // A green renderer alone is a warning until the native scheduler is
+      // observed firing the job.
+      expect(result.status).toBe(state === "current" ? "warning" : "fail");
       expect(result.details?.scheduledExecutionVerified).toBe(false);
       expect(result.details?.definitionVerified).toBe(state === "current");
       if (state !== "current") expect(result.category).toBe("verification-or-apply-failure");
+    },
+  );
+
+  it.each(["current"] as const)(
+    "marks %s schedules verified only with recorded fire evidence",
+    (state) => {
+      const status: ScheduleStatus = {
+        state, platform: "linux", schedule: { kind: "daily", localTime: "04:00" },
+        definition: {
+          platform: "linux", mechanism: "systemd-user-timer",
+          serviceName: "canonfig", service: "fixture", schedule: "fixture",
+        },
+      };
+      const fired = scheduledDefinitionReadiness(status, {
+        at: "2026-09-12T04:00:05Z", outcome: "completed",
+      });
+      expect(fired.status).toBe("pass");
+      expect(fired.details).toMatchObject({
+        scheduledExecutionVerified: true,
+        lastFiredAt: "2026-09-12T04:00:05Z",
+        lastFiredOutcome: "completed",
+      });
+      // A failed scheduled apply still proves the scheduler fired the job.
+      const failedFire = scheduledDefinitionReadiness(status, {
+        at: "2026-09-12T04:00:05Z", outcome: "failed",
+      });
+      expect(failedFire.status).toBe("pass");
+      expect(failedFire.details?.scheduledExecutionVerified).toBe(true);
     },
   );
 });

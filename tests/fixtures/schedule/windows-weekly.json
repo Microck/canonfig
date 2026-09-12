@@ -2,6 +2,6 @@
   "platform": "windows",
   "mechanism": "task-scheduler",
   "serviceName": "Canonfig\\canonfig-sync",
-  "service": "$Action = New-ScheduledTaskAction -Execute 'C:\\Program Files\\Canonfig\\canonfig.exe' -Argument 'sync --apply --no-input'\r\n$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive\r\n$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)",
-  "schedule": "$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Mon,Fri -At '23:45'\r\nRegister-ScheduledTask -TaskName 'Canonfig\\canonfig-sync' -Description 'Canonfig follower synchronization [canonfig:aa81df1bd72b10c453aa549d6eb4a6610c0c384f40df7b2da1c0ef78d9736c97]' -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings"
+  "service": "$Action = New-ScheduledTaskAction -Execute 'C:\\Program Files\\Canonfig\\canonfig.exe' -Argument 'sync --apply --no-input --scheduled'\r\n$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive\r\n$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)",
+  "schedule": "$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Mon,Fri -At '23:45'\r\nRegister-ScheduledTask -TaskName 'Canonfig\\canonfig-sync' -Description 'Canonfig follower synchronization [canonfig:61903727c9c546b44784585121dfaedb37f6d60dc0cf95248cba9f6d8a4af2ed]' -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings"
 }
