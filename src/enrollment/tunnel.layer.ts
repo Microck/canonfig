@@ -5,7 +5,6 @@ import { join } from "node:path";
 
 import { Effect, Layer, Schema } from "effect";
 
-import { CertificateFingerprint } from "../domain/brand.ts";
 import { probeSourceDescriptor } from "./follower-client.ts";
 import {
   TunnelConfigurationError,

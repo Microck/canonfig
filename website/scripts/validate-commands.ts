@@ -5,6 +5,10 @@ import { pathToFileURL } from "node:url";
 import { evaluateCli } from "../../src/cli/cli.ts";
 import { parseHarnessArguments } from "../../src/harness-configuration/cli-arguments.ts";
 import { installerArguments, parseInstallerArguments } from "../../src/runtime/installer-cli.ts";
+import {
+  isPrivateEnrollmentCommand,
+  privateEnrollmentArguments,
+} from "../../src/runtime/enrollment-input.ts";
 
 const projectRoot = resolve(import.meta.dirname, "../..");
 export const defaultDocumentationRoots: ReadonlyArray<string> = [
@@ -161,7 +165,10 @@ export const validateDocumentation = async (
           throw new Error(`${path} contains an invalid CLI example: ${example}`);
         }
       } else {
-        const outcome = evaluateCli(arguments_);
+        const evaluatedArguments = isPrivateEnrollmentCommand(arguments_)
+          ? [...privateEnrollmentArguments(arguments_), invitation]
+          : arguments_;
+        const outcome = evaluateCli(evaluatedArguments);
         if (outcome._tag === "InvalidInput") {
           throw new Error(`${path} contains an invalid CLI example: ${example}\n${outcome.message}`);
         }
