@@ -26,10 +26,12 @@ import type {
   JournalActionInput,
   PendingEnrollmentRecord,
   PublishRevisionInput,
+  ReadResourceBlobRangeInput,
   RecordDriftInput,
   RecoveryState,
   RegisterFollowerInput,
   RemoveLocalOverlayInput,
+  ResourceBlobRange,
   RevisionApprovalRecord,
   RunEvidenceSummary,
   SaveLocalOverlayInput,
@@ -122,6 +124,9 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly listRevisionBlobCandidates: (
     blob: ContentDigest,
   ) => Effect.Effect<ReadonlyArray<RevisionBlobCandidate>, StateRepositoryError>;
+  readonly readResourceBlobRange: (
+    input: ReadResourceBlobRangeInput,
+  ) => Effect.Effect<ResourceBlobRange | undefined, StateRepositoryError>;
   readonly loadAppliedResources: (
     follower: FollowerId,
   ) => Effect.Effect<ReadonlyArray<AppliedResourceRecord>, StateRepositoryError>;

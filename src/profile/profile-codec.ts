@@ -7,6 +7,10 @@ export const canonicalJson = (value: JsonValue): string => encodeCanonical(value
 
 export type JsonValue = S.MutableJson;
 
+/** Convert a typed domain value to the strict mutable JSON contract. */
+export const asJson = <Value>(value: Value): JsonValue =>
+  S.decodeUnknownSync(S.MutableJson)(JSON.parse(JSON.stringify(value)));
+
 const encodeCanonical = (value: JsonValue): string => {
   if (value === null) return "null";
   if (Predicate.isString(value)) return JSON.stringify(value);

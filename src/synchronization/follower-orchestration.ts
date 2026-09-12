@@ -21,8 +21,8 @@ import {
   SourceSignature,
 } from "../domain/brand.ts";
 import {
-  ResourceSpecInputSchema,
   type ProfileRevision,
+  type PublishedResourceSpec,
   type ResourceSpecInput,
   type VerificationInput,
 } from "../domain/profile.ts";
@@ -250,9 +250,8 @@ const selectedRevision = Effect.fn(
 
 interface DecodedSpec {
   readonly resource: RevisionMetadata["resources"][number];
-  readonly spec: ResourceSpecInput;
-  readonly blob: FetchedRevision["blobs"][number];
-  readonly blobBytes: Uint8Array;
+  readonly spec: PublishedResourceSpec;
+  readonly content: ReadonlyMap<string, Uint8Array>;
 }
 
 const decodeSpecs = (
@@ -260,50 +259,44 @@ const decodeSpecs = (
 ): Effect.Effect<ReadonlyArray<DecodedSpec>, FollowerSynchronizationConfigurationError> =>
   Effect.forEach(fetched.metadata.resources, (resource) =>
     Effect.gen(function*() {
-      if (resource.blobs.length !== 1) {
+      if (resource.spec.kind !== resource.kind) {
         return yield* configurationError(
           "stale",
-          `resource ${resource.id} does not have one canonical content blob`,
+          `resource ${resource.id} kind does not match its signed metadata`,
         );
       }
-      const blob = fetched.blobs.find((entry) => entry.id === resource.blobs[0]);
-      if (blob === undefined) {
-        return yield* configurationError(
-          "stale",
-          `resource ${resource.id} is missing its verified content blob`,
-        );
-      }
-      const blobBytes = yield* Effect.tryPromise({
-        try: () => readFile(blob.path),
-        catch: () =>
-          configurationError(
+      const content = new Map<string, Uint8Array>();
+      for (const id of resource.blobs) {
+        const blob = fetched.blobs.find((entry) => entry.id === id);
+        if (blob === undefined) {
+          return yield* configurationError(
             "stale",
-            `verified cache blob for ${resource.id} is unavailable`,
-          ),
-      });
-      const spec = yield* Effect.try({
-        try: () =>
-          Schema.decodeUnknownSync(ResourceSpecInputSchema)(
-            JSON.parse(decoder.decode(blobBytes)),
-          ),
-        catch: () =>
-          configurationError(
-            "stale",
-            `verified content blob for ${resource.id} is malformed`,
-          ),
-      });
-      if (spec.kind !== resource.kind) {
-        return yield* configurationError(
-          "stale",
-          `resource ${resource.id} kind does not match its verified content`,
-        );
+            `resource ${resource.id} is missing verified blob ${id}`,
+          );
+        }
+        const bytes = yield* Effect.tryPromise({
+          try: () => readFile(blob.path),
+          catch: () =>
+            configurationError(
+              "stale",
+              `verified cache blob for ${resource.id} is unavailable`,
+            ),
+        });
+        content.set(id, bytes);
       }
-      return { resource, spec, blob, blobBytes };
+      return { resource, spec: resource.spec, content };
     })
   );
 
-const fileDigest = (content: string): typeof ContentDigest.Type =>
-  Schema.decodeUnknownSync(ContentDigest)(sha256BytesHex(encoder.encode(content)));
+const contentFor = (
+  content: ReadonlyMap<string, Uint8Array>,
+  blob: string | undefined,
+): Uint8Array => {
+  if (blob === undefined) throw new Error("regular published file has no blob");
+  const bytes = content.get(blob);
+  if (bytes === undefined) throw new Error(`verified blob ${blob} is unavailable`);
+  return bytes;
+};
 
 const configDocument = (
   spec: Extract<ResourceSpecInput, { readonly kind: "config" }>,
@@ -337,26 +330,27 @@ export const authorizationViewIdentity = (
 };
 
 const desiredFor = (
-  spec: ResourceSpecInput,
+  spec: PublishedResourceSpec,
+  contentByBlob: ReadonlyMap<string, Uint8Array>,
 ): HydratedDesiredResource => {
   switch (spec.kind) {
     case "file": {
-      const content = encoder.encode(spec.content);
       const isSymlink = spec.symlinkTo !== undefined;
       const digest = Schema.decodeUnknownSync(ContentDigest)(
-        !isSymlink
-          ? sha256BytesHex(content)
-          : sha256Hex(spec.symlinkTo),
+        isSymlink ? sha256Hex(spec.symlinkTo!) : spec.blob!,
       );
+      const content = isSymlink
+        ? undefined
+        : contentFor(contentByBlob, spec.blob);
       return {
         desired: {
           kind: "file",
           digest,
-          executable: isSymlink ? false : spec.executable ?? false,
-          mode: isSymlink ? 0 : spec.mode ?? (spec.executable === true ? 0o700 : 0o600),
+          executable: isSymlink ? false : spec.executable,
+          mode: isSymlink ? 0 : spec.mode ?? (spec.executable ? 0o700 : 0o600),
           symlinkTo: spec.symlinkTo,
         },
-        artifacts: !isSymlink ? [{ digest, content }] : [],
+        artifacts: content === undefined ? [] : [{ digest, content }],
       };
     }
     case "directory":
@@ -364,23 +358,24 @@ const desiredFor = (
       const files = spec.files.map((file) => ({
         path: file.path,
         digest: file.symlinkTo === undefined
-          ? fileDigest(file.content)
+          ? Schema.decodeUnknownSync(ContentDigest)(file.blob)
           : Schema.decodeUnknownSync(ContentDigest)(sha256Hex(file.symlinkTo)),
-        executable: file.symlinkTo === undefined ? file.executable ?? false : false,
+        executable: file.symlinkTo === undefined ? file.executable : false,
         mode: file.symlinkTo === undefined
-          ? file.mode ?? (file.executable === true ? 0o700 : 0o600)
+          ? file.mode ?? (file.executable ? 0o700 : 0o600)
           : 0,
         symlinkTo: file.symlinkTo,
       }));
       const artifacts = spec.files.flatMap((file, index) =>
         file.symlinkTo === undefined
-          ? [{ digest: files[index]!.digest, content: encoder.encode(file.content) }]
+          ? [{
+            digest: files[index]!.digest,
+            content: contentFor(contentByBlob, file.blob),
+          }]
           : []
       );
       const directories = spec.directories ?? [];
       const mode = spec.mode ?? 0o700;
-      // The declared verification digest is a stable content contract. Exact
-      // modes and object kinds belong to the separate convergence-state digest.
       const digest = directoryVerificationDigest(files);
       return {
         desired: spec.kind === "skill"
@@ -898,7 +893,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
       record,
     ]));
     for (const entry of decoded) {
-      const hydration = desiredFor(entry.spec);
+      const hydration = desiredFor(entry.spec, entry.content);
       desired.push({
         resource: entry.resource.id,
         desired: hydration.desired,
@@ -914,19 +909,13 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
           scheduleManager,
         ),
       });
-      artifacts.push(
-        { digest: entry.blob.id, content: entry.blobBytes },
-        ...hydration.artifacts,
-      );
-      // Two resources with identical published specifications share one blob,
-      // because a blob's id is the digest of its content. Emit it once: the
-      // list describes what is available to transfer, not which resource asked
-      // for it.
-      if (!announcedBlobs.has(entry.blob.id)) {
-        announcedBlobs.add(entry.blob.id);
+      artifacts.push(...hydration.artifacts);
+      for (const [id, content] of entry.content) {
+        if (announcedBlobs.has(id)) continue;
+        announcedBlobs.add(id);
         blobs.push({
-          id: Schema.decodeUnknownSync(BlobId)(entry.blob.id),
-          bytes: entry.blobBytes.byteLength,
+          id: Schema.decodeUnknownSync(BlobId)(id),
+          bytes: content.byteLength,
         });
       }
     }
@@ -1015,6 +1004,7 @@ const persistableRevision = (
     target: resource.target,
     groups: resource.groups,
     dependsOn: resource.dependsOn,
+    spec: resource.spec,
     blobs: resource.blobs,
     })),
   groups: revision.groups,

@@ -27,7 +27,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentResolution } from "../../src/agent/agent-resolution.service.ts";
 import type { AgentResolutionInput } from "../../src/agent/agent-resolution.types.ts";
 import {
-  BlobId,
   GroupName,
   ProfileId,
   ProfileRevisionId,
@@ -60,9 +59,8 @@ import type {
   SchedulerSnapshot,
 } from "../../src/machine/machine-state.types.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
+import { compileProfileCandidate } from "../../src/profile/compiler.ts";
 import {
-  canonicalJson,
-  digestOf,
   directoryVerificationDigest,
   sha256Hex,
 } from "../../src/profile/profile-codec.ts";
@@ -124,8 +122,6 @@ const acceptancePlatform = (): MachinePlatform => {
   return platform;
 };
 
-const asJson = <Value>(value: Value) =>
-  decode(Schema.MutableJson)(JSON.parse(JSON.stringify(value)));
 
 class RecordingScheduler implements SchedulerBackend {
   definition: RenderedSchedulerJob | undefined;
@@ -538,19 +534,10 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
       const privateKey = createPrivateKey(Redacted.value(
         yield* machine.loadCredential({ reference: source.signingKeyReference }),
       ));
-      const canonicalBytes = canonicalJson(asJson(profile));
-      const digest = sha256Hex(canonicalBytes);
-      const resources = profile.resources.map((entry): PublishedResource => {
-        const base = {
-          id: decode(ResourceId)(entry.id),
-          kind: entry.kind,
-          policy: entry.policy ?? "replace",
-          target: entry.target,
-          dependsOn: [],
-          blobs: [decode(BlobId)(digestOf(asJson(entry.spec)))],
-        };
-        return entry.groups === undefined ? base : { ...base, groups: entry.groups };
-      });
+      const compiled = compileProfileCandidate(profile);
+      const canonicalBytes = compiled.canonicalBytes;
+      const digest = compiled.digest;
+      const resources = compiled.resources;
       const id = decode(ProfileRevisionId)(`${profile.id}:${digest}`);
       const unsigned = {
         id,
@@ -582,7 +569,10 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         resources,
         groups: profile.groups,
       };
-      yield* repository.publishRevision({ revision: published });
+      yield* repository.publishRevision({
+        revision: published,
+        blobs: compiled.blobs,
+      });
       return published;
     }));
 
@@ -706,6 +696,9 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     );
     expect(metadata.id).toBe(revision.id);
     expect(metadata.resources.map((entry) => entry.id)).not.toContain("y-hidden");
+    const visibleBlobCount = new Set(
+      metadata.resources.flatMap((resource) => resource.blobs),
+    ).size;
 
     const initial = await Effect.runPromise(
       synchronizeFollower(followerDatabase, "plan").pipe(
@@ -716,7 +709,7 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
       throw new Error("acceptance planning did not return a synchronization plan");
     }
     expect(initial.revision).toBe(revision.id);
-    expect(initial.downloadedBlobs).toBe(metadata.resources.length);
+    expect(initial.downloadedBlobs).toBe(visibleBlobCount);
     expect(initial.reusedBlobs).toBe(0);
     expect(initial.plan.actions).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -790,7 +783,7 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
       expect(first).toMatchObject({
         revision: revision.id,
         downloadedBlobs: 0,
-        reusedBlobs: metadata.resources.length,
+        reusedBlobs: visibleBlobCount,
         outcome: { outcome: "Converged" },
       });
     }
@@ -821,10 +814,10 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     );
     expect(second).toMatchObject({
       downloadedBlobs: 0,
-      reusedBlobs: metadata.resources.length,
+      reusedBlobs: visibleBlobCount,
       outcome: { outcome: "Converged" },
     });
-    expect(server.blobRequests()).toBe(metadata.resources.length);
+    expect(server.blobRequests()).toBe(visibleBlobCount);
     expect(parseTextComposition(await readFile(instructionsFile))).toEqual({
       kind: "managed",
       source: "Source instructions\n",
@@ -951,7 +944,7 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     expect(recovered).toMatchObject({
       revision: revision.id,
       downloadedBlobs: 0,
-      reusedBlobs: metadata.resources.length,
+      reusedBlobs: visibleBlobCount,
       outcome: {
         outcome: "FollowerDrift",
         run: `acceptance-recovery-${platform}`,

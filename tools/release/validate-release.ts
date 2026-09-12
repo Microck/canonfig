@@ -197,8 +197,9 @@ const validatePackageContents = (
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
   // The public compiler ships its transitive declaration graph so consumers
-  // get the same recursive profile contract without private dist imports.
-  if (artifact.size > 340_000 || artifact.unpackedSize > 1_600_000) {
+  // get the same recursive profile contract without private dist imports. The
+  // CLI also includes byte-resource publication, transport, and hydration.
+  if (artifact.size > 340_000 || artifact.unpackedSize > 1_625_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -279,7 +280,15 @@ const validateBinary = (executable: string): void => {
     || (doctor.status === 0 && doctor.stderr !== "")
     || (doctor.status === 5 && doctor.stdout !== "")
   ) {
-    fail("packed executable doctor did not report its clean-home state truthfully");
+    fail(
+      `packed executable doctor did not report its clean-home state truthfully: ${
+        JSON.stringify({
+          status: doctor.status,
+          stdout: doctor.stdout,
+          stderr: doctor.stderr,
+        })
+      }`,
+    );
   }
   const doctorEnvelope = JSON.parse(doctor.status === 0 ? doctor.stdout : doctor.stderr);
   if (

@@ -1,7 +1,9 @@
+import { lstat, readFile, readlink } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
+
 import { Effect, Schema } from "effect";
 
 import {
-  BlobId,
   ProfileRevisionId,
   ResourceId,
   Timestamp,
@@ -12,6 +14,7 @@ import {
 import {
   normalizeMachineProfile,
   type MachineProfile,
+  type ManagedFileInput,
   type ProfileGroup,
   type ProfileResourceInput,
   type ProfileRevision,
@@ -34,6 +37,7 @@ import {
   UnresolvedPublicationProposalError,
 } from "./profile-catalog.errors.ts";
 import {
+  asJson,
   canonicalJson,
   digestOf,
   directoryVerificationDigest,
@@ -63,10 +67,10 @@ export interface PublicationProfileMetadata {
   readonly name: string;
   readonly groups?: ReadonlyArray<ProfileGroup> | undefined;
   /**
-   * Resources authored in the canonical profile are not discovery proposals.
-   * Keep them on the publication input so publication does not silently
-   * reduce a complete profile to discovered tools and skills.
+   * Directory containing the authored profile. Relative file `source` values
+   * are resolved here, never against the process working directory.
    */
+  readonly directory?: string | undefined;
   readonly resources?: ReadonlyArray<ProfileResourceInput> | undefined;
   readonly scheduleDefault?: ScheduleDefault | undefined;
 }
@@ -96,10 +100,6 @@ export interface ProfileRevisionSigner {
 const compareText = (left: string, right: string): number =>
   left < right ? -1 : left > right ? 1 : 0;
 
-const asJson = <Value>(value: Value): Schema.Schema.Type<typeof Schema.MutableJson> =>
-  Schema.decodeUnknownSync(Schema.MutableJson)(
-    JSON.parse(JSON.stringify(value)),
-  );
 
 /** Stable digest reviewers accept; it binds acceptance to the exact proposal. */
 export const digestDiscoveryProposal = (
@@ -337,44 +337,78 @@ const machineProfileFor = (
       .filter((skill) => discoveryAccepted(skill.id, skill.reviewStatus))
       .map(resourceForSkill),
   ];
-  // An explicitly authored resource is authoritative when it shares an id
-  // with a discovered proposal. The map also makes the merge deterministic
-  // before normalizeMachineProfile applies its canonical id ordering.
   const resources = new Map<string, ProfileResourceInput>(
     acceptedDiscoveryResources.map((resource) => [resource.id, resource]),
   );
   for (const resource of input.profile.resources ?? []) {
     resources.set(resource.id, resource);
   }
-  return normalizeMachineProfile({
+  return {
     id: input.profile.id,
     version: 2,
     name: input.profile.name,
-    groups: input.profile.groups ?? [],
+    groups: [...(input.profile.groups ?? [])],
     resources: [...resources.values()],
     scheduleDefault: input.profile.scheduleDefault,
-  });
+  };
 };
 
-const publishedResources = (
-  profile: MachineProfile,
-): ReadonlyArray<PublishedResource> =>
-  profile.resources.map((resource) => {
-    const blob = Schema.decodeUnknownSync(BlobId)(digestOf(asJson(resource.spec)));
-    const base = {
-      id: Schema.decodeUnknownSync(ResourceId)(resource.id),
-      kind: resource.kind,
-      policy: resource.policy ?? "ensure",
-      target: resource.target,
-      dependsOn: (resource.dependsOn ?? []).map((dependency) =>
-        Schema.decodeUnknownSync(ResourceId)(dependency)
-      ),
-      blobs: [blob],
+const sourcePath = (directory: string | undefined, source: string): string => {
+  if (isAbsolute(source)) return source;
+  if (directory === undefined) {
+    throw new Error(`relative resource source ${source} has no authored profile directory`);
+  }
+  return resolve(directory, source);
+};
+
+const resolveManagedFile = async (
+  file: ManagedFileInput,
+  directory: string | undefined,
+): Promise<ManagedFileInput> => {
+  if (file.symlinkTo !== undefined || file.source === undefined) return file;
+  const path = sourcePath(directory, file.source);
+  const status = await lstat(path);
+  if (status.isSymbolicLink()) {
+    return {
+      path: file.path,
+      executable: false,
+      mode: 0,
+      symlinkTo: await readlink(path),
     };
-    return resource.groups === undefined
-      ? base
-      : { ...base, groups: resource.groups };
-  });
+  }
+  if (!status.isFile()) throw new Error(`resource source ${file.source} is not a file or symlink`);
+  const content = await readFile(path);
+  const mode = file.mode ?? (status.mode & 0o7777);
+  return {
+    path: file.path,
+    content: content.toString("base64"),
+    encoding: "base64",
+    executable: file.executable ?? ((mode & 0o111) !== 0),
+    mode,
+  };
+};
+
+const resolveResourceSources = async (
+  resource: ProfileResourceInput,
+  directory: string | undefined,
+): Promise<ProfileResourceInput> => {
+  if (resource.spec.kind === "file") {
+    const resolved = await resolveManagedFile(
+      { path: "", ...resource.spec },
+      directory,
+    );
+    const { path: _, ...spec } = resolved;
+    return { ...resource, spec: { kind: "file", ...spec } };
+  }
+  if (resource.spec.kind !== "directory" && resource.spec.kind !== "skill") {
+    return resource;
+  }
+  const files = await Promise.all(
+    resource.spec.files.map((file) => resolveManagedFile(file, directory)),
+  );
+  return { ...resource, spec: { ...resource.spec, files } };
+};
+
 
 interface UnsignedRevision {
   readonly id: ProfileRevision["id"];
@@ -410,11 +444,23 @@ export const makePublication = (
       yield* validateReview(input);
       yield* validateProposal(input.proposal);
 
-      const profile = yield* Effect.try({
+      const unresolvedProfile = yield* Effect.try({
         try: () => machineProfileFor(input),
         catch: (cause) => new InvalidPublicationInputError({
           reason: `invalid publication metadata: ${String(cause)}`,
         }),
+      });
+      const resolvedResources = yield* Effect.tryPromise({
+        try: () => Promise.all(unresolvedProfile.resources.map((resource) =>
+          resolveResourceSources(resource, input.profile.directory)
+        )),
+        catch: (cause) => new InvalidPublicationInputError({
+          reason: `resource source could not be read: ${String(cause)}`,
+        }),
+      });
+      const profile = normalizeMachineProfile({
+        ...unresolvedProfile,
+        resources: resolvedResources,
       });
       const errors = validateMachineProfile(profile);
       if (errors.length > 0) {
@@ -424,10 +470,11 @@ export const makePublication = (
       const encoded = yield* Effect.try({
         try: () => compileProfileCandidate(profile),
         catch: (cause) => new InvalidPublicationInputError({
-          reason: `profile cannot be canonically encoded: ${String(cause)}`,
+          reason: `resource bytes could not be encoded: ${String(cause)}`,
         }),
       });
-      const { canonicalBytes, digest } = encoded;
+      const canonicalBytes = encoded.canonicalBytes;
+      const digest = encoded.digest;
       const id = Schema.decodeUnknownSync(ProfileRevisionId)(
         `${profile.id}:${digest}`,
       );
@@ -445,6 +492,7 @@ export const makePublication = (
         }
         yield* repository.publishRevision({
           revision: existing,
+          blobs: encoded.blobs,
           approval: publicationApproval(input),
         });
         return existing;
@@ -459,7 +507,7 @@ export const makePublication = (
         canonicalBytes,
         digest,
         publishedAt: input.publishedAt,
-        resources: publishedResources(profile),
+        resources: encoded.resources,
         groups: profile.groups,
         scheduleDefault: profile.scheduleDefault,
         signingKeyId: signer.keyId,
@@ -486,6 +534,7 @@ export const makePublication = (
       };
       yield* repository.publishRevision({
         revision,
+        blobs: encoded.blobs,
         approval: publicationApproval(input),
       });
       return revision;

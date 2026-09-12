@@ -92,6 +92,8 @@ interface JsonResponse {
 interface BinaryResponse {
   readonly status: number;
   readonly body: Uint8Array;
+  readonly contentRange?: string | undefined;
+  readonly contentLength?: number | undefined;
   readonly errorBody?: unknown | undefined;
 }
 
@@ -826,6 +828,7 @@ const transportRequest = (
   maximumBytes: number,
   timeoutMilliseconds: number,
   signal: AbortSignal | undefined,
+  range?: { readonly start: number; readonly end: number } | undefined,
 ): Effect.Effect<BinaryResponse, EnrollmentError> =>
   Effect.tryPromise({
     try: () =>
@@ -847,6 +850,11 @@ const transportRequest = (
           }));
           return;
         }
+        const headers: OutgoingHttpHeaders = {
+          authorization: `Bearer ${Redacted.value(credential)}`,
+          accept: "application/json, application/octet-stream",
+        };
+        if (range !== undefined) headers.range = `bytes=${range.start}-${range.end}`;
         const request = httpsRequest({
           protocol: "https:",
           hostname: endpoint.hostname.replaceAll("[", "").replaceAll("]", ""),
@@ -856,10 +864,7 @@ const transportRequest = (
           ca: certificate.pem,
           rejectUnauthorized: true,
           minVersion: "TLSv1.2",
-          headers: {
-            authorization: `Bearer ${Redacted.value(credential)}`,
-            accept: "application/json, application/octet-stream",
-          },
+          headers,
         }, (response) => {
           const chunks: Array<Buffer> = [];
           let bytes = 0;
@@ -897,6 +902,8 @@ const transportRequest = (
                 resolveOnce({
                   status: response.statusCode ?? 500,
                   body,
+                  contentRange: response.headers["content-range"],
+                  contentLength: Number(response.headers["content-length"]),
                   errorBody: JSON.parse(body.toString("utf8")),
                 });
               } catch {
@@ -910,6 +917,8 @@ const transportRequest = (
             resolveOnce({
               status: response.statusCode ?? 500,
               body,
+              contentRange: response.headers["content-range"],
+              contentLength: Number(response.headers["content-length"]),
             });
           });
         });
@@ -1098,23 +1107,79 @@ export const retrieveBlob = (
 ): Effect.Effect<Uint8Array, EnrollmentError, MachineState> =>
   Effect.gen(function*() {
     const context = yield* transportContext(input);
-    const response = yield* transportRequest(
-      context.endpoint,
-      `/v1/transport/blobs/${input.blobId}`,
-      context.certificate,
-      context.credential,
-      input.maximumBlobBytes ?? defaultMaximumBlobBytes,
-      input.timeoutMilliseconds ?? defaultTimeoutMilliseconds,
-      input.signal,
-    );
-    if (response.status !== 200) return yield* transportFailure(response);
-    if (sha256BytesHex(response.body) !== input.blobId) {
+    const maximumRangeBytes = input.maximumBlobBytes ?? defaultMaximumBlobBytes;
+    if (!Number.isSafeInteger(maximumRangeBytes) || maximumRangeBytes <= 0) {
+      return yield* new TransportSizeLimitError({
+        artifact: input.blobId,
+        limit: maximumRangeBytes,
+      });
+    }
+    if (input.revisionId === undefined || input.blobBytes === undefined) {
+      return yield* new TransportMalformedResponseError({
+        operation: "retrieve blob",
+        message: "selected revision and signed blob length are required",
+      });
+    }
+    const chunks: Array<Buffer> = [];
+    let offset = 0;
+    do {
+      const end: number = input.blobBytes === 0
+        ? 0
+        : Math.min(input.blobBytes - 1, offset + maximumRangeBytes - 1);
+      const response: BinaryResponse = yield* transportRequest(
+        context.endpoint,
+        `/v1/transport/revisions/${encodeURIComponent(input.revisionId)}/blobs/${input.blobId}`,
+        context.certificate,
+        context.credential,
+        maximumRangeBytes,
+        input.timeoutMilliseconds ?? defaultTimeoutMilliseconds,
+        input.signal,
+        { start: offset, end },
+      );
+      if (input.blobBytes === 0) {
+        if (
+          response.status !== 200
+          || response.body.byteLength !== 0
+          || response.contentLength !== 0
+        ) {
+          return yield* new TransportMalformedResponseError({
+            operation: "retrieve empty blob",
+            message: "the source returned invalid empty blob metadata",
+          });
+        }
+        break;
+      }
+      if (response.status !== 206) return yield* transportFailure(response);
+      const range: RegExpExecArray | null = response.contentRange === undefined
+        ? null
+        : /^bytes (\d+)-(\d+)\/(\d+)$/u.exec(response.contentRange);
+      const observedStart = Number(range?.[1]);
+      const observedEnd = Number(range?.[2]);
+      const observedTotal: number = Number(range?.[3]);
+      if (
+        range === null
+        || observedStart !== offset
+        || observedEnd !== end
+        || observedTotal !== input.blobBytes
+        || response.body.byteLength !== end - offset + 1
+        || response.contentLength !== response.body.byteLength
+      ) {
+        return yield* new TransportMalformedResponseError({
+          operation: "retrieve blob range",
+          message: "the source returned inconsistent byte range metadata",
+        });
+      }
+      chunks.push(Buffer.from(response.body));
+      offset = end + 1;
+    } while (offset < input.blobBytes);
+    const bytes = Buffer.concat(chunks, input.blobBytes);
+    if (sha256BytesHex(bytes) !== input.blobId) {
       return yield* new TransportIntegrityError({
         artifact: input.blobId,
         message: "blob digest mismatch",
       });
     }
-    return response.body;
+    return bytes;
   });
 
 const atomicWrite = (
@@ -1178,11 +1243,15 @@ export const atomicCacheWrite = atomicWrite;
 const cachedBlob = async (
   directory: string,
   id: string,
+  expectedBytes: number,
 ): Promise<CachedBlob | undefined> => {
   const path = join(directory, id);
   try {
     const bytes = await readFile(path);
-    if (sha256BytesHex(bytes) === id) return { id: decode(BlobId)(id), path };
+    if (
+      bytes.byteLength === expectedBytes
+      && sha256BytesHex(bytes) === id
+    ) return { id: decode(BlobId)(id), path };
     await unlink(path);
     return undefined;
   } catch {
@@ -1205,14 +1274,47 @@ export const fetchRevision = (
       catch: (cause) =>
         cacheFailure("create follower transport cache", cause),
     });
-    const ids = [...new Set(
-      metadata.resources.flatMap((resource) => resource.blobs),
-    )];
+    const blobBytes = new Map<string, number>();
+    for (const resource of metadata.resources) {
+      const files = resource.spec.kind === "file"
+        ? [resource.spec]
+        : resource.spec.kind === "directory" || resource.spec.kind === "skill"
+        ? resource.spec.files
+        : [];
+      const references = files.flatMap((file) =>
+        file.blob === undefined || file.bytes === undefined
+          ? []
+          : [{ id: file.blob, bytes: file.bytes }]
+      );
+      if (
+        [...new Set(references.map((reference) => reference.id))].sort().join("\0")
+          !== [...resource.blobs].sort().join("\0")
+      ) {
+        return yield* new TransportIntegrityError({
+          artifact: resource.id,
+          message: "resource blob index does not match signed file metadata",
+        });
+      }
+      for (const reference of references) {
+        const existingBytes = blobBytes.get(reference.id);
+        if (existingBytes !== undefined && existingBytes !== reference.bytes) {
+          return yield* new TransportIntegrityError({
+            artifact: reference.id,
+            message: "blob has conflicting signed lengths",
+          });
+        }
+        blobBytes.set(reference.id, reference.bytes);
+      }
+    }
+    const ids = [...blobBytes.keys()];
     const blobs: Array<CachedBlob> = [];
     let downloadedBlobs = 0;
     let reusedBlobs = 0;
     for (const id of ids) {
-      const existing = yield* Effect.promise(() => cachedBlob(blobDirectory, id));
+      const blobId = decode(BlobId)(id);
+      const existing = yield* Effect.promise(() =>
+        cachedBlob(blobDirectory, id, blobBytes.get(id)!)
+      );
       if (existing !== undefined) {
         blobs.push(existing);
         reusedBlobs += 1;
@@ -1223,7 +1325,9 @@ export const fetchRevision = (
         tlsFingerprint: input.tlsFingerprint,
         credentialReference: input.credentialReference,
         sourceFingerprint: input.sourceFingerprint,
-        blobId: id,
+        revisionId: metadata.id,
+        blobId,
+        blobBytes: blobBytes.get(id)!,
         timeoutMilliseconds: input.timeoutMilliseconds,
         maximumBlobBytes: input.maximumBlobBytes,
         signal: input.signal,
@@ -1233,7 +1337,7 @@ export const fetchRevision = (
         try: () => atomicWrite(path, bytes),
         catch: (cause) => cacheFailure("cache verified blob", cause),
       });
-      blobs.push({ id, path });
+      blobs.push({ id: blobId, path });
       downloadedBlobs += 1;
     }
     const metadataPath = join(

@@ -21,14 +21,31 @@ import type { LocalOverlayEntry } from "../synchronization/synchronization.types
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
 
+export interface StoredResourceBlob {
+  readonly id: ContentDigest;
+  readonly content: Uint8Array;
+}
+
 export interface PublishRevisionInput {
   readonly revision: ProfileRevision;
+  readonly blobs?: ReadonlyArray<StoredResourceBlob> | undefined;
   readonly approval?: {
     readonly proposalDigest: ContentDigest;
     readonly reviewer: string;
     readonly reviewedAt: string;
     readonly recordedAt: string;
   } | undefined;
+}
+
+export interface ReadResourceBlobRangeInput {
+  readonly blob: ContentDigest;
+  readonly offset: number;
+  readonly maximumBytes: number;
+}
+
+export interface ResourceBlobRange {
+  readonly content: Uint8Array;
+  readonly totalBytes: number;
 }
 
 export interface RevisionBlobCandidate {

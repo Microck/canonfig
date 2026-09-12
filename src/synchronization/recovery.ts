@@ -231,6 +231,7 @@ const baseRevision = (revision: SynchronizationRecoveryInput["revision"]) => ({
     target: resource.target,
     groups: resource.groups,
     dependsOn: resource.dependsOn,
+    spec: resource.spec,
     blobs: resource.blobs,
     })),
   groups: revision.groups,

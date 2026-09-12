@@ -17,7 +17,6 @@ import { DeniedAgentCapabilityError } from "../../src/agent/agent-resolution.err
 import {
   ActionId,
   AgentTaskId,
-  BlobId,
   ContentDigest,
   GroupName,
   ProfileId,
@@ -48,9 +47,9 @@ import {
   SyncScheduleSchema,
   type SyncSchedule,
 } from "../../src/schedule/schedule-manager.types.ts";
+import { compileProfileCandidate } from "../../src/profile/compiler.ts";
 import {
   canonicalJson,
-  digestOf,
   directoryVerificationDigest,
   sha256BytesHex,
   sha256Hex,
@@ -162,19 +161,18 @@ describe("production follower orchestration", () => {
           },
         })),
       };
-      const canonicalBytes = canonicalJson(asJson(profile));
-      const digest = sha256Hex(canonicalBytes);
+      const compiled = compileProfileCandidate(profile);
+      const canonicalBytes = compiled.canonicalBytes;
+      const digest = compiled.digest;
       const unsigned = {
         id: decode(ProfileRevisionId)(`${profileId}:${digest}`), profileId, sequence: 1,
         canonicalBytes, digest, publishedAt: "2026-09-08T00:00:00Z",
         groups: [], signingKeyId: source.source.keyId,
-        resources: profile.resources.map((resource) => ({
-          id: decode(ResourceId)(resource.id), kind: resource.kind, policy: resource.policy ?? "ensure",
-          target: resource.target, dependsOn: [], blobs: [decode(BlobId)(digestOf(asJson(resource.spec)))],
-        })),
+        resources: compiled.resources,
       };
       yield* (yield* StateRepository).publishRevision({
         revision: { ...unsigned, signature: decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(revisionSigningPayload(unsigned)), privateKey).toString("base64url")}`) },
+        blobs: compiled.blobs,
       });
     }));
     const server = await sourceRuntime.runPromise(startSourceServer().pipe(Effect.provide(sourceLayer)));
@@ -238,19 +236,18 @@ describe("production follower orchestration", () => {
           verify: { method: "digest", digest: sha256Hex(content) },
         }],
       };
-      const canonicalBytes = canonicalJson(asJson(profile));
-      const digest = sha256Hex(canonicalBytes);
+      const compiled = compileProfileCandidate(profile);
+      const canonicalBytes = compiled.canonicalBytes;
+      const digest = compiled.digest;
       const unsigned = {
         id: decode(ProfileRevisionId)(`${profileId}:${digest}`), profileId, sequence,
         canonicalBytes, digest, publishedAt: `2026-09-07T00:00:${String(sequence).padStart(2, "0")}Z`,
         groups: [], signingKeyId: source.source.keyId,
-        resources: profile.resources.map((resource) => ({
-          id: decode(ResourceId)(resource.id), kind: resource.kind, policy: resource.policy ?? "replace",
-          target, dependsOn: [], blobs: [decode(BlobId)(digestOf(asJson(resource.spec)))],
-        })),
+        resources: compiled.resources,
       };
       await sourceRuntime.runPromise(Effect.flatMap(StateRepository, (repository) => repository.publishRevision({
         revision: { ...unsigned, signature: decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(revisionSigningPayload(unsigned)), privateKey).toString("base64url")}`) },
+        blobs: compiled.blobs,
       })));
     };
     await publish("Source one\n");
@@ -356,15 +353,15 @@ describe("production follower orchestration", () => {
         id: profileId, version: 2, name: "Schedule override", groups: [], resources: [],
         scheduleDefault: { type: "daily", at: "04:30", timezone: "local" },
       };
-      const canonicalBytes = canonicalJson(asJson(profile));
-      const digest = sha256Hex(canonicalBytes);
+      const compiled = compileProfileCandidate(profile);
       const unsigned = {
-        id: decode(ProfileRevisionId)(`${profileId}:${digest}`), profileId, sequence: 1,
-        canonicalBytes, digest, publishedAt: "2026-09-09T00:00:00Z",
-        groups: [], signingKeyId: source.source.keyId, resources: [],
+        id: decode(ProfileRevisionId)(`${profileId}:${compiled.digest}`), profileId, sequence: 1,
+        canonicalBytes: compiled.canonicalBytes, digest: compiled.digest, publishedAt: "2026-09-09T00:00:00Z",
+        groups: [], signingKeyId: source.source.keyId, resources: compiled.resources,
       };
       yield* (yield* StateRepository).publishRevision({
         revision: { ...unsigned, signature: decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(revisionSigningPayload(unsigned)), privateKey).toString("base64url")}`) },
+        blobs: compiled.blobs,
       });
     }));
     const server = await sourceRuntime.runPromise(startSourceServer().pipe(Effect.provide(sourceLayer)));
@@ -777,22 +774,11 @@ describe("production follower orchestration", () => {
           timezone: "local",
         },
       };
-      const canonicalBytes = canonicalJson(asJson(profile));
-      const digest = sha256Hex(canonicalBytes);
+      const compiled = compileProfileCandidate(profile);
+      const canonicalBytes = compiled.canonicalBytes;
+      const digest = compiled.digest;
       const id = decode(ProfileRevisionId)(`${profileId}:${digest}`);
-      const resources = profile.resources.map((resource) => {
-        const published = {
-          id: decode(ResourceId)(resource.id),
-          kind: resource.kind,
-          policy: resource.policy ?? "replace",
-          target: resource.target,
-          dependsOn: [],
-          blobs: [decode(BlobId)(digestOf(asJson(resource.spec)))],
-        };
-        return resource.groups === undefined
-          ? published
-          : { ...published, groups: resource.groups };
-      });
+      const resources = compiled.resources;
       const unsigned = {
         id,
         profileId,
@@ -823,9 +809,20 @@ describe("production follower orchestration", () => {
         resources,
         groups: profile.groups,
       };
-      yield* repository.publishRevision({ revision: signed });
+      yield* repository.publishRevision({
+        revision: signed,
+        blobs: compiled.blobs,
+      });
       return signed;
     }));
+    const publicBlobCount = new Set(
+      revision.resources
+        .filter((resource) => resource.groups === undefined)
+        .flatMap((resource) => resource.blobs),
+    ).size;
+    const authorizedBlobCount = new Set(
+      revision.resources.flatMap((resource) => resource.blobs),
+    ).size;
 
     const server = await sourceRuntime.runPromise(
       startSourceServer().pipe(Effect.provide(sourceLayer)),
@@ -992,7 +989,7 @@ describe("production follower orchestration", () => {
     expect(first).toMatchObject({
       revision: revision.id,
       downloadedBlobs: 0,
-      reusedBlobs: 3,
+      reusedBlobs: publicBlobCount,
       outcome: { outcome: "Converged" },
     });
     expect(await readFile(target, "utf8")).toBe(content);
@@ -1008,10 +1005,10 @@ describe("production follower orchestration", () => {
     );
     expect(second).toMatchObject({
       downloadedBlobs: 0,
-      reusedBlobs: 3,
+      reusedBlobs: publicBlobCount,
       outcome: { outcome: "Converged" },
     });
-    expect(server.blobRequests()).toBe(3);
+    expect(server.blobRequests()).toBe(publicBlobCount);
 
     const publicViewRevisions = await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>
@@ -1038,12 +1035,12 @@ describe("production follower orchestration", () => {
     );
     expect(alphaViewSync).toMatchObject({
       revision: revision.id,
-      downloadedBlobs: 1,
-      reusedBlobs: 3,
+      downloadedBlobs: authorizedBlobCount - publicBlobCount,
+      reusedBlobs: publicBlobCount,
       outcome: { outcome: "Converged" },
     });
     expect(await readFile(restrictedTarget, "utf8")).toBe("alpha-only content\n");
-    expect(server.blobRequests()).toBe(4);
+    expect(server.blobRequests()).toBe(authorizedBlobCount);
 
     const authorizedViewRevisions = await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>
@@ -1070,7 +1067,7 @@ describe("production follower orchestration", () => {
     expect(publicViewAgain).toMatchObject({
       revision: revision.id,
       downloadedBlobs: 0,
-      reusedBlobs: 3,
+      reusedBlobs: publicBlobCount,
       outcome: { outcome: "Converged" },
     });
     const emptyViewConfiguration = await Effect.runPromise(
@@ -1083,7 +1080,7 @@ describe("production follower orchestration", () => {
       at: "00:00",
       timezone: "local",
     });
-    expect(server.blobRequests()).toBe(4);
+    expect(server.blobRequests()).toBe(authorizedBlobCount);
     const stableViews = await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>
         repository.listRevisions()
@@ -1127,7 +1124,7 @@ describe("production follower orchestration", () => {
     expect(recovered).toMatchObject({
       revision: revision.id,
       downloadedBlobs: 0,
-      reusedBlobs: 3,
+      reusedBlobs: publicBlobCount,
       outcome: { outcome: "Converged", run: "process-restart-run" },
     });
 
@@ -1175,16 +1172,10 @@ describe("production follower orchestration", () => {
       ],
       scheduleDefault: { type: "daily", at: "01:15", timezone: "local" },
     };
-    const nextCanonicalBytes = canonicalJson(asJson(nextProfile));
-    const nextDigest = sha256Hex(nextCanonicalBytes);
-    const nextResources = nextProfile.resources.map((resource) => ({
-      id: decode(ResourceId)(resource.id),
-      kind: resource.kind,
-      policy: resource.policy ?? "replace",
-      target: resource.target,
-      dependsOn: [],
-      blobs: [decode(BlobId)(digestOf(asJson(resource.spec)))],
-    }));
+    const nextCompiled = compileProfileCandidate(nextProfile);
+    const nextCanonicalBytes = nextCompiled.canonicalBytes;
+    const nextDigest = nextCompiled.digest;
+    const nextResources = nextCompiled.resources;
     expect(nextResources.some((resource) => resource.id === "alpha-only-file")).toBe(false);
     const nextId = decode(ProfileRevisionId)(`${profileId}:${nextDigest}`);
     const nextUnsigned = {
@@ -1213,6 +1204,7 @@ describe("production follower orchestration", () => {
               }`,
             ),
           },
+          blobs: nextCompiled.blobs,
         })
       ),
     );
