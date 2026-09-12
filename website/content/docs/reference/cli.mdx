@@ -96,6 +96,14 @@ another profile. It is not a rollback: whatever the interrupted run already
 applied stays applied, and the next run reconciles it like any other follower
 state. Abandoning only stops the open run from blocking that.
 
+`status --json` includes a `completionReceipt` after enrollment. It reports the
+exact applied revision and separates signed publication, apply outcome,
+explicit client-load evidence, native scheduling, and independent journal
+verification. `secondRunNoOp` is true only when the latest converged run
+performed no filesystem, configuration, removal, or tool-install mutation.
+Scheduling remains `pending` until the native job is current and a real
+`sync --apply --no-input --scheduled` invocation has completed.
+
 ## Shared secrets
 
 ```text

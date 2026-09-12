@@ -250,7 +250,18 @@ describe("reviewed profile publication", () => {
     );
 
     expect(published.loaded).toEqual(published.revision);
+    const approval = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.loadRevisionApproval(published.revision.id)
+      ).pipe(Effect.provide(stateRepositoryLayer(fixture.database))),
+    );
+    expect(approval).toMatchObject({
+      proposalDigest: digestDiscoveryProposal(discovery),
+      revisionDigest: published.revision.digest,
+      reviewer: "reviewer@example.test",
+    });
     expect(published.revision.sequence).toBe(1);
+    expect(published.revision.scheduleDefault).toBeUndefined();
     expect(published.revision.id).toBe(
       `profile-publication:${published.revision.digest}`,
     );

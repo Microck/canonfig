@@ -9,6 +9,7 @@ import type {
   GroupName,
   ProfileId,
   ProfileRevisionId,
+  RunId,
 } from "../domain/brand.ts";
 import type { SourceIdentity } from "../domain/identity.ts";
 import type { ProfileRevision } from "../domain/profile.ts";
@@ -18,6 +19,7 @@ import type {
   CancelPendingEnrollmentInput,
   ConsumeEnrollmentInvitationInput,
   CreateEnrollmentInvitationInput,
+  DeploymentReceipt,
   EnrollmentSourceRecord,
   FollowerCredentialRecord,
   FinalizeEnrollmentInput,
@@ -28,12 +30,14 @@ import type {
   RecoveryState,
   RegisterFollowerInput,
   RemoveLocalOverlayInput,
+  RevisionApprovalRecord,
+  RunEvidenceSummary,
   SaveLocalOverlayInput,
-  StartRunInput,
   StateSnapshot,
   RevisionBlobCandidate,
   StoredEnrollmentInvitation,
   SaveFollowerSynchronizationConfigurationInput,
+  StartRunInput,
 } from "./state-repository.types.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
@@ -133,6 +137,18 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly completeRun: (
     input: CompleteRunInput,
   ) => Effect.Effect<void, StateRepositoryError>;
+  readonly loadDeploymentReceipt: (
+    run: RunId,
+  ) => Effect.Effect<DeploymentReceipt | undefined, StateRepositoryError>;
+  readonly latestDeploymentReceipt: (
+    follower: FollowerId,
+  ) => Effect.Effect<DeploymentReceipt | undefined, StateRepositoryError>;
+  readonly loadRevisionApproval: (
+    revision: ProfileRevisionId,
+  ) => Effect.Effect<RevisionApprovalRecord | undefined, StateRepositoryError>;
+  readonly loadRunEvidence: (
+    run: RunId,
+  ) => Effect.Effect<RunEvidenceSummary | undefined, StateRepositoryError>;
   readonly loadRecovery: (
     follower: FollowerId,
   ) => Effect.Effect<RecoveryState | undefined, StateRepositoryError>;

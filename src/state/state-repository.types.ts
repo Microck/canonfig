@@ -23,12 +23,67 @@ import type { FollowerSynchronizationConfiguration } from
 
 export interface PublishRevisionInput {
   readonly revision: ProfileRevision;
+  readonly approval?: {
+    readonly proposalDigest: ContentDigest;
+    readonly reviewer: string;
+    readonly reviewedAt: string;
+    readonly recordedAt: string;
+  } | undefined;
 }
 
 export interface RevisionBlobCandidate {
   readonly blob: ContentDigest;
   readonly revision: ProfileRevisionId;
   readonly resource: ResourceId;
+}
+
+/**
+ * A deployment receipt names the build that applied one completed run. It is
+ * the durable half of the completion receipt: audits can say which sources
+ * produced the deployed state on each machine.
+ */
+export interface DeploymentReceipt {
+  readonly run: RunId;
+  readonly follower: FollowerId;
+  readonly revision: ProfileRevisionId;
+  readonly packageVersion: string;
+  readonly buildIdentity: string;
+  readonly stateFormat: number;
+  readonly outcome: SynchronizationOutcome["outcome"];
+  readonly recordedAt: string;
+}
+
+/**
+ * The approval that authorized a revision, persisted at publish time. It
+ * binds the reviewer's accepted proposal digest to the exact revision digest
+ * publish produced, so the plan and approval stay bound to the revision the
+ * fleet applies instead of living only in the publish call.
+ */
+export interface RevisionApprovalRecord {
+  readonly revision: ProfileRevisionId;
+  readonly proposalDigest: ContentDigest;
+  readonly revisionDigest: ContentDigest;
+  readonly reviewer: string;
+  readonly reviewedAt: string;
+  readonly recordedAt: string;
+}
+
+/**
+ * Lean evidence for one finished run, backing the completion receipt without
+ * replaying the full journal. Verification counts come from journaled
+ * verification evidence; the mutating action count comes from the persisted
+ * plan, so a clean second run reads as a no-op (zero mutating actions).
+ */
+export interface RunEvidenceSummary {
+  readonly run: RunId;
+  readonly revision: ProfileRevisionId;
+  readonly outcome: SynchronizationOutcome["outcome"];
+  readonly completedAt: string;
+  readonly totalActions: number;
+  readonly mutatingActions: number;
+  readonly verifiedActions: number;
+  readonly passedVerifications: number;
+  readonly passedVerificationMethods: ReadonlyArray<string>;
 }
 
 export interface RegisterFollowerInput {

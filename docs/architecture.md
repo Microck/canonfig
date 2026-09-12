@@ -137,7 +137,7 @@ The Source Machine owns JSONC authoring files under its Canonfig source director
 
 `profile.jsonc` declares groups, resources, policies, dependencies, and an optional inherited schedule default. A Machine Profile does not apply a schedule: the native synchronization job belongs to the Follower Machine, which either inherits the profile default or chooses its own with `canonfig schedule set`. Reconciling that job happens after a converged run rather than as part of one, so a follower whose native scheduler does not work still converges. `tools.jsonc` is an agent-readable catalog of every discovered CLI or tool, including invocation evidence, upstream URL, supported platforms, installation recipes, verification, configuration files, and login requirements.
 
-Publishing converts JSONC into a canonical encoded Profile Revision. Comments and authoring layout never affect the revision digest.
+Publishing converts JSONC into a canonical encoded Profile Revision. Comments and authoring layout never affect the revision digest. The accepted proposal digest, reviewer, and signed revision digest commit in the same SQLite transaction as the immutable revision.
 
 ### Profile Resource kinds
 
@@ -438,7 +438,13 @@ Followers use native schedulers:
 - macOS: launchd user agent
 - Windows: Task Scheduler
 
-The default schedule is daily at 00:00 in the follower's configured timezone. Weekly and custom calendar schedules are supported. Native jobs invoke `canonfig sync --apply --no-input`; the application does not keep a follower daemon running.
+There is no built-in schedule. A follower either inherits an optional profile default after its first converged apply or explicitly selects its own calendar. Native jobs invoke `canonfig sync --apply --no-input --scheduled`; the application does not keep a follower daemon running. A schedule is verified only when its native definition is current and a scheduled invocation has completed.
+
+`canonfig status --json` renders a completion receipt from durable revision,
+deployment, action-journal, scheduler, and build evidence. Publication, apply,
+explicit client loading, scheduling, and independent verification remain
+separate states; a successful generic command check never implies that a
+client loaded the resource.
 
 ## Effect program design
 

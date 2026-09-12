@@ -14,7 +14,7 @@ import {
   ResourceId,
   RunId,
   type FollowerId,
-  type ProfileRevisionId,
+  ProfileRevisionId,
 } from "../src/domain/brand.ts";
 import {
   FollowerIdentity,
@@ -336,6 +336,66 @@ describe("StateRepository SQLite adapter", () => {
       ).run("revision-1")
     ).toThrow(/immutable/u);
     database.close();
+  });
+
+  it("persists publication approval atomically with its exact revision", async () => {
+    const path = databasePath();
+    const approved = await runWithRepository(
+      path,
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        const published = revision();
+        yield* repository.publishRevision({
+          revision: published,
+          approval: {
+            proposalDigest: digestB,
+            reviewer: "operator",
+            reviewedAt: "2026-08-15T12:00:00Z",
+            recordedAt: "2026-08-15T12:00:01Z",
+          },
+        });
+        return yield* repository.loadRevisionApproval(published.id);
+      }),
+    );
+    expect(approved).toEqual({
+      revision: "revision-1",
+      proposalDigest: digestB,
+      revisionDigest: digestA,
+      reviewer: "operator",
+      reviewedAt: "2026-08-15T12:00:00Z",
+      recordedAt: "2026-08-15T12:00:01Z",
+    });
+
+    const database = new DatabaseSync(path);
+    database.exec(`
+      CREATE TRIGGER reject_revision_approval
+      BEFORE INSERT ON revision_approvals
+      BEGIN
+        SELECT RAISE(ABORT, 'reject approval fixture');
+      END
+    `);
+    database.close();
+    const rolledBack = await runWithRepository(
+      path,
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        const failed = yield* Effect.exit(repository.publishRevision({
+          revision: revision("revision-2", 2),
+          approval: {
+            proposalDigest: digestC,
+            reviewer: "operator",
+            reviewedAt: "2026-08-15T12:01:00Z",
+            recordedAt: "2026-08-15T12:01:01Z",
+          },
+        }));
+        const stored = yield* repository.findRevision(
+          decode(ProfileRevisionId)("revision-2"),
+        );
+        return { failed, stored };
+      }),
+    );
+    expect(rolledBack.failed._tag).toBe("Failure");
+    expect(rolledBack.stored).toBeUndefined();
   });
 
   it("rolls back a failed run-start transaction", async () => {
@@ -722,5 +782,155 @@ describe("StateRepository SQLite adapter", () => {
         mode: 0o640,
       }],
     }]);
+  });
+
+  it("records deployment, verification, client-load, and no-op evidence separately", async () => {
+    const path = databasePath();
+    const result = await runWithRepository(
+      path,
+      Effect.gen(function*() {
+        yield* seed();
+        const repository = yield* StateRepository;
+        const firstPlan = decode(SynchronizationPlanSchema)({
+          follower: "follower-1",
+          revision: "revision-1",
+          encoded: "first-run",
+          actions: [
+            {
+              id: "write",
+              resource: "resource-write",
+              kind: "write-file",
+              detail: {
+                kind: "write-file",
+                target: "~/.config/client",
+                digest: digestA,
+              },
+              before: [],
+            },
+            {
+              id: "load",
+              resource: "resource-load",
+              kind: "verify-only",
+              detail: { kind: "verify-only", method: "command" },
+              before: ["write"],
+            },
+            {
+              id: "transfer",
+              resource: "resource-transfer",
+              kind: "transfer-blob",
+              detail: { kind: "transfer-blob", blob: digestA, bytes: 1 },
+              before: [],
+            },
+          ],
+        });
+        yield* start(
+          repository,
+          "run-evidence",
+          follower().id,
+          revision().id,
+          firstPlan,
+        );
+        for (const [action, method] of [
+          ["write", "sha256"],
+          ["load", "client-load:codex"],
+          ["transfer", "sha256-and-size"],
+        ] as const) {
+          yield* repository.journalAction({
+            run: asRunId("run-evidence"),
+            action: asActionId(action),
+            state: "succeeded",
+            recordedAt: "2026-08-15T12:02:00Z",
+            attempt: 1,
+            verification: { status: "passed", method },
+          });
+        }
+        yield* repository.completeRun({
+          run: asRunId("run-evidence"),
+          completedAt: "2026-08-15T12:03:00Z",
+          outcome: decode(SynchronizationOutcomeSchema)({
+            outcome: "Converged",
+            run: "run-evidence",
+            verified: ["resource-write", "resource-load"],
+          }),
+          appliedResources: [],
+        });
+        const firstReceipt = yield* repository.loadDeploymentReceipt(
+          asRunId("run-evidence"),
+        );
+        const firstEvidence = yield* repository.loadRunEvidence(
+          asRunId("run-evidence"),
+        );
+
+        const secondPlan = decode(SynchronizationPlanSchema)({
+          follower: "follower-1",
+          revision: "revision-1",
+          encoded: "second-run",
+          actions: [{
+            id: "noop",
+            resource: "resource-write",
+            kind: "no-op",
+            detail: { kind: "no-op" },
+            before: [],
+          }],
+        });
+        yield* start(
+          repository,
+          "run-noop",
+          follower().id,
+          revision().id,
+          secondPlan,
+        );
+        yield* repository.journalAction({
+          run: asRunId("run-noop"),
+          action: asActionId("noop"),
+          state: "succeeded",
+          recordedAt: "2026-08-15T12:04:00Z",
+          attempt: 1,
+          verification: { status: "passed", method: "sha256" },
+        });
+        yield* repository.completeRun({
+          run: asRunId("run-noop"),
+          completedAt: "2026-08-15T12:05:00Z",
+          outcome: decode(SynchronizationOutcomeSchema)({
+            outcome: "Converged",
+            run: "run-noop",
+            verified: ["resource-write"],
+          }),
+          appliedResources: [],
+        });
+        const latestReceipt = yield* repository.latestDeploymentReceipt(
+          follower().id,
+        );
+        const secondEvidence = yield* repository.loadRunEvidence(
+          asRunId("run-noop"),
+        );
+        return { firstReceipt, firstEvidence, latestReceipt, secondEvidence };
+      }),
+    );
+
+    expect(result.firstReceipt).toMatchObject({
+      run: "run-evidence",
+      follower: "follower-1",
+      revision: "revision-1",
+      outcome: "Converged",
+    });
+    expect(result.firstEvidence).toMatchObject({
+      totalActions: 3,
+      mutatingActions: 1,
+      verifiedActions: 3,
+      passedVerifications: 3,
+      passedVerificationMethods: [
+        "client-load:codex",
+        "sha256",
+        "sha256-and-size",
+      ],
+    });
+    expect(result.latestReceipt?.run).toBe("run-noop");
+    expect(result.secondEvidence).toMatchObject({
+      totalActions: 1,
+      mutatingActions: 0,
+      verifiedActions: 1,
+      passedVerifications: 1,
+    });
   });
 });

@@ -694,6 +694,113 @@ const followerCommandsLayer = (
         };
       });
 
+    const completionReceipt = (
+      configuration: FollowerSynchronizationConfiguration,
+    ) =>
+      Effect.gen(function*() {
+        const deployment = yield* mapFailure(
+          repository.latestDeploymentReceipt(configuration.follower.id),
+        );
+        if (deployment === undefined) {
+          const notReached = (detail: string) => ({
+            status: "not-reached" as const,
+            detail,
+          });
+          return {
+            published: notReached("no completed synchronization run"),
+            applied: notReached("no completed synchronization run"),
+            clientLoaded: notReached("no completed synchronization run"),
+            scheduled: notReached("first apply has not completed"),
+            independentlyVerified: notReached("no completed synchronization run"),
+            secondRunNoOp: false,
+          };
+        }
+        const [revision, approval, runEvidence] = yield* Effect.all([
+          mapFailure(repository.findRevision(deployment.revision)),
+          mapFailure(repository.loadRevisionApproval(deployment.revision)),
+          mapFailure(repository.loadRunEvidence(deployment.run)),
+        ]);
+        const stage = (
+          verified: boolean,
+          detail: string,
+        ) => ({
+          status: verified ? "verified" as const : "not-verified" as const,
+          detail,
+        });
+        const clientMethods = runEvidence?.passedVerificationMethods
+          .filter((method) => method.startsWith("client-load:")) ?? [];
+        const scheduleInput = desiredScheduleInput(
+          configuration.scheduleOverride,
+          configuration.scheduleDefault,
+        );
+        const scheduled = scheduleInput === undefined
+          ? {
+            status: "not-selected" as const,
+            detail: "this follower has no selected native schedule",
+          }
+          : yield* schedules.status(scheduleInput).pipe(
+            Effect.match({
+              onFailure: (error) => ({
+                status: "not-verified" as const,
+                detail: error.message,
+              }),
+              onSuccess: (status) => {
+                const lastFire = readScheduleFires(statePath).at(-1);
+                const verified = status.state === "current"
+                  && lastFire?.outcome === "completed";
+                return {
+                  status: verified ? "verified" as const : "pending" as const,
+                  detail: verified
+                    ? `native schedule is current; unattended run completed at ${lastFire.at}`
+                    : status.state === "current"
+                    ? "native schedule is current but no completed unattended run is recorded"
+                    : `native schedule state is ${status.state}`,
+                };
+              },
+            }),
+          );
+        const allVerificationsPassed = runEvidence !== undefined
+          && runEvidence.outcome === "Converged"
+          && runEvidence.verifiedActions === runEvidence.passedVerifications;
+        const approvalBound = revision !== undefined
+          && approval?.revisionDigest === revision.digest;
+        return {
+          run: deployment.run,
+          revision: deployment.revision,
+          published: stage(
+            revision !== undefined,
+            revision === undefined
+              ? "the applied revision is not stored locally"
+              : approval !== undefined && approvalBound
+              ? `signed revision is stored with approval ${approval.proposalDigest}`
+              : "signed revision is stored; publication approval is held by the Source",
+          ),
+          applied: stage(
+            deployment.outcome === "Converged",
+            `deployment receipt outcome is ${deployment.outcome}`,
+          ),
+          clientLoaded: stage(
+            clientMethods.length > 0,
+            clientMethods.length > 0
+              ? `client loading verified by ${clientMethods.join(", ")}`
+              : "the revision declared no successful client-load verification",
+          ),
+          scheduled,
+          independentlyVerified: stage(
+            allVerificationsPassed,
+            runEvidence === undefined
+              ? "completed-run verification evidence is unavailable"
+              : `${runEvidence.passedVerifications}/${runEvidence.verifiedActions} journaled verifications passed`,
+          ),
+          secondRunNoOp: runEvidence?.mutatingActions === 0,
+          build: {
+            packageVersion: deployment.packageVersion,
+            identity: deployment.buildIdentity,
+            stateFormat: deployment.stateFormat,
+          },
+        };
+      });
+
     const service: FollowerCommandsService = {
       enroll: (input) =>
         input.selectedProfile === undefined
@@ -990,11 +1097,13 @@ const followerCommandsLayer = (
                   selectedProfile: configuration.selectedProfile,
                   appliedRevisions: revisions,
                 }).pipe(Effect.provideService(MachineState, machine));
+                const receipt = yield* completionReceipt(configuration);
                 return {
                   ...state,
                   localOverlay: configuration.localOverlay ?? [],
                   lifecycle,
                   tunnel: tunnelReport,
+                  completionReceipt: receipt,
                 };
               })
             ),
@@ -1003,12 +1112,22 @@ const followerCommandsLayer = (
           : mapFailure(repository.loadState(follower)).pipe(
             Effect.flatMap((state) =>
               mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-                Effect.map((configuration) => ({
-                  ...state,
-                  localOverlay: configuration?.follower.id === follower
-                    ? configuration.localOverlay ?? []
-                    : [],
-                })),
+                Effect.flatMap((configuration) =>
+                  Effect.gen(function*() {
+                    const receipt = configuration?.follower.id === follower
+                      ? yield* completionReceipt(configuration)
+                      : undefined;
+                    const base = {
+                      ...state,
+                      localOverlay: configuration?.follower.id === follower
+                        ? configuration.localOverlay ?? []
+                        : [],
+                    };
+                    return receipt === undefined
+                      ? base
+                      : { ...base, completionReceipt: receipt };
+                  })
+                ),
               )
             ),
             Effect.map(payload),

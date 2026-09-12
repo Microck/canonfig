@@ -54,6 +54,7 @@ import type {
   CompleteRunInput,
   ConsumeEnrollmentInvitationInput,
   CreateEnrollmentInvitationInput,
+  DeploymentReceipt,
   DriftRecord,
   EnrollmentSourceRecord,
   FinalizeEnrollmentInput,
@@ -64,8 +65,10 @@ import type {
   RecordDriftInput,
   RecoveryState,
   RegisterFollowerInput,
+  RevisionApprovalRecord,
   RevisionBlobCandidate,
   RemoveLocalOverlayInput,
+  RunEvidenceSummary,
   SaveFollowerSynchronizationConfigurationInput,
   SaveLocalOverlayInput,
   StartRunInput,
@@ -100,6 +103,31 @@ const OpenRunIdentityRow = Schema.Struct({
   creating_version: Schema.NullOr(Schema.String),
   creating_identity: Schema.NullOr(Schema.String),
   state_format: Schema.NullOr(Schema.Number),
+});
+const DeploymentReceiptRow = Schema.Struct({
+  run_id: RunId,
+  follower_id: FollowerId,
+  revision_id: ProfileRevisionId,
+  package_version: Schema.String,
+  build_identity: Schema.String,
+  state_format: Schema.Number,
+  outcome: Schema.String,
+  recorded_at: Schema.String,
+});
+const RevisionApprovalRow = Schema.Struct({
+  revision_id: ProfileRevisionId,
+  proposal_digest: ContentDigest,
+  revision_digest: ContentDigest,
+  reviewer: Schema.String,
+  reviewed_at: Schema.String,
+  recorded_at: Schema.String,
+});
+const CompletedRunRow = Schema.Struct({
+  id: RunId,
+  revision_id: ProfileRevisionId,
+  status: Schema.String,
+  completed_at: Schema.String,
+  plan_json: Schema.String,
 });
 const ActionJournalRow = Schema.Struct({
   action_id: ActionId,
@@ -1216,47 +1244,69 @@ const makeRepository = Effect.gen(function*() {
             "profile revision",
             revision.id,
           );
-          if (encodeJson(stored) === encoded) return;
-          return yield* new RevisionImmutableError({
-            revision: revision.id,
-            message: "the revision id already names different immutable content",
-          });
-        }
-        yield* sql`
-          INSERT INTO profile_revisions (
-            id,
-            profile_id,
-            sequence,
-            canonical_bytes,
-            digest,
-            signature,
-            published_at,
-            revision_json
-          ) VALUES (
-            ${revision.id},
-            ${revision.profileId},
-            ${revision.sequence},
-            ${revision.canonicalBytes},
-            ${revision.digest},
-            ${revision.signature},
-            ${revision.publishedAt},
-            ${encoded}
-          )
-        `;
-        for (const resource of revision.resources) {
-          for (const blob of resource.blobs) {
-            yield* sql`
-              INSERT OR IGNORE INTO profile_revision_blobs (
-                blob_id,
-                revision_id,
-                resource_id
-              ) VALUES (
-                ${Schema.decodeUnknownSync(BlobId)(blob)},
-                ${revision.id},
-                ${resource.id}
-              )
-            `;
+          if (encodeJson(stored) !== encoded) {
+            return yield* new RevisionImmutableError({
+              revision: revision.id,
+              message: "the revision id already names different immutable content",
+            });
           }
+        } else {
+          yield* sql`
+            INSERT INTO profile_revisions (
+              id,
+              profile_id,
+              sequence,
+              canonical_bytes,
+              digest,
+              signature,
+              published_at,
+              revision_json
+            ) VALUES (
+              ${revision.id},
+              ${revision.profileId},
+              ${revision.sequence},
+              ${revision.canonicalBytes},
+              ${revision.digest},
+              ${revision.signature},
+              ${revision.publishedAt},
+              ${encoded}
+            )
+          `;
+          for (const resource of revision.resources) {
+            for (const blob of resource.blobs) {
+              yield* sql`
+                INSERT OR IGNORE INTO profile_revision_blobs (
+                  blob_id,
+                  revision_id,
+                  resource_id
+                ) VALUES (
+                  ${Schema.decodeUnknownSync(BlobId)(blob)},
+                  ${revision.id},
+                  ${resource.id}
+                )
+              `;
+            }
+          }
+        }
+        if (input.approval !== undefined) {
+          yield* sql`
+            INSERT INTO revision_approvals (
+              revision_id,
+              proposal_digest,
+              revision_digest,
+              reviewer,
+              reviewed_at,
+              recorded_at
+            ) VALUES (
+              ${revision.id},
+              ${input.approval.proposalDigest},
+              ${revision.digest},
+              ${input.approval.reviewer},
+              ${input.approval.reviewedAt},
+              ${input.approval.recordedAt}
+            )
+            ON CONFLICT(revision_id) DO NOTHING
+          `;
         }
       });
       yield* sql.withTransaction(transaction).pipe(
@@ -1880,6 +1930,186 @@ const makeRepository = Effect.gen(function*() {
       );
     },
   );
+  const receiptOutcomes = [
+    "Converged",
+    "HumanActionRequired",
+    "FollowerDrift",
+    "Failed",
+    "Interrupted",
+  ] as const;
+
+  const decodeReceipt = (
+    row: Schema.Schema.Type<typeof DeploymentReceiptRow>,
+    entity: string,
+  ): Effect.Effect<DeploymentReceipt, RepositoryDecodeError> => {
+    const outcome = receiptOutcomes.find((candidate) => candidate === row.outcome);
+    if (outcome === undefined) {
+      return Effect.fail(new RepositoryDecodeError({
+        entity,
+        id: row.run_id,
+        message: `unknown deployment receipt outcome: ${row.outcome}`,
+      }));
+    }
+    return Effect.succeed({
+      run: row.run_id,
+      follower: row.follower_id,
+      revision: row.revision_id,
+      packageVersion: row.package_version,
+      buildIdentity: row.build_identity,
+      stateFormat: row.state_format,
+      outcome,
+      recordedAt: row.recorded_at,
+    });
+  };
+
+  const loadDeploymentReceipt = Effect.fn("StateRepository.loadDeploymentReceipt")(
+    function*(run: RunIdType): Effect.fn.Return<DeploymentReceipt | undefined, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT
+          receipts.run_id,
+          receipts.follower_id,
+          runs.revision_id,
+          receipts.package_version,
+          receipts.build_identity,
+          receipts.state_format,
+          receipts.outcome,
+          receipts.recorded_at
+        FROM deployment_receipts AS receipts
+        JOIN synchronization_runs AS runs ON runs.id = receipts.run_id
+        WHERE receipts.run_id = ${run}
+      `.pipe(Effect.mapError(sqlError("load deployment receipt")));
+      const decoded = yield* decodeRows(DeploymentReceiptRow, rows, "deployment receipt", run);
+      const row = decoded[0];
+      if (row === undefined) return undefined;
+      return yield* decodeReceipt(row, "deployment receipt");
+    },
+  );
+
+  const latestDeploymentReceipt = Effect.fn("StateRepository.latestDeploymentReceipt")(
+    function*(follower: FollowerIdType): Effect.fn.Return<DeploymentReceipt | undefined, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT
+          receipts.run_id,
+          receipts.follower_id,
+          runs.revision_id,
+          receipts.package_version,
+          receipts.build_identity,
+          receipts.state_format,
+          receipts.outcome,
+          receipts.recorded_at
+        FROM deployment_receipts AS receipts
+        JOIN synchronization_runs AS runs ON runs.id = receipts.run_id
+        WHERE receipts.follower_id = ${follower}
+        ORDER BY receipts.recorded_at DESC
+        LIMIT 1
+      `.pipe(Effect.mapError(sqlError("load latest deployment receipt")));
+      const decoded = yield* decodeRows(DeploymentReceiptRow, rows, "deployment receipt", follower);
+      const row = decoded[0];
+      if (row === undefined) return undefined;
+      return yield* decodeReceipt(row, "deployment receipt");
+    },
+  );
+
+
+  const loadRevisionApproval = Effect.fn("StateRepository.loadRevisionApproval")(
+    function*(revision: ProfileRevisionIdType): Effect.fn.Return<RevisionApprovalRecord | undefined, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT
+          revision_id,
+          proposal_digest,
+          revision_digest,
+          reviewer,
+          reviewed_at,
+          recorded_at
+        FROM revision_approvals
+        WHERE revision_id = ${revision}
+      `.pipe(Effect.mapError(sqlError("load revision approval")));
+      const decoded = yield* decodeRows(RevisionApprovalRow, rows, "revision approval", revision);
+      const row = decoded[0];
+      if (row === undefined) return undefined;
+      return {
+        revision: row.revision_id,
+        proposalDigest: row.proposal_digest,
+        revisionDigest: row.revision_digest,
+        reviewer: row.reviewer,
+        reviewedAt: row.reviewed_at,
+        recordedAt: row.recorded_at,
+      };
+    },
+  );
+  const loadRunEvidence = Effect.fn("StateRepository.loadRunEvidence")(
+    function*(run: RunIdType): Effect.fn.Return<RunEvidenceSummary | undefined, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT id, revision_id, status, completed_at, plan_json
+        FROM synchronization_runs
+        WHERE id = ${run}
+          AND status NOT IN ('applying', 'Interrupted')
+          AND completed_at IS NOT NULL
+      `.pipe(Effect.mapError(sqlError("load completed synchronization run")));
+      const decoded = yield* decodeRows(CompletedRunRow, rows, "completed synchronization run", run);
+      const row = decoded[0];
+      if (row === undefined) return undefined;
+      const outcome = receiptOutcomes.find((candidate) => candidate === row.status);
+      if (outcome === undefined) {
+        return yield* new RepositoryDecodeError({
+          entity: "completed synchronization run",
+          id: run,
+          message: `unknown run outcome: ${row.status}`,
+        });
+      }
+      const plan = yield* parseJson(
+        SynchronizationPlanSchema,
+        row.plan_json,
+        "synchronization plan",
+        row.id,
+      );
+      const verificationRows = yield* sql`
+        SELECT verification_json
+        FROM action_journal
+        WHERE run_id = ${run}
+          AND verification_json IS NOT NULL
+      `.pipe(Effect.mapError(sqlError("load run verification evidence")));
+      const encoded = yield* decodeRows(
+        Schema.Struct({ verification_json: Schema.String }),
+        verificationRows,
+        "run verification evidence",
+        run,
+      );
+      let passedVerifications = 0;
+      const passedVerificationMethods: Array<string> = [];
+      for (const [index, stored] of encoded.entries()) {
+        const evidence = yield* parseJson(
+          VerificationEvidenceSchema,
+          stored.verification_json,
+          "run verification evidence",
+          `${run}:${index}`,
+        );
+        if (evidence.status === "passed") {
+          passedVerifications += 1;
+          passedVerificationMethods.push(evidence.method);
+        }
+      }
+      return {
+        run: row.id,
+        revision: row.revision_id,
+        outcome,
+        completedAt: row.completed_at,
+        totalActions: plan.actions.length,
+        mutatingActions: plan.actions.filter((action) =>
+          [
+            "write-file",
+            "write-config",
+            "mirror-directory",
+            "remove-resource",
+            "install-tool",
+          ].includes(action.kind)
+        ).length,
+        verifiedActions: encoded.length,
+        passedVerifications,
+        passedVerificationMethods: [...new Set(passedVerificationMethods)].sort(),
+      };
+    },
+  );
 
   const loadRecovery = Effect.fn("StateRepository.loadRecovery")(
     function*(follower: FollowerIdType): Effect.fn.Return<RecoveryState | undefined, StateRepositoryError> {
@@ -2177,6 +2407,10 @@ const makeRepository = Effect.gen(function*() {
     journalAction,
     recordDrift,
     completeRun,
+    loadDeploymentReceipt,
+    latestDeploymentReceipt,
+    loadRevisionApproval,
+    loadRunEvidence,
     loadRecovery,
     loadOpenRunIdentity,
     loadState,

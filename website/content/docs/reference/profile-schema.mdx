@@ -207,6 +207,19 @@ The v2 contract supports digest, command, executable-present,
 credential-present, and symlink verification. Allowed methods depend on resource
 kind. Verification is mandatory after mutation, including after agent apply.
 
+Command verification proves only that its declared process exited successfully.
+Set `"proves": "client-load"` only when that command launches the real client
+and makes it load the applied resource. Canonfig records that evidence
+separately from digest and executable checks:
+
+```json
+{
+  "method": "command",
+  "command": ["client", "--check-config"],
+  "proves": "client-load"
+}
+```
+
 ## Applied Resource Records
 
 An **Applied Resource Record** stores the exact resource revision, digest,

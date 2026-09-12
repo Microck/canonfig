@@ -51,6 +51,12 @@ interface WriteFileActionDetail {
   executable?: boolean;
   mode?: number;
   previousSourceDigest?: string;
+  adoptionNotice?: string;
+}
+
+interface WriteFileDraft extends ResourceActionDraft {
+  readonly kind: "write-file";
+  readonly detail: WriteFileActionDetail;
 }
 
 interface DriftConflictActionDetail {
@@ -320,7 +326,7 @@ const writeFile = (
   digest: ContentDigest,
   executable?: boolean | undefined,
   mode?: number | undefined,
-): ResourceActionDraft => {
+): WriteFileDraft => {
   const detail: WriteFileActionDetail = {
     kind: "write-file",
     target: context.resource.target,
@@ -569,7 +575,18 @@ const planAppendLocal = (context: ResourcePlanningContext): ReadonlyArray<Resour
     return [driftConflict(context, desired.digest, observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
   }
   if (observed.managedSourceDigest === undefined) {
-    return [writeFile(context, desired.digest, false, desired.mode)];
+    const draft = writeFile(context, desired.digest, false, desired.mode);
+    const current = observedDigest(context);
+    if (current !== undefined && current !== desired.digest) {
+      return [{
+        kind: "write-file",
+        detail: {
+          ...draft.detail,
+          adoptionNotice: `First adoption of ${context.resource.target}: the existing file differs from the Source payload, so its current content is preserved as follower-local text. Canonfig cannot tell an old shared rule from a deliberate local addition; move shared rules into the Source profile to manage them.`,
+        },
+      }];
+    }
+    return [draft];
   }
   const sourceObserved = { ...observed, digest: observed.managedSourceDigest };
   // Reuse the file permission and three-way drift rules with the owned payload.

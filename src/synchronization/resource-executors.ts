@@ -1684,7 +1684,12 @@ export const verifyResource = (
   const desired = context.desired;
   const verification = context.verification;
   if (verification.method === "command") {
-    return verifyCommand(context, verification.command, verification.expectContains);
+    return verifyCommand(
+      context,
+      verification.command,
+      verification.expectContains,
+      verification.proves,
+    );
   }
   if (verification.method === "symlink") {
     return verifySymlink(context, verification.target);
@@ -1772,6 +1777,7 @@ const verifyCommand = (
   context: ResourceExecutionContext,
   command: ReadonlyArray<string>,
   expectContains?: string,
+  proves?: "client-load",
 ): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const [name, ...arguments_] = command;
@@ -1797,7 +1803,7 @@ const verifyCommand = (
     return {
       passed: result.exitCode === 0
         && (expectContains === undefined || output.includes(expectContains)),
-      method: `command:${name}`,
+      method: `${proves === "client-load" ? "client-load" : "command"}:${name}`,
       exitCode: result.exitCode ?? undefined,
     };
   });

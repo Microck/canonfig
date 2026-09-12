@@ -898,7 +898,19 @@ describe("packed Canonfig executable", () => {
 
     const status = invoke(followerHome, ["status", "--json"]);
     expect(status.status, status.stderr).toBe(0);
-    expect(JSON.parse(status.stdout).data.follower.id).toBe(follower);
+    const statusData = JSON.parse(status.stdout).data;
+    expect(statusData.follower.id).toBe(follower);
+    expect(statusData.completionReceipt.revision).toMatch(
+      new RegExp(`^${packedRevision}:view:[a-f0-9]{64}$`, "u"),
+    );
+    expect(statusData.completionReceipt).toMatchObject({
+      published: { status: "verified" },
+      applied: { status: "verified" },
+      clientLoaded: { status: "not-verified" },
+      scheduled: { status: "not-selected" },
+      independentlyVerified: { status: "verified" },
+      secondRunNoOp: true,
+    });
     const recovery = invoke(followerHome, ["recover", "--no-input", "--json"]);
     expect(recovery.status).toBe(2);
     expect(recovery.stdout).toBe("");
@@ -1039,12 +1051,6 @@ npm install --global canonfig-fixture@1.0.0
       new Set(["agents", "hook", "mcp", "package-metadata"]),
     );
 
-    const configV1 = JSON.stringify({
-      canonical: { enabled: true, removed: "v1" },
-    }, undefined, 2) + "\n";
-    const configV2 = JSON.stringify({
-      canonical: { enabled: false },
-    }, undefined, 2) + "\n";
     const directoryV1 = [
       { path: "keep.txt", content: "directory v1\n" },
       { path: "remove.txt", content: "owned v1\n" },
@@ -1110,8 +1116,13 @@ npm install --global canonfig-fixture@1.0.0
               : [{ path: "canonical.enabled", value: false }],
           },
           verify: {
-            method: "digest",
-            digest: sha256(version === 1 ? configV1 : configV2),
+            method: "command",
+            command: [
+              process.execPath,
+              "--eval",
+              "JSON.parse(require('node:fs').readFileSync(require('node:path').join(process.env.HOME, '.canonfig-packed-multi/settings.json'), 'utf8'));",
+            ],
+            proves: "client-load",
           },
         },
         {
@@ -1332,91 +1343,6 @@ npm install --global canonfig-fixture@1.0.0
     expect(statSync(resolve(workstationHome, ".canonfig", "state.sqlite")).isFile())
       .toBe(true);
 
-    // The follower owns its native job, so it has none until it asks for one.
-    // `schedule status` used to render a built-in default whether or not
-    // anything was scheduled, which is why the only schedule that could ever
-    // read `current` was a daily 00:00 job installed from PATH.
-    const beforeAnySchedule = requireSuccess(
-      invoke(workstationHome, ["schedule", "status", "--json"]),
-      "report no schedule before one is chosen",
-    );
-    expect(beforeAnySchedule.data).toEqual({ state: "disabled" });
-    const schedulerInstall = invoke(workstationHome, [
-      "schedule",
-      "set",
-      "daily@00:00",
-      "--json",
-    ]);
-    let schedulerAvailable = schedulerInstall.status === 0;
-    if (!schedulerAvailable && process.platform === "linux") {
-      const simulatedSystemctl = resolve(fixtureBin, "systemctl-simulated");
-      writeFileSync(simulatedSystemctl, `#!/bin/sh
-set -eu
-operation="\${2:-}"
-marker="$HOME/.canonfig-packed-systemd-enabled"
-case "$operation" in
-  daemon-reload) exit 0 ;;
-  is-enabled)
-    if test -f "$marker"; then
-      printf 'enabled\n'
-      exit 0
-    fi
-    printf 'disabled\n'
-    exit 1
-    ;;
-  is-active)
-    if test -f "$marker"; then
-      printf 'active\n'
-      exit 0
-    fi
-    printf 'inactive\n'
-    exit 3
-    ;;
-  enable) touch "$marker" ;;
-  disable) rm -f "$marker" ;;
-  *) exit 0 ;;
-esac
-`);
-      chmodSync(simulatedSystemctl, 0o700);
-      packedSchedulerEnvironment = {
-        CANONFIG_SYSTEMCTL: simulatedSystemctl,
-      };
-      const simulatedInstall = invoke(workstationHome, [
-        "schedule",
-        "set",
-        "daily@00:00",
-        "--json",
-      ]);
-      requireSuccess(simulatedInstall, "install simulated Linux scheduler");
-      schedulerAvailable = true;
-    }
-    if (!schedulerAvailable) {
-      console.warn(
-        `native scheduler installation unavailable on ${process.platform}; `
-          + "packed multi-follower apply coverage is limited to plan/transport "
-          + `and rendering (${schedulerInstall.stderr.trim()})`,
-      );
-      return;
-    }
-    const schedulerState = requireSuccess(
-      invoke(workstationHome, ["schedule", "status", "--json"]),
-      "verify installed native scheduler",
-    );
-    expect(schedulerState.data.state).toBe("current");
-    expect(schedulerState.data).toMatchObject({
-      platform: process.platform === "darwin"
-        ? "macos"
-        : process.platform === "win32"
-        ? "windows"
-        : "linux",
-      definition: {
-        mechanism: process.platform === "darwin"
-          ? "launchd-user-agent"
-          : process.platform === "win32"
-          ? "task-scheduler"
-          : "systemd-user-timer",
-      },
-    });
 
     const root = resolve(workstationHome, ".canonfig-packed-multi");
     mkdirSync(resolve(root, "mirror"), { recursive: true });
@@ -1559,6 +1485,93 @@ esac
       downloadedBlobs: 0,
       outcome: { outcome: "Converged" },
     });
+    // Native scheduling is reconciled only after the first successful apply;
+    // this follower now selects its required 04:00 Madrid calendar.
+    const schedulerInstall = invoke(workstationHome, [
+      "schedule",
+      "set",
+      "daily@04:00",
+      "--timezone",
+      "Europe/Madrid",
+      "--json",
+    ]);
+    let schedulerAvailable = schedulerInstall.status === 0;
+    if (!schedulerAvailable && process.platform === "linux") {
+      const simulatedSystemctl = resolve(fixtureBin, "systemctl-simulated");
+      writeFileSync(simulatedSystemctl, `#!/bin/sh
+set -eu
+operation="\${2:-}"
+marker="$HOME/.canonfig-packed-systemd-enabled"
+case "$operation" in
+  daemon-reload) exit 0 ;;
+  is-enabled)
+    if test -f "$marker"; then
+      printf 'enabled\n'
+      exit 0
+    fi
+    printf 'disabled\n'
+    exit 1
+    ;;
+  is-active)
+    if test -f "$marker"; then
+      printf 'active\n'
+      exit 0
+    fi
+    printf 'inactive\n'
+    exit 3
+    ;;
+  enable) touch "$marker" ;;
+  disable) rm -f "$marker" ;;
+  *) exit 0 ;;
+esac
+`);
+      chmodSync(simulatedSystemctl, 0o700);
+      packedSchedulerEnvironment = {
+        CANONFIG_SYSTEMCTL: simulatedSystemctl,
+      };
+      const simulatedInstall = invoke(workstationHome, [
+        "schedule",
+        "set",
+        "daily@04:00",
+        "--timezone",
+        "Europe/Madrid",
+        "--json",
+      ]);
+      requireSuccess(simulatedInstall, "install simulated Linux scheduler");
+      schedulerAvailable = true;
+    }
+    if (!schedulerAvailable) {
+      console.warn(
+        `native scheduler installation unavailable on ${process.platform}; `
+          + "packed multi-follower apply coverage is limited to plan/transport "
+          + `and rendering (${schedulerInstall.stderr.trim()})`,
+      );
+      return;
+    }
+    const schedulerState = requireSuccess(
+      invoke(workstationHome, ["schedule", "status", "--json"]),
+      "verify installed native scheduler",
+    );
+    expect(schedulerState.data.state).toBe("current");
+    expect(schedulerState.data.schedule).toMatchObject({
+      kind: "daily",
+      localTime: "04:00",
+      timezone: "Europe/Madrid",
+    });
+    expect(schedulerState.data).toMatchObject({
+      platform: process.platform === "darwin"
+        ? "macos"
+        : process.platform === "win32"
+        ? "windows"
+        : "linux",
+      definition: {
+        mechanism: process.platform === "darwin"
+          ? "launchd-user-agent"
+          : process.platform === "win32"
+          ? "task-scheduler"
+          : "systemd-user-timer",
+      },
+    });
     expect(readFileSync(resolve(root, "managed.txt"), "utf8"))
       .toBe("version one\n");
     const executableMetadata = statSync(resolve(root, "bin", "managed-tool"));
@@ -1579,8 +1592,11 @@ esac
       .toBe("# Packed multi skill\n");
 
     const secondApply = requireSuccess(
-      invoke(workstationHome, ["sync", "--apply", "--no-input", "--json"]),
-      "idempotent workstation revision one apply",
+      invoke(
+        workstationHome,
+        ["sync", "--apply", "--no-input", "--scheduled", "--json"],
+      ),
+      "run the native unattended command without mutations",
     );
     expect(secondApply.data).toMatchObject({
       revision: revisionOne,
@@ -1600,6 +1616,23 @@ esac
       "base-file",
       "base-skill",
     ]));
+    const completionStatus = requireSuccess(
+      invoke(
+        workstationHome,
+        ["status", "--json"],
+        packedSchedulerEnvironment,
+      ),
+      "render the final completion receipt",
+    );
+    expect(completionStatus.data.completionReceipt).toMatchObject({
+      revision: planOne.revision,
+      published: { status: "verified" },
+      applied: { status: "verified" },
+      clientLoaded: { status: "verified" },
+      scheduled: { status: "verified" },
+      independentlyVerified: { status: "verified" },
+      secondRunNoOp: true,
+    });
 
     const oldRotatedStatus = requireSuccess(
       invoke(rotatedHome, ["status", "--json"]),
