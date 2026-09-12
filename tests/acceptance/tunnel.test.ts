@@ -57,7 +57,9 @@ describe("managed enrollment tunnel", () => {
     expect(await readFile(path, "utf8")).toMatch(
       new RegExp(`^[A-Za-z0-9_-]+\\n${invitationEnvelopeEof}\\n$`, "u"),
     );
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+    }
     expect(await Effect.runPromise(readInvitationEnvelope({ path }))).toEqual(grant);
     expect(await Effect.runPromise(consumeInvitationEnvelope({ path }))).toEqual(grant);
     await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
@@ -85,32 +87,35 @@ describe("managed enrollment tunnel", () => {
     expect(error._tag).toBe("TunnelHostKeyBypassError");
   });
 
-  it("classifies an unknown or changed SSH host key as an identity failure", async () => {
-    const root = await temporaryRoot();
-    const executable = join(root, "fake-ssh");
-    await writeFile(executable, "#!/bin/sh\necho 'Host key verification failed' >&2\nexit 255\n");
-    await chmod(executable, 0o700);
+  it.skipIf(process.platform === "win32")(
+    "classifies an unknown or changed SSH host key as an identity failure",
+    async () => {
+      const root = await temporaryRoot();
+      const executable = join(root, "fake-ssh");
+      await writeFile(executable, "#!/bin/sh\necho 'Host key verification failed' >&2\nexit 255\n");
+      await chmod(executable, 0o700);
 
-    const error = await Effect.runPromise(Effect.flip(
-      Effect.flatMap(Tunnel, (tunnel) => tunnel.startTunnel({
-        sshHost: "source.example",
-        sshPort: 22,
-        sshUser: "operator",
-        sshHostKey: `ssh-ed25519 ${Buffer.alloc(32, 1).toString("base64")}`,
-        localHost: "127.0.0.1",
-        localPort: 17342,
-        remoteHost: "127.0.0.1",
-        remotePort: 17342,
-        tlsFingerprint: fingerprint,
-        sourceFingerprint,
-        stateDirectory: root,
-        sshExecutable: executable,
-        timeoutMilliseconds: 1_000,
-      })).pipe(Effect.provide(TunnelLive)),
-    ));
+      const error = await Effect.runPromise(Effect.flip(
+        Effect.flatMap(Tunnel, (tunnel) => tunnel.startTunnel({
+          sshHost: "source.example",
+          sshPort: 22,
+          sshUser: "operator",
+          sshHostKey: `ssh-ed25519 ${Buffer.alloc(32, 1).toString("base64")}`,
+          localHost: "127.0.0.1",
+          localPort: 17342,
+          remoteHost: "127.0.0.1",
+          remotePort: 17342,
+          tlsFingerprint: fingerprint,
+          sourceFingerprint,
+          stateDirectory: root,
+          sshExecutable: executable,
+          timeoutMilliseconds: 1_000,
+        })).pipe(Effect.provide(TunnelLive)),
+      ));
 
-    expect(error._tag).toBe("TunnelHostKeyError");
-  });
+      expect(error._tag).toBe("TunnelHostKeyError");
+    },
+  );
 
   it("never signals a reused PID that does not match the recorded tunnel", async () => {
     const root = await temporaryRoot();
