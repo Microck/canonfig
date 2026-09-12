@@ -30,6 +30,14 @@ Do not call a degraded, partially applied, or merely downloaded follower
 - intended user can resolve the `canonfig` executable;
 - bounded diagnostics reported.
 
+### Machine bootstrap
+
+- setup role matches the intended machine;
+- setup plan digest and approval are reported;
+- setup status is `complete`;
+- required item evidence and qualified recipe provenance are recorded;
+- optional exclusions or failures are reported without hiding independent work.
+
 ### Source Machine
 
 - intended user owns one Source identity;

@@ -50,7 +50,6 @@ const fail = (
 const asJson = <Value>(value: Value): JsonValue =>
   Schema.decodeUnknownSync(Schema.MutableJson)(JSON.parse(JSON.stringify(value)));
 
-
 /** Establish the requested role before running role-specific inspection. */
 export const establishSetupRole = (value: string): Effect.Effect<SetupRole, SetupError> =>
   Schema.decodeUnknownEffect(SetupRole)(value).pipe(
@@ -371,7 +370,6 @@ const setupRecipeFor = (
   }
   return undefined;
 };
-
 
 /**
  * Run the shipped discovery operation over the bounded file set. Files the
@@ -848,25 +846,25 @@ const recordItem = (
 ): Effect.Effect<SetupJournal, SetupError> =>
   Effect.gen(function*() {
     const updated: SetupJournal = {
-    ...journal,
-    evidence: evidence === undefined ? journal.evidence : [...journal.evidence, evidence],
-    catalog: catalog === undefined
-      ? journal.catalog
-      : [...journal.catalog.filter((entry) => entry.resource !== catalog.resource), catalog],
-    records: journal.records.map((record) => {
-      if (record.id !== id) return record;
-      const item = journal.items.find((candidate) => candidate.id === id);
-      const detailDigest = item === undefined
-        ? undefined
-        : sha256Hex(canonicalJson(asJson(item.detail)));
-      return {
-        ...record,
-        status,
-        evidence,
-        detailDigest,
-        updatedAt: new Date().toISOString(),
-      };
-    }),
+      ...journal,
+      evidence: evidence === undefined ? journal.evidence : [...journal.evidence, evidence],
+      catalog: catalog === undefined
+        ? journal.catalog
+        : [...journal.catalog.filter((entry) => entry.resource !== catalog.resource), catalog],
+      records: journal.records.map((record) => {
+        if (record.id !== id) return record;
+        const item = journal.items.find((candidate) => candidate.id === id);
+        const detailDigest = item === undefined
+          ? undefined
+          : sha256Hex(canonicalJson(asJson(item.detail)));
+        return {
+          ...record,
+          status,
+          evidence,
+          detailDigest,
+          updatedAt: new Date().toISOString(),
+        };
+      }),
     };
     yield* writeJournal(machine, journalPath, updated);
     return updated;

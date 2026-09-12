@@ -11,9 +11,9 @@ import type {
   SetupRole,
   SetupStage,
 } from "./setup.types.ts";
+
 const asJson = <Value>(value: Value) =>
   Schema.decodeUnknownSync(Schema.MutableJson)(JSON.parse(JSON.stringify(value)));
-
 
 /**
  * The plan digest covers intent, decisions, exclusions, bounded inventory,

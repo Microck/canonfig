@@ -121,6 +121,7 @@ npm --version
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000 --json
 canonfig status --json
+canonfig setup status --json
 canonfig schedule status
 canonfig agent policy
 canonfig agent harness
@@ -165,6 +166,20 @@ Show changed settings, targets, ownership, pending requirements, and verificatio
 Unchanged rows can stay collapsed. Use the approval question pattern in
 `references/questions.md`; never treat mode selection, a device selection, or
 `Use recommendations` as authorization to execute.
+
+After the role and discovery files are selected, use the shipped setup
+controller as the bootstrap plan of record:
+
+```text
+canonfig setup plan --role <source|follower> --file <approved-path> --intent "<selected outcome>"
+canonfig setup approve --approver <operator>
+canonfig setup apply
+canonfig setup status --json
+```
+
+Show the plan digest, intent, exclusions, inventory, and item graph before the
+approval command. Omit `--file` when no discovery file was approved. An
+unchanged journal resumes; preserve its approval and completed evidence.
 
 ### 4. Execute and resume idempotently
 

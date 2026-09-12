@@ -40,6 +40,7 @@ import {
   SourceCommands,
   type CliPayload,
 } from "./source-commands.ts";
+import { SetupCommands } from "./setup-commands.ts";
 
 export const programName = "canonfig";
 export const programDisplayName = "Canonfig";
@@ -83,6 +84,12 @@ Profiles and policy:
     [--allow-leaf-executable <name>...] [--bind-secret <ENV=secret-name>...]
     [--allow-origin <https-origin>...]
     [--allow-capability <capability>...] [--maximum-input-bytes <bytes>]
+
+Setup:
+  setup plan --role <source|follower> [--file <path>...] [--intent <text>]
+  setup approve --approver <name>
+  setup apply
+  setup status
 
 Scheduling:
   schedule set <daily@HH:mm|weekly:Day@HH:mm> [--timezone <IANA>] [--executable <path>]
@@ -166,6 +173,15 @@ export type CliCommand =
   }
   | { readonly _tag: "TunnelStatus" }
   | { readonly _tag: "TunnelStop" }
+  | {
+    readonly _tag: "SetupPlan";
+    readonly role: string;
+    readonly files: ReadonlyArray<string>;
+    readonly intent?: string | undefined;
+  }
+  | { readonly _tag: "SetupApprove"; readonly approver: string }
+  | { readonly _tag: "SetupApply" }
+  | { readonly _tag: "SetupStatus" }
   | { readonly _tag: "ProfileList" }
   | {
     readonly _tag: "ProfileShow";
@@ -499,6 +515,48 @@ const evaluateTunnelCommand = (
     ),
   }, format);
 };
+const evaluateSetupCommand = (
+  action: string | undefined,
+  rest: ReadonlyArray<string>,
+  format: CliOutputFormat,
+): CliOutcome => {
+  if (action === "apply" || action === "status") {
+    const options = parseOptions(rest, new Set(), new Set());
+    if (options.positionals.length > 0) {
+      return invalid(`setup ${action} accepts no arguments`);
+    }
+    return command({
+      _tag: action === "apply" ? "SetupApply" : "SetupStatus",
+    }, format);
+  }
+  if (action === "approve") {
+    const options = parseOptions(rest, new Set(["--approver"]), new Set());
+    if (options.positionals.length > 0) {
+      return invalid("setup approve accepts only named options");
+    }
+    return command({
+      _tag: "SetupApprove",
+      approver: one(options, "--approver", true)!,
+    }, format);
+  }
+  if (action === "plan") {
+    const options = parseOptions(
+      rest,
+      new Set(["--role", "--file", "--intent"]),
+      new Set(),
+    );
+    if (options.positionals.length > 0) {
+      return invalid("setup plan accepts only named options");
+    }
+    return command({
+      _tag: "SetupPlan",
+      role: one(options, "--role", true)!,
+      files: options.values.get("--file") ?? [],
+      intent: one(options, "--intent"),
+    }, format);
+  }
+  return invalid(`Unknown setup command: ${action ?? ""}`);
+};
 
 const evaluateCommand = (
   arguments_: ReadonlyArray<string>,
@@ -729,6 +787,7 @@ const evaluateCommand = (
       return invalid(`Unknown overlay command: ${action ?? ""}`);
     }
     if (area === "tunnel") return evaluateTunnelCommand(action, rest, format);
+    if (area === "setup") return evaluateSetupCommand(action, rest, format);
     if (area === "doctor") {
       const options = parseOptions(
         arguments_.slice(1),
@@ -902,6 +961,10 @@ const commandName = (value: CliCommand): string => {
     case "TunnelStart": return "tunnel.start";
     case "TunnelStatus": return "tunnel.status";
     case "TunnelStop": return "tunnel.stop";
+    case "SetupPlan": return "setup.plan";
+    case "SetupApprove": return "setup.approve";
+    case "SetupApply": return "setup.apply";
+    case "SetupStatus": return "setup.status";
     case "AgentHarnessGet": return "agent.harness.get";
     case "AgentHarnessSet": return "agent.harness.set";
     case "ScheduleSet": return "schedule.set";
@@ -912,9 +975,14 @@ const commandName = (value: CliCommand): string => {
 
 const executeCommand = Effect.fn("Cli.executeCommand")(function*(
   value: CliCommand,
-): Effect.fn.Return<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands> {
+): Effect.fn.Return<
+  CliPayload,
+  CliCommandFailure,
+  SourceCommands | FollowerCommands | SetupCommands
+> {
   const source = yield* SourceCommands;
   const follower = yield* FollowerCommands;
+  const setup = yield* SetupCommands;
   switch (value._tag) {
     case "SourceInit": return yield* source.initialize();
     case "SourceScan": return yield* source.scan({ files: value.files });
@@ -969,6 +1037,15 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
     case "TunnelStart": return yield* follower.startTunnel(value);
     case "TunnelStatus": return yield* follower.tunnelStatus();
     case "TunnelStop": return yield* follower.stopTunnel();
+    case "SetupPlan":
+      return yield* setup.plan({
+        role: value.role,
+        files: value.files,
+        intent: value.intent,
+      });
+    case "SetupApprove": return yield* setup.approve({ approver: value.approver });
+    case "SetupApply": return yield* setup.apply();
+    case "SetupStatus": return yield* setup.status();
     case "ProfileList": return yield* source.listProfiles();
     case "ProfileShow": return yield* source.inspectProfile(value.revision);
     case "ProfileSelect": return yield* follower.selectProfile(value.profile);
@@ -991,7 +1068,11 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
 export const runCli = Effect.fn("runCli")(function*(
   arguments_: ReadonlyArray<string>,
   io: CliIo,
-): Effect.fn.Return<CliExitCodeValue, never, SourceCommands | FollowerCommands> {
+): Effect.fn.Return<
+  CliExitCodeValue,
+  never,
+  SourceCommands | FollowerCommands | SetupCommands
+> {
   const outcome = evaluateCli(arguments_);
   if (outcome._tag === "Help" || outcome._tag === "Version") {
     yield* Effect.sync(() => {

@@ -44,12 +44,28 @@ the npm package is `@microck/canonfig`; the installed binary is `canonfig`.
 
 ## quickstart
 
+For a journaled bootstrap, establish the machine role, review the generated
+plan, approve its digest, and apply it:
+
+```bash
+canonfig setup plan --role source --file AGENTS.md --file package.json --intent "prepare source"
+canonfig setup approve --approver operator
+canonfig setup apply
+canonfig setup status
+```
+
+`setup plan` inventories the OS, account, loopback transport, runtime, native
+installers, and bounded discovery evidence only after the role is known. The
+approval binds the exact intent, exclusions, inventory, and structured argv
+plan. `setup apply` resumes from the journal without repeating unchanged
+discovery or approval, and optional recipe failures do not block independent
+machine work.
+
 ### 1. source machine setup
 
 initialize the source machine and scan for explicit configuration to publish:
 
 ```bash
-canonfig source init
 canonfig doctor --no-input --timeout-ms 5000
 canonfig source scan --file AGENTS.md --file package.json
 canonfig source publish --proposal package.json --profile workstation --name Workstation --reviewer operator
@@ -82,6 +98,9 @@ on the follower machine, start the managed tunnel when the Source is remote,
 then enroll from the private envelope, select the profile, plan, and apply:
 
 ```bash
+canonfig setup plan --role follower --intent "prepare follower"
+canonfig setup approve --approver operator
+canonfig setup apply
 canonfig tunnel start --invitation ./canonfig-invite --ssh-host source.example --ssh-user operator --ssh-host-key-file ./source-host-key.pub
 cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
 canonfig profile select workstation
@@ -150,6 +169,7 @@ transfers are content-addressed and incremental. transfer and apply remain separ
 
 | command | purpose |
 | --- | --- |
+| `canonfig setup` | plan, approve, apply, or inspect a journaled machine bootstrap |
 | `canonfig source init` | initialize local source authority |
 | `canonfig source scan` | scan declared files for discovery proposals |
 | `canonfig source publish` | review and publish an immutable profile revision |

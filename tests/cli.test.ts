@@ -23,6 +23,10 @@ import {
   type CliPayload,
   type SourceCommandsService,
 } from "../src/cli/source-commands.ts";
+import {
+  SetupCommands,
+  type SetupCommandsService,
+} from "../src/cli/setup-commands.ts";
 
 interface Invocation {
   readonly route: string;
@@ -88,9 +92,16 @@ const recordingLayers = (
     tunnelStatus: () => invoke("tunnel.status"),
     stopTunnel: () => invoke("tunnel.stop"),
   };
-  return Layer.merge(
+  const setup: SetupCommandsService = {
+    plan: (input) => invoke("setup.plan", input),
+    approve: (input) => invoke("setup.approve", input),
+    apply: () => invoke("setup.apply"),
+    status: () => invoke("setup.status"),
+  };
+  return Layer.mergeAll(
     Layer.succeed(SourceCommands, SourceCommands.of(source)),
     Layer.succeed(FollowerCommands, FollowerCommands.of(follower)),
+    Layer.succeed(SetupCommands, SetupCommands.of(setup)),
   );
 };
 
@@ -215,6 +226,19 @@ describe("typed CLI command boundary", () => {
     ], "tunnel.start"],
     [["tunnel", "status"], "tunnel.status"],
     [["tunnel", "stop"], "tunnel.stop"],
+    [[
+      "setup",
+      "plan",
+      "--role",
+      "source",
+      "--file",
+      "AGENTS.md",
+      "--intent",
+      "prepare source",
+    ], "setup.plan"],
+    [["setup", "approve", "--approver", "operator"], "setup.approve"],
+    [["setup", "apply"], "setup.apply"],
+    [["setup", "status"], "setup.status"],
     [["schedule", "set", "daily@00:00"], "schedule.set"],
     [["schedule", "set", "weekly:Mon@12:30"], "schedule.set"],
     [["schedule", "status"], "schedule.status"],

@@ -80,6 +80,20 @@ an existing installation in place; the declared verification still checks it
 during apply. A present entry file alone does not prove the expected version,
 working dependencies, or a signed-in session.
 
+## Setup execution
+
+`canonfig setup plan --role <source|follower> --file <path>` feeds bounded
+declared files through this shipped discovery pipeline. Accepted recipes become
+per-resource plan items only when their native installer is present. The plan
+stores the installer executable, argument vector, independent verifier,
+version, source, upstream, and integrity metadata; it never stores shell text.
+
+After `setup approve`, `setup apply` executes those known recipes directly and
+records verification evidence and provenance in the setup journal. An
+unavailable or failed optional recipe does not block unrelated required work.
+Unknown or ambiguous recipes remain exclusions for review; setup does not
+delegate them to an outer agent.
+
 ## Supported discovery methods
 
 Discovery can resolve deterministic metadata for npm, Homebrew, winget, uv,

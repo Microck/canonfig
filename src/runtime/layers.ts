@@ -61,6 +61,7 @@ import {
   type ResolvedScheduleInput,
 } from "../schedule/schedule-manager.types.ts";
 import { scheduleManagerLayer } from "../schedule/schedule-manager.layer.ts";
+import { setupCommandsLayer } from "../setup/setup.layer.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
 import { SynchronizationLive } from "../synchronization/synchronization.layer.ts";
@@ -1434,6 +1435,9 @@ export const runtimeLayer = (
     Layer.provide(Layer.merge(state, machine)),
   );
   const agentResolution = AgentResolutionWithSecretsLive.pipe(Layer.provide(machine));
+  const setup = setupCommandsLayer(statePath).pipe(
+    Layer.provide(Layer.merge(machine, enrollment)),
+  );
   const dependencies = Layer.mergeAll(
     state,
     machine,
@@ -1444,7 +1448,7 @@ export const runtimeLayer = (
     tunnel,
     agentResolution,
   );
-  return Layer.merge(
+  return Layer.mergeAll(
     sourceCommandsLayer.pipe(Layer.provide(dependencies)),
     followerCommandsLayer(
       statePath,
@@ -1454,5 +1458,6 @@ export const runtimeLayer = (
     ).pipe(
       Layer.provide(dependencies),
     ),
+    setup,
   );
 };
