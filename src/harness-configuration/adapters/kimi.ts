@@ -29,6 +29,14 @@ interface KimiRemoteHeaders {
   bearerTokenEnvVar?: string;
 }
 
+interface KimiAgentFrontmatter {
+  name: string;
+  description: string;
+  tools: ReadonlyArray<string>;
+  model?: string;
+  disallowedTools?: ReadonlyArray<string>;
+}
+
 interface KimiMcpCommon {
   enabled: boolean;
   startupTimeoutMs?: number;
@@ -175,13 +183,7 @@ export const kimiAdapter: HarnessAdapter = {
 
     for (const { agent, content } of await agentDocuments(context)) {
       const tools = nativeTools("kimi", agent);
-      const frontmatter: {
-        name: string;
-        description: string;
-        tools: ReadonlyArray<string>;
-        model?: string;
-        disallowedTools?: ReadonlyArray<string>;
-      } = {
+      const frontmatter: KimiAgentFrontmatter = {
         name: agent.id,
         description: agent.description,
         tools,

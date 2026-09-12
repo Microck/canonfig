@@ -131,9 +131,7 @@ describe("Kimi, Kilo, Hermes, and Qwen harness adapters", () => {
 
     const kimiMcp = JSON.parse(
       await readFile(path.join(root, ".kimi-code/mcp.json"), "utf8"),
-    ) as {
-      mcpServers: Record<string, Record<string, unknown>>;
-    };
+    );
     expect(kimiMcp.mcpServers.local).toMatchObject({
       transport: "stdio",
       startupTimeoutMs: 15_000,
@@ -148,10 +146,9 @@ describe("Kimi, Kilo, Hermes, and Qwen harness adapters", () => {
     await expect(readFile(path.join(root, ".kimi-code/agents/reviewer.md"), "utf8"))
       .resolves.toContain("mcp__*");
 
-    const kilo = JSON.parse(await readFile(path.join(root, "kilo.json"), "utf8")) as {
-      $schema: string;
-      mcp: Record<string, unknown>;
-    };
+    const kilo = JSON.parse(
+      await readFile(path.join(root, "kilo.json"), "utf8"),
+    );
     expect(kilo.$schema).toBe("https://app.kilo.ai/config.json");
     expect(kilo.mcp.local).toBeDefined();
     await expect(readFile(path.join(root, ".kilo/plugins/canonfig.ts"), "utf8"))
@@ -162,10 +159,7 @@ describe("Kimi, Kilo, Hermes, and Qwen harness adapters", () => {
 
     const qwen = JSON.parse(
       await readFile(path.join(root, ".qwen/settings.json"), "utf8"),
-    ) as {
-      mcpServers: Record<string, Record<string, unknown>>;
-      hooks: Record<string, unknown>;
-    };
+    );
     expect(qwen.mcpServers.docs).toMatchObject({
       httpUrl: "https://example.invalid/mcp",
       timeout: 10_000,

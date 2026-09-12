@@ -30,6 +30,13 @@ interface OpenCodeFamilyDefinition {
   notes: readonly string[];
 }
 
+interface OpenCodeAgentFrontmatter {
+  description: string;
+  mode: "subagent";
+  permission: Record<string, string>;
+  model?: string;
+}
+
 export function createOpenCodeFamilyAdapter(
   definition: OpenCodeFamilyDefinition,
 ): HarnessAdapter {
@@ -118,12 +125,7 @@ export function createOpenCodeFamilyAdapter(
         for (const serverName of mcpServerNames) {
           permissions[`${serverName}_*`] = agent.tools.includes("mcp") ? "allow" : "deny";
         }
-        const frontmatter: {
-          description: string;
-          mode: "subagent";
-          permission: Record<string, string>;
-          model?: string;
-        } = {
+        const frontmatter: OpenCodeAgentFrontmatter = {
           description: agent.description,
           mode: "subagent",
           permission: permissions,
