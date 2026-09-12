@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign, verify } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -35,7 +35,7 @@ import {
 } from "../src/state/state-repository.errors.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
-import { sha256Hex } from "../src/profile/profile-codec.ts";
+import { sha256BytesHex, sha256Hex } from "../src/profile/profile-codec.ts";
 
 const temporaryDirectories: Array<string> = [];
 
@@ -265,7 +265,7 @@ describe("reviewed profile publication", () => {
     expect(published.revision.id).toBe(
       `profile-publication:${published.revision.digest}`,
     );
-    expect(published.revision.resources[0]?.blobs[0]).toMatch(/^[a-f0-9]{64}$/u);
+    expect(published.revision.resources[0]?.blobs).toEqual([]);
     // SAFETY: publication canonicalBytes is validated JSON with this recipe shape.
     const canonical = JSON.parse(published.revision.canonicalBytes) as {
       readonly resources: ReadonlyArray<{
@@ -585,6 +585,101 @@ describe("reviewed profile publication", () => {
       "tool",
       "tool",
     ]);
+  });
+
+  it("publishes byte-exact file trees as compact per-file blobs", async () => {
+    const fixture = workspace();
+    const assets = join(fixture.directory, "profile");
+    mkdirSync(assets);
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x1a, 0x0a]);
+    const archive = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x80, 0xff]);
+    const native = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x02]);
+    writeFileSync(join(assets, "image.png"), png);
+    writeFileSync(join(assets, "empty"), Buffer.alloc(0));
+    writeFileSync(join(assets, "fixture.zip"), archive);
+    writeFileSync(join(assets, "native"), native);
+    chmodSync(join(assets, "native"), 0o755);
+    symlinkSync("image.png", join(assets, "image-link"));
+    const discovery = await proposal(fixture.directory);
+    const resources: ReadonlyArray<ProfileResourceInput> = [
+      {
+        id: "png", kind: "file", target: "~/.bytes/image.png",
+        spec: { kind: "file", source: "image.png" },
+        verify: { method: "digest", digest: sha256BytesHex(png) },
+      },
+      {
+        id: "empty", kind: "file", target: "~/.bytes/empty",
+        spec: { kind: "file", source: "empty" },
+        verify: { method: "digest", digest: sha256BytesHex(Buffer.alloc(0)) },
+      },
+      {
+        id: "archive-tree", kind: "directory", target: "~/.bytes/archive",
+        spec: { kind: "directory", files: [
+          { path: "fixture.zip", source: "fixture.zip" },
+          { path: "image-link", source: "image-link" },
+        ] },
+        verify: { method: "digest", digest: "a".repeat(64) },
+      },
+      {
+        id: "native-skill", kind: "skill", target: "~/.bytes/skill",
+        spec: { kind: "skill", name: "native", files: [
+          { path: "bin/native", source: "native" },
+        ] },
+        verify: { method: "digest", digest: "b".repeat(64) },
+      },
+    ];
+    const result = await runCatalog(
+      fixture.database,
+      makeSigner().signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        const revision = yield* catalog.publish({
+          ...inputFor(discovery),
+          profile: {
+            ...inputFor(discovery).profile,
+            directory: assets,
+            resources,
+          },
+        });
+        const repository = yield* StateRepository;
+        const ranges = yield* Effect.forEach(
+          revision.resources.flatMap((resource) => resource.blobs),
+          (blob) => repository.readResourceBlobRange({
+            blob,
+            offset: 0,
+            maximumBytes: 3,
+          }),
+        );
+        return { revision, ranges };
+      }),
+    );
+    const published = result.revision.resources.filter((resource) =>
+      ["png", "empty", "archive-tree", "native-skill"].includes(resource.id)
+    );
+    expect(published.flatMap((resource) => resource.blobs)).toEqual(
+      expect.arrayContaining([
+        sha256BytesHex(png),
+        sha256BytesHex(Buffer.alloc(0)),
+        sha256BytesHex(archive),
+        sha256BytesHex(native),
+      ]),
+    );
+    const archiveSpec = published.find((resource) => resource.id === "archive-tree")?.spec;
+    expect(archiveSpec?.kind).toBe("directory");
+    if (archiveSpec?.kind !== "directory") throw new Error("missing published archive directory");
+    expect(archiveSpec.files.find((file) => file.path === "image-link"))
+      .toMatchObject({ path: "image-link", symlinkTo: "image.png", executable: false, mode: 0 });
+    expect(archiveSpec.files.find((file) => file.path === "fixture.zip"))
+      .toMatchObject({ path: "fixture.zip", blob: sha256BytesHex(archive), bytes: archive.byteLength });
+    expect(published.find((resource) => resource.id === "native-skill")?.spec)
+      .toMatchObject({
+        files: [{ path: "bin/native", blob: sha256BytesHex(native), mode: 0o755, executable: true }],
+      });
+    expect(result.ranges.every((range) => range !== undefined)).toBe(true);
+    expect(result.ranges.filter((range) => range?.totalBytes !== 0)
+      .every((range) => range?.content.byteLength === 3)).toBe(true);
+    expect(result.revision.canonicalBytes).not.toContain(png.toString("base64"));
+    expect(result.revision.canonicalBytes).not.toContain("\"content\"");
   });
 
   it("returns the original immutable revision for duplicate publication", async () => {

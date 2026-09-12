@@ -13,12 +13,14 @@ import {
 import { FollowerIdentity, SourceIdentity } from "../domain/identity.ts";
 import {
   PublishedResourceSchema,
+  PublishedResourceSpecSchema,
   ScheduleDefaultSchema,
   VerificationInputSchema,
 } from "../domain/profile.ts";
 
 export const TransportPublishedResourceSchema = Schema.Struct({
   ...PublishedResourceSchema.fields,
+  spec: PublishedResourceSpecSchema,
   verify: VerificationInputSchema,
 });
 
@@ -124,8 +126,23 @@ export interface RevisionMetadataInput extends FollowerTransportInput {
 }
 
 export interface BlobRetrievalInput extends FollowerTransportInput {
+  readonly revisionId?: string | undefined;
   readonly blobId: typeof BlobId.Type;
+  readonly blobBytes?: number | undefined;
+  /** Maximum bytes accepted in any one HTTP range response. */
   readonly maximumBlobBytes?: number | undefined;
+}
+
+export interface AuthorizedBlobRangeInput {
+  readonly revisionId: string;
+  readonly blobId: typeof BlobId.Type;
+  readonly offset: number;
+  readonly maximumBytes: number;
+}
+
+export interface AuthorizedBlobRange {
+  readonly content: Uint8Array;
+  readonly totalBytes: number;
 }
 
 export interface FetchRevisionInput extends RevisionMetadataInput {

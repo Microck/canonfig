@@ -55,7 +55,6 @@ import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
-  digestOf,
   sha256BytesHex,
   sha256Hex,
   type JsonValue,
@@ -141,6 +140,7 @@ const publishFixtureRevision = (
 ): Promise<{
   readonly revision: ProfileRevision;
   readonly blobs: ReadonlyArray<typeof BlobId.Type>;
+  readonly blobBytes: ReadonlyArray<number>;
 }> =>
   setup.runtime.runPromise(Effect.gen(function*() {
     const enrollment = yield* Enrollment;
@@ -236,21 +236,40 @@ const publishFixtureRevision = (
         timezone: "local",
       },
     };
-    const canonicalBytes = canonicalJson(asJson(profile));
-    const digest = sha256Hex(canonicalBytes);
     const resources: ReadonlyArray<PublishedResource> = profile.resources.map(
-      (resource) => ({
-        id: decode(ResourceId)(resource.id),
-        kind: resource.kind,
-        policy: resource.policy ?? "replace",
-        target: resource.target,
-        groups: resource.groups,
-        dependsOn: (resource.dependsOn ?? []).map((dependency) =>
-          decode(ResourceId)(dependency)
-        ),
-        blobs: [decode(BlobId)(digestOf(asJson(resource.spec)))],
-      }),
+      (resource) => {
+        if (resource.spec.kind !== "file" || resource.spec.content === undefined) {
+          throw new Error("transport fixture resources must be inline files");
+        }
+        const content = Buffer.from(resource.spec.content);
+        const blob = decode(BlobId)(sha256BytesHex(content));
+        return {
+          id: decode(ResourceId)(resource.id),
+          kind: resource.kind,
+          policy: resource.policy ?? "replace",
+          target: resource.target,
+          groups: resource.groups,
+          dependsOn: (resource.dependsOn ?? []).map((dependency) =>
+            decode(ResourceId)(dependency)
+          ),
+          spec: {
+            kind: "file",
+            blob,
+            bytes: content.byteLength,
+            executable: resource.spec.executable ?? false,
+          },
+          blobs: [blob],
+        };
+      },
     );
+    const canonicalBytes = canonicalJson(asJson({
+      ...profile,
+      resources: resources.map((resource, index) => ({
+        ...resource,
+        verify: profile.resources[index]!.verify,
+      })),
+    }));
+    const digest = sha256Hex(canonicalBytes);
     const id = decode(ProfileRevisionId)(`${profile.id}:${digest}`);
     const unsigned = {
       id,
@@ -289,12 +308,29 @@ const publishFixtureRevision = (
       resources,
       groups: profile.groups,
     };
-    yield* repository.publishRevision({ revision });
+    yield* repository.publishRevision({
+      revision,
+      blobs: profile.resources.map((resource, index) => {
+        if (resource.spec.kind !== "file" || resource.spec.content === undefined) {
+          throw new Error("transport fixture resources must be inline files");
+        }
+        return {
+          id: resources[index]!.blobs[0]!,
+          content: Buffer.from(resource.spec.content),
+        };
+      }),
+    });
     return {
       revision,
       blobs: resources.flatMap((resource) =>
         resource.blobs.map((blob) => decode(BlobId)(blob))
       ),
+      blobBytes: resources.map((resource) => {
+        if (resource.spec?.kind !== "file" || resource.spec.bytes === undefined) {
+          throw new Error("transport fixture published file has no byte length");
+        }
+        return resource.spec.bytes;
+      }),
     };
   }));
 
@@ -455,10 +491,14 @@ describe("authenticated content-addressed transport", () => {
     const first = await runFollower(setup, retrieveBlob({
       ...input,
       blobId: latest.blobs[1]!,
+      revisionId: latest.revision.id,
+      blobBytes: latest.blobBytes[1]!,
     }));
     const second = await runFollower(setup, retrieveBlob({
       ...input,
       blobId: latest.blobs[1]!,
+      revisionId: latest.revision.id,
+      blobBytes: latest.blobBytes[1]!,
     }));
     expect(Buffer.from(first)).toEqual(Buffer.from(second));
 
@@ -466,9 +506,22 @@ describe("authenticated content-addressed transport", () => {
       retrieveBlob({
         ...input,
         blobId: decode(BlobId)("e".repeat(64)),
+        revisionId: latest.revision.id,
+        blobBytes: 1,
       }).pipe(Effect.provide(setup.followerMachine)),
     ));
     expect(missing).toBeInstanceOf(TransportResourceNotFoundError);
+
+    const firstRevision = history[0]!;
+    const crossRevision = await Effect.runPromise(Effect.flip(
+      retrieveBlob({
+        ...input,
+        blobId: firstRevision.blobs[1]!,
+        revisionId: latest.revision.id,
+        blobBytes: firstRevision.blobBytes[1]!,
+      }).pipe(Effect.provide(setup.followerMachine)),
+    ));
+    expect(crossRevision).toBeInstanceOf(TransportResourceNotFoundError);
 
     const tamperedDatabase = new DatabaseSync(setup.database);
     tamperedDatabase.exec("DROP TRIGGER profile_revisions_immutable_update");
@@ -488,6 +541,8 @@ describe("authenticated content-addressed transport", () => {
       retrieveBlob({
         ...input,
         blobId: latest.blobs[1]!,
+        revisionId: latest.revision.id,
+        blobBytes: latest.blobBytes[1]!,
       }).pipe(Effect.provide(setup.followerMachine)),
     ));
     expect(invalidated).toBeInstanceOf(TransportIntegrityError);
@@ -502,6 +557,8 @@ describe("authenticated content-addressed transport", () => {
     await runFollower(setup, retrieveBlob({
       ...input,
       blobId: published.blobs[1]!,
+      revisionId: published.revision.id,
+      blobBytes: published.blobBytes[1]!,
     }));
 
     await setup.runtime.runPromise(Effect.gen(function*() {
@@ -541,6 +598,8 @@ describe("authenticated content-addressed transport", () => {
       retrieveBlob({
         ...input,
         blobId: published.blobs[1]!,
+        revisionId: published.revision.id,
+        blobBytes: published.blobBytes[1]!,
       }).pipe(Effect.provide(setup.followerMachine)),
     ));
     expect(rotated).toBeInstanceOf(TransportIntegrityError);
@@ -627,12 +686,16 @@ describe("authenticated content-addressed transport", () => {
       retrieveBlob({
         ...input,
         blobId: published.blobs[1]!,
+        revisionId: published.revision.id,
+        blobBytes: published.blobBytes[1]!,
       }).pipe(Effect.provide(setup.followerMachine)),
     ));
     const missing = await Effect.runPromise(Effect.flip(
       retrieveBlob({
         ...input,
         blobId: decode(BlobId)("f".repeat(64)),
+        revisionId: published.revision.id,
+        blobBytes: 1,
       }).pipe(Effect.provide(setup.followerMachine)),
     ));
     expect(unauthorized).toBeInstanceOf(TransportResourceNotFoundError);
@@ -668,7 +731,9 @@ describe("authenticated content-addressed transport", () => {
       retrieveBlob({
         ...input,
         blobId: published.blobs[0]!,
-        maximumBlobBytes: 2,
+        revisionId: published.revision.id,
+        blobBytes: published.blobBytes[0]!,
+        maximumBlobBytes: 0,
       }).pipe(Effect.provide(setup.followerMachine)),
     ));
     expect(oversizedBlob).toBeInstanceOf(TransportSizeLimitError);

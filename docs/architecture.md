@@ -410,6 +410,15 @@ ownership decisions survive synchronization and process restart.
 11. Commit Applied Resource Records and the run outcome.
 ```
 
+Signed revision metadata contains file paths, modes, symlink targets, blob
+digests, and exact byte lengths, but never embeds file content. At publication,
+inline UTF-8/base64 values and `source` paths (resolved relative to the authored
+profile file) become immutable per-file blobs. Followers request each authorized
+blob through its selected revision in verified bounded byte ranges. A response
+with a missing, conflicting, truncated, or aborted range is discarded before
+the cache entry is atomically trusted; denial is returned before any blob length
+header is written.
+
 A run outcome is one of `Converged`, `HumanActionRequired`, `FollowerDrift`, `Failed`, or `Interrupted`. If a deterministic action fails, Canonfig rolls back earlier file and directory mutations from that run in reverse order and restores their prior ownership records. External operations that cannot guarantee rollback remain visible and recoverable. Canonfig never reports convergence because some actions succeeded.
 
 ## Failure and recovery

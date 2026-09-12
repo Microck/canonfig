@@ -30,6 +30,7 @@ import {
   type SynchronizationOutcome,
   type SynchronizationPlan,
 } from "../domain/synchronization.ts";
+import { sha256BytesHex } from "../profile/profile-codec.ts";
 import {
   FollowerSynchronizationConfiguration,
   LocalOverlayEntrySchema,
@@ -68,6 +69,7 @@ import type {
   RevisionApprovalRecord,
   RevisionBlobCandidate,
   RemoveLocalOverlayInput,
+  ResourceBlobRange,
   RunEvidenceSummary,
   SaveFollowerSynchronizationConfigurationInput,
   SaveLocalOverlayInput,
@@ -86,6 +88,14 @@ const RevisionBlobCandidateRow = Schema.Struct({
   blob_id: ContentDigest,
   revision_id: ProfileRevisionId,
   resource_id: ResourceId,
+});
+const ResourceBlobRangeRow = Schema.Struct({
+  content: Schema.Unknown,
+  total_bytes: Schema.Number,
+});
+const ResourceBlobRangeHexRow = Schema.Struct({
+  content_hex: Schema.String,
+  total_bytes: Schema.Number,
 });
 const RunStatusRow = Schema.Struct({
   follower_id: Schema.String,
@@ -1226,6 +1236,42 @@ const makeRepository = Effect.gen(function*() {
       const revision = input.revision;
       const encoded = encodeJson(revision);
       const transaction = Effect.gen(function*() {
+        for (const blob of input.blobs ?? []) {
+          if (sha256BytesHex(blob.content) !== blob.id) {
+            return yield* new RevisionImmutableError({
+              revision: revision.id,
+              message: `resource blob ${blob.id} does not match its digest`,
+            });
+          }
+          const inserted = yield* sql`
+            INSERT OR IGNORE INTO resource_blobs (id, content)
+            VALUES (${blob.id}, ${blob.content})
+            RETURNING id
+          `;
+          if (inserted.length === 0) {
+            const storedRows = yield* sql`
+              SELECT content, length(content) AS total_bytes
+              FROM resource_blobs
+              WHERE id = ${blob.id}
+            `;
+            const stored = yield* decodeRows(
+              ResourceBlobRangeRow,
+              storedRows,
+              "resource blob",
+              blob.id,
+            );
+            const storedContent = stored[0]?.content;
+            if (
+              !(storedContent instanceof Uint8Array)
+              || !Buffer.from(storedContent).equals(Buffer.from(blob.content))
+            ) {
+              return yield* new RevisionImmutableError({
+                revision: revision.id,
+                message: `resource blob ${blob.id} names different immutable content`,
+              });
+            }
+          }
+        }
         const existingRows = yield* sql`
           SELECT revision_json
           FROM profile_revisions
@@ -1447,6 +1493,55 @@ const makeRepository = Effect.gen(function*() {
       revision: row.revision_id,
       resource: row.resource_id,
     }));
+  });
+
+  const readResourceBlobRange = Effect.fn(
+    "StateRepository.readResourceBlobRange",
+  )(function*(
+    input: {
+      readonly blob: typeof ContentDigest.Type;
+      readonly offset: number;
+      readonly maximumBytes: number;
+    },
+  ): Effect.fn.Return<ResourceBlobRange | undefined, StateRepositoryError> {
+    if (
+      !Number.isSafeInteger(input.offset)
+      || input.offset < 0
+      || !Number.isSafeInteger(input.maximumBytes)
+      || input.maximumBytes <= 0
+    ) {
+      return yield* new RepositoryDecodeError({
+        entity: "resource blob range",
+        id: input.blob,
+        message: "range bounds must be positive safe integers",
+      });
+    }
+    const rows = yield* sql`
+      SELECT
+        hex(substr(content, ${input.offset + 1}, ${input.maximumBytes})) AS content_hex,
+        length(content) AS total_bytes
+      FROM resource_blobs
+      WHERE id = ${input.blob}
+    `.pipe(Effect.mapError(sqlError("read resource blob range")));
+    const decoded = yield* decodeRows(
+      ResourceBlobRangeHexRow,
+      rows,
+      "resource blob range",
+      input.blob,
+    );
+    const row = decoded[0];
+    if (row === undefined) return undefined;
+    if (row.content_hex.length % 2 !== 0) {
+      return yield* new RepositoryDecodeError({
+        entity: "resource blob range",
+        id: input.blob,
+        message: "stored blob range has invalid hexadecimal content",
+      });
+    }
+    return {
+      content: Buffer.from(row.content_hex, "hex"),
+      totalBytes: row.total_bytes,
+    };
   });
 
   const loadAppliedResources = Effect.fn(
@@ -2402,6 +2497,7 @@ const makeRepository = Effect.gen(function*() {
     getLatestRevision,
     listRevisions,
     listRevisionBlobCandidates,
+    readResourceBlobRange,
     loadAppliedResources,
     startRun,
     journalAction,

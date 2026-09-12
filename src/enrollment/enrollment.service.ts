@@ -5,6 +5,8 @@ import type { FollowerIdentity } from "../domain/identity.ts";
 import type { EnrollmentError } from "./enrollment.errors.ts";
 import type {
   AuthenticatedFollower,
+  AuthorizedBlobRange,
+  AuthorizedBlobRangeInput,
   RevisionList,
   RevisionMetadata,
   CreateInvitationInput,
@@ -47,10 +49,10 @@ export class Enrollment extends Context.Service<Enrollment, {
     credential: string,
     revisionId: string,
   ) => Effect.Effect<RevisionMetadata, EnrollmentError>;
-  readonly getAuthorizedBlob: (
+  readonly getAuthorizedBlobRange: (
     credential: string,
-    blobId: string,
-  ) => Effect.Effect<Uint8Array, EnrollmentError>;
+    input: AuthorizedBlobRangeInput,
+  ) => Effect.Effect<AuthorizedBlobRange, EnrollmentError>;
   readonly revokeFollower: (
     follower: FollowerId,
   ) => Effect.Effect<void, EnrollmentError>;

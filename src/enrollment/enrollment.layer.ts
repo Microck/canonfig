@@ -16,6 +16,7 @@ import { generate } from "selfsigned";
 import {
   CertificateFingerprint,
   ContentDigest,
+  BlobId,
   CredentialReference,
   FollowerId,
   GroupName,
@@ -25,11 +26,9 @@ import {
 } from "../domain/brand.ts";
 import { FollowerIdentity, SourceIdentity } from "../domain/identity.ts";
 import {
-  MachineProfileSchema,
-  type MachineProfile,
+  PublishedMachineProfileSchema,
   type ProfileRevision,
   type PublishedResource,
-  validateMachineProfile,
 } from "../domain/profile.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {
@@ -138,23 +137,21 @@ const revisionPayload = (
   signingKeyId,
 });
 
+type PublishedMachineProfile = Schema.Schema.Type<typeof PublishedMachineProfileSchema>;
+
 const validateRevision = (
   revision: ProfileRevision,
   signingKeyId: string,
   publicKey: ReturnType<typeof createPublicKey>,
-): Effect.Effect<MachineProfile, TransportIntegrityError> =>
+): Effect.Effect<PublishedMachineProfile, TransportIntegrityError> =>
   Effect.try({
     try: () => {
       if (sha256Hex(revision.canonicalBytes) !== revision.digest) {
         throw new Error("canonical content digest mismatch");
       }
-      const profile = decode(MachineProfileSchema)(
+      const profile = decode(PublishedMachineProfileSchema)(
         JSON.parse(revision.canonicalBytes),
       );
-      const profileErrors = validateMachineProfile(profile);
-      if (profileErrors.length > 0) {
-        throw new Error("profile verification contract mismatch");
-      }
       if (profile.id !== revision.profileId) {
         throw new Error("profile identity mismatch");
       }
@@ -165,19 +162,9 @@ const validateRevision = (
       ) {
         throw new Error("revision schedule default metadata mismatch");
       }
-      const expectedResources = profile.resources.map((resource) => {
-        const base = {
-          id: resource.id,
-          kind: resource.kind,
-          policy: resource.policy,
-          target: resource.target,
-          dependsOn: resource.dependsOn ?? [],
-          blobs: [digestOf(asJson(resource.spec))],
-        };
-        return resource.groups === undefined
-          ? base
-          : { ...base, groups: resource.groups };
-      });
+      const expectedResources = profile.resources.map(({ verify: _, ...resource }) =>
+        resource
+      );
       if (
         canonicalJson(asJson(expectedResources))
         !== canonicalJson(asJson(revision.resources))
@@ -279,21 +266,9 @@ const makeEnrollment = Effect.gen(function*() {
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
   const maximumRevisionValidationCacheEntries = 1024;
-  const maximumAuthorizedBlobIndexEntries = 1024;
-  const maximumCandidatesPerAuthorizedBlobIndexEntry = 1024;
   const validatedRevisionCache = new Map<
     string,
-    MachineProfile
-  >();
-  const authorizedBlobIndex = new Map<
-    string,
-    {
-      readonly candidateFingerprint: string;
-      readonly entries: ReadonlyArray<{
-        readonly revision: typeof ProfileRevisionId.Type;
-        readonly resource: string;
-      }>;
-    }
+    PublishedMachineProfile
   >();
   let cachedSigningKeys:
     | {
@@ -919,101 +894,52 @@ const makeEnrollment = Effect.gen(function*() {
     return metadata;
   });
 
-  const getAuthorizedBlob = Effect.fn("Enrollment.getAuthorizedBlob")(
-    function*(credential: string, blobId: string) {
+  const getAuthorizedBlobRange = Effect.fn("Enrollment.getAuthorizedBlobRange")(
+    function*(credential: string, input: {
+      readonly revisionId: string;
+      readonly blobId: typeof BlobId.Type;
+      readonly offset: number;
+      readonly maximumBytes: number;
+    }) {
       const authenticated = yield* authenticate(credential);
-      const blob = decode(ContentDigest)(blobId);
       const groups = new Set<string>(authenticated.follower.groups);
-      const candidates = yield* repository.listRevisionBlobCandidates(blob).pipe(
-        Effect.mapError(repositoryError("list authorized blob candidates")),
+      const revisionId = decode(ProfileRevisionId)(input.revisionId);
+      const revisions = yield* repository.listRevisions().pipe(
+        Effect.mapError(repositoryError("list authorized blob revisions")),
       );
-      const candidateFingerprint = candidates.map((candidate) =>
-        `${candidate.revision}\0${candidate.resource}`
-      ).join("\n");
-      const scope = [
-        blob,
-        [...groups].sort().join("\0"),
-      ].join("\0");
-      const cached = candidates.length <= maximumCandidatesPerAuthorizedBlobIndexEntry
-        ? authorizedBlobIndex.get(scope)
-        : undefined;
+      const revision = revisions.find((candidate) => candidate.id === revisionId);
+      const resource = revision === undefined
+        ? undefined
+        : visibleResources(revision, groups).find((candidate) =>
+          candidate.blobs.includes(input.blobId)
+        );
+      if (revision === undefined || resource === undefined) {
+        return yield* new TransportResourceNotFoundError({ resource: "blob" });
+      }
       const keys = yield* signingKeys();
-      let entries = cached?.candidateFingerprint === candidateFingerprint
-        ? cached.entries
-        : undefined;
-      if (entries === undefined) {
-        const next: Array<{
-          readonly revision: typeof ProfileRevisionId.Type;
-          readonly resource: string;
-        }> = [];
-        for (const candidate of candidates) {
-          const revision = yield* repository.getRevision(candidate.revision).pipe(
-            Effect.mapError(repositoryError("load authorized blob revision")),
-          );
-          const profile = yield* cachedRevision(
-            revision,
-            keys.material.source.keyId,
-            keys.material.source.publicKeyFingerprint,
-            keys.publicKey,
-          );
-          const resource = visibleResources(revision, groups).find((item) =>
-            item.id === candidate.resource
-            && item.blobs.some((candidateBlob) => candidateBlob === blob)
-          );
-          if (resource === undefined) continue;
-          if (!profile.resources.some((item) => item.id === resource.id)) {
-            return yield* new TransportIntegrityError({
-              artifact: blobId,
-              message: "authorized blob has no canonical resource",
-            });
-          }
-          next.push({
-            revision: candidate.revision,
-            resource: candidate.resource,
-          });
-        }
-        entries = next;
-        if (candidates.length <= maximumCandidatesPerAuthorizedBlobIndexEntry) {
-          cacheSet(
-            authorizedBlobIndex,
-            scope,
-            { candidateFingerprint, entries },
-            maximumAuthorizedBlobIndexEntries,
-          );
-        }
+      const profile = yield* cachedRevision(
+        revision,
+        keys.material.source.keyId,
+        keys.material.source.publicKeyFingerprint,
+        keys.publicKey,
+      );
+      if (!profile.resources.some((candidate) =>
+        candidate.id === resource.id && candidate.blobs.includes(input.blobId)
+      )) {
+        return yield* new TransportIntegrityError({
+          artifact: input.blobId,
+          message: "authorized blob has no canonical resource",
+        });
       }
-      for (const entry of entries) {
-        const revision = yield* repository.getRevision(entry.revision).pipe(
-          Effect.mapError(repositoryError("load authorized blob revision")),
-        );
-        const profile = yield* cachedRevision(
-          revision,
-          keys.material.source.keyId,
-          keys.material.source.publicKeyFingerprint,
-          keys.publicKey,
-        );
-        const resource = visibleResources(revision, groups).find((item) =>
-          item.id === entry.resource
-          && item.blobs.some((candidate) => candidate === blob)
-        );
-        if (resource === undefined) continue;
-        const authored = profile.resources.find((item) => item.id === resource.id);
-        if (authored === undefined) {
-          return yield* new TransportIntegrityError({
-            artifact: blobId,
-            message: "authorized blob has no canonical resource",
-          });
-        }
-        const bytes = Buffer.from(canonicalJson(asJson(authored.spec)));
-        if (sha256BytesHex(bytes) !== blobId) {
-          return yield* new TransportIntegrityError({
-            artifact: blobId,
-            message: "canonical blob digest mismatch",
-          });
-        }
-        return bytes;
+      const range = yield* repository.readResourceBlobRange({
+        blob: input.blobId,
+        offset: input.offset,
+        maximumBytes: input.maximumBytes,
+      }).pipe(Effect.mapError(repositoryError("read authorized blob range")));
+      if (range === undefined) {
+        return yield* new TransportResourceNotFoundError({ resource: "blob" });
       }
-      return yield* new TransportResourceNotFoundError({ resource: "blob" });
+      return range;
     },
   );
 
@@ -1063,7 +989,7 @@ const makeEnrollment = Effect.gen(function*() {
     authenticate,
     listAuthorizedRevisions,
     getAuthorizedRevision,
-    getAuthorizedBlob,
+    getAuthorizedBlobRange,
     revokeFollower,
     updateFollowerGroups,
     getFollower,

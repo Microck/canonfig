@@ -47,6 +47,7 @@ import {
   canonicalJson,
   decodeJsonc,
   digestOf,
+  sha256BytesHex,
   sha256Hex,
   type JsonValue,
 } from "../profile/profile-codec.ts";
@@ -111,11 +112,23 @@ export interface ProfileResourceInput {
   readonly verify: VerificationInput;
 }
 
+export interface ManagedFileInput {
+  readonly path: string;
+  /** Inline UTF-8 text, or base64 when `encoding` is `base64`. */
+  readonly content?: string | undefined;
+  /** File or symlink to read at publication, relative to the profile file. */
+  readonly source?: string | undefined;
+  readonly encoding?: "base64" | undefined;
+  readonly executable?: boolean | undefined;
+  readonly mode?: number | undefined;
+  readonly symlinkTo?: string | undefined;
+}
+
 export type ResourceSpecInput =
-  | { readonly kind: "file"; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }
-  | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
+  | { readonly kind: "file"; readonly content?: string | undefined; readonly source?: string | undefined; readonly encoding?: "base64" | undefined; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }
+  | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<ManagedFileInput> }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }> }
-  | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly content: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
+  | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<ManagedFileInput> }
   | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined; readonly agentInstall?: { readonly paths: ReadonlyArray<string>; readonly origins?: ReadonlyArray<string> | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string };
 
@@ -141,6 +154,14 @@ export interface ProfileRevision {
   readonly scheduleDefault?: ScheduleDefault | undefined;
 }
 
+export type PublishedResourceSpec =
+  | { readonly kind: "file"; readonly blob?: BlobId | undefined; readonly bytes?: number | undefined; readonly executable: boolean; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }
+  | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly blob?: BlobId | undefined; readonly bytes?: number | undefined; readonly executable: boolean; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
+  | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }> }
+  | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly blob?: BlobId | undefined; readonly bytes?: number | undefined; readonly executable: boolean; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
+  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: Extract<ResourceSpecInput, { readonly kind: "tool" }>["recipes"]; readonly login?: Extract<ResourceSpecInput, { readonly kind: "tool" }>["login"]; readonly agentInstall?: Extract<ResourceSpecInput, { readonly kind: "tool" }>["agentInstall"] }
+  | { readonly kind: "credential"; readonly reference: string };
+
 export interface PublishedResource {
   readonly id: ResourceId;
   readonly kind: ResourceKind;
@@ -148,7 +169,8 @@ export interface PublishedResource {
   readonly target: string;
   readonly groups?: ReadonlyArray<string> | undefined;
   readonly dependsOn: ReadonlyArray<ResourceId>;
-  readonly blobs: ReadonlyArray<string>;
+  readonly spec?: PublishedResourceSpec | undefined;
+  readonly blobs: ReadonlyArray<BlobId>;
 }
 
 /** A candidate Machine Profile change from discovery or an agent. */
@@ -177,21 +199,53 @@ export interface CredentialDescriptor {
 // Authoring and follower decoding must accept the exact same portable values.
 const ConfigValueInputSchema = ConfigValue;
 
+const authoredFileIssue = (
+  file: {
+    readonly content?: string | undefined;
+    readonly source?: string | undefined;
+    readonly encoding?: "base64" | undefined;
+    readonly symlinkTo?: string | undefined;
+  },
+): string | undefined => {
+  if (file.content !== undefined && file.source !== undefined) {
+    return "file content and source are mutually exclusive";
+  }
+  if (file.source !== undefined && file.encoding !== undefined) {
+    return "encoding applies only to inline content";
+  }
+  if (
+    file.symlinkTo === undefined
+    && file.content === undefined
+    && file.source === undefined
+  ) return "regular file requires content or source";
+  return undefined;
+};
+
 const AuthoringFileSchema = Schema.Struct({
   kind: Schema.Literal("file"),
-  content: Schema.String,
+  content: Schema.optional(Schema.String),
+  source: Schema.optional(Schema.NonEmptyString),
+  encoding: Schema.optional(Schema.Literal("base64")),
   executable: Schema.optional(Schema.Boolean),
   mode: Schema.optional(FilesystemModeSchema),
   symlinkTo: Schema.optional(Schema.NonEmptyString),
-});
+}).check(Schema.makeFilter((file) => {
+  const issue = authoredFileIssue(file);
+  return issue === undefined ? undefined : { path: [], issue };
+}));
 
 const AuthoringDirectoryFileSchema = Schema.Struct({
   path: Schema.NonEmptyString,
-  content: Schema.String,
+  content: Schema.optional(Schema.String),
+  source: Schema.optional(Schema.NonEmptyString),
+  encoding: Schema.optional(Schema.Literal("base64")),
   executable: Schema.optional(Schema.Boolean),
   mode: Schema.optional(FilesystemModeSchema),
   symlinkTo: Schema.optional(Schema.NonEmptyString),
-});
+}).check(Schema.makeFilter((file) => {
+  const issue = authoredFileIssue(file);
+  return issue === undefined ? undefined : { path: [], issue };
+}));
 
 const AuthoringDirectorySchema = Schema.Struct({
   path: Schema.NonEmptyString,
@@ -278,9 +332,15 @@ const verificationAllowedForSpec = (
 const appendLocalIssue = (resource: Pick<ProfileResourceInput, "policy" | "spec">): string | undefined => {
   if (resource.policy !== "append-local" || resource.spec.kind !== "file") return undefined;
   const spec = resource.spec;
-  return spec.symlinkTo !== undefined || spec.executable === true || ((spec.mode ?? 0) & 0o111) !== 0
-    ? "append-local requires a non-executable regular text file"
-    : sourceTextIssue(spec.content);
+  if (
+    spec.symlinkTo !== undefined
+    || spec.executable === true
+    || ((spec.mode ?? 0) & 0o111) !== 0
+    || spec.source !== undefined
+    || spec.encoding !== undefined
+    || spec.content === undefined
+  ) return "append-local requires inline non-executable UTF-8 text";
+  return sourceTextIssue(spec.content);
 };
 
 const verificationContentIssue = (
@@ -288,8 +348,15 @@ const verificationContentIssue = (
 ): string | undefined => {
   if (resource.kind !== "file" || resource.spec.kind !== "file") return undefined;
   if (resource.spec.symlinkTo === undefined) {
-    return resource.verify.method === "digest"
-      && resource.verify.digest !== sha256Hex(resource.spec.content)
+    if (
+      resource.verify.method !== "digest"
+      || resource.spec.content === undefined
+      || resource.spec.source !== undefined
+    ) return undefined;
+    const digest = resource.spec.encoding === "base64"
+      ? sha256BytesHex(Buffer.from(resource.spec.content, "base64"))
+      : sha256Hex(resource.spec.content);
+    return resource.verify.digest !== digest
       ? "digest verification does not match authored file content"
       : undefined;
   }
@@ -368,6 +435,70 @@ export const MachineProfileAuthoringSchema = Schema.Struct({
   scheduleDefault: Schema.optional(ScheduleDefaultSchema),
 });
 
+const publishedFileIssue = (file: {
+  readonly blob?: BlobId | undefined;
+  readonly bytes?: number | undefined;
+  readonly symlinkTo?: string | undefined;
+}) => {
+  const contentAddressed = file.blob !== undefined && file.bytes !== undefined;
+  const symlink = file.symlinkTo !== undefined
+    && file.blob === undefined
+    && file.bytes === undefined;
+  return contentAddressed || symlink
+    ? undefined
+    : { path: [], issue: "published file must be either a content blob or a symlink" };
+};
+
+const PublishedFileFields = {
+  blob: Schema.optional(BlobId),
+  bytes: Schema.optional(Schema.Natural),
+  executable: Schema.Boolean,
+  mode: Schema.optional(FilesystemModeSchema),
+  symlinkTo: Schema.optional(Schema.NonEmptyString),
+};
+
+const PublishedDirectoryFileSchema = Schema.Struct({
+  path: Schema.NonEmptyString,
+  ...PublishedFileFields,
+}).check(Schema.makeFilter(publishedFileIssue));
+
+export const PublishedResourceSpecSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("file"), ...PublishedFileFields })
+    .check(Schema.makeFilter(publishedFileIssue)),
+  Schema.Struct({
+    kind: Schema.Literal("directory"),
+    mode: Schema.optional(FilesystemModeSchema),
+    directories: Schema.optional(Schema.Array(AuthoringDirectorySchema)),
+    files: Schema.Array(PublishedDirectoryFileSchema),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("config"),
+    format: Schema.Literals(["toml", "json", "yaml"]),
+    keys: Schema.Array(Schema.Struct({
+      path: Schema.NonEmptyString,
+      value: ConfigValueInputSchema,
+    })),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("skill"),
+    name: Schema.NonEmptyString,
+    mode: Schema.optional(FilesystemModeSchema),
+    directories: Schema.optional(Schema.Array(AuthoringDirectorySchema)),
+    files: Schema.Array(PublishedDirectoryFileSchema),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("tool"),
+    toolId: ToolId,
+    recipes: Schema.Array(ToolRecipeRef),
+    login: Schema.optional(AuthoringLoginSchema),
+    agentInstall: Schema.optional(AgentInstallBounds),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("credential"),
+    reference: CredentialReferenceSchema,
+  }),
+]);
+
 export const PublishedResourceSchema = Schema.Struct({
   id: ResourceIdSchema,
   kind: ResourceKindSchema,
@@ -375,7 +506,21 @@ export const PublishedResourceSchema = Schema.Struct({
   target: Schema.NonEmptyString,
   groups: Schema.optional(Schema.Array(GroupName)),
   dependsOn: Schema.Array(ResourceIdSchema),
+  spec: Schema.optional(PublishedResourceSpecSchema),
   blobs: Schema.Array(BlobId),
+});
+
+export const PublishedMachineProfileSchema = Schema.Struct({
+  id: ProfileIdSchema,
+  version: Schema.Literal(2),
+  name: Schema.NonEmptyString,
+  groups: Schema.Array(ProfileGroupSchema),
+  resources: Schema.Array(Schema.Struct({
+    ...PublishedResourceSchema.fields,
+    spec: PublishedResourceSpecSchema,
+    verify: VerificationInputSchema,
+  })),
+  scheduleDefault: Schema.optional(ScheduleDefaultSchema),
 });
 
 export const ProfileRevisionSchema = Schema.Struct({
@@ -1216,16 +1361,18 @@ const compareText = (left: string, right: string): number => {
 const uniqueSorted = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
   [...new Set(values)].sort(compareText);
 
-type ManagedFileInput = Extract<
-  ResourceSpecInput,
-  { readonly kind: "directory" }
->["files"][number];
 
-const normalizeManagedFile = (file: ManagedFileInput) => {
+const normalizeManagedFile = (file: ManagedFileInput): ManagedFileInput => {
+  const payload = file.source === undefined
+    ? {
+      content: file.content,
+      encoding: file.encoding,
+    }
+    : { source: file.source };
   if (file.symlinkTo !== undefined) {
     return {
       path: file.path,
-      content: file.content,
+      ...payload,
       mode: 0,
       executable: false,
       symlinkTo: file.symlinkTo,
@@ -1234,7 +1381,7 @@ const normalizeManagedFile = (file: ManagedFileInput) => {
   const mode = file.mode ?? (file.executable === true ? 0o700 : 0o600);
   return {
     path: file.path,
-    content: file.content,
+    ...payload,
     mode,
     executable: (mode & 0o100) !== 0,
   };
@@ -1243,10 +1390,13 @@ const normalizeManagedFile = (file: ManagedFileInput) => {
 const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
   switch (spec.kind) {
     case "file": {
+      const payload = spec.source === undefined
+        ? { content: spec.content, encoding: spec.encoding }
+        : { source: spec.source };
       if (spec.symlinkTo !== undefined) {
         return {
           kind: spec.kind,
-          content: spec.content,
+          ...payload,
           mode: 0,
           executable: false,
           symlinkTo: spec.symlinkTo,
@@ -1255,7 +1405,7 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
       const mode = spec.mode ?? (spec.executable === true ? 0o700 : 0o600);
       return {
         kind: spec.kind,
-        content: spec.content,
+        ...payload,
         mode,
         executable: (mode & 0o100) !== 0,
       };

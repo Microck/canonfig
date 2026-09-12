@@ -343,6 +343,7 @@ const sourceCommandsLayer: Layer.Layer<
               groups: authored.groups,
               resources: authored.resources,
               scheduleDefault: authored.scheduleDefault,
+              directory: dirname(input.profilePath!),
             };
           const now = new Date().toISOString();
           const revision = yield* mapFailure(profiles.publish({

@@ -37,7 +37,7 @@ const machine = Layer.effect(MachineState, Effect.gen(function*() {
   });
 })).pipe(Layer.provide(linuxMachineStateLayer()));
 
-const source = async (route: "json" | "metadata" | "blob") => {
+const source = async (route: "json" | "list" | "metadata" | "blob") => {
   const certificate = await generate([{ name: "commonName", value: "loopback-test" }], {
     keyType: "ec",
     curve: "P-256",
@@ -45,7 +45,7 @@ const source = async (route: "json" | "metadata" | "blob") => {
   });
   const signing = generateKeyPairSync("ed25519");
   const fingerprint = sha256(signing.publicKey.export({ format: "der", type: "spki" }));
-  const blob = Buffer.from('{"kind":"file","content":"synthetic fixture"}');
+  const blob = Buffer.from("synthetic fixture\0\u00ff-spans-ranges", "latin1");
   const blobId = sha256(blob);
   const unsigned = {
     id: "fixture:one",
@@ -55,7 +55,9 @@ const source = async (route: "json" | "metadata" | "blob") => {
     publishedAt: "2026-01-01T00:00:00.000Z",
     resources: [{
       id: "fixture-file", kind: "file", policy: "replace", target: "~/.fixture",
-      dependsOn: [], blobs: [blobId], verify: { method: "digest", digest: blobId },
+      dependsOn: [],
+      spec: { kind: "file", blob: blobId, bytes: blob.byteLength, executable: false, mode: 0o600 },
+      blobs: [blobId], verify: { method: "digest", digest: blobId },
     }],
     signingKeyId: `ed25519:${fingerprint}`,
     signingPublicKey: signing.publicKey.export({ format: "pem", type: "spki" }).toString(),
@@ -70,21 +72,42 @@ const source = async (route: "json" | "metadata" | "blob") => {
   };
   const sockets = new Set<Socket>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
-  const state = { truncate: true };
+  const state = { truncate: true, blobRequests: 0 };
   const server = createServer({ key: certificate.private, cert: certificate.cert }, (request, response) => {
     request.resume();
-    const isBlob = request.url?.startsWith("/v1/transport/blobs/") === true;
-    const isMetadata = request.url?.startsWith("/v1/transport/revisions/") === true;
+    const isBlob = request.url?.includes("/blobs/") === true;
+    const isMetadata = request.url?.startsWith("/v1/transport/revisions/") === true
+      && !isBlob;
     const shouldTruncate = state.truncate && (
-      route === "blob" ? isBlob : route === "metadata" ? !isBlob : true
+      route === "blob" ? isBlob
+      : route === "metadata" ? isMetadata
+      : route === "list" ? request.url === "/v1/transport/revisions"
+      : true
     );
-    const bytes = isBlob ? blob : Buffer.from(JSON.stringify(isMetadata ? metadata : { revisions: [] }));
+    const range = Schema.is(Schema.String)(request.headers.range)
+      ? /^bytes=(\d+)-(\d+)$/u.exec(request.headers.range)
+      : null;
+    const rangeStart = Number(range?.[1] ?? 0);
+    const rangeEnd = Number(range?.[2] ?? blob.length - 1);
+    if (isBlob) state.blobRequests += 1;
+    const bytes = isBlob
+      ? blob.subarray(rangeStart, Math.min(rangeEnd + 1, blob.length))
+      : Buffer.from(JSON.stringify(isMetadata ? metadata : { revisions: [] }));
+    const blobHeaders = isBlob
+      ? {
+        "content-range": `bytes ${rangeStart}-${rangeStart + bytes.length - 1}/${blob.length}`,
+        "accept-ranges": "bytes",
+      }
+      : {};
     if (!shouldTruncate) {
-      response.writeHead(200, { "content-length": bytes.length });
+      response.writeHead(isBlob ? 206 : 200, { "content-length": bytes.length, ...blobHeaders });
       response.end(bytes);
       return;
     }
-    response.writeHead(200, { "content-length": bytes.length + 100 });
+    response.writeHead(isBlob ? 206 : 200, {
+      "content-length": bytes.length + 100,
+      ...blobHeaders,
+    });
     response.write(bytes.subarray(0, Math.max(1, Math.floor(bytes.length / 2))));
     const timer = setTimeout(() => {
       timers.delete(timer);
@@ -138,7 +161,7 @@ describe("pinned HTTP response lifecycle", () => {
   });
 
   it("settles a truncated revision-list response without waiting for a closed socket timeout", async () => {
-    const fixture = await source("metadata");
+    const fixture = await source("list");
     const result = await Effect.runPromise(
       Effect.result(listRevisions(fixture.input)).pipe(
         Effect.timeoutOption(3000), Effect.provide(machine),
@@ -152,7 +175,12 @@ describe("pinned HTTP response lifecycle", () => {
     const fixture = await source("blob");
     const cache = await mkdtemp(join(tmpdir(), "canonfig-response-"));
     cleanup.push(() => rm(cache, { recursive: true, force: true }));
-    const input = { ...fixture.input, revisionId: "fixture:one", cacheDirectory: cache };
+    const input = {
+      ...fixture.input,
+      revisionId: "fixture:one",
+      cacheDirectory: cache,
+      maximumBlobBytes: 5,
+    };
     const result = await Effect.runPromise(
       Effect.result(fetchRevision(input)).pipe(Effect.timeoutOption(3000), Effect.provide(machine)),
     );
@@ -166,6 +194,9 @@ describe("pinned HTTP response lifecycle", () => {
     expect(fetched.downloadedBlobs).toBe(1);
     expect(await readFile(fetched.blobs[0]!.path)).toEqual(fixture.blob);
     expect(await readdir(join(cache, "blobs"))).toEqual([fixture.blobId]);
+    expect(fixture.state.blobRequests).toBeGreaterThan(
+      Math.ceil(fixture.blob.byteLength / input.maximumBlobBytes),
+    );
 
     const repeated = await Effect.runPromise(fetchRevision(input).pipe(Effect.provide(machine)));
     expect(repeated.downloadedBlobs).toBe(0);

@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { Effect, Redacted, Schema } from "effect";
 
 import { MachineState } from "../machine/machine-state.service.ts";
-import type { CertificateFingerprint } from "../domain/brand.ts";
+import { BlobId, type CertificateFingerprint } from "../domain/brand.ts";
 import type { SourceIdentity } from "../domain/identity.ts";
 import {
   loadSharedSecrets,
@@ -413,29 +413,66 @@ export const startSourceServer = (
             sendJson(response, 200, metadata);
             return;
           }
-          const blobMatch = /^\/v1\/transport\/blobs\/([a-f0-9]{64})$/u.exec(
-            requestUrl.pathname,
-          );
-          if (request.method === "GET" && blobMatch !== null) {
-            blobRequests += 1;
-            const blob = await runRequestEffect(
-              enrollment.getAuthorizedBlob(
-                bearerCredential(request.headers.authorization),
-                blobMatch[1]!,
-              ),
+          const blobMatch =
+            /^\/v1\/transport\/revisions\/([^/]+)\/blobs\/([a-f0-9]{64})$/u.exec(
+              requestUrl.pathname,
             );
-            if (blob.byteLength > maximumBlobBytes) {
-              throw new TransportSizeLimitError({
-                artifact: "blob",
-                limit: maximumBlobBytes,
+          if (request.method === "GET" && blobMatch !== null) {
+            const rangeHeader = request.headers.range;
+            const rangeMatch = Schema.is(Schema.String)(rangeHeader)
+              ? /^bytes=(\d+)-(\d+)$/u.exec(rangeHeader)
+              : null;
+            const start = Number(rangeMatch?.[1]);
+            const requestedEnd = Number(rangeMatch?.[2]);
+            const requestedBytes = requestedEnd - start + 1;
+            if (
+              rangeMatch === null
+              || !Number.isSafeInteger(start)
+              || !Number.isSafeInteger(requestedEnd)
+              || start < 0
+              || requestedEnd < start
+              || requestedBytes > maximumBlobBytes
+            ) {
+              throw new MalformedEnrollmentRequestError({
+                message: "blob request must contain one bounded byte range",
               });
             }
-            response.writeHead(200, {
+            blobRequests += 1;
+            const blob = await runRequestEffect(
+              enrollment.getAuthorizedBlobRange(
+                bearerCredential(request.headers.authorization),
+                {
+                  revisionId: decodeURIComponent(blobMatch[1]!),
+                  blobId: Schema.decodeUnknownSync(BlobId)(blobMatch[2]!),
+                  offset: start,
+                  maximumBytes: requestedBytes,
+                },
+              ),
+            );
+            if (blob.totalBytes === 0 && start === 0) {
+              response.writeHead(200, {
+                "content-type": "application/octet-stream",
+                "content-length": 0,
+                "accept-ranges": "bytes",
+                "cache-control": "no-store",
+              });
+              response.end();
+              return;
+            }
+            if (start >= blob.totalBytes || blob.content.byteLength === 0) {
+              throw new MalformedEnrollmentRequestError({
+                message: "blob range starts beyond the authorized content",
+              });
+            }
+            const end = start + blob.content.byteLength - 1;
+            response.writeHead(206, {
               "content-type": "application/octet-stream",
-              "content-length": blob.byteLength,
+              "content-length": blob.content.byteLength,
+              "content-range": `bytes ${start}-${end}/${blob.totalBytes}`,
+              "accept-ranges": "bytes",
               "cache-control": "no-store",
             });
-            response.end(blob);
+            response.end(blob.content);
             return;
           }
           sendJson(response, 404, {

@@ -392,6 +392,15 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       )
     `;
   }),
+  "0016_resource_blobs": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      CREATE TABLE resource_blobs (
+        id TEXT PRIMARY KEY,
+        content BLOB NOT NULL
+      )
+    `;
+  }),
 });
 
 /** Bumped by every migration that changes what a stored run means. */
