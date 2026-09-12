@@ -2896,6 +2896,7 @@ if (process.argv.slice(2).some((value) =>
             "process.stdout.write('declared-verification')",
           ],
           expectContains: "declared-verification",
+          proves: "client-load",
         },
       }],
     };
@@ -2924,6 +2925,8 @@ if (process.argv.slice(2).some((value) =>
     });
 
     expect(outcome.outcome).toBe("Converged");
+    expect(String(actionRows(base.database).at(-1)?.verification_json))
+      .toContain("\"method\":\"client-load:");
   });
 
   it.each([

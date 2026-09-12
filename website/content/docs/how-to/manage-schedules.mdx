@@ -6,12 +6,13 @@ description: Install and inspect native daily or weekly follower synchronization
 Canonfig uses the operating system's user scheduler (systemd user timer on Linux, launchd user agent on macOS, and Task Scheduler on Windows). There is no resident Follower Machine daemon. Every native job invokes:
 
 ```text
-canonfig sync --apply --no-input
+canonfig sync --apply --no-input --scheduled
 ```
 
-## Set the default schedule
+## Set a schedule
 
-The default schedule is daily at `00:00` in the follower's local timezone. Install it explicitly:
+Canonfig has no built-in schedule. To select daily synchronization at `00:00`
+in the follower's local timezone:
 
 ```bash
 canonfig schedule set daily@00:00

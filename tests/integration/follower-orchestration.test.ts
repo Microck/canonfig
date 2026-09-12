@@ -280,7 +280,14 @@ describe("production follower orchestration", () => {
     await mkdir(join(followerRoot, "home"), { recursive: true });
     const local = "Existing rules\r\n\uFEFF東京\n";
     await writeFile(target, local);
-    expect((await sync("plan")).plan.actions).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "write-file" })]));
+    expect((await sync("plan")).plan.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "write-file",
+        detail: expect.objectContaining({
+          adoptionNotice: expect.stringContaining("cannot tell an old shared rule"),
+        }),
+      }),
+    ]));
     expect(await readFile(target, "utf8")).toBe(local);
     expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
     expect(await text()).toEqual({ kind: "managed", source: "Source one\n", local });

@@ -27,7 +27,6 @@ import type {
   PendingEnrollmentRecord,
   PublishRevisionInput,
   RecordDriftInput,
-  RecordRevisionApprovalInput,
   RecoveryState,
   RegisterFollowerInput,
   RemoveLocalOverlayInput,
@@ -38,6 +37,7 @@ import type {
   RevisionBlobCandidate,
   StoredEnrollmentInvitation,
   SaveFollowerSynchronizationConfigurationInput,
+  StartRunInput,
 } from "./state-repository.types.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
@@ -143,9 +143,6 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly latestDeploymentReceipt: (
     follower: FollowerId,
   ) => Effect.Effect<DeploymentReceipt | undefined, StateRepositoryError>;
-  readonly recordRevisionApproval: (
-    input: RecordRevisionApprovalInput,
-  ) => Effect.Effect<void, StateRepositoryError>;
   readonly loadRevisionApproval: (
     revision: ProfileRevisionId,
   ) => Effect.Effect<RevisionApprovalRecord | undefined, StateRepositoryError>;

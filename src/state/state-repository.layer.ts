@@ -63,7 +63,6 @@ import type {
   PendingEnrollmentRecord,
   PublishRevisionInput,
   RecordDriftInput,
-  RecordRevisionApprovalInput,
   RecoveryState,
   RegisterFollowerInput,
   RevisionApprovalRecord,
@@ -1245,47 +1244,69 @@ const makeRepository = Effect.gen(function*() {
             "profile revision",
             revision.id,
           );
-          if (encodeJson(stored) === encoded) return;
-          return yield* new RevisionImmutableError({
-            revision: revision.id,
-            message: "the revision id already names different immutable content",
-          });
-        }
-        yield* sql`
-          INSERT INTO profile_revisions (
-            id,
-            profile_id,
-            sequence,
-            canonical_bytes,
-            digest,
-            signature,
-            published_at,
-            revision_json
-          ) VALUES (
-            ${revision.id},
-            ${revision.profileId},
-            ${revision.sequence},
-            ${revision.canonicalBytes},
-            ${revision.digest},
-            ${revision.signature},
-            ${revision.publishedAt},
-            ${encoded}
-          )
-        `;
-        for (const resource of revision.resources) {
-          for (const blob of resource.blobs) {
-            yield* sql`
-              INSERT OR IGNORE INTO profile_revision_blobs (
-                blob_id,
-                revision_id,
-                resource_id
-              ) VALUES (
-                ${Schema.decodeUnknownSync(BlobId)(blob)},
-                ${revision.id},
-                ${resource.id}
-              )
-            `;
+          if (encodeJson(stored) !== encoded) {
+            return yield* new RevisionImmutableError({
+              revision: revision.id,
+              message: "the revision id already names different immutable content",
+            });
           }
+        } else {
+          yield* sql`
+            INSERT INTO profile_revisions (
+              id,
+              profile_id,
+              sequence,
+              canonical_bytes,
+              digest,
+              signature,
+              published_at,
+              revision_json
+            ) VALUES (
+              ${revision.id},
+              ${revision.profileId},
+              ${revision.sequence},
+              ${revision.canonicalBytes},
+              ${revision.digest},
+              ${revision.signature},
+              ${revision.publishedAt},
+              ${encoded}
+            )
+          `;
+          for (const resource of revision.resources) {
+            for (const blob of resource.blobs) {
+              yield* sql`
+                INSERT OR IGNORE INTO profile_revision_blobs (
+                  blob_id,
+                  revision_id,
+                  resource_id
+                ) VALUES (
+                  ${Schema.decodeUnknownSync(BlobId)(blob)},
+                  ${revision.id},
+                  ${resource.id}
+                )
+              `;
+            }
+          }
+        }
+        if (input.approval !== undefined) {
+          yield* sql`
+            INSERT INTO revision_approvals (
+              revision_id,
+              proposal_digest,
+              revision_digest,
+              reviewer,
+              reviewed_at,
+              recorded_at
+            ) VALUES (
+              ${revision.id},
+              ${input.approval.proposalDigest},
+              ${revision.digest},
+              ${input.approval.reviewer},
+              ${input.approval.reviewedAt},
+              ${input.approval.recordedAt}
+            )
+            ON CONFLICT(revision_id) DO NOTHING
+          `;
         }
       });
       yield* sql.withTransaction(transaction).pipe(
@@ -1989,28 +2010,6 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
-  const recordRevisionApproval = Effect.fn("StateRepository.recordRevisionApproval")(
-    function*(input: RecordRevisionApprovalInput): Effect.fn.Return<void, StateRepositoryError> {
-      yield* sql`
-        INSERT INTO revision_approvals (
-          revision_id,
-          proposal_digest,
-          revision_digest,
-          reviewer,
-          reviewed_at,
-          recorded_at
-        ) VALUES (
-          ${input.revision},
-          ${input.proposalDigest},
-          ${input.revisionDigest},
-          ${input.reviewer},
-          ${input.reviewedAt},
-          ${input.recordedAt}
-        )
-        ON CONFLICT(revision_id) DO NOTHING
-      `.pipe(Effect.mapError(sqlError("record revision approval")));
-    },
-  );
 
   const loadRevisionApproval = Effect.fn("StateRepository.loadRevisionApproval")(
     function*(revision: ProfileRevisionIdType): Effect.fn.Return<RevisionApprovalRecord | undefined, StateRepositoryError> {
@@ -2077,6 +2076,7 @@ const makeRepository = Effect.gen(function*() {
         run,
       );
       let passedVerifications = 0;
+      const passedVerificationMethods: Array<string> = [];
       for (const [index, stored] of encoded.entries()) {
         const evidence = yield* parseJson(
           VerificationEvidenceSchema,
@@ -2084,7 +2084,10 @@ const makeRepository = Effect.gen(function*() {
           "run verification evidence",
           `${run}:${index}`,
         );
-        if (evidence.status === "passed") passedVerifications += 1;
+        if (evidence.status === "passed") {
+          passedVerifications += 1;
+          passedVerificationMethods.push(evidence.method);
+        }
       }
       return {
         run: row.id,
@@ -2092,9 +2095,18 @@ const makeRepository = Effect.gen(function*() {
         outcome,
         completedAt: row.completed_at,
         totalActions: plan.actions.length,
-        mutatingActions: plan.actions.filter((action) => action.kind !== "no-op").length,
+        mutatingActions: plan.actions.filter((action) =>
+          [
+            "write-file",
+            "write-config",
+            "mirror-directory",
+            "remove-resource",
+            "install-tool",
+          ].includes(action.kind)
+        ).length,
         verifiedActions: encoded.length,
         passedVerifications,
+        passedVerificationMethods: [...new Set(passedVerificationMethods)].sort(),
       };
     },
   );
@@ -2397,7 +2409,6 @@ const makeRepository = Effect.gen(function*() {
     completeRun,
     loadDeploymentReceipt,
     latestDeploymentReceipt,
-    recordRevisionApproval,
     loadRevisionApproval,
     loadRunEvidence,
     loadRecovery,

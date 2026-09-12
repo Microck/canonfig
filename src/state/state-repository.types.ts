@@ -23,6 +23,12 @@ import type { FollowerSynchronizationConfiguration } from
 
 export interface PublishRevisionInput {
   readonly revision: ProfileRevision;
+  readonly approval?: {
+    readonly proposalDigest: ContentDigest;
+    readonly reviewer: string;
+    readonly reviewedAt: string;
+    readonly recordedAt: string;
+  } | undefined;
 }
 
 export interface RevisionBlobCandidate {
@@ -62,15 +68,6 @@ export interface RevisionApprovalRecord {
   readonly recordedAt: string;
 }
 
-export interface RecordRevisionApprovalInput {
-  readonly revision: ProfileRevisionId;
-  readonly proposalDigest: ContentDigest;
-  readonly revisionDigest: ContentDigest;
-  readonly reviewer: string;
-  readonly reviewedAt: string;
-  readonly recordedAt: string;
-}
-
 /**
  * Lean evidence for one finished run, backing the completion receipt without
  * replaying the full journal. Verification counts come from journaled
@@ -86,6 +83,7 @@ export interface RunEvidenceSummary {
   readonly mutatingActions: number;
   readonly verifiedActions: number;
   readonly passedVerifications: number;
+  readonly passedVerificationMethods: ReadonlyArray<string>;
 }
 
 export interface RegisterFollowerInput {

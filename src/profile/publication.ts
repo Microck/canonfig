@@ -302,6 +302,16 @@ const validateReview = (
   return Effect.void;
 };
 
+const publicationApproval = (input: PublishProfileInput) =>
+  input.review.decision === "accepted"
+    ? {
+      proposalDigest: input.review.proposalDigest,
+      reviewer: input.review.reviewer,
+      reviewedAt: input.review.reviewedAt,
+      recordedAt: input.publishedAt,
+    }
+    : undefined;
+
 const validateProposal = (
   proposal: DiscoveryScanResult,
 ): Effect.Effect<void, UnresolvedPublicationProposalError> => {
@@ -342,11 +352,7 @@ const machineProfileFor = (
     name: input.profile.name,
     groups: input.profile.groups ?? [],
     resources: [...resources.values()],
-    scheduleDefault: input.profile.scheduleDefault ?? {
-      type: "daily",
-      at: "00:00",
-      timezone: "local",
-    },
+    scheduleDefault: input.profile.scheduleDefault,
   });
 };
 
@@ -397,22 +403,6 @@ export const makePublication = (
   signer: ProfileRevisionSigner,
   repository: StateRepository["Service"],
 ) => {
-  const recordApproval = (
-    input: PublishProfileInput,
-    revision: ProfileRevision,
-  ): Effect.Effect<void, ProfileCatalogPublishError> =>
-    Effect.gen(function*() {
-      if (input.review.decision !== "accepted") return;
-      yield* repository.recordRevisionApproval({
-        revision: revision.id,
-        proposalDigest: input.review.proposalDigest,
-        revisionDigest: revision.digest,
-        reviewer: input.review.reviewer,
-        reviewedAt: input.review.reviewedAt,
-        recordedAt: input.publishedAt,
-      });
-    });
-
   const publish = (
     input: PublishProfileInput,
   ): Effect.Effect<ProfileRevision, ProfileCatalogPublishError> =>
@@ -456,7 +446,10 @@ export const makePublication = (
             message: "content-addressed revision identity names different content",
           });
         }
-        yield* recordApproval(input, existing);
+        yield* repository.publishRevision({
+          revision: existing,
+          approval: publicationApproval(input),
+        });
         return existing;
       }
 
@@ -494,8 +487,10 @@ export const makePublication = (
         groups: unsigned.groups,
         scheduleDefault: unsigned.scheduleDefault,
       };
-      yield* repository.publishRevision({ revision });
-      yield* recordApproval(input, revision);
+      yield* repository.publishRevision({
+        revision,
+        approval: publicationApproval(input),
+      });
       return revision;
     });
 

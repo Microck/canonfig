@@ -359,7 +359,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       ALTER TABLE synchronization_runs
       ADD COLUMN state_format INTEGER
     `;
-  yield* sql`
+    yield* sql`
       CREATE TABLE IF NOT EXISTS deployment_receipts (
         run_id TEXT PRIMARY KEY REFERENCES synchronization_runs(id),
         follower_id TEXT NOT NULL,
@@ -395,4 +395,4 @@ export const stateMigrations = SqliteMigrator.fromRecord({
 });
 
 /** Bumped by every migration that changes what a stored run means. */
-export const stateFormatVersion = 2;
+export const stateFormatVersion = 3;

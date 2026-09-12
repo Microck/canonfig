@@ -121,7 +121,7 @@ export type ResourceSpecInput =
 
 export type VerificationInput =
   | { readonly method: "digest"; readonly digest: string }
-  | { readonly method: "command"; readonly command: ReadonlyArray<string>; readonly expectContains?: string | undefined }
+  | { readonly method: "command"; readonly command: ReadonlyArray<string>; readonly expectContains?: string | undefined; readonly proves?: "client-load" | undefined }
   | { readonly method: "executable-present"; readonly executable: string }
   | { readonly method: "credential-present"; readonly reference: string }
   | { readonly method: "symlink"; readonly target: string };
@@ -248,6 +248,7 @@ export const VerificationInputSchema = Schema.Union([
     method: Schema.Literal("command"),
     command: Schema.Array(Schema.NonEmptyString),
     expectContains: Schema.optional(Schema.String),
+    proves: Schema.optional(Schema.Literal("client-load")),
   }),
   Schema.Struct({
     method: Schema.Literal("executable-present"),

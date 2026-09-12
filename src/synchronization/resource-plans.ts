@@ -54,6 +54,11 @@ interface WriteFileActionDetail {
   adoptionNotice?: string;
 }
 
+interface WriteFileDraft extends ResourceActionDraft {
+  readonly kind: "write-file";
+  readonly detail: WriteFileActionDetail;
+}
+
 interface DriftConflictActionDetail {
   readonly kind: "drift-conflict";
   readonly target: string;
@@ -321,7 +326,7 @@ const writeFile = (
   digest: ContentDigest,
   executable?: boolean | undefined,
   mode?: number | undefined,
-): ResourceActionDraft => {
+): WriteFileDraft => {
   const detail: WriteFileActionDetail = {
     kind: "write-file",
     target: context.resource.target,
