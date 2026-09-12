@@ -12,6 +12,7 @@ import {
   commandSkillArtifacts,
   enabledHooks,
   enabledMcpServerEntries,
+  hasEnabledMcpServers,
   secretValue,
   skillArtifacts,
 } from "./shared.ts";
@@ -118,7 +119,7 @@ export const kimiAdapter: HarnessAdapter = {
     const artifacts: DesiredArtifact[] = [];
     const diagnostics: Diagnostic[] = [];
 
-    if (Object.keys(context.config.mcp.servers).length > 0) {
+    if (hasEnabledMcpServers(context)) {
       artifacts.push({
         kind: "json",
         path: ".kimi-code/mcp.json",

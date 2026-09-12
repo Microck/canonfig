@@ -51,6 +51,7 @@ export interface StoredProbe {
 export interface ProviderCommandOutput {
   readonly exitCode: number | null;
   readonly stdout: string;
+  readonly stderr: string;
 }
 
 export interface LinuxCredentialBootstrapHost {
@@ -137,33 +138,41 @@ interface BusWait {
   readonly attempts: number;
 }
 
-const waitForBus = (
+interface ProbeRecord {
+  readonly stored: StoredProbe;
+  readonly value: Redacted.Redacted<string>;
+}
+
+const storeBootstrapProbe = (
   host: LinuxCredentialBootstrapHost,
-  secretTool: string,
   probeId: string,
-  options: LinuxCredentialBootstrapOptions,
-): Effect.Effect<BusWait, SecretTransferError> => {
-  const maximum = options.maxBusAttempts ?? 30;
-  const delay = options.busRetryDelayMilliseconds ?? 1000;
-  const probe = (
-    attempt: number,
-  ): Effect.Effect<BusWait, SecretTransferError> =>
-    Effect.gen(function*() {
-      const search = yield* host.runCommand(
-        secretTool,
-        ["search", "canonfig-bootstrap-probe", probeId],
-      );
-      if (search.exitCode === 0) return { attempts: attempt };
-      if (attempt >= maximum) {
-        return yield* host.sessionBusAddress() === undefined
-          ? failure(`the Secret Service bus is not ready. ${busRecovery} ${lockRecovery}`)
-          : failure(`the Secret Service bus is not ready. ${lockRecovery}`);
-      }
-      yield* host.sleep(delay);
-      return yield* probe(attempt + 1);
-    });
-  return probe(1);
+): Effect.Effect<ProbeRecord, SecretTransferError> => {
+  const value = Redacted.make(`canonfig-bootstrap-${probeId}`);
+  return host.storeProbe(`canonfig-bootstrap-probe:${probeId}`, value).pipe(
+    Effect.map((stored) => ({ stored, value })),
+  );
 };
+
+const verifyBootstrapProbe = (
+  host: LinuxCredentialBootstrapHost,
+  probe: ProbeRecord,
+  checkAttributes: boolean,
+): Effect.Effect<void, SecretTransferError> =>
+  Effect.gen(function*() {
+    if (checkAttributes) {
+      const attributes = yield* host.probeAttributes(probe.stored.key);
+      if (!lookupAttributesMatch(
+        new Map([["canonfig-key", probe.stored.key]]),
+        attributes,
+      )) {
+        return yield* failure("the provider did not return the stored credential attributes");
+      }
+    }
+    const bytes = yield* host.loadProbeBytes(probe.stored.reference);
+    if (!secretBytesEqual(Redacted.value(probe.value), bytes)) {
+      return yield* failure("the provider did not return the stored credential bytes");
+    }
+  });
 
 const roundTrip = (
   host: LinuxCredentialBootstrapHost,
@@ -171,25 +180,59 @@ const roundTrip = (
   checkAttributes: boolean,
 ): Effect.Effect<void, SecretTransferError> =>
   Effect.gen(function*() {
-    const name = `canonfig-bootstrap-probe:${probeId}`;
-    const value = Redacted.make(`canonfig-bootstrap-${probeId}`);
-    const stored = yield* host.storeProbe(name, value);
+    const probe = yield* storeBootstrapProbe(host, probeId);
     yield* Effect.ensuring(
-      Effect.gen(function*() {
-        if (checkAttributes) {
-          const attributes = yield* host.probeAttributes(stored.key);
-          if (!lookupAttributesMatch(new Map([["canonfig-key", stored.key]]), attributes)) {
-            return yield* failure("the provider did not return the stored credential attributes");
-          }
-        }
-        const bytes = yield* host.loadProbeBytes(stored.reference);
-        if (!secretBytesEqual(Redacted.value(value), bytes)) {
-          return yield* failure("the provider did not return the stored credential bytes");
-        }
-      }),
-      host.removeProbe(stored.reference).pipe(Effect.ignore),
+      verifyBootstrapProbe(host, probe, checkAttributes),
+      host.removeProbe(probe.stored.reference).pipe(Effect.ignore),
     );
   });
+
+const retryProbe = (
+  host: LinuxCredentialBootstrapHost,
+  options: LinuxCredentialBootstrapOptions,
+  attemptProbe: (attempt: number) => Effect.Effect<void, SecretTransferError>,
+  exhaustedMessage: string,
+): Effect.Effect<BusWait, SecretTransferError> => {
+  const maximum = options.maxBusAttempts ?? 30;
+  const delay = options.busRetryDelayMilliseconds ?? 1000;
+  const attempt = (
+    number: number,
+  ): Effect.Effect<BusWait, SecretTransferError> =>
+    attemptProbe(number).pipe(
+      Effect.as({ attempts: number }),
+      Effect.catchAll(() =>
+        number >= maximum
+          ? Effect.fail(failure(exhaustedMessage))
+          : host.sleep(delay).pipe(Effect.flatMap(() => attempt(number + 1)))
+      ),
+    );
+  return attempt(1);
+};
+
+const waitForRoundTrip = (
+  host: LinuxCredentialBootstrapHost,
+  options: LinuxCredentialBootstrapOptions,
+): Effect.Effect<BusWait, SecretTransferError> =>
+  retryProbe(
+    host,
+    options,
+    (attempt) => roundTrip(host, `${host.randomProbeId()}-${attempt}`, true),
+    host.sessionBusAddress() === undefined
+      ? `the Secret Service bus is not ready. ${busRecovery} ${lockRecovery}`
+      : `the Secret Service bus is not ready. ${lockRecovery}`,
+  );
+
+const waitForStoredProbe = (
+  host: LinuxCredentialBootstrapHost,
+  probe: ProbeRecord,
+  options: LinuxCredentialBootstrapOptions,
+): Effect.Effect<BusWait, SecretTransferError> =>
+  retryProbe(
+    host,
+    options,
+    () => verifyBootstrapProbe(host, probe, true),
+    "the credential did not survive the provider restart",
+  );
 
 const localFileBootstrap = (
   host: LinuxCredentialBootstrapHost,
@@ -203,7 +246,7 @@ const localFileBootstrap = (
       selectedPolicy: "local-file",
       backupEncryption: "unencrypted",
       backupEncryptionDetail:
-        `the local-file policy stores plaintext bytes under ${String(path)} with owner-only permissions. ` +
+        `the local-file policy stores plaintext bytes under ${path.absolute} with owner-only permissions. ` +
         "Encrypt the volume or select the secure-store policy for encrypted backups.",
       secretTool: undefined,
       busAttempts: 0,
@@ -219,18 +262,30 @@ const localFileBootstrap = (
 const secretServiceBootstrap = (
   host: LinuxCredentialBootstrapHost,
   options: LinuxCredentialBootstrapOptions,
+  startProvider: boolean,
 ): Effect.Effect<LinuxCredentialBootstrapResult, SecretTransferError> =>
   Effect.gen(function*() {
     const secretTool = yield* host.findExecutable("secret-tool");
     if (secretTool === undefined) {
       return yield* failure(`secret-tool is not on PATH. ${secretToolPackages}.`);
     }
-    const probeId = host.randomProbeId();
-    const initial = yield* host.runCommand(
-      secretTool,
-      ["search", "canonfig-bootstrap-probe", probeId],
+    const initialRoundTrip = yield* roundTrip(
+      host,
+      host.randomProbeId(),
+      true,
+    ).pipe(
+      Effect.match({
+        onFailure: () => false,
+        onSuccess: () => true,
+      }),
     );
-    if (initial.exitCode !== 0) {
+    let bus: BusWait;
+    if (initialRoundTrip) {
+      bus = { attempts: 1 };
+    } else {
+      if (!startProvider) {
+        return yield* failure(`the Secret Service provider is unavailable. ${lockRecovery}`);
+      }
       const daemon = yield* host.findExecutable("gnome-keyring-daemon");
       if (daemon === undefined) {
         return yield* failure(
@@ -243,34 +298,35 @@ const secretServiceBootstrap = (
           `the credential provider did not start. ${providerPackages}. ${lockRecovery}`,
         );
       }
+      bus = yield* waitForRoundTrip(host, options);
     }
-    const bus = yield* waitForBus(host, secretTool, probeId, options);
-    yield* roundTrip(host, probeId, true);
-    const recycle = yield* host.recycleProvider();
-    if (!recycle.recycled) {
-      return {
-        provider: "secret-service",
-        selectedPolicy: "secure-store",
-        backupEncryption: "unknown",
-        backupEncryptionDetail:
-          "backup encryption depends on the provider collection, which Canonfig cannot inspect " +
-          "without reading secrets. A login keyring is encrypted at rest and unlocks at login; " +
-          "a session collection may be memory-only.",
-        secretTool,
-        busAttempts: bus.attempts,
-        roundTripsPassed: 1,
-        restartPersistence: "manual",
-        logoutPersistence: "manual",
-        persistenceDetail:
-          "Canonfig did not recycle the provider it found. Restart the provider (or reboot), " +
-          "then rerun this command: the existing-provider path re-verifies stored credentials.",
-      } satisfies LinuxCredentialBootstrapResult;
-    }
-    const second = yield* waitForBus(host, secretTool, host.randomProbeId(), options);
-    const secondRoundTrip = yield* roundTrip(host, host.randomProbeId(), true).pipe(
-      Effect.map(() => "verified" as const),
-      Effect.catchAll(() => Effect.succeed("failed" as const)),
+    const persistenceProbe = yield* storeBootstrapProbe(host, host.randomProbeId());
+    const persistence = yield* Effect.ensuring(
+      Effect.gen(function*() {
+        yield* verifyBootstrapProbe(host, persistenceProbe, true);
+        const recycle = yield* host.recycleProvider();
+        if (!recycle.recycled) {
+          return {
+            verdict: "manual" as const,
+            attempts: 0,
+          };
+        }
+        return yield* waitForStoredProbe(host, persistenceProbe, options).pipe(
+          Effect.map((second) => ({
+            verdict: "verified" as const,
+            attempts: second.attempts,
+          })),
+          Effect.catchAll(() =>
+            Effect.succeed({
+              verdict: "failed" as const,
+              attempts: options.maxBusAttempts ?? 30,
+            })
+          ),
+        );
+      }),
+      host.removeProbe(persistenceProbe.stored.reference).pipe(Effect.ignore),
     );
+    const manual = persistence.verdict === "manual";
     return {
       provider: "secret-service",
       selectedPolicy: "secure-store",
@@ -280,13 +336,15 @@ const secretServiceBootstrap = (
         "without reading secrets. A login keyring is encrypted at rest and unlocks at login; " +
         "a session collection may be memory-only.",
       secretTool,
-      busAttempts: bus.attempts + second.attempts,
-      roundTripsPassed: secondRoundTrip === "verified" ? 2 : 1,
-      restartPersistence: secondRoundTrip,
+      busAttempts: bus.attempts + persistence.attempts,
+      roundTripsPassed: persistence.verdict === "failed" ? 1 : 2,
+      restartPersistence: persistence.verdict,
       logoutPersistence: "manual",
-      persistenceDetail:
-        "logout and reboot persistence depend on the provider collection. Reboot (or log out and " +
-        "back in), then rerun this command: the existing-provider path re-verifies stored credentials.",
+      persistenceDetail: manual
+        ? "Canonfig did not recycle the provider it found. Restart the provider (or reboot), " +
+          "then rerun this command: the existing-provider path re-verifies stored credentials."
+        : "logout and reboot persistence depend on the provider collection. Reboot (or log out and " +
+          "back in), then rerun this command: the existing-provider path re-verifies stored credentials.",
     } satisfies LinuxCredentialBootstrapResult;
   });
 
@@ -300,22 +358,21 @@ const secretServiceBootstrap = (
 export const runLinuxCredentialBootstrap = (
   host: LinuxCredentialBootstrapHost,
   options: LinuxCredentialBootstrapOptions = {},
-): Effect.Effect<LinuxCredentialBootstrapResult, SecretTransferError | MachineStateError> =>
+): Effect.Effect<LinuxCredentialBootstrapResult, SecretTransferError> =>
   Effect.gen(function*() {
     const capability = yield* host.capability().pipe(
-      Effect.mapError((cause) =>
-        cause instanceof SecretTransferError
-          ? cause
-          : failure("the platform credential-store capability could not be determined")
+      Effect.mapError(() =>
+        failure("the platform credential-store capability could not be determined")
       ),
     );
     if (capability.kind === "local-file") {
       return yield* localFileBootstrap(host, capability.path);
     }
     if (capability.kind === "unavailable") {
-      return yield* failure(
-        `no secure credential storage is available. ${secretToolPackages}, ${providerPackages}, or explicitly select the local-file credential policy.`,
-      );
+      if (host.sessionBusAddress() === undefined) {
+        return yield* failure(`the Secret Service bus is unavailable. ${busRecovery}`);
+      }
+      return yield* secretServiceBootstrap(host, options, true);
     }
     if (capability.provider !== "secret-service") {
       return yield* failure(
@@ -323,15 +380,16 @@ export const runLinuxCredentialBootstrap = (
         `the platform reported ${capability.provider}.`,
       );
     }
-    return yield* secretServiceBootstrap(host, options);
+    return yield* secretServiceBootstrap(host, options, true);
   });
 
-const searchAttributePattern = /^\s*([^=\s][^=]*?)\s*=\s*(.*?)\s*$/u;
+const searchAttributePattern =
+  /^\s*(?:attribute\.)?([^=\s][^=]*?)\s*=\s*(.*?)\s*$/u;
 
-/** Parse `secret-tool search` attribute lines into a map. Unparseable lines are skipped. */
-export const parseSearchAttributes = (stdout: string): ReadonlyMap<string, string> => {
+/** Parse bounded `secret-tool search` output without retaining secret text. */
+export const parseSearchAttributes = (output: string): ReadonlyMap<string, string> => {
   const attributes = new Map<string, string>();
-  for (const line of stdout.split("\n")) {
+  for (const line of output.split("\n")) {
     const match = searchAttributePattern.exec(line);
     if (match?.[1] !== undefined && match[2] !== undefined) {
       attributes.set(match[1], match[2]);
@@ -349,9 +407,11 @@ export const machineStateBootstrapHost = (
   machine: MachineState["Service"],
   environment: ReadonlyArray<{ readonly name: string; readonly value: string }>,
 ): LinuxCredentialBootstrapHost => {
+  let ownedProviderPid: number | undefined;
+  let ownedProviderExecutable: string | undefined;
   const findExecutable = (name: string): Effect.Effect<string | undefined> =>
     machine.findExecutable({ name }).pipe(
-      Effect.map((found) => String(found.path)),
+      Effect.map((found) => found.path.absolute),
       Effect.catchAll(() => Effect.succeed(undefined)),
     );
   const runCommand = (
@@ -363,14 +423,25 @@ export const machineStateBootstrapHost = (
         machine.runProcess({
           executable: path,
           arguments: [...args],
+          environment,
           timeoutMilliseconds: 15_000,
           maximumOutputBytes: 1024 * 1024,
         })
       ),
-      Effect.map((result) => ({
-        exitCode: result.exitCode,
-        stdout: new TextDecoder().decode(result.standardOutput),
-      })),
+      Effect.map((result) => {
+        const stdout = new TextDecoder().decode(result.standardOutput);
+        const stderr = new TextDecoder().decode(result.standardError);
+        if (
+          args.includes("--components=secrets")
+          && executable.endsWith("gnome-keyring-daemon")
+          && result.exitCode === 0
+        ) {
+          const pid = /\bGNOME_KEYRING_PID=(\d+)\b/u.exec(stdout)?.[1];
+          ownedProviderPid = pid === undefined ? undefined : Number(pid);
+          ownedProviderExecutable = executable;
+        }
+        return { exitCode: result.exitCode, stdout, stderr };
+      }),
       Effect.mapError(() => failure("a credential provider command could not run")),
     );
   return {
@@ -400,7 +471,9 @@ export const machineStateBootstrapHost = (
             : runCommand(secretTool, ["search", "canonfig-key", key]).pipe(
               Effect.flatMap((search) =>
                 search.exitCode === 0
-                  ? Effect.succeed(parseSearchAttributes(search.stdout))
+                  ? Effect.succeed(
+                    parseSearchAttributes(`${search.stdout}\n${search.stderr}`),
+                  )
                   : Effect.fail(failure("the provider did not answer the attribute search"))
               ),
             )
@@ -410,9 +483,29 @@ export const machineStateBootstrapHost = (
       machine.removeCredential(reference).pipe(
         Effect.mapError(() => failure("the bootstrap probe could not be removed")),
       ),
-    recycleProvider: () => Effect.succeed({ recycled: false }),
+    recycleProvider: () => {
+      const pid = ownedProviderPid;
+      const provider = ownedProviderExecutable;
+      if (pid === undefined || provider === undefined) {
+        return Effect.succeed({ recycled: false });
+      }
+      return Effect.gen(function*() {
+        const kill = yield* findExecutable("kill");
+        if (kill === undefined) return { recycled: false };
+        const stopped = yield* runCommand(kill, ["-TERM", String(pid)]);
+        if (stopped.exitCode !== 0) {
+          return yield* failure("the credential provider Canonfig started could not be stopped");
+        }
+        yield* Effect.sleep("200 millis");
+        const restarted = yield* runCommand(provider, ["--start", "--components=secrets"]);
+        if (restarted.exitCode !== 0) {
+          return yield* failure("the credential provider Canonfig started could not be restarted");
+        }
+        return { recycled: true };
+      });
+    },
     sleep: (milliseconds) => Effect.sleep(`${milliseconds} millis`),
     randomProbeId: () =>
       `${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffffffff).toString(36)}`,
   };
-}
+};

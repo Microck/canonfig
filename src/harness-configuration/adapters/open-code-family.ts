@@ -13,6 +13,7 @@ import {
   commandMarkdown,
   enabledHooks,
   enabledMcpServerEntries,
+  hasEnabledMcpServers,
   openCodeMcpMap,
   skillArtifacts,
 } from "./shared.ts";
@@ -57,7 +58,7 @@ export function createOpenCodeFamilyAdapter(
 
       artifacts.push(...await skillArtifacts(context, `${root}/skills`, definition.id));
 
-      if (Object.keys(context.config.mcp.servers).length > 0) {
+      if (hasEnabledMcpServers(context)) {
         artifacts.push(
           {
             kind: "json",

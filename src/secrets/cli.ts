@@ -244,17 +244,7 @@ export const runSecretsCli = (
           ? []
           : [{ name: "DBUS_SESSION_BUS_ADDRESS", value: sessionBus }],
       );
-      const result = yield* runLinuxCredentialBootstrap(host).pipe(
-        Effect.mapError((cause) =>
-          cause instanceof SecretTransferError
-            ? cause
-            : new SecretTransferError({
-              category: "storage",
-              operation: "bootstrap credential store",
-              message: cause instanceof Error ? cause.message : "the credential bootstrap failed",
-            })
-        ),
-      );
+      const result = yield* runLinuxCredentialBootstrap(host);
       const provider = result.provider === "secret-service"
         ? `Secret Service (${result.secretTool ?? "secret-tool"})`
         : "local file";
