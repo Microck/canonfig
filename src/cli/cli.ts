@@ -821,6 +821,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         selectedProfile: value.selectedProfile,
         replace: value.replace,
       });
+    case "Synchronize":
       return yield* follower.synchronize({
         mode: value.mode,
         noInput: value.noInput,

@@ -214,7 +214,7 @@ const readScheduleFires = (statePath: string): ReadonlyArray<ScheduleFireRecord>
 const recordScheduleFire = (
   statePath: string,
   outcome: string,
-): Effect.Effect<void> =>
+): Effect.Effect<void, never> =>
   Effect.tryPromise({
     try: async () => {
       const path = scheduleFirePath(statePath);
@@ -229,7 +229,7 @@ const recordScheduleFire = (
       );
     },
     catch: () => undefined,
-  }).pipe(Effect.asVoid);
+  }).pipe(Effect.ignore);
 
 const persistScheduleOverride = (
   repository: StateRepository["Service"],
