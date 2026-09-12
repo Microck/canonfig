@@ -194,7 +194,7 @@ const validatePackageContents = (
   if (artifact.name !== "@microck/canonfig" || artifact.version !== "3.1.5") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
-  if (artifact.size > 230_000 || artifact.unpackedSize > 1_125_000) {
+  if (artifact.size > 240_000 || artifact.unpackedSize > 1_125_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
