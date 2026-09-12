@@ -98,3 +98,4 @@ export const scheduledDefinitionReadiness = (
       lastFiredOutcome: lastFire.outcome,
     },
   };
+}
