@@ -14,7 +14,7 @@ import { Effect, Layer, Option, Redacted, Schema } from "effect";
 
 import { SourceSignature } from "../domain/brand.ts";
 import { AgentPolicy } from "../domain/identity.ts";
-import { AgentResolutionLive } from "../agent/agent-resolution.layer.ts";
+import { AgentResolutionWithSecretsLive } from "../agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../agent/agent-resolution.service.ts";
 import { EnrollmentLive } from "../enrollment/enrollment.layer.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
@@ -1324,6 +1324,7 @@ export const runtimeLayer = (
   const synchronization = SynchronizationLive.pipe(
     Layer.provide(Layer.merge(state, machine)),
   );
+  const agentResolution = AgentResolutionWithSecretsLive.pipe(Layer.provide(machine));
   const dependencies = Layer.mergeAll(
     state,
     machine,
@@ -1331,7 +1332,7 @@ export const runtimeLayer = (
     profiles,
     schedule,
     synchronization,
-    AgentResolutionLive,
+    agentResolution,
   );
   return Layer.merge(
     sourceCommandsLayer.pipe(Layer.provide(dependencies)),

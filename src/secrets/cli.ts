@@ -5,7 +5,7 @@ import {
   CliExitCode,
   type CliExitCode as CliExitCodeValue,
 } from "../cli/exit-codes.ts";
-import type { MachineState } from "../machine/machine-state.service.ts";
+import { MachineState } from "../machine/machine-state.service.ts";
 import type { StateRepository } from "../state/state-repository.service.ts";
 import {
   listSecrets,

@@ -113,11 +113,13 @@ export const lookupAttributesMatch = (
   expected: ReadonlyMap<string, string> | Readonly<Record<string, string>>,
   actual: ReadonlyMap<string, string> | Readonly<Record<string, string>>,
 ): boolean => {
-  const expectedEntries = expected instanceof Map ? expected.entries() : Object.entries(expected);
-  const read = (key: string): string | undefined =>
-    actual instanceof Map ? actual.get(key) : actual[key];
+  const expectedEntries = expected instanceof Map
+    ? expected.entries()
+    : Object.entries(expected);
+  const actualEntries = actual instanceof Map ? actual.entries() : Object.entries(actual);
+  const actualMap = new Map(actualEntries);
   for (const [key, value] of expectedEntries) {
-    if (read(key) !== value) return false;
+    if (actualMap.get(key) !== value) return false;
   }
   return true;
 };
@@ -200,7 +202,7 @@ const retryProbe = (
   ): Effect.Effect<BusWait, SecretTransferError> =>
     attemptProbe(number).pipe(
       Effect.as({ attempts: number }),
-      Effect.catchAll(() =>
+      Effect.catch(() =>
         number >= maximum
           ? Effect.fail(failure(exhaustedMessage))
           : host.sleep(delay).pipe(Effect.flatMap(() => attempt(number + 1)))
@@ -316,7 +318,7 @@ const secretServiceBootstrap = (
             verdict: "verified" as const,
             attempts: second.attempts,
           })),
-          Effect.catchAll(() =>
+          Effect.catch(() =>
             Effect.succeed({
               verdict: "failed" as const,
               attempts: options.maxBusAttempts ?? 30,
@@ -412,7 +414,7 @@ export const machineStateBootstrapHost = (
   const findExecutable = (name: string): Effect.Effect<string | undefined> =>
     machine.findExecutable({ name }).pipe(
       Effect.map((found) => found.path.absolute),
-      Effect.catchAll(() => Effect.succeed(undefined)),
+      Effect.catch(() => Effect.succeed(undefined)),
     );
   const runCommand = (
     executable: string,

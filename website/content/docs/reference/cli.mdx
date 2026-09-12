@@ -110,6 +110,22 @@ The completion result names the selected `secure-store` or `local-file` policy.
 It reports local-file backup storage as unencrypted and does not claim that a
 provider collection is encrypted when the provider cannot attest it.
 
+Bind a shared secret to an agent harness without writing its value into the
+follower configuration:
+
+```text
+canonfig agent harness codex --executable /opt/codex \
+  --bind-secret MCP_TOKEN=shared-mcp-token
+```
+
+Canonfig persists only `MCP_TOKEN` and `shared-mcp-token`. It resolves the
+current native-store reference immediately before spawning the harness, adds
+the value only to that process environment, and includes it in output
+redaction. Rotating the stored `shared-mcp-token` value therefore takes effect
+on the next launch. MCP projections that use `{ "fromEnv": "MCP_TOKEN" }`
+consume the same binding for environment-backed headers; unrelated secret
+names are not loaded.
+
 ## Harness configuration
 
 ```text

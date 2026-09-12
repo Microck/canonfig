@@ -698,6 +698,60 @@ describe("agent resolution", () => {
     expect(recording.invocations[0]?.arguments).toContain("--print");
   });
 
+  it("resolves symbolic secrets only into the harness process environment", async () => {
+    const recording = new RecordingExecutor(proposal(action()));
+    const secret = "rotated-native-secret-value";
+    const result = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-propose",
+        task: task(directory),
+        harness: {
+          ...harness(directory),
+          secretBindings: [{ name: "MCP_TOKEN", secret: "shared-mcp-token" }],
+        },
+      });
+    }).pipe(Effect.provide(makeAgentResolutionLayer(
+      recording.execute,
+      (bindings) => {
+        expect(bindings).toEqual([{
+          name: "MCP_TOKEN",
+          secret: "shared-mcp-token",
+        }]);
+        return Effect.succeed([{ name: "MCP_TOKEN", value: secret }]);
+      },
+    ))));
+
+    expect(result.outcome).toBe("proposed");
+    expect(recording.invocations).toHaveLength(1);
+    expect(recording.invocations[0]?.environment).toContainEqual({
+      name: "MCP_TOKEN",
+      value: secret,
+    });
+    expect(recording.invocations[0]?.secrets).toContain(secret);
+  });
+
+  it("rejects symbolic bindings that collide with literal harness environment", async () => {
+    const recording = new RecordingExecutor(proposal(action()));
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const service = yield* AgentResolution;
+      return yield* service.resolve({
+        policy: "agent-propose",
+        task: task(directory),
+        harness: {
+          ...harness(directory),
+          secretBindings: [{ name: "PATH", secret: "shared-path" }],
+        },
+      });
+    }).pipe(
+      Effect.provide(makeAgentResolutionLayer(recording.execute)),
+      Effect.flip,
+    ));
+
+    expect(error).toBeInstanceOf(InvalidAgentTaskError);
+    expect(recording.invocations).toEqual([]);
+  });
+
   it("applies bounded actions then verifies with an independent observer", async () => {
     const recording = new RecordingExecutor(proposal(action()));
     const result = await Effect.runPromise(Effect.gen(function*() {

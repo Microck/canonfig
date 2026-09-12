@@ -75,7 +75,7 @@ Profiles and policy:
   profile select <profile-id>
   agent policy [deterministic-only|agent-propose|agent-apply]
   agent harness [codex|claude|gemini] --executable <path> [--allow-path <path>...]
-    [--allow-leaf-executable <name>...]
+    [--allow-leaf-executable <name>...] [--bind-secret <ENV=secret-name>...]
     [--allow-origin <https-origin>...]
     [--allow-capability <capability>...] [--maximum-input-bytes <bytes>]
 
@@ -281,6 +281,21 @@ const parsePositiveInteger = (
     throw new Error(`Invalid ${label}: ${value}`);
   }
   return number;
+};
+
+const parseSecretBinding = (
+  value: string,
+): { readonly name: string; readonly secret: string } => {
+  const separator = value.indexOf("=");
+  const name = separator < 0 ? "" : value.slice(0, separator);
+  const secret = separator < 0 ? "" : value.slice(separator + 1);
+  if (
+    !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(secret)
+  ) {
+    throw new Error("Invalid secret binding; expected ENV_NAME=shared-secret-name");
+  }
+  return { name, secret };
 };
 
 const durationMilliseconds = (value: string): number => {
@@ -661,6 +676,7 @@ const evaluateCommand = (
           "--executable",
           "--allow-path",
           "--allow-leaf-executable",
+          "--bind-secret",
           "--allow-origin",
           "--allow-capability",
           "--maximum-input-bytes",
@@ -693,6 +709,10 @@ const evaluateCommand = (
           allowedPaths: Schema.Array(Schema.NonEmptyString),
           allowedExecutables: Schema.Array(Schema.NonEmptyString),
           executableAuthorizations: Schema.Array(ExecutableAuthorizationSchema),
+          secretBindings: Schema.Array(Schema.Struct({
+            name: Schema.NonEmptyString,
+            secret: Schema.NonEmptyString,
+          })),
           allowedOrigins: Schema.Array(Schema.NonEmptyString),
           allowedCapabilities: Schema.Array(AgentHarnessCapability),
         }),
@@ -708,6 +728,8 @@ const evaluateCommand = (
         allowedExecutables: [
           ...new Set(options.values.get("--allow-leaf-executable") ?? []),
         ],
+        secretBindings: (options.values.get("--bind-secret") ?? [])
+          .map(parseSecretBinding),
         executableAuthorizations: (options.values.get("--allow-leaf-executable") ?? [])
           .map((executable) => ({ executable, behavior: "leaf" as const })),
         allowedOrigins: origins,

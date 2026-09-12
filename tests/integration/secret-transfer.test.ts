@@ -36,6 +36,7 @@ import {
   storeSecret,
 } from "../../src/secrets/secret-store.ts";
 import { fetchSharedSecrets } from "../../src/secrets/secret-client.ts";
+import { resolveSecretBindings } from "../../src/secrets/secret-bindings.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 
@@ -335,6 +336,25 @@ describe("secure secret transfer", () => {
     expect(empty.payload.secrets).toEqual([]);
     await runFollower(setup, applyTransferredSecrets(empty.payload));
     expect(await storedValue(setup, "github-token")).toBeUndefined();
+  });
+
+  it("resolves a rotated native reference by symbolic name at launch time", async () => {
+    const setup = fixture();
+    await runFollower(setup, storeSecret("launcher-token", "old-value"));
+    await runFollower(setup, storeSecret("unrelated-token", "must-not-load"));
+
+    const first = await runFollower(
+      setup,
+      resolveSecretBindings([{ name: "API_TOKEN", secret: "launcher-token" }]),
+    );
+    expect(first).toEqual([{ name: "API_TOKEN", value: "old-value" }]);
+
+    await runFollower(setup, storeSecret("launcher-token", "new-value"));
+    const rotated = await runFollower(
+      setup,
+      resolveSecretBindings([{ name: "API_TOKEN", secret: "launcher-token" }]),
+    );
+    expect(rotated).toEqual([{ name: "API_TOKEN", value: "new-value" }]);
   });
 
   it("normalizes localhost to the canonical loopback address before dialing", async () => {
