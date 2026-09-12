@@ -175,6 +175,26 @@ describe("upgrade gate", () => {
     }));
   });
 
+  it("grandfathers a run created before builds recorded identities", async () => {
+    const path = join(temporaryDirectory("canonfig-gate-"), "state.sqlite");
+    await runWithRepository(path, Effect.gen(function*() {
+      yield* seed;
+      const repository = yield* StateRepository;
+      yield* startOpenRun(repository);
+      // A pre-receipt run has a null creating_identity: upgrading followers
+      // with unfinished legacy runs must not be stranded by the gate.
+      const database = new DatabaseSync(path);
+      try {
+        database.prepare(
+          "UPDATE synchronization_runs SET creating_identity = NULL, creating_version = NULL",
+        ).run();
+      } finally {
+        database.close();
+      }
+      yield* assertUpgradeGate(follower.id);
+    }));
+  });
+
   it("stops an incompatible upgrade before the run is touched", async () => {
     const failure = await gateFailureAfterMutation((database) => {
       database.prepare(
@@ -187,15 +207,6 @@ describe("upgrade gate", () => {
       expect(failure.creatingIdentity).toBe("f".repeat(64));
       expect(failure.currentIdentity).toBe("unbuilt");
     }
-  });
-
-  it("treats a run without a recorded identity as foreign", async () => {
-    const failure = await gateFailureAfterMutation((database) => {
-      database.prepare(
-        "UPDATE synchronization_runs SET creating_identity = NULL, creating_version = NULL",
-      ).run();
-    });
-    expect(failure).toBeInstanceOf(UpgradeGateError);
   });
 
   it("accepts a foreign run when the operator explicitly migrates", async () => {

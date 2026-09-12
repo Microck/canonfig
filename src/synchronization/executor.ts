@@ -1,5 +1,6 @@
 import { Clock, Effect, Option, Schema } from "effect";
 import { statfs } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import {
   ContentDigest,
@@ -790,18 +791,40 @@ export const preflightDisk = (
   Effect.flatMap(MachineState, (machine) =>
     Effect.flatMap(machine.userDirectories(), (directories) =>
       Effect.flatMap(
-        Effect.promise(() => statfsImpl(directories.home.absolute)),
-        (usage) => {
-          const availableBytes = BigInt(usage.bavail) * BigInt(usage.bsize);
-          const requiredBytes = diskRequirementBytes(input);
-          return availableBytes >= requiredBytes
-            ? Effect.void
-            : Effect.fail(new InsufficientDiskError({
-              path: directories.home.absolute,
-              requiredBytes,
-              availableBytes,
-            }));
-        },
+        Effect.promise(async () => {
+          // The managed home may not exist yet: walk up to the nearest
+          // existing ancestor, which sits on the same filesystem.
+          let candidate: string = directories.home.absolute;
+          for (;;) {
+            try {
+              await statfsImpl(candidate);
+              return candidate;
+            } catch (error) {
+              const parent = dirname(candidate);
+              if (
+                parent === candidate
+                || !(error instanceof Error && "code" in error && error.code === "ENOENT")
+              ) {
+                throw error;
+              }
+              candidate = parent;
+            }
+          }
+        }),
+        (existingPath) => Effect.flatMap(
+          Effect.promise(() => statfsImpl(existingPath)),
+          (usage) => {
+            const availableBytes = BigInt(usage.bavail) * BigInt(usage.bsize);
+            const requiredBytes = diskRequirementBytes(input);
+            return availableBytes >= requiredBytes
+              ? Effect.void
+              : Effect.fail(new InsufficientDiskError({
+                path: directories.home.absolute,
+                requiredBytes,
+                availableBytes,
+              }));
+          },
+        ),
       )));
 
 /** Execute one already-recorded plan. The caller owns startRun ordering. */

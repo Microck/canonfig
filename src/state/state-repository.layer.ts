@@ -1831,7 +1831,8 @@ const makeRepository = Effect.gen(function*() {
         }
         // Every completed run leaves a receipt naming the build that applied
         // it, so audits and upgrade decisions can say which sources produced
-        // the deployed state.
+        // the deployed state. A run can complete more than once (interruption
+        // then abandonment); the receipt keeps its final outcome.
         yield* sql`
           INSERT INTO deployment_receipts (
             run_id,
@@ -1850,6 +1851,12 @@ const makeRepository = Effect.gen(function*() {
             ${input.outcome.outcome},
             ${input.completedAt}
           )
+          ON CONFLICT(run_id) DO UPDATE SET
+            package_version = excluded.package_version,
+            build_identity = excluded.build_identity,
+            state_format = excluded.state_format,
+            outcome = excluded.outcome,
+            recorded_at = excluded.recorded_at
         `;
       });
       yield* sql.withTransaction(transaction).pipe(

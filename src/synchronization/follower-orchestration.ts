@@ -117,8 +117,14 @@ export const assertUpgradeGate = Effect.fn(
   const repository = yield* StateRepository;
   const open = yield* repository.loadOpenRunIdentity(follower);
   if (open === undefined) return;
-  const compatible = open.creatingIdentity === buildIdentity.sourceDigest
-    && open.stateFormat === stateFormatVersion;
+  // A run created before builds recorded their identity has no receipt-era
+  // evidence; it is grandfathered rather than stranded by this upgrade.
+  const compatible = open.creatingIdentity === null
+    || open.stateFormat === null
+    || (
+      open.creatingIdentity === buildIdentity.sourceDigest
+      && open.stateFormat === stateFormatVersion
+    );
   if (compatible || process.env.CANONFIG_ACCEPT_FOREIGN_BUILD === "1") return;
   return yield* new UpgradeGateError({
     run: open.run,
