@@ -11,6 +11,7 @@ import {
   agentDocuments,
   commandSkillArtifacts,
   enabledHooks,
+  enabledMcpServerEntries,
   secretValue,
   skillArtifacts,
 } from "./shared.ts";
@@ -75,8 +76,10 @@ function kimiMcpServer(server: McpServer): Record<string, unknown> {
 }
 
 function kimiMcpMap(context: BuildContext): Record<string, unknown> {
+  // Disabled servers carry no profile material, including the secrets in
+  // their env and header maps. See openCodeMcpMap for the same boundary.
   return Object.fromEntries(
-    Object.entries(context.config.mcp.servers).map(([name, server]) => [
+    enabledMcpServerEntries(context).map(([name, server]) => [
       name,
       kimiMcpServer(server),
     ]),

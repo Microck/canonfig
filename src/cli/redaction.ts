@@ -53,7 +53,7 @@ const spacedCredentialFlag = new RegExp(
  */
 export const redactText = (text: string): string => text
   .replace(/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----/gu, replacement)
-  .replace(/\b(https?:\/\/)[^\s/]*@/giu, "$1[REDACTED]@")
+  .replace(/\b([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/]*@/giu, "$1[REDACTED]@")
   .replace(/(\b(?:authorization|proxy-authorization)\s*[:=]\s*)(?:Bearer|Basic)\s+[^\s"',;}\]]+/giu, "$1[REDACTED]")
   .replace(assignedCredential, `$1$2$3${replacement}`)
   .replace(quotedCredentialKey, `$1$2"${replacement}"`)
