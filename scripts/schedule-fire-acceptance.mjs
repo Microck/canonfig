@@ -60,7 +60,8 @@ if (platform === "linux") {
 } else if (platform === "darwin") {
   trigger = run("/bin/launchctl", ["kickstart", `-k`, `gui/${uid}/dev.canonfig.${jobName}`]);
 } else {
-  trigger = run("schtasks", ["/run", "/tn", jobName]);
+  // canonfig registers under the Canonfig task folder: name is folder-qualified.
+  trigger = run("schtasks", ["/run", "/tn", `Canonfig\\${jobName}`]);
 }
 if (trigger.status !== 0) {
   console.error(`scheduler trigger failed: ${trigger.stderr}`);
