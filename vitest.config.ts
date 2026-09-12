@@ -26,6 +26,7 @@ export default defineProject({
       "tests/schedule-manager.test.ts",
       "tests/skills.test.ts",
       "tests/keychain-session-probe.test.ts",
+      "tests/upgrade-gate.test.ts",
       "tests/synchronization-planner.test.ts",
       "tests/contract/**/*.test.ts",
       "tests/integration/**/*.test.ts",

@@ -17,9 +17,14 @@ export interface TaggedRuntimeError extends Error {
   readonly blob?: string | undefined;
   readonly capability?: string | undefined;
   readonly category?: string | undefined;
+  readonly availableBytes?: bigint | undefined;
   readonly collection?: string | undefined;
   readonly command?: ReadonlyArray<string> | undefined;
   readonly conflictsWith?: string | undefined;
+  readonly creatingIdentity?: string | null | undefined;
+  readonly creatingVersion?: string | null | undefined;
+  readonly currentIdentity?: string | undefined;
+  readonly currentVersion?: string | undefined;
   readonly cycle?: ReadonlyArray<string> | undefined;
   readonly decision?: string | undefined;
   readonly dependency?: string | undefined;
@@ -47,6 +52,7 @@ export interface TaggedRuntimeError extends Error {
   readonly outcome?: string | undefined;
   readonly package?: string | undefined;
   readonly path?: string | undefined;
+  readonly requiredBytes?: bigint | undefined;
   readonly policy?: string | undefined;
   readonly publishedKind?: string | undefined;
   readonly reason?: string | undefined;
@@ -525,6 +531,11 @@ export const failureTaxonomy = {
     (error) =>
       `follower ${text(error.follower)} has a run still open; run 'canonfig recover' first`,
   ),
+  UpgradeGateError: describe(
+    "conflict-or-drift",
+    (error) =>
+      `run ${text(error.run)} was created by canonfig ${text(error.creatingVersion ?? "unknown")} (source ${text(error.creatingIdentity ?? "unknown")}); this is canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}). finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`,
+  ),
   DuplicateFollowerIdentityError: declared(
     "conflict-or-drift",
     () => "this machine is already enrolled",
@@ -624,6 +635,11 @@ export const failureTaxonomy = {
     "verification-or-apply-failure",
     (error) =>
       `rollback material for run ${text(error.run)} could not be cleaned up (${text(error.outcome)})`,
+  ),
+  InsufficientDiskError: declared(
+    "verification-or-apply-failure",
+    (error) =>
+      `${text(error.path)} needs ${error.requiredBytes?.toString() ?? "unknown"} free bytes for this run but only ${error.availableBytes?.toString() ?? "unknown"} are available; nothing was changed`,
   ),
   ScheduleVerificationError: declared(
     "verification-or-apply-failure",

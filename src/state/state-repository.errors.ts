@@ -33,6 +33,18 @@ export class ActiveRunExistsError extends TaggedError<ActiveRunExistsError>()(
   },
 ) {}
 
+
+export class UpgradeGateError extends TaggedError<UpgradeGateError>()(
+  "UpgradeGateError",
+  {
+    run: Schema.String,
+    creatingVersion: Schema.NullOr(Schema.String),
+    creatingIdentity: Schema.NullOr(Schema.String),
+    currentVersion: Schema.String,
+    currentIdentity: Schema.String,
+  },
+) {}
+
 export class FollowerNotFoundError extends TaggedError<FollowerNotFoundError>()(
   "FollowerNotFoundError",
   {
@@ -90,6 +102,7 @@ export type StateRepositoryError =
   | RepositoryDecodeError
   | RevisionImmutableError
   | ActiveRunExistsError
+  | UpgradeGateError
   | FollowerNotFoundError
   | RevisionNotFoundError
   | RunNotFoundError

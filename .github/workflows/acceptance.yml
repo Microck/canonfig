@@ -26,6 +26,13 @@ jobs:
           - platform: windows
             os: windows-latest
             native_test: tests/machine-state-windows.test.ts
+          # GitHub's Arm64 Windows hosted runner (public repositories).
+          # The acceptance scenario derives its platform from the host, so
+          # the arm64 leg reports itself as plain windows.
+          - platform: windows-arm64
+            os: windows-11-arm
+            acceptance_platform: windows
+            native_test: tests/machine-state-windows.test.ts
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -58,7 +65,7 @@ jobs:
       - name: Run acceptance scenario
         run: npm run test:acceptance
         env:
-          CANONFIG_ACCEPTANCE_PLATFORM: ${{ matrix.platform }}
+          CANONFIG_ACCEPTANCE_PLATFORM: ${{ matrix.acceptance_platform || matrix.platform }}
 
       - name: Preserve tested package and build identity
         if: always()

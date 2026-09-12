@@ -1,4 +1,6 @@
 import { Clock, Effect, Option, Schema } from "effect";
+import { statfs } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import {
   ContentDigest,
@@ -34,6 +36,7 @@ import type { ScheduleManagerError } from "../schedule/schedule-manager.errors.t
 import type { StateRepositoryError } from "../state/state-repository.errors.ts";
 import type { VerificationEvidence } from "../state/state-repository.types.ts";
 import {
+  InsufficientDiskError,
   InvalidExecutionPlanError,
   MissingExecutionResourceError,
   type SynchronizationExecutionInputError,
@@ -767,6 +770,63 @@ const completeSkipped = (
     { discard: true },
   );
 
+/**
+ * Aggregate disk requirement of one run, before anything is mutated: every
+ * artifact is written once and a rollback snapshot may duplicate what it
+ * replaces, so double the artifact bytes plus a fixed margin covers the
+ * run's worst case. An unverifiable filesystem (statfs unavailable) is not
+ * treated as a blocker.
+ */
+const diskRequirementBytes = (input: SynchronizationRunInput): bigint =>
+  BigInt(
+    input.artifacts.reduce((total, artifact) => total + artifact.content.byteLength, 0)
+      * 2
+      + 4 * 1024 * 1024,
+  );
+
+export const preflightDisk = (
+  input: SynchronizationRunInput,
+  statfsImpl: typeof statfs = statfs,
+): Effect.Effect<void, InsufficientDiskError | MachineStateError, MachineState> =>
+  Effect.flatMap(MachineState, (machine) =>
+    Effect.flatMap(machine.userDirectories(), (directories) =>
+      Effect.flatMap(
+        Effect.promise(async () => {
+          // The managed home may not exist yet: walk up to the nearest
+          // existing ancestor, which sits on the same filesystem.
+          let candidate: string = directories.home.absolute;
+          for (;;) {
+            try {
+              await statfsImpl(candidate);
+              return candidate;
+            } catch (error) {
+              const parent = dirname(candidate);
+              if (
+                parent === candidate
+                || !(error instanceof Error && "code" in error && error.code === "ENOENT")
+              ) {
+                throw error;
+              }
+              candidate = parent;
+            }
+          }
+        }),
+        (existingPath) => Effect.flatMap(
+          Effect.promise(() => statfsImpl(existingPath)),
+          (usage) => {
+            const availableBytes = BigInt(usage.bavail) * BigInt(usage.bsize);
+            const requiredBytes = diskRequirementBytes(input);
+            return availableBytes >= requiredBytes
+              ? Effect.void
+              : Effect.fail(new InsufficientDiskError({
+                path: directories.home.absolute,
+                requiredBytes,
+                availableBytes,
+              }));
+          },
+        ),
+      )));
+
 /** Execute one already-recorded plan. The caller owns startRun ordering. */
 export const executeSynchronizationPlan = (
   input: SynchronizationRunInput,
@@ -776,6 +836,7 @@ export const executeSynchronizationPlan = (
   StateRepository | MachineState
 > =>
   Effect.gen(function*() {
+    yield* preflightDisk(input);
     const states = yield* executionContexts(input, executionLimits(input));
     const completedActions: Array<ActionId> = [];
     const verified = new Set<ResourceId>();
