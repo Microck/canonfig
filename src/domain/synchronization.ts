@@ -69,6 +69,14 @@ export type ActionDetail =
     readonly mode?: number | undefined;
     /** Source baseline retained by a persisted append-local action. */
     readonly previousSourceDigest?: string | undefined;
+    /**
+     * First-adoption ambiguity report. Present when an append-local target is
+     * adopted with pre-existing content that differs from the Source payload:
+     * the existing bytes are preserved as follower-local text because the
+     * planner cannot distinguish an old shared rule from a deliberate local
+     * addition, so the operator is told explicitly.
+     */
+    readonly adoptionNotice?: string | undefined;
   }
   | {
     readonly kind: "write-config";
@@ -294,6 +302,7 @@ export const ActionDetailSchema = Schema.Union([
     executable: Schema.optional(Schema.Boolean),
     mode: Schema.optional(Schema.Int),
     previousSourceDigest: Schema.optional(ContentDigest),
+    adoptionNotice: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     kind: Schema.Literal("write-config"),
