@@ -614,6 +614,18 @@ const makeRepository = Effect.gen(function*() {
     `.pipe(Effect.mapError(sqlError("create enrollment invitation")));
   });
 
+  const removeEnrollmentInvitation = Effect.fn(
+    "StateRepository.removeEnrollmentInvitation",
+  )(function*(
+    codeDigest: typeof ContentDigest.Type,
+  ): Effect.fn.Return<void, StateRepositoryError> {
+    yield* sql`
+      DELETE FROM enrollment_invitations
+      WHERE code_digest = ${codeDigest}
+        AND used_at IS NULL
+    `.pipe(Effect.mapError(sqlError("remove enrollment invitation")));
+  });
+
   const findEnrollmentInvitation = Effect.fn(
     "StateRepository.findEnrollmentInvitation",
   )(function*(
@@ -2144,6 +2156,7 @@ const makeRepository = Effect.gen(function*() {
     saveEnrollmentSource,
     getEnrollmentSource,
     createEnrollmentInvitation,
+    removeEnrollmentInvitation,
     findEnrollmentInvitation,
     consumeEnrollmentInvitation,
     finalizeEnrollment,

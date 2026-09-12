@@ -121,19 +121,21 @@ Serve loopback only. Example for an explicitly approved group:
 
 ```bash
 canonfig source serve --host 127.0.0.1 --port 17342
-canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m --group developers
 ```
 
 Omit `--group` when no group is intended. Tailscale peers are not valid direct
-invitation endpoints. Use the discovery reference's separately approved,
-operator-managed TLS-transparent tunnel/handoff flow for remote machines.
-Record the follower-local loopback origin separately from the source host.
+invitation endpoints. For a remote machine, use Canonfig's managed,
+TLS-transparent loopback tunnel with the invitation and a separately verified
+SSH host public-key file. Record the follower-local loopback origin separately
+from the source host.
 
 Offer numbered choices for follower identity, selected profile, declared groups,
 lifetime, secure delivery, and any shared-secret grant. Recommend minimum scope,
 15m proposed expiry, and fresh material for exposed, expired, or replayed invites.
-Never ask for or display a real invitation in chat or reports. A protected file
-is only a temporary local input method, not a new CLI invitation-file flag.
+Never ask for or display a real invitation in chat or reports. The required
+mode-`0600` output file is temporary delivery material; remove it after the
+follower has consumed the envelope.
 
 `canonfig:secrets` is separate authority. Before granting it, review what the
 installed sharing contract makes available; do not imply unsupported per-name

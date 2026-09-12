@@ -71,6 +71,9 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly createEnrollmentInvitation: (
     input: CreateEnrollmentInvitationInput,
   ) => Effect.Effect<void, StateRepositoryError>;
+  readonly removeEnrollmentInvitation: (
+    codeDigest: ContentDigest,
+  ) => Effect.Effect<void, StateRepositoryError>;
   readonly findEnrollmentInvitation: (
     codeDigest: ContentDigest,
   ) => Effect.Effect<StoredEnrollmentInvitation | undefined, StateRepositoryError>;

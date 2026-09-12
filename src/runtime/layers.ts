@@ -369,7 +369,13 @@ const sourceCommandsLayer: Layer.Layer<
             grant,
             path: input.outputPath,
             timeoutMilliseconds: input.timeoutMilliseconds,
-          }));
+          }).pipe(
+            Effect.catch((deliveryError) =>
+              enrollment.removeInvitation(grant.code).pipe(
+                Effect.flatMap(() => Effect.fail(deliveryError)),
+              )
+            ),
+          ));
           return payload({
             outputPath,
             endpoint: grant.endpoint,

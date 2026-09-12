@@ -518,6 +518,14 @@ const makeEnrollment = Effect.gen(function*() {
     };
   });
 
+  const removeInvitation = Effect.fn("Enrollment.removeInvitation")(function*(
+    code: string,
+  ): Effect.fn.Return<void, EnrollmentError> {
+    yield* repository.removeEnrollmentInvitation(sha256(code)).pipe(
+      Effect.mapError(repositoryError("remove invitation")),
+    );
+  });
+
   const enrollFollower = Effect.fn("Enrollment.enrollFollower")(function*(
     request: EnrollFollowerRequest,
   ) {
@@ -1047,6 +1055,7 @@ const makeEnrollment = Effect.gen(function*() {
     initializeSource,
     source,
     createInvitation,
+    removeInvitation,
     enrollFollower,
     finalizeFollower,
     cancelPendingEnrollment,
