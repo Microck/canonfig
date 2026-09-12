@@ -154,6 +154,10 @@ export interface FollowerEnrollmentInput {
    * configuration. The source only exposes the identity after finalization.
    */
   readonly finalize?: boolean | undefined;
+  /** Bound on each enrollment network phase; defaults to 10 seconds. */
+  readonly timeoutMilliseconds?: number | undefined;
+  /** Cancels a hanging enrollment phase without leaking local state. */
+  readonly signal?: AbortSignal | undefined;
 }
 
 export interface FollowerEnrollment {
