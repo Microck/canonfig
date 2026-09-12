@@ -914,7 +914,7 @@ const followerCommandsLayer = (
             record("failed").pipe(Effect.flatMap(() => Effect.fail(error)))
           ),
         );
-      }
+      },
       abandon: () =>
         mapFailure(abandonFollowerRun(statePath).pipe(
           Effect.provideService(StateRepository, repository),

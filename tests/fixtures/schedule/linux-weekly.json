@@ -2,6 +2,6 @@
   "platform": "linux",
   "mechanism": "systemd-user-timer",
   "serviceName": "canonfig-sync.service",
-  "service": "[Unit]\nDescription=Canonfig follower synchronization\n\n[Service]\nType=oneshot\nExecStart=\"/opt/Canonfig Tools/canonfig\" \"sync\" \"--apply\" \"--no-input\"\n",
+  "service": "[Unit]\nDescription=Canonfig follower synchronization\n\n[Service]\nType=oneshot\nEnvironment=\"PATH=/usr/bin:/bin\"\nExecStart=\"/opt/Canonfig Tools/canonfig\" \"sync\" \"--apply\" \"--no-input\" \"--scheduled\"\n",
   "schedule": "[Unit]\nDescription=Canonfig follower synchronization schedule\n\n[Timer]\nOnCalendar=Mon,Fri *-*-* 23:45:00\nPersistent=true\nUnit=canonfig-sync.service\n\n[Install]\nWantedBy=timers.target\n"
 }

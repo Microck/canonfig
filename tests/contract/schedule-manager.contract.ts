@@ -232,17 +232,34 @@ export const scheduleManagerContract = (
       expect(rendered).toContain("sync");
       expect(rendered).toContain("--apply");
       expect(rendered).toContain("--no-input");
+      expect(rendered).toContain("--scheduled");
       expect(rendered).not.toContain("canonfig sync --apply --no-input");
       if (adapter.platform === "linux") {
         expect(definition.service).toContain(
-          `"${adapter.executable}" "sync" "--apply" "--no-input"`,
+          `"${adapter.executable}" "sync" "--apply" "--no-input" "--scheduled"`,
         );
       } else if (adapter.platform === "macos") {
         expect(definition.service).toContain(
-          "<string>sync</string><string>--apply</string><string>--no-input</string>",
+          "<string>sync</string><string>--apply</string><string>--no-input</string><string>--scheduled</string>",
         );
       } else {
-        expect(definition.service).toContain("-Argument 'sync --apply --no-input'");
+        expect(definition.service).toContain("-Argument 'sync --apply --no-input --scheduled'");
+      }
+    });
+
+    it("pins a minimal environment with no shell in the native job", async () => {
+      const scheduler = new RecordingScheduler();
+      const layer = managerLayer(adapter, scheduler);
+      const definition = await runWith(layer, statusFor(adapter.executable));
+      const rendered = `${definition.service}\n${definition.schedule}`;
+      expect(rendered).not.toContain("sh -c");
+      expect(rendered).not.toContain("cmd /c");
+      expect(rendered).not.toContain("bash -c");
+      if (adapter.platform === "linux") {
+        expect(definition.service).toContain('Environment="PATH=');
+      } else if (adapter.platform === "macos") {
+        expect(definition.service).toContain("<key>EnvironmentVariables</key>");
+        expect(definition.service).toContain("<key>PATH</key>");
       }
     });
 
