@@ -33,6 +33,9 @@ export interface TaggedRuntimeError extends Error {
   readonly entity?: string | undefined;
   readonly executable?: string | undefined;
   readonly field?: string | undefined;
+  readonly endpoint?: string | undefined;
+  readonly flag?: string | undefined;
+  readonly host?: string | undefined;
   readonly follower?: string | undefined;
   readonly format?: string | undefined;
   readonly harness?: string | undefined;

@@ -929,6 +929,17 @@ const followerCommandsLayer = (
           ),
         );
       },
+      abandon: () =>
+        mapFailure(abandonFollowerRun(statePath).pipe(
+          Effect.provideService(StateRepository, repository),
+        )).pipe(Effect.map(payload)),
+      recover: () =>
+        mapFailure(recoverFollower(statePath).pipe(
+          Effect.provideService(StateRepository, repository),
+          Effect.provideService(MachineState, machine),
+          Effect.provideService(Synchronization, synchronization),
+          Effect.provideService(ScheduleManager, schedules),
+        )).pipe(Effect.flatMap(outcomePayload)),
       status: (follower) =>
         follower === undefined
           ? mapFailure(
