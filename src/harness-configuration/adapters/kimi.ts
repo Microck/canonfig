@@ -29,14 +29,6 @@ interface KimiRemoteHeaders {
   bearerTokenEnvVar?: string;
 }
 
-interface KimiAgentFrontmatter {
-  name: string;
-  description: string;
-  tools: ReadonlyArray<string>;
-  model?: string;
-  disallowedTools?: ReadonlyArray<string>;
-}
-
 interface KimiMcpCommon {
   enabled: boolean;
   startupTimeoutMs?: number;
@@ -183,18 +175,18 @@ export const kimiAdapter: HarnessAdapter = {
 
     for (const { agent, content } of await agentDocuments(context)) {
       const tools = nativeTools("kimi", agent);
-      const frontmatter: KimiAgentFrontmatter = {
+      const baseFrontmatter = {
         name: agent.id,
         description: agent.description,
         tools,
       };
-      if (agent.model !== "inherit") frontmatter.model = agent.model;
-      if (
-        !agent.writable
-        && tools.some((tool) => tool === "Edit" || tool === "Write")
-      ) {
-        frontmatter.disallowedTools = ["Edit", "Write"];
-      }
+      const modelFrontmatter = agent.model === "inherit"
+        ? baseFrontmatter
+        : { ...baseFrontmatter, model: agent.model };
+      const frontmatter = !agent.writable
+          && tools.some((tool) => tool === "Edit" || tool === "Write")
+        ? { ...modelFrontmatter, disallowedTools: ["Edit", "Write"] }
+        : modelFrontmatter;
       artifacts.push({
         kind: "replace",
         path: `.kimi-code/agents/${agent.id}.md`,
