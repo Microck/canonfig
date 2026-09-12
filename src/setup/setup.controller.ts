@@ -1,4 +1,4 @@
-import { userInfo, version as nodeVersion } from "node:os";
+import { arch, release, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
 import { Effect, Schema } from "effect";
@@ -8,6 +8,7 @@ import { Enrollment } from "../enrollment/enrollment.service.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { canonicalJson, sha256Hex, type JsonValue } from "../profile/profile-codec.ts";
 import { scanDiscovery } from "../profile/discovery.ts";
+import type { DiscoveredTool, InstallationRecipe } from "../profile/tool-catalog.ts";
 import { SetupError } from "./setup.errors.ts";
 import {
   findSetupDependencyCycle,
@@ -23,14 +24,17 @@ import {
   maxSetupDiscoveryFiles,
   maxSetupJournalBytes,
   maxSetupProcessBytes,
+  maxSetupRecipeOutputBytes,
   maxSetupTools,
   setupProcessTimeoutMilliseconds,
+  setupRecipeTimeoutMilliseconds,
   setupToolMethodsFor,
   type SetupInventory,
   type SetupJournal,
   type SetupPlanItem,
+  SetupRecipe,
+  SetupRole,
   type SetupProvenance,
-  type SetupRole,
 } from "./setup.types.ts";
 
 /** The journal lives next to the state database, like the schedule fires. */
@@ -43,10 +47,13 @@ const fail = (
   category: SetupError["category"],
   recovery?: string,
 ): SetupError => new SetupError({ operation, message, category, recovery });
+const asJson = <Value>(value: Value): JsonValue =>
+  Schema.decodeUnknownSync(Schema.MutableJson)(JSON.parse(JSON.stringify(value)));
+
 
 /** Establish the requested role before running role-specific inspection. */
 export const establishSetupRole = (value: string): Effect.Effect<SetupRole, SetupError> =>
-  Schema.decodeUnknown(SetupRole)(value).pipe(
+  Schema.decodeUnknownEffect(SetupRole)(value).pipe(
     Effect.mapError(() =>
       fail(
         "setup role",
@@ -77,6 +84,10 @@ const readJournal = (
           `the setup journal at ${cause.path} exceeds its size bound; back it up and remove it before re-running setup`,
           "state",
         ))),
+      Effect.mapError((cause) =>
+        cause instanceof SetupError
+          ? cause
+          : fail("setup journal", `the setup journal could not be read: ${cause.message}`, "state")),
     );
     if (bytes === undefined) return undefined;
     const text = yield* Effect.try({
@@ -108,7 +119,7 @@ const writeJournal = (
       try: () => encodeSetupJournal({ ...journal, updatedAt: new Date().toISOString() }),
       catch: (cause) => fail("setup journal", `the setup journal could not be encoded: ${String(cause)}`, "state"),
     });
-    const content = new TextEncoder().encode(`${canonicalJson(encoded as JsonValue)}\n`);
+    const content = new TextEncoder().encode(`${canonicalJson(asJson(encoded))}\n`);
     if (content.length > maxSetupJournalBytes) {
       return yield* fail(
         "setup journal",
@@ -177,30 +188,12 @@ export const runSetupPreflight = (
   });
 
 const probeOsRelease = (
-  machine: MachineState["Service"],
   platform: SetupInventory["platform"],
-): Effect.Effect<string, SetupError> => {
-  if (platform === "windows") return Effect.succeed("windows");
-  return Effect.gen(function*() {
-    const uname = yield* machine.findExecutable({ name: "uname" }).pipe(
-      Effect.mapError((cause) =>
-        fail("setup inventory", `the OS release probe is unavailable: ${cause.message}`, "state")),
-    );
-    const result = yield* machine.runProcess({
-      executable: uname.path,
-      arguments: ["-srm"],
-      timeoutMilliseconds: setupProcessTimeoutMilliseconds,
-      maximumOutputBytes: maxSetupProcessBytes,
-    }).pipe(
-      Effect.mapError((cause) =>
-        fail("setup inventory", `the OS release probe failed: ${cause.message}`, "state")),
-    );
-    if (result.exitCode !== 0 || result.standardOutput.length === 0) {
-      return yield* fail("setup inventory", "the OS release probe reported nothing", "state");
-    }
-    return new TextDecoder().decode(result.standardOutput).trim();
+): Effect.Effect<string, SetupError> =>
+  Effect.try({
+    try: () => `${platform} ${release()} ${arch()}`,
+    catch: () => fail("setup inventory", "the OS release identity could not be read", "state"),
   });
-};
 
 const probeTools = (
   machine: MachineState["Service"],
@@ -211,10 +204,26 @@ const probeTools = (
     for (const method of setupToolMethodsFor(platform)) {
       if (tools.length >= maxSetupTools) break;
       const found = yield* machine.findExecutable({ name: method }).pipe(
-        Effect.map((executable) => executable.path.absolute),
-        Effect.catchAll(() => Effect.succeed(undefined)),
+        Effect.catch(() => Effect.succeed(undefined)),
       );
-      if (found !== undefined) tools.push({ method, executable: found, verified: false });
+      if (found === undefined) continue;
+      const result = yield* machine.runProcess({
+        executable: found.path,
+        arguments: ["--version"],
+        timeoutMilliseconds: setupProcessTimeoutMilliseconds,
+        maximumOutputBytes: maxSetupProcessBytes,
+      }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      if (result === undefined || result.exitCode !== 0) {
+        tools.push({ method, executable: found.path.absolute, verified: false });
+        continue;
+      }
+      const version = new TextDecoder().decode(result.standardOutput).split("\n")[0]!.trim().slice(0, 200);
+      tools.push({
+        method,
+        executable: found.path.absolute,
+        version: version.length === 0 ? undefined : version,
+        verified: version.length > 0,
+      });
     }
     return tools;
   });
@@ -230,12 +239,12 @@ const probeTransport = (
     })),
     Effect.catchTag("SourceNotInitializedError", () =>
       Effect.succeed({ policy: "loopback" as const, initialized: false as const })),
-    Effect.catchAll((cause) =>
+    Effect.catch((cause) =>
       cause instanceof SourceNotInitializedError
         ? Effect.succeed({ policy: "loopback" as const, initialized: false as const })
         : Effect.fail(fail(
           "setup inventory",
-          `source enrollment state could not be read: ${(cause as Error).message}`,
+          `source enrollment state could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
           "state",
         ))),
   );
@@ -244,14 +253,14 @@ const probeTransport = (
 export const collectSetupInventory = (
   preflight: Pick<SetupInventory, "platform" | "home" | "credentialStorage">,
 ): Effect.Effect<
-  Omit<SetupInventory, "discoveryFiles" | "discoveryEvidence">,
+  Omit<SetupInventory, "discoveryFiles" | "discoveryEvidence" | "discoveryDigest">,
   SetupError,
   MachineState | Enrollment
 > =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const enrollment = yield* Enrollment;
-    const osRelease = yield* probeOsRelease(machine, preflight.platform);
+    const osRelease = yield* probeOsRelease(preflight.platform);
     const account = yield* Effect.try({
       try: () => {
         const identity = userInfo().username;
@@ -268,7 +277,7 @@ export const collectSetupInventory = (
       home: preflight.home,
       account,
       osRelease,
-      nodeRuntime: nodeVersion,
+      nodeRuntime: `${process.version} (${process.execPath})`,
       credentialStorage: preflight.credentialStorage,
       transport,
       tools,
@@ -297,11 +306,15 @@ const checkDiscoverySizes = (
           /\b(?:ENOENT|ENOTDIR)\b/u.test(cause.message)
             ? Effect.succeed(-1)
             : Effect.fail(fail("setup discovery", `discovery file ${file} could not be read: ${cause.message}`, "state"))),
+        Effect.mapError((cause) =>
+          cause instanceof SetupError
+            ? cause
+            : fail("setup discovery", `discovery file ${file} could not be read: ${cause.message}`, "state")),
       );
       if (size === -1) exclusions.push(`${file}: file not found`);
       else if (size > maxSetupDiscoveryFileBytes) {
         exclusions.push(`${file}: file exceeds the ${maxSetupDiscoveryFileBytes} byte discovery bound`);
-      } else accepted.push(file);
+      } else accepted.push(path.absolute);
     }
     if (files.length > maxSetupDiscoveryFiles) {
       exclusions.push(
@@ -310,6 +323,55 @@ const checkDiscoverySizes = (
     }
     return { accepted, exclusions };
   });
+const installerMethodFor = (
+  recipe: InstallationRecipe,
+): string | undefined => {
+  switch (recipe.method) {
+    case "homebrew": return "brew";
+    case "npm":
+    case "winget":
+    case "uv":
+    case "cargo":
+      return recipe.method;
+    case "source":
+      return undefined;
+  }
+};
+
+const setupRecipeFor = (
+  tool: DiscoveredTool,
+  inventoryTools: SetupInventory["tools"],
+): SetupRecipe | undefined => {
+  if (tool.reviewStatus !== "accepted") return undefined;
+  const verifyExecutable = tool.verify.command[0];
+  if (verifyExecutable === undefined) return undefined;
+  for (const recipe of tool.recipes) {
+    const installerMethod = installerMethodFor(recipe);
+    if (installerMethod === undefined || recipe.method === "source") continue;
+    const installer = inventoryTools.find((candidate) => candidate.method === installerMethod);
+    if (
+      installer === undefined
+      || recipe.command[0] !== installerMethod
+      || recipe.command.length < 2
+    ) {
+      continue;
+    }
+    return {
+      resource: tool.id,
+      installerMethod,
+      installerExecutable: installer.executable,
+      arguments: recipe.command.slice(1),
+      verifyExecutable,
+      verifyArguments: tool.verify.command.slice(1),
+      version: recipe.version,
+      source: recipe.source,
+      upstream: tool.upstream,
+      integrity: recipe.integrity,
+    };
+  }
+  return undefined;
+};
+
 
 /**
  * Run the shipped discovery operation over the bounded file set. Files the
@@ -317,25 +379,77 @@ const checkDiscoverySizes = (
  */
 export const runSetupDiscovery = (
   files: ReadonlyArray<string>,
+  inventoryTools: SetupInventory["tools"],
 ): Effect.Effect<
-  { readonly files: number; readonly evidence: number; readonly exclusions: ReadonlyArray<string> },
+  {
+    readonly files: number;
+    readonly evidence: number;
+    readonly digest: string;
+    readonly recipes: ReadonlyArray<SetupRecipe>;
+    readonly exclusions: ReadonlyArray<string>;
+  },
   SetupError,
   MachineState
 > =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    if (files.length === 0) return { files: 0, evidence: 0, exclusions: [] };
-    const { accepted, exclusions } = yield* checkDiscoverySizes(machine, files);
-    if (accepted.length === 0) return { files: 0, evidence: 0, exclusions };
-    const result = yield* scanDiscovery({ files: accepted.map((path) => ({ path })) }).pipe(
+    const emptyDigest = sha256Hex(canonicalJson(asJson({
+      scannedPaths: [],
+      resources: [],
+      tools: [],
+      skills: [],
+      evidence: [],
+      agentTasks: [],
+    })));
+    if (files.length === 0) {
+      return { files: 0, evidence: 0, digest: emptyDigest, recipes: [], exclusions: [] };
+    }
+    const bounded = yield* checkDiscoverySizes(machine, files);
+    if (bounded.accepted.length === 0) {
+      return {
+        files: 0,
+        evidence: 0,
+        digest: emptyDigest,
+        recipes: [],
+        exclusions: bounded.exclusions,
+      };
+    }
+    const result = yield* scanDiscovery({
+      files: bounded.accepted.map((path) => ({ path })),
+    }).pipe(
       Effect.mapError((cause) => fail("setup discovery", `discovery failed: ${cause.message}`, "state")),
     );
-    return { files: accepted.length, evidence: result.evidence.length, exclusions };
+    const recipes: Array<SetupRecipe> = [];
+    const exclusions = [...bounded.exclusions];
+    for (const tool of result.tools) {
+      const installed = yield* machine.findExecutable({ name: tool.executable }).pipe(
+        Effect.map(() => true),
+        Effect.catch(() => Effect.succeed(false)),
+      );
+      if (installed) continue;
+      const recipe = setupRecipeFor(tool, inventoryTools);
+      if (recipe === undefined) {
+        exclusions.push(
+          `${tool.id}: no qualified recipe matches an available native installer`,
+        );
+      } else {
+        recipes.push(recipe);
+      }
+    }
+    const digest = sha256Hex(canonicalJson(asJson(result)));
+    return {
+      files: bounded.accepted.length,
+      evidence: result.evidence.length,
+      digest,
+      recipes,
+      exclusions,
+    };
   });
 
 const planItemsFor = (
   role: SetupRole,
   tools: SetupInventory["tools"],
+  recipes: ReadonlyArray<SetupRecipe>,
 ): ReadonlyArray<SetupPlanItem> => {
   const items: Array<SetupPlanItem> = [];
   if (role === "source") {
@@ -367,13 +481,24 @@ const planItemsFor = (
       detail: { method: tool.method, executable: tool.executable },
     });
   }
-  if (verifiers.length > 0) {
+  const installations = recipes.map((recipe) => `recipe-install:${recipe.resource}`);
+  for (const recipe of recipes) {
+    items.push({
+      id: `recipe-install:${recipe.resource}`,
+      kind: "recipe-install",
+      scope: `resource:tool:${recipe.resource}`,
+      optional: true,
+      dependsOn: [`tool-verify:${recipe.installerMethod}`],
+      detail: { ...recipe },
+    });
+  }
+  if (verifiers.length > 0 || installations.length > 0) {
     items.push({
       id: "toolchain-verify",
       kind: "toolchain-verify",
       scope: "machine",
       optional: true,
-      dependsOn: verifiers,
+      dependsOn: [...verifiers, ...installations],
       detail: {},
     });
   }
@@ -383,12 +508,16 @@ const planItemsFor = (
 const reuseCatalog = (
   previous: SetupJournal | undefined,
   tools: SetupInventory["tools"],
+  recipes: ReadonlyArray<SetupRecipe>,
   platform: SetupInventory["platform"],
 ): ReadonlyArray<SetupProvenance> => {
   if (previous === undefined) return [];
-  const current = new Set(tools.map((tool) => `${tool.method}${tool.executable}`));
+  const current = new Set([
+    ...tools.map((tool) => `installer:${tool.method}`),
+    ...recipes.map((recipe) => recipe.resource),
+  ]);
   return previous.catalog.filter((entry) =>
-    entry.platform === platform && current.has(`${entry.method}${entry.executable}`));
+    entry.platform === platform && current.has(entry.resource));
 };
 
 export interface SetupPlanInput {
@@ -407,13 +536,14 @@ export const planSetup = (
     const role = yield* establishSetupRole(input.roleText);
     const preflight = yield* runSetupPreflight(role);
     const partial = yield* collectSetupInventory(preflight);
-    const discovery = yield* runSetupDiscovery(input.files);
+    const discovery = yield* runSetupDiscovery(input.files, partial.tools);
     const inventory: SetupInventory = {
       ...partial,
       discoveryFiles: discovery.files,
       discoveryEvidence: discovery.evidence,
+      discoveryDigest: discovery.digest,
     };
-    const items = planItemsFor(role, inventory.tools);
+    const items = planItemsFor(role, inventory.tools, discovery.recipes);
     const cycle = findSetupDependencyCycle(items);
     if (cycle !== undefined) {
       return yield* fail(
@@ -431,8 +561,15 @@ export const planSetup = (
         `Remove ${journalPath} to start over with --role ${role}.`,
       );
     }
-    const catalog = reuseCatalog(previous, inventory.tools, inventory.platform);
-    const planDigest = setupPlanDigest({ role, inventory, items, catalog });
+    const catalog = reuseCatalog(previous, inventory.tools, discovery.recipes, inventory.platform);
+    const intent = input.intent ?? `establish this machine as ${role}`;
+    const planDigest = setupPlanDigest({
+      role,
+      intent,
+      exclusions: discovery.exclusions,
+      inventory,
+      items,
+    });
     if (previous !== undefined && previous.planDigest === planDigest) {
       // Unchanged discovery and approvals survive a re-plan.
       return previous;
@@ -442,7 +579,7 @@ export const planSetup = (
       schema: "canonfig.setup/v1",
       role,
       planDigest,
-      intent: input.intent ?? `establish this machine as ${role}`,
+      intent,
       inventory,
       items: [...items],
       decisions: [
@@ -465,12 +602,12 @@ export const planSetup = (
         { stage: "role", digest: sha256Hex(canonicalJson(role)), completedAt: timestamp },
         {
           stage: "preflight",
-          digest: sha256Hex(canonicalJson(preflight.credentialStorage)),
+          digest: sha256Hex(canonicalJson(asJson(preflight.credentialStorage))),
           completedAt: timestamp,
         },
         {
           stage: "inventory",
-          digest: sha256Hex(canonicalJson(inventory)),
+          digest: sha256Hex(canonicalJson(asJson(inventory))),
           completedAt: timestamp,
         },
         { stage: "plan", digest: planDigest, completedAt: timestamp },
@@ -517,6 +654,14 @@ export const approveSetup = (
  * is a structured argv invocation on MachineState: no agent adapters take
  * part, so known recipes complete with the outer agent unavailable.
  */
+type SetupItemOutcome =
+  | {
+    readonly ok: true;
+    readonly evidence: string;
+    readonly catalog?: SetupProvenance | undefined;
+  }
+  | { readonly ok: false; readonly cause: SetupError };
+
 const executeSetupItem = (
   item: SetupPlanItem,
   journal: SetupJournal,
@@ -534,7 +679,7 @@ const executeSetupItem = (
           Effect.mapError((cause) =>
             fail("setup apply", `source initialization failed: ${cause.message}`, "prerequisite")),
         );
-        return { evidence: `source initialized as ${material.identity.keyId}` };
+        return { evidence: `source initialized as ${material.source.keyId}` };
       }
       case "ensure-directory": {
         const directories = yield* machine.userDirectories().pipe(
@@ -560,7 +705,7 @@ const executeSetupItem = (
         );
         const found = yield* machine.findExecutable({ name: method }).pipe(
           Effect.map((discovered) => discovered.path.absolute),
-          Effect.catchAll(() => Effect.succeed(undefined)),
+          Effect.catch(() => Effect.succeed(undefined)),
         );
         if (found !== executable.absolute) {
           return yield* fail(
@@ -589,18 +734,104 @@ const executeSetupItem = (
         return {
           evidence: `tool ${method} verified at ${executable.absolute} (${version})`,
           catalog: {
+            resource: `installer:${method}`,
             method,
             platform: executable.platform,
             executable: executable.absolute,
             version,
+            source: "local-path",
+            verifiedAt: new Date().toISOString(),
+          },
+        };
+      }
+      case "recipe-install": {
+        const recipe = yield* Schema.decodeUnknownEffect(SetupRecipe)(item.detail).pipe(
+          Effect.mapError(() =>
+            fail("setup apply", `recipe ${item.id} is invalid`, "state")),
+        );
+        const installer = yield* machine.normalizePath({
+          path: recipe.installerExecutable,
+        }).pipe(
+          Effect.mapError((cause) =>
+            fail("setup apply", `recipe installer path is invalid: ${cause.message}`, "state")),
+        );
+        const currentInstaller = yield* machine.findExecutable({
+          name: recipe.installerMethod,
+        }).pipe(
+          Effect.map((found) => found.path.absolute),
+          Effect.catch(() => Effect.succeed(undefined)),
+        );
+        if (currentInstaller !== installer.absolute) {
+          return yield* fail(
+            "setup apply",
+            `installer ${recipe.installerMethod} moved since approval`,
+            "state",
+          );
+        }
+        const installed = yield* machine.runProcess({
+          executable: installer,
+          arguments: recipe.arguments,
+          timeoutMilliseconds: setupRecipeTimeoutMilliseconds,
+          maximumOutputBytes: maxSetupRecipeOutputBytes,
+        }).pipe(
+          Effect.mapError((cause) =>
+            fail("setup apply", `recipe ${recipe.resource} could not run: ${cause.message}`, "state")),
+        );
+        if (installed.exitCode !== 0) {
+          return yield* fail(
+            "setup apply",
+            `recipe ${recipe.resource} failed with exit ${String(installed.exitCode)}`,
+            "prerequisite",
+          );
+        }
+        const target = yield* machine.findExecutable({
+          name: recipe.verifyExecutable,
+        }).pipe(
+          Effect.mapError((cause) =>
+            fail(
+              "setup apply",
+              `recipe ${recipe.resource} did not install its verifier: ${cause.message}`,
+              "prerequisite",
+            )),
+        );
+        const verified = yield* machine.runProcess({
+          executable: target.path,
+          arguments: recipe.verifyArguments,
+          timeoutMilliseconds: setupProcessTimeoutMilliseconds,
+          maximumOutputBytes: maxSetupProcessBytes,
+        }).pipe(
+          Effect.mapError((cause) =>
+            fail("setup apply", `recipe ${recipe.resource} verification failed: ${cause.message}`, "state")),
+        );
+        if (verified.exitCode !== 0) {
+          return yield* fail(
+            "setup apply",
+            `recipe ${recipe.resource} verifier exited ${String(verified.exitCode)}`,
+            "prerequisite",
+          );
+        }
+        return {
+          evidence: `installed and verified ${recipe.resource} ${recipe.version}`,
+          catalog: {
+            resource: recipe.resource,
+            method: recipe.installerMethod,
+            platform: target.path.platform,
+            executable: target.path.absolute,
+            version: recipe.version,
+            source: recipe.source,
+            upstream: recipe.upstream,
+            integrity: recipe.integrity,
             verifiedAt: new Date().toISOString(),
           },
         };
       }
       case "toolchain-verify": {
         const verified = journal.records
-          .filter((record) => record.id.startsWith("tool-verify:") && record.status === "completed")
-          .map((record) => record.id.slice("tool-verify:".length));
+          .filter((record) =>
+            (record.id.startsWith("tool-verify:") || record.id.startsWith("recipe-install:"))
+            && record.status === "completed"
+          )
+          .map((record) => record.id);
         return { evidence: `toolchain verified: ${verified.join(", ") || "no tools"}` };
       }
     }
@@ -614,29 +845,43 @@ const recordItem = (
   status: "completed" | "skipped" | "failed",
   evidence?: string,
   catalog?: SetupProvenance | undefined,
-): Effect.Effect<SetupJournal, SetupError> => {
-  const updated: SetupJournal = {
+): Effect.Effect<SetupJournal, SetupError> =>
+  Effect.gen(function*() {
+    const updated: SetupJournal = {
     ...journal,
     evidence: evidence === undefined ? journal.evidence : [...journal.evidence, evidence],
     catalog: catalog === undefined
       ? journal.catalog
-      : [...journal.catalog.filter((entry) => entry.method !== catalog.method), catalog],
-    records: journal.records.map((record) =>
-      record.id === id ? { ...record, status, evidence, updatedAt: new Date().toISOString() } : record),
-  };
-  yield* writeJournal(machine, journalPath, updated);
-  return updated;
-};
+      : [...journal.catalog.filter((entry) => entry.resource !== catalog.resource), catalog],
+    records: journal.records.map((record) => {
+      if (record.id !== id) return record;
+      const item = journal.items.find((candidate) => candidate.id === id);
+      const detailDigest = item === undefined
+        ? undefined
+        : sha256Hex(canonicalJson(asJson(item.detail)));
+      return {
+        ...record,
+        status,
+        evidence,
+        detailDigest,
+        updatedAt: new Date().toISOString(),
+      };
+    }),
+    };
+    yield* writeJournal(machine, journalPath, updated);
+    return updated;
+  });
 
 export const applySetup = (
   journalPath: string,
 ): Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    let journal = yield* readJournal(machine, journalPath);
-    if (journal === undefined) {
+    const stored = yield* readJournal(machine, journalPath);
+    if (stored === undefined) {
       return yield* fail("setup apply", "no setup plan exists", "usage", "Run setup plan first.");
     }
+    let journal: SetupJournal = stored;
     if (!isSetupApproved(journal)) {
       return yield* fail(
         "setup apply",
@@ -668,9 +913,9 @@ export const applySetup = (
         );
         continue;
       }
-      const outcome = yield* executeSetupItem(item, journal).pipe(
+      const outcome: SetupItemOutcome = yield* executeSetupItem(item, journal).pipe(
         Effect.map((result) => ({ ok: true as const, ...result })),
-        Effect.catchAll((cause: SetupError) => Effect.succeed({ ok: false as const, cause })),
+        Effect.catch((cause) => Effect.succeed({ ok: false as const, cause })),
       );
       if (outcome.ok) {
         journal = yield* recordItem(
@@ -705,20 +950,18 @@ export const applySetup = (
     return journal;
   });
 
+export interface SetupStatus {
+  readonly role?: SetupRole | undefined;
+  readonly planDigest?: string | undefined;
+  readonly stage: string;
+  readonly approved: boolean;
+  readonly items: ReadonlyArray<{ readonly id: string; readonly status: string }>;
+  readonly catalog: ReadonlyArray<SetupProvenance>;
+}
+
 export const setupStatus = (
   journalPath: string,
-): Effect.Effect<
-  {
-    readonly role?: SetupRole | undefined;
-    readonly planDigest?: string | undefined;
-    readonly stage: string;
-    readonly approved: boolean;
-    readonly items: ReadonlyArray<{ readonly id: string; readonly status: string }>;
-    readonly catalog: ReadonlyArray<SetupProvenance>;
-  },
-  SetupError,
-  MachineState
-> =>
+): Effect.Effect<SetupStatus, SetupError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const journal = yield* readJournal(machine, journalPath);

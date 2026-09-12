@@ -14,10 +14,12 @@ import {
   planSetup,
   setupJournalPath,
   setupStatus,
+  type SetupStatus,
 } from "./setup.controller.ts";
 import { SetupError } from "./setup.errors.ts";
+import type { SetupJournal } from "./setup.types.ts";
 
-const toPayload = (value: unknown): CliPayload =>
+const toPayload = (value: SetupJournal | SetupStatus): CliPayload =>
   Schema.decodeUnknownSync(Schema.MutableJson)(
     JSON.parse(JSON.stringify(value)),
   );
@@ -44,8 +46,8 @@ export const setupCommandsLayer = (
       const machine = yield* MachineState;
       const enrollment = yield* Enrollment;
       const journalPath = setupJournalPath(statePath);
-      const run = <Success>(
-        effect: Effect.Effect<Success, SetupError, MachineState | Enrollment>,
+      const run = (
+        effect: Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment>,
       ): Effect.Effect<CliPayload, CliCommandFailure> =>
         effect.pipe(
           Effect.provideService(MachineState, machine),
@@ -56,7 +58,11 @@ export const setupCommandsLayer = (
           }),
         );
       return SetupCommands.of({
-        plan: (input) => run(planSetup(input, journalPath)),
+        plan: (input) => run(planSetup({
+          roleText: input.role,
+          files: input.files,
+          intent: input.intent,
+        }, journalPath)),
         approve: (input) => run(approveSetup(input.approver, journalPath)),
         apply: () => run(applySetup(journalPath)),
         status: () =>

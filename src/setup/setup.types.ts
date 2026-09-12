@@ -22,6 +22,8 @@ export const maxSetupDiscoveryFileBytes = 256 * 1024;
 export const maxSetupJournalBytes = 256 * 1024;
 export const maxSetupProcessBytes = 16 * 1024;
 export const setupProcessTimeoutMilliseconds = 5_000;
+export const setupRecipeTimeoutMilliseconds = 5 * 60_000;
+export const maxSetupRecipeOutputBytes = 64 * 1024;
 
 /** Installer methods setup probes, per platform. */
 export const setupToolMethodsFor = (
@@ -75,13 +77,28 @@ export const SetupInventory = Schema.Struct({
   tools: Schema.Array(SetupInventoryTool),
   discoveryFiles: Schema.Number,
   discoveryEvidence: Schema.Number,
+  discoveryDigest: Schema.String,
 });
 export type SetupInventory = typeof SetupInventory.Type;
+export const SetupRecipe = Schema.Struct({
+  resource: Schema.String,
+  installerMethod: Schema.String,
+  installerExecutable: Schema.String,
+  arguments: Schema.Array(Schema.String),
+  verifyExecutable: Schema.String,
+  verifyArguments: Schema.Array(Schema.String),
+  version: Schema.String,
+  source: Schema.String,
+  upstream: Schema.optional(Schema.String),
+  integrity: Schema.optional(Schema.String),
+});
+export type SetupRecipe = typeof SetupRecipe.Type;
 
 export const SetupItemKind = Schema.Literals([
   "source-init",
   "ensure-directory",
   "tool-verify",
+  "recipe-install",
   "toolchain-verify",
 ]);
 export type SetupItemKind = typeof SetupItemKind.Type;
@@ -132,12 +149,16 @@ export const SetupApproval = Schema.Struct({
 });
 export type SetupApproval = typeof SetupApproval.Type;
 
-/** Qualified provenance for one verified tool, kept for reuse across runs. */
+/** Qualified local or artifact provenance kept for reuse across runs. */
 export const SetupProvenance = Schema.Struct({
+  resource: Schema.String,
   method: Schema.String,
   platform: Schema.String,
   executable: Schema.String,
   version: Schema.optional(Schema.String),
+  source: Schema.String,
+  upstream: Schema.optional(Schema.String),
+  integrity: Schema.optional(Schema.String),
   verifiedAt: Schema.optional(Schema.String),
 });
 export type SetupProvenance = typeof SetupProvenance.Type;
