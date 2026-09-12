@@ -45,6 +45,8 @@ export const TunnelStartInputSchema = Schema.Struct({
   ),
   /** The Source Machine TLS certificate fingerprint pinned through the tunnel. */
   tlsFingerprint: CertificateFingerprint,
+  /** The Source Machine signing identity pinned independently from TLS. */
+  sourceFingerprint: CertificateFingerprint,
   /** Directory holding tunnel.json, the managed known_hosts file, and the log. */
   stateDirectory: Schema.NonEmptyString,
   sshExecutable: Schema.optional(Schema.NonEmptyString),
@@ -57,23 +59,27 @@ export const TunnelStartInputSchema = Schema.Struct({
 
 export type TunnelStartInput = typeof TunnelStartInputSchema.Type;
 
-export interface TunnelStateFile {
-  readonly version: 1;
-  readonly ssh: {
-    readonly host: string;
-    readonly port: number;
-    readonly user: string;
-    readonly hostKeyType: string;
-    readonly hostKeyFingerprint: string;
-  };
-  readonly local: { readonly host: string; readonly port: number };
-  readonly remote: { readonly host: string; readonly port: number };
-  readonly tlsFingerprint: string;
-  readonly pid: number;
-  readonly startedAt: string;
-  readonly logPath: string;
-  readonly knownHostsPath: string;
-}
+export const TunnelStateFileSchema = Schema.Struct({
+  version: Schema.Literal(1),
+  ssh: Schema.Struct({
+    host: Schema.NonEmptyString,
+    port: Schema.Int,
+    user: Schema.NonEmptyString,
+    hostKeyType: Schema.NonEmptyString,
+    hostKeyFingerprint: Schema.NonEmptyString,
+  }),
+  local: Schema.Struct({ host: TunnelLoopbackHost, port: Schema.Int }),
+  remote: Schema.Struct({ host: TunnelLoopbackHost, port: Schema.Int }),
+  tlsFingerprint: CertificateFingerprint,
+  sourceFingerprint: CertificateFingerprint,
+  pid: Schema.Int.check(Schema.isGreaterThan(0)),
+  processArgumentFingerprint: Schema.NonEmptyString,
+  startedAt: Schema.NonEmptyString,
+  logPath: Schema.NonEmptyString,
+  knownHostsPath: Schema.NonEmptyString,
+});
+
+export type TunnelStateFile = typeof TunnelStateFileSchema.Type;
 
 export type TunnelLifecycle = "running" | "down" | "not-configured";
 
@@ -83,7 +89,9 @@ export interface TunnelIdentityEvidence {
   readonly tlsPinnedFingerprint: string;
   readonly tlsObservedFingerprint?: string | undefined;
   readonly tlsMatch?: boolean | undefined;
-  readonly sourceFingerprint?: string | undefined;
+  readonly sourcePinnedFingerprint: string;
+  readonly sourceObservedFingerprint?: string | undefined;
+  readonly sourceMatch?: boolean | undefined;
 }
 
 export interface TunnelStatusReport {

@@ -444,13 +444,8 @@ export const enrollFollower = (
         certificate,
         undefined,
         credential,
-      ), input).pipe(
-        Effect.tapError(() => machine.removeCredential(credentialReference).pipe(Effect.ignore)),
-      );
-      if (finalized.status !== 200) {
-        yield* machine.removeCredential(credentialReference).pipe(Effect.ignore);
-        return yield* wireError(finalized);
-      }
+      ), input);
+      if (finalized.status !== 200) return yield* wireError(finalized);
     }
     return {
       follower: enrolled.follower,
@@ -622,6 +617,7 @@ export const probeSourceDescriptor = (
         }
         const host = endpoint.hostname.replaceAll("[", "").replaceAll("]", "");
         const port = Number(endpoint.port);
+        let secured = false;
         const socket = tlsConnect({
           host,
           port,
@@ -630,6 +626,7 @@ export const probeSourceDescriptor = (
         });
         socket.setTimeout(timeout);
         socket.once("secureConnect", () => {
+          secured = true;
           const peer = socket.getPeerCertificate();
           if (peer.raw === undefined) {
             socket.destroy();
@@ -669,6 +666,15 @@ export const probeSourceDescriptor = (
               }
               chunks.push(chunk);
             });
+            response.once("aborted", () => {
+              rejectProbe(new Error("source descriptor response was aborted"));
+            });
+            response.once("error", rejectProbe);
+            response.once("close", () => {
+              if (!response.complete) {
+                rejectProbe(new Error("source descriptor response closed before EOF"));
+              }
+            });
             response.on("end", () => {
               try {
                 if (response.statusCode !== 200) throw new Error("descriptor request failed");
@@ -695,6 +701,9 @@ export const probeSourceDescriptor = (
           socket.destroy(new Error("TLS connection timed out"));
         });
         socket.once("error", rejectProbe);
+        socket.once("close", () => {
+          if (!secured) rejectProbe(new Error("TLS connection closed before readiness"));
+        });
       }),
     catch: () =>
       new EnrollmentTransportError({
@@ -731,27 +740,16 @@ export interface FollowerLifecycleReport {
  */
 export const queryFollowerLifecycle = (
   input: FollowerLifecycleInput,
-): Effect.Effect<FollowerLifecycleReport, EnrollmentError, MachineState> =>
+): Effect.Effect<FollowerLifecycleReport, never, MachineState> =>
   Effect.gen(function*() {
     const discovered: FollowerLifecycleState = {
       reached: true,
       detail: `source endpoint ${input.endpoint} is configured`,
     };
-    const revisions = yield* listRevisions(input);
-    const matching = revisions.revisions.filter((revision) =>
-      revision.profileId === input.selectedProfile
-    );
-    const latest = [...matching].sort((left, right) => right.sequence - left.sequence)[0];
-    const selected: FollowerLifecycleState = latest === undefined
-      ? {
-        reached: false,
-        detail: `profile ${input.selectedProfile} has no authorized revision`,
-      }
-      : {
-        reached: true,
-        detail:
-          `profile ${input.selectedProfile} selected at revision ${latest.id} (sequence ${latest.sequence})`,
-      };
+    const selected: FollowerLifecycleState = {
+      reached: true,
+      detail: `profile ${input.selectedProfile} is selected locally`,
+    };
     const probe = yield* probeSourceDescriptor({
       endpoint: input.endpoint,
       tlsFingerprint: input.tlsFingerprint,
@@ -759,66 +757,62 @@ export const queryFollowerLifecycle = (
     }).pipe(
       Effect.match({ onFailure: () => undefined, onSuccess: (result) => result }),
     );
-    const reachable: FollowerLifecycleState = probe === undefined
-      ? { reached: false, detail: "the source is unreachable" }
-      : probe.tlsMatch
-      ? {
-        reached: true,
-        detail: "the source is reachable with pinned TLS identity",
-      }
-      : {
-        reached: false,
-        detail: "the source TLS identity does not match the pinned fingerprint",
-      };
-    const authenticated = yield* authenticateFollower(input).pipe(
-      Effect.map((result) => result as typeof AuthenticatedFollowerSchema.Type | undefined),
-      Effect.catchTag("InvalidFollowerCredentialError", () => Effect.succeed(undefined)),
-      Effect.catchTag("RevokedFollowerCredentialError", () => Effect.succeed(undefined)),
-    );
+    const reachable: FollowerLifecycleState =
+      probe !== undefined
+        && probe.tlsMatch
+        && probe.sourceFingerprint === input.sourceFingerprint
+        ? {
+          reached: true,
+          detail: "the source is reachable with pinned TLS and signing identities",
+        }
+        : {
+          reached: false,
+          detail: probe === undefined
+            ? "the source is unreachable"
+            : !probe.tlsMatch
+            ? "the source TLS identity does not match the pinned fingerprint"
+            : "the source signing identity does not match the pinned fingerprint",
+        };
+    const authenticated = reachable.reached
+      ? yield* authenticateFollower(input).pipe(
+        Effect.match({ onFailure: () => undefined, onSuccess: (result) => result }),
+      )
+      : undefined;
     const enrolled: FollowerLifecycleState = authenticated === undefined
       ? {
         reached: false,
-        detail: "the follower credential is invalid, revoked, or unavailable",
+        detail: reachable.reached
+          ? "the follower credential is invalid, revoked, or unavailable"
+          : "enrollment could not be checked while the source is unreachable",
       }
       : {
         reached: true,
         detail: `enrolled as ${authenticated.follower.name} (${authenticated.follower.id})`,
       };
-    if (!enrolled.reached) {
-      return {
-        discovered,
-        selected,
-        reachable,
-        enrolled,
-        converged: {
-          reached: false,
-          detail: "enrollment is required before convergence",
-        },
+    const revisions = authenticated === undefined
+      ? undefined
+      : yield* listRevisions(input).pipe(
+        Effect.match({ onFailure: () => undefined, onSuccess: (result) => result }),
+      );
+    const latest = revisions?.revisions
+      .filter((revision) => revision.profileId === input.selectedProfile)
+      .sort((left, right) => right.sequence - left.sequence)[0];
+    const converged: FollowerLifecycleState = latest === undefined
+      ? {
+        reached: false,
+        detail: revisions === undefined
+          ? "convergence could not be checked"
+          : `profile ${input.selectedProfile} has no authorized revision`,
+      }
+      : input.appliedRevisions.includes(latest.id)
+      ? { reached: true, detail: `applied revision ${latest.id}` }
+      : {
+        reached: false,
+        detail: input.appliedRevisions.length === 0
+          ? `revision ${latest.id} has never been applied`
+          : `revision ${latest.id} is not applied`,
       };
-    }
-    if (latest === undefined) {
-      return {
-        discovered,
-        selected,
-        reachable,
-        enrolled,
-        converged: { reached: false, detail: "no authorized revision to converge to" },
-      };
-    }
-    return {
-      discovered,
-      selected,
-      reachable,
-      enrolled,
-      converged: input.appliedRevisions.includes(latest.id)
-        ? { reached: true, detail: `applied revision ${latest.id}` }
-        : {
-          reached: false,
-          detail: input.appliedRevisions.length === 0
-            ? `revision ${latest.id} has never been applied`
-            : `revision ${latest.id} is not applied`,
-        },
-    };
+    return { discovered, selected, reachable, enrolled, converged };
   });
 
 const asJson = <Value>(value: Value): JsonValue =>

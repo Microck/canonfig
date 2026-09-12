@@ -58,11 +58,12 @@ export const deliverInvitationEnvelope = (
     ));
   }
   const write = Effect.tryPromise({
-    try: async () => {
+    try: async (signal) => {
       const temporary = join(dirname(input.path), `.invite-${randomUUID()}.part`);
       try {
         await mkdir(dirname(input.path), { recursive: true });
-        await writeFile(temporary, encoded, { mode: 0o600 });
+        await writeFile(temporary, encoded, { mode: 0o600, signal });
+        if (signal.aborted) throw new Error("invitation delivery interrupted");
         await rename(temporary, input.path);
       } catch {
         await unlink(temporary).catch(() => undefined);
@@ -71,7 +72,7 @@ export const deliverInvitationEnvelope = (
       return input.path;
     },
     catch: () => deliveryFailure("deliver invitation", "the invitation could not be delivered"),
-  }).pipe(Effect.uninterruptible);
+  });
   return input.timeoutMilliseconds === undefined
     ? write
     : write.pipe(
@@ -112,7 +113,11 @@ export const readInvitationEnvelope = (
       if (size > maximumEnvelopeBytes) throw new Error("invitation envelope is too large");
       const text = await readFile(input.path, "utf8");
       const lines = text.split("\n");
-      if (lines[lines.length - 1] !== "" || lines[lines.length - 2] !== invitationEnvelopeEof) {
+      if (
+        lines.length !== 3
+        || lines[2] !== ""
+        || lines[1] !== invitationEnvelopeEof
+      ) {
         throw new Error("invitation envelope is incomplete");
       }
       const payload = Buffer.from(lines[0] ?? "", "base64url").toString("utf8");
@@ -133,8 +138,13 @@ export const consumeInvitationEnvelope = (
 ): Effect.Effect<EnrollmentInvitationGrant, EnrollmentError> =>
   readInvitationEnvelope(input).pipe(
     Effect.tap(() =>
-      Effect.promise(() => unlink(input.path).catch(() => undefined)).pipe(
-        Effect.uninterruptible,
-      )
+      Effect.tryPromise({
+        try: () => unlink(input.path),
+        catch: () =>
+          deliveryFailure(
+            "consume invitation",
+            "the invitation was read but its envelope could not be removed",
+          ),
+      }).pipe(Effect.uninterruptible)
     ),
   );

@@ -46,6 +46,19 @@ export interface LocalOverlayInput {
   readonly keys: ReadonlyArray<string>;
 }
 
+export interface TunnelStartCommandInput {
+  readonly invitationPath: string;
+  readonly sshHost: string;
+  readonly sshPort: number;
+  readonly sshUser: string;
+  readonly sshHostKeyPath: string;
+  readonly localHost: "127.0.0.1" | "::1";
+  readonly localPort: number;
+  readonly sshExecutable?: string | undefined;
+  readonly sshArguments: ReadonlyArray<string>;
+  readonly timeoutMilliseconds: number;
+}
+
 export interface FollowerCommandsService {
   readonly enroll: (
     input: FollowerEnrollInput,
@@ -86,6 +99,11 @@ export interface FollowerCommandsService {
   readonly doctor: (
     input: DoctorCommandInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly startTunnel: (
+    input: TunnelStartCommandInput,
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly tunnelStatus: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly stopTunnel: () => Effect.Effect<CliPayload, CliCommandFailure>;
 }
 
 export class FollowerCommands extends Context.Service<

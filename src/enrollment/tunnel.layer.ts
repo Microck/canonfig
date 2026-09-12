@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { Effect, Layer, Schema } from "effect";
@@ -19,10 +20,14 @@ import {
   sshHostKeyFingerprint,
   sshHostKeyType,
   TunnelStartInputSchema,
+  TunnelStateFileSchema,
   type TunnelStartInput,
   type TunnelStateFile,
   type TunnelStatusReport,
 } from "./tunnel.types.ts";
+
+const isEnoent = (cause: unknown): boolean =>
+  cause instanceof Error && "code" in cause && cause.code === "ENOENT";
 
 const decode = Schema.decodeUnknownSync;
 const stateFileName = "tunnel.json";
@@ -114,6 +119,20 @@ const buildSshArguments = (
   `${input.sshUser}@${input.sshHost}`,
 ];
 
+const processArgumentFingerprint = (argv: ReadonlyArray<string>): string =>
+  createHash("sha256").update(argv.join("\0")).digest("hex");
+
+const ownsTunnelProcess = async (state: TunnelStateFile): Promise<boolean> => {
+  if (!isAlive(state.pid) || process.platform !== "linux") return false;
+  try {
+    const commandLine = await readFile(`/proc/${state.pid}/cmdline`);
+    const argv = commandLine.toString("utf8").split("\0").filter(Boolean).slice(1);
+    return processArgumentFingerprint(argv) === state.processArgumentFingerprint;
+  } catch {
+    return false;
+  }
+};
+
 const stateFilePath = (directory: string): string => join(directory, stateFileName);
 
 const readStateFile = (
@@ -125,12 +144,10 @@ const readStateFile = (
       try {
         text = await readFile(stateFilePath(directory), "utf8");
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        if (isEnoent(error)) return undefined;
         throw error;
       }
-      const parsed = JSON.parse(text) as TunnelStateFile;
-      if (parsed.version !== 1 || typeof parsed.pid !== "number") return undefined;
-      return parsed;
+      return decode(TunnelStateFileSchema)(JSON.parse(text));
     },
     catch: () =>
       new TunnelConfigurationError({
@@ -146,9 +163,16 @@ const writeStateFile = (
   Effect.tryPromise({
     try: async () => {
       await mkdir(directory, { recursive: true });
-      await writeFile(stateFilePath(directory), `${JSON.stringify(state, undefined, 2)}\n`, {
-        mode: 0o600,
-      });
+      const temporary = join(directory, `.tunnel-${randomUUID()}.json.part`);
+      try {
+        await writeFile(temporary, `${JSON.stringify(state, undefined, 2)}\n`, {
+          mode: 0o600,
+        });
+        await rename(temporary, stateFilePath(directory));
+      } catch (error) {
+        await unlink(temporary).catch(() => undefined);
+        throw error;
+      }
     },
     catch: () =>
       new TunnelConfigurationError({
@@ -160,11 +184,23 @@ const writeStateFile = (
 const removeStateFiles = (
   directory: string,
   state: TunnelStateFile,
-): Effect.Effect<void, never> =>
-  Effect.promise(async () => {
-    await unlink(stateFilePath(directory)).catch(() => undefined);
-    await unlink(state.knownHostsPath).catch(() => undefined);
-  }).pipe(Effect.ignore, Effect.uninterruptible);
+): Effect.Effect<void, TunnelConfigurationError> =>
+  Effect.tryPromise({
+    try: async () => {
+      for (const path of [stateFilePath(directory), state.knownHostsPath]) {
+        try {
+          await unlink(path);
+        } catch (error) {
+          if (!isEnoent(error)) throw error;
+        }
+      }
+    },
+    catch: () =>
+      new TunnelConfigurationError({
+        operation: "remove tunnel state",
+        message: "the tunnel state could not be removed completely",
+      }),
+  }).pipe(Effect.uninterruptible);
 
 const isAlive = (pid: number): boolean => {
   try {
@@ -313,12 +349,13 @@ const waitTunnelReady = (
             }),
           ).then((probe) => {
             if (finished) return;
-            if (!probe.tlsMatch) {
+            if (!probe.tlsMatch || probe.sourceFingerprint !== input.sourceFingerprint) {
               finish(() =>
                 reject(new TunnelReadinessError({
                   endpoint,
-                  message:
-                    "the tunnel endpoint presents a TLS certificate that does not match the pinned Source identity",
+                  message: !probe.tlsMatch
+                    ? "the tunnel endpoint TLS certificate does not match the pinned Source identity"
+                    : "the Source signing identity does not match the pinned invitation identity",
                 }))
               );
               return;
@@ -361,25 +398,31 @@ const statusOf = (
   reconnected: boolean,
 ): Effect.Effect<TunnelStatusReport, TunnelError> =>
   Effect.gen(function*() {
-    const alive = isAlive(state.pid);
-    const endpoint = `https://${state.local.host === "::1" ? "[::1]" : state.local.host}:${state.local.port}`;
-    if (!alive) {
+    const pidAlive = isAlive(state.pid);
+    const owned = yield* Effect.promise(() => ownsTunnelProcess(state));
+    const endpoint =
+      `https://${state.local.host === "::1" ? "[::1]" : state.local.host}:${state.local.port}`;
+    const baseIdentity = {
+      sshHostKeyFingerprint: state.ssh.hostKeyFingerprint,
+      tlsPinnedFingerprint: state.tlsFingerprint,
+      sourcePinnedFingerprint: state.sourceFingerprint,
+    };
+    if (!owned) {
       return {
         lifecycle: "down",
         pid: state.pid,
         startedAt: state.startedAt,
         endpoint,
         reconnected,
-        identity: {
-          sshHostKeyFingerprint: state.ssh.hostKeyFingerprint,
-          tlsPinnedFingerprint: state.tlsFingerprint,
-        },
-        detail: `tunnel process ${state.pid} is not running`,
+        identity: baseIdentity,
+        detail: pidAlive
+          ? `process ${state.pid} does not match the recorded tunnel and was left untouched`
+          : `tunnel process ${state.pid} is not running`,
       } satisfies TunnelStatusReport;
     }
     const probe = yield* probeSourceDescriptor({
       endpoint,
-      tlsFingerprint: decode(CertificateFingerprint)(state.tlsFingerprint),
+      tlsFingerprint: state.tlsFingerprint,
       timeoutMilliseconds: 5_000,
     }).pipe(
       Effect.match({
@@ -387,7 +430,8 @@ const statusOf = (
         onSuccess: (result) => result,
       }),
     );
-    if (probe === undefined || !probe.tlsMatch) {
+    const sourceMatch = probe?.sourceFingerprint === state.sourceFingerprint;
+    if (probe === undefined || !probe.tlsMatch || !sourceMatch) {
       return {
         lifecycle: "down",
         pid: state.pid,
@@ -395,15 +439,17 @@ const statusOf = (
         endpoint,
         reconnected,
         identity: {
-          sshHostKeyFingerprint: state.ssh.hostKeyFingerprint,
-          tlsPinnedFingerprint: state.tlsFingerprint,
+          ...baseIdentity,
           tlsObservedFingerprint: probe?.observedTlsFingerprint,
           tlsMatch: probe?.tlsMatch ?? false,
-          sourceFingerprint: probe?.sourceFingerprint,
+          sourceObservedFingerprint: probe?.sourceFingerprint,
+          sourceMatch,
         },
         detail: probe === undefined
           ? `tunnel process ${state.pid} is running but the endpoint is not reachable`
-          : "tunnel process is running but the endpoint TLS identity does not match the pinned Source",
+          : !probe.tlsMatch
+          ? "tunnel endpoint TLS identity does not match the pinned Source"
+          : "Source signing identity does not match the pinned invitation identity",
       } satisfies TunnelStatusReport;
     }
     return {
@@ -413,20 +459,20 @@ const statusOf = (
       endpoint,
       reconnected,
       identity: {
-        sshHostKeyFingerprint: state.ssh.hostKeyFingerprint,
-        tlsPinnedFingerprint: state.tlsFingerprint,
+        ...baseIdentity,
         tlsObservedFingerprint: probe.observedTlsFingerprint,
         tlsMatch: true,
-        sourceFingerprint: probe.sourceFingerprint,
+        sourceObservedFingerprint: probe.sourceFingerprint,
+        sourceMatch: true,
       },
-      detail: `tunnel is forwarding ${endpoint} with pinned Source identity`,
+      detail: `tunnel is forwarding ${endpoint} with independent SSH, TLS, and Source signing pins`,
     } satisfies TunnelStatusReport;
   });
 
 const makeTunnel = Effect.gen(function*() {
   const startTunnel = Effect.fn("Tunnel.startTunnel")(function*(
     rawInput: TunnelStartInput,
-  ) {
+  ): Effect.fn.Return<TunnelStatusReport, TunnelError> {
     const input = yield* Schema.decodeUnknownEffect(TunnelStartInputSchema)(rawInput).pipe(
       Effect.mapError(() =>
         new TunnelConfigurationError({
@@ -442,10 +488,18 @@ const makeTunnel = Effect.gen(function*() {
     const existing = yield* readStateFile(input.stateDirectory);
     if (existing !== undefined) {
       const current = yield* statusOf(existing, false);
-      if (current.lifecycle === "running") return current;
-      // A stale record never blocks a fresh start: reclaim the local port
-      // mapping without manual process intervention.
-      if (isAlive(existing.pid)) {
+      const sameConfiguration = existing.ssh.host === input.sshHost
+        && existing.ssh.port === input.sshPort
+        && existing.ssh.user === input.sshUser
+        && existing.ssh.hostKeyFingerprint === sshHostKeyFingerprint(input.sshHostKey)
+        && existing.local.host === input.localHost
+        && existing.local.port === input.localPort
+        && existing.remote.host === input.remoteHost
+        && existing.remote.port === input.remotePort
+        && existing.tlsFingerprint === input.tlsFingerprint
+        && existing.sourceFingerprint === input.sourceFingerprint;
+      if (current.lifecycle === "running" && sameConfiguration) return current;
+      if (yield* Effect.promise(() => ownsTunnelProcess(existing))) {
         yield* Effect.tryPromise({
           try: () => terminateProcess(existing.pid),
           catch: () =>
@@ -478,9 +532,10 @@ const makeTunnel = Effect.gen(function*() {
     let recorded = false;
     const cleanupUnrecorded = Effect.gen(function*() {
       if (recorded) return;
-      if (pid !== undefined) {
+      const processId = pid;
+      if (processId !== undefined) {
         yield* Effect.tryPromise({
-          try: () => terminateProcess(pid as number),
+          try: () => terminateProcess(processId),
           catch: () =>
             new TunnelProcessError({
               operation: "cancel tunnel start",
@@ -498,15 +553,14 @@ const makeTunnel = Effect.gen(function*() {
       }).pipe(Effect.ignore);
     });
     const started = yield* Effect.gen(function*() {
-      pid = yield* spawnTunnelProcess(
-        executable,
-        buildSshArguments(input, knownHostsPath, extra),
-        logPath,
-      );
-      const ready = yield* waitTunnelReady(input, timeoutMilliseconds).pipe(
+      const argv = buildSshArguments(input, knownHostsPath, extra);
+      pid = yield* spawnTunnelProcess(executable, argv, logPath);
+      yield* waitTunnelReady(input, timeoutMilliseconds).pipe(
         Effect.catchTag("TunnelReadinessError", (error) =>
           Effect.promise(() => readLogTail(logPath)).pipe(
-            Effect.flatMap((tail) =>
+            Effect.flatMap((
+              tail,
+            ): Effect.Effect<never, TunnelReadinessError | TunnelHostKeyError> =>
               tail !== undefined && hostKeyFailurePattern.test(tail)
                 ? Effect.fail(new TunnelHostKeyError({
                   host: input.sshHost,
@@ -529,16 +583,18 @@ const makeTunnel = Effect.gen(function*() {
         local: { host: input.localHost, port: input.localPort },
         remote: { host: input.remoteHost, port: input.remotePort },
         tlsFingerprint: input.tlsFingerprint,
+        sourceFingerprint: input.sourceFingerprint,
         pid,
+        processArgumentFingerprint: processArgumentFingerprint(argv),
         startedAt: new Date().toISOString(),
         logPath,
         knownHostsPath,
       };
       yield* writeStateFile(input.stateDirectory, state);
       recorded = true;
-      return { state, ready };
+      return state;
     }).pipe(Effect.ensuring(cleanupUnrecorded));
-    const report = yield* statusOf(started.state, existing !== undefined);
+    const report = yield* statusOf(started, existing !== undefined);
     if (report.lifecycle !== "running") {
       const tail = yield* Effect.promise(() => readLogTail(logPath));
       return yield* new TunnelReadinessError({
@@ -570,7 +626,8 @@ const makeTunnel = Effect.gen(function*() {
   ): Effect.fn.Return<StopTunnelResult, TunnelError> {
     const existing = yield* readStateFile(input.stateDirectory);
     if (existing === undefined) return { stopped: false };
-    if (isAlive(existing.pid)) {
+    const owned = yield* Effect.promise(() => ownsTunnelProcess(existing));
+    if (owned) {
       yield* Effect.tryPromise({
         try: () => terminateProcess(existing.pid),
         catch: () =>
@@ -581,7 +638,7 @@ const makeTunnel = Effect.gen(function*() {
       });
     }
     yield* removeStateFiles(input.stateDirectory, existing);
-    return { stopped: true, pid: existing.pid };
+    return { stopped: owned || !isAlive(existing.pid), pid: existing.pid };
   });
 
   return Tunnel.of({ startTunnel, tunnelStatus, stopTunnel });

@@ -1,5 +1,8 @@
 import type { Readable } from "node:stream";
 
+import { invitationEnvelopeEof, maximumEnvelopeBytes } from
+  "../enrollment/invitation-envelope.ts";
+
 /**
  * `--json` is a global option that `evaluateCli` accepts at any position, so it
  * never identifies a command. Drop it before matching, or a wrapper that writes
@@ -38,7 +41,7 @@ export const readEnrollmentInput = (
   input: Readable & { readonly isTTY?: boolean },
   limits: InputLimits = {},
 ): Promise<string> => {
-  const maximumBytes = limits.maximumBytes ?? 64 * 1024;
+  const maximumBytes = limits.maximumBytes ?? maximumEnvelopeBytes;
   const timeoutMilliseconds = limits.timeoutMilliseconds ?? 10_000;
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 64 * 1024
     || !Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds < 1
@@ -95,15 +98,24 @@ export const readEnrollmentInput = (
       const value = Buffer.concat(chunks, bytes);
       let invitation: string;
       try {
-        invitation = new TextDecoder("utf-8", { fatal: true }).decode(value).trim();
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(value);
+        const lines = text.split("\n");
+        if (
+          lines.length !== 3
+          || lines[2] !== ""
+          || lines[1] !== invitationEnvelopeEof
+        ) {
+          throw new Error("missing invitation EOF marker");
+        }
+        invitation = lines[0] ?? "";
       } catch {
         value.fill(0);
-        fail("Private enrollment input is not valid UTF-8");
+        fail("Private enrollment input is incomplete or not valid UTF-8");
         return;
       }
       value.fill(0);
       if (!/^[A-Za-z0-9_-]+$/u.test(invitation)) {
-        fail("Private enrollment input must contain one nonempty base64url invitation");
+        fail("Private enrollment input must contain one invitation envelope");
         return;
       }
       settled = true;
