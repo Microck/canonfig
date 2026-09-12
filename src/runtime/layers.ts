@@ -927,6 +927,8 @@ const followerCommandsLayer = (
           Effect.catch((error) =>
             record("failed").pipe(Effect.flatMap(() => Effect.fail(error)))
           ),
+        );
+      },
       status: (follower) =>
         follower === undefined
           ? mapFailure(
