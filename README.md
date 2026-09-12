@@ -60,26 +60,30 @@ start the local source server and create a single-use invitation:
 
 ```bash
 canonfig source serve --host 127.0.0.1 --port 17342
-canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m --group developers
 ```
 
-Treat the returned invitation as temporary sensitive material.
-`source serve` accepts only `127.0.0.1` or `::1`, and `source invite --endpoint` accepts only a loopback HTTPS origin, so both commands are limited to same-machine enrollment as shipped.
-To enroll a follower on another machine, forward the source port to the follower's loopback address yourself (for example over SSH) and keep the endpoint in the invitation as the loopback origin the follower will dial; the follower pins the source TLS certificate, so the tunnel must present it unchanged.
+The output file is mode `0600`, bounded, and ends with an explicit EOF marker.
+Transfer it over an authenticated private channel. For a remote follower, use
+`canonfig tunnel start` with that invitation and a verified SSH host public-key
+file; Canonfig pins SSH, TLS, and Source signing identities independently and
+manages tunnel readiness and lifecycle state.
 
 To opt that follower into shared secrets, add `--group canonfig:secrets` to the invitation and pipe each value into the source credential store:
 
 ```bash
 printf %s "$GITHUB_TOKEN" | canonfig secrets set github-token
-canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers --group canonfig:secrets
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-secrets-invite --expires 15m --group developers --group canonfig:secrets
 ```
 
 ### 2. follower machine enrollment
 
-on the follower machine, enroll with the invitation token, select the profile, plan the sync, and apply:
+on the follower machine, start the managed tunnel when the Source is remote,
+then enroll from the private envelope, select the profile, plan, and apply:
 
 ```bash
-canonfig follower enroll "$INVITE" --name laptop --profile workstation
+canonfig tunnel start --invitation ./canonfig-invite --ssh-host source.example --ssh-user operator --ssh-host-key-file ./source-host-key.pub
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
 canonfig profile select workstation
 canonfig sync --plan
 canonfig sync --apply
@@ -151,6 +155,7 @@ transfers are content-addressed and incremental. transfer and apply remain separ
 | `canonfig source publish` | review and publish an immutable profile revision |
 | `canonfig source serve` | start loopback source enrollment and profile server |
 | `canonfig source invite` | generate short-lived, single-use follower invitation |
+| `canonfig tunnel` | start, inspect, or stop the pinned enrollment tunnel |
 | `canonfig source revoke` | revoke an enrolled follower identity |
 | `canonfig follower enroll` | enroll follower with pinned source invitation |
 | `canonfig sync` | plan (`--plan`) or apply (`--apply`) profile synchronization |

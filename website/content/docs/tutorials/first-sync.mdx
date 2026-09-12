@@ -26,17 +26,10 @@ canonfig source serve --host 127.0.0.1 --port 17342
 Keep this running. `--host` accepts only `127.0.0.1` or `::1`, so the shipped server is
 reachable from the same machine only.
 
-To enroll a follower on another machine, forward this port to the follower's own loopback
-address yourself, then leave the invitation endpoint as the loopback origin the follower
-will dial. Run the forward on the follower machine:
-
-```bash
-ssh -N -L 17342:127.0.0.1:17342 <user>@<source-host>
-```
-
-The follower pins the source TLS certificate at enrollment, so the tunnel has to pass it
-through unchanged. The cross-platform reference states the same limit: remote exposure and
-public listeners are outside the shipped CLI contract.
+For a remote follower, Canonfig manages the approved SSH loopback tunnel after
+you create the invitation below. You need the Source SSH host's verified public
+key in a local file; Canonfig will not accept `StrictHostKeyChecking=no`,
+`accept-new`, a null known-hosts file, or an additional forward.
 
 ## 3. Discover and publish a profile
 
@@ -59,17 +52,22 @@ This binds the review to the proposal, signs the profile, and stores it in revis
 To enroll a Follower Machine, create a short-lived, single-use invitation:
 
 ```bash
-canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m
 ```
 
-The output includes a base64url invitation containing the endpoint, pinned TLS and signing fingerprints, and a one-time token.
+The mode-`0600` output is a bounded base64url envelope with an explicit EOF
+marker. It contains the loopback endpoint, independent TLS and signing pins,
+and a one-time token. Transfer the file through an authenticated private
+channel; command output contains no invitation material.
 
 ## 5. Enroll the Follower Machine
 
-On the Follower Machine, use the invitation to enroll. Set `INVITE` to the exact invitation string:
+On a remote Follower Machine, start the managed tunnel, then pipe the invitation
+envelope into enrollment:
 
 ```bash
-canonfig follower enroll "$INVITE" --name laptop --profile workstation
+canonfig tunnel start --invitation ./canonfig-invite --ssh-host source.example --ssh-user operator --ssh-host-key-file ./source-host-key.pub
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
 ```
 
 The follower validates the pinned TLS fingerprint, authenticates, and receives its own revocable credential. It now knows to request the `workstation` profile.

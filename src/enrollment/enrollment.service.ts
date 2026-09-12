@@ -22,6 +22,9 @@ export class Enrollment extends Context.Service<Enrollment, {
   readonly createInvitation: (
     input: CreateInvitationInput,
   ) => Effect.Effect<EnrollmentInvitationGrant, EnrollmentError>;
+  readonly removeInvitation: (
+    code: string,
+  ) => Effect.Effect<void, EnrollmentError>;
   readonly enrollFollower: (
     request: EnrollFollowerRequest,
   ) => Effect.Effect<EnrollFollowerResponse, EnrollmentError>;

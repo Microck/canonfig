@@ -53,6 +53,8 @@ export interface SourceInviteInput {
   readonly endpoint: string;
   readonly expiresInMilliseconds: number;
   readonly groups: ReadonlyArray<GroupName>;
+  readonly outputPath: string;
+  readonly timeoutMilliseconds: number;
 }
 
 export interface SourceCommandsService {

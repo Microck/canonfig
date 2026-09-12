@@ -24,7 +24,14 @@ import {
   getRevisionMetadata,
   finalizeFollowerEnrollment,
   listRevisions,
+  queryFollowerLifecycle,
 } from "../enrollment/follower-client.ts";
+import {
+  deliverInvitationEnvelope,
+  readInvitationEnvelope,
+} from "../enrollment/invitation-envelope.ts";
+import { TunnelLive } from "../enrollment/tunnel.layer.ts";
+import { Tunnel } from "../enrollment/tunnel.service.ts";
 import { startSourceServer } from "../enrollment/source-server.ts";
 import {
   decodeMachineProfileJsonc,
@@ -356,14 +363,26 @@ const sourceCommandsLayer: Layer.Layer<
           })),
         ),
       invite: (input) =>
-        mapFailure(enrollment.createInvitation(input)).pipe(
-          Effect.map((grant) => payload({
-            invite: Buffer.from(JSON.stringify(grant)).toString("base64url"),
+        Effect.gen(function*() {
+          const grant = yield* mapFailure(enrollment.createInvitation(input));
+          const outputPath = yield* mapFailure(deliverInvitationEnvelope({
+            grant,
+            path: input.outputPath,
+            timeoutMilliseconds: input.timeoutMilliseconds,
+          }).pipe(
+            Effect.catch((deliveryError) =>
+              enrollment.removeInvitation(grant.code).pipe(
+                Effect.flatMap(() => Effect.fail(deliveryError)),
+              )
+            ),
+          ));
+          return payload({
+            outputPath,
             endpoint: grant.endpoint,
             expiresAt: grant.expiresAt,
             groups: grant.groups,
-          })),
-        ),
+          });
+        }),
       revoke: (follower) =>
         mapFailure(enrollment.revokeFollower(follower)).pipe(
           Effect.as(payload({ follower, revoked: true })),
@@ -534,7 +553,7 @@ const followerCommandsLayer = (
   FollowerCommands,
   never,
   MachineState | ScheduleManager | StateRepository | Synchronization
-  | AgentResolution
+  | AgentResolution | Tunnel
 > => Layer.effect(
   FollowerCommands,
   Effect.gen(function*() {
@@ -543,6 +562,7 @@ const followerCommandsLayer = (
     const repository = yield* StateRepository;
     const synchronization = yield* Synchronization;
     const agentResolution = yield* AgentResolution;
+    const tunnel = yield* Tunnel;
     const policies = policyFile(policyPath);
     const outcomePayload = <Value extends {
       readonly outcome?: {
@@ -932,17 +952,50 @@ const followerCommandsLayer = (
             repository.getFollowerSynchronizationConfiguration(),
           ).pipe(
             Effect.flatMap((configuration) =>
-              configuration === undefined
-                ? Effect.fail(new CliCommandFailure({
-                  category: "usage-or-configuration",
-                  message: "follower synchronization configuration is not enrolled",
-                }))
-                : mapFailure(repository.loadState(configuration.follower.id)).pipe(
-                  Effect.map((state) => ({
-                    ...state,
-                    localOverlay: configuration.localOverlay ?? [],
-                  })),
-                )
+              Effect.gen(function*() {
+                const tunnelReport = yield* mapFailure(tunnel.tunnelStatus({
+                  stateDirectory: join(dirname(statePath), "tunnel"),
+                }));
+                if (configuration === undefined) {
+                  const notReached = (detail: string) => ({
+                    reached: false,
+                    detail,
+                  });
+                  return {
+                    lifecycle: {
+                      discovered: notReached("no Source endpoint is configured"),
+                      selected: notReached("no profile is selected"),
+                      reachable: notReached("no Source endpoint is configured"),
+                      enrolled: notReached("this machine is not enrolled"),
+                      converged: notReached("enrollment is required before convergence"),
+                    },
+                    tunnel: tunnelReport,
+                  };
+                }
+                const [state, appliedResources] = yield* Effect.all([
+                  mapFailure(repository.loadState(configuration.follower.id)),
+                  mapFailure(repository.loadAppliedResources(configuration.follower.id)),
+                ]);
+                const revisions = [...new Set(
+                  appliedResources.map((resource) => resource.revision),
+                )];
+                const lifecycle = yield* queryFollowerLifecycle({
+                  endpoint: configuration.source.endpoint,
+                  tlsFingerprint: configuration.source.tlsFingerprint,
+                  sourceFingerprint: configuration.source.signingFingerprint,
+                  credentialReference: configuration.credentialReference,
+                  timeoutMilliseconds:
+                    configuration.scheduledInvocation.timeoutMilliseconds,
+                  selectedProfile: configuration.selectedProfile,
+                  appliedRevisions: revisions,
+                }).pipe(Effect.provideService(MachineState, machine));
+                return {
+                  ...state,
+                  localOverlay: configuration.localOverlay ?? [],
+                  lifecycle,
+                  tunnel: tunnelReport,
+                };
+              })
             ),
             Effect.map(payload),
           )
@@ -1172,6 +1225,61 @@ const followerCommandsLayer = (
           Effect.andThen(mapFailure(schedules.remove())),
           Effect.map(payload),
         ),
+      startTunnel: (input) =>
+        Effect.gen(function*() {
+          const invitation = yield* mapFailure(readInvitationEnvelope({
+            path: input.invitationPath,
+          }));
+          const sshHostKey = yield* Effect.tryPromise({
+            try: () => readFile(input.sshHostKeyPath, "utf8"),
+            catch: () =>
+              new CliCommandFailure({
+                category: "usage-or-configuration",
+                message: "the pinned SSH host key file could not be read",
+              }),
+          });
+          let endpoint: URL;
+          try {
+            endpoint = new URL(invitation.endpoint);
+          } catch {
+            return yield* new CliCommandFailure({
+              category: "usage-or-configuration",
+              message: "the invitation Source endpoint is invalid",
+            });
+          }
+          const remoteHost = endpoint.hostname.replaceAll("[", "").replaceAll("]", "");
+          if (remoteHost !== "127.0.0.1" && remoteHost !== "::1") {
+            return yield* new CliCommandFailure({
+              category: "usage-or-configuration",
+              message: "the invitation Source endpoint is not loopback-only",
+            });
+          }
+          const report = yield* mapFailure(tunnel.startTunnel({
+            sshHost: input.sshHost,
+            sshPort: input.sshPort,
+            sshUser: input.sshUser,
+            sshHostKey,
+            localHost: input.localHost,
+            localPort: input.localPort,
+            remoteHost,
+            remotePort: endpoint.port === "" ? 443 : Number(endpoint.port),
+            tlsFingerprint: invitation.tlsFingerprint,
+            sourceFingerprint: invitation.sourceFingerprint,
+            stateDirectory: join(dirname(statePath), "tunnel"),
+            sshExecutable: input.sshExecutable,
+            sshArguments: input.sshArguments,
+            timeoutMilliseconds: input.timeoutMilliseconds,
+          }));
+          return payload(report);
+        }),
+      tunnelStatus: () =>
+        mapFailure(tunnel.tunnelStatus({
+          stateDirectory: join(dirname(statePath), "tunnel"),
+        })).pipe(Effect.map(payload)),
+      stopTunnel: () =>
+        mapFailure(tunnel.stopTunnel({
+          stateDirectory: join(dirname(statePath), "tunnel"),
+        })).pipe(Effect.map(payload)),
       doctor: (input) =>
         // Probe the configuration a run would actually use. Enrollment moves
         // the agent policy and harness into the follower configuration and
@@ -1321,6 +1429,7 @@ export const runtimeLayer = (
     Layer.provide(Layer.mergeAll(state, machine, enrollment)),
   );
   const schedule = scheduleManagerLayer.pipe(Layer.provide(machine));
+  const tunnel = TunnelLive;
   const synchronization = SynchronizationLive.pipe(
     Layer.provide(Layer.merge(state, machine)),
   );
@@ -1332,6 +1441,7 @@ export const runtimeLayer = (
     profiles,
     schedule,
     synchronization,
+    tunnel,
     agentResolution,
   );
   return Layer.merge(

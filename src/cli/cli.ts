@@ -55,7 +55,7 @@ Source:
   source publish --proposal <path> --profile <id> --name <name> --reviewer <name>
   source publish --profile-file <profile.jsonc> [--proposal <path>] --reviewer <name>
   source serve [--host <127.0.0.1|::1>] [--port <port>]
-  source invite --endpoint <https-url> [--expires <duration>] [--group <name>...]
+  source invite --endpoint <https-url> --output <path> [--expires <duration>] [--group <name>...]
   source revoke <follower-id>
 
 Follower:
@@ -68,6 +68,11 @@ Follower:
   overlay set <resource-id> --target <path> --key <config.path> [--key <config.path>...]
   overlay remove <resource-id>
   doctor [--no-input] [--timeout-ms <ms>]
+  tunnel start --invitation <path> --ssh-host <host> --ssh-user <user> --ssh-host-key-file <path>
+    [--ssh-port <port>] [--local-host <127.0.0.1|::1>] [--local-port <port>]
+    [--ssh-executable <path>] [--ssh-argument <arg>...] [--timeout-ms <ms>]
+  tunnel status
+  tunnel stop
 
 Profiles and policy:
   profile list
@@ -111,6 +116,8 @@ export type CliCommand =
     readonly endpoint: string;
     readonly expiresInMilliseconds: number;
     readonly groups: ReadonlyArray<typeof GroupName.Type>;
+    readonly outputPath: string;
+    readonly timeoutMilliseconds: number;
   }
   | { readonly _tag: "SourceRevoke"; readonly follower: typeof FollowerId.Type }
   | {
@@ -144,6 +151,21 @@ export type CliCommand =
     readonly noInput: boolean;
     readonly timeoutMilliseconds: number;
   }
+  | {
+    readonly _tag: "TunnelStart";
+    readonly invitationPath: string;
+    readonly sshHost: string;
+    readonly sshPort: number;
+    readonly sshUser: string;
+    readonly sshHostKeyPath: string;
+    readonly localHost: "127.0.0.1" | "::1";
+    readonly localPort: number;
+    readonly sshExecutable?: string | undefined;
+    readonly sshArguments: ReadonlyArray<string>;
+    readonly timeoutMilliseconds: number;
+  }
+  | { readonly _tag: "TunnelStatus" }
+  | { readonly _tag: "TunnelStop" }
   | { readonly _tag: "ProfileList" }
   | {
     readonly _tag: "ProfileShow";
@@ -416,6 +438,68 @@ const evaluateScheduleCommand = (
       return invalid(`Unknown schedule command: ${action ?? ""}`);
 };
 
+const evaluateTunnelCommand = (
+  action: string | undefined,
+  rest: ReadonlyArray<string>,
+  format: CliOutputFormat,
+): CliOutcome => {
+  if (action === "status" && rest.length === 0) {
+    return command({ _tag: "TunnelStatus" }, format);
+  }
+  if (action === "stop" && rest.length === 0) {
+    return command({ _tag: "TunnelStop" }, format);
+  }
+  if (action !== "start") return invalid(`Unknown tunnel command: ${action ?? ""}`);
+  const options = parseOptions(
+    rest,
+    new Set([
+      "--invitation",
+      "--ssh-host",
+      "--ssh-port",
+      "--ssh-user",
+      "--ssh-host-key-file",
+      "--local-host",
+      "--local-port",
+      "--ssh-executable",
+      "--ssh-argument",
+      "--timeout-ms",
+    ]),
+    new Set(),
+  );
+  if (options.positionals.length > 0) {
+    return invalid("tunnel start accepts only named options");
+  }
+  const localHost = one(options, "--local-host") ?? "127.0.0.1";
+  if (localHost !== "127.0.0.1" && localHost !== "::1") {
+    return invalid(`Invalid tunnel local host: ${localHost}`);
+  }
+  return command({
+    _tag: "TunnelStart",
+    invitationPath: one(options, "--invitation", true)!,
+    sshHost: one(options, "--ssh-host", true)!,
+    sshPort: parsePositiveInteger(
+      one(options, "--ssh-port") ?? "22",
+      "SSH port",
+      65_535,
+    ),
+    sshUser: one(options, "--ssh-user", true)!,
+    sshHostKeyPath: one(options, "--ssh-host-key-file", true)!,
+    localHost,
+    localPort: parsePositiveInteger(
+      one(options, "--local-port") ?? "17342",
+      "tunnel local port",
+      65_535,
+    ),
+    sshExecutable: one(options, "--ssh-executable"),
+    sshArguments: options.values.get("--ssh-argument") ?? [],
+    timeoutMilliseconds: parsePositiveInteger(
+      one(options, "--timeout-ms") ?? "30000",
+      "tunnel timeout",
+      300_000,
+    ),
+  }, format);
+};
+
 const evaluateCommand = (
   arguments_: ReadonlyArray<string>,
   format: CliOutputFormat,
@@ -472,7 +556,7 @@ const evaluateCommand = (
       if (action === "invite") {
         const options = parseOptions(
           rest,
-          new Set(["--endpoint", "--expires", "--group"]),
+          new Set(["--endpoint", "--expires", "--group", "--output", "--timeout-ms"]),
           new Set(),
         );
         if (options.positionals.length > 0) return invalid("source invite accepts only named options");
@@ -498,6 +582,12 @@ const evaluateCommand = (
           _tag: "SourceInvite",
           endpoint: url.origin,
           expiresInMilliseconds: durationMilliseconds(one(options, "--expires") ?? "15m"),
+          outputPath: one(options, "--output", true)!,
+          timeoutMilliseconds: parsePositiveInteger(
+            one(options, "--timeout-ms") ?? "10000",
+            "invitation delivery timeout",
+            60_000,
+          ),
           groups,
         }, format);
       }
@@ -638,6 +728,7 @@ const evaluateCommand = (
       }
       return invalid(`Unknown overlay command: ${action ?? ""}`);
     }
+    if (area === "tunnel") return evaluateTunnelCommand(action, rest, format);
     if (area === "doctor") {
       const options = parseOptions(
         arguments_.slice(1),
@@ -808,6 +899,9 @@ const commandName = (value: CliCommand): string => {
     case "ProfileSelect": return "profile.select";
     case "AgentPolicyGet": return "agent.policy.get";
     case "AgentPolicySet": return "agent.policy.set";
+    case "TunnelStart": return "tunnel.start";
+    case "TunnelStatus": return "tunnel.status";
+    case "TunnelStop": return "tunnel.stop";
     case "AgentHarnessGet": return "agent.harness.get";
     case "AgentHarnessSet": return "agent.harness.set";
     case "ScheduleSet": return "schedule.set";
@@ -839,6 +933,8 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         endpoint: value.endpoint,
         expiresInMilliseconds: value.expiresInMilliseconds,
         groups: value.groups,
+        outputPath: value.outputPath,
+        timeoutMilliseconds: value.timeoutMilliseconds,
       });
     case "SourceRevoke": return yield* source.revoke(value.follower);
     case "FollowerEnroll":
@@ -870,6 +966,9 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         noInput: value.noInput,
         timeoutMilliseconds: value.timeoutMilliseconds,
       });
+    case "TunnelStart": return yield* follower.startTunnel(value);
+    case "TunnelStatus": return yield* follower.tunnelStatus();
+    case "TunnelStop": return yield* follower.stopTunnel();
     case "ProfileList": return yield* source.listProfiles();
     case "ProfileShow": return yield* source.inspectProfile(value.revision);
     case "ProfileSelect": return yield* follower.selectProfile(value.profile);

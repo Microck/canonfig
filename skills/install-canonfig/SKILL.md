@@ -47,19 +47,19 @@ canonfig source serve --host 127.0.0.1 --port 17342
 Create a short-lived, single-use invitation only while the endpoint is running:
 
 ```bash
-canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m --group developers
 ```
 
-Treat the returned invitation as temporary sensitive material. The endpoint must
-be reachable as the exact enrolled HTTPS origin; cross-host exposure and port
-forwarding are outside the shipped contract.
+Treat the mode-`0600` envelope as temporary sensitive material. For a remote
+follower, transfer it over an authenticated private channel and use
+`canonfig tunnel start` with a separately verified SSH host public-key file.
 
 ## Follower Machine
 
-Keep the invitation in an ephemeral shell variable, then enroll:
+Pipe the bounded envelope into enrollment:
 
 ```bash
-canonfig follower enroll "$INVITE" --name laptop --profile workstation
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
 canonfig profile select workstation
 canonfig sync --plan
 ```

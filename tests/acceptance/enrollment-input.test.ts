@@ -10,6 +10,8 @@ import {
   privateEnrollmentArguments,
   readEnrollmentInput,
 } from "../../src/runtime/enrollment-input.ts";
+import { invitationEnvelopeEof } from
+  "../../src/enrollment/invitation-envelope.ts";
 
 const argv = ["follower", "enroll", "--stdin", "--name", "laptop", "--profile", "workstation"];
 
@@ -48,7 +50,7 @@ describe("private enrollment input", () => {
     const original = Buffer.from("opaque_");
     const result = readEnrollmentInput(stream);
     stream.write(original);
-    stream.end("invitation-123\r\n");
+    stream.end(`invitation-123\n${invitationEnvelopeEof}\n`);
     expect(await result).toBe("opaque_invitation-123");
     expect(original.toString()).toBe("opaque_");
     for (const event of ["data", "end", "error", "close"]) {
@@ -56,12 +58,19 @@ describe("private enrollment input", () => {
     }
   });
 
-  it.each(["", "   ", "token second-token", "token\0", "token\nsecond"])(
-    "rejects empty or multiple invitations without reflecting the value", async (value) => {
+  it.each([
+    "",
+    "   ",
+    "token second-token",
+    `token\n${invitationEnvelopeEof}\nextra`,
+    `token\n${invitationEnvelopeEof}`,
+  ])(
+    "rejects incomplete or multiple invitation envelopes without reflecting the value",
+    async (value) => {
       const stream = new PassThrough();
       const result = readEnrollmentInput(stream);
       stream.end(value);
-      await expect(result).rejects.toThrow("one nonempty base64url invitation");
+      await expect(result).rejects.toThrow("incomplete or not valid UTF-8");
     },
   );
 
@@ -127,7 +136,7 @@ it("the CLI consumes private stdin without reflecting it or creating state on in
     const result = spawnSync(process.execPath, [
       "--import", "tsx", resolve(import.meta.dirname, "../../src/runtime/main.ts"), ...argv, "--json",
     ], {
-      input: privateValue,
+      input: `${privateValue}\n${invitationEnvelopeEof}\n`,
       encoding: "utf8",
       timeout: 20_000,
       env: { ...process.env, HOME: home, USERPROFILE: home,

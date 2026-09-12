@@ -43,13 +43,13 @@ credential values in a profile file or command argument.
 With the loopback source endpoint running:
 
 ```bash
-canonfig source invite --endpoint https://127.0.0.1:17342 --expires 15m --group developers
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m --group developers
 ```
 
 Repeat `--group` for additional declared groups. Group membership is source
-owned and carried by enrollment; followers cannot add themselves. Deliver the
-invitation through an ephemeral private channel and create a new one if it is
-expired or exposed.
+owned and carried by enrollment; followers cannot add themselves. The output
+is a bounded mode-`0600` envelope with explicit EOF. Deliver it through an
+authenticated private channel and create a new one if it is expired or exposed.
 
 ## Revoke
 

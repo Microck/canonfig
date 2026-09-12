@@ -461,10 +461,10 @@ canonfig source init
 canonfig source scan --file AGENTS.md
 canonfig source publish --proposal proposal.json --profile workstation --name Workstation --reviewer operator
 canonfig source serve
-canonfig source invite --endpoint https://127.0.0.1:17342
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite
 canonfig source revoke follower-one
 
-canonfig follower enroll "$INVITE" --name laptop --profile workstation
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
 canonfig sync --plan
 canonfig recover --no-input
 canonfig status --json

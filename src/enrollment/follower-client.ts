@@ -305,6 +305,59 @@ const wireError = (
     }),
   );
 
+const enrollmentPhaseTimeout = (input: FollowerEnrollmentInput): number =>
+  input.timeoutMilliseconds ?? defaultTimeoutMilliseconds;
+
+const abortEnrollmentPhase = (
+  signal: AbortSignal | undefined,
+): Effect.Effect<never, TransportInterruptedError> =>
+  Effect.tryPromise({
+    try: () =>
+      new Promise<never>((_resolve, reject) => {
+        if (signal?.aborted === true) {
+          reject(new TransportInterruptedError({ operation: "enroll follower" }));
+          return;
+        }
+        signal?.addEventListener(
+          "abort",
+          () => reject(new TransportInterruptedError({ operation: "enroll follower" })),
+          { once: true },
+        );
+      }),
+    catch: (cause) =>
+      cause instanceof TransportInterruptedError
+        ? cause
+        : new TransportInterruptedError({ operation: "enroll follower" }),
+  });
+
+/**
+ * Bound one enrollment network phase in time and make it cancellable.
+ *
+ * A timed-out or cancelled phase fails without storing anything locally, so a
+ * retry either resumes the recorded pending enrollment or fails cleanly on
+ * the spent single-use invitation instead of leaking a half-written state.
+ */
+const enrollmentPhase = <A, E>(
+  phase: Effect.Effect<A, E>,
+  input: FollowerEnrollmentInput,
+): Effect.Effect<A, E | EnrollmentTransportError | TransportInterruptedError> => {
+  const raced = input.signal === undefined
+    ? phase
+    : Effect.raceFirst(phase, abortEnrollmentPhase(input.signal));
+  return raced.pipe(
+    Effect.timeoutOption(enrollmentPhaseTimeout(input)),
+    Effect.flatMap((option) =>
+      option._tag === "Some"
+        ? Effect.succeed(option.value)
+        : Effect.fail(new EnrollmentTransportError({
+          operation: "enroll follower",
+          message: "follower enrollment timed out",
+        }))
+    ),
+  );
+};
+
+
 export const enrollFollower = (
   input: FollowerEnrollmentInput,
 ): Effect.Effect<FollowerEnrollment, EnrollmentError, MachineState> =>
@@ -330,13 +383,13 @@ export const enrollFollower = (
       });
     }
     const endpoint = yield* checkedEndpoint(input.invitation.endpoint);
-    const certificate = yield* inspectCertificate(endpoint);
+    const certificate = yield* enrollmentPhase(inspectCertificate(endpoint), input);
     if (certificate.fingerprint !== input.invitation.tlsFingerprint) {
       return yield* new EnrollmentFingerprintMismatchError({
         message: "the source TLS fingerprint does not match the invitation",
       });
     }
-    const response = yield* requestJson(
+    const response = yield* enrollmentPhase(requestJson(
       "POST",
       endpoint,
       "/v1/enrollment",
@@ -348,7 +401,7 @@ export const enrollFollower = (
         tlsFingerprint: input.invitation.tlsFingerprint,
         followerName: input.followerName,
       },
-    );
+    ), input);
     if (response.status !== 201) return yield* wireError(response);
     const enrolled = yield* Schema.decodeUnknownEffect(EnrollFollowerResponseSchema)(
       response.body,
@@ -384,18 +437,15 @@ export const enrollFollower = (
     );
     const credential = Redacted.make(enrolled.credential);
     if (input.finalize !== false) {
-      const finalized = yield* requestJson(
+      const finalized = yield* enrollmentPhase(requestJson(
         "POST",
         endpoint,
         "/v1/enrollment/finalize",
         certificate,
         undefined,
         credential,
-      );
-      if (finalized.status !== 200) {
-        yield* machine.removeCredential(credentialReference).pipe(Effect.ignore);
-        return yield* wireError(finalized);
-      }
+      ), input);
+      if (finalized.status !== 200) return yield* wireError(finalized);
     }
     return {
       follower: enrolled.follower,
@@ -518,6 +568,251 @@ export const authenticateFollower = (
         })
       ),
     );
+  });
+
+const SourceDescriptorSchema = Schema.Struct({
+  source: Schema.Struct({
+    publicKeyFingerprint: CertificateFingerprint,
+  }),
+  tlsFingerprint: CertificateFingerprint,
+});
+
+export interface SourceDescriptorProbeInput {
+  readonly endpoint: string;
+  readonly tlsFingerprint: typeof CertificateFingerprint.Type;
+  readonly timeoutMilliseconds?: number | undefined;
+}
+
+export interface SourceDescriptorProbe {
+  readonly observedTlsFingerprint: typeof CertificateFingerprint.Type;
+  readonly tlsMatch: boolean;
+  readonly sourceFingerprint: string | undefined;
+}
+
+/**
+ * Describe the source behind an endpoint without authenticating.
+ *
+ * A pin mismatch is reported rather than thrown so callers can tell tunnel
+ * tampering apart from an unreachable endpoint.
+ */
+export const probeSourceDescriptor = (
+  input: SourceDescriptorProbeInput,
+): Effect.Effect<SourceDescriptorProbe, EnrollmentTransportError> => {
+  const timeout = input.timeoutMilliseconds ?? defaultTimeoutMilliseconds;
+  return Effect.tryPromise({
+    try: () =>
+      new Promise<SourceDescriptorProbe>((resolveProbe, rejectProbe) => {
+        let endpoint: URL;
+        try {
+          endpoint = new URL(input.endpoint);
+          const loopback = endpoint.hostname === "127.0.0.1"
+            || endpoint.hostname === "[::1]"
+            || endpoint.hostname === "::1";
+          if (endpoint.protocol !== "https:" || !loopback) {
+            throw new Error("not a loopback HTTPS URL");
+          }
+        } catch {
+          rejectProbe(new Error("invalid source endpoint"));
+          return;
+        }
+        const host = endpoint.hostname.replaceAll("[", "").replaceAll("]", "");
+        const port = Number(endpoint.port);
+        let secured = false;
+        const socket = tlsConnect({
+          host,
+          port,
+          rejectUnauthorized: false,
+          minVersion: "TLSv1.2",
+        });
+        socket.setTimeout(timeout);
+        socket.once("secureConnect", () => {
+          secured = true;
+          const peer = socket.getPeerCertificate();
+          if (peer.raw === undefined) {
+            socket.destroy();
+            rejectProbe(new Error("source did not provide a certificate"));
+            return;
+          }
+          const raw = peer.raw;
+          const observed = createHash("sha256").update(raw).digest("hex");
+          const pem = new X509Certificate(raw).toString();
+          socket.end();
+          if (observed !== input.tlsFingerprint) {
+            resolveProbe({
+              observedTlsFingerprint: decode(CertificateFingerprint)(observed),
+              tlsMatch: false,
+              sourceFingerprint: undefined,
+            });
+            return;
+          }
+          const request = httpsRequest({
+            protocol: "https:",
+            hostname: host,
+            port: endpoint.port,
+            path: "/v1/enrollment/source",
+            method: "GET",
+            ca: pem,
+            rejectUnauthorized: true,
+            minVersion: "TLSv1.2",
+            headers: { accept: "application/json" },
+          }, (response) => {
+            const chunks: Array<Buffer> = [];
+            let bytes = 0;
+            response.on("data", (chunk: Buffer) => {
+              bytes += chunk.byteLength;
+              if (bytes > maximumResponseBytes) {
+                request.destroy(new Error("descriptor exceeds the size limit"));
+                return;
+              }
+              chunks.push(chunk);
+            });
+            response.once("aborted", () => {
+              rejectProbe(new Error("source descriptor response was aborted"));
+            });
+            response.once("error", rejectProbe);
+            response.once("close", () => {
+              if (!response.complete) {
+                rejectProbe(new Error("source descriptor response closed before EOF"));
+              }
+            });
+            response.on("end", () => {
+              try {
+                if (response.statusCode !== 200) throw new Error("descriptor request failed");
+                const descriptor = decode(SourceDescriptorSchema)(
+                  JSON.parse(Buffer.concat(chunks).toString("utf8")),
+                );
+                resolveProbe({
+                  observedTlsFingerprint: decode(CertificateFingerprint)(observed),
+                  tlsMatch: true,
+                  sourceFingerprint: descriptor.source.publicKeyFingerprint,
+                });
+              } catch {
+                rejectProbe(new Error("source descriptor is malformed"));
+              }
+            });
+          });
+          request.setTimeout(timeout, () => {
+            request.destroy(new Error("descriptor request timed out"));
+          });
+          request.once("error", rejectProbe);
+          request.end();
+        });
+        socket.once("timeout", () => {
+          socket.destroy(new Error("TLS connection timed out"));
+        });
+        socket.once("error", rejectProbe);
+        socket.once("close", () => {
+          if (!secured) rejectProbe(new Error("TLS connection closed before readiness"));
+        });
+      }),
+    catch: () =>
+      new EnrollmentTransportError({
+        operation: "probe source descriptor",
+        message: "the source descriptor could not be probed",
+      }),
+  });
+};
+
+export interface FollowerLifecycleInput extends FollowerTransportInput {
+  readonly selectedProfile: string;
+  readonly appliedRevisions: ReadonlyArray<string>;
+}
+
+export interface FollowerLifecycleState {
+  readonly reached: boolean;
+  readonly detail: string;
+}
+
+export interface FollowerLifecycleReport {
+  readonly discovered: FollowerLifecycleState;
+  readonly selected: FollowerLifecycleState;
+  readonly reachable: FollowerLifecycleState;
+  readonly enrolled: FollowerLifecycleState;
+  readonly converged: FollowerLifecycleState;
+}
+
+/**
+ * Report follower lifecycle as five separate states.
+ *
+ * Each state is probed independently so a follower can be selected but
+ * unreachable, or enrolled but not converged, without collapsing the
+ * distinction the way a single status word would.
+ */
+export const queryFollowerLifecycle = (
+  input: FollowerLifecycleInput,
+): Effect.Effect<FollowerLifecycleReport, never, MachineState> =>
+  Effect.gen(function*() {
+    const discovered: FollowerLifecycleState = {
+      reached: true,
+      detail: `source endpoint ${input.endpoint} is configured`,
+    };
+    const selected: FollowerLifecycleState = {
+      reached: true,
+      detail: `profile ${input.selectedProfile} is selected locally`,
+    };
+    const probe = yield* probeSourceDescriptor({
+      endpoint: input.endpoint,
+      tlsFingerprint: input.tlsFingerprint,
+      timeoutMilliseconds: input.timeoutMilliseconds,
+    }).pipe(
+      Effect.match({ onFailure: () => undefined, onSuccess: (result) => result }),
+    );
+    const reachable: FollowerLifecycleState =
+      probe !== undefined
+        && probe.tlsMatch
+        && probe.sourceFingerprint === input.sourceFingerprint
+        ? {
+          reached: true,
+          detail: "the source is reachable with pinned TLS and signing identities",
+        }
+        : {
+          reached: false,
+          detail: probe === undefined
+            ? "the source is unreachable"
+            : !probe.tlsMatch
+            ? "the source TLS identity does not match the pinned fingerprint"
+            : "the source signing identity does not match the pinned fingerprint",
+        };
+    const authenticated = reachable.reached
+      ? yield* authenticateFollower(input).pipe(
+        Effect.match({ onFailure: () => undefined, onSuccess: (result) => result }),
+      )
+      : undefined;
+    const enrolled: FollowerLifecycleState = authenticated === undefined
+      ? {
+        reached: false,
+        detail: reachable.reached
+          ? "the follower credential is invalid, revoked, or unavailable"
+          : "enrollment could not be checked while the source is unreachable",
+      }
+      : {
+        reached: true,
+        detail: `enrolled as ${authenticated.follower.name} (${authenticated.follower.id})`,
+      };
+    const revisions = authenticated === undefined
+      ? undefined
+      : yield* listRevisions(input).pipe(
+        Effect.match({ onFailure: () => undefined, onSuccess: (result) => result }),
+      );
+    const latest = revisions?.revisions
+      .filter((revision) => revision.profileId === input.selectedProfile)
+      .sort((left, right) => right.sequence - left.sequence)[0];
+    const converged: FollowerLifecycleState = latest === undefined
+      ? {
+        reached: false,
+        detail: revisions === undefined
+          ? "convergence could not be checked"
+          : `profile ${input.selectedProfile} has no authorized revision`,
+      }
+      : input.appliedRevisions.includes(latest.id)
+      ? { reached: true, detail: `applied revision ${latest.id}` }
+      : {
+        reached: false,
+        detail: input.appliedRevisions.length === 0
+          ? `revision ${latest.id} has never been applied`
+          : `revision ${latest.id} is not applied`,
+      };
+    return { discovered, selected, reachable, enrolled, converged };
   });
 
 const asJson = <Value>(value: Value): JsonValue =>

@@ -33,6 +33,9 @@ export interface TaggedRuntimeError extends Error {
   readonly entity?: string | undefined;
   readonly executable?: string | undefined;
   readonly field?: string | undefined;
+  readonly endpoint?: string | undefined;
+  readonly flag?: string | undefined;
+  readonly host?: string | undefined;
   readonly follower?: string | undefined;
   readonly format?: string | undefined;
   readonly harness?: string | undefined;
@@ -433,6 +436,26 @@ export const failureTaxonomy = {
   EnrollmentConfigurationError: declared(
     "usage-or-configuration",
     (error) => `${text(error.operation)} is not configured`,
+  ),
+  TunnelConfigurationError: declared(
+    "usage-or-configuration",
+    (error) => `${text(error.operation)} is not configured`,
+  ),
+  TunnelHostKeyBypassError: declared(
+    "usage-or-configuration",
+    (error) => `SSH option ${text(error.flag)} is not allowed for a managed tunnel`,
+  ),
+  TunnelHostKeyError: declared(
+    "authentication-or-revocation",
+    (error) => `SSH host identity for ${text(error.host)} did not match its pin`,
+  ),
+  TunnelReadinessError: declared(
+    "transport",
+    (error) => `the managed tunnel endpoint ${text(error.endpoint)} did not become ready`,
+  ),
+  TunnelProcessError: declared(
+    "transport",
+    (error) => `${text(error.operation)} could not manage the SSH tunnel process`,
   ),
   MalformedEnrollmentRequestError: declared(
     "usage-or-configuration",
