@@ -100,7 +100,7 @@ const validSecretsCommand = (arguments_: ReadonlyArray<string>): boolean => {
     || action === "--help"
     || action === "-h"
   ) return rest.length === 0;
-  if (action === "list" || action === "sync") return rest.length === 0;
+  if (action === "list" || action === "sync" || action === "bootstrap") return rest.length === 0;
   if (action === "set" || action === "remove") return rest.length === 1;
   return false;
 };

@@ -17,10 +17,14 @@ import {
   storeSecret,
 } from "./secret-store.ts";
 import {
+  type LinuxCredentialBootstrapResult,
+  machineStateBootstrapHost,
+  runLinuxCredentialBootstrap,
+} from "./linux-credential-bootstrap.ts";
+import {
   synchronizeSharedSecrets,
   type SecretSynchronizationResult,
 } from "./secret-client.ts";
-
 export const secretsHelpText = `Canonfig shared secrets
 
 Usage: canonfig secrets <command> [options]
@@ -30,6 +34,7 @@ Commands:
   list            List secret names and origins
   remove <name>   Remove a stored secret
   sync            Pull authorized secrets from the enrolled source
+  bootstrap       Verify the native credential store end to end
 
 Options:
   --json          Emit machine-readable JSON
@@ -37,6 +42,8 @@ Options:
 
 Secret values are accepted only through stdin and are never printed.
 Followers must be enrolled with the ${SECRET_SHARE_GROUP} group to receive them.
+Bootstrap stores only disposable probes, removes them, and reports the
+selected credential policy with backup-encryption and persistence evidence.
 `;
 
 export const isSecretsCommand = (
@@ -111,6 +118,7 @@ const readSecretFromStdin = (): Effect.Effect<string, SecretTransferError> =>
 type SecretCliData =
   | SharedSecretSummary
   | SecretSynchronizationResult
+  | LinuxCredentialBootstrapResult
   | { readonly commands: ReadonlyArray<string> }
   | { readonly secrets: ReadonlyArray<SharedSecretSummary> }
   | { readonly name: string; readonly removed: boolean };
@@ -172,7 +180,7 @@ export const runSecretsCli = (
   const program = Effect.gen(function*() {
     if (command === "help" || command === "--help" || command === "-h") {
       if (rest.length > 0) return yield* usageError("help does not accept arguments");
-      writeSuccess(io, json, "secrets.help", { commands: ["set", "list", "remove", "sync"] }, secretsHelpText);
+      writeSuccess(io, json, "secrets.help", { commands: ["set", "list", "remove", "sync", "bootstrap"] }, secretsHelpText);
       return;
     }
     if (command === "set") {
@@ -223,6 +231,43 @@ export const runSecretsCli = (
         : result.status === "not-shared"
         ? "The source does not share secrets with this follower.\n"
         : `Synchronized ${result.secrets.length} secret${result.secrets.length === 1 ? "" : "s"}.\n`;
+      writeSuccess(io, json, commandName, result, human);
+      return;
+    }
+    if (command === "bootstrap") {
+      if (rest.length !== 0) return yield* usageError("usage: canonfig secrets bootstrap");
+      const machine = yield* MachineState;
+      const sessionBus = process.env.DBUS_SESSION_BUS_ADDRESS;
+      const host = machineStateBootstrapHost(
+        machine,
+        sessionBus === undefined
+          ? []
+          : [{ name: "DBUS_SESSION_BUS_ADDRESS", value: sessionBus }],
+      );
+      const result = yield* runLinuxCredentialBootstrap(host).pipe(
+        Effect.mapError((cause) =>
+          cause instanceof SecretTransferError
+            ? cause
+            : new SecretTransferError({
+              category: "storage",
+              operation: "bootstrap credential store",
+              message: cause instanceof Error ? cause.message : "the credential bootstrap failed",
+            })
+        ),
+      );
+      const provider = result.provider === "secret-service"
+        ? `Secret Service (${result.secretTool ?? "secret-tool"})`
+        : "local file";
+      const human = [
+        "Credential bootstrap complete.",
+        `Provider: ${provider}`,
+        `Selected policy: ${result.selectedPolicy}`,
+        `Backup encryption: ${result.backupEncryption} (${result.backupEncryptionDetail})`,
+        `Round trips passed: ${result.roundTripsPassed}`,
+        `Restart persistence: ${result.restartPersistence}`,
+        `Logout and reboot persistence: ${result.logoutPersistence} (${result.persistenceDetail})`,
+        "",
+      ].join("\n");
       writeSuccess(io, json, commandName, result, human);
       return;
     }
