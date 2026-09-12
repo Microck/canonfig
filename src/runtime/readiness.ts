@@ -63,23 +63,13 @@ export const scheduledDefinitionReadiness = (
   status: ScheduleStatus,
   lastFire?: ScheduleFireEvidence | undefined,
 ): DoctorProbe => {
-  const details = lastFire === undefined
-    ? {
-      state: status.state,
-      platform: status.platform,
-      mechanism: status.definition.mechanism,
-      definitionVerified: status.state === "current",
-      scheduledExecutionVerified: false,
-    }
-    : {
-      state: status.state,
-      platform: status.platform,
-      mechanism: status.definition.mechanism,
-      definitionVerified: status.state === "current",
-      scheduledExecutionVerified: true,
-      lastFiredAt: lastFire.at,
-      lastFiredOutcome: lastFire.outcome,
-    };
+  const details = {
+    state: status.state,
+    platform: status.platform,
+    mechanism: status.definition.mechanism,
+    definitionVerified: status.state === "current",
+    scheduledExecutionVerified: status.state === "current" && lastFire !== undefined,
+  };
   if (status.state !== "current") {
     return {
       name: "scheduler",
@@ -89,17 +79,22 @@ export const scheduledDefinitionReadiness = (
       details,
     };
   }
-  return lastFire === undefined
-    ? {
+  if (lastFire === undefined) {
+    return {
       name: "scheduler",
       status: "warning",
       message: "scheduler definition is current; the native scheduler has not been observed firing it yet",
       details,
-    }
-    : {
-      name: "scheduler",
-      status: "pass",
-      message: "scheduler definition is current and the native scheduler has fired it",
-      details,
     };
-};
+  }
+  return {
+    name: "scheduler",
+    status: "pass",
+    message: "scheduler definition is current and the native scheduler has fired it",
+    details: {
+      ...details,
+      scheduledExecutionVerified: true,
+      lastFiredAt: lastFire.at,
+      lastFiredOutcome: lastFire.outcome,
+    },
+  };
