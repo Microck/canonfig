@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 // The binding stores what fs/promises.realpath returns, which on Windows
 // expands 8.3 short names that fs.realpathSync leaves alone. Resolve the
 // expected paths the same way, or the two spellings of one file disagree.
@@ -196,6 +196,15 @@ describe("local installer binding contract", () => {
       resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer), Effect.flip),
     );
     expect(refusedOversized._tag).toBe("HumanActionRequiredError");
+    // Unreadable content is still present content: removal records the
+    // removal instead of failing on the read.
+    await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
+    chmodSync(join(f.home, ".canonfig", "installers", "npm.json"), 0o000);
+    expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(true);
+    const refusedUnreadable = await Effect.runPromise(
+      resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer), Effect.flip),
+    );
+    expect(refusedUnreadable._tag).toBe("HumanActionRequiredError");
   }, 30_000);
 
   it("rejects relative input, moved entrypoints, and failed checks without installing anything", async () => {

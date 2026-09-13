@@ -166,7 +166,19 @@ export const saveInstallerBinding = (
   }).pipe(Effect.catchTag("FileSizeLimitError", () => Effect.succeed(undefined)));
   // One atomic write is the whole transition: it overwrites a binding or a
   // removal record alike, so re-binding needs no separate marker cleanup.
-  if (existing !== undefined && Buffer.from(existing).equals(content)) return binding;
+  if (existing !== undefined && Buffer.from(existing).equals(content)) {
+    // Re-read before skipping the write: a concurrent `remove` may have
+    // replaced these bytes with a removal record after the read above.
+    // Falling through re-binds (this command wins); returning early here
+    // would report success while the file says removed.
+    const fresh = yield* machine.readFile({
+      path: paths.path, maximumBytes: 16 * 1024,
+    }).pipe(
+      Effect.catchTag("FileSizeLimitError", () => Effect.succeed(undefined)),
+      Effect.catchTag("MachineFilesystemError", () => Effect.succeed(undefined)),
+    );
+    if (fresh !== undefined && Buffer.from(fresh).equals(content)) return binding;
+  }
   yield* machine.ensureDirectory({ path: paths.root, mode: 0o700 });
   yield* machine.atomicWrite({ path: paths.path, content, mode: 0o600 });
   return binding;
@@ -191,11 +203,12 @@ export const removeInstallerBinding = (method: string) => Effect.gen(function*()
   if (kind === undefined) return false;
   if (kind.kind !== "regular") return yield* unavailable("Only a regular local installer binding can be removed.");
   const state = yield* loadInstallerState(paths.method).pipe(
-    // Removal is a local explicit request: malformed, foreign, or oversized
-    // content is still present content, so it never blocks recording the
-    // removal. Other I/O failures propagate.
+    // Removal is a local explicit request: malformed, foreign, oversized, or
+    // unreadable content is still present content, so it never blocks
+    // recording the removal. Other I/O failures propagate.
     Effect.catchTag("HumanActionRequiredError", () => Effect.succeed({ status: "present" } as const)),
     Effect.catchTag("FileSizeLimitError", () => Effect.succeed({ status: "present" } as const)),
+    Effect.catchTag("MachineFilesystemError", () => Effect.succeed({ status: "present" } as const)),
   );
   if (state.status === "removed") return false;
   // One atomic write is the whole transition: the binding file becomes the
