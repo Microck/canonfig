@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { Effect, Redacted, Schema } from "effect";
 
 import { MachineState } from "../machine/machine-state.service.ts";
+import { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import { BlobId, type CertificateFingerprint } from "../domain/brand.ts";
 import type { SourceIdentity } from "../domain/identity.ts";
 import {
@@ -181,9 +182,10 @@ const runRequestEffect = async <Value>(
   return result.success;
 };
 
-const asEnrollmentError = (error: Error): EnrollmentError => {
+export const asEnrollmentError = (error: Error): EnrollmentError => {
   if (
-    error instanceof DuplicateFollowerIdentityError
+    error instanceof CredentialStorageError
+    || error instanceof DuplicateFollowerIdentityError
     || error instanceof EnrollmentConfigurationError
     || error instanceof EnrollmentFingerprintMismatchError
     || error instanceof EnrollmentSourceMismatchError
