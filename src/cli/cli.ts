@@ -44,7 +44,7 @@ import { SetupCommands } from "./setup-commands.ts";
 
 export const programName = "canonfig";
 export const programDisplayName = "Canonfig";
-export const programVersion = "3.1.5";
+export const programVersion = "3.2.0";
 
 export const helpText = `${programDisplayName} ${programVersion}
 

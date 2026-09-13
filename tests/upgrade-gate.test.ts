@@ -134,7 +134,7 @@ describe("build identity", () => {
       sourceDigest: string;
       commit: string | null;
     };
-    expect(identity.packageVersion).toBe("3.1.5");
+    expect(identity.packageVersion).toBe("3.2.0");
     expect(identity.sourceDigest).toBe("unbuilt");
     expect(identity.commit).toBeNull();
   });
@@ -142,7 +142,7 @@ describe("build identity", () => {
   it("keeps the plain --version output as the release version", () => {
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",
-      text: "3.1.5",
+      text: "3.2.0",
       exitCode: 0,
     });
   });
@@ -159,7 +159,7 @@ describe("upgrade gate", () => {
     }));
     expect(open).toEqual({
       run: "run-gate-1",
-      creatingVersion: "3.1.5",
+      creatingVersion: "3.2.0",
       creatingIdentity: "unbuilt",
       stateFormat: stateFormatVersion,
     });
@@ -264,7 +264,7 @@ describe("deployment receipts", () => {
       };
       expect(receipt).toEqual({
         run_id: "run-gate-1",
-        package_version: "3.1.5",
+        package_version: "3.2.0",
         build_identity: "unbuilt",
         state_format: stateFormatVersion,
         outcome: "Converged",
