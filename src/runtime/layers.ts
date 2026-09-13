@@ -166,6 +166,23 @@ const emptyDiscoveryProposal: DiscoveryScanResult = {
   scannedPaths: [],
 };
 
+/**
+ * Build the failure for an unreadable or invalid authored profile file. The
+ * underlying validation cause is included (bounded) so operators can fix
+ * their authoring without trial and error; it carries no credential
+ * material, only the profile contract complaint.
+ */
+export const profileFileFailure = (cause: unknown): CliCommandFailure => {
+  const raw = cause instanceof Error && cause.message.trim().length > 0
+    ? cause.message
+    : "unknown validation failure";
+  const detail = raw.replace(/\s+/gu, " ").trim().slice(0, 300);
+  return new CliCommandFailure({
+    category: "usage-or-configuration",
+    message: `authored profile file is malformed or invalid: ${detail}`,
+  });
+};
+
 const readAuthoredProfile = (
   path: string,
 ): Effect.Effect<MachineProfile, CliCommandFailure> =>
@@ -179,10 +196,7 @@ const readAuthoredProfile = (
     Effect.flatMap((text) =>
       Effect.try({
         try: () => decodeMachineProfileJsonc(text),
-        catch: () => new CliCommandFailure({
-          category: "usage-or-configuration",
-          message: "authored profile file is malformed or invalid",
-        }),
+        catch: (cause) => profileFileFailure(cause),
       })
     ),
   );

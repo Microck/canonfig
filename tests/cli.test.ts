@@ -27,6 +27,7 @@ import {
   SetupCommands,
   type SetupCommandsService,
 } from "../src/cli/setup-commands.ts";
+import { profileFileFailure } from "../src/runtime/layers.ts";
 
 interface Invocation {
   readonly route: string;
@@ -625,5 +626,19 @@ describe("CLI rendering and exit semantics", () => {
       text: "3.2.1",
       exitCode: 0,
     });
+  });
+});
+
+describe("authored profile validation detail", () => {
+  it("names the underlying contract complaint within bounds", () => {
+    const failure = profileFileFailure(new Error("Expected 2 | undefined at [version]"));
+    expect(failure.category).toBe("usage-or-configuration");
+    expect(failure.message).toContain("authored profile file is malformed or invalid");
+    expect(failure.message).toContain("Expected 2 | undefined");
+  });
+
+  it("falls back safely for empty causes", () => {
+    const failure = profileFileFailure(new Error("   "));
+    expect(failure.message).toContain("unknown validation failure");
   });
 });
