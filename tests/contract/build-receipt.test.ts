@@ -11,7 +11,7 @@ const fixture = (): string => {
   mkdirSync(join(root, "src"));
   mkdirSync(join(root, "dist"));
   mkdirSync(join(root, "tools", "release"), { recursive: true });
-  writeFileSync(join(root, "package.json"), JSON.stringify({ version: "3.2.0" }));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ version: "3.2.1" }));
   writeFileSync(join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: {} }));
   writeFileSync(join(root, "src", "main.ts"), "export const value = 1;\n");

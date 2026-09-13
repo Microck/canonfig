@@ -26,7 +26,7 @@ const embedded = substituted === undefined
   ? { sourceDigest: "unbuilt", commit: null }
   : (JSON.parse(substituted) as { sourceDigest: string; commit: string | null });
 
-export const packageVersion = "3.2.0";
+export const packageVersion = "3.2.1";
 
 export interface BuildIdentity {
   readonly packageVersion: string;

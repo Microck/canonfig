@@ -325,19 +325,12 @@ esac
     JSON.parse(packed.stdout),
   );
   const tarball = resolve(packedRoot, packedResult[0]!.filename);
-  // npm only honors overrides of the root project: a tarball dependency's
-  // own overrides are ignored. The install stub is the root project of this
-  // install, so it carries canonfig's effect closure pins; without them a
-  // floating transitive range can drift into an upstream release whose
-  // peers reference an unpublished effect version.
-  // SAFETY: the repository package.json declares the closure pins in its
-  // overrides field, so the parsed root manifest has exactly that shape.
-  const { overrides } = JSON.parse(
-    readFileSync(resolve(projectRoot, "package.json"), "utf8"),
-  ) as { overrides: Record<string, string> };
+  // Install as an ordinary consumer without root overrides. Every runtime
+  // package that must share Canonfig's Effect release candidate is a direct,
+  // exact dependency of the published package.
   writeFileSync(
     resolve(installRoot, "package.json"),
-    `${JSON.stringify({ private: true, overrides })}\n`,
+    `${JSON.stringify({ private: true })}\n`,
   );
   const installed = runNpm(
     installRoot,
@@ -506,7 +499,7 @@ describe("packed Canonfig executable", () => {
     const version = invoke(followerHome, ["--version"]);
     expect(help).toMatchObject({ status: 0, stderr: "" });
     expect(help.stdout).toContain("Usage: canonfig");
-    expect(version).toEqual({ status: 0, stdout: "3.2.0\n", stderr: "" });
+    expect(version).toEqual({ status: 0, stdout: "3.2.1\n", stderr: "" });
   });
 
   it("runs representative safe routes with stable JSON", () => {

@@ -160,7 +160,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const metadata = Schema.decodeUnknownSync(PackageMetadata)(
     JSON.parse(readFileSync(metadataPath, "utf8")),
   );
-  if (metadata.name !== "@microck/canonfig" || metadata.version !== "3.2.0") {
+  if (metadata.name !== "@microck/canonfig" || metadata.version !== "3.2.1") {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
@@ -173,6 +173,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const runtimeDependencies = Object.keys(metadata.dependencies).sort();
   const expectedRuntimeDependencies = [
     "@effect/platform-node",
+    "@effect/platform-node-shared",
     "@effect/sql-sqlite-node",
     "effect",
     "selfsigned",
@@ -193,7 +194,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
 const validatePackageContents = (
   artifact: typeof PackedArtifact.Type,
 ): void => {
-  if (artifact.name !== "@microck/canonfig" || artifact.version !== "3.2.0") {
+  if (artifact.name !== "@microck/canonfig" || artifact.version !== "3.2.1") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
   // The public compiler ships its transitive declaration graph so consumers
@@ -253,7 +254,7 @@ const validateBinary = (executable: string): void => {
 
   const version = invokeExecutable(executable, ["--version"]);
   requireSuccess("packed executable version", version);
-  if (version.stdout !== "3.2.0\n" || version.stderr !== "") {
+  if (version.stdout !== "3.2.1\n" || version.stderr !== "") {
     fail("packed executable version output is invalid");
   }
 
@@ -367,18 +368,11 @@ try {
     npm_config_cache: npmCacheRoot,
   };
   mkdirSync(installRoot, { recursive: true });
-  // npm only honors overrides of the root project it installs into, and a
-  // bare --prefix target has none: without the closure pins the floating
-  // transitive @effect ranges can drift into an upstream release whose
-  // peers reference an unpublished effect version.
-  // SAFETY: the repository package.json declares the overrides field, so
-  // the parsed root manifest has exactly that shape.
-  const { overrides } = JSON.parse(
-    readFileSync(resolve(projectRoot, "package.json"), "utf8"),
-  ) as { overrides: Record<string, string> };
+  // Install as an ordinary consumer without root overrides. Runtime packages
+  // that must share an Effect release candidate are direct exact dependencies.
   writeFileSync(
     resolve(installRoot, "package.json"),
-    `${JSON.stringify({ private: true, overrides })}\n`,
+    `${JSON.stringify({ private: true })}\n`,
   );
   const installed = run({
     command: "npm",
