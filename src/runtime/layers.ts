@@ -168,11 +168,20 @@ const emptyDiscoveryProposal: DiscoveryScanResult = {
 
 /**
  * Build the failure for an unreadable or invalid authored profile file. The
- * underlying validation cause is included (bounded) so operators can fix
- * their authoring without trial and error; it carries no credential
- * material, only the profile contract complaint.
+ * underlying contract complaint is included (bounded) so operators can fix
+ * their authoring without trial and error. Raw parser messages are never
+ * echoed: a JSON syntax error quotes the offending source text, which may be
+ * profile content, so it is replaced with a static diagnostic. Schema and
+ * contract errors describe expected types by structural path and carry no
+ * profile values.
  */
 export const profileFileFailure = (cause: unknown): CliCommandFailure => {
+  if (cause instanceof SyntaxError) {
+    return new CliCommandFailure({
+      category: "usage-or-configuration",
+      message: "authored profile file is malformed or invalid: profile is not valid JSONC",
+    });
+  }
   const raw = cause instanceof Error && cause.message.trim().length > 0
     ? cause.message
     : "unknown validation failure";

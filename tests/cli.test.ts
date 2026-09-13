@@ -636,9 +636,16 @@ describe("authored profile validation detail", () => {
     expect(failure.message).toContain("authored profile file is malformed or invalid");
     expect(failure.message).toContain("Expected 2 | undefined");
   });
-
   it("falls back safely for empty causes", () => {
     const failure = profileFileFailure(new Error("   "));
     expect(failure.message).toContain("unknown validation failure");
+  });
+
+  it("never echoes parser excerpts from profile contents", () => {
+    const failure = profileFileFailure(
+      new SyntaxError(`Unexpected token 'u', '{"id": unquoted-secret-value'... is not valid JSON`),
+    );
+    expect(failure.message).toContain("profile is not valid JSONC");
+    expect(failure.message).not.toContain("unquoted-secret-value");
   });
 });
