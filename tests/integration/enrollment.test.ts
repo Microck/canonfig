@@ -23,6 +23,7 @@ import {
   RevokedFollowerCredentialError,
   type EnrollmentError,
 } from "../../src/enrollment/enrollment.errors.ts";
+import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
 import { EnrollmentLive } from "../../src/enrollment/enrollment.layer.ts";
 import { Enrollment } from "../../src/enrollment/enrollment.service.ts";
 import {
@@ -397,6 +398,30 @@ describe("loopback HTTPS enrollment", () => {
       enrollFollower({ invitation: grant, followerName: "No Store Host" }),
     );
     expect(enrolled.follower.name).toBe("No Store Host");
+  });
+
+  it("classifies source credential-store failures as human action required", async () => {
+    const setup = fixture();
+    const noCredentialStore = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(setup.root, "source-no-store-home") },
+        { name: "PATH", value: join(setup.root, "bin") },
+      ],
+      credentialPolicy: { kind: "secure-store" },
+    });
+    const runtime = ManagedRuntime.make(
+      sourceApplicationLayer(
+        join(setup.root, "source-no-store.sqlite"),
+        noCredentialStore,
+      ),
+    );
+    sourceRuntimes.push(runtime);
+
+    const refused = await runtime.runPromise(Effect.flip(
+      Effect.flatMap(Enrollment, (enrollment) => enrollment.initializeSource()),
+    ));
+
+    expect(refused).toBeInstanceOf(CredentialStorageError);
   });
 
   it("rejects TLS pin and intended source identity mismatches before enrollment", async () => {
