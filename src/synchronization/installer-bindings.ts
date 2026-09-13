@@ -191,9 +191,11 @@ export const removeInstallerBinding = (method: string) => Effect.gen(function*()
   if (kind === undefined) return false;
   if (kind.kind !== "regular") return yield* unavailable("Only a regular local installer binding can be removed.");
   const state = yield* loadInstallerState(paths.method).pipe(
-    // Removal is a local explicit request: malformed or foreign content is
-    // still present content, so it never blocks recording the removal.
+    // Removal is a local explicit request: malformed, foreign, or oversized
+    // content is still present content, so it never blocks recording the
+    // removal. Other I/O failures propagate.
     Effect.catchTag("HumanActionRequiredError", () => Effect.succeed({ status: "present" } as const)),
+    Effect.catchTag("FileSizeLimitError", () => Effect.succeed({ status: "present" } as const)),
   );
   if (state.status === "removed") return false;
   // One atomic write is the whole transition: the binding file becomes the

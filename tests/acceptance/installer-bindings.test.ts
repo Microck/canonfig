@@ -188,6 +188,14 @@ describe("local installer binding contract", () => {
     await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
     const rebound = await Effect.runPromise(resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer)));
     expect(rebound.arguments).toEqual([await realpath(f.entry)]);
+    // Oversized malformed content is still present content: removal records
+    // the removal instead of failing on the bounded read.
+    writeFileSync(join(f.home, ".canonfig", "installers", "npm.json"), "x".repeat(20 * 1024));
+    expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(true);
+    const refusedOversized = await Effect.runPromise(
+      resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer), Effect.flip),
+    );
+    expect(refusedOversized._tag).toBe("HumanActionRequiredError");
   }, 30_000);
 
   it("rejects relative input, moved entrypoints, and failed checks without installing anything", async () => {
