@@ -27,6 +27,8 @@ import {
   SetupCommands,
   type SetupCommandsService,
 } from "../src/cli/setup-commands.ts";
+import { profileFileFailure } from "../src/runtime/layers.ts";
+import { decodeMachineProfileJsonc } from "../src/domain/profile.ts";
 
 interface Invocation {
   readonly route: string;
@@ -625,5 +627,52 @@ describe("CLI rendering and exit semantics", () => {
       text: "3.2.1",
       exitCode: 0,
     });
+  });
+});
+
+describe("authored profile validation detail", () => {
+  it("names the underlying contract complaint within bounds", () => {
+    const failure = profileFileFailure(new Error("Expected 2 | undefined at [version]"));
+    expect(failure.category).toBe("usage-or-configuration");
+    expect(failure.message).toContain("authored profile file is malformed or invalid");
+    expect(failure.message).toContain("Expected 2 | undefined");
+  });
+  it("falls back safely for empty and unknown causes", () => {
+    expect(profileFileFailure(new Error("   ")).message).toContain("profile validation failed");
+    expect(profileFileFailure("boom").message).toContain("unknown validation failure");
+  });
+
+  it("never echoes parser excerpts from profile contents", () => {
+    const failure = profileFileFailure(
+      new SyntaxError(`Unexpected token 'u', '{"id": unquoted-secret-value'... is not valid JSON`),
+    );
+    expect(failure.message).toContain("profile is not valid JSONC");
+    expect(failure.message).not.toContain("unquoted-secret-value");
+  });
+
+  it("drops rejected values from real decoder failures", () => {
+    const text = JSON.stringify({
+      id: "x",
+      version: 2,
+      name: "n",
+      groups: [],
+      resources: [{
+        id: "r",
+        kind: "file",
+        target: "~/a",
+        spec: { kind: "file", content: { secret_marker: "MARKER-ABC-123" } },
+        verify: { method: "digest", digest: "0".repeat(64) },
+      }],
+    });
+    let cause: unknown;
+    try {
+      decodeMachineProfileJsonc(text);
+    } catch (error) {
+      cause = error;
+    }
+    expect(cause).toBeDefined();
+    const failure = profileFileFailure(cause);
+    expect(failure.message).toContain("resources");
+    expect(failure.message).not.toContain("MARKER-ABC-123");
   });
 });
