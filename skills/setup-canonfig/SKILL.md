@@ -171,11 +171,17 @@ After the role and discovery files are selected, use the shipped setup
 controller as the bootstrap plan of record:
 
 ```text
-canonfig setup plan --role <source|follower> --file <approved-path> --intent "<selected outcome>"
+canonfig setup plan --role <source|follower> [--scope <full|cli-only|project-only>] --file <approved-path> --intent "<selected outcome>"
 canonfig setup approve --approver <operator>
 canonfig setup apply
 canonfig setup status --json
 ```
+
+Pass `--scope` explicitly from the selected goal: `cli-only` for the CLI-only
+goal (no machine identity or schedule), `project-only` for the project
+harness goal (no identity), and the `full` default otherwise. A narrow goal
+planned without `--scope` would silently become full setup and, for a Source
+plan, could establish an identity after approval.
 
 Show the plan digest, intent, exclusions, inventory, and item graph before the
 approval command. Omit `--file` when no discovery file was approved. An
