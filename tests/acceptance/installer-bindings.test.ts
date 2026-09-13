@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 // The binding stores what fs/promises.realpath returns, which on Windows
 // expands 8.3 short names that fs.realpathSync leaves alone. Resolve the
 // expected paths the same way, or the two spellings of one file disagree.
@@ -165,6 +165,55 @@ describe("local installer binding contract", () => {
     writeFileSync(path, "invalid-json-again");
     expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(true);
     expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(false);
+  }, 30_000);
+
+  it("fails actionably when a removed binding would otherwise fall back to PATH", async () => {
+    const f = fixture();
+    await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
+    const resolved = await Effect.runPromise(resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer)));
+    expect(resolved.arguments).toEqual([await realpath(f.entry)]);
+    expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(true);
+    // The removal is recorded in the binding file itself: one atomic write
+    // per transition, so no interleaving can lose both the binding and its
+    // record.
+    const record = JSON.parse(readFileSync(join(f.home, ".canonfig", "installers", "npm.json"), "utf8"));
+    expect(record.schema).toBe("canonfig.installer-removed/v1");
+    expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(false);
+    const refused = await Effect.runPromise(
+      resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer), Effect.flip),
+    );
+    expect(refused._tag).toBe("HumanActionRequiredError");
+    if (refused._tag !== "HumanActionRequiredError") throw new Error("expected a human-action failure");
+    expect(refused.recovery).toContain("explicitly removed");
+    await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
+    const rebound = await Effect.runPromise(resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer)));
+    expect(rebound.arguments).toEqual([await realpath(f.entry)]);
+    // Oversized malformed content is still present content: removal records
+    // the removal instead of failing on the bounded read.
+    writeFileSync(join(f.home, ".canonfig", "installers", "npm.json"), "x".repeat(20 * 1024));
+    expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(true);
+    const refusedOversized = await Effect.runPromise(
+      resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer), Effect.flip),
+    );
+    expect(refusedOversized._tag).toBe("HumanActionRequiredError");
+    // Unreadable content is still present content: removal records the
+    // removal instead of failing on the read. POSIX-only: on Windows the
+    // permission bits become a read-only flag that also blocks replacement,
+    // so removal loudly reports EPERM there instead.
+    if (process.platform !== "win32") {
+      const bindingPath = join(f.home, ".canonfig", "installers", "npm.json");
+      await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
+      chmodSync(bindingPath, 0o000);
+      try {
+        expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(true);
+        const refusedUnreadable = await Effect.runPromise(
+          resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer), Effect.flip),
+        );
+        expect(refusedUnreadable._tag).toBe("HumanActionRequiredError");
+      } finally {
+        chmodSync(bindingPath, 0o600);
+      }
+    }
   }, 30_000);
 
   it("rejects relative input, moved entrypoints, and failed checks without installing anything", async () => {

@@ -26,6 +26,13 @@ All deterministic resource installers resolve through this data before launching
 Arguments from the signed recipe follow the binding's fixed prefix unchanged.
 Without a binding the existing PATH lookup remains available, but Windows
 `.cmd`/`.bat` shims produce Human Action Required rather than enabling a shell.
+An explicit `remove` is different from never having configured a binding: the
+binding file becomes a removal record in one atomic write, and installer
+resolution then fails Human Action Required naming the `installer set` repair
+instead of silently taking PATH. Re-binding overwrites the record. Every
+transition is a single atomic file write, so concurrent `set` and `remove`
+commands always converge to a coherent state (last completed write wins) and
+no interleaving can lose both the binding and its removal record.
 Node plus `npm-cli.js` or `pnpm.cjs` works without an interactive PATH. Native
 installers may still have their own runtime prerequisites; `check` reports only
 current-process execution, not unattended scheduler readiness or package success.

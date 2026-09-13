@@ -6,7 +6,7 @@ import { normalizeInstallerMethod } from "../domain/installer-binding.ts";
 import { HumanActionRequiredError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {
-  checkInstallerBinding, listInstallerBindings, loadInstallerBinding,
+  checkInstallerBinding, listInstallerBindings, loadInstallerState,
   removeInstallerBinding, saveInstallerBinding,
 } from "../synchronization/installer-bindings.ts";
 
@@ -82,11 +82,14 @@ export const runInstallerCli = (
       case "remove": return { removed: yield* removeInstallerBinding(parsed.method) };
       case "set": return { binding: yield* saveInstallerBinding(parsed.method, parsed.executable, parsed.arguments) };
       case "check": {
-        const binding = yield* loadInstallerBinding(parsed.method);
-        if (binding === undefined) return yield* new HumanActionRequiredError({
+        const state = yield* loadInstallerState(parsed.method);
+        if (state.status === "removed") return yield* new HumanActionRequiredError({
+          action: "configure an installer binding", recovery: "The installer binding was explicitly removed; run installer set with the existing executable and optional JavaScript entrypoint, then retry.",
+        });
+        if (state.status !== "bound") return yield* new HumanActionRequiredError({
           action: "configure an installer binding", recovery: "Run installer set with the existing executable and optional JavaScript entrypoint, then retry.",
         });
-        return yield* checkInstallerBinding(binding);
+        return yield* checkInstallerBinding(state.binding);
       }
     }
   });
