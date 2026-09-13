@@ -31,6 +31,7 @@ import {
   type PublishedResource,
 } from "../domain/profile.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import {
   EnrollmentStateConflictError,
   FollowerNotFoundError,
@@ -397,33 +398,36 @@ const makeEnrollment = Effect.gen(function*() {
       value: Redacted.make(generated.signingPrivateKey),
     }).pipe(
       Effect.mapError(() =>
-        new EnrollmentConfigurationError({
-          operation: "store source signing key",
+        new CredentialStorageError({
+          operation: "store credential",
+          reference: "source signing key",
           message: "secure credential storage is unavailable",
         })
-      ),
+      )
     );
     const tlsKeyReference = yield* machine.storeCredential({
       name: "canonfig-source-tls-key",
       value: Redacted.make(generated.tlsPrivateKey),
     }).pipe(
       Effect.mapError(() =>
-        new EnrollmentConfigurationError({
-          operation: "store source TLS key",
+        new CredentialStorageError({
+          operation: "store credential",
+          reference: "source TLS key",
           message: "secure credential storage is unavailable",
         })
-      ),
+      )
     );
     const tlsCertificateReference = yield* machine.storeCredential({
       name: "canonfig-source-tls-certificate",
       value: Redacted.make(generated.tlsCertificate),
     }).pipe(
       Effect.mapError(() =>
-        new EnrollmentConfigurationError({
-          operation: "store source TLS certificate",
+        new CredentialStorageError({
+          operation: "store credential",
+          reference: "source TLS certificate",
           message: "secure credential storage is unavailable",
         })
-      ),
+      )
     );
     const identity = decode(SourceIdentity)({
       keyId: `ed25519:${generated.signingFingerprint}`,
@@ -573,11 +577,12 @@ const makeEnrollment = Effect.gen(function*() {
       value: Redacted.make(credential),
     }).pipe(
       Effect.mapError(() =>
-        new EnrollmentConfigurationError({
-          operation: "store follower credential",
+        new CredentialStorageError({
+          operation: "store credential",
+          reference: "follower credential",
           message: "secure credential storage is unavailable",
         })
-      ),
+      )
     );
     const enrolledAt = decode(Timestamp)(new Date().toISOString());
     const follower = decode(FollowerIdentity)({

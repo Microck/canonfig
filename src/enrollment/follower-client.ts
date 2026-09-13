@@ -233,6 +233,59 @@ const requestJson = (
       }),
   });
 
+/**
+ * Rebuild a source-reported enrollment failure from its wire tag and message.
+ * The wire envelope carries only `{ error, message }`, so errors with richer
+ * fields are reconstructed with safe placeholders that preserve their
+ * classification. In particular, a source-side credential-store failure must
+ * stay a `CredentialStorageError` (human action, exit 3), not collapse into
+ * a generic transport failure (exit 6).
+ */
+export const reconstructEnrollmentWireError = (
+  tag: string,
+  message: string,
+): EnrollmentError => {
+  switch (tag) {
+    case "InvitationNotFoundError":
+      return new InvitationNotFoundError({ message });
+    case "InvitationExpiredError":
+      return new InvitationExpiredError({ message });
+    case "InvitationReplayError":
+      return new InvitationReplayError({ message });
+    case "EnrollmentSourceMismatchError":
+      return new EnrollmentSourceMismatchError({ message });
+    case "EnrollmentFingerprintMismatchError":
+      return new EnrollmentFingerprintMismatchError({ message });
+    case "MalformedEnrollmentRequestError":
+      return new MalformedEnrollmentRequestError({ message });
+    case "CredentialStorageError":
+      return new CredentialStorageError({
+        operation: "store credential",
+        reference: "source credential",
+        message,
+      });
+    case "DuplicateFollowerIdentityError":
+      return new DuplicateFollowerIdentityError({ message });
+    case "InvalidFollowerCredentialError":
+      return new InvalidFollowerCredentialError({ message });
+    case "RevokedFollowerCredentialError":
+      return new RevokedFollowerCredentialError({ message });
+    case "TransportResourceNotFoundError":
+      return new TransportResourceNotFoundError({ resource: "transport-resource" });
+    case "TransportUnauthorizedError":
+      return new TransportUnauthorizedError({ resource: "transport-resource" });
+    case "TransportSizeLimitError":
+      return new TransportSizeLimitError({ artifact: "transport-response", limit: 0 });
+    case "TransportIntegrityError":
+      return new TransportIntegrityError({ artifact: "source", message });
+    default:
+      return new EnrollmentTransportError({
+        operation: "source enrollment request",
+        message: `the source rejected the enrollment request (${tag})`,
+      });
+  }
+};
+
 const wireError = (
   response: JsonResponse,
 ): Effect.Effect<never, EnrollmentError> =>
@@ -243,68 +296,9 @@ const wireError = (
         message: "the source returned an invalid enrollment failure",
       })
     ),
-    Effect.flatMap((error) => {
-      let enrollmentError: EnrollmentError;
-      switch (error.error) {
-        case "InvitationNotFoundError":
-          enrollmentError = new InvitationNotFoundError({ message: error.message });
-          break;
-        case "InvitationExpiredError":
-          enrollmentError = new InvitationExpiredError({ message: error.message });
-          break;
-        case "InvitationReplayError":
-          enrollmentError = new InvitationReplayError({ message: error.message });
-          break;
-        case "EnrollmentSourceMismatchError":
-          enrollmentError = new EnrollmentSourceMismatchError({ message: error.message });
-          break;
-        case "EnrollmentFingerprintMismatchError":
-          enrollmentError = new EnrollmentFingerprintMismatchError({
-            message: error.message,
-          });
-          break;
-        case "MalformedEnrollmentRequestError":
-          enrollmentError = new MalformedEnrollmentRequestError({ message: error.message });
-          break;
-        case "DuplicateFollowerIdentityError":
-          enrollmentError = new DuplicateFollowerIdentityError({ message: error.message });
-          break;
-        case "InvalidFollowerCredentialError":
-          enrollmentError = new InvalidFollowerCredentialError({ message: error.message });
-          break;
-        case "RevokedFollowerCredentialError":
-          enrollmentError = new RevokedFollowerCredentialError({ message: error.message });
-          break;
-        case "TransportResourceNotFoundError":
-          enrollmentError = new TransportResourceNotFoundError({
-            resource: "transport-resource",
-          });
-          break;
-        case "TransportUnauthorizedError":
-          enrollmentError = new TransportUnauthorizedError({
-            resource: "transport-resource",
-          });
-          break;
-        case "TransportSizeLimitError":
-          enrollmentError = new TransportSizeLimitError({
-            artifact: "transport-response",
-            limit: 0,
-          });
-          break;
-        case "TransportIntegrityError":
-          enrollmentError = new TransportIntegrityError({
-            artifact: "source",
-            message: error.message,
-          });
-          break;
-        default:
-          enrollmentError = new EnrollmentTransportError({
-            operation: "source enrollment request",
-            message: `the source rejected the enrollment request (${error.error})`,
-          });
-      }
-      return Effect.fail(enrollmentError);
-    }),
+    Effect.flatMap((error) =>
+      Effect.fail(reconstructEnrollmentWireError(error.error, error.message))
+    ),
   );
 
 const enrollmentPhaseTimeout = (input: FollowerEnrollmentInput): number =>
