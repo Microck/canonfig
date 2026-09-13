@@ -39,7 +39,7 @@ Install only when necessary, then create the Source bootstrap plan from approved
 discovery files:
 
 ```bash
-npm install --global @microck/canonfig@3.2.0
+npm install --global @microck/canonfig@3.2.1
 canonfig --version
 canonfig setup plan --role source --file AGENTS.md --intent "prepare source"
 canonfig setup approve --approver operator
