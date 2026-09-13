@@ -35,6 +35,7 @@ import { Tunnel } from "../enrollment/tunnel.service.ts";
 import { startSourceServer } from "../enrollment/source-server.ts";
 import {
   decodeMachineProfileJsonc,
+  ProfileContractError,
   type MachineProfile,
 } from "../domain/profile.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
@@ -167,13 +168,26 @@ const emptyDiscoveryProposal: DiscoveryScanResult = {
 };
 
 /**
+ * Keep only structural schema diagnostics: `Expected <type>` lines and
+ * `at [<path>]` lines. Anything else (notably rejected actual values the
+ * formatter may inline) is dropped rather than echoed.
+ */
+const schemaDiagnostic = (message: string): string | undefined => {
+  const kept = message.split("\n").map((line) => line.trim()).filter((line) =>
+    line.startsWith("Expected ") || /^at \[.*\]$/.test(line)
+  );
+  if (kept.length === 0) return undefined;
+  return kept.join(" ").slice(0, 300);
+};
+
+/**
  * Build the failure for an unreadable or invalid authored profile file. The
- * underlying contract complaint is included (bounded) so operators can fix
+ * underlying complaint is included in sanitized form so operators can fix
  * their authoring without trial and error. Raw parser messages are never
  * echoed: a JSON syntax error quotes the offending source text, which may be
- * profile content, so it is replaced with a static diagnostic. Schema and
- * contract errors describe expected types by structural path and carry no
- * profile values.
+ * profile content, so it is replaced with a static diagnostic. Contract
+ * errors carry only their tag list. Schema errors keep structural
+ * expected-type/path lines; rejected values are dropped.
  */
 export const profileFileFailure = (cause: unknown): CliCommandFailure => {
   if (cause instanceof SyntaxError) {
@@ -182,13 +196,23 @@ export const profileFileFailure = (cause: unknown): CliCommandFailure => {
       message: "authored profile file is malformed or invalid: profile is not valid JSONC",
     });
   }
-  const raw = cause instanceof Error && cause.message.trim().length > 0
-    ? cause.message
-    : "unknown validation failure";
-  const detail = raw.replace(/\s+/gu, " ").trim().slice(0, 300);
+  if (cause instanceof ProfileContractError) {
+    const detail = cause.message.replace(/\s+/gu, " ").trim().slice(0, 300);
+    return new CliCommandFailure({
+      category: "usage-or-configuration",
+      message: `authored profile file is malformed or invalid: ${detail}`,
+    });
+  }
+  if (cause instanceof Error) {
+    const detail = schemaDiagnostic(cause.message) ?? "profile validation failed";
+    return new CliCommandFailure({
+      category: "usage-or-configuration",
+      message: `authored profile file is malformed or invalid: ${detail}`,
+    });
+  }
   return new CliCommandFailure({
     category: "usage-or-configuration",
-    message: `authored profile file is malformed or invalid: ${detail}`,
+    message: "authored profile file is malformed or invalid: unknown validation failure",
   });
 };
 
