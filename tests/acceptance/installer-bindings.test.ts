@@ -167,6 +167,23 @@ describe("local installer binding contract", () => {
     expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(false);
   }, 30_000);
 
+  it("fails actionably when a removed binding would otherwise fall back to PATH", async () => {
+    const f = fixture();
+    await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
+    const resolved = await Effect.runPromise(resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer)));
+    expect(resolved.arguments).toEqual([await realpath(f.entry)]);
+    expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(true);
+    const refused = await Effect.runPromise(
+      resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer), Effect.flip),
+    );
+    expect(refused._tag).toBe("HumanActionRequiredError");
+    if (refused._tag !== "HumanActionRequiredError") throw new Error("expected a human-action failure");
+    expect(refused.recovery).toContain("explicitly removed");
+    await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
+    const rebound = await Effect.runPromise(resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer)));
+    expect(rebound.arguments).toEqual([await realpath(f.entry)]);
+  }, 30_000);
+
   it("rejects relative input, moved entrypoints, and failed checks without installing anything", async () => {
     const f = fixture();
     await expect(Effect.runPromise(saveInstallerBinding("npm", "node", [f.entry]).pipe(Effect.provide(f.layer)))).rejects.toBeDefined();

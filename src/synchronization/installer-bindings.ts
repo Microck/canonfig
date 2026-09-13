@@ -27,10 +27,11 @@ const pathsFor = (method: string) => Effect.gen(function*() {
   const directories = yield* machine.userDirectories();
   const root = yield* machine.normalizePath({ path: ".canonfig/installers", base: directories.home });
   const path = yield* machine.normalizePath({ path: `${normalized}.json`, base: root });
+  const tombstone = yield* machine.normalizePath({ path: `${normalized}.removed.json`, base: root });
   // Every segment below the home directory is a literal, so containment is
   // structural. Checking it would also lstat a home that need not exist yet,
   // which is the normal state of a machine that has bound no installer.
-  return { root, path, method: normalized, platform: directories.home.platform };
+  return { root, path, tombstone, method: normalized, platform: directories.home.platform };
 });
 
 const inspectOptional = (path: MachinePath) => Effect.gen(function*() {
@@ -123,6 +124,9 @@ export const saveInstallerBinding = (
   if (existing !== undefined && Buffer.from(existing).equals(content)) return binding;
   yield* machine.ensureDirectory({ path: paths.root, mode: 0o700 });
   yield* machine.atomicWrite({ path: paths.path, content, mode: 0o600 });
+  // Re-binding clears an explicit removal: the operator has chosen again.
+  const tombstoneKind = yield* inspectOptional(paths.tombstone);
+  if (tombstoneKind !== undefined) yield* machine.removeFile({ path: paths.tombstone });
   return binding;
 });
 
@@ -146,6 +150,12 @@ export const removeInstallerBinding = (method: string) => Effect.gen(function*()
   if (kind.kind !== "regular") return yield* unavailable("Only a regular local installer binding can be removed.");
   // Removal is a local explicit request, so malformed JSON must not prevent it.
   yield* machine.removeFile({ path: paths.path });
+  // Record the explicit removal so later sync runs fail actionably instead
+  // of silently falling back to whatever the PATH happens to resolve.
+  const removed = new TextEncoder().encode(
+    `${JSON.stringify({ schema: "canonfig.installer-removed/v1", method: paths.method, removedAt: new Date().toISOString() }, null, 2)}\n`,
+  );
+  yield* machine.atomicWrite({ path: paths.tombstone, content: removed, mode: 0o600 });
   return true;
 });
 
@@ -155,7 +165,6 @@ export interface InstallerInvocation {
   readonly arguments: ReadonlyArray<string>;
 }
 
-/** Resolve every deterministic installer through the same follower-owned data. */
 export const resolveInstallerInvocation = (
   method: string,
 ): Effect.Effect<InstallerInvocation, MachineStateError, MachineState> => Effect.gen(function*() {
@@ -165,6 +174,13 @@ export const resolveInstallerInvocation = (
   if (binding !== undefined) {
     const executable = yield* inspectBindingFiles(binding);
     return { executable, arguments: binding.arguments };
+  }
+  const paths = yield* pathsFor(normalized);
+  const tombstoneKind = yield* inspectOptional(paths.tombstone);
+  if (tombstoneKind !== undefined) {
+    return yield* unavailable(
+      `The installer binding for ${normalized} was explicitly removed; run installer set to bind it again. No PATH executable was selected.`,
+    );
   }
   const name = normalized === "apt" ? "apt-get" : normalized;
   const found = yield* machine.findExecutable({ name });
