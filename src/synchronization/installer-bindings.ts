@@ -155,7 +155,6 @@ export const removeInstallerBinding = (method: string) => Effect.gen(function*()
   const kind = yield* inspectOptional(paths.path);
   if (kind === undefined) return false;
   if (kind.kind !== "regular") return yield* unavailable("Only a regular local installer binding can be removed.");
-  // Removal is a local explicit request, so malformed JSON must not prevent it.
   // Record the explicit removal BEFORE deleting the binding: if the delete
   // fails, the binding is still present and wins over the marker; if the
   // marker write fails, the binding is untouched. No failure state loses both.
@@ -164,6 +163,15 @@ export const removeInstallerBinding = (method: string) => Effect.gen(function*()
   );
   yield* machine.atomicWrite({ path: paths.tombstone, content: removed, mode: 0o600 });
   yield* machine.removeFile({ path: paths.path });
+  // A concurrent `installer set` may have cleared the marker between the
+  // write above and the delete. Re-assert it so the observable state can
+  // never be "no binding, no marker" after a completed removal: the worst
+  // remaining interleave resolves to binding-wins, which the next command
+  // reports loudly instead of silently taking PATH.
+  const recheckKind = yield* inspectOptional(paths.tombstone);
+  if (recheckKind === undefined) {
+    yield* machine.atomicWrite({ path: paths.tombstone, content: removed, mode: 0o600 });
+  }
   return true;
 });
 
