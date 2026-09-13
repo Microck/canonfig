@@ -182,6 +182,13 @@ describe("local installer binding contract", () => {
     await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
     const rebound = await Effect.runPromise(resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer)));
     expect(rebound.arguments).toEqual([await realpath(f.entry)]);
+    // A stale removal marker alongside identical binding bytes is cleared by
+    // re-binding instead of misclassifying a later disappearance.
+    writeFileSync(join(f.home, ".canonfig", "installers", "npm.removed.json"), "{}");
+    await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
+    expect(() => statSync(join(f.home, ".canonfig", "installers", "npm.removed.json"))).toThrow();
+    const recleared = await Effect.runPromise(resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer)));
+    expect(recleared.arguments).toEqual([await realpath(f.entry)]);
   }, 30_000);
 
   it("rejects relative input, moved entrypoints, and failed checks without installing anything", async () => {

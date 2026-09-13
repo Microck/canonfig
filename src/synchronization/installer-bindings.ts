@@ -121,12 +121,19 @@ export const saveInstallerBinding = (
   const existing = kind === undefined ? undefined : yield* machine.readFile({
     path: paths.path, maximumBytes: 16 * 1024,
   }).pipe(Effect.catchTag("FileSizeLimitError", () => Effect.succeed(undefined)));
-  if (existing !== undefined && Buffer.from(existing).equals(content)) return binding;
+  // Re-binding clears an explicit removal once the binding bytes are durable,
+  // including when they are already identical: the operator has chosen again.
+  const clearTombstone = Effect.gen(function*() {
+    const tombstoneKind = yield* inspectOptional(paths.tombstone);
+    if (tombstoneKind !== undefined) yield* machine.removeFile({ path: paths.tombstone });
+  });
+  if (existing !== undefined && Buffer.from(existing).equals(content)) {
+    yield* clearTombstone;
+    return binding;
+  }
   yield* machine.ensureDirectory({ path: paths.root, mode: 0o700 });
   yield* machine.atomicWrite({ path: paths.path, content, mode: 0o600 });
-  // Re-binding clears an explicit removal: the operator has chosen again.
-  const tombstoneKind = yield* inspectOptional(paths.tombstone);
-  if (tombstoneKind !== undefined) yield* machine.removeFile({ path: paths.tombstone });
+  yield* clearTombstone;
   return binding;
 });
 
@@ -149,13 +156,14 @@ export const removeInstallerBinding = (method: string) => Effect.gen(function*()
   if (kind === undefined) return false;
   if (kind.kind !== "regular") return yield* unavailable("Only a regular local installer binding can be removed.");
   // Removal is a local explicit request, so malformed JSON must not prevent it.
-  yield* machine.removeFile({ path: paths.path });
-  // Record the explicit removal so later sync runs fail actionably instead
-  // of silently falling back to whatever the PATH happens to resolve.
+  // Record the explicit removal BEFORE deleting the binding: if the delete
+  // fails, the binding is still present and wins over the marker; if the
+  // marker write fails, the binding is untouched. No failure state loses both.
   const removed = new TextEncoder().encode(
     `${JSON.stringify({ schema: "canonfig.installer-removed/v1", method: paths.method, removedAt: new Date().toISOString() }, null, 2)}\n`,
   );
   yield* machine.atomicWrite({ path: paths.tombstone, content: removed, mode: 0o600 });
+  yield* machine.removeFile({ path: paths.path });
   return true;
 });
 
