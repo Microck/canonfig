@@ -197,14 +197,23 @@ describe("local installer binding contract", () => {
     );
     expect(refusedOversized._tag).toBe("HumanActionRequiredError");
     // Unreadable content is still present content: removal records the
-    // removal instead of failing on the read.
-    await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
-    chmodSync(join(f.home, ".canonfig", "installers", "npm.json"), 0o000);
-    expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(true);
-    const refusedUnreadable = await Effect.runPromise(
-      resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer), Effect.flip),
-    );
-    expect(refusedUnreadable._tag).toBe("HumanActionRequiredError");
+    // removal instead of failing on the read. POSIX-only: on Windows the
+    // permission bits become a read-only flag that also blocks replacement,
+    // so removal loudly reports EPERM there instead.
+    if (process.platform !== "win32") {
+      const bindingPath = join(f.home, ".canonfig", "installers", "npm.json");
+      await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
+      chmodSync(bindingPath, 0o000);
+      try {
+        expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(true);
+        const refusedUnreadable = await Effect.runPromise(
+          resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer), Effect.flip),
+        );
+        expect(refusedUnreadable._tag).toBe("HumanActionRequiredError");
+      } finally {
+        chmodSync(bindingPath, 0o600);
+      }
+    }
   }, 30_000);
 
   it("rejects relative input, moved entrypoints, and failed checks without installing anything", async () => {
