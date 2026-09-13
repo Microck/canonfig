@@ -622,7 +622,7 @@ describe("CLI rendering and exit semantics", () => {
     expect(evaluateCli(["--help"])._tag).toBe("Help");
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",
-      text: "3.1.5",
+      text: "3.2.0",
       exitCode: 0,
     });
   });
