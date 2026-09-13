@@ -4,6 +4,16 @@ import { Schema } from "effect";
 export const SetupRole = Schema.Literals(["source", "follower"]);
 export type SetupRole = typeof SetupRole.Type;
 
+/**
+ * How much of the machine setup establishes. `full` is the default and keeps
+ * current behavior. `cli-only` verifies the CLI runs without creating
+ * identities, installing recipes, or touching schedules and remote
+ * connections. `project-only` additionally runs recipe installs but still
+ * creates no identity. Named `request` scope because plan items already use
+ * `scope` for the machine or resource a step belongs to.
+ */
+export const SetupRequestScope = Schema.Literals(["full", "cli-only", "project-only"]);
+export type SetupRequestScope = typeof SetupRequestScope.Type;
 /** Ordered setup stages. `apply` resumes at the next eligible stage. */
 export const setupStages = [
   "role",
@@ -171,6 +181,8 @@ export type SetupProvenance = typeof SetupProvenance.Type;
 export const SetupJournal = Schema.Struct({
   schema: Schema.Literal("canonfig.setup/v1"),
   role: SetupRole,
+  // Absent on journals written before request scopes existed; read as full.
+  scope: Schema.optional(SetupRequestScope),
   planDigest: Schema.String,
   intent: Schema.String,
   inventory: SetupInventory,

@@ -258,6 +258,19 @@ describe("typed CLI command boundary", () => {
     });
   });
 
+  it("routes setup plan scope through to the service input", async () => {
+    const scoped = await execute(["setup", "plan", "--role", "source", "--scope", "cli-only", "--json"]);
+    expect(scoped.invocations).toEqual([{
+      route: "setup.plan",
+      input: { role: "source", scope: "cli-only", files: [], intent: undefined },
+    }]);
+    const byDefault = await execute(["setup", "plan", "--role", "follower", "--json"]);
+    expect(byDefault.invocations).toEqual([{
+      route: "setup.plan",
+      input: { role: "follower", scope: "full", files: [], intent: undefined },
+    }]);
+  });
+
   it("decodes symbolic secret bindings into harness configuration", async () => {
     const result = await execute([
       "agent",

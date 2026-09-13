@@ -86,7 +86,7 @@ Profiles and policy:
     [--allow-capability <capability>...] [--maximum-input-bytes <bytes>]
 
 Setup:
-  setup plan --role <source|follower> [--file <path>...] [--intent <text>]
+  setup plan --role <source|follower> [--scope <full|cli-only|project-only>] [--file <path>...] [--intent <text>]
   setup approve --approver <name>
   setup apply
   setup status
@@ -176,6 +176,7 @@ export type CliCommand =
   | {
     readonly _tag: "SetupPlan";
     readonly role: string;
+    readonly scope?: string | undefined;
     readonly files: ReadonlyArray<string>;
     readonly intent?: string | undefined;
   }
@@ -542,7 +543,7 @@ const evaluateSetupCommand = (
   if (action === "plan") {
     const options = parseOptions(
       rest,
-      new Set(["--role", "--file", "--intent"]),
+      new Set(["--role", "--scope", "--file", "--intent"]),
       new Set(),
     );
     if (options.positionals.length > 0) {
@@ -551,6 +552,7 @@ const evaluateSetupCommand = (
     return command({
       _tag: "SetupPlan",
       role: one(options, "--role", true)!,
+      scope: one(options, "--scope") ?? "full",
       files: options.values.get("--file") ?? [],
       intent: one(options, "--intent"),
     }, format);
@@ -1040,6 +1042,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
     case "SetupPlan":
       return yield* setup.plan({
         role: value.role,
+        scope: value.scope,
         files: value.files,
         intent: value.intent,
       });

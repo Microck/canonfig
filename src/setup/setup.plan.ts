@@ -1,13 +1,13 @@
 import { Schema } from "effect";
 
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
-
 import type {
   SetupInventory,
   SetupItemRecord,
   SetupItemStatus,
   SetupJournal,
   SetupPlanItem,
+  SetupRequestScope,
   SetupRole,
   SetupStage,
 } from "./setup.types.ts";
@@ -22,6 +22,7 @@ const asJson = <Value>(value: Value) =>
  */
 export const setupPlanDigest = (input: {
   readonly role: SetupRole;
+  readonly scope: SetupRequestScope;
   readonly intent: string;
   readonly exclusions: ReadonlyArray<string>;
   readonly inventory: SetupInventory;
@@ -29,6 +30,7 @@ export const setupPlanDigest = (input: {
 }): string =>
   sha256Hex(canonicalJson(asJson({
     role: input.role,
+    scope: input.scope,
     intent: input.intent,
     exclusions: input.exclusions,
     inventory: input.inventory,

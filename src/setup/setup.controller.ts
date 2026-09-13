@@ -33,6 +33,7 @@ import {
   type SetupJournal,
   type SetupPlanItem,
   SetupRecipe,
+  SetupRequestScope,
   SetupRole,
   type SetupProvenance,
 } from "./setup.types.ts";
@@ -59,6 +60,19 @@ export const establishSetupRole = (value: string): Effect.Effect<SetupRole, Setu
         `unknown setup role: ${value}`,
         "usage",
         "Run setup with --role source or --role follower.",
+      )
+    ),
+  );
+
+/** Establish how much of the machine setup establishes. Defaults to full. */
+export const establishSetupScope = (value: string): Effect.Effect<SetupRequestScope, SetupError> =>
+  Schema.decodeUnknownEffect(SetupRequestScope)(value).pipe(
+    Effect.mapError(() =>
+      fail(
+        "setup scope",
+        `unknown setup scope: ${value}`,
+        "usage",
+        "Run setup with --scope full, --scope cli-only, or --scope project-only.",
       )
     ),
   );
@@ -157,6 +171,7 @@ const credentialInventory = (
  */
 export const runSetupPreflight = (
   role: SetupRole,
+  requestScope: SetupRequestScope = "full",
 ): Effect.Effect<
   Pick<SetupInventory, "platform" | "home" | "credentialStorage">,
   SetupError,
@@ -169,7 +184,9 @@ export const runSetupPreflight = (
         fail("setup preflight", `machine directories could not be read: ${cause.message}`, "state")),
     );
     const credentialStorage = yield* credentialInventory(machine);
-    if (role === "source" && credentialStorage.kind === "unavailable") {
+    // Narrow requests create no identity, so missing key storage is not a
+    // prerequisite for them.
+    if (role === "source" && requestScope === "full" && credentialStorage.kind === "unavailable") {
       return yield* fail(
         "setup preflight",
         "this machine cannot be a Source: key storage is unavailable "
@@ -443,14 +460,15 @@ export const runSetupDiscovery = (
       exclusions,
     };
   });
-
 const planItemsFor = (
   role: SetupRole,
+  requestScope: SetupRequestScope,
   tools: SetupInventory["tools"],
   recipes: ReadonlyArray<SetupRecipe>,
 ): ReadonlyArray<SetupPlanItem> => {
   const items: Array<SetupPlanItem> = [];
-  if (role === "source") {
+  // Narrow requests never create an identity: only full setup initializes.
+  if (role === "source" && requestScope === "full") {
     items.push({
       id: "source-init",
       kind: "source-init",
@@ -479,24 +497,30 @@ const planItemsFor = (
       detail: { method: tool.method, executable: tool.executable },
     });
   }
-  const installations = recipes.map((recipe) => `recipe-install:${recipe.resource}`);
-  for (const recipe of recipes) {
-    items.push({
-      id: `recipe-install:${recipe.resource}`,
-      kind: "recipe-install",
-      scope: `resource:tool:${recipe.resource}`,
-      optional: true,
-      dependsOn: [`tool-verify:${recipe.installerMethod}`],
-      detail: { ...recipe },
-    });
+  // CLI-only setup verifies the CLI runs and changes nothing else.
+  const installations = requestScope === "cli-only"
+    ? []
+    : recipes.map((recipe) => `recipe-install:${recipe.resource}`);
+  if (requestScope !== "cli-only") {
+    for (const recipe of recipes) {
+      items.push({
+        id: `recipe-install:${recipe.resource}`,
+        kind: "recipe-install",
+        scope: `resource:tool:${recipe.resource}`,
+        optional: true,
+        dependsOn: [`tool-verify:${recipe.installerMethod}`],
+        detail: { ...recipe },
+      });
+    }
   }
-  if (verifiers.length > 0 || installations.length > 0) {
+  const wanted = [...verifiers, ...installations];
+  if (wanted.length > 0) {
     items.push({
       id: "toolchain-verify",
       kind: "toolchain-verify",
       scope: "machine",
       optional: true,
-      dependsOn: [...verifiers, ...installations],
+      dependsOn: wanted,
       detail: {},
     });
   }
@@ -518,8 +542,15 @@ const reuseCatalog = (
     entry.platform === platform && current.has(entry.resource));
 };
 
+const defaultSetupIntent = (role: SetupRole, requestScope: SetupRequestScope): string => {
+  if (requestScope === "cli-only") return "verify the CLI runs without machine changes";
+  if (requestScope === "project-only") return `prepare project resources without establishing a ${role} identity`;
+  return `establish this machine as ${role}`;
+};
+
 export interface SetupPlanInput {
   readonly roleText: string;
+  readonly scopeText?: string | undefined;
   readonly files: ReadonlyArray<string>;
   readonly intent?: string | undefined;
 }
@@ -532,7 +563,8 @@ export const planSetup = (
     const machine = yield* MachineState;
     // The role is established before any role-specific inspection runs.
     const role = yield* establishSetupRole(input.roleText);
-    const preflight = yield* runSetupPreflight(role);
+    const requestScope = yield* establishSetupScope(input.scopeText ?? "full");
+    const preflight = yield* runSetupPreflight(role, requestScope);
     const partial = yield* collectSetupInventory(preflight);
     const discovery = yield* runSetupDiscovery(input.files, partial.tools);
     const inventory: SetupInventory = {
@@ -541,7 +573,7 @@ export const planSetup = (
       discoveryEvidence: discovery.evidence,
       discoveryDigest: discovery.digest,
     };
-    const items = planItemsFor(role, inventory.tools, discovery.recipes);
+    const items = planItemsFor(role, requestScope, inventory.tools, discovery.recipes);
     const cycle = findSetupDependencyCycle(items);
     if (cycle !== undefined) {
       return yield* fail(
@@ -559,10 +591,19 @@ export const planSetup = (
         `Remove ${journalPath} to start over with --role ${role}.`,
       );
     }
+    if (previous !== undefined && (previous.scope ?? "full") !== requestScope) {
+      return yield* fail(
+        "setup plan",
+        `a setup journal already exists for scope ${previous.scope ?? "full"}; remove ${journalPath} to switch scopes`,
+        "usage",
+        `Remove ${journalPath} to start over with --scope ${requestScope}.`,
+      );
+    }
     const catalog = reuseCatalog(previous, inventory.tools, discovery.recipes, inventory.platform);
-    const intent = input.intent ?? `establish this machine as ${role}`;
+    const intent = input.intent ?? defaultSetupIntent(role, requestScope);
     const planDigest = setupPlanDigest({
       role,
+      scope: requestScope,
       intent,
       exclusions: discovery.exclusions,
       inventory,
@@ -576,6 +617,7 @@ export const planSetup = (
     const journal: SetupJournal = {
       schema: "canonfig.setup/v1",
       role,
+      scope: requestScope,
       planDigest,
       intent,
       inventory,
@@ -950,6 +992,7 @@ export const applySetup = (
 
 export interface SetupStatus {
   readonly role?: SetupRole | undefined;
+  readonly scope?: SetupRequestScope | undefined;
   readonly planDigest?: string | undefined;
   readonly stage: string;
   readonly approved: boolean;
@@ -967,6 +1010,7 @@ export const setupStatus = (
     const verdicts = setupItemVerdicts(journal.items, journal.records);
     return {
       role: journal.role,
+      scope: journal.scope ?? "full",
       planDigest: journal.planDigest,
       stage: nextEligibleSetupStage(journal),
       approved: isSetupApproved(journal),
