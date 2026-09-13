@@ -1,5 +1,5 @@
 import { realpath } from "node:fs/promises";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import {
   installerBindingFor,
   installerMethods,
@@ -27,11 +27,10 @@ const pathsFor = (method: string) => Effect.gen(function*() {
   const directories = yield* machine.userDirectories();
   const root = yield* machine.normalizePath({ path: ".canonfig/installers", base: directories.home });
   const path = yield* machine.normalizePath({ path: `${normalized}.json`, base: root });
-  const tombstone = yield* machine.normalizePath({ path: `${normalized}.removed.json`, base: root });
   // Every segment below the home directory is a literal, so containment is
   // structural. Checking it would also lstat a home that need not exist yet,
   // which is the normal state of a machine that has bound no installer.
-  return { root, path, tombstone, method: normalized, platform: directories.home.platform };
+  return { root, path, method: normalized, platform: directories.home.platform };
 });
 
 const inspectOptional = (path: MachinePath) => Effect.gen(function*() {
@@ -41,26 +40,70 @@ const inspectOptional = (path: MachinePath) => Effect.gen(function*() {
   ));
 });
 
-export const loadInstallerBinding = (method: string): Effect.Effect<InstallerBinding | undefined, MachineStateError, MachineState> =>
+const removalRecordSchema = "canonfig.installer-removed/v1";
+
+/**
+ * The local binding state from a single file read. A removal is recorded in
+ * the binding file itself (one atomic write per transition), so concurrent
+ * `set` and `remove` commands always converge to a coherent state: the last
+ * completed write wins, and no interleaving can lose both the binding and
+ * its removal record.
+ */
+const RemovalRecordSchema = Schema.Struct({ schema: Schema.Literal(removalRecordSchema) });
+
+const isRemovalRecord = (text: string): boolean => {
+  try {
+    Schema.decodeUnknownSync(RemovalRecordSchema)(JSON.parse(text));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export type InstallerBindingState =
+  | { readonly status: "bound"; readonly binding: InstallerBinding }
+  | { readonly status: "removed" }
+  | { readonly status: "absent" };
+
+export const loadInstallerState = (method: string): Effect.Effect<InstallerBindingState, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const paths = yield* pathsFor(method);
     const rootKind = yield* inspectOptional(paths.root);
-    if (rootKind === undefined) return undefined;
+    if (rootKind === undefined) return { status: "absent" } as const;
     if (rootKind.kind !== "directory") return yield* unavailable("The installer binding directory must not be a symbolic link or special file.");
     const kind = yield* inspectOptional(paths.path);
-    if (kind === undefined) return undefined;
+    if (kind === undefined) return { status: "absent" } as const;
     if (kind.kind !== "regular") return yield* unavailable("The installer binding must be a regular file.");
-    const bytes = yield* machine.readFile({ path: paths.path, maximumBytes: 16 * 1024 });
-    const binding = yield* Effect.try({
-      try: () => parseInstallerBinding(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
-      catch: () => unavailable("The local installer binding is invalid; review and replace it with installer set."),
-    });
-    if (binding.method !== paths.method || binding.platform !== paths.platform) {
-      return yield* unavailable("The installer binding belongs to a different method or platform; configure it on this machine.");
+    const raw = yield* machine.readFile({ path: paths.path, maximumBytes: 16 * 1024 });
+    let text: string | undefined;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+    } catch {
+      text = undefined;
     }
-    return binding;
+    if (text === undefined) {
+      return yield* unavailable("The local installer binding is invalid; review and replace it with installer set.");
+    }
+    let binding: InstallerBinding | undefined;
+    try {
+      binding = parseInstallerBinding(text);
+    } catch {
+      binding = undefined;
+    }
+    if (binding !== undefined) {
+      if (binding.method !== paths.method || binding.platform !== paths.platform) {
+        return yield* unavailable("The installer binding belongs to a different method or platform; configure it on this machine.");
+      }
+      return { status: "bound", binding } as const;
+    }
+    if (isRemovalRecord(text)) return { status: "removed" } as const;
+    return yield* unavailable("The local installer binding is invalid; review and replace it with installer set.");
   });
+
+export const loadInstallerBinding = (method: string): Effect.Effect<InstallerBinding | undefined, MachineStateError, MachineState> =>
+  Effect.flatMap(loadInstallerState(method), (state) =>
+    state.status === "bound" ? Effect.succeed(state.binding) : Effect.succeed(undefined));
 
 const inspectBindingFiles = (binding: InstallerBinding) => Effect.gen(function*() {
   const machine = yield* MachineState;
@@ -121,19 +164,11 @@ export const saveInstallerBinding = (
   const existing = kind === undefined ? undefined : yield* machine.readFile({
     path: paths.path, maximumBytes: 16 * 1024,
   }).pipe(Effect.catchTag("FileSizeLimitError", () => Effect.succeed(undefined)));
-  // Re-binding clears an explicit removal once the binding bytes are durable,
-  // including when they are already identical: the operator has chosen again.
-  const clearTombstone = Effect.gen(function*() {
-    const tombstoneKind = yield* inspectOptional(paths.tombstone);
-    if (tombstoneKind !== undefined) yield* machine.removeFile({ path: paths.tombstone });
-  });
-  if (existing !== undefined && Buffer.from(existing).equals(content)) {
-    yield* clearTombstone;
-    return binding;
-  }
+  // One atomic write is the whole transition: it overwrites a binding or a
+  // removal record alike, so re-binding needs no separate marker cleanup.
+  if (existing !== undefined && Buffer.from(existing).equals(content)) return binding;
   yield* machine.ensureDirectory({ path: paths.root, mode: 0o700 });
   yield* machine.atomicWrite({ path: paths.path, content, mode: 0o600 });
-  yield* clearTombstone;
   return binding;
 });
 
@@ -155,23 +190,18 @@ export const removeInstallerBinding = (method: string) => Effect.gen(function*()
   const kind = yield* inspectOptional(paths.path);
   if (kind === undefined) return false;
   if (kind.kind !== "regular") return yield* unavailable("Only a regular local installer binding can be removed.");
-  // Record the explicit removal BEFORE deleting the binding: if the delete
-  // fails, the binding is still present and wins over the marker; if the
-  // marker write fails, the binding is untouched. No failure state loses both.
+  const state = yield* loadInstallerState(paths.method).pipe(
+    // Removal is a local explicit request: malformed or foreign content is
+    // still present content, so it never blocks recording the removal.
+    Effect.catchTag("HumanActionRequiredError", () => Effect.succeed({ status: "present" } as const)),
+  );
+  if (state.status === "removed") return false;
+  // One atomic write is the whole transition: the binding file becomes the
+  // removal record, so no interleaving with `installer set` can lose both.
   const removed = new TextEncoder().encode(
     `${JSON.stringify({ schema: "canonfig.installer-removed/v1", method: paths.method, removedAt: new Date().toISOString() }, null, 2)}\n`,
   );
-  yield* machine.atomicWrite({ path: paths.tombstone, content: removed, mode: 0o600 });
-  yield* machine.removeFile({ path: paths.path });
-  // A concurrent `installer set` may have cleared the marker between the
-  // write above and the delete. Re-assert it so the observable state can
-  // never be "no binding, no marker" after a completed removal: the worst
-  // remaining interleave resolves to binding-wins, which the next command
-  // reports loudly instead of silently taking PATH.
-  const recheckKind = yield* inspectOptional(paths.tombstone);
-  if (recheckKind === undefined) {
-    yield* machine.atomicWrite({ path: paths.tombstone, content: removed, mode: 0o600 });
-  }
+  yield* machine.atomicWrite({ path: paths.path, content: removed, mode: 0o600 });
   return true;
 });
 
@@ -186,14 +216,14 @@ export const resolveInstallerInvocation = (
 ): Effect.Effect<InstallerInvocation, MachineStateError, MachineState> => Effect.gen(function*() {
   const machine = yield* MachineState;
   const normalized = yield* methodFor(method);
-  const binding = yield* loadInstallerBinding(normalized);
-  if (binding !== undefined) {
-    const executable = yield* inspectBindingFiles(binding);
-    return { executable, arguments: binding.arguments };
+  // One read decides: a removal recorded here fails actionably instead of
+  // silently falling back to whatever PATH happens to resolve.
+  const state = yield* loadInstallerState(normalized);
+  if (state.status === "bound") {
+    const executable = yield* inspectBindingFiles(state.binding);
+    return { executable, arguments: state.binding.arguments };
   }
-  const paths = yield* pathsFor(normalized);
-  const tombstoneKind = yield* inspectOptional(paths.tombstone);
-  if (tombstoneKind !== undefined) {
+  if (state.status === "removed") {
     return yield* unavailable(
       `The installer binding for ${normalized} was explicitly removed; run installer set to bind it again. No PATH executable was selected.`,
     );

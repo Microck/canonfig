@@ -173,6 +173,12 @@ describe("local installer binding contract", () => {
     const resolved = await Effect.runPromise(resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer)));
     expect(resolved.arguments).toEqual([await realpath(f.entry)]);
     expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(true);
+    // The removal is recorded in the binding file itself: one atomic write
+    // per transition, so no interleaving can lose both the binding and its
+    // record.
+    const record = JSON.parse(readFileSync(join(f.home, ".canonfig", "installers", "npm.json"), "utf8"));
+    expect(record.schema).toBe("canonfig.installer-removed/v1");
+    expect(await Effect.runPromise(removeInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBe(false);
     const refused = await Effect.runPromise(
       resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer), Effect.flip),
     );
@@ -182,13 +188,6 @@ describe("local installer binding contract", () => {
     await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
     const rebound = await Effect.runPromise(resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer)));
     expect(rebound.arguments).toEqual([await realpath(f.entry)]);
-    // A stale removal marker alongside identical binding bytes is cleared by
-    // re-binding instead of misclassifying a later disappearance.
-    writeFileSync(join(f.home, ".canonfig", "installers", "npm.removed.json"), "{}");
-    await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
-    expect(() => statSync(join(f.home, ".canonfig", "installers", "npm.removed.json"))).toThrow();
-    const recleared = await Effect.runPromise(resolveInstallerInvocation("npm").pipe(Effect.provide(f.layer)));
-    expect(recleared.arguments).toEqual([await realpath(f.entry)]);
   }, 30_000);
 
   it("rejects relative input, moved entrypoints, and failed checks without installing anything", async () => {
