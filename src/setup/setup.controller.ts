@@ -613,6 +613,22 @@ export const planSetup = (
       // Unchanged discovery and approvals survive a re-plan.
       return previous;
     }
+    if (
+      previous !== undefined
+      && previous.scope === undefined
+      && requestScope === "full"
+      && previous.planDigest === setupPlanDigest({
+        role,
+        scope: undefined,
+        intent,
+        exclusions: discovery.exclusions,
+        inventory,
+        items,
+      })
+    ) {
+      // Pre-scope journal with unchanged inputs: approvals survive the upgrade.
+      return previous;
+    }
     const timestamp = new Date().toISOString();
     const journal: SetupJournal = {
       schema: "canonfig.setup/v1",

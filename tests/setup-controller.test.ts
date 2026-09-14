@@ -195,6 +195,22 @@ describe("setup controller decisions", () => {
     })).not.toBe(digest);
   });
 
+  it("reproduces pre-scope digests for upgrade comparison", () => {
+    const base = {
+      role: "follower",
+      intent: "prepare follower",
+      exclusions: [],
+      inventory,
+      items,
+    } as const;
+    const legacy = setupPlanDigest({ ...base });
+    // The scoped encoding binds the scope: identical inputs under an
+    // explicit scope never collide with a legacy approval.
+    expect(setupPlanDigest({ ...base, scope: "full" })).not.toBe(legacy);
+    expect(setupPlanDigest({ ...base, scope: "cli-only" })).not.toBe(legacy);
+    expect(setupPlanDigest({ ...base })).toBe(legacy);
+  });
+
   it("resumes required work without blocking on an independent optional failure", () => {
     const records = [
       {
