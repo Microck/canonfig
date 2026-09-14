@@ -32,10 +32,15 @@ describe("public enrollment refusal", () => {
     expect(isPublicEnrollmentCommand(["--json", "follower", "enroll", "--name", "n", "--profile", "p", "INVITE"])).toBe(true);
   });
 
-  it("leaves the pipe form, bare options, and help for the dispatcher", () => {
+  it("flags positionals even beside stdin or help flags", () => {
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--stdin", "--name", "n", "--profile", "p"])).toBe(true);
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--help"])).toBe(true);
+  });
+
+  it("leaves the pipe form and bare options for the dispatcher", () => {
     expect(isPublicEnrollmentCommand(["follower", "enroll", "--stdin", "--name", "n", "--profile", "p"])).toBe(false);
     expect(isPublicEnrollmentCommand(["follower", "enroll", "--name", "n", "--profile", "p"])).toBe(false);
-    expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--help"])).toBe(false);
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "--help"])).toBe(false);
     expect(isPublicEnrollmentCommand(["source", "invite", "--stdin"])).toBe(false);
   });
 });
