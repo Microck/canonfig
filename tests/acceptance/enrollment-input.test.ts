@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   EnrollmentInputError,
   isPrivateEnrollmentCommand,
+  isPublicEnrollmentCommand,
   privateEnrollmentArguments,
   readEnrollmentInput,
 } from "../../src/runtime/enrollment-input.ts";
@@ -24,6 +25,25 @@ describe("private enrollment input", () => {
     ]);
     expect(argv[2]).toBe("--stdin");
   });
+
+describe("public enrollment refusal", () => {
+  it("flags invitations carried as arguments", () => {
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--name", "n", "--profile", "p"])).toBe(true);
+    expect(isPublicEnrollmentCommand(["--json", "follower", "enroll", "--name", "n", "--profile", "p", "INVITE"])).toBe(true);
+  });
+
+  it("flags positionals even beside stdin or help flags", () => {
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--stdin", "--name", "n", "--profile", "p"])).toBe(true);
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--help"])).toBe(true);
+  });
+
+  it("leaves the pipe form and bare options for the dispatcher", () => {
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "--stdin", "--name", "n", "--profile", "p"])).toBe(false);
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "--name", "n", "--profile", "p"])).toBe(false);
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "--help"])).toBe(false);
+    expect(isPublicEnrollmentCommand(["source", "invite", "--stdin"])).toBe(false);
+  });
+});
 
   it("treats --json as a global option at any position", () => {
     const leading = ["--json", ...argv];

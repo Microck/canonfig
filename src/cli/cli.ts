@@ -60,7 +60,8 @@ Source:
   source revoke <follower-id>
 
 Follower:
-  follower enroll <invite> --name <name> --profile <id> [--replace]
+  follower enroll --stdin --name <name> --profile <id> [--replace]
+    (pipe the invitation envelope; it is never accepted as an argument)
   sync [--plan | --apply] [--no-input] [--scheduled]
   recover [--no-input]
   abandon
@@ -660,6 +661,9 @@ const evaluateCommand = (
       }
       return invalid(`Unknown source command: ${action ?? ""}`);
     }
+    // The positional invitation below serves the private `--stdin`
+    // redispatch built in main.ts from in-memory argv. Real process argv
+    // carrying a positional invitation is refused there before parsing.
     if (area === "follower" && action === "enroll") {
       const options = parseOptions(
         rest,

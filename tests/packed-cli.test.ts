@@ -135,11 +135,13 @@ const invoke = (
   home: string,
   arguments_: ReadonlyArray<string>,
   environment: NodeJS.ProcessEnv = {},
+  input?: string | undefined,
 ): PackedInvocation => {
   const result = spawnSync(executable, [packedEntry, ...arguments_], {
     cwd: installRoot,
     encoding: "utf8",
     env: environmentFor(home, environment),
+    input,
     timeout: 60_000,
   });
   return {
@@ -148,6 +150,10 @@ const invoke = (
     stderr: result.stderr,
   };
 };
+
+/** Pipe an invitation envelope over stdin: argv never carries the secret. */
+const envelopeInput = (invitation: string): string =>
+  `${invitation}\nCANONFIG-INVITE-EOF\n`;
 
 const unusedPort = (): Promise<number> =>
   new Promise((resolvePort, rejectPort) => {
@@ -634,13 +640,13 @@ describe("packed Canonfig executable", () => {
     const enrolled = invoke(authoredFollowerHome, [
       "follower",
       "enroll",
-      invitation,
+      "--stdin",
       "--name",
       "packed-authored-follower",
       "--profile",
       "packed-authored",
       "--json",
-    ]);
+    ], {}, envelopeInput(invitation));
     expect(enrolled.status, enrolled.stderr).toBe(0);
     const plan = invoke(authoredFollowerHome, [
       "sync",
@@ -732,13 +738,13 @@ describe("packed Canonfig executable", () => {
     const again = invoke(authoredFollowerHome, [
       "follower",
       "enroll",
-      invitation,
+      "--stdin",
       "--name",
       "packed-second-name",
       "--profile",
       "packed-authored",
       "--json",
-    ]);
+    ], {}, envelopeInput(invitation));
     expect(again.status).toBe(4);
     const envelope = JSON.parse(again.stderr);
     expect(envelope.message).toContain("already enrolled");
@@ -843,13 +849,13 @@ describe("packed Canonfig executable", () => {
     const enrolled = invoke(followerHome, [
       "follower",
       "enroll",
-      invitation,
+      "--stdin",
       "--name",
       "packed-follower",
       "--profile",
       "packed-profile",
       "--json",
-    ]);
+    ], {}, envelopeInput(invitation));
     expect(enrolled.status, enrolled.stderr).toBe(0);
     const follower = JSON.parse(enrolled.stdout).data.follower.id;
 
@@ -942,13 +948,13 @@ describe("packed Canonfig executable", () => {
     const tamperedEnrollment = invoke(tamperedFollowerHome, [
       "follower",
       "enroll",
-      invitation,
+      "--stdin",
       "--name",
       "tampered-follower",
       "--profile",
       "packed-profile",
       "--json",
-    ]);
+    ], {}, envelopeInput(invitation));
     expect(tamperedEnrollment.status, tamperedEnrollment.stderr).toBe(0);
     const statePath = resolve(tamperedFollowerHome, ".canonfig/state.sqlite");
     const database = new DatabaseSync(statePath);
@@ -1268,13 +1274,13 @@ npm install --global canonfig-fixture@1.0.0
         invoke(home, [
           "follower",
           "enroll",
-          invitation,
+          "--stdin",
           "--name",
           name,
           "--profile",
           "packed-multi",
           "--json",
-        ]),
+        ], {}, envelopeInput(invitation)),
         `enroll ${name}`,
       );
       return String(
@@ -1304,13 +1310,15 @@ npm install --global canonfig-fixture@1.0.0
       [
         "follower",
         "enroll",
-        rotatedInvitation,
+        "--stdin",
         "--name",
         "packed-replay",
         "--profile",
         "packed-multi",
         "--json",
       ],
+      {},
+      envelopeInput(rotatedInvitation),
     );
     // Replaying a consumed invitation is an authorization refusal, not a
     // transport failure: the request reached the Source Machine and was

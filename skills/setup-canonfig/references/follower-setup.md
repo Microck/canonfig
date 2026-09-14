@@ -74,17 +74,19 @@ The source is an exact loopback HTTPS origin. A Tailscale IP/MagicDNS name is no
 that endpoint; an operator-managed TLS-transparent tunnel is separate. Verify
 source process/tunnel availability and preserve TLS/signing pins.
 
-With the locally supplied variable and explicitly selected name/profile:
+With the locally supplied invitation file and explicitly selected name/profile:
 
 ```bash
-canonfig follower enroll "$INVITE" --name laptop --profile workstation
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
 ```
 
-Clear the variable or remove its protected temporary file immediately afterward,
-on PowerShell as well as POSIX shells. Enrollment must establish independently
-revocable credentials, pinned TLS/signing fingerprints, and an authorized profile
-revision. Refuse invalid/exposed/expired/replayed material and request a fresh
-invitation; never reset trust or suppress verification.
+The invitation is a single-use secret: never place it in an argument (process
+listings and shell history expose arguments to other local users), never print
+it, and clear the variable or remove its protected temporary file immediately
+afterward, on PowerShell as well as POSIX shells. Enrollment must establish
+independently revocable credentials, pinned TLS/signing fingerprints, and an
+authorized profile revision. Refuse invalid/exposed/expired/replayed material
+and request a fresh invitation; never reset trust or suppress verification.
 
 Inspect granted groups without printing the invitation. If `canonfig:secrets` is
 present, explain the automatic transfer on successful apply and obtain explicit
