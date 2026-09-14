@@ -22,6 +22,7 @@ import { installerArguments, installerHelp, isInstallerCommand, runInstallerCli 
 import {
   EnrollmentInputError,
   isPrivateEnrollmentCommand,
+  isPublicEnrollmentCommand,
   privateEnrollmentArguments,
   privateEnrollmentHelp,
   readEnrollmentInput,
@@ -156,6 +157,15 @@ if (isSecretsCommand(arguments_)) {
       }),
     ),
   );
+} else if (isPublicEnrollmentCommand(arguments_)) {
+  // The invitation is a single-use secret: refuse it as an argument, where
+  // the process listing and shell history would expose it to other local
+  // users. The private pipe form is handled above and never reaches here.
+  nodeCliIo.writeStderr(renderUsageFailure(
+    "follower enroll no longer accepts the invitation as an argument; pipe the envelope instead: cat ./canonfig-invite | canonfig follower enroll --stdin --name <name> --profile <id>",
+    arguments_.includes("--json") ? "json" : "human",
+  ));
+  nodeCliIo.setExitCode(CliExitCode.usageOrConfiguration);
 } else {
   const outcome = evaluateCli(arguments_);
 

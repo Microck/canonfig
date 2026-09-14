@@ -20,6 +20,25 @@ export const isPrivateEnrollmentCommand = (arguments_: ReadonlyArray<string>): b
     && command.slice(2).includes("--stdin");
 };
 
+export const isPublicEnrollmentCommand = (arguments_: ReadonlyArray<string>): boolean => {
+  const command = withoutGlobalJson(arguments_);
+  if (command[0] !== "follower" || command[1] !== "enroll") return false;
+  const rest = command.slice(2);
+  if (rest.includes("--stdin")) return false;
+  if (rest.some((argument) => ["--help", "-h", "--version", "-V"].includes(argument))) return false;
+  // Skip the values of the known value options; any other bare token can
+  // only be an invitation carried as an argument.
+  for (let index = 0; index < rest.length; index += 1) {
+    const argument = rest[index]!;
+    if (argument === "--name" || argument === "--profile") {
+      index += 1;
+      continue;
+    }
+    if (!argument.startsWith("-")) return true;
+  }
+  return false;
+};
+
 export const privateEnrollmentHelp = "  follower enroll --stdin --name <name> --profile <id> [--replace]";
 
 export class EnrollmentInputError extends Error {
