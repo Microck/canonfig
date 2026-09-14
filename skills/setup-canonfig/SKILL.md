@@ -171,7 +171,7 @@ After the role and discovery files are selected, use the shipped setup
 controller as the bootstrap plan of record:
 
 ```text
-canonfig setup plan --role <source|follower> [--scope <full|cli-only|project-only>] --file <approved-path> --intent "<selected outcome>"
+canonfig setup plan --role <source|follower> --scope <full|cli-only|project-only> --file <approved-path> --intent "<selected outcome>"
 canonfig setup approve --approver <operator>
 canonfig setup apply
 canonfig setup status --json
