@@ -34,11 +34,14 @@ canonfig setup status
 
 `setup plan` requires the machine role before any role-specific inspection.
 It records a bounded OS, account, loopback transport, Node runtime, native
-installer, and discovery inventory. A Source plan fails before initialization
-when signing and TLS key storage is unavailable. Approval binds the plan
-digest; apply runs only structured native argv recipes and journals evidence
-and qualified provenance. Re-running apply resumes the next eligible stage.
-An unavailable optional integration excludes only its dependent branch.
+installer, and discovery inventory. A full Source plan fails before
+initialization when signing and TLS key storage is unavailable. Request a
+narrower scope with `--scope cli-only` (verify the CLI runs; no identities,
+schedules, or remote connections) or `--scope project-only` (also install
+recipes; still no identity). Approval binds the plan digest; apply runs only
+structured native argv recipes and journals evidence and qualified provenance.
+Re-running apply resumes the next eligible stage. An unavailable optional
+integration excludes only its dependent branch.
 
 ## Source Machine
 

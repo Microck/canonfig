@@ -6,7 +6,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
-import { runSetupPreflight } from "../src/setup/setup.controller.ts";
+import { establishSetupScope, runSetupPreflight } from "../src/setup/setup.controller.ts";
 
 import {
   nextEligibleSetupStage,
@@ -62,15 +62,16 @@ const items: ReadonlyArray<SetupPlanItem> = [
 
 const digest = setupPlanDigest({
   role: "follower",
+  scope: "full",
   intent: "prepare follower",
   exclusions: [],
   inventory,
   items,
 });
-
 const journal = (overrides: Partial<SetupJournal> = {}): SetupJournal => ({
   schema: "canonfig.setup/v1",
   role: "follower",
+  scope: "full",
   planDigest: digest,
   intent: "prepare follower",
   inventory,
@@ -127,9 +128,42 @@ describe("setup controller decisions", () => {
     },
   );
 
+  it.runIf(process.platform === "linux")(
+    "skips the Source key-storage gate for narrow scopes",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "canonfig-setup-narrow-"));
+      const home = join(root, "home");
+      mkdirSync(home);
+      try {
+        const layer = linuxMachineStateLayer({
+          environment: [
+            { name: "HOME", value: home },
+            { name: "PATH", value: "" },
+          ],
+          credentialPolicy: { kind: "secure-store" },
+        });
+        for (const scope of ["cli-only", "project-only"] as const) {
+          const preflight = await Effect.runPromise(
+            runSetupPreflight("source", scope).pipe(Effect.provide(layer)),
+          );
+          expect(preflight.credentialStorage.kind).toBe("unavailable");
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("rejects unknown request scopes with the supported list", async () => {
+    const error = await Effect.runPromise(Effect.flip(establishSetupScope("minimal")));
+    expect(error).toMatchObject({ _tag: "SetupError", category: "usage" });
+    expect(error.recovery).toContain("--scope full");
+  });
+
   it("binds approval to declared intent, exclusions, inventory, and exact items", () => {
     expect(setupPlanDigest({
       role: "follower",
+      scope: "full",
       intent: "prepare follower",
       exclusions: [],
       inventory,
@@ -137,6 +171,15 @@ describe("setup controller decisions", () => {
     })).toBe(digest);
     expect(setupPlanDigest({
       role: "follower",
+      scope: "cli-only",
+      intent: "prepare follower",
+      exclusions: [],
+      inventory,
+      items,
+    })).not.toBe(digest);
+    expect(setupPlanDigest({
+      role: "follower",
+      scope: "full",
       intent: "prepare source instead",
       exclusions: [],
       inventory,
@@ -144,11 +187,28 @@ describe("setup controller decisions", () => {
     })).not.toBe(digest);
     expect(setupPlanDigest({
       role: "follower",
+      scope: "full",
       intent: "prepare follower",
       exclusions: ["skip unavailable integration"],
       inventory,
       items,
     })).not.toBe(digest);
+  });
+
+  it("reproduces pre-scope digests for upgrade comparison", () => {
+    const base = {
+      role: "follower",
+      intent: "prepare follower",
+      exclusions: [],
+      inventory,
+      items,
+    } as const;
+    const legacy = setupPlanDigest({ ...base });
+    // The scoped encoding binds the scope: identical inputs under an
+    // explicit scope never collide with a legacy approval.
+    expect(setupPlanDigest({ ...base, scope: "full" })).not.toBe(legacy);
+    expect(setupPlanDigest({ ...base, scope: "cli-only" })).not.toBe(legacy);
+    expect(setupPlanDigest({ ...base })).toBe(legacy);
   });
 
   it("resumes required work without blocking on an independent optional failure", () => {

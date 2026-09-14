@@ -60,6 +60,7 @@ export const setupCommandsLayer = (
       return SetupCommands.of({
         plan: (input) => run(planSetup({
           roleText: input.role,
+          scopeText: input.scope,
           files: input.files,
           intent: input.intent,
         }, journalPath)),

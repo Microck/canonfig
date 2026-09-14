@@ -1,13 +1,13 @@
 import { Schema } from "effect";
 
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
-
 import type {
   SetupInventory,
   SetupItemRecord,
   SetupItemStatus,
   SetupJournal,
   SetupPlanItem,
+  SetupRequestScope,
   SetupRole,
   SetupStage,
 } from "./setup.types.ts";
@@ -22,18 +22,32 @@ const asJson = <Value>(value: Value) =>
  */
 export const setupPlanDigest = (input: {
   readonly role: SetupRole;
+  readonly scope?: SetupRequestScope | undefined;
   readonly intent: string;
   readonly exclusions: ReadonlyArray<string>;
   readonly inventory: SetupInventory;
   readonly items: ReadonlyArray<SetupPlanItem>;
-}): string =>
-  sha256Hex(canonicalJson(asJson({
+}): string => {
+  // Journals written before request scopes existed carry no scope key;
+  // the legacy branch reproduces their digest for upgrade comparison.
+  if (input.scope === undefined) {
+    return sha256Hex(canonicalJson(asJson({
+      role: input.role,
+      intent: input.intent,
+      exclusions: input.exclusions,
+      inventory: input.inventory,
+      items: input.items,
+    })));
+  }
+  return sha256Hex(canonicalJson(asJson({
     role: input.role,
+    scope: input.scope,
     intent: input.intent,
     exclusions: input.exclusions,
     inventory: input.inventory,
     items: input.items,
   })));
+};
 
 /** Item ids that form a dependency cycle, or undefined when the plan is acyclic. */
 export const findSetupDependencyCycle = (
