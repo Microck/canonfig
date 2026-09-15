@@ -26,6 +26,24 @@ export const isSecretField = (name: string): boolean => secretName.test(name);
 const replacement = "[REDACTED]";
 
 /**
+ * Scrub caller-supplied secret values wherever they appear, regardless of
+ * the surrounding field name. Longest first so overlapping values redact
+ * once. Callers pass values already in scope (never a store dump); empty
+ * values are skipped because they would match everywhere.
+ */
+export const redactKnownValues = (
+  text: string,
+  secrets: ReadonlyArray<string>,
+): string => {
+  let redacted = text;
+  const ordered = [...new Set(secrets)]
+    .filter((secret) => secret.length > 0)
+    .sort((left, right) => right.length - left.length);
+  for (const secret of ordered) redacted = redacted.replaceAll(secret, replacement);
+  return redacted;
+};
+
+/**
  * The name in an assignment must be a credential name for the pattern to match
  * at all. Matching every `name=value` pair and then deciding would let a
  * harmless pair such as "argument: " consume the credential that follows it,
@@ -51,16 +69,23 @@ const spacedCredentialFlag = new RegExp(
  * This is a presentation safeguard, not a parser for arbitrary shell programs.
  * Callers must still avoid collecting raw authentication files or process output.
  */
-export const redactText = (text: string): string => text
-  .replace(/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----/gu, replacement)
-  .replace(/\b([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/]*@/giu, "$1[REDACTED]@")
-  .replace(/(\b(?:authorization|proxy-authorization)\s*[:=]\s*)(?:Bearer|Basic)\s+[^\s"',;}\]]+/giu, "$1[REDACTED]")
-  .replace(assignedCredential, `$1$2$3${replacement}`)
-  .replace(quotedCredentialKey, `$1$2"${replacement}"`)
-  .replace(spacedCredentialFlag, `$1$2${replacement}`);
+export const redactText = (
+  text: string,
+  secrets: ReadonlyArray<string> = [],
+): string =>
+  redactKnownValues(text
+    .replace(/-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----/gu, replacement)
+    .replace(/\b([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/]*@/giu, "$1[REDACTED]@")
+    .replace(/(\b(?:authorization|proxy-authorization)\s*[:=]\s*)(?:Bearer|Basic)\s+[^\s"',;}\]]+/giu, "$1[REDACTED]")
+    .replace(assignedCredential, `$1$2$3${replacement}`)
+    .replace(quotedCredentialKey, `$1$2"${replacement}"`)
+    .replace(spacedCredentialFlag, `$1$2${replacement}`), secrets);
 
 /** Preserve argv structure while recognizing both --name=value and --name value. */
-export const redactArguments = (values: ReadonlyArray<string>): Array<string> => {
+export const redactArguments = (
+  values: ReadonlyArray<string>,
+  secrets: ReadonlyArray<string> = [],
+): Array<string> => {
   let redactNext = false;
   return values.map((value) => {
     if (redactNext) {
@@ -73,6 +98,6 @@ export const redactArguments = (values: ReadonlyArray<string>): Array<string> =>
       redactNext = true;
       return value;
     }
-    return redactText(value);
+    return redactText(value, secrets);
   });
 };
