@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { lstat, open, realpath } from "node:fs/promises";
 import { win32 } from "node:path";
 
+import { redactKnownValues } from "../cli/redaction.ts";
 import { Effect } from "effect";
 
 import {
@@ -109,14 +110,7 @@ const pipRequirementFilesUnchanged = async (
 export const redactText = (
   value: string,
   secrets: ReadonlyArray<string>,
-): string => {
-  let redacted = value;
-  const ordered = [...new Set(secrets)]
-    .filter((secret) => secret.length > 0)
-    .sort((left, right) => right.length - left.length);
-  for (const secret of ordered) redacted = redacted.replaceAll(secret, "[REDACTED]");
-  return redacted;
-};
+): string => redactKnownValues(value, secrets);
 
 const packageManagerName = (value: string): string => {
   const name = value

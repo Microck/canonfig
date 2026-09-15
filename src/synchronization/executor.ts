@@ -20,6 +20,7 @@ import type {
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
+import { redactKnownValues } from "../cli/redaction.ts";
 import {
   desiredDirectoryEntries,
   desiredResourceDigest,
@@ -84,11 +85,7 @@ const redact = (
   // tagged error now has a message (message-less classes render their fields),
   // using the message alone would drop the tag from reasons such as
   // `MissingArtifactError: digest="..."`.
-  let message = String(value);
-  for (const secret of secrets) {
-    if (secret.length > 0) message = message.replaceAll(secret, "[REDACTED]");
-  }
-  return message.slice(0, 2048);
+  return redactKnownValues(String(value), secrets).slice(0, 2048);
 };
 
 export const executionLimits = (

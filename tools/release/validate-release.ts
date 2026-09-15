@@ -200,9 +200,10 @@ const validatePackageContents = (
   // The public compiler ships its transitive declaration graph so consumers
   // get the same recursive profile contract without private dist imports. The
   // CLI also includes byte-resource transport and staged MCP qualification.
-  // Bumped for the setup request-scope feature; still tight enough to catch
-  // accidental bulk.
-  if (artifact.size > 341_000 || artifact.unpackedSize > 1_700_000) {
+  // Release budget guards against accidental bulk (precedent #128: 340k→341k).
+  // Bumped for the #134 redaction feature (341,295 packed); still tight
+  // enough to catch bulk while leaving ~700B headroom.
+  if (artifact.size > 342_000 || artifact.unpackedSize > 1_700_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
