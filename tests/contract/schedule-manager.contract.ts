@@ -144,6 +144,14 @@ const fixture = (
 const goldenValue = (definition: RenderedSchedulerJob): string =>
   `${JSON.stringify(definition, undefined, 2)}\n`;
 
+// Golden fixtures must not pin the test executable path (an input, not
+// product behavior): install-path tests use real probe-passing scripts.
+const goldenDefinition = (
+  definition: RenderedSchedulerJob,
+  adapter: ScheduleManagerContractAdapter,
+): string =>
+  goldenValue(definition).replaceAll(adapter.executable, "<test-executable>");
+
 export const scheduleManagerContract = (
   name: string,
   adapter: ScheduleManagerContractAdapter,
@@ -162,8 +170,27 @@ export const scheduleManagerContract = (
         }),
       );
 
-      expect(goldenValue(daily)).toBe(await fixture(adapter.platform, "daily"));
-      expect(goldenValue(weekly)).toBe(await fixture(adapter.platform, "weekly"));
+      expect(goldenDefinition(daily, adapter)).toBe(await fixture(adapter.platform, "daily"));
+      expect(goldenDefinition(weekly, adapter)).toBe(await fixture(adapter.platform, "weekly"));
+    });
+
+    it("refuses a custom executable that fails under the native unit PATH", async () => {
+      // Microck/canonfig#132: an npm wrapper that works interactively can
+      // crash under the unit PATH (systemd: PATH=/usr/bin:/bin). The probe
+      // runs `<executable> --version` there; /bin/false deterministically
+      // exits 1, so install must refuse before writing any unit. Windows
+      // is skipped: the probe is posix-only by design (absolute PE launch
+      // performs no PATH interpreter lookup).
+      if (adapter.platform === "windows") return;
+      const scheduler = new RecordingScheduler();
+      const layer = managerLayer(adapter, scheduler);
+      const error = await runWith(layer, Effect.gen(function*() {
+        const manager = yield* ScheduleManager;
+        return yield* Effect.flip(manager.install({ executable: "/bin/false" }));
+      }));
+
+      expect(error).toBeInstanceOf(ScheduleHumanActionRequiredError);
+      expect(scheduler.installs).toBe(0);
     });
 
     it("preserves named timezone intent or returns Human Action Required", async () => {
@@ -176,7 +203,7 @@ export const scheduleManagerContract = (
       };
       if (adapter.supportsNamedTimezone) {
         const definition = await runWith(layer, statusFor(adapter.executable, schedule));
-        expect(goldenValue(definition)).toBe(
+        expect(goldenDefinition(definition, adapter)).toBe(
           await fixture(adapter.platform, "timezone"),
         );
         expect(definition.schedule).toContain("America/New_York");
@@ -204,7 +231,7 @@ export const scheduleManagerContract = (
       } as const;
       if (adapter.supportsNamedTimezone) {
         const definition = await runWith(layer, statusFor(adapter.executable, custom));
-        expect(goldenValue(definition)).toBe(
+        expect(goldenDefinition(definition, adapter)).toBe(
           await fixture(adapter.platform, "custom-timezone"),
         );
         expect(definition.schedule).toContain("Europe/Paris");

@@ -1,5 +1,6 @@
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import type { ScheduleDefault } from "../src/domain/profile.ts";
 import { macosMachineStateLayer } from "../src/machine/macos.layer.ts";
@@ -20,9 +21,24 @@ const windowsEnvironment = [
   { name: "SystemRoot", value: "C:\\Windows" },
 ] as const;
 
+// Install-path contract tests exercise the set-time executable probe, which
+// runs `<executable> --version` under the native unit PATH. These fixtures
+// are real scripts (with quoting-sensitive spaces in their paths) that exit
+// 0 for any arguments; a wrapper needing a newer interpreter than the unit
+// PATH provides must fail that probe instead (Microck/canonfig#132).
+const linuxFixture = "/tmp/Canonfig Test Tools/canonfig-linux";
+const macosFixture = "/tmp/Canonfig Test Tools/canonfig-macos";
+beforeAll(async () => {
+  await mkdir("/tmp/Canonfig Test Tools", { recursive: true });
+  for (const path of [linuxFixture, macosFixture]) {
+    await writeFile(path, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await chmod(path, 0o755);
+  }
+});
+
 scheduleManagerContract("Linux", {
   platform: "linux",
-  executable: "/opt/Canonfig Tools/canonfig",
+  executable: linuxFixture,
   supportsNamedTimezone: true,
   layer: (scheduler: SchedulerBackend) =>
     linuxMachineStateLayer({
@@ -34,7 +50,7 @@ scheduleManagerContract("Linux", {
 
 scheduleManagerContract("macOS", {
   platform: "macos",
-  executable: "/Applications/Canonfig Tools/canonfig",
+  executable: macosFixture,
   supportsNamedTimezone: false,
   layer: (scheduler: SchedulerBackend) =>
     macosMachineStateLayer({

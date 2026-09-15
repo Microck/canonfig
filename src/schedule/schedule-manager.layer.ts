@@ -10,6 +10,7 @@ import { linuxCalendar } from "./linux-schedule.ts";
 import { macosCalendar } from "./macos-schedule.ts";
 import {
   InvalidScheduleError,
+  ScheduleHumanActionRequiredError,
   type ScheduleManagerError,
   ScheduleVerificationError,
 } from "./schedule-manager.errors.ts";
@@ -133,6 +134,41 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
     ScheduleManager,
     Effect.gen(function*() {
       const machine = yield* MachineState;
+      const verifyCustomExecutable = (
+        rawPath: string,
+      ): Effect.Effect<void, ScheduleManagerError> =>
+        Effect.gen(function*() {
+          // A custom --executable may be an npm wrapper with an env-based
+          // shebang. The systemd unit runs with PATH=/usr/bin:/bin (and
+          // launchd agents start from a minimal PATH), so a wrapper that
+          // works interactively can crash on fire (Box lane: shell Node
+          // v24, unit Node v20, undici import crash). Probe the exact
+          // custom executable under the unit PATH before claiming success;
+          // the default path pins process.execPath and needs no probe.
+          // Windows is skipped: Task Scheduler launches absolute PE paths
+          // with the user environment, so no PATH-resolved interpreter
+          // stands between the unit and its runtime. Canonfig requires
+          // Node >= 24 (engines).
+          const probed = yield* machine.normalizePath({ path: rawPath });
+          if (probed.platform === "windows") return;
+          const probe = yield* machine.runProcess({
+            executable: probed,
+            arguments: ["--version"],
+            environment: [{ name: "PATH", value: "/usr/bin:/bin" }],
+            timeoutMilliseconds: 10_000,
+            maximumOutputBytes: 64 * 1024,
+          }).pipe(Effect.catch(() => Effect.succeed(null)));
+          if (probe === null || probe.exitCode !== 0) {
+            const detail = probe === null
+              ? "did not start"
+              : `exited with code ${probe.exitCode}`;
+            return yield* new ScheduleHumanActionRequiredError({
+              action: "install a scheduled sync whose executable runs under the native scheduler",
+              recovery:
+                `The custom executable ${probed.absolute} ${detail} with PATH=/usr/bin:/bin (native scheduler environment, Node >= 24 required). Retry without --executable to pin the running interpreter (${process.execPath} ${process.version}), or install Node >= 24 where the scheduler can see it.`,
+            });
+          }
+        });
 
       const definition = Effect.fn("ScheduleManager.definition")(
         function*(input: SetScheduleInput = {}): Effect.fn.Return<
@@ -221,6 +257,9 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           ScheduleChange,
           ScheduleManagerError
         > {
+          if (input.executable !== undefined) {
+            yield* verifyCustomExecutable(input.executable);
+          }
           const desired = yield* definition(input);
           const before = yield* machine.inspectSchedulerJob(desired.definition);
           if (before.installed && before.enabled && before.matches) {
