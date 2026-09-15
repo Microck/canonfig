@@ -414,8 +414,15 @@ describe("production follower orchestration", () => {
     const withSchedules = <Value, Error>(effect: Effect.Effect<Value, Error, ScheduleManager>) =>
       Effect.runPromise(effect.pipe(Effect.provide(schedules)));
     // The job as an earlier renderer bound it: the operator's cadence, but a
-    // binding the current renderer no longer produces.
-    await withSchedules(Effect.flatMap(ScheduleManager, (manager) => manager.install({ schedule: operatorSchedule, executable: "/opt/old-canonfig/canonfig" })));
+    // binding the current renderer no longer produces. The stale executable
+    // is a real probe-passing script: the set-time probe runs `<executable>
+    // --version` under the unit PATH, so a non-existent path would (correctly)
+    // refuse install instead of seeding the stale job (Microck/canonfig#132).
+    const staleExecutable = join(followerRoot, "bin", "old-canonfig");
+    await mkdir(join(followerRoot, "bin"), { recursive: true });
+    await writeFile(staleExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await chmod(staleExecutable, 0o755);
+    await withSchedules(Effect.flatMap(ScheduleManager, (manager) => manager.install({ schedule: operatorSchedule, executable: staleExecutable })));
     const staleJob = installedJob!;
     const status = () => withSchedules(Effect.flatMap(ScheduleManager, (manager) => manager.status({ schedule: operatorSchedule })));
     const drifted = await status();
