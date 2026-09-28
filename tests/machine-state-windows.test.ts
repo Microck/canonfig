@@ -143,7 +143,7 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
       // Reconstruct recovery from disk in a fresh process, then replay it.
       // Compare against native observations, not the adapter's snapshot reader.
       for (let attempt = 0; attempt < 2; attempt++) {
-        await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", `
+        await promisify(execFile)(process.execPath, ["--import=tsx", "--input-type=module", "--eval", `
           import { Effect } from "effect";
           import { windowsMachineStateLayer } from "./src/machine/windows.layer.ts";
           import { restoreRollbackReference } from "./src/synchronization/resource-executors.ts";
