@@ -42,6 +42,16 @@ describe("credential-safe CLI output", () => {
     });
   });
 
+  it("shows a value that only names an environment variable, and still redacts literals", () => {
+    expect(sanitizeCliData({
+      headers: { Authorization: "Bearer ${API_TOKEN}", "X-Api-Key": "{env:SERVICE_KEY}" },
+      env: { GITHUB_TOKEN: "$GITHUB_TOKEN", OTHER_TOKEN: "Bearer ${API_TOKEN}-suffix" },
+    })).toEqual({
+      env: { GITHUB_TOKEN: "$GITHUB_TOKEN", OTHER_TOKEN: "[REDACTED]" },
+      headers: { Authorization: "Bearer ${API_TOKEN}", "X-Api-Key": "{env:SERVICE_KEY}" },
+    });
+  });
+
   it("redacts quoted values and URL credentials in free text", () => {
     const text = 'failed --password "test-only two words" https://user:pass@example.test/?api_key=test-only-key&port=9000';
     expect(redactText(text)).toBe('failed --password [REDACTED] https://[REDACTED]@example.test/?api_key=[REDACTED]&port=9000');

@@ -26,8 +26,19 @@ import {
   CertificateFingerprint,
   CredentialReference,
 } from "../domain/brand.ts";
-import { CredentialStorageError } from "../machine/machine-state.errors.ts";
+import {
+  availableBytes,
+  diskMarginBytes,
+  requireFreeSpace,
+} from "../machine/disk-space.ts";
+import {
+  CredentialStorageError,
+  credentialFailureDetail,
+  InsufficientDiskError,
+  type MachineStateError,
+} from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import { BlobTransferProgress } from "./blob-transfer-progress.ts";
 import {
   DuplicateFollowerIdentityError,
   EnrollmentFingerprintMismatchError,
@@ -37,6 +48,7 @@ import {
   InvitationNotFoundError,
   InvitationReplayError,
   InvalidFollowerCredentialError,
+  LegacyRevisionFormatError,
   MalformedEnrollmentRequestError,
   RevokedFollowerCredentialError,
   TransportIntegrityError,
@@ -45,6 +57,7 @@ import {
   TransportResourceNotFoundError,
   TransportSizeLimitError,
   TransportUnauthorizedError,
+  SourceVersionMismatchError,
   type EnrollmentError,
 } from "./enrollment.errors.ts";
 import {
@@ -72,6 +85,14 @@ import {
   sha256BytesHex,
   type JsonValue,
 } from "../profile/profile-codec.ts";
+import { buildIdentity } from "../runtime/build-identity.ts";
+import {
+  announcedVersion,
+  canonfigVersionHeader,
+  peerVersionCompatible,
+  sourceVersionMismatch,
+  versionMismatchMessage,
+} from "./version-handshake.ts";
 
 const decode = Schema.decodeUnknownSync;
 const maximumResponseBytes = 64 * 1024;
@@ -120,6 +141,7 @@ const checkedEndpoint = (
 
 const inspectCertificate = (
   endpoint: URL,
+  timeoutMilliseconds = defaultTimeoutMilliseconds,
 ): Effect.Effect<PinnedCertificate, EnrollmentTransportError> =>
   Effect.tryPromise({
     try: () =>
@@ -130,7 +152,7 @@ const inspectCertificate = (
           rejectUnauthorized: false,
           minVersion: "TLSv1.2",
         });
-        socket.setTimeout(10_000);
+        socket.setTimeout(timeoutMilliseconds);
         socket.once("secureConnect", () => {
           const peer = socket.getPeerCertificate();
           if (peer.raw === undefined) {
@@ -151,11 +173,18 @@ const inspectCertificate = (
         });
         socket.once("error", rejectCertificate);
       }),
-    catch: () =>
-      new EnrollmentTransportError({
+    catch: (cause) => {
+      // A refused or reset connection means nothing answered at the endpoint
+      // (a stopped Source, or a tunnel that is down), not a certificate
+      // problem; say which so the operator looks at the right component.
+      const code = cause instanceof Error && "code" in cause ? String(cause.code) : "";
+      return new EnrollmentTransportError({
         operation: "inspect source certificate",
-        message: "the source TLS certificate could not be inspected",
-      }),
+        message: code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EPIPE"
+          ? `nothing answered at the Source endpoint ${endpoint.host} (${code}); start the Source, or run \`canonfig tunnel start\` if it is reached through a managed tunnel`
+          : "the source TLS certificate could not be inspected",
+      });
+    },
   });
 
 const requestJson = (
@@ -165,12 +194,16 @@ const requestJson = (
   certificate: PinnedCertificate,
   body?: EnrollFollowerRequest | undefined,
   authorization?: Redacted.Redacted<string> | undefined,
-): Effect.Effect<JsonResponse, EnrollmentTransportError> =>
+  timeoutMilliseconds = defaultTimeoutMilliseconds,
+): Effect.Effect<JsonResponse, EnrollmentTransportError | SourceVersionMismatchError> =>
   Effect.tryPromise({
     try: () =>
       new Promise<JsonResponse>((resolveResponse, rejectResponse) => {
         const encoded = body === undefined ? undefined : JSON.stringify(body);
-        const headers: OutgoingHttpHeaders = { accept: "application/json" };
+        const headers: OutgoingHttpHeaders = {
+          accept: "application/json",
+          [canonfigVersionHeader]: buildIdentity.packageVersion,
+        };
         if (encoded !== undefined) {
           headers["content-type"] = "application/json";
           headers["content-length"] = Buffer.byteLength(encoded);
@@ -189,6 +222,12 @@ const requestJson = (
           minVersion: "TLSv1.2",
           headers,
         }, (response) => {
+          const sourceVersion = announcedVersion(response.headers[canonfigVersionHeader]);
+          if (!peerVersionCompatible(sourceVersion)) {
+            rejectResponse(sourceVersionMismatch(sourceVersion));
+            request.destroy();
+            return;
+          }
           const chunks: Array<Buffer> = [];
           let bytes = 0;
           response.once("error", (cause) => {
@@ -220,17 +259,19 @@ const requestJson = (
             }
           });
         });
-        request.setTimeout(10_000, () => {
+        request.setTimeout(timeoutMilliseconds, () => {
           request.destroy(new Error("source request timed out"));
         });
         request.once("error", rejectResponse);
         request.end(encoded);
       }),
-    catch: () =>
-      new EnrollmentTransportError({
-        operation: "request source enrollment endpoint",
-        message: "the source enrollment endpoint could not be reached",
-      }),
+    catch: (cause) =>
+      cause instanceof SourceVersionMismatchError
+        ? cause
+        : new EnrollmentTransportError({
+          operation: "request source enrollment endpoint",
+          message: "the source enrollment endpoint could not be reached",
+        }),
   });
 
 /**
@@ -278,6 +319,8 @@ export const reconstructEnrollmentWireError = (
       return new TransportSizeLimitError({ artifact: "transport-response", limit: 0 });
     case "TransportIntegrityError":
       return new TransportIntegrityError({ artifact: "source", message });
+    case "LegacyRevisionFormatError":
+      return new LegacyRevisionFormatError({ message });
     default:
       return new EnrollmentTransportError({
         operation: "source enrollment request",
@@ -379,7 +422,10 @@ export const enrollFollower = (
       });
     }
     const endpoint = yield* checkedEndpoint(input.invitation.endpoint);
-    const certificate = yield* enrollmentPhase(inspectCertificate(endpoint), input);
+    const certificate = yield* enrollmentPhase(
+      inspectCertificate(endpoint, enrollmentPhaseTimeout(input)),
+      input,
+    );
     if (certificate.fingerprint !== input.invitation.tlsFingerprint) {
       return yield* new EnrollmentFingerprintMismatchError({
         message: "the source TLS fingerprint does not match the invitation",
@@ -397,6 +443,8 @@ export const enrollFollower = (
         tlsFingerprint: input.invitation.tlsFingerprint,
         followerName: input.followerName,
       },
+      undefined,
+      enrollmentPhaseTimeout(input),
     ), input);
     if (response.status !== 201) return yield* wireError(response);
     const enrolled = yield* Schema.decodeUnknownEffect(EnrollFollowerResponseSchema)(
@@ -419,15 +467,18 @@ export const enrollFollower = (
         message: "the enrolled TLS fingerprint does not match the invitation",
       });
     }
+    // A fresh item per enrollment: rotating or replacing an identity must not
+    // overwrite the credential that still authenticates until the new one is
+    // finalized. The caller retires the previous item afterwards.
     const credentialReference = yield* machine.storeCredential({
-      name: `canonfig-follower-${enrolled.follower.id}-${enrolled.source.publicKeyFingerprint}`,
+      name: `canonfig-follower-${enrolled.follower.id}-${enrolled.source.publicKeyFingerprint}-${randomUUID()}`,
       value: Redacted.make(enrolled.credential),
     }).pipe(
-      Effect.mapError(() =>
+      Effect.mapError((error) =>
         new CredentialStorageError({
           operation: "store",
           reference: "follower credential",
-          message: "the follower credential could not be stored",
+          message: `the follower credential could not be stored in this machine's credential store: ${credentialFailureDetail(error)}`,
         })
       ),
     );
@@ -440,6 +491,7 @@ export const enrollFollower = (
         certificate,
         undefined,
         credential,
+        enrollmentPhaseTimeout(input),
       ), input);
       if (finalized.status !== 200) return yield* wireError(finalized);
     }
@@ -450,6 +502,19 @@ export const enrollFollower = (
       tlsFingerprint: enrolled.tlsFingerprint,
       authorizedProfiles: enrolled.authorizedProfiles,
     };
+  });
+
+/**
+ * Reading the enrolled credential happens on this machine before any Source
+ * request, so its failure is a local credential-store problem (locked
+ * keyring or Keychain, missing session bus) and keeps the native recovery
+ * text. It must never read as a Source-side authentication or revocation.
+ */
+const followerCredentialReadFailure = (error: MachineStateError): CredentialStorageError =>
+  new CredentialStorageError({
+    operation: "load",
+    reference: "follower credential",
+    message: `the follower credential could not be read from this machine's credential store: ${credentialFailureDetail(error)}`,
   });
 
 const mutateEnrollment = (
@@ -476,11 +541,7 @@ const mutateEnrollment = (
     const credential = yield* machine.loadCredential({
       reference: input.credentialReference,
     }).pipe(
-      Effect.mapError(() =>
-        new InvalidFollowerCredentialError({
-          message: "the follower credential is unavailable",
-        })
-      ),
+      Effect.mapError(followerCredentialReadFailure),
     );
     const response = yield* requestJson(
       "POST",
@@ -541,11 +602,7 @@ export const authenticateFollower = (
     const credential = yield* machine.loadCredential({
       reference: input.credentialReference,
     }).pipe(
-      Effect.mapError(() =>
-        new InvalidFollowerCredentialError({
-          message: "the follower credential is unavailable",
-        })
-      ),
+      Effect.mapError(followerCredentialReadFailure),
     );
     const response = yield* requestJson(
       "GET",
@@ -583,6 +640,8 @@ export interface SourceDescriptorProbe {
   readonly observedTlsFingerprint: typeof CertificateFingerprint.Type;
   readonly tlsMatch: boolean;
   readonly sourceFingerprint: string | undefined;
+  /** The release the Source announced; undefined when it predates the handshake. */
+  readonly sourceVersion: string | undefined;
 }
 
 /**
@@ -638,6 +697,7 @@ export const probeSourceDescriptor = (
               observedTlsFingerprint: decode(CertificateFingerprint)(observed),
               tlsMatch: false,
               sourceFingerprint: undefined,
+              sourceVersion: undefined,
             });
             return;
           }
@@ -650,7 +710,10 @@ export const probeSourceDescriptor = (
             ca: pem,
             rejectUnauthorized: true,
             minVersion: "TLSv1.2",
-            headers: { accept: "application/json" },
+            headers: {
+              accept: "application/json",
+              [canonfigVersionHeader]: buildIdentity.packageVersion,
+            },
           }, (response) => {
             const chunks: Array<Buffer> = [];
             let bytes = 0;
@@ -681,6 +744,7 @@ export const probeSourceDescriptor = (
                   observedTlsFingerprint: decode(CertificateFingerprint)(observed),
                   tlsMatch: true,
                   sourceFingerprint: descriptor.source.publicKeyFingerprint,
+                  sourceVersion: announcedVersion(response.headers[canonfigVersionHeader]),
                 });
               } catch {
                 rejectProbe(new Error("source descriptor is malformed"));
@@ -726,6 +790,9 @@ export interface FollowerLifecycleReport {
   readonly enrolled: FollowerLifecycleState;
   readonly converged: FollowerLifecycleState;
 }
+const appliesPublishedRevision = (applied: string, published: string): boolean =>
+  applied === published || applied.startsWith(`${published}:view:`);
+
 
 /**
  * Report follower lifecycle as five separate states.
@@ -757,6 +824,7 @@ export const queryFollowerLifecycle = (
       probe !== undefined
         && probe.tlsMatch
         && probe.sourceFingerprint === input.sourceFingerprint
+        && peerVersionCompatible(probe.sourceVersion)
         ? {
           reached: true,
           detail: "the source is reachable with pinned TLS and signing identities",
@@ -767,7 +835,9 @@ export const queryFollowerLifecycle = (
             ? "the source is unreachable"
             : !probe.tlsMatch
             ? "the source TLS identity does not match the pinned fingerprint"
-            : "the source signing identity does not match the pinned fingerprint",
+            : probe.sourceFingerprint !== input.sourceFingerprint
+            ? "the source signing identity does not match the pinned fingerprint"
+            : versionMismatchMessage(probe.sourceVersion, buildIdentity.packageVersion),
         };
     const authenticated = reachable.reached
       ? yield* authenticateFollower(input).pipe(
@@ -800,7 +870,7 @@ export const queryFollowerLifecycle = (
           ? "convergence could not be checked"
           : `profile ${input.selectedProfile} has no authorized revision`,
       }
-      : input.appliedRevisions.includes(latest.id)
+      : input.appliedRevisions.some((applied) => appliesPublishedRevision(applied, latest.id))
       ? { reached: true, detail: `applied revision ${latest.id}` }
       : {
         reached: false,
@@ -847,6 +917,7 @@ const transportRequest = (
         const headers: OutgoingHttpHeaders = {
           authorization: `Bearer ${Redacted.value(credential)}`,
           accept: "application/json, application/octet-stream",
+          [canonfigVersionHeader]: buildIdentity.packageVersion,
         };
         if (range !== undefined) headers.range = `bytes=${range.start}-${range.end}`;
         const request = httpsRequest({
@@ -860,6 +931,12 @@ const transportRequest = (
           minVersion: "TLSv1.2",
           headers,
         }, (response) => {
+          const sourceVersion = announcedVersion(response.headers[canonfigVersionHeader]);
+          if (!peerVersionCompatible(sourceVersion)) {
+            rejectOnce(sourceVersionMismatch(sourceVersion));
+            request.destroy();
+            return;
+          }
           const chunks: Array<Buffer> = [];
           let bytes = 0;
           const incomplete = (): void => {
@@ -936,6 +1013,7 @@ const transportRequest = (
         cause instanceof TransportInterruptedError
         || cause instanceof TransportMalformedResponseError
         || cause instanceof TransportSizeLimitError
+        || cause instanceof SourceVersionMismatchError
       ) return cause;
       return new EnrollmentTransportError({
         operation: "request source transport endpoint",
@@ -954,7 +1032,7 @@ const transportContext = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const endpoint = yield* checkedEndpoint(input.endpoint);
-    const certificate = yield* inspectCertificate(endpoint);
+    const certificate = yield* inspectCertificate(endpoint, input.timeoutMilliseconds);
     if (certificate.fingerprint !== input.tlsFingerprint) {
       return yield* new EnrollmentFingerprintMismatchError({
         message: "the source TLS fingerprint does not match the pinned fingerprint",
@@ -963,11 +1041,7 @@ const transportContext = (
     const credential = yield* machine.loadCredential({
       reference: input.credentialReference,
     }).pipe(
-      Effect.mapError(() =>
-        new InvalidFollowerCredentialError({
-          message: "the follower credential is unavailable",
-        })
-      ),
+      Effect.mapError(followerCredentialReadFailure),
     );
     return { endpoint, certificate, credential };
   });
@@ -1165,6 +1239,7 @@ export const retrieveBlob = (
       }
       chunks.push(Buffer.from(response.body));
       offset = end + 1;
+      input.onProgress?.(offset);
     } while (offset < input.blobBytes);
     const bytes = Buffer.concat(chunks, input.blobBytes);
     if (sha256BytesHex(bytes) !== input.blobId) {
@@ -1253,9 +1328,11 @@ const cachedBlob = async (
   }
 };
 
+const NoSpaceError = Schema.Struct({ code: Schema.Literal("ENOSPC") });
+
 export const fetchRevision = (
   input: FetchRevisionInput,
-): Effect.Effect<FetchedRevision, EnrollmentError, MachineState> =>
+): Effect.Effect<FetchedRevision, EnrollmentError | InsufficientDiskError, MachineState> =>
   Effect.gen(function*() {
     const metadata = yield* getRevisionMetadata(input);
     const blobDirectory = join(input.cacheDirectory, "blobs");
@@ -1301,19 +1378,35 @@ export const fetchRevision = (
       }
     }
     const ids = [...blobBytes.keys()];
-    const blobs: Array<CachedBlob> = [];
-    let downloadedBlobs = 0;
-    let reusedBlobs = 0;
+    const cached = new Map<string, CachedBlob>();
+    let missingBytes = 0n;
     for (const id of ids) {
-      const blobId = decode(BlobId)(id);
       const existing = yield* Effect.promise(() =>
         cachedBlob(blobDirectory, id, blobBytes.get(id)!)
       );
-      if (existing !== undefined) {
-        blobs.push(existing);
-        reusedBlobs += 1;
-        continue;
+      if (existing === undefined) {
+        missingBytes += BigInt(blobBytes.get(id)!);
+      } else {
+        cached.set(id, existing);
       }
+    }
+    // The signed sizes are known before the first byte arrives. Downloading
+    // until the cache filled up used to take minutes and then fail as a
+    // transport error.
+    yield* requireFreeSpace([{ path: blobDirectory, bytes: missingBytes }]);
+    const progress = yield* BlobTransferProgress;
+    // Smallest first: an interruption inside a large blob then keeps every
+    // smaller blob verified in the cache, and the next run fetches only what
+    // is still missing. A blob is cached only whole and verified, so one cut
+    // mid-transfer is fetched again from its start.
+    const missing = ids
+      .filter((id) => !cached.has(id))
+      .sort((left, right) => blobBytes.get(left)! - blobBytes.get(right)!);
+    const total = missing.reduce((sum, id) => sum + blobBytes.get(id)!, 0);
+    let received = 0;
+    for (const [index, id] of missing.entries()) {
+      const blobId = decode(BlobId)(id);
+      const bytesOfBlob = blobBytes.get(id)!;
       const bytes = yield* retrieveBlob({
         endpoint: input.endpoint,
         tlsFingerprint: input.tlsFingerprint,
@@ -1321,19 +1414,51 @@ export const fetchRevision = (
         sourceFingerprint: input.sourceFingerprint,
         revisionId: metadata.id,
         blobId,
-        blobBytes: blobBytes.get(id)!,
+        blobBytes: bytesOfBlob,
         timeoutMilliseconds: input.timeoutMilliseconds,
         maximumBlobBytes: input.maximumBlobBytes,
         signal: input.signal,
+        onProgress: (blobReceived) => progress({
+          blob: id,
+          blobIndex: index + 1,
+          blobCount: missing.length,
+          blobReceived,
+          blobBytes: bytesOfBlob,
+          received: received + blobReceived,
+          total,
+        }),
       });
       const path = join(blobDirectory, id);
+      // Space can still run out while writing when something else fills the
+      // disk after the preflight. That is a disk-space failure too.
       yield* Effect.tryPromise({
         try: () => atomicWrite(path, bytes),
-        catch: (cause) => cacheFailure("cache verified blob", cause),
-      });
-      blobs.push({ id: blobId, path });
-      downloadedBlobs += 1;
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause): Effect.Effect<never, InsufficientDiskError | EnrollmentTransportError> =>
+          Schema.is(NoSpaceError)(cause)
+            ? Effect.flatMap(availableBytes(blobDirectory), (available) =>
+              Effect.fail(new InsufficientDiskError({
+                path: blobDirectory,
+                requiredBytes: BigInt(bytes.byteLength) + diskMarginBytes,
+                availableBytes: available,
+              })))
+            : Effect.fail(cacheFailure("cache verified blob", cause))
+        ),
+      );
+      received += bytesOfBlob;
+      // An empty blob has no range, so it reports once it is cached.
+      if (bytesOfBlob === 0) {
+        progress({
+          blob: id, blobIndex: index + 1, blobCount: missing.length,
+          blobReceived: 0, blobBytes: 0, received, total,
+        });
+      }
+      cached.set(id, { id: blobId, path });
     }
+    const blobs = ids.map((id) => cached.get(id)!);
+    const downloadedBlobs = missing.length;
+    const reusedBlobs = ids.length - missing.length;
     const metadataPath = join(
       revisionDirectory,
       `${createHash("sha256").update(metadata.id).digest("hex")}.json`,

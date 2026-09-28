@@ -1,12 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
-import { establishSetupScope, runSetupPreflight } from "../src/setup/setup.controller.ts";
+import { MachineState } from "../src/machine/machine-state.service.ts";
+import { establishSetupScope, probeTools, runSetupPreflight } from "../src/setup/setup.controller.ts";
 
 import {
   nextEligibleSetupStage,
@@ -154,6 +156,61 @@ describe("setup controller decisions", () => {
     },
   );
 
+  it.runIf(process.platform === "linux" && process.env["RUSTUP_HOME"] === undefined)(
+    "probes installers without letting corepack or rustup shims write state",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "canonfig-setup-probe-"));
+      const home = join(root, "home");
+      const bin = join(root, "bin");
+      mkdirSync(home);
+      mkdirSync(bin);
+      try {
+        // A rustup proxy writes its settings file on any invocation.
+        writeFileSync(join(bin, "rustup"), [
+          "#!/bin/sh",
+          "mkdir -p \"$RUSTUP_HOME\" && touch \"$RUSTUP_HOME/settings.toml\"",
+          "echo 'cargo 1.99.0'",
+          "",
+        ].join("\n"));
+        chmodSync(join(bin, "rustup"), 0o755);
+        symlinkSync("rustup", join(bin, "cargo"));
+        // A corepack shim downloads the package manager unless network is off.
+        writeFileSync(join(bin, "pnpm"), [
+          "#!/bin/sh",
+          "[ \"$COREPACK_ENABLE_NETWORK\" = 0 ] || mkdir -p \"$HOME/.cache/node/corepack\"",
+          "exit 1",
+          "",
+        ].join("\n"));
+        chmodSync(join(bin, "pnpm"), 0o755);
+        const probe = Effect.gen(function*() {
+          return yield* probeTools(yield* MachineState, "linux");
+        }).pipe(Effect.provide(linuxMachineStateLayer({
+          environment: [
+            { name: "HOME", value: home },
+            { name: "PATH", value: bin },
+          ],
+        })));
+
+        const fresh = await Effect.runPromise(probe);
+        expect(fresh.find((tool) => tool.method === "cargo")).toMatchObject({ verified: false });
+        expect(fresh.find((tool) => tool.method === "pnpm")).toMatchObject({ verified: false });
+        expect(existsSync(join(home, ".rustup"))).toBe(false);
+        expect(existsSync(join(home, ".cache"))).toBe(false);
+
+        // Once rustup is configured, running its proxy changes nothing new.
+        mkdirSync(join(home, ".rustup"));
+        writeFileSync(join(home, ".rustup", "settings.toml"), "version = \"12\"\n");
+        const configured = await Effect.runPromise(probe);
+        expect(configured.find((tool) => tool.method === "cargo")).toMatchObject({
+          verified: true,
+          version: "cargo 1.99.0",
+        });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("rejects unknown request scopes with the supported list", async () => {
     const error = await Effect.runPromise(Effect.flip(establishSetupScope("minimal")));
     expect(error).toMatchObject({ _tag: "SetupError", category: "usage" });
@@ -242,4 +299,69 @@ describe("setup controller decisions", () => {
       ],
     }))).toBe("complete");
   });
+});
+
+describe("setup decision record", () => {
+  const projectRoot = resolve(import.meta.dirname, "..");
+  const runtimeEntrypoint = resolve(projectRoot, "src/runtime/main.ts");
+
+  it("records mode and discovery paths, and setup status shows them with the approver and stages", () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-setup-record-"));
+    const discoveryFile = join(home, "package.json");
+    writeFileSync(discoveryFile, "{\"name\":\"record\"}\n");
+    const setup = (arguments_: ReadonlyArray<string>) => {
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", runtimeEntrypoint, "setup", ...arguments_, "--json"],
+        {
+          cwd: projectRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+            CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, ".canonfig-credentials"),
+            CANONFIG_LOG: "off",
+          },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      return JSON.parse(result.stdout).data;
+    };
+    const plan = (mode: ReadonlyArray<string>) => setup([
+      "plan", "--role", "follower", "--scope", "cli-only", ...mode,
+      "--file", discoveryFile, "--file", join(home, "missing.md"),
+    ]);
+    try {
+      const planned = plan(["--mode", "advanced"]);
+      expect(planned.mode).toBe("advanced");
+      // Only files discovery actually read are recorded; the missing one is an
+      // exclusion.
+      expect(planned.discoveryPaths).toHaveLength(1);
+      expect(planned.discoveryPaths[0]).toMatch(/package\.json$/u);
+      setup(["approve", "--approver", "operator"]);
+
+      // Switching modes is not a new plan: the approval survives.
+      const switched = plan(["--mode", "simple"]);
+      expect(switched.planDigest).toBe(planned.planDigest);
+      // A re-plan without --mode keeps the recorded choice.
+      plan([]);
+
+      const status = setup(["status"]);
+      expect(status).toMatchObject({
+        role: "follower",
+        scope: "cli-only",
+        mode: "simple",
+        discoveryPaths: planned.discoveryPaths,
+        planDigest: planned.planDigest,
+        approvals: [{ approver: "operator", digest: planned.planDigest }],
+      });
+      expect(status.stages.map((stage: { readonly stage: string }) => stage.stage))
+        .toEqual(["role", "preflight", "inventory", "plan", "approve"]);
+      expect(status.stages.every((stage: { readonly completedAt: string }) =>
+        !Number.isNaN(Date.parse(stage.completedAt)))).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

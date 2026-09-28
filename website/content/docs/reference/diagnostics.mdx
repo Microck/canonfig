@@ -1,6 +1,6 @@
 ---
 title: Diagnostics
-description: Run bounded health probes and map failures to the correct recovery path.
+description: Run bounded health probes, read what each one proves, and map failures to the correct recovery path.
 ---
 
 `doctor` runs seven isolated, bounded probes. One timeout or failure does not
@@ -10,61 +10,147 @@ prevent the other probes from reporting.
 canonfig doctor --no-input --timeout-ms 5000
 ```
 
-Use JSON when another tool will inspect the report:
+The human report prints one line per probe. Use JSON when another tool will
+inspect the report:
 
 ```bash
 canonfig doctor --no-input --timeout-ms 5000 --json
 ```
 
-The report schema is `canonfig.doctor/v1`. Its overall status is `healthy`,
-`degraded`, or `unhealthy`.
+The report schema is `canonfig.doctor/v1`. Each probe is `pass`, `warning`,
+`skipped`, or `fail`. The overall status is `unhealthy` when any probe fails,
+`degraded` when any probe warns or is skipped, and `healthy` otherwise. A
+failing probe carries a CLI failure category, and `doctor` exits with the code
+of the most serious one.
 
 ## Probes
 
 | Probe | What it checks |
 | --- | --- |
-| `runtime` | Node version, Canonfig version, platform, and architecture |
+| `runtime` | Node version (24 or newer), Canonfig version, platform, and architecture |
 | `state` | SQLite header, current migrations, readability, and writability |
-| `credentials` | Which credential provider is present, never whether it is writable |
-| `source` | Configuration, reachability, TLS pin, and follower authentication |
-| `scheduler` | Whether the requested native job is installed and current |
+| `credentials` | The native credential provider and how much access this session has proven |
+| `source` | Follower credential load, then reachability, TLS pin, and follower authentication |
+| `scheduler` | The effective native job, its next run, and the last unattended run |
 | `package-managers` | Availability of npm, pnpm, or yarn |
 | `agent-adapter` | Policy, supported adapter, and executable availability |
 
-`warning` and `skipped` produce a degraded report. `fail` produces an unhealthy
-report and maps to a CLI failure category.
+### credentials
 
-The `credentials` probe reads provider presence, which does not prove that the
-current session can write to the vault or reach it unattended, so it reports a
-warning rather than a pass. Every report is therefore at least `degraded`; read
-each probe rather than the overall status. A requested scheduler job that is
-missing, disabled, or drifted is a failure, and a current one proves only its
-installed definition, not that it has ever fired.
+The result states what was verified, in `details.verification`:
+
+| Verification | Status | Meaning |
+| --- | --- | --- |
+| `session-probe` | pass | A disposable item was written, read back, and deleted in this session (macOS Keychain). |
+| `credential-load` | pass | The `source` probe read the enrolled follower credential from the store in this process. Read access is verified (`readAccessVerified: true`); write access is not. |
+| `provider-presence` | warning | The provider is installed. Write and unattended access are not verified. |
+| `configuration` | warning | The explicitly configured local-file policy is in use. |
+| `not-verified` | warning | No noninteractive store is available: "noninteractive credential storage is unavailable:" plus the recovery text, which is also in `details.recovery`. |
+
+A failure of the capability check itself is Human Action Required: "credential
+capability check failed:" followed by the native detail.
+
+A healthy report is possible: on an enrolled follower whose `source` probe
+reads the credential, `credentials` passes. Provider presence alone stays a
+warning, because it does not prove the vault is writable or reachable from a
+scheduled run.
+
+### source
+
+The probe first reads the follower credential from the native store. Only then
+does it contact the Source.
+
+- If the store fails, the probe is Human Action Required: "this machine's
+  credential store could not return the follower credential, so no Source
+  request was made:" plus the native text.
+- If the read does not finish within `--timeout-ms`, the probe is Human Action
+  Required with `details.stage` `credential-load`: a locked keyring or Keychain
+  may be waiting for an unlock prompt the session cannot show. No Source request
+  was made.
+- A connection failure is transport; a TLS fingerprint mismatch or a rejected
+  credential is authentication or revocation.
+
+When the Source endpoint goes through a managed tunnel, `details.tunnel` holds
+the tunnel lifecycle (`running`, `down`, or `stopped`). A transport failure
+while the tunnel is down or stopped reads "configured source is unreachable
+because the managed tunnel `<endpoint>` is down" (or stopped), with
+`details.recovery` set to `canonfig tunnel start`.
+
+Without a configured Source (for example on the Source Machine itself), the
+probe is skipped.
+
+### scheduler
+
+The probe reads the effective native state, not only the files Canonfig wrote:
+for systemd, `systemctl --user show`, including drop-ins. `details` carries the
+`state`, `timezone`, `nextRun`, and, once the job has run, `lastFiredAt`,
+`lastFiredOutcome`, and `lastFiredReason`.
+
+- **Fail** (exit 7) when the job will not run as chosen: `disabled`,
+  `inactive`, `not-installed`, `overridden`, or calendar drift. A job disabled,
+  stopped, or deleted outside Canonfig reads "automation disabled outside
+  Canonfig" and says to run `canonfig schedule set` to restore it or
+  `canonfig schedule remove` to confirm manual operation.
+- **Warning** when the job is current but not proven: no unattended run has
+  completed yet, the last unattended run failed ("the last unattended run
+  failed at `<time>`: `<reason>`; the last completed one was at `<time>`"), a
+  run started and recorded no outcome, or Linux lingering is off ("run
+  `loginctl enable-linger <user>` to run it while logged out"). Binding-only
+  drift after an upgrade and a job installed by an earlier release without a
+  follower decision (`unmanaged`) are warnings too.
+- **Pass** when the job is current and the native scheduler has run it.
+- **Skipped** when the follower has no schedule decision and no job.
+
+See [Manage schedules](/how-to/manage-schedules#inspect-a-schedule) for every
+state.
 
 ## Diagnose by symptom
 
-### Authentication or revocation
+### Local credential store (exit 3)
 
-Check whether the Source Machine revoked the Follower Identity, whether the
-local credential reference still resolves, and whether the stored TLS pin
-matches the source. Do not reset trust automatically.
+The message names the store and what to run. On Linux, check that the session
+bus is reachable (`DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus`) and the
+login keyring is unlocked. On macOS over SSH, unlock the login Keychain for that
+session. See [Local credential-store failures](/reference/security#local-credential-store-failures).
 
-### Transport
+### Authentication or revocation (exit 5)
 
-Confirm the loopback source process is running on the enrolled endpoint and that
-the timeout is long enough for the probe. A reachable endpoint must still pass
-TLS pinning and authentication.
+Check whether the Source Machine revoked the Follower Identity and whether the
+stored TLS pin matches the Source. Canonfig never resets trust automatically;
+enroll again with a new invitation.
+
+### Transport (exit 6)
+
+Confirm the Source is serving on the enrolled endpoint. Run `source service
+status` on the Source Machine and `tunnel status` on the follower:
+
+```bash
+canonfig source service status
+canonfig tunnel status
+```
+
+"nothing answered at the Source endpoint" means no process accepted the
+connection: start the Source, or `canonfig tunnel start` when the endpoint goes
+through a managed tunnel. A tunnel whose SSH session is up while the Source on
+that host is down says so explicitly. A reachable endpoint must still pass TLS
+pinning and authentication.
+
+### Version mismatch (exit 2)
+
+"source/follower version mismatch" means the Source and this follower run
+different `major.minor` releases. A 4.0.0 Source refuses 3.2.x followers and
+vice versa. Do not use an in-place upgrade to resolve this mismatch; see
+[the fresh-install guide](/how-to/upgrade).
 
 ### Scheduler
-
-Inspect native scheduler state:
 
 ```bash
 canonfig schedule status
 ```
 
-A state of `drifted` or `disabled` is visible; setting the intended calendar can
-update the native definition.
+Follow the state's remedy in [Manage schedules](/how-to/manage-schedules).
+`schedule set` restores a job that was disabled or deleted; it refuses while a
+native override exists.
 
 ### Agent adapter
 
@@ -85,8 +171,10 @@ canonfig status
 canonfig sync --plan
 ```
 
-Status explains enrolled identity and recorded run state. A fresh plan rechecks
-Observed State; it does not erase previous action evidence.
+Status explains the enrolled identity and recorded run state; `converged` is
+false while a run is open or interrupted. A fresh plan rechecks Observed State;
+it does not erase previous action evidence. For an open run, see
+[Recover](/how-to/recover).
 
 <Callout title="Preserve evidence" type="warning">
   Do not delete the SQLite database, cache, or action journal as a first

@@ -46,13 +46,34 @@ export interface DiscoveredPackageMetadata {
   readonly buildPolicy?: BuildPolicy | undefined;
 }
 
+/**
+ * One copy of an executable found on PATH, with the evidence available
+ * without running it: a copy may be a shim or a server that must not start.
+ */
+export interface ExecutableCandidate {
+  readonly path: string;
+  readonly realPath: string;
+  readonly bytes: number;
+  readonly modifiedAt: string;
+  readonly sha256?: string | undefined;
+  /** `name@version` from the npm package or uv tool receipt that owns the copy. */
+  readonly packageVersion?: string | undefined;
+}
+
 export interface ToolDiscoveryEvidence {
   readonly sourcePath: string;
   readonly location: EvidenceLocation;
   readonly kind: DiscoverySourceKind;
   readonly invocation: ReadonlyArray<string>;
   readonly resolvedExecutable?: string | undefined;
+  /**
+   * Every distinct copy on PATH, in PATH order, when there is more than one.
+   * PATH order alone does not say which copy is intended.
+   */
+  readonly candidates?: ReadonlyArray<ExecutableCandidate> | undefined;
   readonly package?: DiscoveredPackageMetadata | undefined;
+  /** Declared fields a canonfig.tools entry lacks or gives an unsupported value. */
+  readonly incomplete?: ReadonlyArray<string> | undefined;
   readonly upstream?: string | undefined;
   readonly confidence: EvidenceConfidence;
   readonly reviewStatus: EvidenceReviewStatus;
@@ -107,7 +128,13 @@ export interface DiscoveredTool {
   readonly evidence: ReadonlyArray<ToolDiscoveryEvidence>;
   readonly recipes: ReadonlyArray<InstallationRecipe>;
   readonly reviewStatus: EvidenceReviewStatus;
-  readonly verify: { readonly command: ReadonlyArray<string> };
+  /**
+   * An MCP server is checked for presence only: it has no reliable version
+   * flag, and starting it would serve until killed.
+   */
+  readonly verify:
+    | { readonly method: "command"; readonly command: ReadonlyArray<string> }
+    | { readonly method: "executable-present"; readonly executable: string };
 }
 
 export interface DiscoveredSkill {
@@ -133,6 +160,8 @@ export type DiscoveredCatalogResource = DiscoveredTool | DiscoveredSkill;
 
 export type DiscoveryTaskReason =
   | "ambiguous-recipe"
+  | "ambiguous-executable"
+  | "incomplete-declaration"
   | "missing-version"
   | "missing-upstream"
   | "unresolved-executable";
@@ -203,6 +232,8 @@ const evidenceKey = (evidence: ToolDiscoveryEvidence): string =>
     evidence.kind,
     evidence.invocation.join("\0"),
     evidence.resolvedExecutable ?? "",
+    (evidence.candidates ?? []).map((candidate) => JSON.stringify(candidate)).join("\u0001"),
+    (evidence.incomplete ?? []).join("\u0001"),
     packageKey(evidence.package),
     evidence.upstream ?? "",
     evidence.confidence,
@@ -347,6 +378,7 @@ const recipeFromPackage = (
             "install",
             specification,
             "--no-build",
+            "--no-python-downloads",
             "--no-config",
             `--default-index=${index}`,
           ]
@@ -355,6 +387,7 @@ const recipeFromPackage = (
             "tool",
             "install",
             specification,
+            "--no-python-downloads",
             "--no-config",
             `--default-index=${index}`,
           ],
@@ -451,9 +484,18 @@ const makeTask = (
   upstream: string | undefined,
   bounds: DiscoveryTaskBounds | undefined,
 ): DiscoveryAgentTask => {
-  const evidenceText = evidence.map((record) =>
-    `${record.sourcePath}#${locationKey(record.location)} ${record.invocation.join(" ")}`
-  );
+  const evidenceText = evidence.map((record) => {
+    const base = `${record.sourcePath}#${locationKey(record.location)} ${record.invocation.join(" ")}`;
+    const missing = record.incomplete === undefined ? "" : ` (missing or unsupported: ${record.incomplete.join(", ")})`;
+    const copies = record.candidates === undefined ? "" : ` (copies on PATH, first wins: ${
+      record.candidates.map((candidate) =>
+        `${candidate.path} [${candidate.packageVersion ?? "version unknown"}, modified ${candidate.modifiedAt}, ${
+          candidate.sha256 === undefined ? `${candidate.bytes} bytes` : `sha256 ${candidate.sha256.slice(0, 12)}`
+        }]`
+      ).join("; ")
+    })`;
+    return `${base}${missing}${copies}`;
+  });
   const executables = [...new Set(evidence.flatMap((record) => {
     const executable = record.invocation[0];
     return executable === undefined ? [] : [executable];
@@ -525,20 +567,39 @@ const catalogToolWithBounds = (
   recipes.sort((left, right) => compareText(recipeKey(left), recipeKey(right)));
 
   const acceptedEvidence = evidence.filter((record) => record.reviewStatus === "accepted");
-  const resolved = acceptedEvidence.some((record) => record.resolvedExecutable !== undefined);
+  const npmRunner = evidence.some((record) =>
+    record.package?.ecosystem === "npm" && ["npm", "npx"].includes(record.invocation[0] ?? "")
+  );
+  const knownExecutable = evidence.find((record) =>
+    record.package?.ecosystem === "npm"
+    && record.location.kind === "field"
+    && /(?:^|\.)bin\./u.test(record.location.field)
+  ) ?? evidence.find((record) =>
+    record.package === undefined && record.resolvedExecutable !== undefined
+  );
+  // Finding npx on PATH proves nothing about the package's published bin name.
+  const resolved = npmRunner
+    ? knownExecutable !== undefined
+    : evidence.some((record) => record.resolvedExecutable !== undefined);
   const packageWithoutVersion = acceptedEvidence.some((record) =>
     record.package !== undefined && record.package.version === undefined
   );
   const tasks: Array<DiscoveryAgentTask> = [];
   if (ambiguous) tasks.push(makeTask(group.id, "ambiguous-recipe", evidence, upstream, bounds));
+  if (evidence.some((record) => record.candidates !== undefined)) {
+    tasks.push(makeTask(group.id, "ambiguous-executable", evidence, upstream, bounds));
+  }
+  if (evidence.some((record) => record.incomplete !== undefined)) {
+    tasks.push(makeTask(group.id, "incomplete-declaration", evidence, upstream, bounds));
+  }
   if (recipes.length === 0 && packageWithoutVersion) {
     tasks.push(makeTask(group.id, "missing-version", evidence, upstream, bounds));
   }
   if (upstream === undefined) tasks.push(makeTask(group.id, "missing-upstream", evidence, upstream, bounds));
-  if (!resolved && recipes.length === 0) {
+  if (!resolved && (recipes.length === 0 || npmRunner)) {
     tasks.push(makeTask(group.id, "unresolved-executable", evidence, upstream, bounds));
   }
-  const executable = executableForEvidence(evidence[0]!);
+  const executable = executableForEvidence(knownExecutable ?? evidence[0]!);
   const reviewStatus = tasks.length === 0 && evidence.some((record) => record.reviewStatus === "accepted")
     ? "accepted"
     : "needs-review";
@@ -551,7 +612,9 @@ const catalogToolWithBounds = (
       evidence,
       recipes,
       reviewStatus,
-      verify: { command: [executable, "--version"] },
+      verify: evidence.some((record) => record.kind === "mcp")
+        ? { method: "executable-present", executable }
+        : { method: "command", command: [executable, "--version"] },
     },
     tasks,
   };

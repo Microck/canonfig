@@ -1,14 +1,21 @@
+import { realpath, stat } from "node:fs/promises";
 import { arch, release, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { Effect, Schema } from "effect";
 
 import { SourceNotInitializedError } from "../enrollment/enrollment.errors.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import type { MachineStateError } from "../machine/machine-state.errors.ts";
+import type { MachinePath, ProcessResult } from "../machine/machine-state.types.ts";
 import { canonicalJson, sha256Hex, type JsonValue } from "../profile/profile-codec.ts";
 import { scanDiscovery } from "../profile/discovery.ts";
 import type { DiscoveredTool, InstallationRecipe } from "../profile/tool-catalog.ts";
+import {
+  minimumSupportedNodeMajor,
+  nodeRuntimeIsSupported,
+} from "../runtime/build-identity.ts";
 import { SetupError } from "./setup.errors.ts";
 import {
   findSetupDependencyCycle,
@@ -31,11 +38,14 @@ import {
   setupToolMethodsFor,
   type SetupInventory,
   type SetupJournal,
+  SetupMode,
   type SetupPlanItem,
   SetupRecipe,
   SetupRequestScope,
   SetupRole,
   type SetupProvenance,
+  type SetupStageRecord,
+  type SetupApproval,
 } from "./setup.types.ts";
 
 /** The journal lives next to the state database, like the schedule fires. */
@@ -73,6 +83,19 @@ export const establishSetupScope = (value: string): Effect.Effect<SetupRequestSc
         `unknown setup scope: ${value}`,
         "usage",
         "Run setup with --scope full, --scope cli-only, or --scope project-only.",
+      )
+    ),
+  );
+
+/** Establish the interview depth the operator chose. */
+export const establishSetupMode = (value: string): Effect.Effect<SetupMode, SetupError> =>
+  Schema.decodeUnknownEffect(SetupMode)(value).pipe(
+    Effect.mapError(() =>
+      fail(
+        "setup mode",
+        `unknown setup mode: ${value}`,
+        "usage",
+        "Run setup plan with --mode simple or --mode advanced.",
       )
     ),
   );
@@ -178,6 +201,14 @@ export const runSetupPreflight = (
   MachineState
 > =>
   Effect.gen(function*() {
+    if (!nodeRuntimeIsSupported(process.versions.node)) {
+      return yield* fail(
+        "setup preflight",
+        `Node.js ${process.versions.node} is unsupported; Canonfig requires Node.js ${minimumSupportedNodeMajor} or newer`,
+        "prerequisite",
+        `Install Node.js ${minimumSupportedNodeMajor} or newer, then restart setup.`,
+      );
+    }
     const machine = yield* MachineState;
     const directories = yield* machine.userDirectories().pipe(
       Effect.mapError((cause) =>
@@ -211,7 +242,71 @@ const probeOsRelease = (
     catch: () => fail("setup inventory", "the OS release identity could not be read", "state"),
   });
 
-const probeTools = (
+/**
+ * Whether an executable is a rustup proxy: a link to, or hard-linked copy of,
+ * the `rustup` binary beside it. Filesystem reads only.
+ */
+const isRustupProxy = async (executable: string): Promise<boolean> => {
+  const resolved = await realpath(executable).catch(() => executable);
+  if (/^rustup(?:-init)?(?:\.exe)?$/iu.test(basename(resolved))) return true;
+  const extension = /\.exe$/iu.test(executable) ? ".exe" : "";
+  const [self, rustup] = await Promise.all([
+    stat(executable).catch(() => undefined),
+    stat(join(dirname(executable), `rustup${extension}`)).catch(() => undefined),
+  ]);
+  return self !== undefined && rustup !== undefined && self.dev === rustup.dev && self.ino === rustup.ino;
+};
+
+/**
+ * `--version` for a probe, without the state some package-manager shims write
+ * on first use. A plan in a fresh home used to download pnpm through corepack
+ * and create ~/.rustup/settings.toml. Corepack now runs with network access
+ * and auto-pinning disabled, so it only reads its cache. rustup writes its
+ * settings file on any proxy invocation, even with auto-install disabled, so a
+ * proxy runs only when that file already exists; otherwise it is not run.
+ */
+const probeVersion = (
+  machine: MachineState["Service"],
+  executable: MachinePath,
+): Effect.Effect<
+  { readonly ran: true; readonly result: ProcessResult } | { readonly ran: false; readonly reason: string },
+  MachineStateError
+> =>
+  Effect.gen(function*() {
+    const home = (yield* machine.userDirectories()).home;
+    const rustupHome = process.env["RUSTUP_HOME"] ?? join(home.absolute, ".rustup");
+    if (yield* Effect.promise(() => isRustupProxy(executable.absolute))) {
+      const settings = yield* machine.normalizePath({ path: join(rustupHome, "settings.toml") });
+      const configured = yield* machine.inspectPath(settings).pipe(
+        Effect.as(true),
+        Effect.catch(() => Effect.succeed(false)),
+      );
+      if (!configured) {
+        return {
+          ran: false,
+          reason:
+            `${executable.absolute} is a rustup proxy and rustup has no settings at ${settings.absolute}; running it would create them. Run \`rustup default stable\` to configure a toolchain, then rerun setup.`,
+        } as const;
+      }
+    }
+    const result = yield* machine.runProcess({
+      executable,
+      arguments: ["--version"],
+      environment: [
+        { name: "COREPACK_ENABLE_NETWORK", value: "0" },
+        { name: "COREPACK_ENABLE_AUTO_PIN", value: "0" },
+        { name: "COREPACK_ENABLE_DOWNLOAD_PROMPT", value: "0" },
+        { name: "RUSTUP_AUTO_INSTALL", value: "0" },
+        { name: "RUSTUP_HOME", value: rustupHome },
+      ],
+      timeoutMilliseconds: setupProcessTimeoutMilliseconds,
+      maximumOutputBytes: maxSetupProcessBytes,
+    });
+    return { ran: true, result } as const;
+  });
+
+/** The installer inventory of a setup plan. Probes read state only. */
+export const probeTools = (
   machine: MachineState["Service"],
   platform: SetupInventory["platform"],
 ): Effect.Effect<SetupInventory["tools"], SetupError> =>
@@ -223,12 +318,10 @@ const probeTools = (
         Effect.catch(() => Effect.succeed(undefined)),
       );
       if (found === undefined) continue;
-      const result = yield* machine.runProcess({
-        executable: found.path,
-        arguments: ["--version"],
-        timeoutMilliseconds: setupProcessTimeoutMilliseconds,
-        maximumOutputBytes: maxSetupProcessBytes,
-      }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      const probe = yield* probeVersion(machine, found.path).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
+      const result = probe?.ran === true ? probe.result : undefined;
       if (result === undefined || result.exitCode !== 0) {
         tools.push({ method, executable: found.path.absolute, verified: false });
         continue;
@@ -359,7 +452,9 @@ const setupRecipeFor = (
   inventoryTools: SetupInventory["tools"],
 ): SetupRecipe | undefined => {
   if (tool.reviewStatus !== "accepted") return undefined;
-  const verifyExecutable = tool.verify.command[0];
+  const verifyExecutable = tool.verify.method === "command"
+    ? tool.verify.command[0]
+    : tool.verify.executable;
   if (verifyExecutable === undefined) return undefined;
   for (const recipe of tool.recipes) {
     const installerMethod = installerMethodFor(recipe);
@@ -378,7 +473,9 @@ const setupRecipeFor = (
       installerExecutable: installer.executable,
       arguments: recipe.command.slice(1),
       verifyExecutable,
-      verifyArguments: tool.verify.command.slice(1),
+      // Absent for a presence-only verifier, such as an MCP server that would
+      // start serving instead of printing a version.
+      verifyArguments: tool.verify.method === "command" ? tool.verify.command.slice(1) : undefined,
       version: recipe.version,
       source: recipe.source,
       upstream: tool.upstream,
@@ -398,6 +495,8 @@ export const runSetupDiscovery = (
 ): Effect.Effect<
   {
     readonly files: number;
+    /** The normalized absolute paths discovery read. */
+    readonly paths: ReadonlyArray<string>;
     readonly evidence: number;
     readonly digest: string;
     readonly recipes: ReadonlyArray<SetupRecipe>;
@@ -417,12 +516,13 @@ export const runSetupDiscovery = (
       agentTasks: [],
     })));
     if (files.length === 0) {
-      return { files: 0, evidence: 0, digest: emptyDigest, recipes: [], exclusions: [] };
+      return { files: 0, paths: [], evidence: 0, digest: emptyDigest, recipes: [], exclusions: [] };
     }
     const bounded = yield* checkDiscoverySizes(machine, files);
     if (bounded.accepted.length === 0) {
       return {
         files: 0,
+        paths: [],
         evidence: 0,
         digest: emptyDigest,
         recipes: [],
@@ -454,6 +554,7 @@ export const runSetupDiscovery = (
     const digest = sha256Hex(canonicalJson(asJson(result)));
     return {
       files: bounded.accepted.length,
+      paths: bounded.accepted,
       evidence: result.evidence.length,
       digest,
       recipes,
@@ -548,9 +649,40 @@ const defaultSetupIntent = (role: SetupRole, requestScope: SetupRequestScope): s
   return `establish this machine as ${role}`;
 };
 
+/** The operator's choices that are recorded but do not shape the plan. */
+interface SetupDecisionRecord {
+  readonly mode: SetupMode | undefined;
+  readonly discoveryPaths: ReadonlyArray<string>;
+}
+
+/**
+ * Keep an unchanged plan and its approvals, updating only the recorded mode
+ * and discovery paths when they changed.
+ */
+const recordSetupDecisions = (
+  machine: MachineState["Service"],
+  journalPath: string,
+  journal: SetupJournal,
+  decision: SetupDecisionRecord,
+): Effect.Effect<SetupJournal, SetupError> => {
+  const recordedPaths = journal.discoveryPaths ?? [];
+  const unchanged = journal.mode === decision.mode
+    && recordedPaths.length === decision.discoveryPaths.length
+    && recordedPaths.every((path, index) => path === decision.discoveryPaths[index]);
+  if (unchanged) return Effect.succeed(journal);
+  const updated: SetupJournal = {
+    ...journal,
+    mode: decision.mode,
+    discoveryPaths: [...decision.discoveryPaths],
+    updatedAt: new Date().toISOString(),
+  };
+  return writeJournal(machine, journalPath, updated).pipe(Effect.as(updated));
+};
+
 export interface SetupPlanInput {
   readonly roleText: string;
   readonly scopeText?: string | undefined;
+  readonly modeText?: string | undefined;
   readonly files: ReadonlyArray<string>;
   readonly intent?: string | undefined;
 }
@@ -564,6 +696,7 @@ export const planSetup = (
     // The role is established before any role-specific inspection runs.
     const role = yield* establishSetupRole(input.roleText);
     const requestScope = yield* establishSetupScope(input.scopeText ?? "full");
+    const chosenMode = input.modeText === undefined ? undefined : yield* establishSetupMode(input.modeText);
     const preflight = yield* runSetupPreflight(role, requestScope);
     const partial = yield* collectSetupInventory(preflight);
     const discovery = yield* runSetupDiscovery(input.files, partial.tools);
@@ -600,6 +733,11 @@ export const planSetup = (
       );
     }
     const catalog = reuseCatalog(previous, inventory.tools, discovery.recipes, inventory.platform);
+    // A mode chosen earlier stays recorded until the operator chooses another.
+    const decision: SetupDecisionRecord = {
+      mode: chosenMode ?? previous?.mode,
+      discoveryPaths: discovery.paths,
+    };
     const intent = input.intent ?? defaultSetupIntent(role, requestScope);
     const planDigest = setupPlanDigest({
       role,
@@ -611,7 +749,7 @@ export const planSetup = (
     });
     if (previous !== undefined && previous.planDigest === planDigest) {
       // Unchanged discovery and approvals survive a re-plan.
-      return previous;
+      return yield* recordSetupDecisions(machine, journalPath, previous, decision);
     }
     if (
       previous !== undefined
@@ -627,13 +765,15 @@ export const planSetup = (
       })
     ) {
       // Pre-scope journal with unchanged inputs: approvals survive the upgrade.
-      return previous;
+      return yield* recordSetupDecisions(machine, journalPath, previous, decision);
     }
     const timestamp = new Date().toISOString();
     const journal: SetupJournal = {
       schema: "canonfig.setup/v1",
       role,
       scope: requestScope,
+      mode: decision.mode,
+      discoveryPaths: [...decision.discoveryPaths],
       planDigest,
       intent,
       inventory,
@@ -770,15 +910,14 @@ const executeSetupItem = (
             "state",
           );
         }
-        const result = yield* machine.runProcess({
-          executable,
-          arguments: ["--version"],
-          timeoutMilliseconds: setupProcessTimeoutMilliseconds,
-          maximumOutputBytes: maxSetupProcessBytes,
-        }).pipe(
+        const probe = yield* probeVersion(machine, executable).pipe(
           Effect.mapError((cause) =>
             fail("setup apply", `tool ${method} could not be verified: ${cause.message}`, "state")),
         );
+        if (!probe.ran) {
+          return yield* fail("setup apply", `tool ${method} was not run: ${probe.reason}`, "prerequisite");
+        }
+        const result = probe.result;
         if (result.exitCode !== 0) {
           return yield* fail(
             "setup apply",
@@ -842,6 +981,7 @@ const executeSetupItem = (
         }
         const target = yield* machine.findExecutable({
           name: recipe.verifyExecutable,
+          installMethods: [{ method: recipe.installerMethod, installer }],
         }).pipe(
           Effect.mapError((cause) =>
             fail(
@@ -850,21 +990,24 @@ const executeSetupItem = (
               "prerequisite",
             )),
         );
-        const verified = yield* machine.runProcess({
-          executable: target.path,
-          arguments: recipe.verifyArguments,
-          timeoutMilliseconds: setupProcessTimeoutMilliseconds,
-          maximumOutputBytes: maxSetupProcessBytes,
-        }).pipe(
-          Effect.mapError((cause) =>
-            fail("setup apply", `recipe ${recipe.resource} verification failed: ${cause.message}`, "state")),
-        );
-        if (verified.exitCode !== 0) {
-          return yield* fail(
-            "setup apply",
-            `recipe ${recipe.resource} verifier exited ${String(verified.exitCode)}`,
-            "prerequisite",
+        // A presence-only verifier is satisfied by the lookup above.
+        if (recipe.verifyArguments !== undefined) {
+          const verified = yield* machine.runProcess({
+            executable: target.path,
+            arguments: recipe.verifyArguments,
+            timeoutMilliseconds: setupProcessTimeoutMilliseconds,
+            maximumOutputBytes: maxSetupProcessBytes,
+          }).pipe(
+            Effect.mapError((cause) =>
+              fail("setup apply", `recipe ${recipe.resource} verification failed: ${cause.message}`, "state")),
           );
+          if (verified.exitCode !== 0) {
+            return yield* fail(
+              "setup apply",
+              `recipe ${recipe.resource} verifier exited ${String(verified.exitCode)}`,
+              "prerequisite",
+            );
+          }
         }
         return {
           evidence: `installed and verified ${recipe.resource} ${recipe.version}`,
@@ -1006,12 +1149,23 @@ export const applySetup = (
     return journal;
   });
 
+/**
+ * The setup decision record: what was chosen (role, scope, mode, intent,
+ * discovery paths), who approved the current plan, and which stages completed
+ * when.
+ */
 export interface SetupStatus {
   readonly role?: SetupRole | undefined;
   readonly scope?: SetupRequestScope | undefined;
+  readonly mode?: SetupMode | undefined;
+  readonly intent?: string | undefined;
+  readonly discoveryPaths: ReadonlyArray<string>;
   readonly planDigest?: string | undefined;
   readonly stage: string;
   readonly approved: boolean;
+  /** Approvals of the current plan digest only. */
+  readonly approvals: ReadonlyArray<SetupApproval>;
+  readonly stages: ReadonlyArray<SetupStageRecord>;
   readonly items: ReadonlyArray<{ readonly id: string; readonly status: string }>;
   readonly catalog: ReadonlyArray<SetupProvenance>;
 }
@@ -1022,14 +1176,29 @@ export const setupStatus = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const journal = yield* readJournal(machine, journalPath);
-    if (journal === undefined) return { stage: "role", approved: false, items: [], catalog: [] };
+    if (journal === undefined) {
+      return {
+        stage: "role",
+        approved: false,
+        discoveryPaths: [],
+        approvals: [],
+        stages: [],
+        items: [],
+        catalog: [],
+      };
+    }
     const verdicts = setupItemVerdicts(journal.items, journal.records);
     return {
       role: journal.role,
       scope: journal.scope ?? "full",
+      mode: journal.mode,
+      intent: journal.intent,
+      discoveryPaths: [...(journal.discoveryPaths ?? [])],
       planDigest: journal.planDigest,
       stage: nextEligibleSetupStage(journal),
       approved: isSetupApproved(journal),
+      approvals: journal.approvals.filter((approval) => approval.digest === journal.planDigest),
+      stages: [...journal.stages],
       items: journal.items.map((item) => ({
         id: item.id,
         status: verdicts.get(item.id) ?? "pending",

@@ -616,6 +616,18 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
       },
     }];
   }
+  // A follower file that cannot be parsed blocks this resource only; the
+  // executor would otherwise fail mid-run on the same file.
+  if (context.observed.state === "unverifiable") {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `Cannot merge ${context.resource.id} into ${context.resource.target}: ${context.observed.reason}`,
+        instructions: `Fix ${context.resource.target} so it is readable and valid ${context.desired.format.toUpperCase()}, then run synchronization again. Canonfig has not changed the file.`,
+      },
+    }];
+  }
   const conflicts = context.desired.keys.filter((key) =>
     context.overlayKeys.some((local) => configPathsOverlap(key, local))
   );
@@ -646,6 +658,11 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
   const prunable = dropped.filter((key) =>
     !context.overlayKeys.some((local) => configPathsOverlap(key, local))
   );
+  const retained = dropped.filter((key) => !prunable.includes(key));
+  const retention = retained.length === 0 ? {} : {
+    retains: retained,
+    retentionNotice: `Canonfig no longer manages ${retained.join(", ")} in ${context.resource.target}: the revision stopped declaring ${retained.length === 1 ? "it" : "them"}, and Local Overlay keys overlap, so the current values stay, including anything the Source wrote there earlier. Edit or remove stale values by hand.`,
+  };
   if (prunable.length > 0) {
     return [{
       kind: "write-config",
@@ -654,16 +671,20 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
         target: context.resource.target,
         keys: sortedUnique(context.desired.keys),
         removes: prunable,
+        ...retention,
       },
     }];
   }
-  if (observedMatchesDesired(context.desired, context.observed)) return [noOp()];
+  // An ownership hand-over is planned even when the values already match, so
+  // the plan says which keys were left behind instead of reading `no-op`.
+  if (retained.length === 0 && observedMatchesDesired(context.desired, context.observed)) return [noOp()];
   return [{
     kind: "write-config",
     detail: {
       kind: "write-config",
       target: context.resource.target,
       keys: sortedUnique(context.desired.keys),
+      ...retention,
     },
   }];
 };

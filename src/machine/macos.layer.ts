@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { access, lstat, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, normalize, resolve } from "node:path";
+import { homedir, uptime } from "node:os";
+import { dirname, join, normalize, resolve } from "node:path";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
 
@@ -19,10 +19,13 @@ import {
 } from "./machine-state.errors.ts";
 import { MachineState } from "./machine-state.service.ts";
 import {
+  keychainSessionGuidance,
   keychainSessionProbe,
+  securityExitMeaning,
   type SecurityRunner,
 } from "./keychain-session-probe.ts";
 import { linuxMachineStateLayer } from "./linux.layer.ts";
+import { installDestinationDirectories } from "./install-destinations.ts";
 import type {
   CredentialPolicy,
   CredentialStorageCapability,
@@ -188,6 +191,12 @@ const renderLaunchdJob = (
       (argument, index) => validateSingleLine(argument, `arguments[${index}]`),
     );
     const calendar = yield* launchdCalendar(job.calendar);
+    const servicePath = [...new Set([
+      dirname(executable.absolute),
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin",
+    ])].join(":");
     const label = `dev.canonfig.${job.name}`;
     const programArguments = [executable.absolute, ...arguments_]
       .map((argument) => `<string>${xml(argument)}</string>`)
@@ -199,10 +208,11 @@ const renderLaunchdJob = (
       "<plist version=\"1.0\"><dict>",
       `<key>Label</key><string>${xml(label)}</string>`,
       `<key>ProgramArguments</key><array>${programArguments}</array>`,
-      // The scheduled run must not depend on the user session's PATH: the
-      // plist pins the minimal search path and ProgramArguments is absolute.
+      // ProgramArguments remains absolute. Include only the installing
+      // runtime's directory and standard system locations so user-managed
+      // npm tools remain usable without inheriting shell startup state.
       "<key>EnvironmentVariables</key><dict>"
-        + "<key>PATH</key><string>/usr/bin:/bin:/usr/local/bin</string>"
+        + `<key>PATH</key><string>${xml(servicePath)}</string>`
         + "</dict>",
       "<key>ProcessType</key><string>Background</string>",
       `<key>StartCalendarInterval</key>${calendar}`,
@@ -232,6 +242,20 @@ const keychainKey = (
   }
   return Effect.succeed(value.slice(prefix.length));
 };
+
+/** launchd can keep the old zone until the next boot after /etc/localtime changes. */
+const timezoneChangedSinceBoot = (): Effect.Effect<boolean, MachineFilesystemError> =>
+  process.platform !== "darwin"
+    ? Effect.succeed(false)
+    : Effect.tryPromise({
+      try: async () => (await lstat("/etc/localtime")).ctimeMs > Date.now() - uptime() * 1_000,
+      catch: (cause) =>
+        new MachineFilesystemError({
+          operation: "inspect macOS timezone",
+          path: "/etc/localtime",
+          message: cause instanceof Error ? cause.message : String(cause),
+        }),
+    });
 
 export const macosMachineStateLayer = (
   options: MacosMachineStateOptions = {},
@@ -264,7 +288,7 @@ export const macosMachineStateLayer = (
         return yield* new HumanActionRequiredError({
           action: "configure macOS credential storage",
           recovery:
-            `canonfig could not find the macOS Keychain tools. ${sessionGuidance} Alternatively, explicitly select the local-file credential policy.`,
+            `canonfig could not find the macOS Keychain tool ${security}. Restore it, or explicitly select the local-file credential policy.`,
         });
       });
       const runSecurity = (
@@ -283,7 +307,7 @@ export const macosMachineStateLayer = (
       const runSessionProbe: SecurityRunner = options.securityRunner
         ?? ((invocation) =>
           machine.runProcess({
-            executable: { platform: "linux", absolute: "/usr/bin/osascript" },
+            executable: { platform: "linux", absolute: security },
             arguments: invocation.arguments,
             standardInput: invocation.standardInput,
             timeoutMilliseconds: 5_000,
@@ -292,8 +316,15 @@ export const macosMachineStateLayer = (
       const launchAgents = join(home, "Library", "LaunchAgents");
       const launchctl = "/bin/launchctl";
       const launchDomain = `gui/${process.getuid?.() ?? 0}`;
-      const sessionGuidance =
-        `SSH and other background sessions cannot use the login Keychain: run canonfig in the logged-in graphical session, or from its ${launchDomain} LaunchAgent.`;
+      const sessionGuidance = keychainSessionGuidance(process.getuid?.() ?? 0);
+      const securityExit = (exitCode: number | null): string => {
+        const meaning = securityExitMeaning(exitCode);
+        return exitCode === null
+          ? "security was stopped by a signal"
+          : meaning === undefined
+          ? `security exited with code ${exitCode}`
+          : `security exited with code ${exitCode} (${meaning})`;
+      };
       const runLaunchctl = options.launchctlRunner
         ?? ((arguments_: ReadonlyArray<string>) =>
           machine.runProcess({
@@ -318,26 +349,54 @@ export const macosMachineStateLayer = (
         return environmentValue(environment, "XPC_SERVICE_NAME") === label;
       };
 
-      const queryLaunchctlActive = (
+      /** `launchctl print`: whether the agent is loaded, and what launchd says about it. */
+      const queryLaunchctlService = (
         label: string,
         action: string,
         recovery: string,
-      ): Effect.Effect<boolean, MachineStateError> =>
+      ): Effect.Effect<{ readonly loaded: boolean; readonly output: string }, MachineStateError> =>
         runLaunchctl(["print", `${launchDomain}/${label}`]).pipe(
-          Effect.flatMap((result) => {
-            if (result.exitCode === 0) return Effect.succeed(true);
+          Effect.flatMap((result): Effect.Effect<
+            { readonly loaded: boolean; readonly output: string },
+            MachineStateError
+          > => {
             const output = Buffer.concat([
               Buffer.from(result.standardOutput),
               Buffer.from(result.standardError),
             ]).toString("utf8");
-            if (/could not find service/iu.test(output)) return Effect.succeed(false);
+            if (result.exitCode === 0) return Effect.succeed({ loaded: true, output });
+            if (/could not find service/iu.test(output)) {
+              return Effect.succeed({ loaded: false, output });
+            }
             return Effect.fail(new HumanActionRequiredError({ action, recovery }));
+          }),
+        );
+      /** `launchctl disable` persists outside the plist; only print-disabled shows it. */
+      const queryLaunchctlDisabled = (
+        label: string,
+      ): Effect.Effect<boolean, MachineStateError> =>
+        runLaunchctl(["print-disabled", launchDomain]).pipe(
+          Effect.flatMap((result) => {
+            if (result.exitCode !== 0) {
+              return Effect.fail(new HumanActionRequiredError({
+                action: "inspect the Canonfig launchd agent",
+                recovery:
+                  `launchctl print-disabled ${launchDomain} failed; sign in to the macOS graphical user session and retry.`,
+              }));
+            }
+            const output = Buffer.from(result.standardOutput).toString("utf8");
+            return Effect.succeed(
+              output.split("\n").some((line) =>
+                line.includes(`"${label}"`) && /=>\s*(?:disabled|true)\b/u.test(line)
+              ),
+            );
           }),
         );
       const nativeScheduler: SchedulerBackend = {
         inspect: (expected) => {
           const path = join(launchAgents, expected.serviceName);
           return Effect.gen(function*() {
+            const timezoneChanged = yield* timezoneChangedSinceBoot();
             const stored = yield* Effect.tryPromise({
               try: () =>
                 readFile(path, "utf8").catch((cause: NodeJS.ErrnoException) =>
@@ -351,18 +410,31 @@ export const macosMachineStateLayer = (
                 }),
             });
             if (stored === undefined) {
-              return { installed: false, enabled: false, matches: false };
+              return { installed: false, enabled: false, matches: false, timezoneChangedSinceBoot: timezoneChanged };
             }
             const label = expected.serviceName.slice(0, -".plist".length);
-            const active = yield* queryLaunchctlActive(
+            const service = yield* queryLaunchctlService(
               label,
               "inspect the Canonfig launchd agent",
               "launchd inspection failed; sign in to the macOS graphical user session and retry.",
             );
+            const disabled = yield* queryLaunchctlDisabled(label);
+            const calendarLine = /<key>StartCalendarInterval<\/key>.*$/mu;
+            const storedCalendar = calendarLine.exec(stored)?.[0];
+            const exitCode = /^\s*last exit code = (\d+)/mu.exec(service.output)?.[1];
             return {
               installed: true,
-              enabled: active,
+              enabled: !disabled,
               matches: stored === expected.schedule,
+              calendarMatches: storedCalendar !== undefined
+                && storedCalendar === calendarLine.exec(expected.schedule)?.[0],
+              // Booted out (or never bootstrapped) outside Canonfig: the plist
+              // is there but launchd will not fire it.
+              active: service.loaded,
+              timezoneChangedSinceBoot: timezoneChanged,
+              lastResult: exitCode === undefined
+                ? undefined
+                : { succeeded: exitCode === "0", detail: `launchd last exit code ${exitCode}` },
             };
           });
         },
@@ -399,7 +471,7 @@ export const macosMachineStateLayer = (
                 }),
             });
             const label = expected.serviceName.slice(0, -".plist".length);
-            const active = yield* queryLaunchctlActive(
+            const { loaded: active } = yield* queryLaunchctlService(
               label,
               "capture the Canonfig launchd agent",
               "launchd snapshot inspection failed; sign in to the macOS graphical user session and retry.",
@@ -433,6 +505,10 @@ export const macosMachineStateLayer = (
             // which is strictly better than killing the run doing the update.
             if (runsUnderAgent(definition.serviceName)) return;
             yield* runLaunchctl(["bootout", launchDomain, path]).pipe(Effect.ignore);
+            // An explicit install restores a job disabled with `launchctl
+            // disable`: bootstrap refuses a disabled service.
+            const label = definition.serviceName.slice(0, -".plist".length);
+            yield* runLaunchctl(["enable", `${launchDomain}/${label}`]).pipe(Effect.ignore);
             const result = yield* runLaunchctl(["bootstrap", launchDomain, path]);
             if (result.exitCode !== 0) {
               return yield* new HumanActionRequiredError({
@@ -533,6 +609,10 @@ export const macosMachineStateLayer = (
           requireMacosPath(input.path).pipe(
             Effect.flatMap((path) => machine.removeEmptyDirectory({ ...input, path })),
           ),
+        removeTemporaryEntries: (input) =>
+          requireMacosPath(input.directory).pipe(
+            Effect.flatMap((directory) => machine.removeTemporaryEntries({ ...input, directory })),
+          ),
         validatePathWithinRoot: (input) =>
           Effect.all({
             root: requireMacosPath(input.root),
@@ -572,8 +652,19 @@ export const macosMachineStateLayer = (
         snapshotPermissions: (path) =>
           requireMacosPath(path).pipe(Effect.flatMap(machine.snapshotPermissions)),
         findExecutable: (query) => {
-          const searchPath = query.searchPath?.map(linuxPath);
-          return machine.findExecutable({ ...query, searchPath }).pipe(
+          // The macOS destinations (Homebrew prefixes, ~/Library/pnpm) are
+          // resolved here; the Linux lookup below only walks the result.
+          const searchPath = [
+            ...installDestinationDirectories({
+              platform: "macos",
+              home,
+              environment: (name) => environmentValue(environment, name),
+              methods: query.installMethods ?? [],
+            }),
+            ...(query.searchPath?.map((path) => path.absolute)
+              ?? (environmentValue(environment, "PATH") ?? "").split(":").filter((entry) => entry.length > 0)),
+          ].map((absolute): MachinePath => ({ platform: "linux", absolute }));
+          return machine.findExecutable({ name: query.name, searchPath }).pipe(
             Effect.map((found) => ({ ...found, path: macosPath(found.path.absolute) })),
           );
         },
@@ -607,7 +698,7 @@ export const macosMachineStateLayer = (
               return {
                 kind: "unavailable" as const,
                 recovery:
-                  `canonfig could not find the macOS Keychain tools. ${sessionGuidance} Alternatively, explicitly select the local-file credential policy.`,
+                  `canonfig could not find the macOS Keychain tool ${security}. Restore it, or explicitly select the local-file credential policy.`,
               };
             }
             // Presence is not permission: only a successful disposable
@@ -633,7 +724,7 @@ export const macosMachineStateLayer = (
             }
             const probeEvidence = probe.stage === "error"
               ? `the session probe could not run: ${probe.detail ?? "unknown error"}`
-              : `the session probe failed at ${probe.stage} with exit code ${probe.exitCode ?? "signal"}`;
+              : `the session probe failed at ${probe.stage}: ${securityExit(probe.exitCode)}`;
             return {
               kind: "unavailable" as const,
               recovery: `Keychain access is unavailable from this execution session: ${probeEvidence}. ${sessionGuidance}`,
@@ -670,7 +761,7 @@ export const macosMachineStateLayer = (
                 )
                 : Effect.fail(new HumanActionRequiredError({
                   action: "access the macOS Keychain from this session",
-                  recovery: `The Keychain refused the credential write from this execution session. ${sessionGuidance}`,
+                  recovery: `The Keychain refused the credential write from this execution session (${securityExit(result.exitCode)}). ${sessionGuidance}`,
                 }))
             ),
           );
@@ -688,10 +779,17 @@ export const macosMachineStateLayer = (
               `dev.canonfig.${key}`,
               "-w",
             ]);
+            if (result.exitCode === 44) {
+              return yield* new CredentialStorageError({
+                operation: "load credential",
+                reference: String(input.reference),
+                message: "the macOS login Keychain has no item for this credential",
+              });
+            }
             if (result.exitCode !== 0) {
               return yield* new HumanActionRequiredError({
-                action: "provide macOS Keychain credential",
-                recovery: `The credential could not be read from this execution session. ${sessionGuidance}`,
+                action: "unlock the macOS login Keychain",
+                recovery: `The credential could not be read from this execution session (${securityExit(result.exitCode)}). ${sessionGuidance}`,
               });
             }
             return Redacted.make(

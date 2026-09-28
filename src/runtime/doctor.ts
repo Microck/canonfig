@@ -4,9 +4,15 @@ import { access, open } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
 
-import { Effect, Option, Redacted, Schema } from "effect";
+import { Effect, Option, Redacted, Ref, Schema } from "effect";
 
-import { programVersion } from "../cli/cli.ts";
+import { programVersion } from "../cli/help.ts";
+import {
+  buildIdentity,
+  minimumSupportedNodeMajor,
+  nodeRuntimeIsSupported,
+} from "./build-identity.ts";
+import { canonfigVersionHeader } from "../enrollment/version-handshake.ts";
 import { credentialReadiness, scheduledDefinitionReadiness } from "./readiness.ts";
 import type { ScheduleFireEvidence } from "./readiness.ts";
 import { AgentPolicy } from "../domain/identity.ts";
@@ -15,10 +21,19 @@ import {
   CertificateFingerprint,
   CredentialReference,
 } from "../domain/brand.ts";
+import {
+  credentialFailureDetail,
+  type MachineStateError,
+} from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import type { CredentialStorageCapability } from "../machine/machine-state.types.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
-import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
+import {
+  type SyncSchedule,
+  unmanagedScheduleDetail,
+} from "../schedule/schedule-manager.types.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
+import type { TunnelStatusReport } from "../enrollment/tunnel.types.ts";
 
 export const doctorProbeNames = [
   "runtime",
@@ -90,8 +105,17 @@ export interface DoctorInput {
    * PATH.
    */
   readonly schedule?: DoctorScheduleConfiguration | undefined;
-  readonly lastFire?: ScheduleFireEvidence | undefined;
+  /** Why there is no schedule, e.g. a profile default awaiting `schedule set --default`. */
+  readonly unscheduledDetail?: string | undefined;
+  /** The unattended run records, oldest first. */
+  readonly fires?: ReadonlyArray<ScheduleFireEvidence> | undefined;
   readonly source?: DoctorSourceConfiguration | undefined;
+  /**
+   * The managed tunnel, when the configured Source endpoint is reached through
+   * it. A transport failure of the source probe is then reported as the
+   * tunnel outage, with the command that restarts it.
+   */
+  readonly tunnel?: TunnelStatusReport | undefined;
   readonly agent?: DoctorAgentConfiguration | undefined;
 }
 
@@ -125,7 +149,14 @@ class DoctorSourceProbeError extends Error {
   readonly _tag = "DoctorSourceProbeError";
 
   constructor(
-    readonly kind: "configuration" | "transport" | "tls-pin" | "authentication",
+    readonly kind:
+      | "configuration"
+      | "local-credential"
+      | "transport"
+      | "tls-pin"
+      | "authentication",
+    /** The native credential-store failure, for `local-credential`. */
+    readonly detail?: string | undefined,
   ) {
     super(`source probe failed: ${kind}`);
   }
@@ -136,6 +167,7 @@ const categoryForSourceError = (
 ): CliFailureCategory => {
   switch (error.kind) {
     case "configuration": return "usage-or-configuration";
+    case "local-credential": return "human-action-required";
     case "transport": return "transport";
     case "tls-pin":
     case "authentication": return "authentication-or-revocation";
@@ -145,11 +177,21 @@ const categoryForSourceError = (
 const sourceFailureMessage = (error: DoctorSourceProbeError): string => {
   switch (error.kind) {
     case "configuration": return "source probe configuration is invalid";
+    case "local-credential":
+      return `this machine's credential store could not return the follower credential, so no Source request was made: ${error.detail ?? "unknown credential-store failure"}`;
     case "transport": return "configured source is unreachable";
     case "tls-pin": return "source TLS pin validation failed";
     case "authentication": return "source authentication failed";
   }
 };
+
+/**
+ * How far the source probe got. The follower credential is read from the
+ * local store before any Source traffic, so a probe that times out while
+ * reading it (a locked keyring or Keychain waiting on an unlock prompt) is a
+ * local failure, and a completed read proves native read access here.
+ */
+type SourceProbeStage = "not-started" | "loading-credential" | "credential-loaded";
 
 const isolated = <Failure, Requirements>(
   name: DoctorProbeName,
@@ -157,33 +199,42 @@ const isolated = <Failure, Requirements>(
   operation: Effect.Effect<DoctorProbe, Failure, Requirements>,
   onFailure: (error: Failure) => DoctorProbe,
   timeoutCategory: CliFailureCategory,
+  onTimeout: Effect.Effect<DoctorProbe> = Effect.succeed(
+    failed(name, timeoutCategory, `${name} probe timed out`, { timeoutMilliseconds }),
+  ),
 ): Effect.Effect<DoctorProbe, never, Requirements> =>
   operation.pipe(
     Effect.catch((error) => Effect.succeed(onFailure(error))),
     Effect.timeoutOption(timeoutMilliseconds),
-    Effect.matchCause({
+    Effect.matchCauseEffect({
       onFailure: () =>
-        failed(name, "internal", `${name} probe failed unexpectedly`),
+        Effect.succeed(failed(name, "internal", `${name} probe failed unexpectedly`)),
       onSuccess: Option.match({
-        onNone: () =>
-          failed(name, timeoutCategory, `${name} probe timed out`, {
-            timeoutMilliseconds,
-          }),
-        onSome: (result) => result,
+        onNone: () => onTimeout,
+        onSome: (result) => Effect.succeed(result),
       }),
     }),
   );
 
 const runtimeProbe = (): Effect.Effect<DoctorProbe> =>
-  Effect.sync(() =>
-    pass("runtime", "runtime is supported", {
+  Effect.sync(() => {
+    const runtimeVersion = process.versions.node;
+    const details = {
       runtime: "node",
-      runtimeVersion: process.versions.node,
+      runtimeVersion,
       canonfigVersion: programVersion,
       platform: process.platform,
       architecture: process.arch,
-    })
-  );
+    };
+    return nodeRuntimeIsSupported(runtimeVersion)
+      ? pass("runtime", "runtime is supported", details)
+      : failed(
+        "runtime",
+        "human-action-required",
+        `Node.js ${runtimeVersion} is unsupported; Canonfig requires Node.js ${minimumSupportedNodeMajor} or newer`,
+        details,
+      );
+  });
 
 const stateProbe = (
   statePath: string,
@@ -217,12 +268,17 @@ const stateProbe = (
 
 const credentialProbe = (
   machine: MachineState["Service"],
-): Effect.Effect<DoctorProbe, object> =>
-  machine.credentialCapability().pipe(Effect.map(credentialReadiness));
+  capability: Ref.Ref<Option.Option<CredentialStorageCapability>>,
+): Effect.Effect<DoctorProbe, MachineStateError> =>
+  machine.credentialCapability().pipe(
+    Effect.tap((found) => Ref.set(capability, Option.some(found))),
+    Effect.map((found) => credentialReadiness(found)),
+  );
 
 const sourceProbe = (
   machine: MachineState["Service"],
   source: DoctorSourceConfiguration | undefined,
+  stage: Ref.Ref<SourceProbeStage>,
 ): Effect.Effect<DoctorProbe, DoctorSourceProbeError> => {
   if (source === undefined) {
     return Effect.succeed(skipped(
@@ -237,9 +293,13 @@ const sourceProbe = (
     const credentialReference = yield* Schema.decodeUnknownEffect(CredentialReference)(
       source.credentialReference,
     ).pipe(Effect.mapError(() => new DoctorSourceProbeError("configuration")));
+    yield* Ref.set(stage, "loading-credential");
     const credential = yield* machine.loadCredential({
       reference: credentialReference,
-    }).pipe(Effect.mapError(() => new DoctorSourceProbeError("authentication")));
+    }).pipe(Effect.mapError((error) =>
+      new DoctorSourceProbeError("local-credential", credentialFailureDetail(error))
+    ));
+    yield* Ref.set(stage, "credential-loaded");
     yield* Effect.tryPromise({
       try: (signal) =>
         new Promise<void>((resolveProbe, rejectProbe) => {
@@ -294,6 +354,7 @@ const sourceProbe = (
               headers: {
                 authorization: `Bearer ${Redacted.value(credential)}`,
                 accept: "application/json",
+                [canonfigVersionHeader]: buildIdentity.packageVersion,
               },
             }, (response) => {
               response.resume();
@@ -343,20 +404,50 @@ const sourceProbe = (
   });
 };
 
+/**
+ * The source probe, told what the managed tunnel carrying it is doing. An
+ * unreachable Source behind a down tunnel is the tunnel's outage, and the
+ * operator needs `canonfig tunnel start`, not a hunt for a network fault.
+ */
+const withTunnelEvidence = (
+  probe: DoctorProbe,
+  tunnel: TunnelStatusReport | undefined,
+): DoctorProbe => {
+  if (tunnel === undefined || tunnel.lifecycle === "not-configured") return probe;
+  const details = { ...probe.details, tunnel: tunnel.lifecycle };
+  if (probe.status !== "fail" || probe.category !== "transport" || tunnel.lifecycle === "running") {
+    return { ...probe, details };
+  }
+  return failed(
+    "source",
+    "transport",
+    `configured source is unreachable because the managed tunnel ${tunnel.endpoint ?? ""} is ${tunnel.lifecycle}: ${tunnel.detail}`,
+    { ...details, recovery: tunnel.recovery ?? "canonfig tunnel start" },
+  );
+};
+
 const schedulerProbe = (
   schedules: ScheduleManager["Service"],
-  schedule: DoctorScheduleConfiguration | undefined,
-  lastFire: ScheduleFireEvidence | undefined,
+  input: Pick<DoctorInput, "schedule" | "unscheduledDetail" | "fires">,
 ): Effect.Effect<DoctorProbe, object> => {
-  // Nothing to compare against when this follower runs no scheduled
-  // synchronization.
-  if (schedule === undefined) {
-    return Effect.succeed(
-      skipped("scheduler", "this follower runs no scheduled synchronization"),
+  if (input.schedule === undefined) {
+    // No decision, so nothing to compare against, but a job left by an
+    // earlier release (v2.x `schedule set`, a v3.x default) still runs.
+    const unscheduled = skipped(
+      "scheduler",
+      input.unscheduledDetail ?? "this follower runs no scheduled synchronization",
+    );
+    return schedules.status().pipe(
+      Effect.map((status): DoctorProbe =>
+        status.state === "not-installed"
+          ? unscheduled
+          : { name: "scheduler", status: "warning", message: unmanagedScheduleDetail }
+      ),
+      Effect.catch(() => Effect.succeed(unscheduled)),
     );
   }
-  return schedules.status(schedule).pipe(
-    Effect.map((status) => scheduledDefinitionReadiness(status, lastFire)),
+  return schedules.status(input.schedule).pipe(
+    Effect.map((status) => scheduledDefinitionReadiness(status, input.fires)),
   );
 };
 
@@ -470,6 +561,18 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
   const schedules = yield* ScheduleManager;
   const repository = yield* StateRepository;
   const timeout = input.timeoutMilliseconds;
+  const sourceStage = yield* Ref.make<SourceProbeStage>("not-started");
+  const capability = yield* Ref.make(Option.none<CredentialStorageCapability>());
+  const sourceTimedOut = Effect.map(Ref.get(sourceStage), (stage) =>
+    stage === "loading-credential"
+      ? failed(
+        "source",
+        "human-action-required",
+        `this machine's credential store did not return the follower credential within ${timeout} ms, so no Source request was made; a locked keyring or Keychain may be waiting for an unlock prompt that this session cannot show`,
+        { timeoutMilliseconds: timeout, stage: "credential-load" },
+      )
+      : failed("source", "transport", "source probe timed out", { timeoutMilliseconds: timeout })
+  );
   const probes = yield* Effect.all([
     isolated(
       "runtime",
@@ -488,22 +591,28 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
     isolated(
       "credentials",
       timeout,
-      credentialProbe(machine),
-      () => failed("credentials", "human-action-required", "credential capability check failed"),
+      credentialProbe(machine, capability),
+      (error) =>
+        failed(
+          "credentials",
+          "human-action-required",
+          `credential capability check failed: ${credentialFailureDetail(error)}`,
+        ),
       "human-action-required",
     ),
     isolated(
       "source",
       timeout,
-      sourceProbe(machine, input.source),
+      sourceProbe(machine, input.source, sourceStage),
       (error) =>
         failed("source", categoryForSourceError(error), sourceFailureMessage(error)),
       "transport",
-    ),
+      sourceTimedOut,
+    ).pipe(Effect.map((probe) => withTunnelEvidence(probe, input.tunnel))),
     isolated(
       "scheduler",
       timeout,
-      schedulerProbe(schedules, input.schedule, input.lastFire),
+      schedulerProbe(schedules, input),
       () => failed("scheduler", "verification-or-apply-failure", "scheduler state check failed"),
       "verification-or-apply-failure",
     ),
@@ -522,8 +631,19 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
       "internal",
     ),
   ], { concurrency: "unbounded" });
-  const failedCount = probes.filter((probe) => probe.status === "fail").length;
-  const degraded = probes.some((probe) =>
+  // Provider presence alone stays a warning, but a native read of the enrolled
+  // credential by this very process proves access from this session.
+  const credentialLoaded = (yield* Ref.get(sourceStage)) === "credential-loaded";
+  const knownCapability = yield* Ref.get(capability);
+  const combined = credentialLoaded && Option.isSome(knownCapability)
+    ? probes.map((probe) =>
+      probe.name === "credentials"
+        ? credentialReadiness(knownCapability.value, { enrolledCredentialLoaded: true })
+        : probe
+    )
+    : probes;
+  const failedCount = combined.filter((probe) => probe.status === "fail").length;
+  const degraded = combined.some((probe) =>
     probe.status === "warning" || probe.status === "skipped"
   );
   return {
@@ -531,7 +651,7 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
     status: failedCount > 0 ? "unhealthy" : degraded ? "degraded" : "healthy",
     noInput: input.noInput,
     timeoutMilliseconds: timeout,
-    probes,
+    probes: combined,
   };
 });
 

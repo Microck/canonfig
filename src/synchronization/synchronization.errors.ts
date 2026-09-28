@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 
+import type { InsufficientDiskError } from "../machine/machine-state.errors.ts";
 import type { ScheduleManagerError } from "../schedule/schedule-manager.errors.ts";
 
 export class DuplicatePlannerInputError extends TaggedError<DuplicatePlannerInputError>()(
@@ -158,21 +159,42 @@ export class RecoveryRunNotFoundError extends TaggedError<RecoveryRunNotFoundErr
   { follower: Schema.String },
 ) {}
 
-
-export class InsufficientDiskError extends TaggedError<InsufficientDiskError>()(
-  "InsufficientDiskError",
-  {
-    path: Schema.String,
-    requiredBytes: Schema.BigInt,
-    availableBytes: Schema.BigInt,
-  },
-) {}
-
 export class RecoveryIntegrityError extends TaggedError<RecoveryIntegrityError>()(
   "RecoveryIntegrityError",
   {
     run: Schema.String,
     message: Schema.String,
+  },
+) {}
+
+/**
+ * Another live process owns this follower's run: it is applying, recovering or
+ * abandoning. `pid` is absent only when the lock was created an instant ago
+ * and its owner has not written its record yet.
+ */
+export class RunLockHeldError extends TaggedError<RunLockHeldError>()(
+  "RunLockHeldError",
+  {
+    path: Schema.String,
+    operation: Schema.optional(Schema.String),
+    pid: Schema.optional(Schema.Number),
+    since: Schema.optional(Schema.String),
+  },
+) {}
+
+/**
+ * Recovery found a target whose current state is neither what it was before
+ * the interrupted run nor what the run was writing: someone changed it
+ * afterwards. Recovery stops before touching anything and keeps the run open,
+ * the changed files and the rollback snapshot.
+ */
+export class RecoveryLocalEditError extends TaggedError<RecoveryLocalEditError>()(
+  "RecoveryLocalEditError",
+  {
+    run: Schema.String,
+    resource: Schema.String,
+    paths: Schema.Array(Schema.String),
+    snapshot: Schema.String,
   },
 ) {}
 
@@ -215,4 +237,5 @@ export type SynchronizationExecutionInputError =
 export type SynchronizationRecoveryError =
   | RecoveryRunNotFoundError
   | RecoveryIntegrityError
+  | RecoveryLocalEditError
   | SynchronizationExecutionInputError;

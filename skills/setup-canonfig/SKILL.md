@@ -89,7 +89,15 @@ Every field must remain editable through numbered options plus custom input.
 
 For both modes, keep a non-secret decision record: field ID, value, provenance
 (Detected/Operator/Recommended default), validation, scope, and approval. Include
-mode, deferred requirements, and selected device IDs; re-observe on resume.
+mode, deferred requirements, and selected device IDs; re-observe on resume. Keep
+it in the session and the final report. The persisted plan of record is the CLI's
+setup journal, `~/.canonfig/setup.json` next to `state.sqlite`: it records the
+intent, decisions, exclusions, evidence, and approvals against the plan digest.
+Pass the chosen mode as `setup plan --mode simple|advanced`; the journal also
+keeps the discovery paths that were read. Switching modes keeps approvals.
+`canonfig setup status --json` reads role, scope, mode, intent, discovery paths,
+approver, and completed stages back. Write no other record file unless the
+operator asks.
 
 ## Route the request
 
@@ -171,7 +179,7 @@ After the role and discovery files are selected, use the shipped setup
 controller as the bootstrap plan of record:
 
 ```text
-canonfig setup plan --role <source|follower> --scope <full|cli-only|project-only> --file <approved-path> --intent "<selected outcome>"
+canonfig setup plan --role <source|follower> --scope <full|cli-only|project-only> --mode <simple|advanced> --file <approved-path> --intent "<selected outcome>"
 canonfig setup approve --approver <operator>
 canonfig setup apply
 canonfig setup status --json
@@ -187,19 +195,29 @@ Show the plan digest, intent, exclusions, inventory, and item graph before the
 approval command. Omit `--file` when no discovery file was approved. An
 unchanged journal resumes; preserve its approval and completed evidence.
 
+`setup plan --file` bounds tool discovery only. It does not select synced
+content: files, configs, and skills reach followers only through an authored
+JSONC profile file that the operator reviews, checks with
+`canonfig source digest --profile-file <profile.jsonc>`, and publishes with
+`canonfig source publish --profile-file <profile.jsonc> --reviewer <name>`.
+[Source setup](references/source-setup.md) has the authoring route.
+
 ### 4. Execute and resume idempotently
 
 Read the selected branch and execute only approved stages. Node.js 24 or newer
-and npm are required; the documented package for this revision is:
+and npm are required.
+
+Preserve an existing installation. An in-place upgrade from 3.2.x to 4.0.0 is
+unsupported and unverified; establish a separate installation after backing up
+the old state (see [fresh-install guide](../../website/content/docs/how-to/upgrade.mdx)).
+Check installed help when it differs; do not downgrade silently. On a new
+installation, use:
 
 ```bash
-npm install --global @microck/canonfig@3.2.1
+npm install --global @microck/canonfig@4.0.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```
-
-Preserve an existing compatible version unless an upgrade is requested/approved.
-Check installed help when it differs; do not downgrade silently.
 
 | Platform | Secure credentials | User scheduler |
 | --- | --- | --- |
@@ -215,8 +233,12 @@ reset trust, or force ownership just because setup is invoked again.
 
 Use the completion checklist in both modes. Separate discovered, selected,
 reachable, enrolled, converged, and scheduled machines. One configured machine
-is not proof that the whole selected fleet is configured. Unavailable optional
-discovery does not prevent an otherwise verified local setup from completing.
+is not proof that the whole selected fleet is configured: the Source has no
+fleet view, so each follower's own `canonfig status` is its completion
+evidence. After a follower apply, give the client trust and hook review steps
+from [completion](references/completion.md); `clientLoaded` stays
+`not-verified`. Unavailable optional discovery does not prevent an otherwise
+verified local setup from completing.
 
 ## Stop conditions
 

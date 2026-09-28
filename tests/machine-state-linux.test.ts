@@ -2,21 +2,26 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
+import { CredentialStorageError } from "../src/machine/machine-state.errors.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
+import { nativeSecretStoreLayer } from "../src/secrets/native-secret-store.ts";
 import { machineStateContract } from "./contract/machine-state.contract.ts";
 
 const environment = (root: string) => [
@@ -467,6 +472,198 @@ describe("bounded process cleanup", () => {
         }
       }
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// Behaves like libsecret 0.20's secret-tool: `store` keeps at most 8192 bytes
+// of piped input, reports "password is too long" and still exits 0; `lookup`
+// prints the stored bytes with no newline when stdout is not a terminal and
+// refuses a value that is not valid UTF-8; `clear` and `lookup` exit 1 for a
+// missing item. FAKE_SECRET_LIMIT/FAKE_SECRET_QUIET model a store that
+// truncates without saying so.
+const fakeSecretTool = `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const [operation, ...rest] = process.argv.slice(2);
+const attributes = operation === "store" ? rest.slice(1) : rest;
+const directory = process.env.FAKE_SECRET_STORE;
+fs.appendFileSync(path.join(directory, "..", "bus.log"), (process.env.DBUS_SESSION_BUS_ADDRESS ?? "") + "\\n");
+const item = path.join(directory, Buffer.from(attributes.join("=")).toString("hex"));
+const limit = Number(process.env.FAKE_SECRET_LIMIT ?? "8192");
+if (operation === "store") {
+  const input = fs.readFileSync(0);
+  if (input.length >= limit && process.env.FAKE_SECRET_QUIET !== "1") {
+    process.stderr.write("secret-tool: password is too long\\n");
+  }
+  fs.writeFileSync(item, input.subarray(0, limit));
+  process.exit(0);
+}
+if (!fs.existsSync(item)) process.exit(1);
+if (operation === "lookup") {
+  const bytes = fs.readFileSync(item);
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    process.stderr.write("secret-tool: Secret does not contain a valid password.\\n");
+    process.exit(1);
+  }
+  process.stdout.write(bytes);
+  process.exit(0);
+}
+if (operation === "clear") {
+  fs.rmSync(item);
+  process.exit(0);
+}
+process.exit(2);
+`;
+
+const secretServiceFixture = (
+  options: {
+    readonly limit?: number;
+    readonly quiet?: boolean;
+    readonly bus?: { readonly name: string; readonly value: string } | undefined;
+  } = {},
+) => {
+  const root = mkdtempSync(join(tmpdir(), "canonfig-secret-service-"));
+  const bin = join(root, "bin");
+  const store = join(root, "store");
+  mkdirSync(bin);
+  mkdirSync(store);
+  writeFileSync(join(bin, "secret-tool"), fakeSecretTool, { mode: 0o755 });
+  const entries = [
+    ...environment(root).filter((entry) => entry.name !== "PATH"),
+    { name: "PATH", value: `${bin}:${dirnameOfExecutable}` },
+    { name: "FAKE_SECRET_STORE", value: store },
+    { name: "FAKE_SECRET_LIMIT", value: String(options.limit ?? 8192) },
+    ...(options.quiet === true ? [{ name: "FAKE_SECRET_QUIET", value: "1" }] : []),
+    ...(options.bus === undefined
+      ? [{ name: "DBUS_SESSION_BUS_ADDRESS", value: "unix:path=/nonexistent/canonfig-test-bus" }]
+      : [options.bus]),
+  ];
+  return {
+    root,
+    store,
+    layer: nativeSecretStoreLayer(linuxMachineStateLayer({
+      credentialPolicy: { kind: "secure-store" },
+      environment: entries,
+    })),
+  };
+};
+
+const roundTrip = (value: string) =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const reference = yield* machine.storeCredential({
+      name: "canonfig-shared-secret:big",
+      value: Redacted.make(value),
+    });
+    const loaded = yield* machine.loadCredential({ reference });
+    return { reference: String(reference), value: Redacted.value(loaded) };
+  });
+
+describe("Secret Service credential storage", () => {
+  it("round-trips a 12000-byte secret exactly although secret-tool keeps 8192 bytes per item", async () => {
+    const fixture = secretServiceFixture();
+    try {
+      // Multibyte characters at odd offsets make every part boundary land
+      // inside a UTF-8 sequence unless the split respects code points.
+      const value = `a${"é".repeat(5999)}z`;
+      expect(Buffer.byteLength(value, "utf8")).toBe(12000);
+      const stored = await Effect.runPromise(roundTrip(value).pipe(Effect.provide(fixture.layer)));
+
+      expect(stored.value).toBe(value);
+      expect(stored.reference).toMatch(/^secret-service:[0-9a-f]{64}:2$/u);
+      const items = readdirSync(fixture.store);
+      expect(items).toHaveLength(2);
+      for (const item of items) {
+        expect(statSync(join(fixture.store, item)).size).toBeLessThan(8192);
+      }
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses, and removes, a credential the store truncates without reporting it", async () => {
+    const fixture = secretServiceFixture({ limit: 4000, quiet: true });
+    try {
+      const error = await Effect.runPromise(
+        Effect.flip(roundTrip("x".repeat(12000))).pipe(Effect.provide(fixture.layer)),
+      );
+
+      expect(error).toBeInstanceOf(CredentialStorageError);
+      expect(error.message).toContain("for a 12000-byte credential");
+      expect(readdirSync(fixture.store)).toEqual([]);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps leading BOM and newlines byte-exact", async () => {
+    const fixture = secretServiceFixture();
+    try {
+      for (const value of ["\uFEFFleading BOM", "X\n\n", "value\r\n", "\n\nleading", "single\n"]) {
+        const stored = await Effect.runPromise(roundTrip(value).pipe(Effect.provide(fixture.layer)));
+        expect(stored.value).toBe(value);
+      }
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reaches the user bus at $XDG_RUNTIME_DIR/bus when DBUS_SESSION_BUS_ADDRESS is unset", async () => {
+    const runtime = mkdtempSync(join(tmpdir(), "cf-run-"));
+    const socket = join(runtime, "bus");
+    const server: Server = createServer();
+    await new Promise<void>((resolveListen) => server.listen(socket, resolveListen));
+    const fixture = secretServiceFixture({
+      bus: { name: "XDG_RUNTIME_DIR", value: runtime },
+    });
+    try {
+      const result = await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const capability = yield* machine.credentialCapability();
+          const stored = yield* roundTrip("bus-value");
+          return { capability, stored };
+        }).pipe(Effect.provide(fixture.layer)),
+      );
+
+      expect(result.capability.kind).toBe("secure-noninteractive");
+      expect(result.stored.value).toBe("bus-value");
+      const buses = new Set(
+        readFileSync(join(fixture.root, "bus.log"), "utf8").split("\n").filter((line) => line !== ""),
+      );
+      expect([...buses]).toEqual([`unix:path=${socket}`]);
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+      rmSync(runtime, { recursive: true, force: true });
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("names the missing bus and a headless remedy instead of dbus-run-session", async () => {
+    const runtime = mkdtempSync(join(tmpdir(), "cf-run-"));
+    const fixture = secretServiceFixture({
+      bus: { name: "XDG_RUNTIME_DIR", value: runtime },
+    });
+    try {
+      const capability = await Effect.runPromise(
+        Effect.gen(function*() {
+          const machine = yield* MachineState;
+          return yield* machine.credentialCapability();
+        }).pipe(Effect.provide(fixture.layer)),
+      );
+
+      expect(capability.kind).toBe("unavailable");
+      if (capability.kind !== "unavailable") return;
+      expect(capability.recovery).toContain(`${join(runtime, "bus")} is not a D-Bus socket`);
+      expect(capability.recovery).toContain(`export XDG_RUNTIME_DIR=/run/user/${process.getuid?.() ?? 0}`);
+      expect(capability.recovery).toContain("loginctl enable-linger");
+      expect(capability.recovery).toContain("Do not use dbus-run-session");
+    } finally {
+      rmSync(runtime, { recursive: true, force: true });
+      rmSync(fixture.root, { recursive: true, force: true });
     }
   });
 });

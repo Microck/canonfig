@@ -33,6 +33,7 @@ import {
 } from "./mcp-qualification.ts";
 import {
   canonicalRecipeIndexUrl,
+  isMissingAutomaticRecipeVersion,
   recipeValidationError,
 } from "./recipe-versions.ts";
 import {
@@ -51,8 +52,9 @@ import {
   canonicalJson,
   decodeJsonc,
   digestOf,
-  sha256BytesHex,
-  sha256Hex,
+  inexactNumberPath,
+  inexactNumberReason,
+  jsonPathText,
   type JsonValue,
 } from "../profile/profile-codec.ts";
 
@@ -113,7 +115,7 @@ export interface ProfileResourceInput {
   readonly groups?: ReadonlyArray<string> | undefined;
   readonly dependsOn?: ReadonlyArray<string> | undefined;
   readonly spec: ResourceSpecInput;
-  readonly verify: VerificationInput;
+  readonly verify: AuthoredVerificationInput;
 }
 
 export interface ManagedFileInput {
@@ -143,6 +145,16 @@ export type VerificationInput =
   | { readonly method: "credential-present"; readonly reference: string }
   | { readonly method: "symlink"; readonly target: string }
   | McpQualificationInput;
+
+/**
+ * Verification as authored. A digest-verified resource (file, directory,
+ * config, skill) may omit `digest`: publication computes it from the exact
+ * published content, the value `canonfig source digest` prints. A supplied
+ * digest that differs fails publication before signing.
+ */
+export type AuthoredVerificationInput =
+  | Exclude<VerificationInput, { readonly method: "digest" }>
+  | { readonly method: "digest"; readonly digest?: string | undefined };
 
 /** An immutable, authenticated publication of a Machine Profile. */
 export interface ProfileRevision {
@@ -301,23 +313,45 @@ export const ResourceSpecInputSchema = Schema.Union([
   }),
 ]);
 
+const CommandVerificationSchema = Schema.Struct({
+  method: Schema.Literal("command"),
+  command: Schema.Array(Schema.NonEmptyString),
+  expectContains: Schema.optional(Schema.String),
+  proves: Schema.optional(Schema.Literal("client-load")),
+});
+const ExecutablePresentVerificationSchema = Schema.Struct({
+  method: Schema.Literal("executable-present"),
+  executable: Schema.NonEmptyString,
+});
+const CredentialPresentVerificationSchema = Schema.Struct({
+  method: Schema.Literal("credential-present"),
+  reference: CredentialReferenceSchema,
+});
+const SymlinkVerificationSchema = Schema.Struct({
+  method: Schema.Literal("symlink"),
+  target: Schema.NonEmptyString,
+});
+
+/** Published verification: a digest-verified resource always carries its digest. */
 export const VerificationInputSchema = Schema.Union([
   Schema.Struct({ method: Schema.Literal("digest"), digest: ContentDigestSchema }),
+  CommandVerificationSchema,
+  ExecutablePresentVerificationSchema,
+  CredentialPresentVerificationSchema,
+  SymlinkVerificationSchema,
+  McpQualificationInputSchema,
+]);
+
+/** Authored verification: see {@link AuthoredVerificationInput}. */
+export const AuthoredVerificationInputSchema = Schema.Union([
   Schema.Struct({
-    method: Schema.Literal("command"),
-    command: Schema.Array(Schema.NonEmptyString),
-    expectContains: Schema.optional(Schema.String),
-    proves: Schema.optional(Schema.Literal("client-load")),
+    method: Schema.Literal("digest"),
+    digest: Schema.optional(ContentDigestSchema),
   }),
-  Schema.Struct({
-    method: Schema.Literal("executable-present"),
-    executable: Schema.NonEmptyString,
-  }),
-  Schema.Struct({
-    method: Schema.Literal("credential-present"),
-    reference: CredentialReferenceSchema,
-  }),
-  Schema.Struct({ method: Schema.Literal("symlink"), target: Schema.NonEmptyString }),
+  CommandVerificationSchema,
+  ExecutablePresentVerificationSchema,
+  CredentialPresentVerificationSchema,
+  SymlinkVerificationSchema,
   McpQualificationInputSchema,
 ]);
 
@@ -349,23 +383,16 @@ const appendLocalIssue = (resource: Pick<ProfileResourceInput, "policy" | "spec"
   return sourceTextIssue(spec.content);
 };
 
+/**
+ * Only the symlink target is checked here. A digest is checked, or computed
+ * when omitted, by the compiler against the exact published bytes, which is
+ * the only place every resource kind's content is known.
+ */
 const verificationContentIssue = (
   resource: Pick<ProfileResourceInput, "kind" | "spec" | "verify">,
 ): string | undefined => {
   if (resource.kind !== "file" || resource.spec.kind !== "file") return undefined;
-  if (resource.spec.symlinkTo === undefined) {
-    if (
-      resource.verify.method !== "digest"
-      || resource.spec.content === undefined
-      || resource.spec.source !== undefined
-    ) return undefined;
-    const digest = resource.spec.encoding === "base64"
-      ? sha256BytesHex(Buffer.from(resource.spec.content, "base64"))
-      : sha256Hex(resource.spec.content);
-    return resource.verify.digest !== digest
-      ? "digest verification does not match authored file content"
-      : undefined;
-  }
+  if (resource.spec.symlinkTo === undefined) return undefined;
   return resource.verify.method === "symlink"
     && resource.verify.target !== resource.spec.symlinkTo
     ? "symlink verification target does not match authored symlink target"
@@ -380,7 +407,7 @@ export const ProfileResourceInputSchema = Schema.Struct({
   groups: Schema.optional(Schema.Array(GroupName)),
   dependsOn: Schema.optional(Schema.Array(ResourceIdSchema)),
   spec: ResourceSpecInputSchema,
-  verify: VerificationInputSchema,
+  verify: AuthoredVerificationInputSchema,
 }).check(
   Schema.makeFilter((resource) => {
     const policy = resource.policy ?? defaultPolicyForKind[resource.kind];
@@ -688,6 +715,16 @@ export class InvalidTextCompositionError extends TaggedError<InvalidTextComposit
   { id: Schema.String, reason: Schema.String },
 ) {}
 
+/**
+ * An authored `verify.digest` that the published content cannot satisfy. It
+ * carries the computed digest so the author can correct the profile, or omit
+ * the digest and let publication compute it.
+ */
+export class VerificationDigestMismatchError extends TaggedError<VerificationDigestMismatchError>()(
+  "VerificationDigestMismatchError",
+  { id: Schema.String, declaredDigest: Schema.String, computedDigest: Schema.String },
+) {}
+
 export type ProfileValidationError =
   | DuplicateResourceError
   | MissingDependencyError
@@ -705,7 +742,8 @@ export type ProfileValidationError =
   | InvalidBuildPolicyError
   | InvalidTextCompositionError
   | InvalidConfigKeyError
-  | InvalidRecipeError;
+  | InvalidRecipeError
+  | VerificationDigestMismatchError;
 
 /** Aggregate contract failure preserving all precise tagged graph errors. */
 export class ProfileContractError extends Error {
@@ -804,17 +842,25 @@ export const validateProfileResources = (
 const validateConfigKeys = (resource: ProfileResourceInput): ReadonlyArray<InvalidConfigKeyError> => {
   if (resource.spec.kind !== "config") return [];
   const errors: Array<InvalidConfigKeyError> = [];
-  const keys = resource.spec.keys.map((entry) => entry.path).sort(compareText);
-  for (let index = 0; index < keys.length; index += 1) {
-    const path = keys[index]!;
+  const entries = [...resource.spec.keys].sort((left, right) => compareText(left.path, right.path));
+  for (let index = 0; index < entries.length; index += 1) {
+    const { path, value } = entries[index]!;
     const reason = configPathIssue(path);
     if (reason !== undefined) errors.push(new InvalidConfigKeyError({ id: resource.id, path, reason }));
-    for (const previous of keys.slice(0, index)) {
-      if (configPathsOverlap(previous, path)) {
+    for (const previous of entries.slice(0, index)) {
+      if (configPathsOverlap(previous.path, path)) {
         errors.push(new InvalidConfigKeyError({
-          id: resource.id, path, reason: `config path overlaps declared path ${previous}`,
+          id: resource.id, path, reason: `config path overlaps declared path ${previous.path}`,
         }));
       }
+    }
+    const inexact = inexactNumberPath(value);
+    if (inexact !== undefined) {
+      errors.push(new InvalidConfigKeyError({
+        id: resource.id,
+        path,
+        reason: `${jsonPathText("value", inexact)} ${inexactNumberReason}`,
+      }));
     }
   }
   return errors;
@@ -872,7 +918,10 @@ const validateRecipes = (
 ): ReadonlyArray<InvalidRecipeError> => {
   if (resource.spec.kind !== "tool") return [];
   return resource.spec.recipes.flatMap((recipe) => {
-    const genericReason = recipeValidationError(recipe);
+    const genericReason = recipeValidationError(recipe)
+      ?? (isMissingAutomaticRecipeVersion(recipe)
+        ? `installer ${recipe.method} requires an exact "version" so every follower installs the same build`
+        : undefined);
     const qualificationReason = resource.verify.method !== "mcp-qualification"
       ? undefined
       : recipe.version === undefined

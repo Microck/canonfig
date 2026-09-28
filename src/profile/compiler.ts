@@ -5,6 +5,7 @@ import {
   MachineProfileAuthoringSchema,
   MachineProfileSchema,
   ProfileContractError,
+  VerificationDigestMismatchError,
   decodeMachineProfileJsonc,
   normalizeMachineProfile,
   validateMachineProfile,
@@ -15,8 +16,20 @@ import {
   type PublishedResource,
   type PublishedResourceSpec,
 } from "../domain/profile.ts";
-import { asJson, canonicalJson, sha256BytesHex, sha256Hex } from "./profile-codec.ts";
-import { defaultPolicyForKind, Platform, type Platform as PlatformName } from "../domain/resource.ts";
+import { renderConfigDocument } from "../synchronization/config-codec.ts";
+import {
+  asJson,
+  canonicalJson,
+  directoryVerificationDigest,
+  sha256BytesHex,
+  sha256Hex,
+} from "./profile-codec.ts";
+import {
+  defaultPolicyForKind,
+  Platform,
+  type Platform as PlatformName,
+  type ResourceKind,
+} from "../domain/resource.ts";
 
 export interface ProfileCompilerOptions {
   readonly platforms?: ReadonlyArray<PlatformName> | undefined;
@@ -171,12 +184,108 @@ const materializeResources = (
   };
 };
 
+/**
+ * The digest a follower derives from a published spec when it verifies the
+ * resource by `digest` (follower-orchestration `desiredFor` computes the same
+ * value). Tools, credentials, and symlink files have no content digest.
+ */
+const publishedContentDigest = (
+  spec: PublishedResourceSpec,
+): ContentDigest | undefined => {
+  switch (spec.kind) {
+    case "file":
+      return spec.symlinkTo === undefined ? spec.blob : undefined;
+    case "directory":
+    case "skill":
+      return directoryVerificationDigest(spec.files.map((file) =>
+        file.symlinkTo === undefined
+          ? { path: file.path, digest: file.blob!, executable: file.executable }
+          : { path: file.path, digest: sha256Hex(file.symlinkTo), executable: false }
+      ));
+    case "config":
+      return sha256BytesHex(renderConfigDocument(spec));
+    case "tool":
+    case "credential":
+      return undefined;
+  }
+};
+
+/** One resource's content digest beside the digest its profile declares. */
+export interface ResourceContentDigest {
+  readonly id: ResourceId;
+  readonly kind: ResourceKind;
+  readonly verifyMethod: ProfileResourceInput["verify"]["method"];
+  readonly computedDigest: ContentDigest;
+  /** Absent when the profile omits `verify.digest` or verifies another way. */
+  readonly declaredDigest?: string | undefined;
+}
+
+const contentDigestsFor = (
+  profile: MachineProfile,
+  materialized: MaterializedProfileResources,
+): ReadonlyArray<ResourceContentDigest> =>
+  profile.resources.flatMap((resource, index) => {
+    const computedDigest = publishedContentDigest(materialized.resources[index]!.spec!);
+    if (computedDigest === undefined) return [];
+    return [{
+      id: Schema.decodeUnknownSync(ResourceId)(resource.id),
+      kind: resource.kind,
+      verifyMethod: resource.verify.method,
+      computedDigest,
+      declaredDigest: resource.verify.method === "digest" ? resource.verify.digest : undefined,
+    }];
+  });
+
+/**
+ * Content digests of every resource that has content, computed exactly as
+ * publication computes them. `canonfig source digest` prints these. Sources
+ * must already be resolved.
+ */
+export const profileContentDigests = (
+  input: ProfileCompilerInput,
+): ReadonlyArray<ResourceContentDigest> => {
+  const profile = decodeInput(input);
+  return contentDigestsFor(profile, materializeResources(profile));
+};
+
+/**
+ * Fill each omitted `verify.digest` from the published content and reject a
+ * declared digest that differs, so no revision is signed that its followers
+ * could never verify.
+ */
+const completeVerification = (
+  profile: MachineProfile,
+  materialized: MaterializedProfileResources,
+): MachineProfile => {
+  const mismatches: Array<VerificationDigestMismatchError> = [];
+  const resources = profile.resources.map((resource, index) => {
+    if (resource.verify.method !== "digest") return resource;
+    const computedDigest = publishedContentDigest(materialized.resources[index]!.spec!);
+    // Validation already rejected digest verification of content-less kinds.
+    if (computedDigest === undefined) {
+      throw new Error(`resource ${resource.id} has digest verification but no content digest`);
+    }
+    const declaredDigest = resource.verify.digest;
+    if (declaredDigest !== undefined && declaredDigest !== computedDigest) {
+      mismatches.push(new VerificationDigestMismatchError({
+        id: resource.id,
+        declaredDigest,
+        computedDigest,
+      }));
+    }
+    return { ...resource, verify: { method: "digest" as const, digest: computedDigest } };
+  });
+  if (mismatches.length > 0) throw new ProfileContractError(mismatches);
+  return { ...profile, resources };
+};
+
 /** Compile the exact normalized candidate consumed by publication. */
 export const compileProfileCandidate = (
   input: ProfileCompilerInput,
 ): CompiledProfileCandidate => {
-  const profile = decodeInput(input);
-  const materialized = materializeResources(profile);
+  const decoded = decodeInput(input);
+  const materialized = materializeResources(decoded);
+  const profile = completeVerification(decoded, materialized);
   const canonicalBytes = canonicalJson(asJson({
     ...profile,
     resources: materialized.resources.map((resource, index) => ({

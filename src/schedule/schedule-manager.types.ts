@@ -1,9 +1,10 @@
 import { Schema } from "effect";
 
-import type { ResourceSpecInput, ScheduleDefault } from "../domain/profile.ts";
+import type { ScheduleDefault } from "../domain/profile.ts";
 import type {
   MachinePlatform,
   RenderedSchedulerJob,
+  SchedulerRunResult,
   SchedulerSnapshot,
 } from "../machine/machine-state.types.ts";
 import type { FollowerSynchronizationConfiguration } from "../synchronization/follower-sync-config.ts";
@@ -85,11 +86,45 @@ export interface ResolvedScheduleInput extends SetScheduleInput {
   readonly schedule: SyncSchedule;
 }
 
+/**
+ * The effective native state of the job, not only whether its files match.
+ *
+ * - `not-installed`, `disabled`, `inactive`: deleted, disabled, or stopped
+ *   (unloaded) outside Canonfig; the job will not fire.
+ * - `overridden`: a native override (a systemd drop-in) changes the job.
+ * - `drifted`: the installed definition differs from the rendered one; see
+ *   `drift` for whether only Canonfig's binding or the calendar differs.
+ */
+export type ScheduleState =
+  | "not-installed"
+  | "current"
+  | "drifted"
+  | "disabled"
+  | "inactive"
+  | "timezone-changed"
+  | "overridden";
+
 export interface ScheduleStatus {
-  readonly state: "not-installed" | "current" | "drifted" | "disabled";
+  readonly state: ScheduleState;
   readonly platform: MachinePlatform;
   readonly schedule: SyncSchedule;
   readonly definition: RenderedSchedulerJob;
+  /** One sentence describing the state and the next action. */
+  readonly detail: string;
+  /** For `drifted`: only the runtime/entrypoint binding differs, or the calendar too. */
+  readonly drift?: "binding" | "calendar" | undefined;
+  /** The zone `localTime` is read in: the named timezone, or this machine's own. */
+  readonly timezone: string;
+  /** The next start, computed from the calendar or reported by the native scheduler. */
+  readonly nextRun?: string | undefined;
+  readonly overrides?: ReadonlyArray<string> | undefined;
+  readonly effectiveCalendar?: string | undefined;
+  /** The last run the native scheduler itself recorded. */
+  readonly lastNativeRun?: SchedulerRunResult | undefined;
+  /** Linux: whether the user manager keeps running while logged out. */
+  readonly lingering?: boolean | undefined;
+  /** Conditions under which a selected run will not happen: DST gaps, no linger. */
+  readonly warnings: ReadonlyArray<string>;
 }
 
 export type ScheduleSnapshot = SchedulerSnapshot;
@@ -97,6 +132,40 @@ export type ScheduleSnapshot = SchedulerSnapshot;
 export interface ScheduleChange {
   readonly change: "installed" | "unchanged" | "updated";
   readonly status: ScheduleStatus;
+}
+
+/** What the post-apply reconciler did with the native job. */
+export interface ScheduleReconciliation {
+  /**
+   * `left-as-is`: the job was deleted, disabled, stopped, or overridden
+   * outside Canonfig. Sync respects that and never recreates or re-enables
+   * it; only an explicit `schedule set` does.
+   */
+  readonly action: "unchanged" | "updated" | "left-as-is";
+  readonly status: ScheduleStatus;
+}
+
+/**
+ * What a sync did or offers about the native job, reported in plan and apply
+ * output so no schedule change or refusal is silent.
+ *
+ * - `available`: the profile declares a default, but this follower never
+ *   consented to scheduling; nothing is installed.
+ * - `kept-unmanaged`: a job exists without a decision (installed by an earlier
+ *   release); it is kept as is.
+ * - `removed`: the inherited profile default was withdrawn.
+ * - `failed`: the native scheduler could not be inspected or updated; the
+ *   resource run is unaffected.
+ */
+export interface ScheduleSyncReport {
+  readonly action:
+    | ScheduleReconciliation["action"]
+    | "available"
+    | "kept-unmanaged"
+    | "removed"
+    | "failed";
+  readonly state?: ScheduleState | undefined;
+  readonly detail: string;
 }
 
 export interface RemoveScheduleResult {
@@ -140,8 +209,11 @@ export const syncScheduleFromDefault = (
 
 /**
  * What this follower's native job should be, or undefined when it should have
- * none. The follower's own override wins and the profile default is inherited
- * otherwise.
+ * none. Only the follower's explicit decision installs a job: `schedule` pins
+ * a calendar this machine chose, and `inherit` (`schedule set --default`)
+ * follows the profile's `scheduleDefault`. Without a decision a profile
+ * default is only offered, never installed: automatic scheduling needs the
+ * follower's consent.
  *
  * `schedule status`, the doctor scheduler probe, and the reconciler that runs
  * after a converged apply all resolve the job through this, so they cannot
@@ -154,16 +226,31 @@ export const desiredScheduleInput = (
   override: FollowerSynchronizationConfiguration["scheduleOverride"],
   scheduleDefault: ScheduleDefault | undefined,
 ): ResolvedScheduleInput | undefined => {
-  if (override?.kind === "disabled") return undefined;
   if (override?.kind === "schedule") {
     return override.executable === undefined
       ? { schedule: override.schedule }
       : { schedule: override.schedule, executable: override.executable };
   }
-  return scheduleDefault === undefined
-    ? undefined
-    : { schedule: syncScheduleFromDefault(scheduleDefault) };
+  return override?.kind === "inherit" && scheduleDefault !== undefined
+    ? { schedule: syncScheduleFromDefault(scheduleDefault) }
+    : undefined;
 };
+
+/**
+ * The sync report when this follower made no schedule decision: a profile
+ * default is offered, never installed.
+ */
+export const scheduleAvailableDetail = (schedule: ScheduleDefault): string => {
+  const normalized = syncScheduleFromDefault(schedule);
+  const calendar = normalized.kind === "weekly"
+    ? `weekly:${normalized.weekdays.join(",")}@${schedule.at}`
+    : `daily@${schedule.at}`;
+  return `schedule available: the profile suggests ${calendar} in this machine's time zone; run \`canonfig schedule set --default\` to install it`;
+};
+
+/** Status of a job left behind without a decision, e.g. by a v2.x or v3.x auto-install. */
+export const unmanagedScheduleDetail =
+  "a Canonfig native schedule installed by an earlier release is kept as is but no longer managed; run `canonfig schedule set --default` or `canonfig schedule set <calendar>` to manage it, or `canonfig schedule remove` to delete it";
 
 const weekdayIndex = new Map(
   scheduleWeekdays.map((weekday, index) => [weekday, index] as const),

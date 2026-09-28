@@ -14,10 +14,6 @@ import {
 } from "./brand.ts";
 import type { ResourceId } from "./brand.ts";
 import {
-  SyncScheduleSchema,
-  type SyncSchedule,
-} from "../schedule/schedule-manager.types.ts";
-import {
   AutomaticRecipeMethod,
   BuildPolicy as BuildPolicySchema,
   RecipeIndexPolicy,
@@ -95,6 +91,14 @@ export type ActionDetail =
      * Canonfig wrote, so a local edit is never silently discarded.
      */
     readonly removes?: ReadonlyArray<string> | undefined;
+    /**
+     * Keys Canonfig owned that the revision no longer declares but that stay,
+     * because a Local Overlay key overlaps them. Canonfig stops managing them
+     * and leaves their current values, so the plan names them instead of
+     * reading as if nothing were left behind.
+     */
+    readonly retains?: ReadonlyArray<string> | undefined;
+    readonly retentionNotice?: string | undefined;
   }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
   | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }
@@ -319,6 +323,8 @@ export const ActionDetailSchema = Schema.Union([
     target: Schema.NonEmptyString,
     keys: Schema.Array(Schema.NonEmptyString),
     removes: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+    retains: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+    retentionNotice: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     kind: Schema.Literal("mirror-directory"),

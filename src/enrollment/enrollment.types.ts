@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { type Redacted, Schema } from "effect";
 
 import {
   BlobId,
@@ -68,6 +68,19 @@ export interface SourceEnrollmentMaterial {
   readonly tlsFingerprint: typeof CertificateFingerprint.Type;
 }
 
+/**
+ * The Source's secret material, loaded from the native store and checked
+ * against the fingerprints its state records: the signing key belongs to
+ * `material.source`, and the TLS key and certificate to
+ * `material.tlsFingerprint`.
+ */
+export interface SourceCredentials {
+  readonly material: SourceEnrollmentMaterial;
+  readonly signingPrivateKey: Redacted.Redacted<string>;
+  readonly tlsPrivateKey: Redacted.Redacted<string>;
+  readonly tlsCertificate: Redacted.Redacted<string>;
+}
+
 export interface StartSourceServerInput {
   /**
    * Runtime input is validated as an unambiguous loopback host by the server
@@ -131,6 +144,8 @@ export interface BlobRetrievalInput extends FollowerTransportInput {
   readonly blobBytes?: number | undefined;
   /** Maximum bytes accepted in any one HTTP range response. */
   readonly maximumBlobBytes?: number | undefined;
+  /** Called after each verified range with the bytes of this blob received so far. */
+  readonly onProgress?: ((receivedBytes: number) => void) | undefined;
 }
 
 export interface AuthorizedBlobRangeInput {

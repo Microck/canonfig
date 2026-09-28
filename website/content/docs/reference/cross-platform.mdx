@@ -1,6 +1,6 @@
 ---
 title: Cross-platform behavior
-description: Understand equivalent Linux, macOS, and Windows contracts without assuming identical paths or tools.
+description: Understand equivalent Linux, macOS, and Windows contracts without assuming identical paths, tools, or unattended modes.
 ---
 
 Linux, macOS, and Windows are first-class Follower Machine platforms. They share
@@ -10,7 +10,8 @@ domain outcomes and conformance contracts, not raw paths or command output.
 
 | Capability | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| Scheduler | systemd user timer | launchd user agent | Task Scheduler |
+| Follower schedule | systemd user timer | launchd user agent | Task Scheduler task |
+| Source service | systemd user unit `canonfig-source.service` | LaunchAgent `dev.canonfig.source` | Task Scheduler at-logon task `Canonfig\canonfig-source` |
 | Secure credential provider | Secret Service | Keychain | Credential Manager |
 | Common package recipe | apt, npm, uv, cargo, source | Homebrew, npm, uv, cargo, source | winget, npm, uv, cargo, source |
 | User path syntax | POSIX | POSIX | Windows |
@@ -30,10 +31,11 @@ on Windows and POSIX paths on Linux or macOS.
 
 ## Filesystem behavior
 
-Atomic file replacement uses a sibling temporary file, durability
-synchronization where supported, and rename. Symlink, permission, cancellation,
-timeout, and output-limit behavior is implemented by each real platform adapter
-and returns typed errors when unavailable.
+Atomic file replacement uses a short, fixed-length sibling temporary name
+(`.cf-<12 hex>.tmp`), durability synchronization where supported, and rename,
+so any file name the filesystem accepts can be a target. Symlink, permission,
+cancellation, timeout, and output-limit behavior is implemented by each real
+platform adapter and returns typed errors when unavailable.
 
 <Callout title="Equivalent does not mean identical" type="info">
   A resource can have the same desired capability on all platforms while using
@@ -50,6 +52,43 @@ platforms only when their own evidence supports that claim.
 Never choose a recipe solely because its package name resembles a package on
 another platform.
 
+A bare verifier command such as `ruff` is looked up first in the directories
+where that recipe's installer puts executables, then on `PATH`. Those
+directories differ per platform, for example `%APPDATA%\npm` and
+`%LOCALAPPDATA%\Microsoft\WinGet\Links` on Windows. See
+[Tool discovery and Installation Recipes](/explanation/tools-and-recipes#verification-lookup).
+
+## Windows package managers
+
+Canonfig starts installers without a shell. On Windows, `npm.cmd`, `pnpm.cmd`,
+and other `.cmd` or `.bat` shims cannot run that way. When no binding is set
+and PATH resolves npm to `npm.cmd` (or a recorded binding names the shim),
+`canonfig sync --plan` lists a `warnings` entry, and the apply stops with Human
+Action Required. Both, `canonfig installer check npm`, and `canonfig installer
+list` (as `suggestions`) print the exact binding command. Canonfig finds
+`npm-cli.js` beside the shim (`node_modules\npm\bin\npm-cli.js`) and `node.exe`
+beside it or on PATH:
+
+> No installer binding is set for npm, and PATH resolves it to the Windows
+> command shim C:\Program Files\nodejs\npm.cmd, which cannot run without a
+> shell. Bind npm to Node and its own entrypoint instead, then retry:
+
+```powershell
+canonfig installer set npm --executable "C:\Program Files\nodejs\node.exe" --arg "C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js"
+canonfig installer check npm
+```
+
+When either half is missing, the message gives the `--executable <node.exe>
+--arg <entrypoint>` shape instead.
+
+Both paths must be absolute and must exist. They depend on where Node.js is
+installed (a version manager such as nvm-windows or Volta uses other
+directories), so check them on the machine first. pnpm follows the same shape
+with `pnpm.cjs` as the `--arg`. This form has not been verified on a live
+Windows machine in this release; `installer check` confirms that the binding
+starts in the current session. See
+[Installer bindings](/reference/cli#installer-bindings).
+
 ## Schedules
 
 The calendar remains a local-time domain value. The adapter renders it for the
@@ -57,24 +96,52 @@ native scheduler. Inspect the installed result rather than copying a systemd
 definition to another platform:
 
 ```bash
-canonfig schedule set daily@00:00 --timezone Europe/Paris
+canonfig schedule set daily@09:00 --timezone Europe/Paris
 canonfig schedule status
 ```
 
-## Noninteractive operation
+Missed-run and daylight-saving behavior is native and differs per platform; see
+[Manage schedules](/how-to/manage-schedules#time-zones-daylight-saving-and-missed-runs).
 
-All native jobs use the same canonical apply command:
+## Unattended operation
+
+Every native follower job runs the same command:
 
 ```text
-canonfig sync --apply --no-input
+canonfig sync --apply --no-input --scheduled
 ```
 
 No platform may wait for a prompt during a scheduled run. Missing secure storage,
 login, elevation, or another human-only capability becomes Human Action Required
 with platform-specific instructions.
 
-## Source endpoint limitation
+Scheduled follower runs and the Source service run under these conditions:
 
-The shipped source server accepts loopback hosts only on every platform. Remote
-exposure, port forwarding, or a public listener is outside the verified C11 CLI
-contract.
+| Platform | While logged in | While logged out |
+| --- | --- | --- |
+| Linux | yes | only with lingering (`loginctl enable-linger <user>`), and with Secret Service reachable and unlocked or the local-file credential policy |
+| macOS | in the logged-in desktop session (`gui/<uid>`), with the login Keychain unlocked | no |
+| Windows | from logon while the user stays logged on | no |
+
+`doctor` and `status` warn on Linux when lingering is off. On macOS, run
+`source service install` from the desktop session, not over SSH. See
+[Run Canonfig unattended](/how-to/run-unattended).
+
+## Source endpoint and the managed tunnel
+
+The Source server accepts loopback hosts only, on every platform. A follower on
+another host reaches it through the managed SSH tunnel, `canonfig tunnel`,
+which is part of the supported CLI. It forwards the follower's loopback port to
+the Source's loopback port over SSH and pins the SSH host key, the Source TLS
+certificate, and the Source signing key separately. It rejects host-key bypass
+and extra forwarding options. A public listener is not supported.
+
+```bash
+canonfig tunnel start --invitation ./canonfig-invite --ssh-host a.example --ssh-user you --ssh-host-key-file ./source-host-key.pub
+canonfig tunnel start
+```
+
+The first start records the tunnel; later starts need no invitation, and a
+scheduled run restarts a tunnel that went down once before fetching. See
+[Run Canonfig unattended](/how-to/run-unattended) and the
+[CLI reference](/reference/cli#managed-ssh-tunnel).

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, win32 } from "node:path";
+import { release, tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { describe, expect, it } from "vitest";
@@ -14,7 +14,7 @@ import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
 import type { SecurityRunner } from "../../src/machine/keychain-session-probe.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
-import { windowsCredentialScript } from "../../src/machine/windows-credentials.ts";
+import { windowsPowerShellExecutable } from "../../src/machine/windows-credentials.ts";
 import {
   nativeCredentialWriteCommand,
   nativeSecretStoreLayer,
@@ -247,15 +247,11 @@ describe("shared-secret cleanup retry", () => {
       // the real keychain work still happens in the store and load below.
       const probeRunner: SecurityRunner = (invocation) =>
         Effect.sync(() => {
-          // SAFETY: the probe runner is only fed by keychainSessionProbe,
-          // whose stdin is always the JSON with an operation field.
-          const payload = JSON.parse(
-            new TextDecoder().decode(invocation.standardInput),
-          ) as { operation: string };
+          const command = invocation.arguments[0];
           return {
             exitCode: 0,
             signal: null,
-            standardOutput: payload.operation === "probe-load"
+            standardOutput: command === "find-generic-password"
               ? new TextEncoder().encode("canonfig-session-probe write check")
               : new Uint8Array(),
             standardError: new Uint8Array(),
@@ -320,12 +316,9 @@ describe("shared-secret cleanup retry", () => {
       arguments: command.arguments,
       environment: command.environment,
     });
-    const script = command.arguments.join(" ");
     expect(metadata).not.toContain(secret);
     expect(metadata).not.toContain("CANONFIG_SECRET");
     expect(Buffer.from(command.standardInput).toString("utf8")).toBe(secret);
-    expect(script).toContain("[System.Text.UTF8Encoding]::new($false)");
-    expect(script).toContain("[Console]::In.ReadToEnd()");
   });
 
   it.runIf(process.platform === "win32")(
@@ -333,13 +326,7 @@ describe("shared-secret cleanup retry", () => {
     async () => {
       const secret = "é🔐-windows-round-trip";
       const layer = windowsMachineStateLayer();
-      const powershell = win32.join(
-        process.env.SystemRoot ?? "C:\\Windows",
-        "System32",
-        "WindowsPowerShell",
-        "v1.0",
-        "powershell.exe",
-      );
+      const powershell = windowsPowerShellExecutable();
       const script = [
         "$ErrorActionPreference='Stop'",
         "[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false)",
@@ -376,27 +363,15 @@ describe("shared-secret cleanup retry", () => {
 });
 
 describe("Windows native credential contract", () => {
-  it.each(["store", "load", "remove"] as const)("activates WinRT and fixes UTF-8 for %s", (operation) => {
-    const script = windowsCredentialScript(operation);
-    expect(script).toContain("Add-Type -AssemblyName System.Runtime.WindowsRuntime");
-    expect(script).toContain("PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new()");
-    expect(script).toContain("[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)");
-    expect(script).not.toContain("CANONFIG_SECRET");
-    expect(script).not.toContain("New-Object");
-  });
 
-  it("shares the same fixed write program with secret transfer", () => {
-    const command = nativeCredentialWriteCommand(
-      { kind: "secure-noninteractive", provider: "credential-manager", verification: "provider-presence" },
-      { name: "round-trip-fixture", value: Redacted.make("synthetic-value") },
-    );
-    expect(command?.arguments.at(-1)).toBe(windowsCredentialScript("store"));
-  });
 
   for (const path of ["machine", "secret-transfer"] as const) {
     it.runIf(process.platform === "win32").each([
       { label: "ASCII", secret: "native-vault-fixture" },
       { label: "Unicode", secret: "é🔐日本語-native-vault" },
+      ...(process.arch === "arm64" && Number(release().split(".")[2]) < 22000
+        ? [{ label: "16KiB Unicode", secret: "é🔐\n".repeat(2340) + "tail" }]
+        : []),
       { label: "quoted multiline", secret: "quote \"; slash \\ and newline\nsecond line\n" },
     ])(`round-trips and removes $label through ${path}`, async ({ secret }) => {
       const name = `canonfig-vault-test-${randomUUID()}`;
@@ -428,6 +403,6 @@ describe("Windows native credential contract", () => {
           }).pipe(Effect.provide(layer))).catch(() => undefined);
         }
       }
-    }, 30_000);
+    }, 120_000);
   }
 });

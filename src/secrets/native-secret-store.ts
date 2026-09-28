@@ -1,25 +1,27 @@
 import { createHash } from "node:crypto";
-import { win32 } from "node:path";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
 
 import { CredentialReference } from "../domain/brand.ts";
 import {
   CredentialStorageError,
+  credentialFailureDetail,
   HumanActionRequiredError,
   type MachineStateError,
 } from "../machine/machine-state.errors.ts";
+import { keychainSessionGuidance } from "../machine/keychain-session-probe.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import { windowsCredentialScript } from "../machine/windows-credentials.ts";
+import { windowsCredentialScript, windowsCredentialTimeoutMilliseconds, windowsPowerShellExecutable } from "../machine/windows-credentials.ts";
 import type {
   CredentialStorageCapability,
   LoadCredentialInput,
   ProcessEnvironmentEntry,
   StoreCredentialInput,
+  ProcessResult,
 } from "../machine/machine-state.types.ts";
 
 const maximumCredentialOutputBytes = 1024 * 1024;
-const credentialTimeoutMilliseconds = 5_000;
+const keychainTimeoutMilliseconds = 5_000;
 const keychainHexPrefix = "keychain-hex:";
 const decode = Schema.decodeUnknownSync;
 
@@ -77,12 +79,46 @@ const failure = (
   provider === "keychain"
     ? new HumanActionRequiredError({
       action: "access the macOS Keychain from this session",
-      recovery: `The Keychain refused the native credential write from this execution session. SSH and other background sessions cannot use the login Keychain: run canonfig in the logged-in graphical session, or from its gui/${process.getuid?.() ?? 0} LaunchAgent.`,
+      recovery: `The Keychain refused the native credential write from this execution session. ${keychainSessionGuidance(process.getuid?.() ?? 0)}`,
     })
     : new HumanActionRequiredError({
       action: "unlock Windows Credential Manager",
       recovery: "Sign in interactively and make Credential Manager available, then retry.",
     });
+
+/**
+ * A failed `keychain-hex:` read. The helper script reports the Security
+ * framework status (`Keychain read failed: <OSStatus>`) on standard error;
+ * a missing item is a local state problem, anything else is the session's
+ * Keychain refusing access, which only the operator can resolve.
+ */
+const keychainReadFailure = (
+  input: LoadCredentialInput,
+  result: ProcessResult,
+): HumanActionRequiredError | CredentialStorageError => {
+  const status = /Keychain read failed: (-?\d+)/u.exec(
+    new TextDecoder().decode(result.standardError),
+  )?.[1];
+  if (status === "-25300") {
+    return new CredentialStorageError({
+      operation: "load credential",
+      reference: String(input.reference),
+      message: "the macOS login Keychain has no item for this credential (Keychain status -25300, item not found)",
+    });
+  }
+  const meaning = status === "-25308"
+    ? ", user interaction is not allowed: the login Keychain is locked in this session"
+    : status === "-128"
+    ? ", the Keychain unlock prompt was cancelled"
+    : "";
+  const evidence = status === undefined
+    ? `osascript exited with code ${result.exitCode ?? "signal"}`
+    : `osascript exited with code ${result.exitCode ?? "signal"}, Keychain status ${status}${meaning}`;
+  return new HumanActionRequiredError({
+    action: "unlock the macOS login Keychain",
+    recovery: `The Keychain credential could not be read from this execution session (${evidence}). ${keychainSessionGuidance(process.getuid?.() ?? 0)}`,
+  });
+};
 
 const runNativeCredentialCommand = (
   machine: MachineState["Service"],
@@ -97,7 +133,7 @@ const runNativeCredentialCommand = (
       arguments: command.arguments,
       environment: command.environment,
       standardInput: command.standardInput,
-      timeoutMilliseconds: credentialTimeoutMilliseconds,
+      timeoutMilliseconds: command.provider === "credential-manager" ? windowsCredentialTimeoutMilliseconds : keychainTimeoutMilliseconds,
       maximumOutputBytes: maximumCredentialOutputBytes,
     });
     return result.exitCode;
@@ -159,14 +195,7 @@ export const nativeCredentialWriteCommand = (
     };
   }
 
-  const powershell = environment.CANONFIG_POWERSHELL
-    ?? win32.join(
-      environment.SystemRoot ?? "C:\\Windows",
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    );
+  const powershell = windowsPowerShellExecutable(environment);
   const script = windowsCredentialScript("store");
   return {
     provider: "credential-manager",
@@ -187,24 +216,58 @@ export const nativeCredentialWriteCommand = (
   };
 };
 
+const loadKeychainHexCredential = (
+  machine: MachineState["Service"],
+  input: LoadCredentialInput,
+): Effect.Effect<Redacted.Redacted<string>, MachineStateError> =>
+  Effect.gen(function*() {
+    const reference = String(input.reference);
+    const executable = yield* machine.normalizePath({ path: "/usr/bin/osascript" });
+    const loaded = yield* machine.runProcess({
+      executable,
+      arguments: keychainArguments,
+      standardInput: new TextEncoder().encode(JSON.stringify({
+        operation: "load",
+        service: `dev.canonfig.${reference.slice(keychainHexPrefix.length)}`,
+      })),
+      timeoutMilliseconds: keychainTimeoutMilliseconds,
+      maximumOutputBytes: maximumCredentialOutputBytes,
+    });
+    if (loaded.exitCode !== 0) return yield* keychainReadFailure(input, loaded);
+    return yield* decodeKeychainValue(input, Redacted.make(
+      new TextDecoder().decode(loaded.standardOutput).trim(),
+    ));
+  });
+
+const providerName = (capability: CredentialStorageCapability): string =>
+  capability.kind === "local-file"
+    ? "local-file credential store"
+    : capability.kind === "unavailable"
+    ? "credential store"
+    : capability.provider === "secret-service"
+    ? "Secret Service"
+    : capability.provider === "keychain"
+    ? "macOS Keychain"
+    : "Windows Credential Manager";
+
 export const nativeSecretStoreLayer = (
   base: Layer.Layer<MachineState>,
   options: NativeSecretStoreLayerOptions = {},
 ): Layer.Layer<MachineState> =>
   Layer.effect(
     MachineState,
-    Effect.map(MachineState, (machine) => ({
-      ...machine,
-      storeCredential: (input: StoreCredentialInput) =>
+    Effect.map(MachineState, (machine) => {
+      const loadCredential = (input: LoadCredentialInput) =>
+        String(input.reference).startsWith(keychainHexPrefix)
+          ? loadKeychainHexCredential(machine, input)
+          : machine.loadCredential(input);
+      const removeCredential = (reference: typeof CredentialReference.Type) =>
+        machine.removeCredential(keychainStorageReference(reference) ?? reference);
+      const writeCredential = (
+        input: StoreCredentialInput,
+        capability: CredentialStorageCapability,
+      ): Effect.Effect<typeof CredentialReference.Type, MachineStateError> =>
         Effect.gen(function*() {
-          if (input.name.trim().length === 0) {
-            return yield* new CredentialStorageError({
-              operation: "store credential",
-              reference: "native-store",
-              message: "credential name must not be empty",
-            });
-          }
-          const capability = yield* machine.credentialCapability();
           if (capability.kind !== "secure-noninteractive") {
             return yield* machine.storeCredential(input);
           }
@@ -220,37 +283,56 @@ export const nativeSecretStoreLayer = (
           );
           if (exitCode !== 0) return yield* failure(command.provider);
           return command.reference;
-        }),
-      loadCredential: (input: LoadCredentialInput) => {
-        const reference = String(input.reference);
-        if (!reference.startsWith(keychainHexPrefix)) return machine.loadCredential(input);
-        return Effect.gen(function*() {
-          const executable = yield* machine.normalizePath({ path: "/usr/bin/osascript" });
-          const loaded = yield* machine.runProcess({
-            executable,
-            arguments: keychainArguments,
-            standardInput: new TextEncoder().encode(JSON.stringify({
-              operation: "load",
-              service: `dev.canonfig.${reference.slice(keychainHexPrefix.length)}`,
-            })),
-            timeoutMilliseconds: credentialTimeoutMilliseconds,
-            maximumOutputBytes: maximumCredentialOutputBytes,
-          });
-          if (loaded.exitCode !== 0) {
-            return yield* new CredentialStorageError({
-              operation: "load credential",
-              reference: String(input.reference),
-              message: "the Keychain credential is unavailable",
-            });
-          }
-          return yield* decodeKeychainValue(input, Redacted.make(
-            new TextDecoder().decode(loaded.standardOutput).trim(),
-          ));
         });
-      },
-      removeCredential: (reference: typeof CredentialReference.Type) => {
-        const storageReference = keychainStorageReference(reference);
-        return machine.removeCredential(storageReference ?? reference);
-      },
-    })),
+      return {
+        ...machine,
+        /**
+         * Every store is read back and compared by digest before its
+         * reference is returned. A provider that truncates or rewrites the
+         * value (secret-tool silently keeps 8192 bytes of a longer pipe, for
+         * example) must fail the store, never report success over a
+         * corrupted credential; the partial item is removed.
+         */
+        storeCredential: (input: StoreCredentialInput) =>
+          Effect.gen(function*() {
+            if (input.name.trim().length === 0) {
+              return yield* new CredentialStorageError({
+                operation: "store credential",
+                reference: "native-store",
+                message: "credential name must not be empty",
+              });
+            }
+            const capability = yield* machine.credentialCapability();
+            const reference = yield* writeCredential(input, capability);
+            const provider = providerName(capability);
+            const discard = removeCredential(reference).pipe(Effect.ignore);
+            const stored = yield* loadCredential({ reference }).pipe(
+              Effect.tapError(() => discard),
+              Effect.mapError((error) =>
+                new CredentialStorageError({
+                  operation: "store credential",
+                  reference: String(reference),
+                  message: `the ${provider} accepted the credential but it could not be read back, so it was removed: ${credentialFailureDetail(error)}`,
+                })
+              ),
+            );
+            const expected = Redacted.value(input.value);
+            const actual = Redacted.value(stored);
+            if (
+              createHash("sha256").update(actual, "utf8").digest("hex")
+                !== createHash("sha256").update(expected, "utf8").digest("hex")
+            ) {
+              yield* discard;
+              return yield* new CredentialStorageError({
+                operation: "store credential",
+                reference: String(reference),
+                message: `the ${provider} returned ${Buffer.byteLength(actual, "utf8")} bytes for a ${Buffer.byteLength(expected, "utf8")}-byte credential, so the credential was removed instead of being kept corrupted; nothing was stored`,
+              });
+            }
+            return reference;
+          }),
+        loadCredential,
+        removeCredential,
+      };
+    }),
   ).pipe(Layer.provide(base));

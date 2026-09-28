@@ -9,17 +9,41 @@ import type { ProcessResult } from "./machine-state.types.ts";
  * Whether the login Keychain is writable from the CURRENT process context.
  *
  * Presence of `/usr/bin/security` only proves the provider is installed: an
- * SSH or other background session cannot use the Keychain at all, and every
- * write fails with "User interaction is not allowed" no matter how the
- * Keychain is unlocked elsewhere. The only honest check is a disposable
+ * SSH or other background session starts with the login Keychain locked, and
+ * a locked Keychain refuses noninteractive access (`security` exit code 36,
+ * "User interaction is not allowed"). The only honest check is a disposable
  * add/read-back/delete lifecycle of a non-secret sentinel in a unique
  * Canonfig-owned namespace, run right here.
  *
- * The sentinel travels over stdin as hex (the same transport as the native
- * secret store) so no value is ever placed in argv. Existing credentials are
- * never read, modified, or deleted: the probe item lives under its own
- * account and a per-run unique service name.
+ * The sentinel is a fixed, non-secret constant passed on argv as
+ * `security add-generic-password ... -w <sentinel>`; nothing travels over
+ * standard input.
+ *
+ * Existing credentials are never read, modified, or deleted: the probe item
+ * lives under its own account and a per-run unique service name.
  */
+
+/**
+ * What to do when the login Keychain refuses access from this session.
+ *
+ * macOS unlocks the login Keychain per security session: an unlock in one SSH
+ * session works for that session only, and launchd starts scheduled runs in
+ * the logged-in desktop session's `gui/<uid>` domain.
+ */
+export const keychainSessionGuidance = (uid: number): string =>
+  "The login Keychain is locked in this SSH or background session. "
+  + "To continue in this session, run `security unlock-keychain ~/Library/Keychains/login.keychain-db` and retry; "
+  + "the unlock lasts only for this session and does not carry over to new SSH sessions, the desktop session, or scheduled runs. "
+  + `Scheduled runs need the logged-in desktop session (launchd domain gui/${uid}).`;
+
+/** Plain-language meaning of a `/usr/bin/security` exit code, when known. */
+export const securityExitMeaning = (exitCode: number | null): string | undefined => {
+  switch (exitCode) {
+    case 36: return "user interaction is not allowed: the login Keychain is locked in this session";
+    case 44: return "the Keychain item does not exist";
+    default: return undefined;
+  }
+};
 
 export interface KeychainProbeInvocation {
   readonly arguments: ReadonlyArray<string>;
@@ -42,64 +66,36 @@ export type KeychainSessionProbeResult =
     readonly detail?: string | undefined;
   };
 
-// SecurityTool's interactive input is limited to 4 KiB and the CLI takes the
-// password on argv or a prompt, never stdin: the native framework through
-// osascript accepts the payload over stdin instead.
-const probeArguments = ["-l", "JavaScript", "-e", [
-  "ObjC.import('Foundation');",
-  "ObjC.import('Security');",
-  "function run() {",
-  "  const bytes = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;",
-  "  const payload = JSON.parse(ObjC.unwrap($.NSString.alloc.initWithDataEncoding(bytes, $.NSUTF8StringEncoding)));",
-  "  const query = $.NSMutableDictionary.dictionary;",
-  "  query.setObjectForKey(ObjC.castRefToObject($.kSecClassGenericPassword), ObjC.castRefToObject($.kSecClass));",
-  "  query.setObjectForKey($(payload.service), ObjC.castRefToObject($.kSecAttrService));",
-  "  query.setObjectForKey($(payload.account), ObjC.castRefToObject($.kSecAttrAccount));",
-  "  if (payload.operation === 'probe-add') {",
-  "    const attributes = $.NSMutableDictionary.dictionary;",
-  "    attributes.setObjectForKey($(payload.hexadecimal).dataUsingEncoding($.NSUTF8StringEncoding), ObjC.castRefToObject($.kSecValueData));",
-  "    const status = $.SecItemAdd(query, null);",
-  "    if (status !== 0) throw Error('Keychain probe add failed: ' + status);",
-  "    return '';",
-  "  }",
-  "  if (payload.operation === 'probe-load') {",
-  "    query.setObjectForKey($.NSNumber.numberWithBool(true), ObjC.castRefToObject($.kSecReturnData));",
-  "    const output = Ref();",
-  "    const status = $.SecItemCopyMatching(query, output);",
-  "    if (status !== 0) throw Error('Keychain probe read failed: ' + status);",
-  "    return ObjC.unwrap($.NSString.alloc.initWithDataEncoding(ObjC.castRefToObject(output[0]), $.NSUTF8StringEncoding));",
-  "  }",
-  "  const status = $.SecItemDelete(query);",
-  "  if (status !== 0) throw Error('Keychain probe delete failed: ' + status);",
-  "  return '';",
-  "}",
-].join("\n")];
-
 const probeAccount = "canonfig-session-probe";
+/** Non-secret: it is passed on argv (`-w <sentinel>`), never over stdin. */
 const probeSentinel = "canonfig-session-probe write check";
 export const probeServicePrefix = "dev.canonfig.session-probe.";
-const textEncoder = new TextEncoder();
 
-const probeInput = (
-  operation: string,
+type ProbeOperation = "probe-add" | "probe-load" | "probe-delete";
+
+const probeInvocation = (
+  operation: ProbeOperation,
   service: string,
-): Uint8Array =>
-  textEncoder.encode(JSON.stringify({
-    operation,
-    service,
-    account: probeAccount,
-    hexadecimal: Buffer.from(probeSentinel, "utf8").toString("hex"),
-  }));
+): KeychainProbeInvocation => {
+  const identity = ["-a", probeAccount, "-s", service];
+  const arguments_ = operation === "probe-add"
+    ? ["add-generic-password", "-U", ...identity, "-w", probeSentinel]
+    : operation === "probe-load"
+    ? ["find-generic-password", ...identity, "-w"]
+    : ["delete-generic-password", ...identity];
+  return {
+    arguments: arguments_,
+    standardInput: new Uint8Array(),
+  };
+};
 
 export const keychainSessionProbe = (
   run: SecurityRunner,
 ): Effect.Effect<KeychainSessionProbeResult, MachineStateError> =>
   Effect.gen(function*() {
     const service = `${probeServicePrefix}${randomUUID()}`;
-    const invocation = (operation: string) => ({
-      arguments: probeArguments,
-      standardInput: probeInput(operation, service),
-    });
+    const invocation = (operation: ProbeOperation) =>
+      probeInvocation(operation, service);
     const cleanup = () => run(invocation("probe-delete"));
     const added = yield* run(invocation("probe-add"));
     if (added.exitCode !== 0) {

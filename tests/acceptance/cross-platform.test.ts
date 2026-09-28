@@ -381,7 +381,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     await writeFile(instructionsFile, localInstructions);
     const configFile = join(followerMachine.home, "settings.json");
     const skillRoot = join(followerMachine.home, "skills", "acceptance");
-    const scheduleFile = join(followerMachine.home, "schedule.json");
     const hiddenFile = join(followerMachine.home, "hidden.txt");
     const skillContent = "# Acceptance skill\n";
     const platformRecipes = [
@@ -883,11 +882,9 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         manager.install({ executable: process.execPath })
       ).pipe(Effect.provide(scheduleLayer)),
     );
-    // The converged apply already reconciled the inherited profile default, so
-    // installing here updates that job rather than creating the first one. The
-    // difference from before is where the reconciliation happens: after the
-    // run, not as a planned action that could roll the run back.
-    expect(installedSchedule.change).toBe("updated");
+    // CF-47: a converged apply never installs the profile scheduleDefault, so
+    // this explicit install creates the first native job.
+    expect(installedSchedule.change).toBe("installed");
     expect(installedSchedule.status.platform).toBe(platform);
     expect(installedSchedule.status.definition.mechanism).toBe(
       platform === "linux"
@@ -896,14 +893,14 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         ? "launchd-user-agent"
         : "task-scheduler",
     );
-    expect(scheduler.installs).toBe(2);
+    expect(scheduler.installs).toBe(1);
     const unchangedSchedule = await Effect.runPromise(
       Effect.flatMap(ScheduleManager, (manager) =>
         manager.install({ executable: process.execPath })
       ).pipe(Effect.provide(scheduleLayer)),
     );
     expect(unchangedSchedule.change).toBe("unchanged");
-    expect(scheduler.installs).toBe(2);
+    expect(scheduler.installs).toBe(1);
 
     await writeFile(managedFile, "interrupted local state\n");
     const recoveryPlan = await Effect.runPromise(

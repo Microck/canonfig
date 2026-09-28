@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
+import { watch } from "node:fs";
 import {
   access,
   mkdtemp,
@@ -296,6 +297,62 @@ describe("command logging", () => {
     );
   }
 
+  it.runIf(process.platform !== "win32")(
+    "exits 143 and logs 143 when SIGTERM interrupts pending enrollment input",
+    async () => withTemporaryDirectory(async (root) => {
+      const logPath = path.join(root, "canonfig.log");
+      // The started entry is written synchronously while the entrypoint
+      // evaluates, so its appearance is the readiness signal; the runtime's
+      // signal listeners are installed in the same evaluation.
+      const started = new Promise<void>((resolve, reject) => {
+        const watcher = watch(root, () => {
+          readFile(logPath, "utf8").then((content) => {
+            if (!content.includes("command.started")) return;
+            watcher.close();
+            resolve();
+          }, () => undefined);
+        });
+        watcher.once("error", reject);
+      });
+      const child = spawn(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          runtimeEntrypoint,
+          "follower",
+          "enroll",
+          "--stdin",
+          "--name",
+          "laptop",
+          "--profile",
+          "default",
+        ],
+        {
+          cwd: projectRoot,
+          env: { ...process.env, CANONFIG_LOG_FILE: logPath },
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      );
+      try {
+        // The stdin pipe stays open, so enrollment is still waiting for EOF.
+        await started;
+        expect(child.kill("SIGTERM")).toBe(true);
+        const [code, observedSignal] = await once(child, "exit");
+        expect({ code, observedSignal }).toEqual({ code: 143, observedSignal: null });
+        expect((await readEntries(logPath))[1]).toMatchObject({
+          event: "command.completed",
+          command: "follower.enroll",
+          exitCode: 143,
+        });
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+      }
+    }),
+  );
+
   it("can be disabled without affecting the command", async () =>
     withTemporaryDirectory(async (root) => {
       const logPath = path.join(root, "canonfig.log");
@@ -325,7 +382,7 @@ describe("command logging", () => {
       );
 
       expect(result.status, result.stderr).toBe(0);
-      expect(result.stdout.trim()).toBe("3.2.1");
+      expect(result.stdout.trim()).toBe("4.0.0");
       expect(await readEntries(logPath)).toEqual([
         expect.objectContaining({
           event: "command.started",

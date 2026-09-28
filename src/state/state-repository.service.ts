@@ -69,6 +69,13 @@ export class StateRepository extends Context.Service<StateRepository, {
     FollowerSynchronizationConfiguration | undefined,
     StateRepositoryError
   >;
+  /**
+   * Forget this machine's enrollment. Applied Resource Records and run
+   * history stay, so re-enrolling the same identity continues from them.
+   * Returns whether an enrollment was recorded.
+   */
+  readonly removeFollowerSynchronizationConfiguration: (
+  ) => Effect.Effect<boolean, StateRepositoryError>;
   readonly saveEnrollmentSource: (
     source: EnrollmentSourceRecord,
   ) => Effect.Effect<void, StateRepositoryError>;

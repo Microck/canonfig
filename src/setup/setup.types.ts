@@ -14,6 +14,14 @@ export type SetupRole = typeof SetupRole.Type;
  */
 export const SetupRequestScope = Schema.Literals(["full", "cli-only", "project-only"]);
 export type SetupRequestScope = typeof SetupRequestScope.Type;
+
+/**
+ * The interview depth the operator chose (the setup skill's Simple or
+ * Advanced). It is a record of the decision only: it changes neither the plan
+ * nor its digest, so switching modes keeps approvals.
+ */
+export const SetupMode = Schema.Literals(["simple", "advanced"]);
+export type SetupMode = typeof SetupMode.Type;
 /** Ordered setup stages. `apply` resumes at the next eligible stage. */
 export const setupStages = [
   "role",
@@ -96,7 +104,8 @@ export const SetupRecipe = Schema.Struct({
   installerExecutable: Schema.String,
   arguments: Schema.Array(Schema.String),
   verifyExecutable: Schema.String,
-  verifyArguments: Schema.Array(Schema.String),
+  /** Absent: the verifier is checked for presence only and never run. */
+  verifyArguments: Schema.optional(Schema.Array(Schema.String)),
   version: Schema.String,
   source: Schema.String,
   upstream: Schema.optional(Schema.String),
@@ -183,6 +192,11 @@ export const SetupJournal = Schema.Struct({
   role: SetupRole,
   // Absent on journals written before request scopes existed; read as full.
   scope: Schema.optional(SetupRequestScope),
+  // Recorded only once the operator chooses one.
+  mode: Schema.optional(SetupMode),
+  // The normalized `--file` paths discovery read. Absent on journals written
+  // before the decision record existed.
+  discoveryPaths: Schema.optional(Schema.Array(Schema.String)),
   planDigest: Schema.String,
   intent: Schema.String,
   inventory: SetupInventory,

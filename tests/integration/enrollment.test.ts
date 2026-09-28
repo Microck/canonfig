@@ -1,8 +1,10 @@
+import { X509Certificate } from "node:crypto";
 import { request as httpsRequest } from "node:https";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { connect as tlsConnect } from "node:tls";
 
 import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,7 +15,6 @@ import {
   GroupName,
 } from "../../src/domain/brand.ts";
 import {
-  DuplicateFollowerIdentityError,
   EnrollmentConfigurationError,
   EnrollmentFingerprintMismatchError,
   EnrollmentSourceMismatchError,
@@ -21,6 +22,7 @@ import {
   InvitationReplayError,
   InvalidFollowerCredentialError,
   RevokedFollowerCredentialError,
+  SourceCredentialMismatchError,
   type EnrollmentError,
 } from "../../src/enrollment/enrollment.errors.ts";
 import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
@@ -28,6 +30,7 @@ import { EnrollmentLive } from "../../src/enrollment/enrollment.layer.ts";
 import { Enrollment } from "../../src/enrollment/enrollment.service.ts";
 import {
   authenticateFollower,
+  cancelFollowerEnrollment,
   enrollFollower,
   reconstructEnrollmentWireError,
 } from "../../src/enrollment/follower-client.ts";
@@ -38,13 +41,17 @@ import {
 import type {
   EnrollmentInvitationGrant,
   FollowerEnrollment,
+  SourceCredentials,
   SourceServerHandle,
 } from "../../src/enrollment/enrollment.types.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
+import { StateRepository } from "../../src/state/state-repository.service.ts";
 import { exitCodeForFailure } from "../../src/cli/exit-codes.ts";
 import { describeRuntimeError } from "../../src/cli/failure-taxonomy.ts";
+import { canonfigVersionHeader } from "../../src/enrollment/version-handshake.ts";
+import { buildIdentity } from "../../src/runtime/build-identity.ts";
 
 const decode = Schema.decodeUnknownSync;
 const temporaryDirectories: Array<string> = [];
@@ -173,6 +180,7 @@ const malformedRequest = (
       headers: {
         "content-type": "application/json",
         "content-length": 1,
+        [canonfigVersionHeader]: buildIdentity.packageVersion,
       },
     }, (response) => {
       const chunks: Array<Buffer> = [];
@@ -313,7 +321,7 @@ describe("loopback HTTPS enrollment", () => {
     expect(authenticated.follower.id).toBe(prepared.follower.id);
   });
 
-  it("rejects expired invitations, replay, nonce mismatch, and duplicate identity misuse", async () => {
+  it("rejects expired invitations, replay and nonce mismatch, and rotates a re-enrolled name", async () => {
     const setup = fixture();
     const server = await start(setup);
     const expired = await invitation(setup, server, 1);
@@ -346,18 +354,9 @@ describe("loopback HTTPS enrollment", () => {
     );
     expect(nonceError).toBeInstanceOf(EnrollmentSourceMismatchError);
 
-    const duplicateGrant = await invitation(setup, server);
-    const duplicateError = await failure(
-      enrollFollower({
-        invitation: duplicateGrant,
-        followerName: "Primary Host",
-      }).pipe(Effect.provide(setup.followerMachine)),
-    );
-    expect(duplicateError).toBeInstanceOf(DuplicateFollowerIdentityError);
-
-    // A rejected duplicate enrollment must not destroy the enrolled
-    // follower's stored credential: the credential key is deterministic per
-    // follower identity, so any overwrite would lock out the real follower.
+    // A new invitation for an enrolled name rotates that identity's
+    // credential: the identity is kept and the previous credential stops
+    // authenticating once the rotation is finalized.
     const primaryCredential = await runFollower(
       setup,
       Effect.flatMap(MachineState, (machine) =>
@@ -366,12 +365,76 @@ describe("loopback HTTPS enrollment", () => {
         })
       ),
     );
-    const stillAuthenticated = await runSource(
+    const rotationGrant = await invitation(setup, server);
+    const rotated = await runFollower(
+      setup,
+      enrollFollower({ invitation: rotationGrant, followerName: "Primary Host" }),
+    );
+    expect(rotated.follower.id).toBe(primary.follower.id);
+    expect(rotated.credentialReference).not.toBe(primary.credentialReference);
+    const rotatedCredential = await runFollower(
+      setup,
+      Effect.flatMap(MachineState, (machine) =>
+        machine.loadCredential({ reference: rotated.credentialReference })
+      ),
+    );
+    const authenticated = await runSource(
       setup,
       Effect.flatMap(Enrollment, (enrollment) =>
-        enrollment.authenticate(Redacted.value(primaryCredential))),
+        enrollment.authenticate(Redacted.value(rotatedCredential))),
     );
-    expect(stillAuthenticated.follower.id).toBe(primary.follower.id);
+    expect(authenticated.follower.id).toBe(primary.follower.id);
+    const retired = await runSource(
+      setup,
+      Effect.flip(Effect.flatMap(Enrollment, (enrollment) =>
+        enrollment.authenticate(Redacted.value(primaryCredential)))),
+    );
+    expect(retired).toBeInstanceOf(InvalidFollowerCredentialError);
+  });
+
+  it("removes the Source-side credential of cancelled, rotated and revoked enrollments", async () => {
+    const setup = fixture();
+    const server = await start(setup);
+    const sourceCredentials = join(setup.root, "source", "credentials");
+    // Three items hold the Source identity itself.
+    expect(readdirSync(sourceCredentials)).toHaveLength(3);
+
+    const enrolled = await runFollower(
+      setup,
+      enrollFollower({ invitation: await invitation(setup, server), followerName: "Kept Host" }),
+    );
+    expect(readdirSync(sourceCredentials)).toHaveLength(4);
+
+    await runFollower(
+      setup,
+      enrollFollower({ invitation: await invitation(setup, server), followerName: "Kept Host" }),
+    );
+    expect(readdirSync(sourceCredentials)).toHaveLength(4);
+
+    const prepared = await runFollower(
+      setup,
+      enrollFollower({
+        invitation: await invitation(setup, server),
+        followerName: "Cancelled Host",
+        finalize: false,
+      }),
+    );
+    expect(readdirSync(sourceCredentials)).toHaveLength(5);
+    await runFollower(
+      setup,
+      cancelFollowerEnrollment({
+        endpoint: server.endpoint,
+        tlsFingerprint: prepared.tlsFingerprint,
+        credentialReference: prepared.credentialReference,
+      }),
+    );
+    expect(readdirSync(sourceCredentials)).toHaveLength(4);
+
+    await runSource(
+      setup,
+      Effect.flatMap(Enrollment, (enrollment) => enrollment.revokeFollower(enrolled.follower.id)),
+    );
+    expect(readdirSync(sourceCredentials)).toHaveLength(3);
   });
 
   it("refuses enrollment before spending the invitation when no credential store is usable", async () => {
@@ -703,5 +766,147 @@ describe("loopback HTTPS enrollment", () => {
     expect(JSON.stringify(replay)).not.toContain(grant.code);
     expect(JSON.stringify(replay)).not.toContain(grant.nonce);
     expect(JSON.stringify(replay)).not.toContain(rawCredential);
+  });
+});
+
+describe("Source credentials shared by one OS account", () => {
+  interface StateDirectory {
+    readonly run: <Value, Failure>(
+      effect: Effect.Effect<Value, Failure, Enrollment | MachineState | StateRepository>,
+    ) => Promise<Value>;
+  }
+
+  // One credential store stands for the OS account's keyring; each database
+  // stands for a Canonfig state directory (a HOME) of that account.
+  const accountStore = () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-source-namespace-"));
+    temporaryDirectories.push(root);
+    const machine = machineLayer(join(root, "account"));
+    const stateDirectory = (name: string): StateDirectory => {
+      const runtime = ManagedRuntime.make(
+        sourceApplicationLayer(join(root, `${name}.sqlite`), machine),
+      );
+      sourceRuntimes.push(runtime);
+      return { run: (effect) => runtime.runPromise(effect) };
+    };
+    return { stateDirectory };
+  };
+
+  const legacyNames = {
+    signingKeyReference: "canonfig-source-signing-key",
+    tlsKeyReference: "canonfig-source-tls-key",
+    tlsCertificateReference: "canonfig-source-tls-certificate",
+  } as const;
+
+  // What an earlier release left behind: the Source's items under the
+  // account-global names and a state record with no credential namespace.
+  const writeLegacySource = (
+    directory: StateDirectory,
+    secretsOf: SourceCredentials,
+    recordOf: SourceCredentials,
+  ) =>
+    directory.run(Effect.gen(function*() {
+      const machine = yield* MachineState;
+      const repository = yield* StateRepository;
+      const store = (name: string, value: Redacted.Redacted<string>) =>
+        machine.storeCredential({ name, value });
+      const references = {
+        signingKeyReference: yield* store(legacyNames.signingKeyReference, secretsOf.signingPrivateKey),
+        tlsKeyReference: yield* store(legacyNames.tlsKeyReference, secretsOf.tlsPrivateKey),
+        tlsCertificateReference: yield* store(
+          legacyNames.tlsCertificateReference,
+          secretsOf.tlsCertificate,
+        ),
+      };
+      yield* repository.saveEnrollmentSource({
+        identity: recordOf.material.source,
+        ...references,
+        tlsFingerprint: recordOf.material.tlsFingerprint,
+      });
+      return references;
+    }));
+
+  const credentialsOf = (directory: StateDirectory) =>
+    directory.run(Effect.gen(function*() {
+      const enrollment = yield* Enrollment;
+      yield* enrollment.initializeSource();
+      return yield* enrollment.sourceCredentials();
+    }));
+
+  it("keeps a separate Source identity for each state directory", async () => {
+    const account = accountStore();
+    const first = await credentialsOf(account.stateDirectory("first"));
+    const second = await credentialsOf(account.stateDirectory("second"));
+
+    expect(second.material.tlsFingerprint).not.toBe(first.material.tlsFingerprint);
+    expect(second.material.tlsCertificateReference).not.toBe(first.material.tlsCertificateReference);
+    // The first directory still reads its own certificate after the second
+    // initialized: nothing of it was overwritten.
+    const firstDirectory = account.stateDirectory("first");
+    const stored = await firstDirectory.run(Effect.gen(function*() {
+      const machine = yield* MachineState;
+      return yield* machine.loadCredential({ reference: first.material.tlsCertificateReference });
+    }));
+    const fingerprint = new X509Certificate(Redacted.value(stored)).fingerprint256
+      .replaceAll(":", "").toLowerCase();
+    expect(fingerprint).toBe(first.material.tlsFingerprint);
+    // And the first directory's server presents its own certificate.
+    const server = await firstDirectory.run(startSourceServer());
+    openServers.push(server);
+    const endpoint = new URL(server.endpoint);
+    const served = await new Promise<string>((resolveServed, rejectServed) => {
+      const socket = tlsConnect({
+        host: endpoint.hostname,
+        port: Number(endpoint.port),
+        rejectUnauthorized: false,
+      }, () => {
+        resolveServed(socket.getPeerCertificate().fingerprint256.replaceAll(":", "").toLowerCase());
+        socket.end();
+      });
+      socket.once("error", rejectServed);
+    });
+    expect(served).toBe(first.material.tlsFingerprint);
+  });
+
+  it("migrates legacy account-global items only when they match the recorded fingerprints", async () => {
+    const account = accountStore();
+    const original = await credentialsOf(account.stateDirectory("original"));
+    const legacy = account.stateDirectory("legacy");
+    const legacyReferences = await writeLegacySource(legacy, original, original);
+
+    const migrated = await legacy.run(Effect.flatMap(Enrollment, (enrollment) =>
+      enrollment.sourceCredentials()
+    ));
+    expect(migrated.material.source).toEqual(original.material.source);
+    expect(migrated.material.signingKeyReference).not.toBe(legacyReferences.signingKeyReference);
+    const record = await legacy.run(Effect.flatMap(StateRepository, (repository) =>
+      repository.getEnrollmentSource()
+    ));
+    expect(record?.credentialNamespace).toMatch(/^[0-9a-f]{32}$/u);
+    expect(record?.tlsCertificateReference).toBe(migrated.material.tlsCertificateReference);
+    expect(Redacted.value(migrated.tlsCertificate)).toBe(Redacted.value(original.tlsCertificate));
+  });
+
+  it("refuses legacy items another Source overwrote and leaves the state as it was", async () => {
+    const account = accountStore();
+    const victim = await credentialsOf(account.stateDirectory("victim"));
+    const intruder = await credentialsOf(account.stateDirectory("intruder"));
+    const legacy = account.stateDirectory("legacy");
+    // The record says "victim", but the account-global items now hold the
+    // intruder's keys, as an earlier release's second `source init` left them.
+    await writeLegacySource(legacy, intruder, victim);
+
+    const refused = await legacy.run(Effect.flip(Effect.flatMap(Enrollment, (enrollment) =>
+      enrollment.sourceCredentials()
+    )));
+    expect(refused).toBeInstanceOf(SourceCredentialMismatchError);
+    expect(refused.message).toContain(String(victim.material.source.publicKeyFingerprint));
+    expect(describeRuntimeError(refused).category).toBe("conflict-or-drift");
+    const record = await legacy.run(Effect.flatMap(StateRepository, (repository) =>
+      repository.getEnrollmentSource()
+    ));
+    expect(record?.credentialNamespace).toBeUndefined();
+    const serve = await legacy.run(Effect.flip(startSourceServer()));
+    expect(serve).toBeInstanceOf(SourceCredentialMismatchError);
   });
 });

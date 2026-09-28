@@ -23,6 +23,19 @@ const secretName = new RegExp(`^(?:${credentialName("$")})$`, "iu");
 
 export const isSecretField = (name: string): boolean => secretName.test(name);
 
+const environmentName = "[A-Za-z_][A-Za-z0-9_]*";
+const environmentReference = new RegExp(
+  `^(?:(?:Bearer|Basic|Token)\\s+)?(?:\\$\\{${environmentName}\\}|\\$${environmentName}|\\{env:${environmentName}\\})$`,
+  "u",
+);
+
+/**
+ * A value that only names an environment variable, such as `Bearer ${API_TOKEN}`,
+ * carries no credential material. Showing it lets a reviewer see what a config
+ * resource will write; the variable's value is resolved by the client later.
+ */
+export const isEnvironmentReference = (value: string): boolean => environmentReference.test(value);
+
 const replacement = "[REDACTED]";
 
 /**

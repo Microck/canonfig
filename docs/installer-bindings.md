@@ -25,7 +25,9 @@ symlinked/special binding file or an escaping ancestor is not silently replaced.
 All deterministic resource installers resolve through this data before launching.
 Arguments from the signed recipe follow the binding's fixed prefix unchanged.
 Without a binding the existing PATH lookup remains available, but Windows
-`.cmd`/`.bat` shims produce Human Action Required rather than enabling a shell.
+`.cmd`/`.bat` shims produce Human Action Required rather than enabling a shell:
+"Windows command shims cannot run with shell:false. Bind npm to node.exe plus
+npm-cli.js (or pnpm to pnpm.cjs), then retry. Do not enable a shell."
 An explicit `remove` is different from never having configured a binding: the
 binding file becomes a removal record in one atomic write, and installer
 resolution then fails Human Action Required naming the `installer set` repair

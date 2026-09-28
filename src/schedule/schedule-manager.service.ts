@@ -4,6 +4,7 @@ import type { ScheduleManagerError } from "./schedule-manager.errors.ts";
 import type {
   RemoveScheduleResult,
   ScheduleChange,
+  ScheduleReconciliation,
   ScheduleSnapshot,
   ScheduleStatus,
   SetScheduleInput,
@@ -19,6 +20,10 @@ export class ScheduleManager extends Context.Service<ScheduleManager, {
   readonly update: (
     input?: SetScheduleInput,
   ) => Effect.Effect<ScheduleChange, ScheduleManagerError>;
+  /** Post-apply convergence that never undoes an out-of-band disable or delete. */
+  readonly reconcile: (
+    input?: SetScheduleInput,
+  ) => Effect.Effect<ScheduleReconciliation, ScheduleManagerError>;
   readonly status: (
     input?: SetScheduleInput,
   ) => Effect.Effect<ScheduleStatus, ScheduleManagerError>;

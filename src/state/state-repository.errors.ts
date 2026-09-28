@@ -34,14 +34,21 @@ export class ActiveRunExistsError extends TaggedError<ActiveRunExistsError>()(
 ) {}
 
 
+/**
+ * An upgrade found an unfinished run that a different build, or the same
+ * build under a different state format, left behind. Both formats travel
+ * with the error so the message can name what actually differs.
+ */
 export class UpgradeGateError extends TaggedError<UpgradeGateError>()(
   "UpgradeGateError",
   {
     run: Schema.String,
     creatingVersion: Schema.NullOr(Schema.String),
     creatingIdentity: Schema.NullOr(Schema.String),
+    creatingStateFormat: Schema.NullOr(Schema.Number),
     currentVersion: Schema.String,
     currentIdentity: Schema.String,
+    currentStateFormat: Schema.Number,
   },
 ) {}
 

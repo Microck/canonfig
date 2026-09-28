@@ -3,8 +3,9 @@ import { access, readFile, stat } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 
-import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
+import { Cause, Effect, Exit, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -22,7 +23,10 @@ import type {
 } from "../../src/enrollment/enrollment.types.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
-import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
+import {
+  CredentialStorageError,
+  HumanActionRequiredError,
+} from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import {
@@ -35,6 +39,7 @@ import {
   SECRET_SHARE_GROUP,
   storeSecret,
 } from "../../src/secrets/secret-store.ts";
+import { readSecretInput, runSecretsCli } from "../../src/secrets/cli.ts";
 import { fetchSharedSecrets } from "../../src/secrets/secret-client.ts";
 import { resolveSecretBindings } from "../../src/secrets/secret-bindings.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
@@ -639,6 +644,169 @@ describe("secure secret transfer", () => {
     ).rejects.toMatchObject({
       category: "usage",
       operation: "validate secret value",
+    });
+  });
+});
+
+interface RecordedOutput {
+  stdout: string;
+  stderr: string;
+  exitCode: number | undefined;
+}
+
+const recordingIo = () => {
+  const output: RecordedOutput = { stdout: "", stderr: "", exitCode: undefined };
+  return {
+    output,
+    io: {
+      writeStdout: (text: string) => {
+        output.stdout += text;
+      },
+      writeStderr: (text: string) => {
+        output.stderr += text;
+      },
+      setExitCode: (exitCode: number) => {
+        output.exitCode = exitCode;
+      },
+    },
+  };
+};
+
+const pipedInput = (bytes: string): PassThrough => {
+  const input = new PassThrough();
+  input.end(Buffer.from(bytes, "utf8"));
+  return input;
+};
+
+const terminalInput = () => {
+  const rawModes: Array<boolean> = [];
+  const input = Object.assign(new PassThrough(), {
+    isTTY: true,
+    setRawMode: (mode: boolean) => {
+      rawModes.push(mode);
+    },
+  });
+  return { input, rawModes };
+};
+
+const failingCredentialStore = new HumanActionRequiredError({
+  action: "unlock Linux credential storage",
+  recovery: "run the fixture unlock command in this session",
+});
+
+describe("secret input", () => {
+  it("keeps piped trailing newlines byte for byte from secrets set to the follower", async () => {
+    const setup = fixture();
+    const values = { "double-newline": "X\n\n", "crlf-ending": "line\r\n" };
+    for (const [name, value] of Object.entries(values)) {
+      const { io, output } = recordingIo();
+      await setup.runtime.runPromise(runSecretsCli(["set", name], io, pipedInput(value)));
+      expect(output, output.stderr).toMatchObject({ exitCode: 0 });
+    }
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server, [group(SECRET_SHARE_GROUP)]);
+    const fetched = await runFollower(setup, fetchSharedSecrets({
+      endpoint: server.endpoint,
+      tlsFingerprint: server.fingerprint,
+      credentialReference: enrolled.credentialReference,
+    }));
+    if (fetched.status !== "shared") throw new Error("expected shared secrets");
+    expect(Object.fromEntries(fetched.payload.secrets.map((secret) => [secret.name, secret.value])))
+      .toEqual(values);
+
+    await runFollower(setup, applyTransferredSecrets(fetched.payload));
+    expect(await storedValue(setup, "double-newline")).toBe("X\n\n");
+    expect(await storedValue(setup, "crlf-ending")).toBe("line\r\n");
+  });
+
+  it("hides terminal entry and drops only the Enter that ends it", async () => {
+    const { input, rawModes } = terminalInput();
+    const { io, output } = recordingIo();
+    const read = Effect.runPromise(readSecretInput("api-token", input, io.writeStderr));
+    // Backspace erases the whole two-byte character, not one byte of it.
+    input.write(Buffer.from(" a\u00e9\u007fb \r\n", "utf8"));
+
+    expect(await read).toBe(" ab ");
+    expect(rawModes).toEqual([true, false]);
+    expect(output.stderr).toBe("Secret for api-token (input hidden): \n");
+  });
+
+  it("treats terminal Ctrl-C as an interrupt and Ctrl-D on empty entry as a cancel", async () => {
+    const interrupted = terminalInput();
+    const interruptedRead = Effect.runPromiseExit(
+      readSecretInput("api-token", interrupted.input, () => undefined),
+    );
+    interrupted.input.write("abc\u0003");
+    const interruptedExit = await interruptedRead;
+    expect(Exit.isFailure(interruptedExit) && Cause.hasInterruptsOnly(interruptedExit.cause))
+      .toBe(true);
+    expect(interrupted.rawModes).toEqual([true, false]);
+
+    const cancelled = terminalInput();
+    const cancelledRead = Effect.runPromise(
+      readSecretInput("api-token", cancelled.input, () => undefined),
+    );
+    cancelled.input.write("\u0004");
+    await expect(cancelledRead).rejects.toMatchObject({
+      category: "usage",
+      message: "secrets set was cancelled: no secret was entered",
+    });
+    expect(cancelled.rawModes).toEqual([true, false]);
+  });
+
+  it("bounds a piped read by EOF time and by size", async () => {
+    // A real, deliberately short timer: the bound under test is wall-clock
+    // time spent waiting for the producer to close the pipe.
+    const open = new PassThrough();
+    open.write("partial");
+    await expect(Effect.runPromise(
+      readSecretInput("api-token", open, () => undefined, { timeoutMilliseconds: 20 }),
+    )).rejects.toMatchObject({
+      category: "usage",
+      message:
+        "secrets set timed out after 0.02 s waiting for end of input on stdin; pipe the secret and close the pipe (printf '%s' \"$VALUE\" | canonfig secrets set api-token)",
+    });
+
+    // Still open and under the default 10 s bound: only the size can end it.
+    const oversized = new PassThrough();
+    const read = Effect.runPromise(readSecretInput("api-token", oversized, () => undefined));
+    oversized.write(Buffer.alloc(maximumSecretBytes + 1, 0x61));
+    await expect(read).rejects.toMatchObject({
+      category: "usage",
+      message: expect.stringContaining(`exceeds the ${maximumSecretBytes} byte limit`),
+    });
+  });
+});
+
+describe("local credential-store failures", () => {
+  it("reports a native store failure as local storage with its recovery", async () => {
+    const setup = fixture();
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server, [group(SECRET_SHARE_GROUP)]);
+    const locked = Layer.effect(
+      MachineState,
+      Effect.map(MachineState, (machine) => ({
+        ...machine,
+        loadCredential: () => Effect.fail(failingCredentialStore),
+        storeCredential: () => Effect.fail(failingCredentialStore),
+      })),
+    ).pipe(Layer.provide(setup.followerMachine));
+    const detail =
+      "unlock Linux credential storage: run the fixture unlock command in this session";
+
+    await expect(Effect.runPromise(fetchSharedSecrets({
+      endpoint: server.endpoint,
+      tlsFingerprint: server.fingerprint,
+      credentialReference: enrolled.credentialReference,
+    }).pipe(Effect.provide(locked)))).rejects.toMatchObject({
+      category: "storage",
+      message: expect.stringContaining(detail),
+    });
+    await expect(Effect.runPromise(
+      storeSecret("api-token", "never-in-a-message").pipe(Effect.provide(locked)),
+    )).rejects.toMatchObject({
+      category: "storage",
+      message: `secure credential storage is unavailable: ${detail}`,
     });
   });
 });

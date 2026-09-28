@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   access,
   chmod,
@@ -15,16 +15,19 @@ import {
   rm,
   symlink,
   unlink,
+  utimes,
+  writeFile,
   type FileHandle,
 } from "node:fs/promises";
-import { constants as filesystemConstants } from "node:fs";
-import { homedir } from "node:os";
+import { constants as filesystemConstants, statSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
 import {
   basename,
   dirname,
   isAbsolute,
   join,
   normalize,
+  posix,
   relative,
   resolve,
   sep,
@@ -52,6 +55,12 @@ import {
 } from "./machine-state.errors.ts";
 import { MachineState } from "./machine-state.service.ts";
 import { relocateFileContent, writeFileContent } from "./file-content.ts";
+import { installDestinationDirectories } from "./install-destinations.ts";
+import {
+  guardEntryName,
+  removeTemporaryEntriesAt,
+  temporaryEntryName,
+} from "./temporary-entries.ts";
 import type {
   AtomicWriteInput,
   CredentialStorageCapability,
@@ -74,6 +83,7 @@ import type {
   ReadFileInput,
   RemoveEmptyDirectoryInput,
   RemoveFileInput,
+  RemoveTemporaryEntriesInput,
   RenderedSchedulerJob,
   SafeRootMutationInput,
   SchedulerBackend,
@@ -95,7 +105,11 @@ const maximumProcessInputBytes = 64 * 1024;
 class ProcessTimeoutSignal extends Error {}
 class ProcessOutputLimitSignal extends Error {}
 class ProcessStartSignal extends Error {}
-class CredentialCommandSignal extends Error {}
+class CredentialCommandSignal extends Error {
+  constructor(readonly reason: "timeout" | "output" | "start") {
+    super(reason);
+  }
+}
 
 const terminateProcessTree = (child: ChildProcess): void => {
   if (child.pid === undefined) {
@@ -313,43 +327,71 @@ const environmentObject = (
 interface CredentialCommandResult {
   readonly exitCode: number | null;
   readonly standardOutput: Buffer;
+  /**
+   * First non-empty stderr line, bounded. secret-tool reports only fixed
+   * diagnostics there ("Cannot autolaunch D-Bus…", "password is too long"),
+   * never secret bytes, so it can reach an operator-facing error.
+   */
+  readonly diagnostic: string;
 }
+
+const credentialCommandTimeoutMilliseconds = 5_000;
+
+const firstDiagnosticLine = (bytes: Buffer): string =>
+  bytes.toString("utf8")
+    .split("\n")
+    .map((line) => line.replace(/\p{Cc}/gu, " ").trim())
+    .find((line) => line.length > 0)
+    ?.slice(0, 300) ?? "";
 
 const runCredentialCommand = (
   executable: string,
   arguments_: ReadonlyArray<string>,
   environment: ReadonlyArray<ProcessEnvironmentEntry>,
-  secret?: Redacted.Redacted<string> | undefined,
+  additions: ReadonlyArray<ProcessEnvironmentEntry>,
+  secret?: Uint8Array | undefined,
 ): Effect.Effect<CredentialCommandResult, HumanActionRequiredError> =>
   Effect.tryPromise({
     try: (signal) => new Promise<CredentialCommandResult>((resolveCommand, rejectCommand) => {
       const child = spawn(executable, [...arguments_], {
-        env: environmentObject(environment, []),
+        env: environmentObject(environment, additions),
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
       });
       const output: Array<Buffer> = [];
+      const errors: Array<Buffer> = [];
       let outputBytes = 0;
-      let failed = false;
-      const fail = (): void => {
-        if (failed) return;
-        failed = true;
+      let errorBytes = 0;
+      let failure: CredentialCommandSignal["reason"] | undefined;
+      const fail = (reason: CredentialCommandSignal["reason"]): void => {
+        if (failure !== undefined) return;
+        failure = reason;
         child.kill("SIGKILL");
       };
       child.stdout.on("data", (chunk: Buffer) => {
         outputBytes += chunk.byteLength;
         if (outputBytes > 1024 * 1024) {
-          fail();
+          fail("output");
           return;
         }
         output.push(chunk);
       });
       child.stderr.on("data", (chunk: Buffer) => {
         outputBytes += chunk.byteLength;
-        if (outputBytes > 1024 * 1024) fail();
+        if (outputBytes > 1024 * 1024) {
+          fail("output");
+          return;
+        }
+        if (errorBytes < 4096) {
+          errors.push(chunk);
+          errorBytes += chunk.byteLength;
+        }
       });
-      child.once("error", fail);
-      const timer = setTimeout(fail, 5_000);
+      child.once("error", () => fail("start"));
+      // A tool that exits before reading its input must not crash the CLI
+      // with an unhandled EPIPE: its exit status reports the failure.
+      child.stdin.on("error", () => undefined);
+      const timer = setTimeout(() => fail("timeout"), credentialCommandTimeoutMilliseconds);
       const abort = (): void => {
         child.kill("SIGKILL");
       };
@@ -357,31 +399,37 @@ const runCredentialCommand = (
       child.once("close", (exitCode) => {
         clearTimeout(timer);
         signal.removeEventListener("abort", abort);
-        if (failed) {
-          rejectCommand(new CredentialCommandSignal());
+        if (failure !== undefined) {
+          rejectCommand(new CredentialCommandSignal(failure));
           return;
         }
         resolveCommand({
           exitCode,
           standardOutput: Buffer.concat(output),
+          diagnostic: firstDiagnosticLine(Buffer.concat(errors)),
         });
       });
       if (secret === undefined) {
         child.stdin.end();
       } else {
-        child.stdin.end(Redacted.value(secret));
+        child.stdin.end(secret);
       }
     }),
-    catch: () =>
-      new HumanActionRequiredError({
-        action: "unlock Linux credential storage",
-        recovery:
-          "Start and unlock a Secret Service provider for this user session, then retry.",
-      }),
+    catch: (cause) => {
+      const reason = cause instanceof CredentialCommandSignal ? cause.reason : "start";
+      return new HumanActionRequiredError({
+        action: "reach Linux credential storage",
+        recovery: reason === "timeout"
+          ? `${executable} did not answer within ${credentialCommandTimeoutMilliseconds} ms. The Secret Service provider is probably waiting on an unlock prompt this session cannot show: unlock the login keyring for this user (log in with your password, or unlock it in the desktop session), then retry.`
+          : reason === "output"
+          ? `${executable} produced more than 1 MiB of output; the Secret Service provider did not answer as expected.`
+          : `${executable} could not be started. Install the Secret Service client (Debian and Ubuntu: libsecret-tools; Fedora and RHEL: libsecret; Arch: libsecret), then retry.`,
+      });
+    },
   });
 
 const makeTemporarySibling = (path: string): string =>
-  join(dirname(path), `.${basename(path)}.canonfig-${randomBytes(12).toString("hex")}`);
+  join(dirname(path), temporaryEntryName());
 
 const removeManagedLeaf = async (path: string): Promise<void> => {
   try {
@@ -476,10 +524,7 @@ const portableSafeRootMutation = async (
       | filesystemConstants.O_NOFOLLOW,
   );
   const rootIdentity = await rootHandle.stat();
-  const guard = join(
-    dirname(root),
-    `.${basename(root)}.canonfig-guard-${randomBytes(12).toString("hex")}`,
-  );
+  const guard = join(dirname(root), guardEntryName());
   const heldRoot = join(guard, basename(root));
   let held = false;
   try {
@@ -539,10 +584,7 @@ const portableSafeRootMutation = async (
       return;
     }
 
-    const temporary = join(
-      parent,
-      `.${name}.canonfig-${randomBytes(12).toString("hex")}`,
-    );
+    const temporary = join(parent, temporaryEntryName());
     try {
       if (input.mutation.kind === "symlink") {
         await symlink(symlinkTarget!, temporary);
@@ -690,10 +732,7 @@ const safeRootMutation = (
           return;
         }
 
-        const temporary = join(
-          descriptorPath(parent),
-          `.${name}.canonfig-${randomBytes(12).toString("hex")}`,
-        );
+        const temporary = join(descriptorPath(parent), temporaryEntryName());
         try {
           if (input.mutation.kind === "symlink") {
             await symlink(symlinkTarget!, temporary);
@@ -1039,6 +1078,9 @@ const renderSystemdJob = (
       ),
     ].join(" ");
     const calendar = yield* schedulerExpression(job.calendar);
+    const executableDirectory = dirname(executable);
+    const servicePath = [...new Set([executableDirectory, "/usr/local/bin", "/usr/bin", "/bin"])]
+      .join(":");
     const serviceName = `${job.name}.service`;
     return {
       platform: "linux",
@@ -1050,10 +1092,11 @@ const renderSystemdJob = (
         "",
         "[Service]",
         "Type=oneshot",
-        // The scheduled run must not depend on the user session's PATH or on
-        // any shell startup file: the unit pins the minimal search path and
-        // ExecStart is absolute.
-        `Environment="PATH=/usr/bin:/bin"`,
+        // ExecStart remains absolute. The scheduled process gets only the
+        // installing runtime's bin directory plus standard system locations,
+        // so npm-managed tools installed beside that runtime remain verifiable
+        // without inheriting shell startup state.
+        `Environment="PATH=${servicePath}"`,
         `ExecStart=${command}`,
         "",
       ].join("\n"),
@@ -1080,6 +1123,14 @@ const systemdBackend = (
   const unitDirectory = join(home, ".config", "systemd", "user");
   const systemctl = environmentValue(environment, "CANONFIG_SYSTEMCTL")
     ?? "/usr/bin/systemctl";
+  const loginctl = environmentValue(environment, "CANONFIG_LOGINCTL")
+    ?? "/usr/bin/loginctl";
+  // Persistent=true timers remember their last trigger in this stamp file.
+  const timerStampDirectory = join(
+    environmentValue(environment, "XDG_DATA_HOME") ?? join(home, ".local", "share"),
+    "systemd",
+    "timers",
+  );
   const paths = (definition: RenderedSchedulerJob) => {
     const timerName = definition.serviceName.endsWith(".service")
       ? `${definition.serviceName.slice(0, -".service".length)}.timer`
@@ -1114,29 +1165,69 @@ const systemdBackend = (
           }))
       ),
     );
-  const queryTimerState = (
+  /**
+   * The effective state of the timer and its service as the user manager
+   * sees them: `ActiveState`, the unit file state, drop-ins, and the calendar
+   * it actually uses. The unit files alone cannot show a timer that was
+   * stopped, or whose calendar a drop-in replaced.
+   */
+  const showUnits = (
     timerName: string,
-    operation: "is-enabled" | "is-active",
-  ): Effect.Effect<boolean, MachineStateError> =>
-    runSystemctl([operation, timerName]).pipe(
+    serviceName: string,
+    action: string,
+  ): Effect.Effect<
+    { readonly timer: Record<string, string>; readonly service: Record<string, string> },
+    MachineStateError
+  > =>
+    runSystemctl([
+      "show",
+      timerName,
+      serviceName,
+      "--property=Id,LoadState,ActiveState,UnitFileState,DropInPaths,TimersCalendar,NextElapseUSecRealtime,Result,ExecMainStatus,ExecMainExitTimestamp",
+    ]).pipe(
       Effect.flatMap((result) => {
-        const value = Buffer.from(result.standardOutput)
-          .toString("utf8")
-          .trim()
-          .toLowerCase();
-        const positive = operation === "is-enabled" ? "enabled" : "active";
-        const negative = operation === "is-enabled" ? "disabled" : "inactive";
-        if (value === positive && result.exitCode === 0) return Effect.succeed(true);
-        // systemctl uses a non-zero exit status for these normal negative
-        // states. Accept only the explicit semantic state, never an arbitrary
-        // query failure or permission error.
-        if (value === negative) return Effect.succeed(false);
-        return Effect.fail(new HumanActionRequiredError({
-          action: `inspect the systemd user timer (${operation})`,
-          recovery:
-            "The systemd user manager returned an indeterminate scheduler state; ensure it is running and retry.",
-        }));
+        const units = new Map(
+          Buffer.from(result.standardOutput).toString("utf8").split(/\n\s*\n/u).map((block) => {
+            const properties: Record<string, string> = {};
+            for (const line of block.split("\n")) {
+              const separator = line.indexOf("=");
+              if (separator > 0) properties[line.slice(0, separator)] = line.slice(separator + 1).trim();
+            }
+            return [properties.Id ?? "", properties] as const;
+          }),
+        );
+        const timer = units.get(timerName);
+        const service = units.get(serviceName);
+        // Accept only a complete answer, never an arbitrary query failure.
+        if (
+          result.exitCode !== 0 || timer?.LoadState === undefined
+          || timer.ActiveState === undefined || service === undefined
+        ) {
+          return Effect.fail(new HumanActionRequiredError({
+            action,
+            recovery:
+              "The systemd user manager returned an indeterminate scheduler state; ensure it is running (`systemctl --user status`) and retry.",
+          }));
+        }
+        return Effect.succeed({ timer, service });
       }),
+    );
+  const timerEnabled = (timer: Record<string, string>): boolean =>
+    timer.LoadState === "loaded"
+    && (timer.UnitFileState === "enabled" || timer.UnitFileState === "enabled-runtime");
+  /** Undefined when logind cannot answer; linger is advisory, not a scheduler failure. */
+  const lingering = (): Effect.Effect<boolean | undefined> =>
+    runBoundedProcess({
+      executable: linuxPath(loginctl),
+      arguments: ["show-user", String(process.getuid?.() ?? ""), "--property=Linger"],
+      timeoutMilliseconds: 5_000,
+      maximumOutputBytes: 64 * 1024,
+    }, environment).pipe(
+      Effect.map((result) => {
+        const value = /^Linger=(yes|no)$/mu.exec(Buffer.from(result.standardOutput).toString("utf8"))?.[1];
+        return result.exitCode !== 0 || value === undefined ? undefined : value === "yes";
+      }),
+      Effect.catch(() => Effect.succeed(undefined)),
     );
   const readUnit = (
     path: string,
@@ -1163,32 +1254,39 @@ const systemdBackend = (
     inspect: (expected) =>
       Effect.gen(function*() {
         const path = paths(expected);
-        const installed = yield* Effect.tryPromise({
-          try: async () => {
-            try {
-              const [service, timer] = await Promise.all([
-                readFile(path.service, "utf8"),
-                readFile(path.timer, "utf8"),
-              ]);
-              return {
-                installed: true,
-                matches: service === expected.service && timer === expected.schedule,
-              };
-            } catch (cause) {
-              const code = cause instanceof Error && "code" in cause
-                ? String(cause.code)
-                : "";
-              if (code === "ENOENT") return { installed: false, matches: false };
-              throw cause;
-            }
-          },
-          catch: filesystemError("inspect systemd user schedule", unitDirectory),
-        });
-        if (!installed.installed) {
+        const service = yield* readUnit(path.service);
+        const timer = yield* readUnit(path.timer);
+        if (service === undefined || timer === undefined) {
           return { installed: false, enabled: false, matches: false };
         }
-        const enabled = yield* queryTimerState(path.timerName, "is-enabled");
-        return { ...installed, enabled };
+        const units = yield* showUnits(
+          path.timerName,
+          expected.serviceName,
+          "inspect the systemd user timer",
+        );
+        const overrides = (units.timer.DropInPaths ?? "").split(/\s+/u).filter((entry) => entry.length > 0);
+        const calendars = [...(units.timer.TimersCalendar ?? "").matchAll(/OnCalendar=(.+?) ;/gu)]
+          .map((match) => match[1]!);
+        const exitedAt = units.service.ExecMainExitTimestamp;
+        const ran = exitedAt !== undefined && exitedAt !== "" && exitedAt !== "n/a";
+        return {
+          installed: true,
+          enabled: timerEnabled(units.timer),
+          matches: service.content === expected.service && timer.content === expected.schedule,
+          calendarMatches: timer.content === expected.schedule,
+          active: units.timer.ActiveState === "active",
+          overrides,
+          effectiveCalendar: calendars.length === 0 ? undefined : calendars.join("; "),
+          nextElapse: units.timer.NextElapseUSecRealtime || undefined,
+          lastResult: ran
+            ? {
+              succeeded: units.service.Result === "success" && units.service.ExecMainStatus === "0",
+              detail: `systemd service result ${units.service.Result ?? "unknown"}, exit status ${units.service.ExecMainStatus ?? "unknown"}`,
+              at: exitedAt,
+            }
+            : undefined,
+          lingering: yield* lingering(),
+        };
       }),
     snapshot: (expected) =>
       Effect.gen(function*() {
@@ -1203,12 +1301,15 @@ const systemdBackend = (
             serviceName: expected.serviceName,
           } satisfies SchedulerSnapshot;
         }
-        const enabled = timer === undefined
-          ? false
-          : yield* queryTimerState(path.timerName, "is-enabled");
-        const active = timer === undefined
-          ? false
-          : yield* queryTimerState(path.timerName, "is-active");
+        const units = timer === undefined
+          ? undefined
+          : yield* showUnits(
+            path.timerName,
+            expected.serviceName,
+            "capture the systemd user timer",
+          );
+        const enabled = units === undefined ? false : timerEnabled(units.timer);
+        const active = units?.timer.ActiveState === "active";
         return {
           state: "present",
           platform: expected.platform,
@@ -1229,6 +1330,19 @@ const systemdBackend = (
         const path = paths(definition);
         yield* atomicWriteFile(path.service, new TextEncoder().encode(definition.service), 0o600);
         yield* atomicWriteFile(path.timer, new TextEncoder().encode(definition.schedule), 0o600);
+        // Persistent=true catches up an elapse missed since the last trigger
+        // when the timer starts. A calendar set to a time already passed today
+        // would therefore run at once. Restart the timer with its stamp at
+        // now, so only elapses after this install count; a later downtime is
+        // still caught up.
+        yield* runSystemctl(["stop", path.timerName]).pipe(Effect.ignore);
+        const stamp = join(timerStampDirectory, `stamp-${path.timerName}`);
+        yield* promiseEffect("reset the systemd timer stamp", stamp, async () => {
+          await mkdir(timerStampDirectory, { recursive: true });
+          await writeFile(stamp, "", { flag: "a" });
+          const now = new Date(Date.now() - 1_000);
+          await utimes(stamp, now, now);
+        });
         yield* requireSuccess(["daemon-reload"], "reload the systemd user manager");
         yield* requireSuccess(
           ["enable", "--now", path.timerName],
@@ -1351,19 +1465,135 @@ const discoverSecretTool = (
     return undefined;
   });
 
-const secretServiceKey = (
+/**
+ * One Canonfig credential in the Secret Service. `secret-tool store` reads at
+ * most 8192 bytes from a pipe, prints "password is too long" and still exits
+ * 0 after storing the truncated prefix, so a credential is kept as one or
+ * more items of at most `secretServicePartBytes` each. Part 0 carries
+ * `canonfig-key=<key>` (the only form earlier releases wrote); part N carries
+ * `canonfig-key=<key>.N`. The reference records the part count:
+ * `secret-service:<key>` for one part, `secret-service:<key>:<parts>` for more.
+ */
+interface SecretServiceItem {
+  readonly key: string;
+  readonly parts: number;
+}
+
+const secretServicePartBytes = 8000;
+
+const secretServicePartKey = (key: string, part: number): string =>
+  part === 0 ? key : `${key}.${part}`;
+
+const secretServiceItem = (
   reference: CredentialReferenceType,
-): Effect.Effect<string, CredentialStorageError> => {
+): Effect.Effect<SecretServiceItem, CredentialStorageError> => {
   const prefix = "secret-service:";
   const value = String(reference);
-  if (!value.startsWith(prefix) || value.length === prefix.length) {
+  const body = value.startsWith(prefix) ? value.slice(prefix.length) : "";
+  const multipart = /^([^:]+):([2-9]|[1-9][0-9]+)$/u.exec(body);
+  if (body.length === 0 || (multipart === null && body.includes(":"))) {
     return Effect.fail(new CredentialStorageError({
       operation: "resolve credential reference",
       reference: value,
       message: "credential reference is not owned by the Secret Service provider",
     }));
   }
-  return Effect.succeed(value.slice(prefix.length));
+  return Effect.succeed(multipart === null
+    ? { key: body, parts: 1 }
+    : { key: multipart[1]!, parts: Number(multipart[2]) });
+};
+
+/**
+ * Split credential bytes into Secret Service parts without breaking a UTF-8
+ * sequence: `secret-tool lookup` refuses to print a part that is not valid
+ * text when the provider drops the stored content type.
+ */
+const secretServiceParts = (bytes: Uint8Array): ReadonlyArray<Uint8Array> => {
+  if (bytes.byteLength <= secretServicePartBytes) return [bytes];
+  const parts: Array<Uint8Array> = [];
+  let start = 0;
+  while (start < bytes.byteLength) {
+    let end = Math.min(start + secretServicePartBytes, bytes.byteLength);
+    while (end < bytes.byteLength && end > start + 1 && (bytes[end]! & 0xc0) === 0x80) {
+      end -= 1;
+    }
+    parts.push(bytes.subarray(start, end));
+    start = end;
+  }
+  return parts;
+};
+
+/** The user D-Bus session bus that secret-tool talks to. */
+export type LinuxSessionBus =
+  | { readonly kind: "environment"; readonly address: string }
+  | { readonly kind: "runtime-directory"; readonly address: string }
+  | { readonly kind: "missing"; readonly runtimeDirectory: string | undefined };
+
+const dbusAddressValue = (path: string): string =>
+  [...Buffer.from(path, "utf8")]
+    .map((byte) => {
+      const character = String.fromCharCode(byte);
+      return /[-0-9A-Za-z_/.\\*]/u.test(character)
+        ? character
+        : `%${byte.toString(16).padStart(2, "0")}`;
+    })
+    .join("");
+
+/**
+ * DBUS_SESSION_BUS_ADDRESS when set; otherwise the systemd user bus socket at
+ * $XDG_RUNTIME_DIR/bus, which is what libsecret itself falls back to. A
+ * background run (a timer, cron with XDG_RUNTIME_DIR, `ssh host cmd`) often
+ * lacks the variable while the user bus is present.
+ */
+export const resolveLinuxSessionBus = (
+  environment: ReadonlyArray<ProcessEnvironmentEntry> = processEnvironmentEntries(),
+): LinuxSessionBus => {
+  const address = environmentValue(environment, "DBUS_SESSION_BUS_ADDRESS");
+  if (address !== undefined && address.trim().length > 0) {
+    return { kind: "environment", address };
+  }
+  const runtimeDirectory = environmentValue(environment, "XDG_RUNTIME_DIR");
+  if (runtimeDirectory !== undefined && isAbsolute(runtimeDirectory)) {
+    const socket = join(runtimeDirectory, "bus");
+    try {
+      if (statSync(socket).isSocket()) {
+        return { kind: "runtime-directory", address: `unix:path=${dbusAddressValue(socket)}` };
+      }
+    } catch {
+      // No user bus socket in this runtime directory.
+    }
+  }
+  return { kind: "missing", runtimeDirectory };
+};
+
+const currentUserName = (): string => {
+  try {
+    return userInfo().username;
+  } catch {
+    return "$USER";
+  }
+};
+
+/**
+ * What to run when no user session bus is reachable. dbus-run-session is not
+ * a remedy: its private bus activates a second, empty keyring that asks a
+ * graphical prompter for a new password and never reaches the login keyring.
+ */
+export const linuxSessionBusRecovery = (
+  bus: Extract<LinuxSessionBus, { readonly kind: "missing" }>,
+): string => {
+  const uid = process.getuid?.() ?? 0;
+  const expected = `/run/user/${uid}/bus`;
+  const cause = bus.runtimeDirectory === undefined
+    ? "DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR are both unset, so no user D-Bus session bus is reachable"
+    : `DBUS_SESSION_BUS_ADDRESS is unset and ${join(bus.runtimeDirectory, "bus")} is not a D-Bus socket`;
+  return [
+    `${cause}.`,
+    `Point canonfig at your user session bus with \`export XDG_RUNTIME_DIR=/run/user/${uid}\` (canonfig then uses ${expected}), then retry.`,
+    `If ${expected} does not exist, the systemd user manager is not running: keep it running without a login session with \`sudo loginctl enable-linger ${currentUserName()}\`, and make sure the login keyring is unlocked (it unlocks when you log in with your password).`,
+    "Do not use dbus-run-session: its private bus cannot reach the login keyring.",
+    "Alternatively, explicitly select the local-file credential policy.",
+  ].join(" ");
 };
 
 export const linuxMachineStateLayer = (
@@ -1379,8 +1609,18 @@ export const linuxMachineStateLayer = (
       const localCredentialRoot = credentialPolicy.kind === "local-file"
         ? resolve(credentialPolicy.path)
         : undefined;
-      const secretServiceSession = credentialPolicy.kind === "secure-store"
-        && environmentValue(environment, "DBUS_SESSION_BUS_ADDRESS") !== undefined;
+      const sessionBus: LinuxSessionBus = credentialPolicy.kind === "secure-store"
+        ? resolveLinuxSessionBus(environment)
+        : { kind: "missing", runtimeDirectory: undefined };
+      // secret-tool gets the resolved bus explicitly, so the item it reaches
+      // is the one the capability check examined.
+      const busEnvironment: ReadonlyArray<ProcessEnvironmentEntry> =
+        sessionBus.kind === "runtime-directory"
+          ? [{ name: "DBUS_SESSION_BUS_ADDRESS", value: sessionBus.address }]
+          : [];
+      const busName = sessionBus.kind === "missing" ? "no session bus" : sessionBus.address;
+      const secretToolMissing =
+        `secret-tool is not on PATH (${environmentValue(environment, "PATH") ?? "PATH is unset"}). Install the Secret Service client (Debian and Ubuntu: libsecret-tools; Fedora and RHEL: libsecret; Arch: libsecret) and a provider such as gnome-keyring, or explicitly select the local-file credential policy.`;
 
       const normalizePath = Effect.fn("MachineState.normalizePath")(
         function*(input: NormalizePathInput): Effect.fn.Return<MachinePath, MachineStateError> {
@@ -1450,6 +1690,19 @@ export const linuxMachineStateLayer = (
         function*(input: RemoveEmptyDirectoryInput): Effect.fn.Return<void, MachineStateError> {
           const path = yield* checkLinuxPath(input.path);
           yield* promiseEffect("remove empty directory", path, () => rmdir(path));
+        },
+      );
+
+      const removeTemporaryEntries = Effect.fn("MachineState.removeTemporaryEntries")(
+        function*(
+          input: RemoveTemporaryEntriesInput,
+        ): Effect.fn.Return<ReadonlyArray<string>, MachineStateError> {
+          const directory = yield* checkLinuxPath(input.directory);
+          return yield* promiseEffect(
+            "remove temporary entries",
+            directory,
+            () => removeTemporaryEntriesAt(directory, input.recursive, posix),
+          );
         },
       );
 
@@ -1616,13 +1869,19 @@ export const linuxMachineStateLayer = (
             || query.name.includes("/")
             || query.name.includes("\0")
           ) {
-            return yield* new ExecutableNotFoundError({ name: query.name });
+            return yield* new ExecutableNotFoundError({ executable: query.name, searched: [] });
           }
-          const search = query.searchPath === undefined
-            ? (environmentValue(environment, "PATH") ?? "").split(":")
+          const search = [
+            ...installDestinationDirectories({
+              platform: "linux",
+              home,
+              environment: (name) => environmentValue(environment, name),
+              methods: query.installMethods ?? [],
+            }).map(linuxPath),
+            ...(query.searchPath ?? (environmentValue(environment, "PATH") ?? "").split(":")
               .filter((entry) => entry.length > 0)
-              .map(linuxPath)
-            : query.searchPath;
+              .map(linuxPath)),
+          ];
           for (const directory of search) {
             const directoryPath = yield* checkLinuxPath(directory);
             const candidate = join(directoryPath, query.name);
@@ -1635,7 +1894,10 @@ export const linuxMachineStateLayer = (
               return { name: query.name, path: linuxPath(candidate) };
             }
           }
-          return yield* new ExecutableNotFoundError({ name: query.name });
+          return yield* new ExecutableNotFoundError({
+            executable: query.name,
+            searched: [...new Set(search.map((directory) => directory.absolute))],
+          });
         },
       );
 
@@ -1644,15 +1906,15 @@ export const linuxMachineStateLayer = (
           if (localCredentialRoot !== undefined) {
             return { kind: "local-file", path: linuxPath(localCredentialRoot) };
           }
-          const secretTool = secretServiceSession
-            ? yield* discoverSecretTool(environment)
-            : undefined;
+          if (sessionBus.kind === "missing") {
+            return {
+              kind: "unavailable",
+              recovery: `The Secret Service bus is unavailable: ${linuxSessionBusRecovery(sessionBus)}`,
+            };
+          }
+          const secretTool = yield* discoverSecretTool(environment);
           return secretTool === undefined
-            ? {
-            kind: "unavailable",
-            recovery:
-              "Configure a Secret Service session for noninteractive access, or explicitly select the local-file credential policy.",
-            }
+            ? { kind: "unavailable", recovery: secretToolMissing }
             : {
               kind: "secure-noninteractive",
               provider: "secret-service",
@@ -1663,17 +1925,43 @@ export const linuxMachineStateLayer = (
 
       const requireSecretTool = Effect.fn("MachineState.requireSecretTool")(
         function*(): Effect.fn.Return<string, HumanActionRequiredError> {
-          const secretTool = secretServiceSession
-            ? yield* discoverSecretTool(environment)
-            : undefined;
+          if (sessionBus.kind === "missing") {
+            return yield* new HumanActionRequiredError({
+              action: "reach the Secret Service bus",
+              recovery: linuxSessionBusRecovery(sessionBus),
+            });
+          }
+          const secretTool = yield* discoverSecretTool(environment);
           if (secretTool !== undefined) return secretTool;
           return yield* new HumanActionRequiredError({
-            action: "configure credential storage",
-            recovery:
-              "Install secret-tool and start an unlocked Secret Service provider for this user session, or explicitly select the local-file credential policy.",
+            action: "install secret-tool",
+            recovery: secretToolMissing,
           });
         },
       );
+
+      const unlockRecovery =
+        "Make sure the Secret Service provider is running and the login keyring is unlocked for this user (it unlocks when you log in with your password, or from the desktop session), then retry.";
+
+      const clearSecretServiceParts = (
+        secretTool: string,
+        key: string,
+        parts: number,
+      ): Effect.Effect<ReadonlyArray<string>, HumanActionRequiredError> =>
+        Effect.gen(function*() {
+          const failed: Array<string> = [];
+          for (let part = 0; part < parts; part += 1) {
+            const partKey = secretServicePartKey(key, part);
+            const result = yield* runCredentialCommand(
+              secretTool,
+              ["clear", "canonfig-key", partKey],
+              environment,
+              busEnvironment,
+            );
+            if (result.exitCode !== 0) failed.push(partKey);
+          }
+          return failed;
+        });
 
       const storeCredential = Effect.fn("MachineState.storeCredential")(
         function*(input: StoreCredentialInput): Effect.fn.Return<CredentialReferenceType, MachineStateError> {
@@ -1685,27 +1973,42 @@ export const linuxMachineStateLayer = (
             });
           }
           const name = createHash("sha256").update(input.name).digest("hex");
+          const bytes = new TextEncoder().encode(Redacted.value(input.value));
           if (localCredentialRoot !== undefined) {
             const path = join(localCredentialRoot, `${name}.credential`);
-            const bytes = new TextEncoder().encode(Redacted.value(input.value));
             yield* atomicWriteFile(path, bytes, defaultFileMode);
             return decode(CredentialReference)(`local-file:${path}`);
           }
           const secretTool = yield* requireSecretTool();
-          const result = yield* runCredentialCommand(
-            secretTool,
-            ["store", "--label=Canonfig credential", "canonfig-key", name],
-            environment,
-            input.value,
-          );
-          if (result.exitCode !== 0) {
-            return yield* new HumanActionRequiredError({
-              action: "unlock Linux credential storage",
-              recovery:
-                "Unlock the Secret Service collection for this user session, then retry.",
-            });
+          const parts = secretServiceParts(bytes);
+          for (let part = 0; part < parts.length; part += 1) {
+            const label = parts.length === 1
+              ? "Canonfig credential"
+              : `Canonfig credential (part ${part + 1} of ${parts.length})`;
+            const result = yield* runCredentialCommand(
+              secretTool,
+              ["store", `--label=${label}`, "canonfig-key", secretServicePartKey(name, part)],
+              environment,
+              busEnvironment,
+              parts[part],
+            ).pipe(
+              Effect.tapError(() => clearSecretServiceParts(secretTool, name, part).pipe(Effect.ignore)),
+            );
+            // secret-tool exits 0 after truncating oversized input; its
+            // "too long" diagnostic is a failure even with a zero status.
+            if (result.exitCode !== 0 || /too long/iu.test(result.diagnostic)) {
+              yield* clearSecretServiceParts(secretTool, name, part + 1).pipe(Effect.ignore);
+              return yield* new HumanActionRequiredError({
+                action: "unlock Linux credential storage",
+                recovery: `secret-tool could not store the credential on ${busName}${
+                  result.diagnostic === "" ? ` (exit ${result.exitCode ?? "signal"})` : `: ${result.diagnostic}`
+                }. ${unlockRecovery}`,
+              });
+            }
           }
-          return decode(CredentialReference)(`secret-service:${name}`);
+          return decode(CredentialReference)(
+            parts.length === 1 ? `secret-service:${name}` : `secret-service:${name}:${parts.length}`,
+          );
         },
       );
 
@@ -1717,23 +2020,32 @@ export const linuxMachineStateLayer = (
               path: linuxPath(path),
               maximumBytes: 1024 * 1024,
             });
-            return Redacted.make(new TextDecoder().decode(content));
+            return Redacted.make(new TextDecoder("utf-8", { ignoreBOM: true }).decode(content));
           }
-          const key = yield* secretServiceKey(input.reference);
+          const item = yield* secretServiceItem(input.reference);
           const secretTool = yield* requireSecretTool();
-          const result = yield* runCredentialCommand(
-            secretTool,
-            ["lookup", "canonfig-key", key],
-            environment,
-          );
-          if (result.exitCode !== 0) {
-            return yield* new HumanActionRequiredError({
-              action: "provide local credential",
-              recovery:
-                "Store the required credential in the unlocked Secret Service collection, then retry.",
-            });
+          const parts: Array<Buffer> = [];
+          for (let part = 0; part < item.parts; part += 1) {
+            const partKey = secretServicePartKey(item.key, part);
+            const result = yield* runCredentialCommand(
+              secretTool,
+              ["lookup", "canonfig-key", partKey],
+              environment,
+              busEnvironment,
+            );
+            if (result.exitCode !== 0) {
+              return yield* new HumanActionRequiredError({
+                action: "provide local credential",
+                recovery: result.diagnostic === ""
+                  ? `the Secret Service on ${busName} returned no item with canonfig-key=${partKey}: the login keyring is locked or the item was removed outside Canonfig. ${unlockRecovery} If the item is gone, store the credential again.`
+                  : `secret-tool could not read canonfig-key=${partKey} on ${busName}: ${result.diagnostic}. ${unlockRecovery}`,
+              });
+            }
+            parts.push(result.standardOutput);
           }
-          return Redacted.make(result.standardOutput.toString("utf8").replace(/\n$/u, ""));
+          // Byte-exact: secret-tool adds a newline only when stdout is a
+          // terminal, and this pipe never is, so nothing is trimmed.
+          return Redacted.make(new TextDecoder("utf-8", { ignoreBOM: true }).decode(Buffer.concat(parts)));
         },
       );
 
@@ -1744,18 +2056,14 @@ export const linuxMachineStateLayer = (
             yield* promiseEffect("remove credential", path, () => unlink(path));
             return;
           }
-          const key = yield* secretServiceKey(reference);
+          const item = yield* secretServiceItem(reference);
           const secretTool = yield* requireSecretTool();
-          const result = yield* runCredentialCommand(
-            secretTool,
-            ["clear", "canonfig-key", key],
-            environment,
-          );
-          if (result.exitCode !== 0) {
+          const failed = yield* clearSecretServiceParts(secretTool, item.key, item.parts);
+          if (failed.length > 0) {
             return yield* new CredentialStorageError({
               operation: "remove credential",
               reference: String(reference),
-              message: "Secret Service did not remove the credential",
+              message: `the Secret Service on ${busName} did not remove canonfig-key=${failed.join(", ")}`,
             });
           }
         },
@@ -1769,6 +2077,7 @@ export const linuxMachineStateLayer = (
         readFile: Effect.fn("MachineState.readFile")(readBounded),
         removeFile,
         removeEmptyDirectory,
+        removeTemporaryEntries,
         validatePathWithinRoot,
         mutateWithinRoot,
         replaceSymlink,

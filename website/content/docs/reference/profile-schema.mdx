@@ -9,13 +9,14 @@ profile. JSONC authoring layout and comments do not affect the canonical digest.
 
 ## Profile shape
 
-The v2 authoring contract contains a stable profile ID, display name, Follower
-Groups, Profile Resources, and an optional default schedule:
+The v2 authoring contract contains the file-format version, a stable profile
+ID, display name, Follower Groups, Profile Resources, and an optional suggested
+schedule:
 
 ```jsonc
 {
+  "version": 2, // the authoring format version, not a revision number; always 2
   "id": "workstation",
-  "version": 2,
   "name": "Developer workstation",
   "groups": [
     { "name": "developers", "description": "Developer tools" }
@@ -23,29 +24,31 @@ Groups, Profile Resources, and an optional default schedule:
   "resources": [],
   "scheduleDefault": {
     "type": "daily",
-    "at": "00:00",
+    "at": "04:30",
     "timezone": "local"
   }
 }
 ```
 
-`scheduleDefault` is optional and is a default a Follower Machine *inherits*,
-not a resource a profile applies. A profile that omits it schedules nothing.
+Publish a profile file with `canonfig source publish --profile-file <file>`.
+Revision sequence numbers are assigned at publication; `version` never
+changes.
+
+`scheduleDefault` is optional and is only a suggestion. Sync never installs
+it. A follower that has made no schedule decision sees "schedule available" in
+its plan and status and accepts the suggestion with `canonfig schedule set
+--default`, or chooses its own calendar with `canonfig schedule set`.
 
 Only daily and weekly calendars in the follower's own timezone are accepted,
 written as `"timezone": "local"`. Those are the only shapes every follower
 backend can render: launchd and Windows Task Scheduler refuse a custom
-expression and cannot bind a named timezone, so publishing either left those
-followers with no scheduled synchronization at all. A follower that wants a
-backend-specific calendar or a named timezone sets one locally with
-`canonfig schedule set --timezone`, where only that machine has to render it.
+expression and cannot bind a named timezone. A follower that wants a named
+timezone sets one locally with `canonfig schedule set --timezone`, where only
+that machine has to render it.
 
 A Follower Machine owns its own native synchronization job. `canonfig schedule
 set` and `canonfig schedule remove` decide it, and that decision outlives an
-apply. Canonfig installs the inherited default only when the follower has not
-decided for itself, and it reconciles that job after a converged run rather
-than as part of one, so a machine whose scheduler does not work still
-converges.
+apply. See [Manage schedules](/how-to/manage-schedules).
 
 Canonfig normalizes omitted defaults and unordered collections before hashing.
 It rejects duplicate IDs, missing dependencies, dependency cycles, undeclared
@@ -124,6 +127,104 @@ Every Profile Resource has a unique ID, kind, target, kind-specific
 specification, verification contract, optional groups, and optional
 dependencies. Dependencies form a directed acyclic graph.
 
+## Author file, config, and skill resources
+
+Discovery (`source scan`) proposes only `tool` resources. Author every file,
+config, directory, and skill resource in the profile file yourself. The
+[end-to-end tutorial](/tutorials/first-sync) builds a complete Claude Code and
+Codex profile from these shapes.
+
+A **file** comes from a `source` file or from inline `content`:
+
+```jsonc
+{
+  "id": "claude-instructions",
+  "kind": "file",
+  "target": "~/.claude/CLAUDE.md",
+  "spec": { "kind": "file", "source": ".claude/CLAUDE.md" },
+  "verify": { "method": "digest" }
+}
+```
+
+```jsonc
+{
+  "id": "helper",
+  "kind": "file",
+  "target": "~/.local/bin/review-helper",
+  "spec": { "kind": "file", "content": "#!/bin/sh\ngit diff --stat\n", "executable": true },
+  "verify": { "method": "digest" }
+}
+```
+
+Spec fields: `source` (a path relative to the profile file's directory) or
+`content` (inline UTF-8 text, or base64 with `"encoding": "base64"`), never
+both; optional `mode` (decimal, for example `384` for `0600`) or `executable`;
+or `symlinkTo` for a link whose target is written exactly as authored. Without
+`mode`, a regular file is written `0600`, or `0700` when `executable` is true.
+Binary files work the same way: point `source` at the file.
+
+A **config** merges keys into a JSON, TOML, or YAML file:
+
+```jsonc
+{
+  "id": "codex-config",
+  "kind": "config",
+  "target": "~/.codex/config.toml",
+  "spec": {
+    "kind": "config",
+    "format": "toml",
+    "keys": [
+      { "path": "model_reasoning_effort", "value": "high" },
+      { "path": "mcp_servers.memory", "value": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"] } }
+    ]
+  },
+  "verify": { "method": "digest" }
+}
+```
+
+`format` is `json`, `toml`, or `yaml`. Each `path` names a dotted key and owns
+the whole `value` there (see [Structured configuration ownership](#structured-configuration-ownership)).
+A config resource has no `mode`: Canonfig writes the target `0600` and creates
+missing parent directories `0700`.
+
+A **skill** or **directory** lists every file it contains, each with a `path`
+inside the tree and a `source` or `content`:
+
+```jsonc
+{
+  "id": "claude-review-skill",
+  "kind": "skill",
+  "target": "~/.claude/skills/code-review",
+  "spec": {
+    "kind": "skill",
+    "name": "code-review",
+    "files": [
+      { "path": "SKILL.md", "source": ".claude/skills/code-review/SKILL.md" },
+      { "path": "scripts/check.sh", "source": ".claude/skills/code-review/scripts/check.sh", "executable": true }
+    ]
+  },
+  "verify": { "method": "digest" }
+}
+```
+
+### Source paths
+
+A `source` is resolved relative to the directory that contains the profile
+file. It must be relative, must not contain `..`, and its real path (after
+following symlinks at any depth) must stay inside that directory. A source that
+is itself a symlink to something inside the directory is published as a
+symlink; a link meant to point outside is authored with `symlinkTo`. Anything
+else fails before signing with a usage error, for example "resource
+claude-instructions cannot publish source ../outside.txt: ".." segments are not
+allowed; keep the source inside the profile file's directory".
+
+Keeping the profile file in your home directory, as the tutorial does, lets
+sources point at the real files, so an edit followed by `source publish` is the
+whole update. Keeping it in a dedicated directory (for example a Git
+repository) means copying changed files into that directory before
+publishing. [Publish profile changes](/how-to/publish-profile-changes) covers
+both.
+
 ## Filesystem fidelity
 
 File, directory, and skill resources preserve numeric modes. Directory and
@@ -145,7 +246,7 @@ the exact authored string, so a relative target stays relative to the link:
 { "path": "current", "content": "", "symlinkTo": "../bin/tool" }
     ]
   },
-  "verify": { "method": "digest", "digest": "<directory-digest>" }
+  "verify": { "method": "digest" }
 }
 ```
 
@@ -222,7 +323,35 @@ Review that local text once; it remains follower-owned and is never uploaded.
 
 The v2 contract supports digest, command, executable-present,
 credential-present, and symlink verification. Allowed methods depend on resource
-kind. Verification is mandatory after mutation, including after agent apply.
+kind. Every resource declares `verify`, and verification is mandatory after
+mutation, including after agent apply.
+
+File, directory, config, and skill resources use digest verification. Write
+`{ "method": "digest" }` and omit the value: publication computes the digest
+from the exact content it signs. If you write a `digest`, it must match, or
+publication fails before signing:
+
+> the profile cannot be published: resource codex-config declares verify.digest
+> `<declared>`, but its published content has digest `<computed>`. Set
+> verify.digest to `<computed>`, or omit it and publish computes it
+> (`canonfig source digest` prints it)
+
+To see the computed digests without publishing:
+
+```bash
+canonfig source digest --profile-file ~/canonfig.profile.jsonc
+canonfig source digest --profile-file ~/canonfig.profile.jsonc --resource codex-config
+```
+
+It lists every file, directory, config, and skill resource with its computed
+digest, and marks a declared digest as matching or not. It exits 0 even when a
+declared digest differs; publication is what refuses.
+
+A symlink `file` uses `{ "method": "symlink", "target": "<the symlinkTo value>" }`.
+Tools use `command` or `executable-present`; a bare executable name is looked up
+first in the recipe's own install directories (such as `~/.local/bin` for uv and
+the npm global prefix for npm), then on `PATH`, and a failure lists every
+directory it searched.
 
 Command verification proves only that its declared process exited successfully.
 Set `"proves": "client-load"` only when that command launches the real client
@@ -247,11 +376,17 @@ the follower.
 
 ## Structured configuration ownership
 
-A `config` value may contain strings, finite numbers, booleans, arrays of these
+A `config` value may contain strings, numbers, booleans, arrays of these
 values, and nested objects. Arrays preserve their order, including arrays of hook
 objects. Null is not supported by the portable contract because TOML cannot
 represent it. Unsupported values and reserved prototype fields are rejected,
 not converted or silently dropped.
+
+Numbers must be finite and, when integral, within the JavaScript safe-integer
+range (-9007199254740991 to 9007199254740991). Canonfig never rounds: a larger
+integer fails publication with the key path, for example "the number at
+$.resources[0].spec.keys[0].value.big cannot be carried exactly". Write such a
+value as a string if its consumer accepts one.
 
 Each dotted key owns the entire value at that path. A profile cannot claim both
 `mcpServers.example` and `mcpServers.example.command`, or declare the same path
@@ -259,8 +394,47 @@ twice. Empty path segments, NUL bytes, and prototype traversal segments are
 invalid. Source and Local Overlay paths conflict when either is an ancestor of
 the other; similar sibling names do not conflict.
 
+A key whose name contains a dot is written with `\.`, and a literal backslash
+with `\\`. In profile JSON each backslash is itself escaped, so the key
+`amp.mcpServers` → `docs` is written:
+
+```json
+{ "path": "amp\\.mcpServers.docs", "value": { "command": "docs-server" } }
+```
+
+Any other backslash in a path is rejected at publication and by
+`canonfig overlay set`.
+
+### How follower files are edited
+
+- JSON targets are read as JSONC: `//` and `/* */` comments and trailing commas
+  are accepted. A merge edits only the owned members, so comments and layout
+  elsewhere survive.
+- TOML and YAML targets are edited in place. Comments, key order, anchors and
+  aliases, and value spellings (such as `1.0` or dates) outside owned keys are
+  preserved. An integral number that replaces a float stays a float (`2.0`); a
+  new key takes the JSON value's type, so JSON `1` becomes TOML integer `1`.
+- Object key order does not count as a difference. An owned value that equals
+  the profile's value in another key order is left as written; a new or
+  changed value is written in the profile's canonical (sorted) key order.
+  Unmanaged keys are never reordered.
+- YAML output double-quotes strings that YAML 1.1 readers would read as a
+  boolean, null, number, or timestamp (`yes`, `no`, `on`, `off`, `~`,
+  `2001-12-14`), in keys as well as values.
+- When a merge cannot be written without changing values outside the owned
+  keys, for example an owned key under a shared YAML anchor, it fails and
+  leaves the file unchanged.
+- A follower file that does not parse blocks the resources that target it.
+  `sync --plan` shows each as `human-action` with the file, line, and column,
+  and the file is left unchanged. Apply stops at the first blocked resource:
+  resources applied before it stay applied, and later ones are skipped. Repair
+  the file, then run `sync --apply` again to apply the rest.
+
 When ownership changes between a parent object and one of its children, dropped
 Source keys are removed before the new values are written. Unrelated settings
 remain untouched. An old parent that contains a newly local child is retained
-rather than deleting local state; review that retained subtree when changing
+rather than deleting local state. The plan discloses this: the `write-config`
+action lists the retained keys under `retains`, with a notice explaining that a
+Local Overlay key overlaps them and that their current values, including
+earlier Source-written ones, stay. Review that retained subtree when changing
 ownership. Normal rollback restores the exact previous file.

@@ -6,6 +6,7 @@ import {
   commandMarkdown,
   enabledHooks,
   hasEnabledMcpServers,
+  mcpOptionDiagnostics,
   piMcpMap,
   ruleDocuments,
   ruleMarkdown,
@@ -52,6 +53,7 @@ export const piAdapter: HarnessAdapter = {
     artifacts.push(...await skillArtifacts(context, ".pi/skills", "pi"));
 
     if (hasEnabledMcpServers(context)) {
+      diagnostics.push(...mcpOptionDiagnostics(context, "pi", ["timeoutMs", "enabledTools", "disabledTools"], ".pi/mcp.json projection"));
       artifacts.push({
         kind: "json",
         path: ".pi/mcp.json",

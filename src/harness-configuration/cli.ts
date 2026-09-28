@@ -28,10 +28,6 @@ import { TARGET_IDS } from "./core/types.ts";
 
 export type { HarnessConfigurationCliIo } from "./cli-output.ts";
 
-export const isHarnessConfigurationCommand = (
-  arguments_: ReadonlyArray<string>,
-): boolean => arguments_[0] === "harness";
-
 const renderHelp = (
   parsed: ParsedHarnessArguments,
   io: HarnessConfigurationCliIo,

@@ -24,6 +24,7 @@ import type {
   ReadFileInput,
   RemoveEmptyDirectoryInput,
   RemoveFileInput,
+  RemoveTemporaryEntriesInput,
   RenderedSchedulerJob,
   SafeRootMutationInput,
   SchedulerInspection,
@@ -57,6 +58,14 @@ export class MachineState extends Context.Service<MachineState, {
   readonly removeEmptyDirectory: (
     input: RemoveEmptyDirectoryInput,
   ) => Effect.Effect<void, MachineStateError>;
+  /**
+   * Remove the temporary entries Canonfig itself creates while mutating
+   * (fixed-shape names only) and put back entries a killed mutation left
+   * isolated in a guard. Returns the absolute paths it cleaned.
+   */
+  readonly removeTemporaryEntries: (
+    input: RemoveTemporaryEntriesInput,
+  ) => Effect.Effect<ReadonlyArray<string>, MachineStateError>;
   readonly validatePathWithinRoot: (
     input: ValidatePathWithinRootInput,
   ) => Effect.Effect<void, MachineStateError>;

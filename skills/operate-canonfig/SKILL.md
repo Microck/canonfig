@@ -1,6 +1,6 @@
 ---
 name: operate-canonfig
-description: Operate Canonfig 2 Source and Follower Machines safely. Use for discovery and proposal review, explicit profile publication, follower invitations, groups or revocation, profile selection, synchronization planning or apply, no-input automation, agent policy and harness bounds, schedules, status or doctor diagnostics, Follower Drift, Human Action Required, and interrupted-run recovery.
+description: Operate Canonfig 4.0.0 Source and Follower Machines safely. Use for tool discovery, profile authoring and digests, explicit profile publication, the Source service and tunnel, follower invitations, groups or revocation, unenrollment, profile selection, synchronization planning or apply, no-input automation, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust after apply, Follower Drift, Human Action Required, and interrupted-run recovery.
 ---
 
 # Operate Canonfig
@@ -10,13 +10,15 @@ authority; they never publish upstream.
 
 ## Route the request
 
-- For discovery, proposal review, publication, invitations, groups, and
-  revocation, read [references/source-operations.md](references/source-operations.md).
-- For profile selection, plan/apply, status, diagnostics, drift, Human Action
-  Required, and recovery, read
+- For tool discovery, profile digests, publication, the Source service,
+  invitations, groups, and revocation, read
+  [references/source-operations.md](references/source-operations.md).
+- For profile selection, plan/apply, client trust, status, diagnostics, drift,
+  Human Action Required, recovery, and unenrollment, read
   [references/follower-operations.md](references/follower-operations.md).
-- Before changing schedules, credential handling, recipes, or harness paths,
-  read [references/platform-boundaries.md](references/platform-boundaries.md).
+- Before changing schedules, the tunnel, credential handling, recipes, or
+  harness paths, read
+  [references/platform-boundaries.md](references/platform-boundaries.md).
 
 ## Operating loop
 
@@ -26,26 +28,34 @@ authority; they never publish upstream.
    task, conflict, human action, and verification.
 4. Apply only an approved plan with `canonfig sync --apply`.
 5. Verify the final outcome and evidence. `Converged` requires every required
-   verification to pass.
+   verification to pass. It does not prove a client loaded the result:
+   `clientLoaded` stays `not-verified`, and client trust and hook review are
+   the operator's steps.
 6. Preserve and report `HumanActionRequired`, `FollowerDrift`, `Failed`, or
    `Interrupted` exactly. Never reinterpret partial success as convergence.
+7. Report each follower from its own `canonfig status`. The Source has no fleet
+   view: on the Source, `canonfig status --follower <id>` reports only that
+   follower's enrollment, not its convergence.
 
 ## Automation
 
 Native schedules run:
 
 ```bash
-canonfig sync --apply --no-input
+canonfig sync --apply --no-input --scheduled
 ```
 
-For machine-readable output:
+For machine-readable output from a manual noninteractive run:
 
 ```bash
 canonfig sync --apply --no-input --json
 ```
 
 Scheduled runs never wait for approval. Human Action Required exits with code
-`3`; Follower Drift exits with code `4`. Keep failure output visible.
+`3`; Follower Drift exits with code `4`. Keep failure output visible. `status`
+and `doctor` report the last unattended run's outcome and reason. A scheduled
+run restarts a managed tunnel that is down once before fetching; a stopped
+tunnel is left stopped.
 
 ## Agent policy
 

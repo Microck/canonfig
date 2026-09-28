@@ -10,10 +10,13 @@
   (in-depth) mode. It inspects first, offers numbered choices plus custom input,
   explains each question, recommends safe defaults, then plans and verifies the
   requested Source Machine, Follower Machine, or project harness outcome.
-- [`install-canonfig`](install-canonfig/SKILL.md): direct installation and
-  first-time role establishment.
-- [`operate-canonfig`](operate-canonfig/SKILL.md): evidence-first publication,
-  synchronization, scheduling, diagnostics, drift handling, and recovery.
+- [`install-canonfig`](install-canonfig/SKILL.md): direct installation of
+  `@microck/canonfig@4.0.0`, first-time role establishment, profile authoring
+  and publication, and follower enrollment.
+- [`operate-canonfig`](operate-canonfig/SKILL.md): evidence-first tool
+  discovery, profile digests and publication, the Source service and tunnel,
+  synchronization, client trust after apply, scheduling, diagnostics, drift
+  handling, recovery, and unenrollment.
 
 For harness-to-harness work, start with `Use $sync-harnesses in simple mode to
 sync my Codex project configuration to Claude Code and Antigravity`.
