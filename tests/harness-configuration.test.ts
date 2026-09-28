@@ -158,6 +158,10 @@ describe("harness configuration compiler", () => {
       .resolves.toContain("Canonical instructions");
     await expect(readFile(path.join(root, ".codex/config.toml"), "utf8"))
       .resolves.toContain("canonfig:begin");
+    const codexHooks = JSON.parse(await readFile(path.join(root, ".codex/hooks.json"), "utf8"));
+    expect(codexHooks).toEqual({
+      hooks: expect.objectContaining({ PreToolUse: expect.any(Array) }),
+    });
     await expect(readFile(path.join(root, ".claude/settings.json"), "utf8"))
       .resolves.toContain("PreToolUse");
     await expect(readFile(path.join(root, ".cursor/mcp.json"), "utf8"))

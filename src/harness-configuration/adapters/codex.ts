@@ -57,7 +57,6 @@ export const codexAdapter: HarnessAdapter = {
       if (Object.keys(compiled.hooks).length > 0) {
         artifacts.push({
           kind: "json", path: ".codex/hooks.json", owner: "codex",
-          rootDefaults: { version: 1 },
           operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
           description: "Codex lifecycle hooks",
         });

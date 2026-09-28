@@ -145,7 +145,7 @@ function runCanonfig(hookId, event, payload, timeoutMs) {
   return new Promise((resolve) => {
     const runner = path.join(root, ".canonfig", ".runtime", "hook-runner.mjs");
     const child = execFile(
-      process.execPath,
+      "node",
       [runner, "--hook", hookId, "--target", "${target}", "--event", event],
       {
         cwd: root,
