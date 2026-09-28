@@ -382,8 +382,13 @@ describe("synchronization crash recovery", () => {
       // A killed write leaves its partial temporary sibling behind.
       const orphan = join(dirname(value.target), ".cf-0123456789ab.tmp");
       if (label === "during write/replace") writeFileSync(orphan, "canonical con");
+      let rollbackOrphan: string | undefined;
       if (state !== "pending") {
         const reference = rollbackReference(value, action.id, "original");
+        if (label === "during write/replace") {
+          rollbackOrphan = join(dirname(reference), ".cf-abcdef012345.tmp");
+          writeFileSync(rollbackOrphan, "partial snapshot manifest");
+        }
         await journal(value, action.id, "running", reference);
         if (state === "succeeded") {
           await journal(value, action.id, "succeeded", reference);
@@ -404,6 +409,10 @@ describe("synchronization crash recovery", () => {
       expect(await readFile(value.target, "utf8")).toBe("canonical content");
       expect(targetWrites).toBe(state === "succeeded" ? 0 : state === "running" ? 2 : 1);
       expect(existsSync(orphan)).toBe(false);
+      if (rollbackOrphan !== undefined) {
+        expect(existsSync(rollbackOrphan)).toBe(false);
+        expect(existsSync(dirname(rollbackOrphan))).toBe(false);
+      }
     },
   );
 

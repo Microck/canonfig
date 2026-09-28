@@ -167,6 +167,9 @@ export const cleanupRollbackSnapshots = (
       );
     }
     if (retained.size > 0) return;
+    // An interrupted atomic write of a rollback manifest leaves a Canonfig
+    // temporary sibling here, outside every managed target cleaned by recover.
+    yield* machine.removeTemporaryEntries({ directory, recursive: false });
     yield* machine.removeEmptyDirectory({ path: directory }).pipe(
       Effect.catchTag("MachineFilesystemError", (error) =>
         /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
