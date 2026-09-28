@@ -52,8 +52,8 @@ apply, tell the operator to:
   changed outside the app, and trust each project folder when asked;
 - in Codex, trust each project directory, and open `/hooks` to trust hooks from
   `~/.codex/hooks.json`, which stay in a review state until trusted;
-- in Gemini CLI, trust the folder first: it hides user-level MCP servers in
-  untrusted folders.
+- for Antigravity MCP configuration, start `agy` in the project and invoke
+  a managed MCP tool to check that the server loaded.
 
 `clientLoaded` stays `not-verified` unless the profile declares a verification
 that proves the client loaded the resource. Report it as not verified.

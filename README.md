@@ -157,7 +157,7 @@ canonfig status
 
 apply journals every action and verifies each resource independently. the result is `Converged` when every resource matches; if a filesystem action fails, the run is rolled back and names the resource and the reason.
 
-`Converged` does not mean each client has accepted what it received. restart Claude Code and review hooks in `/hooks` if it reports hooks changed outside the app; Claude Code and Codex ask you to trust each project folder; Codex does not run hooks from `~/.codex/hooks.json` until you open `/hooks` and trust each one; Gemini CLI hides user-level MCP servers in folders you have not trusted. `canonfig status` keeps `clientLoaded` at `not-verified`: canonfig cannot see inside a client.
+`Converged` does not mean each client has accepted what it received. Restart Claude Code and review hooks in `/hooks` if it reports hooks changed outside the app; Claude Code and Codex ask you to trust each project folder; Codex does not run hooks from `~/.codex/hooks.json` until you open `/hooks` and trust each one. For a projected Antigravity MCP server, start `agy` in that project and invoke one of its managed tools to verify loading. `canonfig status` keeps `clientLoaded` at `not-verified`: canonfig cannot see inside a client.
 
 ### 7. sync automatically
 

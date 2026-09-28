@@ -155,9 +155,9 @@ must be checked separately and reported using names/references only.
 After apply, give the client trust steps; Canonfig never copies trust between
 machines. Restart Claude Code and review `/hooks` if it reports hooks changed
 outside the app; trust project folders in Claude Code and Codex; open `/hooks` in
-Codex to trust hooks from `~/.codex/hooks.json`; trust the folder in Gemini CLI,
-which hides user MCP servers in untrusted folders. `clientLoaded` stays
-`not-verified`; report it that way.
+Codex to trust hooks from `~/.codex/hooks.json`; for Antigravity MCP config,
+start `agy` in the project and invoke a managed tool to check the server.
+`clientLoaded` stays `not-verified`; report it that way.
 
 ## Schedule last, only when selected
 

@@ -80,8 +80,8 @@ them. Canonfig never copies trust decisions between machines. Tell the operator:
 - Codex: trust each project directory when asked; hooks from
   `~/.codex/hooks.json` load in a review state and do not run until trusted in
   `/hooks`.
-- Gemini CLI: trust the folder first; it hides user-level MCP servers in
-  untrusted folders.
+- Antigravity CLI: start `agy` in the project and invoke a managed MCP tool
+  to confirm that the changed server loaded.
 
 `clientLoaded` stays `not-verified` unless the profile declares a verification
 that proves a client loaded the resource. Never report it as verified from file

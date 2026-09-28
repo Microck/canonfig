@@ -334,21 +334,22 @@ steps, and Canonfig never copies trust decisions from A to B:
   trust each project directory the first time. If your profile syncs Codex
   hooks (`~/.codex/hooks.json`), Codex loads them in a review state and does
   not run them until you open `/hooks` in Codex and trust each one.
-- **Gemini CLI.** Gemini hides even user-level MCP servers in folders you have
-  not trusted. Trust the folder in Gemini's dialog first.
+- **Antigravity CLI.** Start `agy` in B's project and invoke a managed MCP
+  tool to confirm that the projected server loaded. The written config alone
+  does not prove that the client accepted it.
 
-Codex and Gemini write their own trust records, for example Codex's
+Codex keeps its own project trust record, for example
 `projects.<path>.trust_level` in `~/.codex/config.toml`. Canonfig leaves keys it
-does not own alone, so those records survive later syncs.
+does not own alone, so that record survives later syncs.
 
 `canonfig status` on B keeps `clientLoaded` at `not-verified` until the profile
 declares a verification that proves a client loaded the resource (see
 [Verification](/reference/profile-schema#verification)). Canonfig cannot see
 inside a client; checking each client is your job. After an apply that writes
 `~/.codex/hooks.json` (or `hooks` keys in `~/.codex/config.toml`) or
-`mcpServers` in `~/.gemini/settings.json`, the human output ends with "still to
-do in each client" naming the Codex `/hooks` review or the Gemini folder trust
-step, the JSON output carries them as `clientSteps`, and the `clientLoaded`
+`mcpServers` in `.agents/mcp_config.json`, the human output ends with "still to
+do in each client" naming the Codex `/hooks` review or the Antigravity MCP
+invocation, the JSON output carries them as `clientSteps`, and the `clientLoaded`
 detail in `status` repeats them. A download that takes longer than a second
 prints progress lines on stderr in human mode.
 

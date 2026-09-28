@@ -116,9 +116,10 @@ canonfig status
 `Converged` means the files are in place and verified, not that each client
 accepted them. Tell the operator to restart Claude Code and review `/hooks` if
 it reports hooks changed outside the app, to trust project folders in Claude
-Code and Codex, to trust Codex hooks from `~/.codex/hooks.json` in `/hooks`,
-and to trust folders in Gemini CLI, which hides user MCP servers in untrusted
-folders. `clientLoaded` stays `not-verified`.
+Code and Codex, and to trust Codex hooks from `~/.codex/hooks.json` in
+`/hooks`. For Antigravity MCP configuration, start `agy` in the project and
+invoke a managed MCP tool to confirm it loaded. `clientLoaded` stays
+`not-verified` until a declared verification proves otherwise.
 
 Configure and inspect the native schedule once the operator picks a time:
 

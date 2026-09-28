@@ -4,14 +4,13 @@ import type { AppliedResourceRecord, PlannedAction } from "../domain/synchroniza
  * A step a client still needs from its user after Canonfig changed one of
  * its files.
  *
- * "Converged" means the files are written, not that the client uses them:
- * Codex runs a new or changed hook only after the user reviews it, and Gemini
- * CLI connects no MCP server, user-level ones included, in a folder it does
- * not trust. Canonfig cannot see or grant either, so it names the step and
- * `clientLoaded` stays not-verified until the user has checked each client.
+ * Codex runs a new or changed hook only after the user reviews it. A
+ * projected Antigravity MCP config needs an actual client invocation to
+ * establish that its server loaded. Canonfig cannot infer either from the
+ * written file, so `clientLoaded` stays not-verified until checked.
  */
 export interface ClientReviewStep {
-  readonly client: "codex" | "gemini";
+  readonly client: "codex" | "antigravity";
   readonly target: string;
   /** What to do, in full. */
   readonly step: string;
@@ -31,10 +30,10 @@ const codexHookReview = {
   summary: "review and trust the hooks in Codex (/hooks)",
 } as const;
 
-const geminiFolderTrust = {
-  client: "gemini",
-  step: "Gemini CLI connects no MCP server in a folder it does not trust: start gemini in each project folder, choose Trust folder (or change it later with /permissions), then check the servers with /mcp.",
-  summary: "trust each project folder in Gemini CLI, then check /mcp",
+const antigravityMcpReview = {
+  client: "antigravity",
+  step: "Start Antigravity CLI in the project folder and invoke a managed MCP tool to confirm the changed server loaded; the config file alone cannot establish that.",
+  summary: "invoke a managed MCP tool in Antigravity CLI",
 } as const;
 
 const under = (keys: ReadonlyArray<string>, root: string): boolean =>
@@ -53,8 +52,8 @@ export const clientReviewSteps = (
     const review = directory === ".codex"
         && (file === "hooks.json" || (file === "config.toml" && keys !== undefined && under(keys, "hooks")))
       ? codexHookReview
-      : directory === ".gemini" && file === "settings.json" && (keys === undefined || under(keys, "mcpServers"))
-      ? geminiFolderTrust
+      : directory === ".agents" && file === "mcp_config.json" && (keys === undefined || under(keys, "mcpServers"))
+      ? antigravityMcpReview
       : undefined;
     if (review !== undefined) steps.set(`${review.client}\0${target}`, { ...review, target });
   }

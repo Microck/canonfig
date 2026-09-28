@@ -694,21 +694,21 @@ describe("CLI rendering and exit semantics", () => {
         plan: {
           agentTasks: [],
           actions: [{
-            id: "action:gemini:0:human-action",
+            id: "action:antigravity:0:human-action",
             kind: "human-action",
-            resource: "gemini",
+            resource: "antigravity",
             before: [],
             detail: {
               kind: "human-action",
-              reason: "~/.gemini/settings.json is not valid JSON: expected a property name at line 2 column 10",
-              instructions: "Fix ~/.gemini/settings.json, then run synchronization again.",
+              reason: "~/.agents/mcp_config.json is not valid JSON: expected a property name at line 2 column 10",
+              instructions: "Fix ~/.agents/mcp_config.json, then run synchronization again.",
             },
           }],
         },
       },
     }, "human");
     expect(rendered).toMatch(
-      /human-action +gemini\n {6}~\/\.gemini\/settings\.json is not valid JSON: expected a property name at line 2 column 10\n {6}Fix ~\/\.gemini\/settings\.json, then run synchronization again\.\n/u,
+      /human-action +antigravity\n {6}~\/\.agents\/mcp_config\.json is not valid JSON: expected a property name at line 2 column 10\n {6}Fix ~\/\.agents\/mcp_config\.json, then run synchronization again\.\n/u,
     );
   });
 
@@ -729,13 +729,13 @@ describe("CLI rendering and exit semantics", () => {
     expect(rendered).not.toContain("details shortened");
   });
 
-  // Clients usability 5: Converged is not loaded for Codex hooks or Gemini MCP.
-  it("names the Codex hook review and Gemini folder trust an apply leaves to the user", () => {
+  // Converged means client files were written, not loaded by Codex or Antigravity.
+  it("names client checks only for changed hooks and MCP servers", () => {
     const actions = Schema.decodeUnknownSync(Schema.Array(PlannedAction))([
       { kind: "write-file", target: "/home/u/.codex/hooks.json", digest: "d".repeat(64) },
-      { kind: "write-config", target: "/home/u/.gemini/settings.json", keys: ["mcpServers.docs"] },
-      { kind: "write-config", target: "/home/u/.gemini/settings.json", keys: ["mcpServers.more"] },
-      { kind: "write-config", target: "/home/u/.gemini/settings.json", keys: ["theme"] },
+      { kind: "write-config", target: "/home/u/.agents/mcp_config.json", keys: ["mcpServers.docs"] },
+      { kind: "write-config", target: "/home/u/.agents/mcp_config.json", keys: ["mcpServers.more"] },
+      { kind: "write-config", target: "/home/u/.agents/mcp_config.json", keys: ["theme"] },
       { kind: "write-config", target: "/home/u/.codex/config.toml", keys: ["model"] },
     ].map((detail, index) => ({
       id: `action-${String(index)}`, resource: "client", kind: detail.kind, detail, before: [],
@@ -743,7 +743,7 @@ describe("CLI rendering and exit semantics", () => {
     const steps = clientReviewSteps(plannedFileChanges(actions));
     expect(steps.map((step) => [step.client, step.target])).toEqual([
       ["codex", "/home/u/.codex/hooks.json"],
-      ["gemini", "/home/u/.gemini/settings.json"],
+      ["antigravity", "/home/u/.agents/mcp_config.json"],
     ]);
     const rendered = renderCliResult({
       command: "sync.apply",
@@ -752,8 +752,9 @@ describe("CLI rendering and exit semantics", () => {
       data: { mode: "apply", outcome: { outcome: "Converged" }, clientSteps: steps.map((step) => ({ ...step })) },
     }, "human");
     expect(rendered).toContain("still to do in each client (Canonfig cannot check this; clientLoaded stays not-verified):");
-    expect(rendered).toContain("  - codex /home/u/.codex/hooks.json: Codex runs a new or changed hook only after you review it: open Codex, run /hooks");
-    expect(rendered).toContain("  - gemini /home/u/.gemini/settings.json: Gemini CLI connects no MCP server in a folder it does not trust");
+    expect(rendered).toContain("codex /home/u/.codex/hooks.json");
+    expect(rendered).toContain("antigravity /home/u/.agents/mcp_config.json");
+    expect(steps[1]?.step).toMatch(/invoke a managed MCP tool/u);
   });
 
   it("keeps fields a summary does not recognize visible in human output", () => {
