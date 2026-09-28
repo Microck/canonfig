@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -75,5 +76,33 @@ describe("Antigravity harness adapter", () => {
     const second = await compiler.plan({ root });
     expect(second.entries.filter((entry) => entry.action !== "unchanged"))
       .toEqual([]);
+  });
+
+  it("runs projected hooks from Antigravity's config directory", async () => {
+    const root = await fixture();
+    const configPath = path.join(root, ".canonfig/harness.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.hooks = [{
+      id: "probe",
+      enabled: true,
+      event: "before_tool",
+      matcher: { capabilities: [], tools: [], inputRegex: ".*" },
+      run: ["node", ".canonfig/hooks/marker.mjs"],
+      timeoutMs: 10_000,
+      onFailure: "block",
+    }];
+    await writeFile(configPath, `${JSON.stringify(config)}\n`);
+    await write(root, ".canonfig/hooks/marker.mjs", 'import { writeFileSync } from "node:fs";\nwriteFileSync(".canonfig/hook-hit", "hit\\n");\n');
+
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const hooks = JSON.parse(await readFile(path.join(root, ".agents/hooks.json"), "utf8"));
+    const command = hooks["canonfig-probe"].PreToolUse[0].hooks[0].command as string;
+    execSync(command, {
+      cwd: path.join(root, ".agents"),
+      input: '{"tool_name":"call_mcp_tool"}',
+      timeout: 5_000,
+    });
+    await expect(readFile(path.join(root, ".canonfig/hook-hit"), "utf8")).resolves.toBe("hit\n");
   });
 });

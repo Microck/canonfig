@@ -2,7 +2,9 @@ import type { Hook } from "../core/schema.ts";
 import type { BuildContext, Diagnostic, TargetId } from "../core/types.ts";
 
 export function hookCommand(target: TargetId, hook: Hook): string {
-  return `node \".canonfig/.runtime/hook-runner.mjs\" --hook ${hook.id} --target ${target} --event ${hook.event}`;
+  // Antigravity executes project hooks from .agents, beside hooks.json.
+  const runner = target === "antigravity" ? "../.canonfig/.runtime/hook-runner.mjs" : ".canonfig/.runtime/hook-runner.mjs";
+  return `node "${runner}" --hook ${hook.id} --target ${target} --event ${hook.event}`;
 }
 
 export function enabledHooks(context: BuildContext): Hook[] {
