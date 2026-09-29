@@ -919,26 +919,22 @@ const makeTunnel = Effect.sync(() => {
           }),
       }).pipe(Effect.ignore);
     });
+    const classifyStartupFailure = (error: TunnelProcessError | TunnelReadinessError) =>
+      Effect.promise(() => readLogTail(logPath)).pipe(
+        Effect.flatMap((tail): Effect.Effect<never, TunnelProcessError | TunnelReadinessError | TunnelHostKeyError> =>
+          tail !== undefined && hostKeyFailurePattern.test(tail)
+            ? Effect.fail(new TunnelHostKeyError({
+              host: input.sshHost,
+              message: "the SSH host key is unknown or has changed; the connection was blocked",
+            }))
+            : Effect.fail(error)
+        ),
+      );
     const started = yield* Effect.gen(function*() {
       const argv = buildSshArguments(input, knownHostsPath, extra);
       const processId = yield* spawnTunnelProcess(executable, argv, logPath, systemdUnit);
       pid = processId;
-      yield* waitTunnelReady(input, processId, logPath, timeoutMilliseconds).pipe(
-        Effect.catchTag("TunnelReadinessError", (error) =>
-          Effect.promise(() => readLogTail(logPath)).pipe(
-            Effect.flatMap((
-              tail,
-            ): Effect.Effect<never, TunnelReadinessError | TunnelHostKeyError> =>
-              tail !== undefined && hostKeyFailurePattern.test(tail)
-                ? Effect.fail(new TunnelHostKeyError({
-                  host: input.sshHost,
-                  message:
-                    "the SSH host key is unknown or has changed; the connection was blocked",
-                }))
-                : Effect.fail(error)
-            ),
-          ))
-      );
+      yield* waitTunnelReady(input, processId, logPath, timeoutMilliseconds);
       const state: TunnelStateFile = {
         version: 1,
         ssh: {
@@ -967,7 +963,13 @@ const makeTunnel = Effect.sync(() => {
       yield* writeConfigurationFile(input.stateDirectory, configuration);
       recorded = true;
       return state;
-    }).pipe(Effect.ensuring(cleanupUnrecorded));
+    }).pipe(
+      Effect.catchTags({
+        TunnelProcessError: classifyStartupFailure,
+        TunnelReadinessError: classifyStartupFailure,
+      }),
+      Effect.ensuring(cleanupUnrecorded),
+    );
     const report = yield* statusOf(started, existing !== undefined, configuration);
     if (report.lifecycle !== "running") {
       const tail = yield* Effect.promise(() => readLogTail(logPath));
