@@ -15,6 +15,14 @@ Unattended operation needs three things to keep working on their own:
 A follower that reaches the Source through a managed SSH tunnel also needs that
 tunnel, which a scheduled run restarts for you once if it went down.
 
+On Linux, recovery from a systemd job starts SSH in a separate transient user
+service. The sync job keeps systemd's normal cgroup cleanup, but its exit no
+longer kills the recovered route. `canonfig tunnel stop` stops the tunnel's
+service and subprocesses and records a deliberate stop, which scheduled sync
+respects. `canonfig tunnel start` can recreate it using the recorded SSH, TLS,
+and signing pins. This recovery requires `systemd-run` and a reachable user
+manager; a native ownership failure never falls back to a detached process.
+
 ## Supported modes
 
 | Platform | Source service runs | Follower schedule runs | Not supported |
@@ -118,7 +126,10 @@ schedule states. What each platform needs for the job to fire:
   logout, or all the time once lingering is on.
 - **macOS:** you must be logged in to the desktop session, and the login
   Keychain must be unlocked. The job runs in the `gui/<uid>` launchd domain.
-- **Windows:** you must be logged on.
+- **Windows:** you must be logged on. Canonfig's tasks use normal process
+  priority so credential-store helpers are not starved behind foreground
+  work. An older below-normal task is reported as mismatched; run
+  `canonfig schedule set` again with your existing schedule to replace it.
 
 ### Turn on lingering (Linux)
 

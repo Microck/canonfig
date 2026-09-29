@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { constants as filesystemConstants } from "node:fs";
+import { access, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { connect as netConnect } from "node:net";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { Effect, Layer, Schema } from "effect";
 
@@ -404,13 +405,126 @@ const readLogTail = async (logPath: string): Promise<string | undefined> => {
   }
 };
 
+const tunnelUnitPrefix = (directory: string): string =>
+  `canonfig-tunnel-${createHash("sha256").update(resolve(directory)).digest("hex")}-`;
+
+const runSystemdCommand = (
+  executable: string,
+  argv: ReadonlyArray<string>,
+): Promise<string> =>
+  new Promise((resolveCommand, rejectCommand) => {
+    const child = spawn(executable, [...argv], {
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectCommand(new Error("the systemd user manager did not answer within 10 seconds"));
+    }, 10_000);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout = (stdout + chunk.toString("utf8")).slice(-16_384);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(-16_384);
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      rejectCommand(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolveCommand(stdout.trim());
+      else rejectCommand(new Error(stderr.trim() || `systemd command exited with status ${code}`));
+    });
+  });
+
+const systemctl = (): string => process.env.CANONFIG_SYSTEMCTL ?? "/usr/bin/systemctl";
+
+const resolveSshExecutable = async (executable: string): Promise<string> => {
+  if (isAbsolute(executable) || executable.includes("/")) return resolve(executable);
+  for (const directory of (process.env.PATH ?? "/usr/bin:/bin").split(":")) {
+    const candidate = resolve(directory, executable);
+    try {
+      await access(candidate, filesystemConstants.X_OK);
+      return candidate;
+    } catch {
+      // Search the next PATH entry, as a direct spawn would.
+    }
+  }
+  throw new Error(`SSH executable ${executable} was not found in PATH`);
+};
+
+const terminateTunnelProcess = async (
+  state: TunnelStateFile,
+  directory: string,
+): Promise<void> => {
+  if (state.systemdUnit === undefined) return terminateProcess(state.pid);
+  if (!state.systemdUnit.startsWith(tunnelUnitPrefix(directory))) {
+    throw new Error("the recorded tunnel service does not belong to this state directory");
+  }
+  const properties = await runSystemdCommand(systemctl(), [
+    "--user", "show", state.systemdUnit, "--property=MainPID,LoadState",
+  ]);
+  if (/^LoadState=not-found$/mu.test(properties)) return;
+  const value = /^MainPID=(\d+)$/mu.exec(properties)?.[1];
+  if (value === undefined) throw new Error("the tunnel service did not report its process identity");
+  const pid = Number(value);
+  if (pid !== 0 && pid !== state.pid) {
+    throw new Error("the tunnel service no longer owns the recorded SSH process");
+  }
+  // Stop the whole dedicated cgroup, including any SSH subprocesses.
+  await runSystemdCommand(systemctl(), ["--user", "stop", state.systemdUnit]);
+};
+
+const spawnSystemdTunnel = async (
+  executable: string,
+  argv: ReadonlyArray<string>,
+  logPath: string,
+  unit: string,
+): Promise<number> => {
+  const ssh = await resolveSshExecutable(executable);
+  const environment = ["PATH", "SSH_AUTH_SOCK"].flatMap((name) =>
+    process.env[name] === undefined ? [] : [`--setenv=${name}=${process.env[name]}`]
+  );
+  try {
+    await runSystemdCommand(process.env.CANONFIG_SYSTEMD_RUN ?? "/usr/bin/systemd-run", [
+      "--user", "--collect", "--service-type=exec", `--unit=${unit}`,
+      "--property=KillMode=control-group",
+      `--property=TimeoutStopSec=${killGraceMilliseconds}ms`,
+      `--property=StandardOutput=append:${resolve(logPath)}`,
+      `--property=StandardError=append:${resolve(logPath)}`,
+      ...environment,
+      // Transient service commands still expand $ variables at execution.
+      "--", ssh, ...argv.map((argument) => argument.replaceAll("$", () => "$$")),
+    ]);
+    // Type=exec waits for execve, so MainPID is available when the launcher exits.
+    const pid = Number(await runSystemdCommand(systemctl(), [
+      "--user", "show", unit, "--property=MainPID", "--value",
+    ]));
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error("the managed SSH service exited before its process could be recorded");
+    }
+    return pid;
+  } catch (cause) {
+    await runSystemdCommand(systemctl(), ["--user", "stop", unit]).catch(() => undefined);
+    throw cause;
+  }
+};
+
 const spawnTunnelProcess = (
   executable: string,
   argv: ReadonlyArray<string>,
   logPath: string,
+  systemdUnit: string | undefined,
 ): Effect.Effect<number, TunnelProcessError> =>
   Effect.tryPromise({
     try: async () => {
+      if (systemdUnit !== undefined) {
+        return spawnSystemdTunnel(executable, argv, logPath, systemdUnit);
+      }
       const log = await open(logPath, "a");
       try {
         const child = await new Promise<ReturnType<typeof spawn>>((resolve, reject) => {
@@ -733,9 +847,12 @@ const makeTunnel = Effect.sync(() => {
         yield* writeConfigurationFile(input.stateDirectory, configuration);
         return current;
       }
-      if (yield* Effect.promise(() => ownsTunnelProcess(existing))) {
+      if (
+        (yield* Effect.promise(() => ownsTunnelProcess(existing)))
+        || (existing.systemdUnit !== undefined && !isAlive(existing.pid))
+      ) {
         yield* Effect.tryPromise({
-          try: () => terminateProcess(existing.pid),
+          try: () => terminateTunnelProcess(existing, input.stateDirectory),
           catch: () =>
             new TunnelProcessError({
               operation: "reclaim tunnel",
@@ -745,8 +862,8 @@ const makeTunnel = Effect.sync(() => {
       }
       yield* removeStateFiles(input.stateDirectory, existing);
     }
-    const knownHostsPath = join(input.stateDirectory, knownHostsFileName);
-    const logPath = join(input.stateDirectory, logFileName);
+    const knownHostsPath = join(resolve(input.stateDirectory), knownHostsFileName);
+    const logPath = join(resolve(input.stateDirectory), logFileName);
     yield* Effect.tryPromise({
       try: async () => {
         await mkdir(input.stateDirectory, { recursive: true });
@@ -762,20 +879,36 @@ const makeTunnel = Effect.sync(() => {
           message: "the pinned SSH host key could not be recorded",
         }),
     });
+    // setsid/detached does not leave a systemd cgroup. Native recovery must
+    // give SSH its own user service, not a child of the sync oneshot.
+    const systemdUnit = process.platform === "linux"
+        && /^[a-f0-9]{32}$/u.test(process.env.INVOCATION_ID ?? "")
+      ? `${tunnelUnitPrefix(input.stateDirectory)}${randomUUID().replaceAll("-", "")}.service`
+      : undefined;
     let pid: number | undefined;
     let recorded = false;
+    let startedState: TunnelStateFile | undefined;
     const cleanupUnrecorded = Effect.gen(function*() {
       if (recorded) return;
       const processId = pid;
       if (processId !== undefined) {
         yield* Effect.tryPromise({
-          try: () => terminateProcess(processId),
+          try: async () => {
+            if (systemdUnit !== undefined) {
+              await runSystemdCommand(systemctl(), ["--user", "stop", systemdUnit]);
+            } else {
+              await terminateProcess(processId);
+            }
+          },
           catch: () =>
             new TunnelProcessError({
               operation: "cancel tunnel start",
               message: "the starting tunnel process could not be stopped",
             }),
         }).pipe(Effect.ignore);
+      }
+      if (startedState !== undefined) {
+        yield* removeStateFiles(input.stateDirectory, startedState).pipe(Effect.ignore);
       }
       yield* Effect.tryPromise({
         try: () => unlink(knownHostsPath).catch(() => undefined),
@@ -788,7 +921,7 @@ const makeTunnel = Effect.sync(() => {
     });
     const started = yield* Effect.gen(function*() {
       const argv = buildSshArguments(input, knownHostsPath, extra);
-      const processId = yield* spawnTunnelProcess(executable, argv, logPath);
+      const processId = yield* spawnTunnelProcess(executable, argv, logPath, systemdUnit);
       pid = processId;
       yield* waitTunnelReady(input, processId, logPath, timeoutMilliseconds).pipe(
         Effect.catchTag("TunnelReadinessError", (error) =>
@@ -821,16 +954,18 @@ const makeTunnel = Effect.sync(() => {
         sourceFingerprint: input.sourceFingerprint,
         pid: processId,
         processArgumentFingerprint: processArgumentFingerprint(argv),
+        systemdUnit,
         startedAt: new Date().toISOString(),
         logPath,
         knownHostsPath,
       };
+      startedState = state;
       yield* writeStateFile(input.stateDirectory, state);
-      recorded = true;
       // The durable restart record: `tunnel start` and a scheduled sync can
       // bring this tunnel back after its process dies or the machine reboots,
       // without the one-use invitation envelope.
       yield* writeConfigurationFile(input.stateDirectory, configuration);
+      recorded = true;
       return state;
     }).pipe(Effect.ensuring(cleanupUnrecorded));
     const report = yield* statusOf(started, existing !== undefined, configuration);
@@ -892,9 +1027,9 @@ const makeTunnel = Effect.sync(() => {
     let owned = false;
     if (existing !== undefined) {
       owned = yield* Effect.promise(() => ownsTunnelProcess(existing));
-      if (owned) {
+      if (owned || (existing.systemdUnit !== undefined && !isAlive(existing.pid))) {
         yield* Effect.tryPromise({
-          try: () => terminateProcess(existing.pid),
+          try: () => terminateTunnelProcess(existing, input.stateDirectory),
           catch: () =>
             new TunnelProcessError({
               operation: "stop tunnel",

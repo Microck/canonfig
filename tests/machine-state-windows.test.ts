@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -334,6 +335,50 @@ describe("Windows ACL command rendering", () => {
       { name: "USERDNSDOMAIN", value: "micr.example" },
       { name: "COMPUTERNAME", value: "WORKSTATION" },
     ], "C:\\Users\\operator")).toBe("MICR\\operator");
+  });
+});
+
+describe.skipIf(process.platform !== "win32")("Windows scheduled task priority repair", () => {
+  it("replaces a starvable existing task with foreground-equivalent priority", async () => {
+    await Effect.runPromise(Effect.gen(function*() {
+      const machine = yield* MachineState;
+      const name = `canonfig-priority-${randomUUID()}`;
+      const rendered = yield* machine.renderSchedulerJob({
+        name,
+        description: "Canonfig scheduled credential priority regression",
+        executable: yield* machine.normalizePath({ path: process.execPath }),
+        arguments: ["--version"],
+        calendar: { kind: "daily", localTime: "00:00" },
+      });
+      try {
+        yield* machine.installSchedulerJob(rendered);
+        const powershell = yield* machine.normalizePath({
+          path: join(process.env.SystemRoot ?? "C:\\Windows",
+            "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        });
+        const changed = yield* machine.runProcess({
+          executable: powershell,
+          arguments: [
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+            "$ErrorActionPreference='Stop';"
+              + "$task=Get-ScheduledTask -TaskPath '\\Canonfig\\' -TaskName $env:CANONFIG_TEST_TASK;"
+              + "$task.Settings.Priority=7;$task|Set-ScheduledTask|Out-Null",
+          ],
+          environment: [{ name: "CANONFIG_TEST_TASK", value: name }],
+          timeoutMilliseconds: 60_000,
+          maximumOutputBytes: 1024 * 1024,
+        });
+        expect(changed.exitCode).toBe(0);
+        const drifted = yield* machine.inspectSchedulerJob(rendered);
+        expect(drifted.installed).toBe(true);
+        expect(drifted.calendarMatches).toBe(true);
+        expect(drifted.matches).toBe(false);
+        yield* machine.installSchedulerJob(rendered);
+        expect((yield* machine.inspectSchedulerJob(rendered)).matches).toBe(true);
+      } finally {
+        yield* machine.removeSchedulerJob(rendered);
+      }
+    }).pipe(Effect.provide(windowsMachineStateLayer())));
   });
 });
 

@@ -1,5 +1,5 @@
 import { createHash, X509Certificate } from "node:crypto";
-import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer, type Server } from "node:https";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import { Effect, Schema } from "effect";
 import { generate } from "selfsigned";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CliCommandFailure } from "../../src/cli/source-commands.ts";
 import {
@@ -60,6 +60,7 @@ const temporaryRoot = async (): Promise<string> => {
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  vi.unstubAllEnvs();
 });
 
 const freePort = (): Promise<number> =>
@@ -84,6 +85,7 @@ const fakeSsh = async (root: string): Promise<string> => {
     path,
     `#!${process.execPath}
 const net = require("node:net");
+require("node:fs").writeFileSync(${JSON.stringify(join(root, "ssh.pid"))}, String(process.pid));
 const args = process.argv.slice(2);
 const [bind, localPort, remoteHost, remotePort] = args[args.indexOf("-L") + 1].split(":");
 const server = net.createServer((client) => {
@@ -309,6 +311,37 @@ describe("managed enrollment tunnel", () => {
       expect(restarted).toMatchObject({ lifecycle: "running", reconnected: true });
       expect(restarted.pid).not.toBe(deadPid);
       expect(restarted.identity).toMatchObject({ tlsMatch: true, sourceMatch: true });
+    });
+
+    it("stops a newly established route if its restart configuration cannot be persisted", async () => {
+      const root = await temporaryRoot();
+      const source = await fakeSource();
+      const input = await startManagedTunnel(root, source.port, source.tlsFingerprint);
+      await mkdir(join(root, "tunnel-config.json"));
+
+      const error = await runTunnel(Effect.flip(
+        Effect.flatMap(Tunnel, (tunnel) => tunnel.startTunnel(input)),
+      ));
+      expect(error._tag).toBe("TunnelConfigurationError");
+      const pid = Number(await readFile(join(root, "ssh.pid"), "utf8"));
+      expect(() => process.kill(pid, 0)).toThrow();
+      await expect(access(join(root, "tunnel.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it.skipIf(process.platform !== "linux")("never detaches a route when native service ownership fails", async () => {
+      const root = await temporaryRoot();
+      const source = await fakeSource();
+      const input = await startManagedTunnel(root, source.port, source.tlsFingerprint);
+      vi.stubEnv("INVOCATION_ID", "a".repeat(32));
+      vi.stubEnv("CANONFIG_SYSTEMD_RUN", join(root, "missing-systemd-run"));
+      vi.stubEnv("CANONFIG_SYSTEMCTL", "/bin/true");
+
+      const error = await runTunnel(Effect.flip(
+        Effect.flatMap(Tunnel, (tunnel) => tunnel.startTunnel(input)),
+      ));
+      expect(error._tag).toBe("TunnelProcessError");
+      await expect(access(join(root, "ssh.pid"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(root, "tunnel.json"))).rejects.toMatchObject({ code: "ENOENT" });
     });
 
     it("keeps a stopped tunnel restartable but reports it as stopped", async () => {

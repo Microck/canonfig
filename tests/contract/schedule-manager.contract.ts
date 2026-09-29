@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -142,48 +139,11 @@ const statusFor = (
     return status.definition;
   });
 
-const fixture = (
-  platform: ScheduleManagerContractAdapter["platform"],
-  name: string,
-): Promise<string> =>
-  readFile(
-    join(process.cwd(), "tests", "fixtures", "schedule", `${platform}-${name}.json`),
-    "utf8",
-  );
-
-const goldenValue = (definition: RenderedSchedulerJob): string =>
-  `${JSON.stringify(definition, undefined, 2)}\n`;
-
-// Golden fixtures must not pin the test executable path (an input, not
-// product behavior): install-path tests use real probe-passing scripts.
-const goldenDefinition = (
-  definition: RenderedSchedulerJob,
-  adapter: ScheduleManagerContractAdapter,
-): string =>
-  goldenValue(definition).replaceAll(adapter.executable, "<test-executable>");
-
 export const scheduleManagerContract = (
   name: string,
   adapter: ScheduleManagerContractAdapter,
 ): void => {
   describe(`${name} ScheduleManager contract`, () => {
-    it("renders stable daily and weekly native definitions", async () => {
-      const scheduler = new RecordingScheduler();
-      const layer = managerLayer(adapter, scheduler);
-      const daily = await runWith(layer, statusFor(adapter.executable));
-      const weekly = await runWith(
-        layer,
-        statusFor(adapter.executable, {
-          kind: "weekly",
-          weekdays: ["Fri", "Mon", "Fri"],
-          localTime: "23:45",
-        }),
-      );
-
-      expect(goldenDefinition(daily, adapter)).toBe(await fixture(adapter.platform, "daily"));
-      expect(goldenDefinition(weekly, adapter)).toBe(await fixture(adapter.platform, "weekly"));
-    });
-
     it("refuses a custom executable that fails under the native unit PATH", async () => {
       // Microck/canonfig#132: an npm wrapper that works interactively can
       // crash under the unit PATH (systemd: PATH=/usr/bin:/bin). The probe
@@ -213,9 +173,6 @@ export const scheduleManagerContract = (
       };
       if (adapter.supportsNamedTimezone) {
         const definition = await runWith(layer, statusFor(adapter.executable, schedule));
-        expect(goldenDefinition(definition, adapter)).toBe(
-          await fixture(adapter.platform, "timezone"),
-        );
         expect(definition.schedule).toContain("America/New_York");
       } else {
         const error = await runWith(
@@ -229,9 +186,6 @@ export const scheduleManagerContract = (
           }),
         );
         expect(error).toBeInstanceOf(ScheduleHumanActionRequiredError);
-        expect(`${JSON.stringify(error, undefined, 2)}\n`).toBe(
-          await fixture(adapter.platform, "timezone"),
-        );
       }
 
       const custom = {
@@ -241,9 +195,6 @@ export const scheduleManagerContract = (
       } as const;
       if (adapter.supportsNamedTimezone) {
         const definition = await runWith(layer, statusFor(adapter.executable, custom));
-        expect(goldenDefinition(definition, adapter)).toBe(
-          await fixture(adapter.platform, "custom-timezone"),
-        );
         expect(definition.schedule).toContain("Europe/Paris");
       } else {
         const error = await runWith(

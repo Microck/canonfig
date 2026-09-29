@@ -172,6 +172,8 @@ the native job runs `canonfig sync --apply --no-input --scheduled` at that local
 
 the source service and follower schedules run while the user is logged in on linux, macos, and windows. on linux they also run at boot and after logout once lingering is on (`loginctl enable-linger "$USER"`); canonfig does not turn it on for you. macos needs the logged-in desktop session with the login Keychain unlocked. a scheduled follower run restarts a managed tunnel that went down once before fetching. see [run canonfig unattended](https://github.com/Microck/canonfig/blob/main/website/content/docs/how-to/run-unattended.mdx) and [manage schedules](https://github.com/Microck/canonfig/blob/main/website/content/docs/how-to/manage-schedules.mdx).
 
+on linux, a tunnel recovered by a systemd job runs in its own transient user service, so finishing the sync does not kill the route. `canonfig tunnel stop` stops that service and its subprocesses; the next scheduled run respects the deliberate stop. a later `canonfig tunnel start` can recreate the route from its recorded pins. native recovery requires `systemd-run` and the systemd user manager; it fails rather than leaving an unowned background process.
+
 ### changes and upgrades
 
 edit the source files or the profile on A, then run the same `source digest` and `source publish` commands; followers apply the new sequence at their next run. see [publish profile changes](https://github.com/Microck/canonfig/blob/main/website/content/docs/how-to/publish-profile-changes.mdx).

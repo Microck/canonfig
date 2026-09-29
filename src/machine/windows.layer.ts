@@ -338,6 +338,10 @@ const taskCalendar = (
       + `-At ${powershellLiteral(calendar.localTime)}`);
 };
 
+// Task Scheduler defaults to BelowNormal. That can starve PowerShell startup
+// before the credential script runs; use the same Normal class as foreground sync.
+const windowsTaskPriority = 4;
+
 const renderTaskSchedulerJob = (
   job: SchedulerJob,
 ): Effect.Effect<RenderedSchedulerJob, MachineStateError> =>
@@ -374,6 +378,7 @@ const renderTaskSchedulerJob = (
           + `-Argument ${powershellLiteral(commandLine)}`,
         `$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive`,
         `$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)`,
+        `$Settings.Priority = ${windowsTaskPriority}`,
       ].join("\r\n"),
       schedule: [
         `$Trigger = ${trigger}`,
@@ -475,7 +480,7 @@ const windowsTaskXml = (
     "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
     "<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>",
     "<StopIfGoingOnBatteries>true</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate>",
-    "<Enabled>true</Enabled><ExecutionTimeLimit>PT1H</ExecutionTimeLimit></Settings>",
+    `<Enabled>true</Enabled><ExecutionTimeLimit>PT1H</ExecutionTimeLimit><Priority>${windowsTaskPriority}</Priority></Settings>`,
     `<Actions Context="Author"><Exec><Command>${escapeXml(definition.executable)}</Command>`,
     `<Arguments>${escapeXml(definition.arguments)}</Arguments></Exec></Actions></Task>`,
   ].join("");
@@ -1297,6 +1302,7 @@ export const windowsMachineStateLayer = (
                   matches: xmlElement(xml, "Description") === desired.description
                     && command === desired.executable
                     && xmlElement(xml, "Arguments") === desired.arguments
+                    && xmlElement(settings, "Priority") === String(windowsTaskPriority)
                     && calendarMatches,
                   calendarMatches,
                   // A disabled trigger or task never fires even when its

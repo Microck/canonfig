@@ -1092,6 +1092,8 @@ const renderSystemdJob = (
         "",
         "[Service]",
         "Type=oneshot",
+        // Keep systemd's default control-group cleanup. Long-lived managed
+        // routes recovered by this job belong to separate user services.
         // ExecStart remains absolute. The scheduled process gets only the
         // installing runtime's bin directory plus standard system locations,
         // so npm-managed tools installed beside that runtime remain verifiable

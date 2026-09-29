@@ -99,6 +99,10 @@ export const TunnelStateFileSchema = Schema.Struct({
   sourceFingerprint: CertificateFingerprint,
   pid: Schema.Int.check(Schema.isGreaterThan(0)),
   processArgumentFingerprint: Schema.NonEmptyString,
+  /** A separate systemd user service owns tunnels recovered by native jobs. */
+  systemdUnit: Schema.optional(Schema.String.check(
+    Schema.isPattern(/^canonfig-tunnel-[a-f0-9]{64}-[a-f0-9]{32}\.service$/u),
+  )),
   startedAt: Schema.NonEmptyString,
   logPath: Schema.NonEmptyString,
   knownHostsPath: Schema.NonEmptyString,
