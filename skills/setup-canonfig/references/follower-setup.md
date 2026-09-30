@@ -5,6 +5,10 @@ and use [numbered choices](questions.md) for every unresolved field and approval
 
 ## Inspect first
 
+For a sandboxed agent, first follow
+[setup-agent execution permissions](completion.md#setup-agent-execution-permissions).
+Inspect the actual follower's native user context, not a sandbox substitute.
+
 Observe the current user, platform, runtime, installed version, secure credential
 provider, native scheduler, role, selected profile, pins, last run, and drift:
 

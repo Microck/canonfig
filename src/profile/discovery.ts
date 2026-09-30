@@ -153,14 +153,19 @@ const distinctCandidates = async (
         .then((bytes) => createHash("sha256").update(bytes).digest("hex"))
         .catch(() => undefined)
       : undefined;
-    if (sha256 !== undefined && candidates.some((candidate) => candidate.sha256 === sha256)) continue;
+    const packageVersion = await owningPackageVersion(realPath);
+    if (
+      sha256 !== undefined
+      && candidates.some((candidate) =>
+        candidate.sha256 === sha256 && candidate.packageVersion === packageVersion)
+    ) continue;
     candidates.push({
       path,
       realPath,
       bytes: details.size,
       modifiedAt: details.mtime.toISOString(),
       sha256,
-      packageVersion: await owningPackageVersion(realPath),
+      packageVersion,
     });
   }
   return candidates.length > 1 ? candidates : undefined;

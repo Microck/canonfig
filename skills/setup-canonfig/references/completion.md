@@ -70,6 +70,33 @@ The Source has no fleet view. On the Source, `canonfig status --follower <id>`
 shows only that follower's enrollment. Each follower's own `canonfig status` is
 its completion evidence; report followers without that evidence as pending.
 
+### Setup-agent execution permissions
+
+Run Canonfig as the intended machine user. A project sandbox is not proof of
+access to that user's state, credential provider, or native scheduler.
+
+State commands can open SQLite for writing even when they only report status.
+Authorize access to the user's Canonfig state directory, normally
+`~/.canonfig`, including SQLite sidecars. Once that directory exists, Codex can
+use its supported scoped directory grant, for example:
+
+```bash
+codex --sandbox workspace-write --ask-for-approval on-request --add-dir "$HOME/.canonfig"
+```
+
+If the state directory does not exist yet, run the approved initial Canonfig
+setup command through the agent's per-command native execution approval, then
+grant the created state directory. Keep the selected project context; do not
+grant the entire home directory or change state-file permissions.
+
+The directory grant does not authorize native Secret Service, Keychain,
+Credential Manager, or scheduler IPC. Request the agent's supported
+per-command approval for the exact required Canonfig diagnostic or setup
+command in the intended user's native session. Preserve the original blocked
+probe. Without that access, report credential or scheduler inspection as
+blocked or indeterminate, not broken, ready, or verified. Do not weaken the
+credential policy or bypass the agent sandbox globally.
+
 ### Client trust after apply
 
 `Converged` means files are in place and verified, not that a client accepted

@@ -48,6 +48,12 @@ pins are not migrated by this procedure.
 - macOS credential decoding preserves a leading UTF-8 BOM as secret data.
   SSH public-key files accept normal LF and CRLF line endings without
   relaxing single-key validation or identity pinning.
+- CLI startup rejects unsupported Node.js runtimes before loading database
+  layers or reading enrollment input, with the required version and exit code 3.
+- Setup verifies npm recipes in the reviewed installer's actual global prefix,
+  including configured prefixes outside PATH and paths containing spaces.
+- Discovery retains distinct package versions when their executable entry files
+  have identical bytes, so stale copies remain visible for review.
 
 These changes do not establish an in-place migration path or prove fleet
 convergence on a live installation.

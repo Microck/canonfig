@@ -123,6 +123,11 @@ CLI-only installation needs no machine identity or schedule.
 Inspect locally with bounded probes appropriate to the installed version. These
 commands are examples, not an unconditional script:
 
+For a sandboxed setup agent, establish the scoped state-directory and native
+execution approvals in
+[setup-agent execution permissions](references/completion.md#setup-agent-execution-permissions)
+before these probes. A blocked sandbox probe does not diagnose the host.
+
 ```text
 node --version
 npm --version

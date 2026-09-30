@@ -6,6 +6,7 @@ import type { CliIo } from "../cli/cli.ts";
 import { CliExitCode } from "../cli/exit-codes.ts";
 import { helpOrVersion } from "../cli/help.ts";
 import { installCommandLog, observedSignalExitCode } from "../logging/command-log.ts";
+import { minimumSupportedNodeMajor, nodeRuntimeIsSupported } from "./build-identity.ts";
 import {
   installerArguments,
   isHarnessConfigurationCommand,
@@ -169,6 +170,22 @@ if (early !== undefined) {
   // installer bindings, so nothing is appended here.
   nodeCliIo.writeStdout(`${early.text}\n`);
   nodeCliIo.setExitCode(early.exitCode);
+} else if (
+  !nodeRuntimeIsSupported(process.versions.node)
+  && !arguments_.includes("--help")
+  && !arguments_.includes("-h")
+  && !(isSecretsCommand(arguments_) && arguments_.length === 1)
+  && !isPublicEnrollmentCommand(arguments_)
+) {
+  // A layer import can require node:sqlite before setup's preflight runs.
+  // Reject the runtime before any command graph or credential input loads.
+  const { renderCliResult } = await import("../cli/render.ts");
+  nodeCliIo.writeStderr(renderCliResult({
+    command: "runtime",
+    message: `Node.js ${process.versions.node} is unsupported; Canonfig requires Node.js ${minimumSupportedNodeMajor} or newer. Install a supported Node.js runtime, then retry.`,
+    exitCode: CliExitCode.humanActionRequired,
+  }, format));
+  nodeCliIo.setExitCode(CliExitCode.humanActionRequired);
 } else if (isSecretsCommand(arguments_)) {
   const secrets = await import("../secrets/cli.ts");
   if (secrets.secretsHelpRequested(arguments_.slice(1))) {

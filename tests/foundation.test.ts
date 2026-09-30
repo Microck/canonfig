@@ -117,6 +117,52 @@ describe("Canonfig foundation CLI", () => {
     }
   }, 120_000);
 
+  it.each(["20.20.2", "22.15.0"])(
+    "refuses Node %s before opening state or reading enrollment input",
+    (version) => {
+      const prerequisiteOnly = "data:text/javascript,"
+        + encodeURIComponent(
+          `Object.defineProperty(process.versions,"node",{value:${JSON.stringify(version)}});`
+          + "import{registerHooks}from'node:module';"
+          + "registerHooks({resolve(specifier,context,next){"
+          + "if(specifier==='node:sqlite')throw new Error('unsupported runtime loaded state');"
+          + "return next(specifier,context)}});",
+        );
+      const home = mkdtempSync(join(tmpdir(), "canonfig-unsupported-runtime-"));
+      try {
+        for (const arguments_ of [
+          ["setup", "preflight"],
+          ["source", "init"],
+          ["secrets", "list"],
+          ["installer", "list"],
+          ["follower", "enroll", "--stdin", "--name", "test", "--profile", "test"],
+        ]) {
+          const result = spawnSync(process.execPath, [
+            "--import", prerequisiteOnly, "--import", "tsx",
+            runtimeEntrypoint, ...arguments_, "--json",
+          ], {
+            cwd: projectRoot,
+            encoding: "utf8",
+            timeout: 15_000,
+            env: { ...process.env, HOME: home, USERPROFILE: home, CANONFIG_LOG: "off" },
+          });
+          expect(result.status, arguments_.join(" ")).toBe(3);
+          expect(result.stdout).toBe("");
+          expect(JSON.parse(result.stderr)).toMatchObject({
+            schema: "canonfig.cli/v1",
+            command: "runtime",
+            status: "error",
+            exitCode: 3,
+          });
+          expect(readdirSync(home)).toEqual([]);
+        }
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
   it("renders the package version with a successful outcome", () => {
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",

@@ -727,6 +727,35 @@ describe("profile discovery", () => {
     expect(task?.observedEvidence.join("\n")).toContain(join(current, "fdtool"));
   });
 
+  it("retains package versions whose entry points have identical bytes", async () => {
+    const binaries: Array<string> = [];
+    for (const version of ["1.6.0", "1.5.0"]) {
+      const root = join(directory, version, "node_modules", "copied-tool");
+      const bin = join(root, "bin");
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(root, "package.json"), JSON.stringify({ name: "copied-tool", version }));
+      await writeFile(join(bin, "copied-tool"), "#!/usr/bin/env node\nconsole.log(require('../package.json').version);\n");
+      await chmod(join(bin, "copied-tool"), 0o755);
+      binaries.push(bin);
+    }
+    const hooks = await fixture("hooks.sh", "copied-tool --index\n");
+    const result = await Effect.runPromise(scanDiscovery({
+      files: [{ path: hooks, kind: "hooks" }],
+      path: binaries.join(":"),
+    }));
+    const evidence = result.tools.find((tool) => tool.id === "copied-tool")?.evidence[0];
+    expect(evidence?.resolvedExecutable).toBe(join(binaries[0]!, "copied-tool"));
+    expect(evidence?.candidates?.map((candidate) => ({
+      path: candidate.path,
+      packageVersion: candidate.packageVersion,
+    }))).toEqual([
+      { path: join(binaries[0]!, "copied-tool"), packageVersion: "copied-tool@1.6.0" },
+      { path: join(binaries[1]!, "copied-tool"), packageVersion: "copied-tool@1.5.0" },
+    ]);
+    expect(evidence?.candidates?.[0]?.sha256).toBe(evidence?.candidates?.[1]?.sha256);
+    expect(result.agentTasks.some((task) => task.reason === "ambiguous-executable")).toBe(true);
+  });
+
   it("verifies an MCP server by presence instead of launching it", async () => {
     const mcp = await fixture("mcp.json", JSON.stringify({
       mcpServers: { everything: { command: "rg", args: ["--stdio"] } },

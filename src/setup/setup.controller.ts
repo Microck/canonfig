@@ -1,6 +1,6 @@
 import { realpath, stat } from "node:fs/promises";
 import { arch, release, userInfo } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, posix, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
 
@@ -1001,9 +1001,40 @@ const executeSetupItem = (
             "prerequisite",
           );
         }
+        let searchPath: ReadonlyArray<MachinePath> | undefined;
+        if (recipe.installerMethod === "npm") {
+          // Setup inherits npm configuration, unlike synchronized recipes.
+          // Ask the reviewed installer where this actual global install went.
+          const prefixResult = yield* machine.runProcess({
+            executable: installer,
+            arguments: ["prefix", "--global"],
+            timeoutMilliseconds: setupProcessTimeoutMilliseconds,
+            maximumOutputBytes: maxSetupProcessBytes,
+          }).pipe(
+            Effect.mapError(() =>
+              fail("setup apply", "npm installation prefix could not be inspected", "prerequisite")),
+          );
+          const prefix = new TextDecoder().decode(prefixResult.standardOutput).trim();
+          const paths = installer.platform === "windows" ? win32 : posix;
+          if (prefixResult.exitCode !== 0 || !paths.isAbsolute(prefix)) {
+            return yield* fail(
+              "setup apply", "npm did not report an absolute global installation prefix", "prerequisite",
+            );
+          }
+          const directory = yield* machine.normalizePath({
+            path: installer.platform === "windows" ? prefix : paths.join(prefix, "bin"),
+          }).pipe(
+            Effect.mapError(() =>
+              fail("setup apply", "npm installation prefix is invalid", "prerequisite")),
+          );
+          searchPath = [directory];
+        }
         const target = yield* machine.findExecutable({
           name: recipe.verifyExecutable,
-          installMethods: [{ method: recipe.installerMethod, installer }],
+          searchPath,
+          installMethods: searchPath === undefined
+            ? [{ method: recipe.installerMethod, installer }]
+            : undefined,
         }).pipe(
           Effect.mapError((cause) =>
             fail(
