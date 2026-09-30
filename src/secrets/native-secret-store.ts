@@ -158,7 +158,7 @@ const decodeKeychainValue = (
         throw new Error("invalid Keychain hex payload");
       }
       return Redacted.make(
-        new TextDecoder("utf-8", { fatal: true }).decode(
+        new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
           Buffer.from(hexadecimal, "hex"),
         ),
       );

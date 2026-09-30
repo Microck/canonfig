@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
@@ -15,10 +15,11 @@ import {
   setupItemVerdicts,
   setupPlanDigest,
 } from "../src/setup/setup.plan.ts";
-import type {
-  SetupInventory,
-  SetupJournal,
-  SetupPlanItem,
+import {
+  maxSetupDiscoveryFileBytes,
+  type SetupInventory,
+  type SetupJournal,
+  type SetupPlanItem,
 } from "../src/setup/setup.types.ts";
 
 const inventory: SetupInventory = {
@@ -68,6 +69,7 @@ const digest = setupPlanDigest({
   intent: "prepare follower",
   exclusions: [],
   inventory,
+  discoveryInputs: [],
   items,
 });
 const journal = (overrides: Partial<SetupJournal> = {}): SetupJournal => ({
@@ -224,6 +226,7 @@ describe("setup controller decisions", () => {
       intent: "prepare follower",
       exclusions: [],
       inventory,
+      discoveryInputs: [],
       items,
     })).toBe(digest);
     expect(setupPlanDigest({
@@ -232,6 +235,7 @@ describe("setup controller decisions", () => {
       intent: "prepare follower",
       exclusions: [],
       inventory,
+      discoveryInputs: [],
       items,
     })).not.toBe(digest);
     expect(setupPlanDigest({
@@ -240,6 +244,7 @@ describe("setup controller decisions", () => {
       intent: "prepare source instead",
       exclusions: [],
       inventory,
+      discoveryInputs: [],
       items,
     })).not.toBe(digest);
     expect(setupPlanDigest({
@@ -248,24 +253,9 @@ describe("setup controller decisions", () => {
       intent: "prepare follower",
       exclusions: ["skip unavailable integration"],
       inventory,
+      discoveryInputs: [],
       items,
     })).not.toBe(digest);
-  });
-
-  it("reproduces pre-scope digests for upgrade comparison", () => {
-    const base = {
-      role: "follower",
-      intent: "prepare follower",
-      exclusions: [],
-      inventory,
-      items,
-    } as const;
-    const legacy = setupPlanDigest({ ...base });
-    // The scoped encoding binds the scope: identical inputs under an
-    // explicit scope never collide with a legacy approval.
-    expect(setupPlanDigest({ ...base, scope: "full" })).not.toBe(legacy);
-    expect(setupPlanDigest({ ...base, scope: "cli-only" })).not.toBe(legacy);
-    expect(setupPlanDigest({ ...base })).toBe(legacy);
   });
 
   it("resumes required work without blocking on an independent optional failure", () => {
@@ -365,3 +355,137 @@ describe("setup decision record", () => {
     }
   }, 60_000);
 });
+
+describe.runIf(process.platform === "linux" && existsSync(join(dirname(process.execPath), "npm")))(
+  "setup recipe approval boundaries",
+  () => {
+    const projectRoot = resolve(import.meta.dirname, "..");
+    const runtimeEntrypoint = resolve(projectRoot, "src/runtime/main.ts");
+    const fixture = () => {
+      const home = mkdtempSync(join(tmpdir(), "canonfig-setup-recipe-"));
+      const bin = join(home, "bin");
+      mkdirSync(bin);
+      symlinkSync(process.execPath, join(bin, "node"));
+      symlinkSync(join(dirname(process.execPath), "npm"), join(bin, "npm"));
+      const file = join(home, "package.json");
+      const writeRecipe = (version = "1.6.0", disabled = false) => writeFileSync(file, JSON.stringify({
+        canonfig: {
+          tools: [
+            { ecosystem: "npm", name: "cowsay", executable: "cowsay", version, disabled },
+            { ecosystem: "npm", name: "disabled-tool", version: "1.0.0", disabled: true },
+          ],
+        },
+      }));
+      writeRecipe();
+      const invoke = (arguments_: ReadonlyArray<string>) => spawnSync(
+        process.execPath,
+        ["--import", "tsx", runtimeEntrypoint, "setup", ...arguments_, "--json"],
+        {
+          cwd: projectRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+            PATH: bin,
+            NPM_CONFIG_PREFIX: join(home, "packages"),
+            CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, ".canonfig-credentials"),
+            CANONFIG_LOG: "off",
+          },
+        },
+      );
+      const setup = (arguments_: ReadonlyArray<string>) => {
+        const result = invoke(arguments_);
+        expect(result.status, result.stderr || result.stdout).toBe(0);
+        return JSON.parse(result.stdout).data;
+      };
+      const plan = (scope = "project-only") => setup([
+        "plan", "--role", "source", "--scope", scope, "--file", file,
+      ]);
+      return { home, bin, file, writeRecipe, invoke, setup, plan };
+    };
+
+    it("plans installation and its verifier for an accepted missing recipe, but not disabled or CLI-only tools", () => {
+      const test = fixture();
+      try {
+        const planned = test.plan();
+        const installation = planned.items.find((item: SetupPlanItem) => item.kind === "recipe-install");
+        expect(installation).toMatchObject({
+          id: "recipe-install:cowsay",
+          scope: "resource:tool:cowsay",
+          dependsOn: ["tool-verify:npm"],
+          detail: {
+            arguments: ["install", "--global", "cowsay@1.6.0", "--ignore-scripts"],
+            verifyExecutable: "cowsay",
+            verifyArguments: ["--version"],
+          },
+        });
+        expect(planned.items.find((item: SetupPlanItem) => item.id === "toolchain-verify").dependsOn)
+          .toContain(installation.id);
+        expect(planned.items.some((item: SetupPlanItem) => item.kind === "source-init")).toBe(false);
+        expect(planned.items.some((item: SetupPlanItem) => item.id.includes("disabled-tool"))).toBe(false);
+        expect(planned.exclusions).toEqual([]);
+
+        rmSync(join(test.home, ".canonfig", "setup.json"));
+        const cliOnly = test.plan("cli-only");
+        expect(cliOnly.items.some((item: SetupPlanItem) =>
+          item.kind === "recipe-install" || item.kind === "source-init")).toBe(false);
+      } finally {
+        rmSync(test.home, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it("preserves an executable already present instead of scheduling a reinstall", () => {
+      const test = fixture();
+      try {
+        symlinkSync(process.execPath, join(test.bin, "cowsay"));
+        const planned = test.plan();
+        expect(planned.items.some((item: SetupPlanItem) => item.kind === "recipe-install")).toBe(false);
+        expect(planned.catalog.some((entry: { readonly resource: string }) => entry.resource === "cowsay"))
+          .toBe(false);
+        expect(planned.evidence.some((entry: string) => entry.includes("installed and verified cowsay")))
+          .toBe(false);
+      } finally {
+        rmSync(test.home, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it.each(["changed", "missing", "oversized", "legacy"] as const)(
+      "rejects %s authoring inputs before executing an approved recipe",
+      (change) => {
+        const test = fixture();
+        try {
+          const planned = test.plan();
+          test.setup(["approve", "--approver", "operator"]);
+          const before = test.setup(["status"]);
+          if (change === "changed") test.writeRecipe("1.5.0");
+          else if (change === "missing") rmSync(test.file);
+          else if (change === "oversized") writeFileSync(test.file, " ".repeat(maxSetupDiscoveryFileBytes + 1));
+          else {
+            const legacy = test.setup(["approve", "--approver", "operator"]);
+            delete legacy.discoveryInputs;
+            writeFileSync(join(test.home, ".canonfig", "setup.json"), JSON.stringify(legacy));
+          }
+          const rejected = test.invoke(["apply"]);
+          expect(rejected.status, rejected.stderr || rejected.stdout).toBe(3);
+          const status = test.setup(["status"]);
+          expect(status.approved).toBe(false);
+          expect(status.items).toEqual(before.items);
+          expect(existsSync(join(test.home, "packages"))).toBe(false);
+
+          test.writeRecipe("1.5.0");
+          const replanned = test.plan();
+          expect(replanned.planDigest).not.toBe(planned.planDigest);
+          const declined = test.invoke(["apply"]);
+          expect(declined.status, declined.stderr || declined.stdout).toBe(3);
+          expect(existsSync(join(test.home, "packages"))).toBe(false);
+          const approved = test.setup(["approve", "--approver", "operator"]);
+          expect(approved.approvals).toEqual([expect.objectContaining({ digest: replanned.planDigest })]);
+        } finally {
+          rmSync(test.home, { recursive: true, force: true });
+        }
+      },
+      60_000,
+    );
+  },
+);

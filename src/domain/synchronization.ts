@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaIssue } from "effect";
 import { TaggedError } from "./tagged-error.ts";
 
 import {
@@ -24,7 +24,7 @@ import {
 import {
   isMissingAutomaticRecipeVersion,
   RecipeSourceMetadata,
-  recipeValidationError,
+  recipeValidationIssue,
 } from "./recipe-versions.ts";
 import {
   InstallerRecipeProvenance,
@@ -289,13 +289,16 @@ const InstallToolActionDetailSchema = Schema.Struct({
   provenance: Schema.optional(InstallerRecipeProvenance),
 }).check(
   Schema.makeFilter((detail) => {
-    const reason = recipeValidationError(detail);
-    return reason === undefined && !isMissingAutomaticRecipeVersion(detail)
-      ? undefined
-      : {
+    const issue = recipeValidationIssue(detail);
+    if (issue !== undefined) return issue;
+    return isMissingAutomaticRecipeVersion(detail)
+      ? {
         path: ["version"],
-        issue: reason ?? `automatic installer ${detail.method} requires an exact version`,
-      };
+        issue: new SchemaIssue.InvalidValue({
+          expected: `automatic installer ${detail.method} requires an exact version`,
+        }),
+      }
+      : undefined;
   }),
 );
 

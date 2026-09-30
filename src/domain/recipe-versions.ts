@@ -1,6 +1,7 @@
-import { Schema } from "effect";
+import { Schema, SchemaIssue } from "effect";
 
 import { isNpmRegistryPackageName } from "./npm-package-spec.ts";
+import { isSecretField } from "../secrets/credential-policy.ts";
 
 export const RecipeMethod = Schema.Literals([
   "npm",
@@ -79,6 +80,9 @@ export const canonicalRecipeIndexUrl = (
       || parsed.pathname === "/"
       || !/(?:^|\/)simple\/?$/u.test(parsed.pathname)
     ) return undefined;
+    for (const name of parsed.searchParams.keys()) {
+      if (isSecretField(name)) return undefined;
+    }
     parsed.pathname = parsed.pathname.replace(/\/$/u, "");
     return parsed.href;
   } catch {
@@ -148,44 +152,57 @@ const versionPatternFor = (
   }
 };
 
-/**
- * Return a stable, boundary-friendly explanation when a recipe cannot be
- * represented by the deterministic installer.
- */
-export const recipeValidationError = (input: {
+export interface RecipeValidationInput {
   readonly method: string;
   readonly package: string;
   readonly version?: string | undefined;
   readonly source?: RecipeSource | undefined;
   readonly integrity?: string | undefined;
   readonly indexPolicy?: RecipeIndexPolicy | undefined;
-}): string | undefined => {
+}
+
+export interface RecipeValidationIssue {
+  readonly path: ReadonlyArray<string>;
+  readonly reason: string;
+  readonly issue: SchemaIssue.InvalidValue;
+}
+
+const recipeIssue = (path: ReadonlyArray<string>, reason: string): RecipeValidationIssue => ({
+  path,
+  reason,
+  issue: new SchemaIssue.InvalidValue({ expected: reason }),
+});
+
+/** Keep each rule's explanation and field together at schema boundaries. */
+export const recipeValidationIssue = (
+  input: RecipeValidationInput,
+): RecipeValidationIssue | undefined => {
   const { method, package: packageName, version } = input;
   if (!Schema.is(RecipeMethod)(method)) {
-    return `unknown installer method ${method}`;
+    return recipeIssue(["method"], "unknown installer method");
   }
   if (
     (method === "npm" || method === "pnpm" || method === "bun")
     && !isNpmRegistryPackageName(packageName)
   ) {
-    return `npm-family package must be an exact registry name: ${packageName}`;
+    return recipeIssue(["package"], "npm-family package must be an exact registry name");
   }
   if (method === "source" && version === undefined) {
-    return "source recipes require an immutable revision";
+    return recipeIssue(["version"], "source recipes require an immutable revision");
   }
   if (method !== "source" && !isSafePackageArgument(packageName)) {
-    return `package argument is unsafe: ${packageName}`;
+    return recipeIssue(["package"], "package argument is unsafe");
   }
   if (input.indexPolicy !== undefined) {
     if (method !== "uv") {
-      return "recipe index policy is only supported for uv recipes";
+      return recipeIssue(["indexPolicy"], "recipe index policy is only supported for uv recipes");
     }
     const { url, reviewedBy, reviewedAt } = input.indexPolicy;
     if (reviewedBy.trim().length === 0 || !Number.isFinite(Date.parse(reviewedAt))) {
-      return "recipe index policy requires a reviewer and valid review timestamp";
+      return recipeIssue(["indexPolicy"], "recipe index policy requires a reviewer and valid review timestamp");
     }
     if (canonicalRecipeIndexUrl(url) === undefined) {
-      return "recipe index policy must be a credential-free HTTPS simple-index URL";
+      return recipeIssue(["indexPolicy", "url"], "recipe index policy must be a credential-free HTTPS simple-index URL");
     }
   }
   const metadata = sourceValue(input.source);
@@ -204,13 +221,13 @@ export const recipeValidationError = (input: {
       || integrity === undefined
     )
   ) {
-    return "npm-family registry installs require an exact version or a reviewed tarball with integrity";
+    return recipeIssue(["version"], "npm-family registry installs require an exact version or a reviewed tarball with integrity");
   }
-  const sourceReason = recipeSourceValidationError({
+  const sourceIssue = recipeSourceValidationIssue({
     ...input,
     version: sourceVersion,
   });
-  if (sourceReason !== undefined) return sourceReason;
+  if (sourceIssue !== undefined) return sourceIssue;
   if (version === undefined && sourceVersion === undefined) return undefined;
   const pattern = versionPatternFor(method);
   if (
@@ -218,7 +235,7 @@ export const recipeValidationError = (input: {
     || !isSafeScalar(sourceVersion!, unsafeVersionCharacter)
     || !pattern.test(sourceVersion!)
   ) {
-    return `installer ${method} cannot honor requested version ${sourceVersion}`;
+    return recipeIssue(["version"], `installer ${method} cannot honor requested version`);
   }
   return undefined;
 };
@@ -294,20 +311,16 @@ export const npmVersionFromTarballSource = (
  * installed from the canonical registry; URL sources are only accepted for
  * exact npm registry tarballs.
  */
-export const recipeSourceValidationError = (input: {
-  readonly method: string;
-  readonly package: string;
-  readonly version?: string | undefined;
-  readonly source?: RecipeSource | undefined;
-  readonly integrity?: string | undefined;
-}): string | undefined => {
+const recipeSourceValidationIssue = (
+  input: RecipeValidationInput,
+): RecipeValidationIssue | undefined => {
   const metadata = sourceValue(input.source);
   const integrity = metadata?.integrity ?? input.integrity;
   if (input.integrity !== undefined && metadata?.integrity !== undefined) {
-    return "recipe source integrity is duplicated";
+    return recipeIssue(["integrity"], "recipe source integrity is duplicated");
   }
   if (integrity !== undefined && !isSRI(integrity)) {
-    return "recipe source integrity must be a valid sha256 or sha512 SRI value";
+    return recipeIssue(["integrity"], "recipe source integrity must be a valid sha256 or sha512 SRI value");
   }
   if (metadata === undefined) return undefined;
   let url: URL;
@@ -319,7 +332,7 @@ export const recipeSourceValidationError = (input: {
       (input.method === "npm" || input.method === "pnpm" || input.method === "bun")
       && integrity !== undefined
     ) {
-      return "npm-family recipe integrity requires a canonical HTTPS registry tarball source";
+      return recipeIssue(["source"], "npm-family recipe integrity requires a canonical HTTPS registry tarball source");
     }
     return undefined;
   }
@@ -327,7 +340,7 @@ export const recipeSourceValidationError = (input: {
     // Schemes such as lock:, package:, and file paths are evidence locators,
     // not network sources.
     if (/^(?:git\+|git:|ssh:|github:|gitlab:|bitbucket:|file:|link:|workspace:|npm:)/iu.test(metadata.source)) {
-      return "mutable Git or source dependency metadata is not an approved package artifact";
+      return recipeIssue(["source"], "mutable Git or source dependency metadata is not an approved package artifact");
     }
     return undefined;
   }
@@ -339,7 +352,7 @@ export const recipeSourceValidationError = (input: {
     || url.hash.length > 0
     || url.port.length > 0 && url.port !== "443"
   ) {
-    return "recipe source must be an exact HTTPS URL without credentials, redirects, query, or fragment";
+    return recipeIssue(["source"], "recipe source must be an exact HTTPS URL without credentials, redirects, query, or fragment");
   }
   if (
     input.method !== "npm"
@@ -347,24 +360,24 @@ export const recipeSourceValidationError = (input: {
     && input.method !== "bun"
     && input.method !== "source"
   ) {
-    return "recipe source URLs are only supported for npm-family registry artifacts or reviewed source recipes";
+    return recipeIssue(["source"], "recipe source URLs are only supported for npm-family registry artifacts or reviewed source recipes");
   }
   if (input.method === "npm" || input.method === "pnpm" || input.method === "bun") {
     const expectedSource = `https://registry.npmjs.org${npmTarballPath(input.package, input.version ?? "")}`;
     if (input.version === undefined || metadata.source !== expectedSource) {
-      return "npm-family recipe source must be the canonical registry tarball for package and version";
+      return recipeIssue(["source"], "npm-family recipe source must be the canonical registry tarball for package and version");
     }
     if (url.origin !== "https://registry.npmjs.org") {
-      return "npm-family recipe source must use the canonical npm registry origin";
+      return recipeIssue(["source"], "npm-family recipe source must use the canonical npm registry origin");
     }
     let path: string;
     try {
       path = decodeURIComponent(url.pathname);
     } catch {
-      return "npm-family recipe source has an invalid encoded path";
+      return recipeIssue(["source"], "npm-family recipe source has an invalid encoded path");
     }
     if (input.version === undefined || path !== npmTarballPath(input.package, input.version)) {
-      return "npm-family recipe source must match the exact registry tarball for package and version";
+      return recipeIssue(["source"], "npm-family recipe source must match the exact registry tarball for package and version");
     }
   }
   return undefined;
@@ -385,7 +398,7 @@ export const isSafeRecipe = (input: {
   readonly method: string;
   readonly package: string;
   readonly version?: string | undefined;
-}): boolean => recipeValidationError(input) === undefined;
+}): boolean => recipeValidationIssue(input) === undefined;
 
 export const isSafeSourceRevision = (value: string): boolean =>
   isSafeScalar(value, unsafeVersionCharacter) && sourceRevision.test(value);

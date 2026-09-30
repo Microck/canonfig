@@ -28,6 +28,7 @@ import { RevisionImmutableError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { compileProfileCandidate } from "./compiler.ts";
 import type { DiscoveryScanResult } from "./discovery.ts";
+import { publicationCredentialIssue } from "./publication-credentials.ts";
 import {
   EmptyPublicationError,
   InvalidPublicationInputError,
@@ -540,6 +541,10 @@ export const makePublication = (
       const errors = validateMachineProfile(profile);
       if (errors.length > 0) {
         return yield* Effect.fail(new InvalidPublicationResourcesError(errors));
+      }
+      const credentialIssue = publicationCredentialIssue(profile.resources);
+      if (credentialIssue !== undefined) {
+        return yield* new InvalidPublicationInputError({ reason: credentialIssue });
       }
 
       const encoded = yield* Effect.try({

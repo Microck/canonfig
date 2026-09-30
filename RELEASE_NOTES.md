@@ -35,6 +35,19 @@ pins are not migrated by this procedure.
   Permission operations have a longer timeout; rollback restores captured
   security descriptors through a native helper rather than recalculating
   inheritance from a temporary parent.
+- Publication rejects recognizable literal credentials in configuration before
+  signing or persistence. Symbolic environment references and named
+  shared-secret bindings remain supported; reviewed bytes are not silently
+  redacted into a different configuration.
+- Setup binds approval to bounded authoring-file fingerprints. Changed,
+  missing, unreadable, or oversized inputs require a new plan and approval
+  before executing an installation or identity step.
+- Recipe validation identifies the failing index, version, package, source,
+  or build field without exposing rejected values. Reviewed uv indices
+  reject credential-bearing query parameters.
+- macOS credential decoding preserves a leading UTF-8 BOM as secret data.
+  SSH public-key files accept normal LF and CRLF line endings without
+  relaxing single-key validation or identity pinning.
 
 These changes do not establish an in-place migration path or prove fleet
 convergence on a live installation.

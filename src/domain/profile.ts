@@ -34,7 +34,7 @@ import {
 import {
   canonicalRecipeIndexUrl,
   isMissingAutomaticRecipeVersion,
-  recipeValidationError,
+  recipeValidationIssue,
 } from "./recipe-versions.ts";
 import {
   BlobId,
@@ -918,7 +918,7 @@ const validateRecipes = (
 ): ReadonlyArray<InvalidRecipeError> => {
   if (resource.spec.kind !== "tool") return [];
   return resource.spec.recipes.flatMap((recipe) => {
-    const genericReason = recipeValidationError(recipe)
+    const genericReason = recipeValidationIssue(recipe)?.reason
       ?? (isMissingAutomaticRecipeVersion(recipe)
         ? `installer ${recipe.method} requires an exact "version" so every follower installs the same build`
         : undefined);
@@ -945,7 +945,7 @@ const validateRecipes = (
       ? []
       : [new InvalidRecipeError({
         id: resource.id,
-        reason: `recipe ${recipe.method}/${recipe.package}: ${reason}`,
+        reason,
       })];
   });
 };

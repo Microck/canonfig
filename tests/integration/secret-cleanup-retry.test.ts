@@ -236,6 +236,7 @@ describe("shared-secret cleanup retry", () => {
     { label: "2000-byte", secret: "a".repeat(2000) },
     { label: "16-KiB", secret: "a".repeat(16 * 1024) },
     { label: "multibyte", secret: "é🔐-macos-keychain-round-trip" },
+    { label: "leading UTF-8 BOM", secret: "\uFEFFtoken" },
     { label: "quoted multiline", secret: "quote \" and slash \\\nsecond line\n" },
   ])(
     "round-trips a $label secret through macOS Keychain stdin",

@@ -340,12 +340,24 @@ and a rustup proxy is not run until rustup has been configured, so such a tool
 is reported unverified. A full Source plan fails before initialization when
 signing and TLS key storage is unavailable. `--scope cli-only` verifies only
 that the CLI runs (no identities, schedules, or remote connections);
-`--scope project-only` also installs recipes but creates no identity.
+`--scope project-only` also installs accepted recipes for missing executables
+but creates no identity. Disabled declarations do not enter the plan. An
+executable already found on PATH is preserved without scheduling a reinstall;
+its presence alone does not record package verification or qualified provenance.
+A missing tool's `recipe-install` step includes its verifier and depends on
+verification of the selected native installer.
 
-Approval binds the plan digest. Apply runs only structured native argv recipes
-and journals evidence and qualified provenance. Re-running apply resumes the
-next eligible stage. An unavailable optional integration excludes only its
-dependent branch.
+Approval binds the plan digest, including fingerprints of the bounded discovery
+files' exact bytes. Apply checks those files before executing any item. If a
+file changed, disappeared, exceeded the bound, or cannot be read, apply clears
+the stale approval without executing the plan. Run `setup plan` with the selected
+role, scope, and files again, review the changed graph, then approve it.
+Older journals without these fingerprints also require a new plan and approval.
+Installing a tool does not change these authoring fingerprints.
+
+Apply runs only structured native argv recipes and journals evidence and
+qualified provenance. Re-running apply resumes the next eligible stage.
+An unavailable optional integration excludes only its dependent branch.
 
 The journal (`~/.canonfig/setup.json`) is the setup decision record, and
 `setup status` shows it:
@@ -357,6 +369,9 @@ The journal (`~/.canonfig/setup.json`) is the setup decision record, and
   keeps approvals;
 - `discoveryPaths`: the normalized `--file` paths discovery read. A file that
   is missing or too large is listed under `exclusions` instead;
+- `discoveryInputs`: the paths and SHA-256 fingerprints of discovery files.
+  These bind approval to authoring bytes, not to whether installation has
+  since made the tool available;
 - `approvals`: approver and time for the current plan digest only;
 - `stages`: each completed stage (`role`, `preflight`, `inventory`, `plan`,
   `approve`, `apply`) with its digest and `completedAt` time. `stage` names the

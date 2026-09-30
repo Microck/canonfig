@@ -6,7 +6,7 @@ import {
   canonicalRecipeIndexUrl,
   defaultPythonIndex,
   isSafeSourceRevision,
-  recipeValidationError,
+  recipeValidationIssue,
 } from "../domain/recipe-versions.ts";
 import type { BuildPolicy, RecipeIndexPolicy } from "../domain/resource.ts";
 import type { AgentTask } from "../domain/synchronization.ts";
@@ -309,7 +309,7 @@ const recipeFromPackage = (
   const recipeMethod = metadata.ecosystem === "homebrew"
     ? "homebrew"
     : metadata.ecosystem;
-  if (metadata.ecosystem !== "source" && recipeValidationError({
+  if (metadata.ecosystem !== "source" && recipeValidationIssue({
     method: recipeMethod,
     package: metadata.name,
     version,

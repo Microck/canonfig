@@ -58,7 +58,7 @@ import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
 import {
   isMissingAutomaticRecipeVersion,
   recipeSourceDetails,
-  recipeValidationError,
+  recipeValidationIssue,
   canonicalRecipeIndexUrl,
   defaultPythonIndex,
   npmVersionFromTarballSource,
@@ -1603,13 +1603,13 @@ const installInvocation = (
         message: `ambiguous or source dependency ${packageName} requires a separately bounded execution plan`,
       });
     }
-    const recipeError = recipeValidationError({
+    const recipeError = recipeValidationIssue({
       method,
       package: packageName,
       version,
       source,
       indexPolicy,
-    });
+    })?.reason;
     if (
       recipeError !== undefined
       || isMissingAutomaticRecipeVersion({

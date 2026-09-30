@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Effect, Layer, Option, Redacted, Schema, SchemaIssue } from "effect";
 
 import { SourceSignature } from "../domain/brand.ts";
 import { configPathIssue } from "../domain/config-path.ts";
@@ -64,7 +64,7 @@ import {
   scanDiscovery,
   type DiscoveryScanResult,
 } from "../profile/discovery.ts";
-import { InexactJsonNumberError } from "../profile/profile-codec.ts";
+import { InexactJsonNumberError, jsonPathText } from "../profile/profile-codec.ts";
 import {
   acceptPublicationProposal,
   makePublication,
@@ -195,17 +195,59 @@ const emptyDiscoveryProposal: DiscoveryScanResult = {
   scannedPaths: [],
 };
 
-/**
- * Keep only structural schema diagnostics: `Expected <type>` lines and
- * `at [<path>]` lines. Anything else (notably rejected actual values the
- * formatter may inline) is dropped rather than echoed.
- */
-const schemaDiagnostic = (message: string): string | undefined => {
-  const kept = message.split("\n").map((line) => line.trim()).filter((line) =>
-    line.startsWith("Expected ") || /^at \[.*\]$/.test(line)
-  );
-  if (kept.length === 0) return undefined;
-  return kept.join(" ").slice(0, 300);
+const isSymbol = Schema.is(Schema.Symbol);
+
+/** Render typed schema structure and trusted expectations, never reported input. */
+const schemaDiagnostic = (cause: Schema.SchemaError): string | undefined => {
+  const problems: Array<{ readonly path: ReadonlyArray<PropertyKey>; readonly reason: string }> = [];
+  const visit = (issue: SchemaIssue.Issue, path: ReadonlyArray<PropertyKey>): void => {
+    switch (issue._tag) {
+      case "Pointer":
+        return visit(issue.issue, [...path, ...issue.path]);
+      case "Encoding":
+        return visit(issue.issue, path);
+      case "Composite":
+      case "AnyOf":
+        for (const child of issue.issues) visit(child, path);
+        if (issue.issues.length === 0) problems.push({ path, reason: "Expected a matching schema" });
+        return;
+      case "Filter":
+        if (issue.issue._tag !== "InvalidValue") return visit(issue.issue, path);
+        problems.push({
+          path,
+          reason: SchemaIssue.defaultLeafHook(new SchemaIssue.InvalidValue({
+            expected: issue.issue.annotations?.expected ?? issue.filter.annotations?.expected,
+          })),
+        });
+        return;
+      case "InvalidType":
+        problems.push({ path, reason: SchemaIssue.defaultLeafHook(new SchemaIssue.InvalidType(issue.ast)) });
+        return;
+      case "InvalidValue":
+        problems.push({
+          path,
+          reason: SchemaIssue.defaultLeafHook(new SchemaIssue.InvalidValue({ expected: issue.annotations?.expected })),
+        });
+        return;
+      case "MissingKey":
+        problems.push({ path, reason: "missing required field" });
+        return;
+      case "UnexpectedKey":
+        problems.push({ path, reason: "unexpected field" });
+        return;
+      case "OneOf":
+        problems.push({ path, reason: "Expected exactly one matching schema" });
+        return;
+      case "Forbidden":
+        problems.push({ path, reason: "schema operation is unavailable" });
+    }
+  };
+  visit(cause.issue, []);
+  if (problems.length === 0) return undefined;
+  return problems.sort((left, right) => right.path.length - left.path.length).slice(0, 5)
+    .map(({ path, reason }) =>
+      `${jsonPathText("profile", path.map((key) => isSymbol(key) ? "[symbol]" : key))}: ${reason}`
+    ).join("; ").slice(0, 300);
 };
 
 /**
@@ -225,8 +267,8 @@ const profileProblems = (errors: ReadonlyArray<TaggedRuntimeError>): string => {
  * echoed: a JSON syntax error quotes the offending source text, which may be
  * profile content, so it is replaced with a static diagnostic. Contract
  * errors render through the failure taxonomy, which names resources and
- * paths but not values. Schema errors keep structural expected-type/path
- * lines; rejected values are dropped.
+ * paths but not values. Schema errors render typed paths and expected values
+ * from the schema; reported input and custom issue messages are never rendered.
  */
 export const profileFileFailure = (cause: unknown): CliCommandFailure => {
   if (cause instanceof SyntaxError) {
@@ -248,7 +290,9 @@ export const profileFileFailure = (cause: unknown): CliCommandFailure => {
     });
   }
   if (cause instanceof Error) {
-    const detail = schemaDiagnostic(cause.message) ?? "profile validation failed";
+    const detail = cause instanceof Schema.SchemaError
+      ? schemaDiagnostic(cause) ?? "profile validation failed"
+      : "profile validation failed";
     return new CliCommandFailure({
       category: "usage-or-configuration",
       message: `authored profile file is malformed or invalid: ${detail}`,
@@ -1828,7 +1872,7 @@ const followerCommandsLayer = (
             path: input.invitationPath,
           }));
           const sshHostKey = yield* Effect.tryPromise({
-            try: () => readFile(input.sshHostKeyPath, "utf8"),
+            try: async () => (await readFile(input.sshHostKeyPath, "utf8")).trim(),
             catch: () =>
               new CliCommandFailure({
                 category: "usage-or-configuration",

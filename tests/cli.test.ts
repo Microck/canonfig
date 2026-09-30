@@ -876,15 +876,31 @@ describe("CLI rendering and exit semantics", () => {
 });
 
 describe("authored profile validation detail", () => {
-  it("names the underlying contract complaint within bounds", () => {
-    const failure = profileFileFailure(new Error("Expected 2 | undefined at [version]"));
-    expect(failure.category).toBe("usage-or-configuration");
-    expect(failure.message).toContain("authored profile file is malformed or invalid");
-    expect(failure.message).toContain("Expected 2 | undefined");
-  });
   it("falls back safely for empty and unknown causes", () => {
     expect(profileFileFailure(new Error("   ")).message).toContain("profile validation failed");
     expect(profileFileFailure("boom").message).toContain("unknown validation failure");
+  });
+
+  it("does not treat arbitrary error text as a trusted schema diagnostic", () => {
+    const failure = profileFileFailure(new Error("Expected profile-disposable-value at [version]"));
+    expect(failure.category).toBe("usage-or-configuration");
+    expect(failure.message).toContain("profile validation failed");
+    expect(failure.message).not.toContain("profile-disposable-value");
+  });
+
+  it("drops reported input from typed schema failures", () => {
+    let cause: unknown;
+    try {
+      Schema.decodeUnknownSync(Schema.String)(
+        { value: "profile-disposable-value" },
+        { reportInput: true },
+      );
+    } catch (error) {
+      cause = error;
+    }
+    const failure = profileFileFailure(cause);
+    expect(failure.message).toContain("Expected string");
+    expect(failure.message).not.toContain("profile-disposable-value");
   });
 
   it("never echoes parser excerpts from profile contents", () => {
@@ -919,5 +935,125 @@ describe("authored profile validation detail", () => {
     const failure = profileFileFailure(cause);
     expect(failure.message).toContain("resources");
     expect(failure.message).not.toContain("MARKER-ABC-123");
+  });
+
+  it.each([
+    {
+      name: "index URL user information",
+      fields: {
+        indexPolicy: {
+          url: "https://operator:profile-disposable-value@example.test/simple",
+          reviewedBy: "reviewer",
+          reviewedAt: "2026-09-30T00:00:00Z",
+        },
+      },
+      field: "indexPolicy",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "index URL query credential",
+      fields: {
+        indexPolicy: {
+          url: "https://example.test/simple?token=profile-disposable-value",
+          reviewedBy: "reviewer",
+          reviewedAt: "2026-09-30T00:00:00Z",
+        },
+      },
+      field: "indexPolicy",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "symbolic index URL query credential",
+      fields: {
+        indexPolicy: {
+          url: "https://example.test/simple?token=${API_TOKEN}",
+          reviewedBy: "reviewer",
+          reviewedAt: "2026-09-30T00:00:00Z",
+        },
+      },
+      field: "indexPolicy",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "empty index URL query credential",
+      fields: {
+        indexPolicy: {
+          url: "https://example.test/simple?token=",
+          reviewedBy: "reviewer",
+          reviewedAt: "2026-09-30T00:00:00Z",
+        },
+      },
+      field: "indexPolicy",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "unsupported version",
+      fields: { version: "profile-disposable-value/invalid" },
+      field: "version",
+      reason: "installer uv cannot honor requested version",
+    },
+    {
+      name: "unsafe registry package",
+      fields: {
+        method: "npm",
+        package: "https://operator:profile-disposable-value@example.test/tool.tgz",
+      },
+      field: "package",
+      reason: "npm-family package must be an exact registry name",
+    },
+    {
+      name: "missing build executable bounds",
+      fields: {
+        buildPolicy: {
+          mode: "required",
+          reviewedBy: "profile-disposable-value",
+          reviewedAt: "2026-09-30T00:00:00Z",
+          paths: [],
+          origins: [],
+          capabilities: ["execute"],
+          steps: [],
+        },
+      },
+      field: "buildPolicy",
+      reason: "executables",
+    },
+  ])("reports the correct field and actionable reason for $name without rejected values", ({ fields, field, reason }) => {
+    let cause: unknown;
+    try {
+      decodeMachineProfileJsonc(JSON.stringify({
+        id: "invalid-recipe",
+        version: 2,
+        name: "Invalid recipe",
+        groups: [],
+        resources: [{
+          id: "tool",
+          kind: "tool",
+          target: "~/.local/bin/tool",
+          spec: {
+            kind: "tool",
+            toolId: "tool",
+            recipes: [{
+              platform: "linux",
+              method: "uv",
+              package: "tool",
+              version: "1.2.3",
+              ...fields,
+            }],
+          },
+          verify: { method: "executable-present", executable: "tool" },
+        }],
+      }));
+    } catch (error) {
+      cause = error;
+    }
+    expect(cause).toBeDefined();
+    const failure = profileFileFailure(cause);
+    expect(failure.message).toContain(field);
+    expect(failure.message).toContain(reason);
+    expect(failure.message).not.toContain("profile-disposable-value");
+    if (field === "indexPolicy") {
+      expect(failure.message).toContain("url");
+      expect(failure.message).not.toMatch(/recipes[^\n]*version/u);
+    }
   });
 });

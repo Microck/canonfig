@@ -9,7 +9,7 @@ import { Enrollment } from "../enrollment/enrollment.service.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import type { MachinePath, ProcessResult } from "../machine/machine-state.types.ts";
-import { canonicalJson, sha256Hex, type JsonValue } from "../profile/profile-codec.ts";
+import { canonicalJson, sha256BytesHex, sha256Hex, type JsonValue } from "../profile/profile-codec.ts";
 import { scanDiscovery } from "../profile/discovery.ts";
 import type { DiscoveredTool, InstallationRecipe } from "../profile/tool-catalog.ts";
 import {
@@ -44,6 +44,7 @@ import {
   SetupRequestScope,
   SetupRole,
   type SetupProvenance,
+  type SetupDiscoveryInput,
   type SetupStageRecord,
   type SetupApproval,
 } from "./setup.types.ts";
@@ -397,40 +398,47 @@ const checkDiscoverySizes = (
   machine: MachineState["Service"],
   files: ReadonlyArray<string>,
 ): Effect.Effect<
-  { readonly accepted: ReadonlyArray<string>; readonly exclusions: ReadonlyArray<string> },
+  {
+    readonly accepted: ReadonlyArray<string>;
+    readonly inputs: ReadonlyArray<SetupDiscoveryInput>;
+    readonly exclusions: ReadonlyArray<string>;
+  },
   SetupError
 > =>
   Effect.gen(function*() {
     const accepted: Array<string> = [];
     const exclusions: Array<string> = [];
+    const inputs: Array<SetupDiscoveryInput> = [];
     for (const file of files.slice(0, maxSetupDiscoveryFiles)) {
       const path = yield* machine.normalizePath({ path: file }).pipe(
         Effect.mapError((cause) =>
           fail("setup discovery", `discovery file ${file} is invalid: ${cause.message}`, "state")),
       );
-      const size = yield* machine.readFile({ path, maximumBytes: maxSetupDiscoveryFileBytes + 1 }).pipe(
-        Effect.map((bytes) => bytes.length),
-        Effect.catchTag("FileSizeLimitError", () => Effect.succeed(maxSetupDiscoveryFileBytes + 1)),
+      const bytes = yield* machine.readFile({ path, maximumBytes: maxSetupDiscoveryFileBytes }).pipe(
+        Effect.catchTag("FileSizeLimitError", () => Effect.succeed("oversized" as const)),
         Effect.catchTag("MachineFilesystemError", (cause) =>
           /\b(?:ENOENT|ENOTDIR)\b/u.test(cause.message)
-            ? Effect.succeed(-1)
+            ? Effect.succeed(undefined)
             : Effect.fail(fail("setup discovery", `discovery file ${file} could not be read: ${cause.message}`, "state"))),
         Effect.mapError((cause) =>
           cause instanceof SetupError
             ? cause
             : fail("setup discovery", `discovery file ${file} could not be read: ${cause.message}`, "state")),
       );
-      if (size === -1) exclusions.push(`${file}: file not found`);
-      else if (size > maxSetupDiscoveryFileBytes) {
+      if (bytes === undefined) exclusions.push(`${file}: file not found`);
+      else if (bytes === "oversized") {
         exclusions.push(`${file}: file exceeds the ${maxSetupDiscoveryFileBytes} byte discovery bound`);
-      } else accepted.push(path.absolute);
+      } else {
+        accepted.push(path.absolute);
+        inputs.push({ path: path.absolute, digest: sha256BytesHex(bytes) });
+      }
     }
     if (files.length > maxSetupDiscoveryFiles) {
       exclusions.push(
         `${files.length - maxSetupDiscoveryFiles} file(s) exceed the ${maxSetupDiscoveryFiles} file discovery bound`,
       );
     }
-    return { accepted, exclusions };
+    return { accepted, inputs, exclusions };
   });
 const installerMethodFor = (
   recipe: InstallationRecipe,
@@ -485,6 +493,23 @@ const setupRecipeFor = (
   return undefined;
 };
 
+const setupDiscoveryInputsUnchanged = (
+  machine: MachineState["Service"],
+  inputs: ReadonlyArray<SetupDiscoveryInput> | undefined,
+): Effect.Effect<boolean> =>
+  Effect.gen(function*() {
+    if (inputs === undefined) return false;
+    for (const input of inputs) {
+      const unchanged = yield* machine.normalizePath({ path: input.path }).pipe(
+        Effect.flatMap((path) => machine.readFile({ path, maximumBytes: maxSetupDiscoveryFileBytes })),
+        Effect.map((bytes) => sha256BytesHex(bytes) === input.digest),
+        Effect.catch(() => Effect.succeed(false)),
+      );
+      if (!unchanged) return false;
+    }
+    return true;
+  });
+
 /**
  * Run the shipped discovery operation over the bounded file set. Files the
  * operator passes but setup cannot take become exclusions, not failures.
@@ -497,6 +522,7 @@ export const runSetupDiscovery = (
     readonly files: number;
     /** The normalized absolute paths discovery read. */
     readonly paths: ReadonlyArray<string>;
+    readonly inputs: ReadonlyArray<SetupDiscoveryInput>;
     readonly evidence: number;
     readonly digest: string;
     readonly recipes: ReadonlyArray<SetupRecipe>;
@@ -516,13 +542,14 @@ export const runSetupDiscovery = (
       agentTasks: [],
     })));
     if (files.length === 0) {
-      return { files: 0, paths: [], evidence: 0, digest: emptyDigest, recipes: [], exclusions: [] };
+      return { files: 0, paths: [], inputs: [], evidence: 0, digest: emptyDigest, recipes: [], exclusions: [] };
     }
     const bounded = yield* checkDiscoverySizes(machine, files);
     if (bounded.accepted.length === 0) {
       return {
         files: 0,
         paths: [],
+        inputs: [],
         evidence: 0,
         digest: emptyDigest,
         recipes: [],
@@ -534,6 +561,14 @@ export const runSetupDiscovery = (
     }).pipe(
       Effect.mapError((cause) => fail("setup discovery", `discovery failed: ${cause.message}`, "state")),
     );
+    if (!(yield* setupDiscoveryInputsUnchanged(machine, bounded.inputs))) {
+      return yield* fail(
+        "setup discovery",
+        "the setup discovery files changed or cannot be read during planning",
+        "state",
+        "Run setup plan again with the selected role, scope and files.",
+      );
+    }
     const recipes: Array<SetupRecipe> = [];
     const exclusions = [...bounded.exclusions];
     for (const tool of result.tools) {
@@ -555,6 +590,7 @@ export const runSetupDiscovery = (
     return {
       files: bounded.accepted.length,
       paths: bounded.accepted,
+      inputs: bounded.inputs,
       evidence: result.evidence.length,
       digest,
       recipes,
@@ -746,25 +782,10 @@ export const planSetup = (
       exclusions: discovery.exclusions,
       inventory,
       items,
+      discoveryInputs: discovery.inputs,
     });
     if (previous !== undefined && previous.planDigest === planDigest) {
       // Unchanged discovery and approvals survive a re-plan.
-      return yield* recordSetupDecisions(machine, journalPath, previous, decision);
-    }
-    if (
-      previous !== undefined
-      && previous.scope === undefined
-      && requestScope === "full"
-      && previous.planDigest === setupPlanDigest({
-        role,
-        scope: undefined,
-        intent,
-        exclusions: discovery.exclusions,
-        inventory,
-        items,
-      })
-    ) {
-      // Pre-scope journal with unchanged inputs: approvals survive the upgrade.
       return yield* recordSetupDecisions(machine, journalPath, previous, decision);
     }
     const timestamp = new Date().toISOString();
@@ -774,6 +795,7 @@ export const planSetup = (
       scope: requestScope,
       mode: decision.mode,
       discoveryPaths: [...decision.discoveryPaths],
+      discoveryInputs: [...discovery.inputs],
       planDigest,
       intent,
       inventory,
@@ -1089,6 +1111,21 @@ export const applySetup = (
         "Run setup approve --approver <name> first.",
       );
     }
+    if (!(yield* setupDiscoveryInputsUnchanged(machine, journal.discoveryInputs))) {
+      yield* writeJournal(machine, journalPath, {
+        ...journal,
+        approvals: [],
+        stages: journal.stages.filter((stage) => stage.stage !== "approve" && stage.stage !== "apply"),
+      });
+      return yield* fail(
+        "setup apply",
+        journal.discoveryInputs === undefined
+          ? "the setup plan has no authoring-file fingerprints and must be planned again"
+          : "the setup discovery files changed or cannot be read since approval",
+        "prerequisite",
+        "Run setup plan with the selected role, scope and files, then review and approve the new plan.",
+      );
+    }
     for (const item of journal.items) {
       const prior = journal.records.find((record) => record.id === item.id);
       if (prior?.status === "completed") continue;
@@ -1160,6 +1197,7 @@ export interface SetupStatus {
   readonly mode?: SetupMode | undefined;
   readonly intent?: string | undefined;
   readonly discoveryPaths: ReadonlyArray<string>;
+  readonly discoveryInputs?: ReadonlyArray<SetupDiscoveryInput> | undefined;
   readonly planDigest?: string | undefined;
   readonly stage: string;
   readonly approved: boolean;
@@ -1194,6 +1232,7 @@ export const setupStatus = (
       mode: journal.mode,
       intent: journal.intent,
       discoveryPaths: [...(journal.discoveryPaths ?? [])],
+      discoveryInputs: journal.discoveryInputs,
       planDigest: journal.planDigest,
       stage: nextEligibleSetupStage(journal),
       approved: isSetupApproved(journal),

@@ -2,7 +2,8 @@ import { Schema } from "effect";
 
 import { CliExitCode } from "./exit-codes.ts";
 import { renderHumanSummary } from "./human-summary.ts";
-import { isEnvironmentReference, isSecretField, redactArguments, redactText } from "./redaction.ts";
+import { isEnvironmentReference, isSecretField } from "../secrets/credential-policy.ts";
+import { redactArguments, redactText } from "./redaction.ts";
 import type { CliPayload } from "./source-commands.ts";
 
 export type CliOutputFormat = "human" | "json";

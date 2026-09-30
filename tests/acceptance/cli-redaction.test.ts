@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { CliExitCode } from "../../src/cli/exit-codes.ts";
-import { isSecretField, redactArguments, redactText } from "../../src/cli/redaction.ts";
+import { redactArguments, redactText } from "../../src/cli/redaction.ts";
+import { isSecretField } from "../../src/secrets/credential-policy.ts";
 import { renderCliResult, renderUsageFailure, sanitizeCliData } from "../../src/cli/render.ts";
 
 const secret = "disposable-redaction-fixture";

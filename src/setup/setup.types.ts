@@ -182,6 +182,12 @@ export const SetupProvenance = Schema.Struct({
 });
 export type SetupProvenance = typeof SetupProvenance.Type;
 
+export const SetupDiscoveryInput = Schema.Struct({
+  path: Schema.String,
+  digest: Schema.String,
+});
+export type SetupDiscoveryInput = typeof SetupDiscoveryInput.Type;
+
 /**
  * The persisted setup journal. Intent, decisions, exclusions, evidence, and
  * approvals are all recorded against `planDigest`, so a re-plan invalidates
@@ -197,6 +203,9 @@ export const SetupJournal = Schema.Struct({
   // The normalized `--file` paths discovery read. Absent on journals written
   // before the decision record existed.
   discoveryPaths: Schema.optional(Schema.Array(Schema.String)),
+  // Exact bounded authoring bytes, independent of installed-tool discovery.
+  // Older journals require a new plan before apply.
+  discoveryInputs: Schema.optional(Schema.Array(SetupDiscoveryInput)),
   planDigest: Schema.String,
   intent: Schema.String,
   inventory: SetupInventory,
