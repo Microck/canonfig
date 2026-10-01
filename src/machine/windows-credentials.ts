@@ -27,8 +27,8 @@ export const windowsPowerShellExecutable = (
 /*
  * Fixed PowerShell programs for the Windows native vault. Values arrive over
  * UTF-8 stdin, never in the script, environment, or process arguments.
- * Desktop PowerShell keeps the WinRT vault used by existing installations;
- * PowerShell Core uses the native generic Credential Manager API.
+ * Both PowerShell editions use the native generic Credential Manager API,
+ * with chunked payloads rather than PasswordVault's smaller password limit.
  */
 const winCredSource = String.raw`
 using System;
@@ -86,6 +86,18 @@ public static class CanonfigWinCred
     private static string PartName(string target, string id, int index)
     {
         return target + ".canonfig.v1." + id + "." + index.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static string HexDigest(byte[] bytes)
+    {
+        const string digits = "0123456789ABCDEF";
+        char[] characters = new char[bytes.Length * 2];
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            characters[i * 2] = digits[bytes[i] >> 4];
+            characters[i * 2 + 1] = digits[bytes[i] & 15];
+        }
+        return new string(characters);
     }
 
     private static byte[] ReadBytes(string target, bool allowMissing)
@@ -204,7 +216,7 @@ public static class CanonfigWinCred
             using (SHA256 sha = SHA256.Create()) digest = sha.ComputeHash(bytes);
             string root = "canonfig-wincred:1:" + id + ":"
                 + bytes.Length.ToString(CultureInfo.InvariantCulture) + ":"
-                + Convert.ToHexString(digest) + ":" + count.ToString(CultureInfo.InvariantCulture);
+                + HexDigest(digest) + ":" + count.ToString(CultureInfo.InvariantCulture);
             Array.Clear(digest, 0, digest.Length);
             byte[] metadata = Encoding.ASCII.GetBytes(root);
             try { WriteBytes(target, metadata); }
@@ -244,7 +256,7 @@ public static class CanonfigWinCred
                 using (SHA256 sha = SHA256.Create()) digest = sha.ComputeHash(bytes);
                 try
                 {
-                    if (!string.Equals(Convert.ToHexString(digest), header.Digest, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(HexDigest(digest), header.Digest, StringComparison.OrdinalIgnoreCase))
                         throw new InvalidOperationException("Credential digest does not match");
                 }
                 finally { Array.Clear(digest, 0, digest.Length); }
@@ -273,7 +285,7 @@ public static class CanonfigWinCred
     }
 }
 `;
-const winCredAssemblyName = `CanonfigWinCred-${createHash("sha256").update(winCredSource).digest("hex").slice(0, 16)}.dll`;
+const winCredAssemblyName = `CanonfigWinCred-${createHash("sha256").update(winCredSource).digest("hex").slice(0, 16)}`;
 
 export const windowsCredentialScript = (
   operation: "store" | "load" | "remove",
@@ -287,7 +299,7 @@ export const windowsCredentialScript = (
     "$nativeData=if($env:LOCALAPPDATA){$env:LOCALAPPDATA}else{[Environment]::GetFolderPath('LocalApplicationData')}",
     "if(-not $nativeData){throw 'Windows local application data directory is unavailable'}",
     "$assemblyRoot=Join-Path $nativeData 'canonfig\\native'",
-    `$assembly=Join-Path $assemblyRoot '${winCredAssemblyName}'`,
+    `$assembly=Join-Path $assemblyRoot ('${winCredAssemblyName}-'+$PSVersionTable.PSEdition+'-'+[Environment]::Version.Major+'.dll')`,
     "if(-not (Test-Path -LiteralPath $assembly)){",
     "$null=New-Item -ItemType Directory -Force -Path $assemblyRoot",
     "$staging=Join-Path $assemblyRoot ([IO.Path]::GetRandomFileName()+'.dll')",
@@ -303,25 +315,5 @@ export const windowsCredentialScript = (
       ? "[Console]::Out.Write([CanonfigWinCred]::Load($env:CANONFIG_TARGET))"
       : "[CanonfigWinCred]::Remove($env:CANONFIG_TARGET)",
   ].join("\n");
-  const desktop = [
-    "Add-Type -AssemblyName System.Runtime.WindowsRuntime",
-    "$vault=[Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]::new()",
-    ...(operation === "store"
-      ? [
-        "$secret=[Console]::In.ReadToEnd()",
-        "$credential=[Windows.Security.Credentials.PasswordCredential,Windows.Security.Credentials,ContentType=WindowsRuntime]::new($env:CANONFIG_TARGET,'canonfig',$secret)",
-        "$vault.Add($credential)",
-      ]
-      : operation === "load"
-      ? [
-        "$credential=$vault.Retrieve($env:CANONFIG_TARGET,'canonfig')",
-        "$credential.RetrievePassword()",
-        "[Console]::Out.Write($credential.Password)",
-      ]
-      : [
-        "$credential=$vault.Retrieve($env:CANONFIG_TARGET,'canonfig')",
-        "$vault.Remove($credential)",
-      ]),
-  ].join(";");
-  return [...prelude, `if ($PSVersionTable.PSEdition -eq 'Core') {\n${native}\n} else {\n${desktop}\n}`].join(";");
+  return [...prelude, native].join(";");
 };

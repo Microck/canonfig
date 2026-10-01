@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { release, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
@@ -370,9 +370,9 @@ describe("Windows native credential contract", () => {
     it.runIf(process.platform === "win32").each([
       { label: "ASCII", secret: "native-vault-fixture" },
       { label: "Unicode", secret: "é🔐日本語-native-vault" },
-      ...(process.arch === "arm64" && Number(release().split(".")[2]) < 22000
-        ? [{ label: "16KiB Unicode", secret: "é🔐\n".repeat(2340) + "tail" }]
-        : []),
+      { label: "BOM", secret: "\uFEFFnative-vault" },
+      { label: "16KiB ASCII", secret: "x".repeat(16_384) },
+      { label: "16KiB Unicode", secret: "é🔐\n".repeat(2340) + "tail" },
       { label: "quoted multiline", secret: "quote \"; slash \\ and newline\nsecond line\n" },
     ])(`round-trips and removes $label through ${path}`, async ({ secret }) => {
       const name = `canonfig-vault-test-${randomUUID()}`;

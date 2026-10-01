@@ -54,6 +54,16 @@ pins are not migrated by this procedure.
   including configured prefixes outside PATH and paths containing spaces.
 - Discovery retains distinct package versions when their executable entry files
   have identical bytes, so stale copies remain visible for review.
+- Windows Desktop and Core PowerShell use the same chunked native Credential
+  Manager backend, so accepted 16 KiB secrets also fit when wrapped in their
+  credential payload. The CLI size limit and native storage policy are unchanged.
+- Linux Source status distinguishes the user manager's boot and logout lifecycle
+  from access to signing and TLS credentials. Linger does not unlock an encrypted
+  login keyring, and an installed service is not proof of login-free serving.
+- The Linux Source service continues spaced failure retries after delayed native
+  credential unlock instead of exhausting a boot-time start quota. Failed starts
+  remain visible in status and the native journal; identity and storage policy
+  are unchanged.
 
 These changes do not establish an in-place migration path or prove fleet
 convergence on a live installation.

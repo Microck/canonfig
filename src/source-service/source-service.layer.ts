@@ -236,8 +236,8 @@ export const sourceServiceLayer = (
           ).pipe(Effect.map((linger) => ({
             linger,
             text: linger
-              ? `runs from boot without a login and across logouts (linger is enabled for ${user})`
-              : `runs only while ${user} has a login session; enable linger with \`loginctl enable-linger ${user}\` to run it at boot and after logout`,
+              ? `is started at boot and managed across logouts by the user manager (linger is enabled for ${user}); serving without a login also requires the service to load its Source credentials in that session. An encrypted login keyring may require login and a separate unlock before the service can start serving`
+              : `is managed only while ${user} has a login session, and must be able to load its Source credentials when it starts; \`loginctl enable-linger ${user}\` extends the manager lifecycle, but does not unlock an encrypted login keyring`,
           }))),
           logs: (rendered) => `journalctl --user -u ${rendered.serviceName}`,
         };

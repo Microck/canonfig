@@ -55,7 +55,7 @@ What `install` creates:
 
 | Platform | Service | Restart behavior | Logs |
 | --- | --- | --- | --- |
-| Linux | systemd user unit `~/.config/systemd/user/canonfig-source.service` | `Restart=on-failure` after 10 s, at most 5 starts in 300 s | `journalctl --user -u canonfig-source.service` |
+| Linux | systemd user unit `~/.config/systemd/user/canonfig-source.service` | restarted 30 s after a failed exit, without a start-count cutoff | `journalctl --user -u canonfig-source.service` |
 | macOS | LaunchAgent `~/Library/LaunchAgents/dev.canonfig.source.plist`, loaded into `gui/<uid>` | restarted after a failed exit, at most every 10 s | `~/.canonfig/source-service.log` |
 | Windows | Task Scheduler task `Canonfig\canonfig-source`, at logon of the current user | restarted every minute on failure, up to 999 times | Task Scheduler history (Event Viewer: `Microsoft-Windows-TaskScheduler/Operational`) |
 
@@ -64,9 +64,12 @@ Platform notes:
 - **Linux.** The unit is enabled for `default.target`, so it starts with your
   user manager. `install` does **not** turn on lingering. Without it the user
   manager, and the Source, stop when you log out. `source service status` says
-  whether lingering is on and prints the command to enable it. The unit carries
-  `HOME`, a bounded `PATH`, and `CANONFIG_LOCAL_CREDENTIAL_ROOT` when that is set
-  at install time.
+  whether lingering is on and prints the command to enable it. Linger does not
+  unlock an encrypted login keyring. The Source must load its signing and TLS
+  credentials when it starts, so an installed, enabled unit is not proof that
+  it can serve before login. Verify `serving` in the intended operating mode.
+  The unit carries `HOME`, a bounded `PATH`, and
+  `CANONFIG_LOCAL_CREDENTIAL_ROOT` when that is set at install time.
 - **macOS.** Run `install` from a terminal in the logged-in desktop session,
   not over SSH: the agent is loaded into that session's `gui/<uid>` domain and
   reads the Source keys from the login Keychain.
@@ -104,11 +107,10 @@ canonfig source service remove
 host/port record. It reports `removed`, or `unchanged` when nothing was
 installed.
 
-If `canonfig source serve` cannot load the Source keys from the native store, its
-error ends with: "To run the Source unattended, supervise it with `canonfig
-source service install`: it then runs while you are logged in, and on Linux also
-at boot and after logout once linger is enabled (`loginctl enable-linger
-<user>`)".
+If `canonfig source serve` cannot load the Source keys from the native store,
+unlock that store in the session that runs the service before installing it.
+The error explains that Linux linger extends the manager lifecycle, not keyring
+access, and asks you to verify that `source service status` reports `serving: true`.
 
 ## Keep followers syncing
 

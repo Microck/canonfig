@@ -239,10 +239,12 @@ canonfig source service status
 `status` reports `running` when it does. The service is a systemd user unit
 (`canonfig-source.service`) on Linux, a LaunchAgent (`dev.canonfig.source`) on
 macOS, and a Task Scheduler logon task (`Canonfig\canonfig-source`) on
-Windows. It runs while you are logged in. On Linux it also runs at boot and
-after logout once lingering is on (`loginctl enable-linger "$USER"`); `install`
-does not turn lingering on for you, and `status` says whether it is on. On
-macOS, run `install` from the desktop session, not over SSH.
+Windows. These managers run the service while you are logged in. On Linux,
+lingering (`loginctl enable-linger "$USER"`) also starts the user manager at boot
+and keeps it after logout; `install` does not enable it. The Source must still
+load its signing and TLS credentials when it starts. Linger does not unlock an
+encrypted login keyring, so check `serving` in the intended operating mode.
+On macOS, run `install` from the desktop session, not over SSH.
 
 To try things out first, you can run the server in the foreground instead and
 leave the terminal open:

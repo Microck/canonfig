@@ -72,10 +72,9 @@ const renderSystemd = (
       definition: [
         "[Unit]",
         `Description=${description}`,
-        // A Source that cannot start (locked keyring, port in use) stops
-        // retrying after five failures in five minutes and reads `failed`.
-        "StartLimitIntervalSec=300",
-        "StartLimitBurst=5",
+        // Credential access may recover only after a later login or unlock.
+        // Keep supervision alive instead of exhausting a boot-time start quota.
+        "StartLimitIntervalSec=0",
         "",
         "[Service]",
         "Type=simple",
@@ -87,7 +86,7 @@ const renderSystemd = (
           ].join(" ")
         }`,
         "Restart=on-failure",
-        "RestartSec=10",
+        "RestartSec=30",
         "",
         "[Install]",
         // default.target starts with the user manager: at login, or at boot

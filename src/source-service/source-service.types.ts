@@ -79,7 +79,7 @@ export interface SourceServiceStatus {
   readonly manager: SourceServiceManagerState;
   /** The endpoint answered with this Source's pinned TLS and signing identity. */
   readonly serving: boolean;
-  /** When the service runs on this platform: the supported unattended modes. */
+  /** Manager lifecycle and credential-access constraints for unattended operation. */
   readonly supportedModes: string;
   /** Linux only: whether the user manager runs without a login. */
   readonly linger?: boolean | undefined;

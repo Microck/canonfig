@@ -467,8 +467,8 @@ const effectiveScheduleInput = (
 
 /** How the Source can run unattended; appended where its keys are unreachable. */
 const supervisedSourceModes =
-  "To run the Source unattended, supervise it with `canonfig source service install`: "
-  + "it then runs while you are logged in, and on Linux also at boot and after logout once linger is enabled (`loginctl enable-linger <user>`)";
+  "Unlock the Source credential store in the session that runs the service, then supervise it with `canonfig source service install`. "
+  + "Linux linger (`loginctl enable-linger <user>`) extends the user manager lifecycle to boot and logout, but does not unlock an encrypted login keyring. Verify `canonfig source service status` reports `serving: true` in the intended mode";
 
 const sourceCommandsLayer: Layer.Layer<
   SourceCommands,

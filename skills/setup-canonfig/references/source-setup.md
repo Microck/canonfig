@@ -161,10 +161,14 @@ canonfig source service status
 canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m --group developers
 ```
 
-`install` waits until the endpoint answers with the pinned identity. The service
-runs while the user is logged in; on Linux also at boot and after logout once
-lingering is on (a human decision: `loginctl enable-linger <user>`). On macOS
-run `install` from the desktop session, not over SSH. For a trial,
+`install` waits until the endpoint answers with the pinned identity. On Linux,
+linger lets the user manager start the service at boot and keep managing it after
+logout (a human decision: `loginctl enable-linger <user>`). It does not unlock an
+encrypted login keyring. The service must be able to load its signing and TLS
+credentials when it starts in the intended session. Check `serving` as well as
+the installed service and linger state; a locked keyring at startup is not a
+healthy login-free Source. On macOS, run `install` from the desktop session, not over SSH;
+logged-out operation is not supported. For a trial,
 `canonfig source serve --host 127.0.0.1 --port 17342` runs it in the foreground.
 
 Omit `--group` when no group is intended. Tailscale peers are not valid direct

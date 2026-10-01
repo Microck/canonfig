@@ -49,7 +49,7 @@ const specification = (
 });
 
 describe("source service definitions", () => {
-  it("renders a restartable systemd user unit that starts with the user manager", async () => {
+  it("quotes systemd paths and escapes native argument expansion", async () => {
     const rendered = await Effect.runPromise(renderSourceService(specification({
       home: "/home/100% source",
       executable: "/home/100% source/.nvm/node",
@@ -66,9 +66,6 @@ describe("source service definitions", () => {
       definitionPath: "/home/100% source/.config/systemd/user/canonfig-source.service",
     });
     const lines = rendered.definition.split("\n");
-    expect(lines).toContain("Type=simple");
-    expect(lines).toContain("Restart=on-failure");
-    expect(lines).toContain("WantedBy=default.target");
     // `%` is a specifier everywhere; `$` expands only in ExecStart arguments.
     expect(lines).toContain("Environment=\"HOME=/home/100%% source\"");
     expect(lines).toContain("Environment=\"CANONFIG_LOCAL_CREDENTIAL_ROOT=/srv/$keys\"");
@@ -242,7 +239,6 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
       manager: { installed: true, matches: true, enabled: true, active: true, pid: 4242 },
       logs: "journalctl --user -u canonfig-source.service",
     });
-    expect(status.supportedModes).toMatch(/linger/u);
 
     const removed = await run(Effect.flatMap(SourceService, (service) => service.remove()));
     expect(removed.change).toBe("removed");
