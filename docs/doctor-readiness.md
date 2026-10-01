@@ -7,32 +7,42 @@ enrollment; they cannot silently replace its selected authority.
 On macOS the credentials evidence no longer stops at provider presence. The
 machine capability runs a disposable add/read-back/delete probe of a non-secret
 sentinel in a unique `dev.canonfig.session-probe.<uuid>` namespace under its own
-account, transported over stdin as hex, and reports
-`secure-noninteractive/keychain` with evidence `session-probe` only after the
-full lifecycle succeeds in the very session that will write credentials. The
-probe item is always deleted, including after a partial failure, and existing
-credentials are never read, modified, or deleted. A provider that is merely
-installed still reports the warning labelled `provider-presence`.
+account. The sentinel is passed to `security add-generic-password` as its
+`-w <sentinel>` argument; it is a fixed non-secret marker, so argv exposure is
+harmless, and real credential values never take this path. The capability
+reports `secure-noninteractive/keychain` with evidence `session-probe` only
+after the full lifecycle succeeds in the very session that will write
+credentials. The probe item is always deleted, including after a partial
+failure, and existing credentials are never read, modified, or deleted. A
+provider that is merely installed still reports the warning labelled
+`provider-presence`.
 
-## The gui/<uid> LaunchAgent session model
+## Keychain access per macOS session
 
-SSH and other background sessions cannot use the login Keychain: every write
-fails with "User interaction is not allowed", and unlocking the Keychain from a
-Terminal session does not transfer that ability. The supported unattended
-context on macOS is a per-user LaunchAgent loaded into the logged-in graphical
-user domain:
+The login Keychain is unlocked per security session. The logged-in desktop
+(Aqua) session unlocks it at login, and a per-user LaunchAgent loaded into the
+`gui/<uid>` domain shares that unlock. That is how the scheduled job runs:
 
 ```bash
-launchctl bootstrap gui/$(id -u) dev.canonfig.plist
+launchctl print gui/$(id -u)/dev.canonfig.canonfig-sync
 ```
 
-A job running in that `gui/<uid>` domain shares the graphical session's
-Keychain access, so scheduled enrollment and credential writes succeed without
-user interaction and without weakening Keychain controls. `launchctl asuser` is
-not a reliable SSH-to-GUI-session trampoline. When the probe fails because the
-session cannot use the Keychain, doctor says so and points at the graphical
-session or its `gui/<uid>` LaunchAgent instead of suggesting a Keychain unlock.
-Logged-out and post-reboot pre-login operation is not verified.
+An SSH session starts with the login Keychain locked, so Keychain writes and
+reads fail with "User interaction is not allowed" (exit 36). It is not
+impossible to use the Keychain over SSH: unlocking it inside that SSH session
+works for the rest of that session.
+
+```bash
+security unlock-keychain ~/Library/Keychains/login.keychain-db
+canonfig doctor --no-input
+```
+
+`security unlock-keychain` prompts for the login password. The unlock does not
+carry over to a new SSH session, to the desktop session, or to scheduled runs.
+Scheduled synchronization needs a user logged in to the desktop with the login
+Keychain unlocked; with nobody logged in, the `gui/<uid>` domain does not exist
+and the job does not fire. When the probe fails because the session's Keychain
+is locked, doctor says so and gives this recovery text.
 
 A requested but absent, disabled, or drifted native job is a verification failure,
 not a pass. A current job proves only its installed definition; the result marks

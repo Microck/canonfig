@@ -60,7 +60,7 @@ Serve/Funnel, or login settings as a side effect of selecting a device.
 | --- | --- | --- |
 | Profile ID / display name | Identifies the profile followers consume | Keep; authorized existing profile; proposed new machine-class ID/name |
 | Authored profile file | Holds the reviewed desired configuration | Existing approved JSONC file; proposed new user-owned path; defer |
-| Discovery inputs | Bounds what source files may be read | Selected observed files (multi-select); no discovery/use authored profile; manual paths |
+| Discovery inputs | Bounds which files tool discovery (`source scan`, `setup plan --file`) may read; never selects synced content | Selected observed files (multi-select); no discovery/use authored profile; manual paths |
 | Supported platforms | Every target needs a verified recipe/path | Observed target OSes; selected Linux/macOS/Windows set; defer unknown targets |
 | Groups / descriptions / resource membership | Controls which configuration is delivered | Keep; no additional groups; select declared groups; add a justified group |
 | Profile schedule default | Offers a calendar, not implicit scheduling consent | Keep; supported daily; supported weekly |
@@ -76,9 +76,12 @@ Serve/Funnel, or login settings as a side effect of selecting a device.
 | Verification timeout / scope where supported | Bounds verification cost and mutation risk | Existing documented bound; tighter supported bound; defer unsupported check |
 
 Policies are not interchangeable: offer only combinations the installed profile
-schema allows. Compute real digests from reviewed content, never placeholders in
-a publication. Local Overlays apply to authorized merge-config keys; they are
-not an arbitrary skill-tree merge or per-platform target override mechanism.
+schema allows. For content resources recommend `"verify": { "method": "digest" }`
+without a digest so publication computes it from the exact published bytes;
+`canonfig source digest` shows the values. Never write a placeholder digest.
+Local Overlays apply to authorized merge-config keys; they are not an arbitrary
+skill-tree merge or per-platform target override mechanism. Files and skills
+cannot move into a Local Overlay.
 
 ## Tools, credentials, agents, schedules
 
@@ -97,7 +100,7 @@ not an arbitrary skill-tree merge or per-platform target override mechanism.
 | Path / executable / HTTPS origin allowlists | Bounds agent actions | Keep minimal valid set; select task-required entries; none/deny |
 | Elevation / login / restart / reboot | Changes privileged or disruptive behavior | Denied; explicitly scoped human decision; defer |
 | Maximum input bytes | Limits material passed to an agent | Keep verified bound; tighter supported bound; validated custom integer |
-| Schedule enablement / calendar / timezone | Controls unattended apply behavior | Keep existing/manual; verified profile default; supported daily/weekly; detected or explicit IANA timezone |
+| Schedule enablement / calendar / timezone | Controls unattended apply behavior | Keep existing/manual; verified profile default (`schedule set --default`); supported daily/weekly outside a daylight-saving gap; detected or explicit IANA timezone |
 | Scheduled executable / failure visibility | Unattended jobs use a different environment | Keep verified path/output; observed absolute path and native job evidence; defer |
 | Recovery / drift choice | Protects interrupted work and local changes | Inspect; resume persisted recoverable plan; preserve edit; reviewed restore |
 | Publication / apply / ownership approval | Makes the mutation boundary explicit | Approve displayed stage; edit; stop |

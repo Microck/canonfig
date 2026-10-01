@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants as filesystemConstants } from "node:fs";
+import { access, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { connect as netConnect } from "node:net";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { Effect, Layer, Schema } from "effect";
 
@@ -14,12 +16,20 @@ import {
   TunnelReadinessError,
   type TunnelError,
 } from "./tunnel.errors.ts";
-import { Tunnel, type StopTunnelInput, type StopTunnelResult } from "./tunnel.service.ts";
+import {
+  Tunnel,
+  type RestartTunnelInput,
+  type StopTunnelInput,
+  type StopTunnelRequest,
+  type StopTunnelResult,
+} from "./tunnel.service.ts";
 import {
   sshHostKeyFingerprint,
   sshHostKeyType,
+  TunnelConfigurationFileSchema,
   TunnelStartInputSchema,
   TunnelStateFileSchema,
+  type TunnelConfigurationFile,
   type TunnelStartInput,
   type TunnelStateFile,
   type TunnelStatusReport,
@@ -30,10 +40,20 @@ const isEnoent = (cause: unknown): boolean =>
 
 const decode = Schema.decodeUnknownSync;
 const stateFileName = "tunnel.json";
+const configurationFileName = "tunnel-config.json";
 const knownHostsFileName = "tunnel-known_hosts";
 const logFileName = "tunnel.log";
 const pollIntervalMilliseconds = 200;
 const killGraceMilliseconds = 3_000;
+/**
+ * How long SSH may be forwarding while the Source behind it refuses before
+ * readiness gives up. A Source that is starting answers well within this; one
+ * that is not running never will, and waiting the full timeout only hides why.
+ */
+const sourceSilenceMilliseconds = 5_000;
+const restartCommand = "canonfig tunnel start";
+const invitationStartCommand =
+  "canonfig tunnel start --invitation <path> --ssh-host <host> --ssh-user <user> --ssh-host-key-file <path>";
 const hostKeyFailurePattern =
   /host key verification failed|remote host identification has changed|offending (?:ecdsa|ed25519|rsa) key/iu;
 
@@ -111,7 +131,7 @@ const buildSshArguments = (
   "-o",
   "ConnectTimeout=10",
   "-L",
-  `${localBind(input.localHost)}:${input.localPort}:${input.remoteHost}:${input.remotePort}`,
+  `${localBind(input.localHost)}:${input.localPort}:${localBind(input.remoteHost)}:${input.remotePort}`,
   "-p",
   String(input.sshPort),
   ...extra,
@@ -185,41 +205,47 @@ const ownsTunnelProcess = async (state: TunnelStateFile): Promise<boolean> => {
 };
 
 const stateFilePath = (directory: string): string => join(directory, stateFileName);
+const configurationFilePath = (directory: string): string =>
+  join(directory, configurationFileName);
 
-const readStateFile = (
-  directory: string,
-): Effect.Effect<TunnelStateFile | undefined, TunnelError> =>
+const readRecord = <Value>(
+  path: string,
+  schema: Schema.Decoder<Value>,
+  what: string,
+): Effect.Effect<Value | undefined, TunnelConfigurationError> =>
   Effect.tryPromise({
     try: async () => {
       let text: string;
       try {
-        text = await readFile(stateFilePath(directory), "utf8");
+        text = await readFile(path, "utf8");
       } catch (error) {
         if (isEnoent(error)) return undefined;
         throw error;
       }
-      return decode(TunnelStateFileSchema)(JSON.parse(text));
+      return decode(schema)(JSON.parse(text));
     },
     catch: () =>
       new TunnelConfigurationError({
-        operation: "read tunnel state",
-        message: "the recorded tunnel state could not be read",
+        operation: `read ${what}`,
+        message: `the recorded ${what} at ${path} could not be read`,
       }),
   });
 
-const writeStateFile = (
+const writeRecord = (
   directory: string,
-  state: TunnelStateFile,
-): Effect.Effect<void, TunnelError> =>
+  fileName: string,
+  value: TunnelStateFile | TunnelConfigurationFile,
+  what: string,
+): Effect.Effect<void, TunnelConfigurationError> =>
   Effect.tryPromise({
     try: async () => {
       await mkdir(directory, { recursive: true });
       const temporary = join(directory, `.tunnel-${randomUUID()}.json.part`);
       try {
-        await writeFile(temporary, `${JSON.stringify(state, undefined, 2)}\n`, {
+        await writeFile(temporary, `${JSON.stringify(value, undefined, 2)}\n`, {
           mode: 0o600,
         });
-        await rename(temporary, stateFilePath(directory));
+        await rename(temporary, join(directory, fileName));
       } catch (error) {
         await unlink(temporary).catch(() => undefined);
         throw error;
@@ -227,10 +253,76 @@ const writeStateFile = (
     },
     catch: () =>
       new TunnelConfigurationError({
-        operation: "record tunnel state",
-        message: "the tunnel state could not be recorded",
+        operation: `record ${what}`,
+        message: `the ${what} could not be recorded in ${directory}`,
       }),
   }).pipe(Effect.uninterruptible);
+
+const readStateFile = (
+  directory: string,
+): Effect.Effect<TunnelStateFile | undefined, TunnelError> =>
+  readRecord(stateFilePath(directory), TunnelStateFileSchema, "tunnel state");
+
+const writeStateFile = (
+  directory: string,
+  state: TunnelStateFile,
+): Effect.Effect<void, TunnelError> =>
+  writeRecord(directory, stateFileName, state, "tunnel state");
+
+const readConfigurationFile = (
+  directory: string,
+): Effect.Effect<TunnelConfigurationFile | undefined, TunnelError> =>
+  readRecord(
+    configurationFilePath(directory),
+    TunnelConfigurationFileSchema,
+    "tunnel configuration",
+  );
+
+const writeConfigurationFile = (
+  directory: string,
+  configuration: TunnelConfigurationFile,
+): Effect.Effect<void, TunnelError> =>
+  writeRecord(directory, configurationFileName, configuration, "tunnel configuration");
+
+const removeConfigurationFile = (
+  directory: string,
+): Effect.Effect<void, TunnelConfigurationError> =>
+  Effect.tryPromise({
+    try: async () => {
+      try {
+        await unlink(configurationFilePath(directory));
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+      }
+    },
+    catch: () =>
+      new TunnelConfigurationError({
+        operation: "forget tunnel configuration",
+        message: `the tunnel configuration at ${configurationFilePath(directory)} could not be removed`,
+      }),
+  }).pipe(Effect.uninterruptible);
+
+const configurationOf = (
+  input: TunnelStartInput,
+  desired: TunnelConfigurationFile["desired"],
+): TunnelConfigurationFile => {
+  const { stateDirectory: _stateDirectory, ...fields } = input;
+  return { version: 1, desired, recordedAt: new Date().toISOString(), ...fields };
+};
+
+const startInputOf = (
+  configuration: TunnelConfigurationFile,
+  stateDirectory: string,
+  timeoutMilliseconds: number | undefined,
+): TunnelStartInput => {
+  const { version: _version, desired: _desired, recordedAt: _recordedAt, ...fields } =
+    configuration;
+  return {
+    ...fields,
+    stateDirectory,
+    timeoutMilliseconds: timeoutMilliseconds ?? fields.timeoutMilliseconds,
+  };
+};
 
 const removeStateFiles = (
   directory: string,
@@ -313,13 +405,126 @@ const readLogTail = async (logPath: string): Promise<string | undefined> => {
   }
 };
 
+const tunnelUnitPrefix = (directory: string): string =>
+  `canonfig-tunnel-${createHash("sha256").update(resolve(directory)).digest("hex")}-`;
+
+const runSystemdCommand = (
+  executable: string,
+  argv: ReadonlyArray<string>,
+): Promise<string> =>
+  new Promise((resolveCommand, rejectCommand) => {
+    const child = spawn(executable, [...argv], {
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectCommand(new Error("the systemd user manager did not answer within 10 seconds"));
+    }, 10_000);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout = (stdout + chunk.toString("utf8")).slice(-16_384);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString("utf8")).slice(-16_384);
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      rejectCommand(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolveCommand(stdout.trim());
+      else rejectCommand(new Error(stderr.trim() || `systemd command exited with status ${code}`));
+    });
+  });
+
+const systemctl = (): string => process.env.CANONFIG_SYSTEMCTL ?? "/usr/bin/systemctl";
+
+const resolveSshExecutable = async (executable: string): Promise<string> => {
+  if (isAbsolute(executable) || executable.includes("/")) return resolve(executable);
+  for (const directory of (process.env.PATH ?? "/usr/bin:/bin").split(":")) {
+    const candidate = resolve(directory, executable);
+    try {
+      await access(candidate, filesystemConstants.X_OK);
+      return candidate;
+    } catch {
+      // Search the next PATH entry, as a direct spawn would.
+    }
+  }
+  throw new Error(`SSH executable ${executable} was not found in PATH`);
+};
+
+const terminateTunnelProcess = async (
+  state: TunnelStateFile,
+  directory: string,
+): Promise<void> => {
+  if (state.systemdUnit === undefined) return terminateProcess(state.pid);
+  if (!state.systemdUnit.startsWith(tunnelUnitPrefix(directory))) {
+    throw new Error("the recorded tunnel service does not belong to this state directory");
+  }
+  const properties = await runSystemdCommand(systemctl(), [
+    "--user", "show", state.systemdUnit, "--property=MainPID,LoadState",
+  ]);
+  if (/^LoadState=not-found$/mu.test(properties)) return;
+  const value = /^MainPID=(\d+)$/mu.exec(properties)?.[1];
+  if (value === undefined) throw new Error("the tunnel service did not report its process identity");
+  const pid = Number(value);
+  if (pid !== 0 && pid !== state.pid) {
+    throw new Error("the tunnel service no longer owns the recorded SSH process");
+  }
+  // Stop the whole dedicated cgroup, including any SSH subprocesses.
+  await runSystemdCommand(systemctl(), ["--user", "stop", state.systemdUnit]);
+};
+
+const spawnSystemdTunnel = async (
+  executable: string,
+  argv: ReadonlyArray<string>,
+  logPath: string,
+  unit: string,
+): Promise<number> => {
+  const ssh = await resolveSshExecutable(executable);
+  const environment = ["PATH", "SSH_AUTH_SOCK"].flatMap((name) =>
+    process.env[name] === undefined ? [] : [`--setenv=${name}=${process.env[name]}`]
+  );
+  try {
+    await runSystemdCommand(process.env.CANONFIG_SYSTEMD_RUN ?? "/usr/bin/systemd-run", [
+      "--user", "--collect", "--service-type=exec", `--unit=${unit}`,
+      "--property=KillMode=control-group",
+      `--property=TimeoutStopSec=${killGraceMilliseconds}ms`,
+      `--property=StandardOutput=append:${resolve(logPath)}`,
+      `--property=StandardError=append:${resolve(logPath)}`,
+      ...environment,
+      // Transient service commands still expand $ variables at execution.
+      "--", ssh, ...argv.map((argument) => argument.replaceAll("$", () => "$$")),
+    ]);
+    // Type=exec waits for execve, so MainPID is available when the launcher exits.
+    const pid = Number(await runSystemdCommand(systemctl(), [
+      "--user", "show", unit, "--property=MainPID", "--value",
+    ]));
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error("the managed SSH service exited before its process could be recorded");
+    }
+    return pid;
+  } catch (cause) {
+    await runSystemdCommand(systemctl(), ["--user", "stop", unit]).catch(() => undefined);
+    throw cause;
+  }
+};
+
 const spawnTunnelProcess = (
   executable: string,
   argv: ReadonlyArray<string>,
   logPath: string,
+  systemdUnit: string | undefined,
 ): Effect.Effect<number, TunnelProcessError> =>
   Effect.tryPromise({
     try: async () => {
+      if (systemdUnit !== undefined) {
+        return spawnSystemdTunnel(executable, argv, logPath, systemdUnit);
+      }
       const log = await open(logPath, "a");
       try {
         const child = await new Promise<ReturnType<typeof spawn>>((resolve, reject) => {
@@ -353,88 +558,141 @@ const spawnTunnelProcess = (
       }),
   });
 
+/**
+ * Whether anything accepts TCP connections on the local end of the forward.
+ * OpenSSH binds `-L` only after it has authenticated, so a listening forward
+ * while the Source probe fails means SSH is up and the Source is not.
+ */
+const forwardListening = (host: string, port: number): Promise<boolean> =>
+  new Promise((resolve) => {
+    const socket = netConnect({ host, port });
+    const settle = (listening: boolean): void => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(listening);
+    };
+    socket.setTimeout(2_000);
+    socket.once("connect", () => settle(true));
+    socket.once("timeout", () => settle(false));
+    socket.once("error", () => settle(false));
+  });
+
+const sshTarget = (user: string, host: string): string => `${user}@${host}`;
+
+const sourceNotAnsweringMessage = (
+  target: string,
+  remoteHost: string,
+  remotePort: number,
+): string =>
+  `SSH to ${target} is connected, but the Source at ${remoteHost}:${remotePort} on that host is not answering through the tunnel. `
+  + "Start the Source there first (`canonfig source serve`, or `canonfig source service install` to keep it running), "
+  + `then run \`${restartCommand}\`.`;
+
+interface TunnelReadiness {
+  readonly observedTlsFingerprint: string;
+  readonly sourceFingerprint: string | undefined;
+}
+
 const waitTunnelReady = (
   input: TunnelStartInput,
+  pid: number,
+  logPath: string,
   timeoutMilliseconds: number,
-): Effect.Effect<
-  { readonly observedTlsFingerprint: string; readonly sourceFingerprint: string | undefined },
-  TunnelError
-> =>
+): Effect.Effect<TunnelReadiness, TunnelError> =>
   Effect.tryPromise({
-    try: (signal) =>
-      new Promise<{
-        readonly observedTlsFingerprint: string;
-        readonly sourceFingerprint: string | undefined;
-      }>((resolve, reject) => {
-        const endpoint = tunnelEndpoint(input);
-        const deadline = Date.now() + timeoutMilliseconds;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        let finished = false;
-        const finish = (outcome: () => void): void => {
-          if (finished) return;
-          finished = true;
-          if (timer !== undefined) clearTimeout(timer);
-          signal.removeEventListener("abort", onAbort);
-          outcome();
-        };
-        const onAbort = (): void => {
-          finish(() =>
-            reject(new TunnelReadinessError({
-              endpoint,
-              message: "tunnel establishment was cancelled",
-            }))
+    try: (signal) => {
+      // The tsconfig lib predates Promise.withResolvers.
+      let resolve!: (readiness: TunnelReadiness) => void;
+      let reject!: (error: TunnelReadinessError) => void;
+      const promise = new Promise<TunnelReadiness>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      const endpoint = tunnelEndpoint(input);
+      const target = sshTarget(input.sshUser, input.sshHost);
+      const deadline = Date.now() + timeoutMilliseconds;
+      let forwardSeenAt: number | undefined;
+      let timer: NodeJS.Timeout | undefined;
+      let finished = false;
+      const finish = (outcome: () => void): void => {
+        if (finished) return;
+        finished = true;
+        if (timer !== undefined) clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        outcome();
+      };
+      const fail = (message: string): void =>
+        finish(() => reject(new TunnelReadinessError({ endpoint, message })));
+      const onAbort = (): void => fail("tunnel establishment was cancelled");
+      // Tell the three ways a start can stall apart instead of waiting out the
+      // whole timeout: SSH exited, SSH never opened the forward, or SSH
+      // forwards but the Source behind it does not answer.
+      const diagnose = async (): Promise<void> => {
+        if (!isAlive(pid)) {
+          const tail = await readLogTail(logPath);
+          fail(
+            `the SSH process for ${target} exited before the tunnel was ready`
+              + (tail === undefined ? "" : `: ${tail}`),
           );
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-        if (signal.aborted) {
-          onAbort();
           return;
         }
-        const attempt = (): void => {
+        const listening = await forwardListening(input.localHost, input.localPort);
+        if (finished) return;
+        const now = Date.now();
+        if (listening) forwardSeenAt ??= now;
+        if (
+          forwardSeenAt !== undefined
+          && (now - forwardSeenAt >= Math.min(sourceSilenceMilliseconds, timeoutMilliseconds)
+            || now >= deadline)
+        ) {
+          fail(sourceNotAnsweringMessage(target, input.remoteHost, input.remotePort));
+          return;
+        }
+        if (now >= deadline) {
+          const tail = await readLogTail(logPath);
+          fail(
+            `SSH to ${target} did not open the forward at ${endpoint} within ${timeoutMilliseconds} ms`
+              + (tail === undefined ? "" : `: ${tail}`),
+          );
+          return;
+        }
+        timer = setTimeout(attempt, pollIntervalMilliseconds);
+        timer.unref();
+      };
+      const attempt = (): void => {
+        if (finished) return;
+        Effect.runPromise(
+          probeSourceDescriptor({
+            endpoint,
+            tlsFingerprint: input.tlsFingerprint,
+            timeoutMilliseconds: Math.min(5_000, timeoutMilliseconds),
+          }),
+        ).then((probe) => {
           if (finished) return;
-          Effect.runPromise(
-            probeSourceDescriptor({
-              endpoint,
-              tlsFingerprint: input.tlsFingerprint,
-              timeoutMilliseconds: Math.min(5_000, timeoutMilliseconds),
-            }),
-          ).then((probe) => {
-            if (finished) return;
-            if (!probe.tlsMatch || probe.sourceFingerprint !== input.sourceFingerprint) {
-              finish(() =>
-                reject(new TunnelReadinessError({
-                  endpoint,
-                  message: !probe.tlsMatch
-                    ? "the tunnel endpoint TLS certificate does not match the pinned Source identity"
-                    : "the Source signing identity does not match the pinned invitation identity",
-                }))
-              );
-              return;
-            }
-            finish(() =>
-              resolve({
-                observedTlsFingerprint: probe.observedTlsFingerprint,
-                sourceFingerprint: probe.sourceFingerprint,
-              })
+          if (!probe.tlsMatch || probe.sourceFingerprint !== input.sourceFingerprint) {
+            fail(
+              !probe.tlsMatch
+                ? "the tunnel endpoint TLS certificate does not match the pinned Source identity"
+                : "the Source signing identity does not match the pinned invitation identity",
             );
-          }).catch(() => {
-            if (finished) return;
-            if (Date.now() >= deadline) {
-              finish(() =>
-                reject(new TunnelReadinessError({
-                  endpoint,
-                  message:
-                    `the tunnel endpoint was not ready within ${timeoutMilliseconds} ms`,
-                }))
-              );
-              return;
-            }
-            timer = setTimeout(attempt, pollIntervalMilliseconds);
-            timer.unref?.();
-          });
-        };
-        attempt();
-      }),
+            return;
+          }
+          finish(() =>
+            resolve({
+              observedTlsFingerprint: probe.observedTlsFingerprint,
+              sourceFingerprint: probe.sourceFingerprint,
+            })
+          );
+        }, () => {
+          if (finished) return;
+          diagnose().catch(() => fail("the tunnel endpoint could not be probed"));
+        });
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      else attempt();
+      return promise;
+    },
     catch: (cause) =>
       cause instanceof TunnelReadinessError
         ? cause
@@ -444,14 +702,41 @@ const waitTunnelReady = (
         }),
   });
 
+/** A recorded configuration with no live process record: stopped on purpose, or down. */
+const configuredStatus = (
+  configuration: TunnelConfigurationFile,
+): TunnelStatusReport => {
+  const endpoint = tunnelEndpoint(startInputOf(configuration, ".", undefined));
+  const identity = {
+    sshHostKeyFingerprint: sshHostKeyFingerprint(configuration.sshHostKey),
+    tlsPinnedFingerprint: configuration.tlsFingerprint,
+    sourcePinnedFingerprint: configuration.sourceFingerprint,
+  };
+  const target = sshTarget(configuration.sshUser, configuration.sshHost);
+  return {
+    lifecycle: configuration.desired === "stopped" ? "stopped" : "down",
+    endpoint,
+    identity,
+    detail: configuration.desired === "stopped"
+      ? `the tunnel to ${target} was stopped with \`canonfig tunnel stop\`; run \`${restartCommand}\` to start it from the recorded configuration`
+      : `the tunnel to ${target} is not running; run \`${restartCommand}\` to start it from the recorded configuration`,
+    restartable: true,
+    recovery: restartCommand,
+  };
+};
+
 const statusOf = (
   state: TunnelStateFile,
   reconnected: boolean,
+  configuration: TunnelConfigurationFile | undefined,
 ): Effect.Effect<TunnelStatusReport, TunnelError> =>
   Effect.gen(function*() {
     const alive = isAlive(state.pid);
     const endpoint =
       `https://${state.local.host === "::1" ? "[::1]" : state.local.host}:${state.local.port}`;
+    const target = sshTarget(state.ssh.user, state.ssh.host);
+    const restartable = configuration !== undefined;
+    const recovery = restartable ? restartCommand : invitationStartCommand;
     const baseIdentity = {
       sshHostKeyFingerprint: state.ssh.hostKeyFingerprint,
       tlsPinnedFingerprint: state.tlsFingerprint,
@@ -465,7 +750,9 @@ const statusOf = (
         endpoint,
         reconnected,
         identity: baseIdentity,
-        detail: `tunnel process ${state.pid} is not running`,
+        detail: `the SSH tunnel process ${state.pid} for ${target} is not running; run \`${recovery}\``,
+        restartable,
+        recovery,
       } satisfies TunnelStatusReport;
     }
     const probe = yield* probeSourceDescriptor({
@@ -480,6 +767,8 @@ const statusOf = (
     );
     const sourceMatch = probe?.sourceFingerprint === state.sourceFingerprint;
     if (probe === undefined || !probe.tlsMatch || !sourceMatch) {
+      const listening = probe === undefined
+        && (yield* Effect.promise(() => forwardListening(state.local.host, state.local.port)));
       return {
         lifecycle: "down",
         pid: state.pid,
@@ -494,10 +783,14 @@ const statusOf = (
           sourceMatch,
         },
         detail: probe === undefined
-          ? `tunnel process ${state.pid} is running but the endpoint is not reachable`
+          ? listening
+            ? sourceNotAnsweringMessage(target, state.remote.host, state.remote.port)
+            : `the SSH tunnel process ${state.pid} for ${target} is running but its forward at ${endpoint} is not listening; run \`${recovery}\``
           : !probe.tlsMatch
           ? "tunnel endpoint TLS identity does not match the pinned Source"
           : "Source signing identity does not match the pinned invitation identity",
+        restartable,
+        recovery,
       } satisfies TunnelStatusReport;
     }
     return {
@@ -514,6 +807,7 @@ const statusOf = (
         sourceMatch: true,
       },
       detail: `tunnel is forwarding ${endpoint} with independent SSH, TLS, and Source signing pins`,
+      restartable,
     } satisfies TunnelStatusReport;
   });
 
@@ -533,9 +827,10 @@ const makeTunnel = Effect.sync(() => {
     yield* rejectBypassArguments(extra);
     const timeoutMilliseconds = input.timeoutMilliseconds ?? 30_000;
     const executable = input.sshExecutable ?? "ssh";
+    const configuration = configurationOf(input, "running");
     const existing = yield* readStateFile(input.stateDirectory);
     if (existing !== undefined) {
-      const current = yield* statusOf(existing, false);
+      const current = yield* statusOf(existing, false, configuration);
       const sameConfiguration = existing.ssh.host === input.sshHost
         && existing.ssh.port === input.sshPort
         && existing.ssh.user === input.sshUser
@@ -546,10 +841,18 @@ const makeTunnel = Effect.sync(() => {
         && existing.remote.port === input.remotePort
         && existing.tlsFingerprint === input.tlsFingerprint
         && existing.sourceFingerprint === input.sourceFingerprint;
-      if (current.lifecycle === "running" && sameConfiguration) return current;
-      if (yield* Effect.promise(() => ownsTunnelProcess(existing))) {
+      if (current.lifecycle === "running" && sameConfiguration) {
+        // A tunnel started before restart configurations were recorded
+        // becomes restartable the first time it is confirmed here.
+        yield* writeConfigurationFile(input.stateDirectory, configuration);
+        return current;
+      }
+      if (
+        (yield* Effect.promise(() => ownsTunnelProcess(existing)))
+        || (existing.systemdUnit !== undefined && !isAlive(existing.pid))
+      ) {
         yield* Effect.tryPromise({
-          try: () => terminateProcess(existing.pid),
+          try: () => terminateTunnelProcess(existing, input.stateDirectory),
           catch: () =>
             new TunnelProcessError({
               operation: "reclaim tunnel",
@@ -559,8 +862,8 @@ const makeTunnel = Effect.sync(() => {
       }
       yield* removeStateFiles(input.stateDirectory, existing);
     }
-    const knownHostsPath = join(input.stateDirectory, knownHostsFileName);
-    const logPath = join(input.stateDirectory, logFileName);
+    const knownHostsPath = join(resolve(input.stateDirectory), knownHostsFileName);
+    const logPath = join(resolve(input.stateDirectory), logFileName);
     yield* Effect.tryPromise({
       try: async () => {
         await mkdir(input.stateDirectory, { recursive: true });
@@ -576,20 +879,36 @@ const makeTunnel = Effect.sync(() => {
           message: "the pinned SSH host key could not be recorded",
         }),
     });
+    // setsid/detached does not leave a systemd cgroup. Native recovery must
+    // give SSH its own user service, not a child of the sync oneshot.
+    const systemdUnit = process.platform === "linux"
+        && /^[a-f0-9]{32}$/u.test(process.env.INVOCATION_ID ?? "")
+      ? `${tunnelUnitPrefix(input.stateDirectory)}${randomUUID().replaceAll("-", "")}.service`
+      : undefined;
     let pid: number | undefined;
     let recorded = false;
+    let startedState: TunnelStateFile | undefined;
     const cleanupUnrecorded = Effect.gen(function*() {
       if (recorded) return;
       const processId = pid;
       if (processId !== undefined) {
         yield* Effect.tryPromise({
-          try: () => terminateProcess(processId),
+          try: async () => {
+            if (systemdUnit !== undefined) {
+              await runSystemdCommand(systemctl(), ["--user", "stop", systemdUnit]);
+            } else {
+              await terminateProcess(processId);
+            }
+          },
           catch: () =>
             new TunnelProcessError({
               operation: "cancel tunnel start",
               message: "the starting tunnel process could not be stopped",
             }),
         }).pipe(Effect.ignore);
+      }
+      if (startedState !== undefined) {
+        yield* removeStateFiles(input.stateDirectory, startedState).pipe(Effect.ignore);
       }
       yield* Effect.tryPromise({
         try: () => unlink(knownHostsPath).catch(() => undefined),
@@ -600,25 +919,22 @@ const makeTunnel = Effect.sync(() => {
           }),
       }).pipe(Effect.ignore);
     });
+    const classifyStartupFailure = (error: TunnelProcessError | TunnelReadinessError) =>
+      Effect.promise(() => readLogTail(logPath)).pipe(
+        Effect.flatMap((tail): Effect.Effect<never, TunnelProcessError | TunnelReadinessError | TunnelHostKeyError> =>
+          tail !== undefined && hostKeyFailurePattern.test(tail)
+            ? Effect.fail(new TunnelHostKeyError({
+              host: input.sshHost,
+              message: "the SSH host key is unknown or has changed; the connection was blocked",
+            }))
+            : Effect.fail(error)
+        ),
+      );
     const started = yield* Effect.gen(function*() {
       const argv = buildSshArguments(input, knownHostsPath, extra);
-      pid = yield* spawnTunnelProcess(executable, argv, logPath);
-      yield* waitTunnelReady(input, timeoutMilliseconds).pipe(
-        Effect.catchTag("TunnelReadinessError", (error) =>
-          Effect.promise(() => readLogTail(logPath)).pipe(
-            Effect.flatMap((
-              tail,
-            ): Effect.Effect<never, TunnelReadinessError | TunnelHostKeyError> =>
-              tail !== undefined && hostKeyFailurePattern.test(tail)
-                ? Effect.fail(new TunnelHostKeyError({
-                  host: input.sshHost,
-                  message:
-                    "the SSH host key is unknown or has changed; the connection was blocked",
-                }))
-                : Effect.fail(error)
-            ),
-          ))
-      );
+      const processId = yield* spawnTunnelProcess(executable, argv, logPath, systemdUnit);
+      pid = processId;
+      yield* waitTunnelReady(input, processId, logPath, timeoutMilliseconds);
       const state: TunnelStateFile = {
         version: 1,
         ssh: {
@@ -632,64 +948,116 @@ const makeTunnel = Effect.sync(() => {
         remote: { host: input.remoteHost, port: input.remotePort },
         tlsFingerprint: input.tlsFingerprint,
         sourceFingerprint: input.sourceFingerprint,
-        pid,
+        pid: processId,
         processArgumentFingerprint: processArgumentFingerprint(argv),
+        systemdUnit,
         startedAt: new Date().toISOString(),
         logPath,
         knownHostsPath,
       };
+      startedState = state;
       yield* writeStateFile(input.stateDirectory, state);
+      // The durable restart record: `tunnel start` and a scheduled sync can
+      // bring this tunnel back after its process dies or the machine reboots,
+      // without the one-use invitation envelope.
+      yield* writeConfigurationFile(input.stateDirectory, configuration);
       recorded = true;
       return state;
-    }).pipe(Effect.ensuring(cleanupUnrecorded));
-    const report = yield* statusOf(started, existing !== undefined);
+    }).pipe(
+      Effect.catchTags({
+        TunnelProcessError: classifyStartupFailure,
+        TunnelReadinessError: classifyStartupFailure,
+      }),
+      Effect.ensuring(cleanupUnrecorded),
+    );
+    const report = yield* statusOf(started, existing !== undefined, configuration);
     if (report.lifecycle !== "running") {
       const tail = yield* Effect.promise(() => readLogTail(logPath));
       return yield* new TunnelReadinessError({
         endpoint: tunnelEndpoint(input),
         message: tail === undefined
-          ? "the tunnel started but the endpoint is not ready"
-          : `the tunnel started but the endpoint is not ready: ${tail}`,
+          ? `the tunnel started but the endpoint is not ready: ${report.detail}`
+          : `the tunnel started but the endpoint is not ready: ${report.detail} (${tail})`,
       });
     }
     return report;
   });
 
+  const restartTunnel = Effect.fn("Tunnel.restartTunnel")(function*(
+    input: RestartTunnelInput,
+  ): Effect.fn.Return<TunnelStatusReport, TunnelError> {
+    const configuration = yield* readConfigurationFile(input.stateDirectory);
+    if (configuration === undefined) {
+      return yield* new TunnelConfigurationError({
+        operation: "restart tunnel",
+        message:
+          `no tunnel configuration is recorded in ${input.stateDirectory}; run \`${invitationStartCommand}\` once to record one`,
+      });
+    }
+    return yield* startTunnel(
+      startInputOf(configuration, input.stateDirectory, input.timeoutMilliseconds),
+    );
+  });
+
   const tunnelStatus = Effect.fn("Tunnel.tunnelStatus")(function*(
     input: StopTunnelInput,
-  ) {
-    const existing = yield* readStateFile(input.stateDirectory);
+  ): Effect.fn.Return<TunnelStatusReport, TunnelError> {
+    const [existing, configuration] = yield* Effect.all([
+      readStateFile(input.stateDirectory),
+      readConfigurationFile(input.stateDirectory),
+    ]);
     if (existing === undefined) {
-      return {
-        lifecycle: "not-configured",
-        identity: undefined,
-        detail: "no tunnel has been configured",
-      } satisfies TunnelStatusReport;
+      return configuration === undefined
+        ? {
+          lifecycle: "not-configured",
+          identity: undefined,
+          detail: "no tunnel has been configured",
+          restartable: false,
+        }
+        : configuredStatus(configuration);
     }
-    return yield* statusOf(existing, false);
+    return yield* statusOf(existing, false, configuration);
   });
 
   const stopTunnel = Effect.fn("Tunnel.stopTunnel")(function*(
-    input: StopTunnelInput,
+    input: StopTunnelRequest,
   ): Effect.fn.Return<StopTunnelResult, TunnelError> {
-    const existing = yield* readStateFile(input.stateDirectory);
-    if (existing === undefined) return { stopped: false };
-    const owned = yield* Effect.promise(() => ownsTunnelProcess(existing));
-    if (owned) {
-      yield* Effect.tryPromise({
-        try: () => terminateProcess(existing.pid),
-        catch: () =>
-          new TunnelProcessError({
-            operation: "stop tunnel",
-            message: `tunnel process ${existing.pid} could not be stopped`,
-          }),
+    const [existing, configuration] = yield* Effect.all([
+      readStateFile(input.stateDirectory),
+      readConfigurationFile(input.stateDirectory),
+    ]);
+    let owned = false;
+    if (existing !== undefined) {
+      owned = yield* Effect.promise(() => ownsTunnelProcess(existing));
+      if (owned || (existing.systemdUnit !== undefined && !isAlive(existing.pid))) {
+        yield* Effect.tryPromise({
+          try: () => terminateTunnelProcess(existing, input.stateDirectory),
+          catch: () =>
+            new TunnelProcessError({
+              operation: "stop tunnel",
+              message: `tunnel process ${existing.pid} could not be stopped`,
+            }),
+        });
+      }
+      yield* removeStateFiles(input.stateDirectory, existing);
+    }
+    if (input.forget === true) {
+      yield* removeConfigurationFile(input.stateDirectory);
+    } else if (configuration !== undefined && configuration.desired !== "stopped") {
+      // Recorded so neither a scheduled sync nor doctor treats a deliberate
+      // stop as an outage to repair.
+      yield* writeConfigurationFile(input.stateDirectory, {
+        ...configuration,
+        desired: "stopped",
       });
     }
-    yield* removeStateFiles(input.stateDirectory, existing);
-    return { stopped: owned || !isAlive(existing.pid), pid: existing.pid };
+    const restartable = input.forget !== true && configuration !== undefined;
+    return existing === undefined
+      ? { stopped: false, restartable }
+      : { stopped: owned || !isAlive(existing.pid), pid: existing.pid, restartable };
   });
 
-  return Tunnel.of({ startTunnel, tunnelStatus, stopTunnel });
+  return Tunnel.of({ startTunnel, restartTunnel, tunnelStatus, stopTunnel });
 });
 
 export const TunnelLive = Layer.effect(Tunnel, makeTunnel);

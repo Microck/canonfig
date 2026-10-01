@@ -1,48 +1,27 @@
-import { readFileSync } from "node:fs";
-
 import { Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
   canonicalJson,
   digestOf,
+  InexactJsonNumberError,
   parseJsonc,
   sha256Hex,
   stripJsonc,
 } from "../src/profile/profile-codec.ts";
 import {
   decodeMachineProfileJsonc,
-  digestMachineProfile,
-  encodeMachineProfile,
-  findDependencyCycle,
-  ProfileContractError,
   ProfileResourceInputSchema,
   ResourceSpecInputSchema,
-  topologicalOrder,
-  validateMachineProfile,
   validateProfileResources,
   type ProfileResourceInput,
 } from "../src/domain/profile.ts";
-import {
-  ActionDetailSchema,
-  AgentTaskSchema,
-  HumanActionRequiredSchema,
-  SynchronizationOutcomeSchema,
-  SynchronizationPlanSchema,
-  validateSynchronizationPlan,
-  type ActionDetail,
-  type SynchronizationOutcome,
-  type SynchronizationPlan,
-} from "../src/domain/synchronization.ts";
+import { ActionDetailSchema } from "../src/domain/synchronization.ts";
 import { FileResourceSpec } from "../src/domain/resource.ts";
 import { composeTextFile, parseTextComposition, sourceTextEnd, sourceTextStart } from "../src/domain/text-composition.ts";
 
-const fixture = (name: string): string =>
-  readFileSync(new URL(`./fixtures/profile-contract/${name}`, import.meta.url), "utf8");
-
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
-const digestC = "c".repeat(64);
 
 const fileResource = (id: string, over: Partial<ProfileResourceInput> = {}): ProfileResourceInput => ({
   id,
@@ -99,6 +78,46 @@ describe("JSONC parsing", () => {
 
   it("rejects invalid JSONC", () => {
     expect(() => parseJsonc(`{"a": `)).toThrow();
+  });
+
+  it("rejects authored numbers JavaScript would round, naming their path", () => {
+    const profileWith = (literal: string): string => `{
+      "id": "numbers", "name": "Numbers",
+      "resources": [{
+        "id": "limits", "kind": "config", "target": "~/.limits.json",
+        "spec": { "kind": "config", "format": "json",
+          "keys": [{ "path": "limits", "value": { "max.id": ${literal} } }] },
+        "verify": { "method": "digest" }
+      }]
+    }`;
+    for (const literal of ["9007199254740993", "-9007199254740992", "1e400"]) {
+      let failure: unknown;
+      try {
+        decodeMachineProfileJsonc(profileWith(literal));
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(InexactJsonNumberError);
+      expect(failure).toMatchObject({ path: `$.resources[0].spec.keys[0].value["max.id"]` });
+    }
+    const exact = decodeMachineProfileJsonc(profileWith("9007199254740991"));
+    expect(exact.resources[0]?.spec).toMatchObject({
+      keys: [{ path: "limits", value: { "max.id": Number.MAX_SAFE_INTEGER } }],
+    });
+  });
+
+  it("rejects an unsafe integer that reaches validation without JSON text", () => {
+    const errors = validateProfileResources([{
+      id: "limits", kind: "config", target: "~/.limits.json",
+      spec: { kind: "config", format: "json", keys: [{ path: "limits", value: { big: [2 ** 60] } }] },
+      verify: { method: "digest" },
+    }]);
+    expect(errors).toEqual([expect.objectContaining({
+      _tag: "InvalidConfigKeyError",
+      id: "limits",
+      path: "limits",
+      reason: expect.stringContaining("value.big[0] cannot be carried exactly"),
+    })]);
   });
 });
 

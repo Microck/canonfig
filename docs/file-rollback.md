@@ -23,6 +23,15 @@ to binary rollback.
   digest before replacement, and restores the captured permissions through the
   same guarded mutation. Windows checks the restored descriptor against the
   captured value. Failure retains the journal and preimages.
+- Before restoring anything, recovery compares the current bytes of every
+  snapshot target with both the pre-run content and the state the run intended
+  to write. A target that matches neither was edited after the interruption:
+  recovery stops with Human Action Required, names the file, and keeps both the
+  file and its snapshot.
+- Temporary siblings and guards use short fixed-length names
+  (`.cf-<12hex>.tmp`, `.cf-<12hex>.guard`), so any valid target name up to 255
+  bytes works. Recover and abandon remove only Canonfig's own temporary names
+  inside managed roots.
 - Restore managed directories with writable modes while restoring their children.
   Restore exact directory permissions from the deepest directory up, root last.
 - The same atomic-write path handles byte buffers and file sources. Native

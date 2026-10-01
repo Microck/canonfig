@@ -32,7 +32,7 @@ const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
   ["profile", new Set(["list", "select", "show"])],
   ["schedule", new Set(["remove", "set", "status"])],
   ["secrets", new Set(["bootstrap", "help", "list", "remove", "set", "sync"])],
-  ["source", new Set(["init", "invite", "publish", "revoke", "scan", "serve"])],
+  ["source", new Set(["digest", "init", "invite", "publish", "revoke", "scan", "serve"])],
 ]);
 const SINGLE_COMMANDS = new Set([
   "doctor",
@@ -218,6 +218,15 @@ export const createCommandLog = (
   };
 };
 
+let observedSignal: number | undefined;
+
+/**
+ * The exit status of the first catchable termination signal the command log
+ * recorded (130 for SIGINT, 143 for SIGTERM), or undefined when none arrived.
+ * The runtime exits with it so the process status matches the log.
+ */
+export const observedSignalExitCode = (): number | undefined => observedSignal;
+
 /** Register catchable termination signals. SIGKILL cannot be observed or logged. */
 export const registerCommandLogSignalHandlers = (log: CommandLog): void => {
   const register = (
@@ -225,6 +234,7 @@ export const registerCommandLogSignalHandlers = (log: CommandLog): void => {
     exitCode: number,
   ): void => {
     const handler = (): void => {
+      observedSignal ??= exitCode;
       log.complete(exitCode);
       process.removeListener(signal, handler);
       process.kill(process.pid, signal);

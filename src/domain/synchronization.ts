@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaIssue } from "effect";
 import { TaggedError } from "./tagged-error.ts";
 
 import {
@@ -14,10 +14,6 @@ import {
 } from "./brand.ts";
 import type { ResourceId } from "./brand.ts";
 import {
-  SyncScheduleSchema,
-  type SyncSchedule,
-} from "../schedule/schedule-manager.types.ts";
-import {
   AutomaticRecipeMethod,
   BuildPolicy as BuildPolicySchema,
   RecipeIndexPolicy,
@@ -28,7 +24,7 @@ import {
 import {
   isMissingAutomaticRecipeVersion,
   RecipeSourceMetadata,
-  recipeValidationError,
+  recipeValidationIssue,
 } from "./recipe-versions.ts";
 import {
   InstallerRecipeProvenance,
@@ -95,6 +91,14 @@ export type ActionDetail =
      * Canonfig wrote, so a local edit is never silently discarded.
      */
     readonly removes?: ReadonlyArray<string> | undefined;
+    /**
+     * Keys Canonfig owned that the revision no longer declares but that stay,
+     * because a Local Overlay key overlaps them. Canonfig stops managing them
+     * and leaves their current values, so the plan names them instead of
+     * reading as if nothing were left behind.
+     */
+    readonly retains?: ReadonlyArray<string> | undefined;
+    readonly retentionNotice?: string | undefined;
   }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
   | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }
@@ -285,13 +289,16 @@ const InstallToolActionDetailSchema = Schema.Struct({
   provenance: Schema.optional(InstallerRecipeProvenance),
 }).check(
   Schema.makeFilter((detail) => {
-    const reason = recipeValidationError(detail);
-    return reason === undefined && !isMissingAutomaticRecipeVersion(detail)
-      ? undefined
-      : {
+    const issue = recipeValidationIssue(detail);
+    if (issue !== undefined) return issue;
+    return isMissingAutomaticRecipeVersion(detail)
+      ? {
         path: ["version"],
-        issue: reason ?? `automatic installer ${detail.method} requires an exact version`,
-      };
+        issue: new SchemaIssue.InvalidValue({
+          expected: `automatic installer ${detail.method} requires an exact version`,
+        }),
+      }
+      : undefined;
   }),
 );
 
@@ -319,6 +326,8 @@ export const ActionDetailSchema = Schema.Union([
     target: Schema.NonEmptyString,
     keys: Schema.Array(Schema.NonEmptyString),
     removes: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+    retains: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+    retentionNotice: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     kind: Schema.Literal("mirror-directory"),

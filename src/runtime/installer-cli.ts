@@ -1,34 +1,23 @@
 import { Effect, Schema } from "effect";
 import type { CliIo } from "../cli/cli.ts";
 import { CliExitCode } from "../cli/exit-codes.ts";
+import { installerHelp } from "../cli/help.ts";
 import { renderCliResult, renderUsageFailure } from "../cli/render.ts";
 import { normalizeInstallerMethod } from "../domain/installer-binding.ts";
 import { HumanActionRequiredError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {
   checkInstallerBinding, listInstallerBindings, loadInstallerState,
-  removeInstallerBinding, saveInstallerBinding,
+  removeInstallerBinding, saveInstallerBinding, unboundInstallerRecovery, windowsNodeBinding,
 } from "../synchronization/installer-bindings.ts";
 
-export const installerHelp = [
-  "  installer list",
-  "  installer set <method> --executable <absolute-path> [--arg <absolute-entrypoint>]",
-  "  installer check <method>",
-  "  installer remove <method>",
-].join("\n");
+/** Help needs no machine layer, and building that layer reads the state database. */
+export const installerHelpRequested = (arguments_: ReadonlyArray<string>): boolean =>
+  arguments_.some((value) => value === "--help" || value === "-h");
 
-/**
- * `--json` is a global option that `evaluateCli` accepts at any position, so it
- * never names the command. Match past it, or `canonfig --json installer list`
- * would miss this branch and fail as an unknown command.
- */
-export const isInstallerCommand = (arguments_: ReadonlyArray<string>): boolean =>
-  arguments_.filter((value) => value !== "--json")[0] === "installer";
-
-/** Drop the command head, keeping any global option that came before it. */
-export const installerArguments = (arguments_: ReadonlyArray<string>): ReadonlyArray<string> => {
-  const head = arguments_.indexOf("installer");
-  return arguments_.filter((value, index) => index !== head);
+export const writeInstallerHelp = (io: CliIo): void => {
+  io.writeStdout(`Installer bindings\n${installerHelp}\n`);
+  io.setExitCode(CliExitCode.success);
 };
 
 type Command = { readonly kind: "list" }
@@ -63,9 +52,8 @@ export const runInstallerCli = (
   arguments_: ReadonlyArray<string>, io: CliIo,
 ): Effect.Effect<void, never, MachineState> => Effect.gen(function*() {
   const format = arguments_.includes("--json") ? "json" : "human";
-  if (arguments_.some((value) => value === "--help" || value === "-h")) {
-    io.writeStdout(`Installer bindings\n${installerHelp}\n`);
-    io.setExitCode(CliExitCode.success);
+  if (installerHelpRequested(arguments_)) {
+    writeInstallerHelp(io);
     return;
   }
   const parsed = yield* Effect.try({ try: () => parseInstallerArguments(arguments_), catch: (cause) => cause }).pipe(
@@ -78,7 +66,17 @@ export const runInstallerCli = (
   }
   const operation = Effect.gen(function*() {
     switch (parsed.kind) {
-      case "list": return { bindings: yield* listInstallerBindings() };
+      case "list": {
+        const bindings = yield* listInstallerBindings();
+        // An unbound npm or pnpm that PATH resolves to a Windows command shim
+        // is refused at install time, so the listing names the binding to set.
+        const suggestions = (yield* Effect.forEach(
+          ["npm", "pnpm"].filter((method) => !bindings.some((binding) => binding.method === method)),
+          (method) => Effect.map(windowsNodeBinding(method), (binding) =>
+            binding === undefined ? undefined : { method, shim: binding.shim, command: binding.command }),
+        )).filter((suggestion) => suggestion !== undefined);
+        return suggestions.length === 0 ? { bindings } : { bindings, suggestions };
+      }
       case "remove": return { removed: yield* removeInstallerBinding(parsed.method) };
       case "set": return { binding: yield* saveInstallerBinding(parsed.method, parsed.executable, parsed.arguments) };
       case "check": {
@@ -87,7 +85,7 @@ export const runInstallerCli = (
           action: "configure an installer binding", recovery: "The installer binding was explicitly removed; run installer set with the existing executable and optional JavaScript entrypoint, then retry.",
         });
         if (state.status !== "bound") return yield* new HumanActionRequiredError({
-          action: "configure an installer binding", recovery: "Run installer set with the existing executable and optional JavaScript entrypoint, then retry.",
+          action: "configure an installer binding", recovery: yield* unboundInstallerRecovery(parsed.method),
         });
         return yield* checkInstallerBinding(state.binding);
       }

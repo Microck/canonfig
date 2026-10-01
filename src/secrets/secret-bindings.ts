@@ -1,5 +1,6 @@
 import { Effect, Redacted } from "effect";
 
+import { credentialFailureDetail } from "../machine/machine-state.errors.ts";
 import type { ProcessEnvironmentEntry } from "../machine/machine-state.types.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {
@@ -57,8 +58,12 @@ export const resolveSecretBindings = (
           return yield* bindingError(`unknown secret for binding ${binding.name}: ${binding.secret}`);
         }
         const value = yield* machine.loadCredential({ reference }).pipe(
-          Effect.mapError(() =>
-            bindingError(`the shared credential for binding ${binding.name} is unavailable`)
+          Effect.mapError((error) =>
+            new SecretTransferError({
+              category: "storage",
+              operation: "resolve secret bindings",
+              message: `the shared credential for binding ${binding.name} could not be loaded from secure credential storage: ${credentialFailureDetail(error)}`,
+            })
           ),
         );
         return { name: binding.name, value: Redacted.value(value) };

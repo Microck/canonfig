@@ -1,7 +1,9 @@
 import { Schema } from "effect";
 
 import { CliExitCode } from "./exit-codes.ts";
-import { isSecretField, redactArguments, redactText } from "./redaction.ts";
+import { renderHumanSummary } from "./human-summary.ts";
+import { isEnvironmentReference, isSecretField } from "../secrets/credential-policy.ts";
+import { redactArguments, redactText } from "./redaction.ts";
 import type { CliPayload } from "./source-commands.ts";
 
 export type CliOutputFormat = "human" | "json";
@@ -47,7 +49,8 @@ const redact = (value: CliPayload, secrets: ReadonlyArray<string> = []): CliPayl
       enumerable: true,
       configurable: true,
       writable: true,
-      value: isSecretField(key) || (namedSecret && key === "value")
+      value: (isSecretField(key) || (namedSecret && key === "value"))
+          && !(Schema.is(Schema.String)(entry) && isEnvironmentReference(entry))
         ? "[REDACTED]"
         : redact(entry, secrets),
     });
@@ -98,6 +101,7 @@ const collectSecretValues = (value: CliPayload): Array<string> => {
       Schema.is(Schema.String)(entry)
       && (isSecretField(key) || (namedSecret && key === "value"))
       && entry !== "[REDACTED]"
+      && !isEnvironmentReference(entry)
     ) found.push(entry);
     else found.push(...collectSecretValues(entry));
   }
@@ -164,6 +168,7 @@ export const renderCliResult = (
     if (data !== undefined) envelope.data = data;
     return `${JSON.stringify(envelope)}\n`;
   }
-  if (data === undefined) return `${message}\n`;
-  return `${message}\n${JSON.stringify(data, null, 2)}\n`;
+  // A usage failure already ends with the help hint; its exit code adds nothing.
+  if (result.command === "usage") return `${message}\n`;
+  return renderHumanSummary(result.command, message, result.exitCode, data);
 };

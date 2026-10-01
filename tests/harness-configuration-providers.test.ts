@@ -1,6 +1,8 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -201,5 +203,28 @@ describe("Kimi, Kilo, Hermes, and Qwen harness adapters", () => {
       code: "FEATURE_LOSSY",
       level: "error",
     }));
+  });
+});
+
+describe("OpenCode hook execution", () => {
+  it("uses Node even when the client executable embeds its own runtime", async () => {
+    const root = await fixture(["opencode"], false);
+    await write(root, ".canonfig/hooks/guard.mjs", [
+      'import { writeFileSync } from "node:fs";',
+      'writeFileSync(".canonfig/hook-hit", "hit\\n");',
+      "",
+    ].join("\n"));
+    await applyPlan(await new HarnessConfigurationCompiler().plan({ root }));
+
+    const plugin = pathToFileURL(path.join(root, ".opencode/plugins/canonfig.ts")).href;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", [
+      `Object.defineProperty(process, "execPath", { value: ${JSON.stringify(path.join(root, "embedded-client"))} });`,
+      `const { CanonfigPlugin } = await import(${JSON.stringify(plugin)});`,
+      'await (await CanonfigPlugin())["tool.execute.before"]({ tool: "bash" }, { args: { command: "git push" } });',
+    ].join("\n")], { cwd: root, encoding: "utf8", timeout: 10_000 });
+
+    expect(child.status).toBe(0);
+    await expect(readFile(path.join(root, ".canonfig/hook-hit"), "utf8"))
+      .resolves.toBe("hit\n");
   });
 });

@@ -1,4 +1,4 @@
-import { Clock, Effect, Option, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 
 import {
   AgentTaskId,
@@ -21,7 +21,6 @@ import {
   PlannedAction as PlannedActionSchema,
 } from "../domain/synchronization.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import type { StateRepositoryError } from "../state/state-repository.errors.ts";
@@ -35,19 +34,21 @@ import {
   executionLimits,
   executeSynchronizationAction,
   ownedFilesFor,
+  removeRunTemporaryEntries,
   type ActionResult,
   type SynchronizationExecutionResult,
 } from "./executor.ts";
 import { desiredResourceDigest } from "./resource-plans.ts";
 import {
+  locallyEditedRollbackTargets,
   restoreRollbackReference,
   verifyResource,
   type ResourceExecutionContext,
   type ResourceVerification,
 } from "./resource-executors.ts";
-import { restoreScheduleRollbackReference } from "./schedule-rollbacks.ts";
 import {
   RecoveryIntegrityError,
+  RecoveryLocalEditError,
   RecoveryRunNotFoundError,
   type SynchronizationRecoveryError,
 } from "./synchronization.errors.ts";
@@ -450,6 +451,37 @@ export const recoverSynchronizationPlan = (
       agentResolution: recoveryInput.agentResolution,
     };
     const states = yield* executionContexts(input, executionLimits(input));
+    // Nothing is touched until every interrupted action's targets are known
+    // to be either as they were before the run or as the run was writing
+    // them. Anything else is a later local edit: restoring the snapshot or
+    // re-running the action would destroy it, so recovery stops and keeps the
+    // run open, the edited file and the snapshot.
+    for (const state of states) {
+      const last = latest.get(state.action.id)!;
+      if (last.state === "pending" || last.state === "skipped") continue;
+      const reference = latestRollbackReference(recovery.actions, state.action.id);
+      if (reference === undefined) continue;
+      const edited = yield* locallyEditedRollbackTargets(state.context, reference).pipe(
+        Effect.mapError((error) =>
+          integrityError(recovery, `cannot inspect ${state.action.id}: ${String(error)}`)
+        ),
+      );
+      if (edited.length > 0) {
+        return yield* new RecoveryLocalEditError({
+          run: recovery.run.id,
+          resource: state.action.resource,
+          paths: edited,
+          snapshot: reference,
+        });
+      }
+    }
+    // A killed run leaves its temporary files behind. A directory that still
+    // holds one cannot be restored (rmdir fails with ENOTEMPTY).
+    yield* removeRunTemporaryEntries(plan.actions).pipe(
+      Effect.mapError((error) =>
+        integrityError(recovery, `cannot remove temporary files of the interrupted run: ${String(error)}`)
+      ),
+    );
     const verified = new Set<ResourceId>();
     const removedResources = new Set<ResourceId>();
     const failedRollbacks: Array<ActionId> = [];

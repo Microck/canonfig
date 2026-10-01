@@ -8,6 +8,7 @@ import type {
 export interface SetupPlanCommandInput {
   readonly role: string;
   readonly scope?: string | undefined;
+  readonly mode?: string | undefined;
   readonly files: ReadonlyArray<string>;
   readonly intent?: string | undefined;
 }

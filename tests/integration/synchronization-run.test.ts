@@ -2,7 +2,10 @@ import {
   chmodSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readlinkSync,
+  type PathLike,
+  type StatsFs,
   readFileSync,
   renameSync,
   rmSync,
@@ -11,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile, type statfs } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -21,6 +24,7 @@ import { Effect, Fiber, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentResolution } from "../../src/agent/agent-resolution.service.ts";
+import { describeRuntimeError } from "../../src/cli/failure-taxonomy.ts";
 import {
   ActionId,
   AgentTaskId,
@@ -43,12 +47,6 @@ import type {
   SynchronizationOutcome,
 } from "../../src/domain/synchronization.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
-import type {
-  RenderedSchedulerJob,
-  SchedulerBackend,
-  SchedulerInspection,
-  SchedulerSnapshot,
-} from "../../src/machine/machine-state.types.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
@@ -60,19 +58,13 @@ import {
 import type { JsonValue } from "../../src/profile/profile-codec.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
-import { scheduleManagerLayer } from "../../src/schedule/schedule-manager.layer.ts";
-import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
-import { ScheduleVerificationError } from "../../src/schedule/schedule-manager.errors.ts";
-import {
-  SyncScheduleSchema,
-  type SyncSchedule,
-} from "../../src/schedule/schedule-manager.types.ts";
 import { planSynchronization } from "../../src/synchronization/planner.ts";
 import { RollbackCleanupError } from "../../src/synchronization/synchronization.errors.ts";
 import {
   defaultSynchronizationExecutionLimits,
   executeSynchronizationAction,
   executionContexts,
+  preflightDisk,
 } from "../../src/synchronization/executor.ts";
 import {
   getConfigPath,
@@ -121,74 +113,6 @@ interface Fixture {
   readonly revision: PlanningProfileRevision;
   readonly artifact: SynchronizationArtifact;
   readonly input: SynchronizationRunInput;
-}
-
-class RecordingScheduler implements SchedulerBackend {
-  definition: RenderedSchedulerJob | undefined;
-  readonly installs: Array<RenderedSchedulerJob> = [];
-  removals = 0;
-
-  readonly inspect = (
-    expected: RenderedSchedulerJob,
-  ): Effect.Effect<SchedulerInspection> =>
-    Effect.sync(() => ({
-      installed: this.definition !== undefined,
-      enabled: this.definition !== undefined,
-      matches: this.definition?.service === expected.service
-        && this.definition.schedule === expected.schedule,
-    }));
-
-  readonly snapshot = (
-    expected: RenderedSchedulerJob,
-  ): Effect.Effect<SchedulerSnapshot> =>
-    Effect.sync(() => this.definition === undefined
-      ? {
-        state: "absent" as const,
-        platform: expected.platform,
-        mechanism: expected.mechanism,
-        serviceName: expected.serviceName,
-      }
-      : {
-        state: "present" as const,
-        platform: expected.platform,
-        mechanism: expected.mechanism,
-        serviceName: expected.serviceName,
-        enabled: true,
-        servicePresent: true,
-        schedulePresent: true,
-        service: this.definition.service,
-        schedule: this.definition.schedule,
-      });
-
-  readonly install = (
-    definition: RenderedSchedulerJob,
-  ): Effect.Effect<void> =>
-    Effect.sync(() => {
-      this.definition = definition;
-      this.installs.push(definition);
-    });
-
-  readonly remove = (): Effect.Effect<void> =>
-    Effect.sync(() => {
-      this.definition = undefined;
-      this.removals += 1;
-    });
-
-  readonly restore = (
-    expected: RenderedSchedulerJob,
-    snapshot: SchedulerSnapshot,
-  ): Effect.Effect<void> =>
-    Effect.sync(() => {
-      if (snapshot.state === "absent") {
-        this.definition = undefined;
-        return;
-      }
-      this.definition = {
-        ...expected,
-        service: snapshot.service ?? "",
-        schedule: snapshot.schedule ?? "",
-      };
-    });
 }
 
 const fileFixture = (
@@ -423,57 +347,6 @@ const mirrorContext = (
   };
 };
 
-const scheduleContext = (
-  root: string,
-  previousSchedule?: {
-    readonly kind: "daily";
-    readonly localTime: string;
-  } | undefined,
-): ResourceExecutionContext => {
-  const spec = {
-    kind: "schedule" as const,
-    calendar: { type: "daily" as const, at: "03:30" },
-    timezone: "local",
-  };
-  const content = new TextEncoder().encode(JSON.stringify(spec));
-  const digest = decode(ContentDigest)(sha256BytesHex(content));
-  const resourceId = decode(ResourceId)("schedule");
-  return {
-    run: decode(RunId)("run-schedule"),
-    action: {
-      id: decode(ActionId)("action:schedule:0:write-file"),
-      resource: resourceId,
-      kind: "write-file",
-      detail: {
-        kind: "write-file",
-        target: join(root, "schedule.json"),
-        digest,
-      },
-      before: [],
-    },
-    resource: {
-      id: resourceId,
-      kind: "schedule",
-      policy: "replace",
-      target: join(root, "schedule.json"),
-      dependsOn: [],
-      blobs: [],
-    },
-    desired: {
-      kind: "schedule",
-      digest,
-      schedule: { kind: "daily", localTime: "03:30" },
-    },
-    verification: {
-      method: "command",
-      command: [process.execPath, "--version"],
-    },
-    artifacts: new Map([[digest, { digest, content }]]),
-    limits: defaultSynchronizationExecutionLimits,
-    previousSchedule,
-  };
-};
-
 const follower = decode(FollowerIdentity)({
   id: "follower-1",
   name: "Follower",
@@ -559,141 +432,6 @@ const reencodePlan = (
     })),
   ));
   return { ...plan, encoded, digest: sha256Hex(encoded) };
-};
-
-const scheduleDefaultRunInput = (
-  fixture: Fixture,
-  run: string,
-  operation: "upsert" | "remove" = "upsert",
-): SynchronizationRunInput => {
-  const schedule = { kind: "daily" as const, localTime: "03:30" };
-  const previousSchedule = { kind: "daily" as const, localTime: "02:15" };
-  const action = {
-    id: decode(ActionId)("action:canonfig.schedule-default:0:schedule-default"),
-    resource: decode(ResourceId)("canonfig.schedule-default"),
-    kind: "schedule-default" as const,
-    detail: {
-      kind: "schedule-default" as const,
-      operation,
-      schedule,
-      previousSchedule,
-    },
-    before: [],
-  };
-  const body = {
-    revision: fixture.revision.id,
-    follower: follower.id,
-    requiredBlobs: [],
-    actions: [action],
-    agentTasks: [],
-  };
-  const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(body));
-  return {
-    id: decode(RunId)(run),
-    plan: {
-      ...body,
-      encoded,
-      digest: sha256Hex(encoded),
-    },
-    revision: fixture.revision,
-    artifacts: [],
-  };
-};
-
-const scheduleManagerFor = (controls: {
-  failUpdate: boolean;
-  blockUpdate: boolean;
-  failRemove?: boolean;
-  failAfterMutation?: boolean;
-  initial?: SyncSchedule | undefined;
-  started?: (() => void) | undefined;
-}): ScheduleManager["Service"] => {
-  let current: SyncSchedule | undefined = controls.initial;
-  let blockedOnce = false;
-  const status = (schedule: SyncSchedule) => ({
-    state: current === undefined
-      ? "not-installed" as const
-      : JSON.stringify(current) === JSON.stringify(schedule)
-        ? "current" as const
-        : "drifted" as const,
-    platform: "linux" as const,
-    schedule,
-    definition: {
-      platform: "linux" as const,
-      mechanism: "systemd-user-timer" as const,
-      serviceName: "test",
-      service: "",
-      schedule: "",
-    },
-  });
-  const update = (input?: { readonly schedule?: SyncSchedule }) => {
-    const schedule = input?.schedule ?? { kind: "daily" as const, localTime: "00:00" };
-    if (controls.blockUpdate && !blockedOnce) {
-      blockedOnce = true;
-      controls.started?.();
-      return Effect.never;
-    }
-    if (controls.failUpdate) {
-      if (controls.failAfterMutation) current = schedule;
-      return Effect.fail(new ScheduleVerificationError({
-        operation: "update",
-        state: "failed",
-        message: "injected schedule update failure",
-      }));
-    }
-    current = schedule;
-    return Effect.succeed({
-      change: "updated" as const,
-      status: status(schedule),
-    });
-  };
-  return ScheduleManager.of({
-    install: update,
-    update,
-    inspect: (input) => Effect.succeed(status(
-      input?.schedule ?? { kind: "daily", localTime: "00:00" },
-    )),
-    status: (input) => Effect.succeed(status(
-      input?.schedule ?? { kind: "daily", localTime: "00:00" },
-    )),
-    snapshot: () => Effect.succeed(current === undefined
-      ? {
-        state: "absent" as const,
-        platform: "linux" as const,
-        mechanism: "systemd-user-timer" as const,
-        serviceName: "test",
-      }
-      : {
-        state: "present" as const,
-        platform: "linux" as const,
-        mechanism: "systemd-user-timer" as const,
-        serviceName: "test",
-        enabled: true,
-        servicePresent: true,
-        schedulePresent: true,
-        service: "",
-        schedule: JSON.stringify(current),
-      }),
-    restore: (_input, snapshot) => Effect.sync(() => {
-      current = snapshot.state === "absent"
-        ? undefined
-        : Schema.decodeUnknownSync(SyncScheduleSchema)(
-          JSON.parse(snapshot.schedule ?? "{}"),
-        );
-    }),
-    remove: () => {
-      if (controls.failRemove) {
-        if (controls.failAfterMutation) current = undefined;
-        return Effect.fail(new ScheduleVerificationError({
-          operation: "remove",
-          state: "failed",
-          message: "injected schedule remove failure",
-        }));
-      }
-      current = undefined;
-      return Effect.succeed({ change: "removed" as const });
-    },
-  });
 };
 
 const npmTarballBytes = (
@@ -958,7 +696,13 @@ describe("synchronization apply run", () => {
       follower: follower.id, revision, artifacts: [base.artifact],
     })).pipe(Effect.provide(applicationLayer({ ...base, revision }))));
     if (edited) {
-      await expect(recovery).rejects.toMatchObject({ _tag: "RecoveryIntegrityError" });
+      // A later local edit stops recovery as work for a person, naming the
+      // file; the edit and the snapshot both stay.
+      await expect(recovery).rejects.toMatchObject({
+        _tag: "RecoveryLocalEditError",
+        paths: [context.resource.target],
+        snapshot: reference,
+      });
       expect(await readFile(context.resource.target, "utf8")).toContain("after interruption\n");
       await expect(access(reference)).resolves.toBeUndefined();
     } else {
@@ -1070,7 +814,7 @@ const keys = [
   "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL",
   "UV_EXTRA_INDEX_URL", "UV_INDEX", "UV_FIND_LINKS", "UV_TRUSTED_HOST",
   "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "PIP_TRUSTED_HOST",
-  "UV_CONFIG_FILE", "PIP_CONFIG_FILE", "UV_HTTP_PROXY", "PIP_PROXY",
+  "UV_CONFIG_FILE", "PIP_CONFIG_FILE", "UV_HTTP_PROXY", "PIP_PROXY", "UV_PYTHON_DOWNLOADS",
   "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY", "NETRC",
   "KEYRING_BACKEND", "PIP_KEYRING_PROVIDER", "PIP_CERT", "PIP_CLIENT_CERT"
 ];
@@ -1108,6 +852,7 @@ if (process.argv.slice(2).some((value) =>
           { name: "PIP_CLIENT_CERT", value: join(root, "evil-client.pem") },
           { name: "PIP_KEYRING_PROVIDER", value: "subprocess" },
           { name: "UV_HTTP_PROXY", value: "http://evil.example.test" },
+          { name: "UV_PYTHON_DOWNLOADS", value: "automatic" },
           { name: "HTTP_PROXY", value: "http://evil.example.test" },
           { name: "https_proxy", value: "http://evil.example.test" },
           { name: "FTP_PROXY", value: "http://evil.example.test" },
@@ -1134,12 +879,16 @@ if (process.argv.slice(2).some((value) =>
         "install",
         "uv-tool==1.2.3",
         "--no-build",
+        // CF-07: an incompatible package must fail instead of fetching an
+        // interpreter from outside the reviewed index.
+        "--no-python-downloads",
         "--no-config",
         `--default-index=${expectedIndex}`,
       ]);
       expect(observed.values.UV_DEFAULT_INDEX).toBe(expectedIndex);
       expect(observed.values.UV_INDEX_URL).toBe(expectedIndex);
       expect(observed.values.PIP_INDEX_URL).toBe(expectedIndex);
+      expect(observed.values.UV_PYTHON_DOWNLOADS).toBe("never");
       for (const key of [
         "UV_EXTRA_INDEX_URL",
         "UV_INDEX",
@@ -1168,6 +917,102 @@ if (process.argv.slice(2).some((value) =>
       expect(observed.configBytes).toBe("");
     },
   );
+
+  it("reports the installer's own last output lines, redacted, when it fails", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, "uv"),
+      `#!${process.execPath}
+for (let line = 1; line <= 30; line += 1) process.stderr.write("resolver noise " + line + "\\n");
+process.stderr.write("  auth token=hunter2-secret\\n");
+process.stderr.write("error: Distribution sqlparse==0.1.19 can't be installed because it has no usable wheels\\n");
+process.exit(1);
+`,
+    );
+    chmodSync(join(bin, "uv"), 0o755);
+    const machine = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(root, "home") },
+        { name: "PATH", value: bin },
+      ],
+    });
+    const error = await Effect.runPromise(
+      Effect.gen(function*() {
+        const prepared = yield* prepareResourceAction(realUvInstallerContext(root, "sqlparse"));
+        return yield* prepared.execute;
+      }).pipe(Effect.provide(machine), Effect.flip),
+    );
+
+    expect(error.message).toContain("installer uv exited with 1");
+    expect(error.message).toContain("sqlparse==0.1.19 can't be installed because it has no usable wheels");
+    expect(error.message).toContain("token=[REDACTED]");
+    expect(error.message).not.toContain("hunter2-secret");
+    // Bounded to the tail: the earliest lines are dropped.
+    expect(error.message).not.toContain("resolver noise 1\n");
+    expect(error.message).toContain("resolver noise 30");
+  });
+
+  describe("tool verifier lookup", () => {
+    const ruffContext = (root: string): ResourceExecutionContext => {
+      const context = realUvInstallerContext(root, "ruff");
+      return {
+        ...context,
+        desired: {
+          kind: "tool",
+          toolId: "ruff",
+          recipes: [{ platform: "linux", method: "uv", package: "ruff", version: "0.6.9" }],
+          loginRequired: false,
+        },
+        verification: {
+          method: "command",
+          command: ["ruff", "rule", "F401"],
+          expectContains: "unused-import",
+        },
+      };
+    };
+    const machineWithoutLocalBin = (root: string) => {
+      const bin = join(root, "bin");
+      mkdirSync(bin, { recursive: true });
+      // A scheduler-bounded PATH: nothing under the home directory.
+      return linuxMachineStateLayer({
+        environment: [
+          { name: "HOME", value: join(root, "home") },
+          { name: "PATH", value: bin },
+        ],
+      });
+    };
+
+    it("finds a tool that exists only in the uv tool bin directory", async () => {
+      const root = temporaryDirectory();
+      const localBin = join(root, "home", ".local", "bin");
+      mkdirSync(localBin, { recursive: true });
+      writeFileSync(join(localBin, "ruff"), "#!/bin/sh\necho 'unused-import (F401)'\n");
+      chmodSync(join(localBin, "ruff"), 0o755);
+
+      const verification = await Effect.runPromise(
+        verifyResource(ruffContext(root)).pipe(Effect.provide(machineWithoutLocalBin(root))),
+      );
+
+      expect(verification).toMatchObject({ passed: true, method: "command:ruff", exitCode: 0 });
+    });
+
+    it("names every directory it searched when the tool is missing", async () => {
+      const root = temporaryDirectory();
+
+      const verification = await Effect.runPromise(
+        verifyResource(ruffContext(root)).pipe(Effect.provide(machineWithoutLocalBin(root))),
+      );
+
+      expect(verification.passed).toBe(false);
+      expect(verification.reason).toBe(
+        `verification executable ruff was not found (searched: ${join(root, "home", ".local", "bin")}, ${
+          join(root, "bin")
+        })`,
+      );
+    });
+  });
 
   it.each([
     "http://packages.example.test/repository/simple",
@@ -1422,6 +1267,17 @@ if (process.argv.slice(2).some((value) =>
       verifyResource(context).pipe(Effect.provide(machineLayer(root))),
     );
     expect(verification.passed).toBe(true);
+    // npm links global bin entries to scripts in its package tree on POSIX.
+    const npmShim = join(root, "opt", "npm-tool");
+    symlinkSync(toolPath, npmShim);
+    const linked = await Effect.runPromise(
+      verifyResource({
+        ...context,
+        resource: { ...context.resource, target: npmShim },
+        verification: { method: "executable-present", executable: npmShim },
+      }).pipe(Effect.provide(machineLayer(root))),
+    );
+    expect(linked.passed).toBe(true);
 
     // A path that exists but is not executable still fails.
     const dataPath = join(root, "opt", "not-a-tool");
@@ -1434,6 +1290,25 @@ if (process.argv.slice(2).some((value) =>
       }).pipe(Effect.provide(machineLayer(root))),
     );
     expect(rejected.passed).toBe(false);
+    const unsafeShim = join(root, "opt", "non-executable-shim");
+    symlinkSync(dataPath, unsafeShim);
+    const unsafe = await Effect.runPromise(
+      verifyResource({
+        ...context,
+        verification: { method: "executable-present", executable: unsafeShim },
+      }).pipe(Effect.provide(machineLayer(root))),
+    );
+    expect(unsafe.passed).toBe(false);
+
+    const cyclicShim = join(root, "opt", "cyclic-shim");
+    symlinkSync(cyclicShim, cyclicShim);
+    const cyclic = await Effect.runPromise(
+      verifyResource({
+        ...context,
+        verification: { method: "executable-present", executable: cyclicShim },
+      }).pipe(Effect.provide(machineLayer(root))),
+    );
+    expect(cyclic.passed).toBe(false);
   });
 
   it("does not follow an intermediate mirror symlink outside the managed root", async () => {
@@ -2006,6 +1881,159 @@ if (process.argv.slice(2).some((value) =>
     },
   );
 
+  it("recovers a skill apply killed with its own temporary files inside the new tree", async () => {
+    // A kill during a skill apply left `.file-000.md.canonfig-<hex>` in a
+    // directory the run had created. Rolling that directory back failed with
+    // ENOTEMPTY on every `recover`, so the follower stayed stuck until someone
+    // deleted the partial tree by hand.
+    const root = temporaryDirectory();
+    const base = fileFixture(root, "run-skill-killed");
+    const target = join(root, "managed-skill");
+    const resource: PublishedResource = {
+      id: decode(ResourceId)("managed-skill"),
+      kind: "skill",
+      policy: "replace-if-unmodified",
+      target,
+      dependsOn: [],
+      blobs: [],
+    };
+    const files = ["SKILL.md", "group-12/nested-2/file-000.md"].map((path) => ({
+      path,
+      digest: base.artifact.digest,
+      executable: false,
+      mode: 0o600,
+    }));
+    const desired: DesiredResource = {
+      kind: "skill",
+      digest: directoryEntriesDigest(files.map((file) => ({ ...file, objectKind: "regular" as const }))),
+      mode: 0o700,
+      directories: [],
+      files,
+    };
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      resources: [resource],
+      desired: [{
+        resource: resource.id,
+        desired,
+        verification: { method: "digest", digest: directoryVerificationDigest(files) },
+      }],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{ resource: resource.id, observed: { state: "absent" } }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const fixture: Fixture = { ...base, target, revision, input: { ...base.input, revision, plan } };
+    const unrelated = join(root, "notes.txt");
+    writeFileSync(unrelated, "keep me");
+    const { desired: _, blobs: __, ...persistable } = revision;
+    await Effect.runPromise(Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower });
+      yield* repository.publishRevision({ revision: persistable });
+      yield* repository.startRun({ id: fixture.input.id, follower: follower.id, revision: revision.id,
+        plan, startedAt: "2026-09-07T00:00:00Z" });
+      const states = yield* executionContexts(fixture.input, defaultSynchronizationExecutionLimits);
+      const state = states.find((entry) => entry.action.kind === "mirror-directory");
+      if (state === undefined) throw new Error("missing mirror action");
+      const prepared = yield* prepareResourceAction(state.context);
+      yield* repository.journalAction({ run: fixture.input.id, action: state.action.id,
+        state: "running", recordedAt: "2026-09-07T00:00:01Z", attempt: 1,
+        rollbackReference: prepared.rollbackReference });
+      yield* prepared.execute;
+    }).pipe(Effect.provide(applicationLayer(fixture))));
+    const nested = join(target, "group-12", "nested-2");
+    writeFileSync(join(nested, ".cf-0123456789ab.tmp"), "partial");
+    writeFileSync(join(nested, `.file-000.md.canonfig-${"c".repeat(24)}`), "partial, older release");
+
+    const outcome = await Effect.runPromise(Effect.flatMap(Synchronization, (synchronization) =>
+      synchronization.recover({ follower: follower.id, revision, artifacts: [base.artifact] })
+    ).pipe(Effect.provide(applicationLayer(fixture))));
+
+    expect(outcome.outcome).toBe("Converged");
+    expect(readdirSync(nested)).toEqual(["file-000.md"]);
+    expect(await readFile(join(nested, "file-000.md"), "utf8")).toBe("canonical content");
+    expect(readFileSync(unrelated, "utf8")).toBe("keep me");
+  });
+
+  it("refuses a run that cannot fit before recording it", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-disk-full");
+    // Larger than any filesystem the suite runs on. Only the preflight reads it.
+    const content = new Uint8Array(1);
+    Object.defineProperty(content, "byteLength", { value: 2 ** 50 });
+    const input = { ...fixture.input, artifacts: [{ digest: fixture.artifact.digest, content }] };
+
+    const error = await Effect.runPromise(Effect.flip(Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower });
+      const { desired: _, blobs: __, ...persistable } = fixture.revision;
+      yield* repository.publishRevision({ revision: persistable });
+      return yield* (yield* Synchronization).run(input);
+    }).pipe(Effect.provide(applicationLayer(fixture)))));
+
+    expect(error).toMatchObject({ _tag: "InsufficientDiskError", path: fixture.target });
+    // The message used to throw "Do not know how to serialize a BigInt".
+    expect(String(error)).toContain("requiredBytes=");
+    const described = describeRuntimeError(error);
+    expect(described.category).toBe("verification-or-apply-failure");
+    expect(described.message).toContain(`the filesystem holding ${fixture.target} needs`);
+    const open = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) => repository.loadRecovery(follower.id))
+        .pipe(Effect.provide(stateRepositoryLayer(fixture.database))),
+    );
+    expect(open).toBeUndefined();
+    await expect(access(fixture.target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  const separateFilesystem = (() => {
+    try {
+      return statSync("/dev/shm").dev !== statSync(tmpdir()).dev ? "/dev/shm" : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
+  it.skipIf(separateFilesystem === undefined)(
+    "measures a target's own filesystem, not only HOME's",
+    async () => {
+      const home = temporaryDirectory();
+      const elsewhere = mkdtempSync(join(separateFilesystem!, "canonfig-target-"));
+      temporaryDirectories.push(elsewhere);
+      const fixture = fileFixture(home);
+      const target = join(elsewhere, "settings.json");
+      const action = fixture.input.plan.actions[0]!;
+      if (action.detail.kind !== "write-file") throw new Error("file fixture did not produce a write");
+      const input: SynchronizationRunInput = {
+        ...fixture.input,
+        plan: reencodePlan({
+          ...fixture.input.plan,
+          actions: [{ ...action, detail: { ...action.detail, target } }],
+        }),
+      };
+      // HOME's filesystem has room; the target's has none.
+      const statfsByFilesystem = async (path: PathLike): Promise<StatsFs> =>
+        // SAFETY: only bsize and bavail feed the estimate.
+        ({ bsize: 4096, bavail: String(path).startsWith(separateFilesystem!) ? 0 : 1_000_000 }) as StatsFs;
+
+      // SAFETY: probe() in src/machine/disk-space.ts calls statfsImpl(path) without
+      // `{ bigint: true }`, so only the Promise<StatsFs> overload is ever exercised.
+      const error = await Effect.runPromise(Effect.flip(
+        preflightDisk(input, statfsByFilesystem as typeof statfs).pipe(
+          Effect.provide(machineLayer(home)),
+        ),
+      ));
+
+      expect(error).toMatchObject({ _tag: "InsufficientDiskError", path: target, availableBytes: 0n });
+    },
+  );
+
   it("rolls back a newly-created directory root to missing", async () => {
     const root = temporaryDirectory();
     const managed = join(root, "managed");
@@ -2323,7 +2351,7 @@ if (process.argv.slice(2).some((value) =>
     // and the reason keeps the tag in front of it.
     expect(outcome).toMatchObject({
       outcome: "Failed",
-      reason: `MissingArtifactError: digest="${fixture.artifact.digest}"`,
+      reason: expect.stringContaining(`: MissingArtifactError: digest="${fixture.artifact.digest}"`),
     });
     const applied = await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>
@@ -3062,7 +3090,7 @@ if (process.argv.slice(2).some((value) =>
     // the reason, which the CLI maps to verification-or-apply-failure.
     expect(outcome).toMatchObject({
       outcome: "Failed",
-      reason: `InvalidExecutionPlanError: cannot merge config ${base.target}: config key path crosses a non-object value: mcp.server`,
+      reason: `resource settings could not be applied to ${base.target}: InvalidExecutionPlanError: cannot merge config ${base.target}: config key path crosses a non-object value: mcp.server. The file was left unchanged.`,
     });
     expect(await readFile(base.target, "utf8")).toBe(current);
   });
@@ -3087,6 +3115,26 @@ if (process.argv.slice(2).some((value) =>
     expect(actionRows(fixture.database)[2]?.rollback_reference).toContain(
       "canonfig/rollback",
     );
+  });
+
+  it("names the blocked resource and its target, not a temporary file, when a target is unwritable", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-unwritable-target");
+    const locked = dirname(fixture.target);
+    // The rollback cache lives under this HOME; only new entries in it are blocked.
+    mkdirSync(join(locked, ".cache", "canonfig", "rollback"), { recursive: true });
+    chmodSync(locked, 0o555);
+    try {
+      const outcome = await seedAndRun(fixture);
+
+      expect(outcome.outcome).toBe("Failed");
+      if (outcome.outcome !== "Failed") return;
+      expect(outcome.reason).toContain(
+        `resource settings could not be applied to ${fixture.target}: atomically write file failed: EACCES`,
+      );
+      expect(outcome.reason).not.toMatch(/\.cf-[0-9a-f]{12}\.tmp|canonfig-[0-9a-f]{24}/u);
+    } finally {
+      chmodSync(locked, 0o755);
+    }
   });
 
   it("returns Failed and rolls back an owned-file action failure", async () => {
@@ -3457,6 +3505,7 @@ if (process.argv.slice(2).some((value) =>
       "install",
       "tool==1.2.3",
       "--no-build",
+      "--no-python-downloads",
       "--no-config",
       "--default-index=https://pypi.org/simple",
     ]],

@@ -10,9 +10,10 @@ import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Effect, Layer, Option, Redacted, Schema, SchemaIssue } from "effect";
 
 import { SourceSignature } from "../domain/brand.ts";
+import { configPathIssue } from "../domain/config-path.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import { AgentResolutionWithSecretsLive } from "../agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../agent/agent-resolution.service.ts";
@@ -25,6 +26,7 @@ import {
   finalizeFollowerEnrollment,
   listRevisions,
   queryFollowerLifecycle,
+  revokeFollowerEnrollment,
 } from "../enrollment/follower-client.ts";
 import {
   deliverInvitationEnvelope,
@@ -32,7 +34,14 @@ import {
 } from "../enrollment/invitation-envelope.ts";
 import { TunnelLive } from "../enrollment/tunnel.layer.ts";
 import { Tunnel } from "../enrollment/tunnel.service.ts";
+import {
+  tunnelCarriesSource,
+  withManagedTunnel,
+} from "../enrollment/tunnel-supervision.ts";
 import { startSourceServer } from "../enrollment/source-server.ts";
+import { sourceServiceLayer } from "../source-service/source-service.layer.ts";
+import { SourceService } from "../source-service/source-service.service.ts";
+import { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import {
   decodeMachineProfileJsonc,
   ProfileContractError,
@@ -43,35 +52,54 @@ import type { CredentialPolicy } from "../machine/machine-state.types.ts";
 import { linuxMachineStateLayer } from "../machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../machine/windows.layer.ts";
+import { nativeSecretStoreLayer } from "../secrets/native-secret-store.ts";
+import { clearTransferredSecrets } from "../secrets/secret-store.ts";
 import { ProfileCatalog } from "../profile/profile-catalog.service.ts";
 import {
+  InvalidPublicationResourcesError,
   PublicationSigningError,
 } from "../profile/profile-catalog.errors.ts";
+import { profileContentDigests } from "../profile/compiler.ts";
 import {
   scanDiscovery,
   type DiscoveryScanResult,
 } from "../profile/discovery.ts";
+import { InexactJsonNumberError, jsonPathText } from "../profile/profile-codec.ts";
 import {
   acceptPublicationProposal,
   makePublication,
+  resolveResourceSources,
   type ProfileRevisionSigner,
 } from "../profile/publication.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
   desiredScheduleInput,
   type ResolvedScheduleInput,
+  scheduleAvailableDetail,
+  syncScheduleFromDefault,
+  unmanagedScheduleDetail,
 } from "../schedule/schedule-manager.types.ts";
+import { describeUnattendedRuns } from "./readiness.ts";
 import { scheduleManagerLayer } from "../schedule/schedule-manager.layer.ts";
 import { setupCommandsLayer } from "../setup/setup.layer.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
 import { SynchronizationLive } from "../synchronization/synchronization.layer.ts";
 import { Synchronization } from "../synchronization/synchronization.service.ts";
+import { runLockHolder } from "../synchronization/run-lock.ts";
+import {
+  followerConvergence,
+  openRunReport,
+} from "../synchronization/run-status.ts";
 import {
   defaultScheduledInvocation,
 } from "../synchronization/follower-sync-config.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
+import {
+  appliedFileChanges,
+  clientReviewSteps,
+} from "../synchronization/client-review.ts";
 import {
   abandonFollowerRun,
   recoverFollower,
@@ -167,17 +195,69 @@ const emptyDiscoveryProposal: DiscoveryScanResult = {
   scannedPaths: [],
 };
 
+const isSymbol = Schema.is(Schema.Symbol);
+
+/** Render typed schema structure and trusted expectations, never reported input. */
+const schemaDiagnostic = (cause: Schema.SchemaError): string | undefined => {
+  const problems: Array<{ readonly path: ReadonlyArray<PropertyKey>; readonly reason: string }> = [];
+  const visit = (issue: SchemaIssue.Issue, path: ReadonlyArray<PropertyKey>): void => {
+    switch (issue._tag) {
+      case "Pointer":
+        return visit(issue.issue, [...path, ...issue.path]);
+      case "Encoding":
+        return visit(issue.issue, path);
+      case "Composite":
+      case "AnyOf":
+        for (const child of issue.issues) visit(child, path);
+        if (issue.issues.length === 0) problems.push({ path, reason: "Expected a matching schema" });
+        return;
+      case "Filter":
+        if (issue.issue._tag !== "InvalidValue") return visit(issue.issue, path);
+        problems.push({
+          path,
+          reason: SchemaIssue.defaultLeafHook(new SchemaIssue.InvalidValue({
+            expected: issue.issue.annotations?.expected ?? issue.filter.annotations?.expected,
+          })),
+        });
+        return;
+      case "InvalidType":
+        problems.push({ path, reason: SchemaIssue.defaultLeafHook(new SchemaIssue.InvalidType(issue.ast)) });
+        return;
+      case "InvalidValue":
+        problems.push({
+          path,
+          reason: SchemaIssue.defaultLeafHook(new SchemaIssue.InvalidValue({ expected: issue.annotations?.expected })),
+        });
+        return;
+      case "MissingKey":
+        problems.push({ path, reason: "missing required field" });
+        return;
+      case "UnexpectedKey":
+        problems.push({ path, reason: "unexpected field" });
+        return;
+      case "OneOf":
+        problems.push({ path, reason: "Expected exactly one matching schema" });
+        return;
+      case "Forbidden":
+        problems.push({ path, reason: "schema operation is unavailable" });
+    }
+  };
+  visit(cause.issue, []);
+  if (problems.length === 0) return undefined;
+  return problems.sort((left, right) => right.path.length - left.path.length).slice(0, 5)
+    .map(({ path, reason }) =>
+      `${jsonPathText("profile", path.map((key) => isSymbol(key) ? "[symbol]" : key))}: ${reason}`
+    ).join("; ").slice(0, 300);
+};
+
 /**
- * Keep only structural schema diagnostics: `Expected <type>` lines and
- * `at [<path>]` lines. Anything else (notably rejected actual values the
- * formatter may inline) is dropped rather than echoed.
+ * Every problem a profile contract or publication found, as operator text
+ * from the failure taxonomy, bounded so a large invalid profile still reads.
  */
-const schemaDiagnostic = (message: string): string | undefined => {
-  const kept = message.split("\n").map((line) => line.trim()).filter((line) =>
-    line.startsWith("Expected ") || /^at \[.*\]$/.test(line)
-  );
-  if (kept.length === 0) return undefined;
-  return kept.join(" ").slice(0, 300);
+const profileProblems = (errors: ReadonlyArray<TaggedRuntimeError>): string => {
+  const shown = errors.slice(0, 5).map((error) => describeRuntimeError(error).message);
+  const hidden = errors.length - shown.length;
+  return hidden > 0 ? `${shown.join("; ")}; and ${hidden} more` : shown.join("; ");
 };
 
 /**
@@ -186,8 +266,9 @@ const schemaDiagnostic = (message: string): string | undefined => {
  * their authoring without trial and error. Raw parser messages are never
  * echoed: a JSON syntax error quotes the offending source text, which may be
  * profile content, so it is replaced with a static diagnostic. Contract
- * errors carry only their tag list. Schema errors keep structural
- * expected-type/path lines; rejected values are dropped.
+ * errors render through the failure taxonomy, which names resources and
+ * paths but not values. Schema errors render typed paths and expected values
+ * from the schema; reported input and custom issue messages are never rendered.
  */
 export const profileFileFailure = (cause: unknown): CliCommandFailure => {
   if (cause instanceof SyntaxError) {
@@ -197,14 +278,21 @@ export const profileFileFailure = (cause: unknown): CliCommandFailure => {
     });
   }
   if (cause instanceof ProfileContractError) {
-    const detail = cause.message.replace(/\s+/gu, " ").trim().slice(0, 300);
     return new CliCommandFailure({
       category: "usage-or-configuration",
-      message: `authored profile file is malformed or invalid: ${detail}`,
+      message: `authored profile file is malformed or invalid: ${profileProblems(cause.errors)}`,
+    });
+  }
+  if (cause instanceof InexactJsonNumberError) {
+    return new CliCommandFailure({
+      category: "usage-or-configuration",
+      message: `authored profile file is malformed or invalid: ${cause.message}`,
     });
   }
   if (cause instanceof Error) {
-    const detail = schemaDiagnostic(cause.message) ?? "profile validation failed";
+    const detail = cause instanceof Schema.SchemaError
+      ? schemaDiagnostic(cause) ?? "profile validation failed"
+      : "profile validation failed";
     return new CliCommandFailure({
       category: "usage-or-configuration",
       message: `authored profile file is malformed or invalid: ${detail}`,
@@ -221,9 +309,11 @@ const readAuthoredProfile = (
 ): Effect.Effect<MachineProfile, CliCommandFailure> =>
   Effect.tryPromise({
     try: () => readFile(path, "utf8"),
-    catch: () => new CliCommandFailure({
+    catch: (cause) => new CliCommandFailure({
       category: "usage-or-configuration",
-      message: "authored profile file could not be read",
+      message: `authored profile file ${path} could not be read: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
     }),
   }).pipe(
     Effect.flatMap((text) =>
@@ -233,6 +323,15 @@ const readAuthoredProfile = (
       })
     ),
   );
+
+/** A publication whose resources fail the profile contract, one line per problem. */
+const invalidResourcesFailure = (
+  errors: ReadonlyArray<TaggedRuntimeError>,
+): CliCommandFailure =>
+  new CliCommandFailure({
+    category: "usage-or-configuration",
+    message: `the profile cannot be published: ${profileProblems(errors)}`,
+  });
 
 const mapFailure = <Success, Failure extends TaggedRuntimeError, Requirements>(
   effect: Effect.Effect<Success, Failure, Requirements>,
@@ -249,6 +348,8 @@ const mapFailure = <Success, Failure extends TaggedRuntimeError, Requirements>(
 export interface ScheduleFireRecord {
   readonly at: string;
   readonly outcome: string;
+  /** For `failed`: the failure category, message, and run reason, bounded. */
+  readonly reason?: string | undefined;
 }
 
 export const scheduleFirePath = (statePath: string): string =>
@@ -266,16 +367,40 @@ const readScheduleFires = (statePath: string): ReadonlyArray<ScheduleFireRecord>
   }
 };
 
+/** The part of a failed run's details that names why the run failed. */
+const FailedRunDetails = Schema.Struct({
+  outcome: Schema.Struct({ reason: Schema.String }),
+});
+
+/**
+ * Why an unattended run failed, as the fire record keeps it. A scheduled run
+ * has no terminal and launchd discards its stderr, so this is the only place
+ * status and doctor can learn the reason from.
+ */
+const fireFailureReason = (failure: CliCommandFailure): string => {
+  const runReason = Option.match(
+    Schema.decodeUnknownOption(FailedRunDetails)(failure.details),
+    {
+      onNone: () => "",
+      onSome: (details) => `: ${details.outcome.reason}`,
+    },
+  );
+  return `${failure.category}: ${failure.message}${runReason}`.slice(0, 2048);
+};
+
 const recordScheduleFire = (
   statePath: string,
   outcome: string,
+  reason?: string,
 ): Effect.Effect<void, never> =>
   Effect.tryPromise({
     try: async () => {
       const path = scheduleFirePath(statePath);
+      // JSON.stringify omits `reason` when it is undefined.
       const fires = [...readScheduleFires(statePath).slice(-9), {
         at: new Date().toISOString(),
         outcome,
+        reason,
       }];
       await mkdir(dirname(path), { recursive: true });
       await writeFile(
@@ -285,6 +410,18 @@ const recordScheduleFire = (
     },
     catch: () => undefined,
   }).pipe(Effect.ignore);
+
+/** Why this follower has no native job, and what to run to get one. */
+const unscheduledDetail = (
+  configuration: FollowerSynchronizationConfiguration | undefined,
+): string => {
+  if (configuration?.scheduleOverride?.kind === "disabled") {
+    return "scheduled synchronization is off on this follower (`canonfig schedule remove`); run `canonfig schedule set` to turn it on";
+  }
+  return configuration?.scheduleDefault === undefined
+    ? "no schedule is selected; run `canonfig schedule set <calendar>` to schedule synchronization"
+    : scheduleAvailableDetail(configuration.scheduleDefault);
+};
 
 const persistScheduleOverride = (
   repository: StateRepository["Service"],
@@ -328,10 +465,15 @@ const effectiveScheduleInput = (
     ),
   );
 
+/** How the Source can run unattended; appended where its keys are unreachable. */
+const supervisedSourceModes =
+  "Unlock the Source credential store in the session that runs the service, then supervise it with `canonfig source service install`. "
+  + "Linux linger (`loginctl enable-linger <user>`) extends the user manager lifecycle to boot and logout, but does not unlock an encrypted login keyring. Verify `canonfig source service status` reports `serving: true` in the intended mode";
+
 const sourceCommandsLayer: Layer.Layer<
   SourceCommands,
   never,
-  Enrollment | MachineState | ProfileCatalog | StateRepository
+  Enrollment | MachineState | ProfileCatalog | StateRepository | SourceService
 > = Layer.effect(
   SourceCommands,
   Effect.gen(function*() {
@@ -339,6 +481,13 @@ const sourceCommandsLayer: Layer.Layer<
     const machine = yield* MachineState;
     const profiles = yield* ProfileCatalog;
     const repository = yield* StateRepository;
+    const sourceService = yield* SourceService;
+    const sourceIdentity = enrollment.source().pipe(
+      Effect.map((material) => ({
+        tlsFingerprint: material.tlsFingerprint,
+        sourceFingerprint: material.source.publicKeyFingerprint,
+      })),
+    );
 
     const service: SourceCommandsService = {
       initialize: () => mapFailure(enrollment.initializeSource()).pipe(Effect.map(payload)),
@@ -393,24 +542,124 @@ const sourceCommandsLayer: Layer.Layer<
               directory: dirname(input.profilePath!),
             };
           const now = new Date().toISOString();
-          const revision = yield* mapFailure(profiles.publish({
+          const revision = yield* profiles.publish({
             proposal,
             profile,
             review: acceptPublicationProposal(proposal, input.reviewer, now),
             publishedAt: now,
-          }));
+            allowEmpty: input.allowEmpty,
+          }).pipe(
+            Effect.mapError((error) =>
+              error instanceof InvalidPublicationResourcesError
+                ? invalidResourcesFailure(error.errors)
+                : commandFailure(error)
+            ),
+          );
           return payload(revision);
+        }),
+      digest: (input) =>
+        Effect.gen(function*() {
+          const authored = yield* readAuthoredProfile(input.profilePath);
+          if (
+            input.resource !== undefined
+            && !authored.resources.some((resource) => resource.id === input.resource)
+          ) {
+            return yield* new CliCommandFailure({
+              category: "usage-or-configuration",
+              message: `profile ${authored.id} in ${input.profilePath} declares no resource ${input.resource}`,
+            });
+          }
+          const resources = yield* mapFailure(resolveResourceSources(
+            authored.resources,
+            dirname(input.profilePath),
+          ));
+          const digests = yield* Effect.try({
+            try: () => profileContentDigests({ ...authored, resources }),
+            catch: (cause) =>
+              cause instanceof ProfileContractError
+                ? invalidResourcesFailure(cause.errors)
+                : new CliCommandFailure({
+                  category: "internal",
+                  message: `resource digests could not be computed: ${String(cause)}`,
+                }),
+          });
+          const selected = digests.filter((entry) =>
+            input.resource === undefined || entry.id === input.resource
+          );
+          if (input.resource !== undefined && selected.length === 0) {
+            return yield* new CliCommandFailure({
+              category: "usage-or-configuration",
+              message: `resource ${input.resource} has no content digest; only file, directory, config, and skill resources carry one`,
+            });
+          }
+          return payload({
+            profile: authored.id,
+            resources: selected.map((entry) => ({
+              id: entry.id,
+              kind: entry.kind,
+              verify: entry.verifyMethod,
+              digest: entry.computedDigest,
+              // `payload` drops both fields when no digest was declared.
+              declaredDigest: entry.declaredDigest,
+              matches: entry.declaredDigest === undefined
+                ? undefined
+                : entry.declaredDigest === entry.computedDigest,
+            })),
+          });
         }),
       serve: (input) =>
         mapFailure(startSourceServer(input).pipe(
           Effect.provideService(Enrollment, enrollment),
           Effect.provideService(MachineState, machine),
+          // A Source whose keys sit in a store this session cannot reach
+          // (no user session bus, a locked Keychain) is told how it can run
+          // unattended, next to the store's own recovery text.
+          Effect.mapError((error) => {
+            const cause: unknown = error;
+            return cause instanceof CredentialStorageError
+              ? new CredentialStorageError({
+                operation: cause.operation,
+                reference: cause.reference,
+                message: `${cause.message}. ${supervisedSourceModes}`,
+              })
+              : error;
+          }),
         )).pipe(
           Effect.map((handle) => payload({
             endpoint: handle.endpoint,
             fingerprint: handle.fingerprint,
           })),
         ),
+      installService: (input) =>
+        Effect.gen(function*() {
+          const identity = yield* sourceIdentity.pipe(
+            Effect.mapError((error) => {
+              const failure = commandFailure(error);
+              return new CliCommandFailure({
+                category: failure.category,
+                message:
+                  `the Source service serves this machine's Source identity, which is unavailable: ${failure.message}. Run \`canonfig source init\` first if this machine is not a Source yet`,
+              });
+            }),
+          );
+          return payload(yield* mapFailure(sourceService.install(input, identity)));
+        }),
+      serviceStatus: () =>
+        Effect.gen(function*() {
+          const identity = yield* sourceIdentity.pipe(
+            Effect.catch(() => Effect.succeed(undefined)),
+          );
+          const status = yield* mapFailure(sourceService.status(identity));
+          if (status.state === "running" || status.state === "not-installed") {
+            return payload(status);
+          }
+          return yield* new CliCommandFailure({
+            category: status.state === "drifted" ? "conflict-or-drift" : "human-action-required",
+            message: status.detail,
+            details: payload(status),
+          });
+        }),
+      removeService: () => mapFailure(sourceService.remove()).pipe(Effect.map(payload)),
       invite: (input) =>
         Effect.gen(function*() {
           const grant = yield* mapFailure(enrollment.createInvitation(input));
@@ -458,35 +707,32 @@ const sourceCommandsLayer: Layer.Layer<
 const runtimeProfileCatalogLayer: Layer.Layer<
   ProfileCatalog,
   never,
-  Enrollment | MachineState | StateRepository
+  Enrollment | StateRepository
 > = Layer.effect(
   ProfileCatalog,
   Effect.gen(function*() {
     const enrollment = yield* Enrollment;
-    const machine = yield* MachineState;
     const repository = yield* StateRepository;
     return ProfileCatalog.of({
       scan: scanDiscovery,
       publish: (input) =>
         Effect.gen(function*() {
-          const material = yield* enrollment.source().pipe(
+          // The signing key is checked against the recorded Source identity:
+          // a key another state directory stored under an earlier release's
+          // account-global name must never sign this Source's revisions. A
+          // local store failure or mismatch keeps its own category and text.
+          const credentials = yield* enrollment.sourceCredentials().pipe(
             Effect.mapError((error) =>
-              new PublicationSigningError({
-                operation: "sign",
-                reason: error.message,
-              })
+              error._tag === "CredentialStorageError" || error._tag === "SourceCredentialMismatchError"
+                ? error
+                : new PublicationSigningError({
+                  operation: "sign",
+                  reason: error.message,
+                })
             ),
           );
-          const encodedKey = yield* machine.loadCredential({
-            reference: material.signingKeyReference,
-          }).pipe(
-            Effect.mapError((error) =>
-              new PublicationSigningError({
-                operation: "sign",
-                reason: error.message,
-              })
-            ),
-          );
+          const material = credentials.material;
+          const encodedKey = credentials.signingPrivateKey;
           const privateKey = yield* Effect.try({
             try: () => createPrivateKey(Redacted.value(encodedKey)),
             catch: (error) =>
@@ -601,11 +847,12 @@ const followerCommandsLayer = (
 ): Layer.Layer<
   FollowerCommands,
   never,
-  MachineState | ScheduleManager | StateRepository | Synchronization
-  | AgentResolution | Tunnel
+  Enrollment | MachineState | ScheduleManager | StateRepository
+  | Synchronization | AgentResolution | Tunnel
 > => Layer.effect(
   FollowerCommands,
   Effect.gen(function*() {
+    const enrollment = yield* Enrollment;
     const machine = yield* MachineState;
     const schedules = yield* ScheduleManager;
     const repository = yield* StateRepository;
@@ -725,8 +972,7 @@ const followerCommandsLayer = (
           || keys.some((key) =>
             key.length === 0
             || key !== key.trim()
-            || key.includes("\0")
-            || key.split(".").some((segment) => segment.length === 0)
+            || configPathIssue(key) !== undefined
             || /\p{Cc}/u.test(key)
           )
         ) {
@@ -764,11 +1010,13 @@ const followerCommandsLayer = (
             secondRunNoOp: false,
           };
         }
-        const [revision, approval, runEvidence] = yield* Effect.all([
+        const [revision, approval, runEvidence, applied] = yield* Effect.all([
           mapFailure(repository.findRevision(deployment.revision)),
           mapFailure(repository.loadRevisionApproval(deployment.revision)),
           mapFailure(repository.loadRunEvidence(deployment.run)),
+          mapFailure(repository.loadAppliedResources(configuration.follower.id)),
         ]);
+        const pendingClientSteps = clientReviewSteps(appliedFileChanges(applied));
         const stage = (
           verified: boolean,
           detail: string,
@@ -793,10 +1041,7 @@ const followerCommandsLayer = (
           configuration.scheduleDefault,
         );
         const scheduled = scheduleInput === undefined
-          ? {
-            status: "not-selected" as const,
-            detail: "this follower has no selected native schedule",
-          }
+          ? { status: "not-selected" as const, detail: unscheduledDetail(configuration) }
           : yield* schedules.status(scheduleInput).pipe(
             Effect.match({
               onFailure: (error) => ({
@@ -804,16 +1049,13 @@ const followerCommandsLayer = (
                 detail: error.message,
               }),
               onSuccess: (status) => {
-                const lastFire = readScheduleFires(statePath).at(-1);
-                const verified = status.state === "current"
-                  && lastFire?.outcome === "completed";
+                const runs = describeUnattendedRuns(readScheduleFires(statePath));
+                const verified = status.state === "current" && runs.completed;
                 return {
                   status: verified ? "verified" as const : "pending" as const,
-                  detail: verified
-                    ? `native schedule is current; unattended run completed at ${lastFire.at}`
-                    : status.state === "current"
-                    ? "native schedule is current but no completed unattended run is recorded"
-                    : `native schedule state is ${status.state}`,
+                  detail: status.state === "current"
+                    ? `native schedule is current; ${runs.text}`
+                    : `native schedule is ${status.state}: ${status.detail}`,
                 };
               },
             }),
@@ -843,7 +1085,9 @@ const followerCommandsLayer = (
             clientMethods.length > 0,
             clientMethods.length > 0
               ? `client loading verified by ${clientMethods.join(", ")}`
-              : "the revision declared no successful client-load verification",
+              : pendingClientSteps.length === 0
+              ? "the revision declared no successful client-load verification"
+              : `the revision declared no successful client-load verification; check each client yourself: ${pendingClientSteps.map((step) => `${step.summary} for ${step.target}`).join("; ")}`,
           ),
           scheduled,
           independentlyVerified: stage(
@@ -901,11 +1145,9 @@ const followerCommandsLayer = (
                     `this machine is already enrolled as ${existing.follower.name} (${existing.follower.id}); pass --replace to enroll it as ${input.followerName} instead`,
                 });
               }
-              // Replacing is explicit, so the superseded credential goes with
-              // the identity that owned it rather than lingering in the store.
-              yield* machine.removeCredential(existing.credentialReference).pipe(
-                Effect.ignore,
-              );
+              // Replacing is explicit. The superseded identity is revoked on
+              // its Source and its credential removed once the new identity
+              // is enrolled, so a failed replacement keeps the working one.
             }
             if (existing?.enrollmentPending === true) {
               const resumed = yield* finalizeFollowerEnrollment({
@@ -972,7 +1214,7 @@ const followerCommandsLayer = (
                 sourceFingerprint: prepared.source.publicKeyFingerprint,
                 credentialReference: prepared.credentialReference,
                 timeoutMilliseconds:
-                  defaultScheduledInvocation.timeoutMilliseconds,
+                  input.timeoutMilliseconds ?? defaultScheduledInvocation.timeoutMilliseconds,
               }).pipe(Effect.provideService(MachineState, machine)))).revisions;
             if (!authorizedProfiles.some((revision) =>
               revision.profileId === selectedProfile
@@ -1000,6 +1242,40 @@ const followerCommandsLayer = (
                   // path rather than stringifying the object.
                   ? { kind: "local-file", path: capability.path.absolute }
                   : { kind: "secure-store" };
+            // Same identity again (a new invitation for the same name) is a
+            // credential rotation: the follower-owned settings stay. A new
+            // identity starts from defaults, and the reply lists every
+            // setting that was reset.
+            const previous = existing !== undefined && existing.enrollmentPending !== true
+              ? existing
+              : undefined;
+            const rotated = previous !== undefined && previous.follower.id === follower.id;
+            const resets = previous === undefined || rotated
+              ? []
+              : [
+                ...(previous.agentPolicy === "deterministic-only"
+                  ? []
+                  : [`agent policy ${previous.agentPolicy} reset to deterministic-only`]),
+                ...(previous.agentHarness === undefined
+                  ? []
+                  : [`agent harness ${previous.agentHarness.kind} removed with its ${previous.agentHarness.secretBindings?.length ?? 0} secret bindings`]),
+                ...(previous.scheduleOverride === undefined
+                  ? []
+                  : [`schedule choice ${previous.scheduleOverride.kind} removed`]),
+                ...((previous.localOverlay?.length ?? 0) === 0
+                  ? []
+                  : [`${previous.localOverlay?.length ?? 0} local overlay entries removed`]),
+              ];
+            const kept = rotated
+              ? {
+                agentPolicy: previous.agentPolicy,
+                agentHarness: previous.agentHarness,
+                scheduleOverride: previous.scheduleOverride,
+                scheduleDefault: previous.scheduleDefault,
+                localOverlay: previous.localOverlay,
+                localExecution: previous.localExecution,
+              }
+              : {};
             const configuration = {
               schemaVersion: 1 as const,
               follower,
@@ -1017,8 +1293,14 @@ const followerCommandsLayer = (
               // does not have to rediscover it from the environment.
               credentialPolicy: enrolledCredentialPolicy,
               enrollmentPending: true as const,
-              scheduledInvocation: defaultScheduledInvocation,
+              scheduledInvocation: {
+                ...defaultScheduledInvocation,
+                timeoutMilliseconds: input.timeoutMilliseconds
+                  ?? (rotated ? previous?.scheduledInvocation.timeoutMilliseconds : undefined)
+                  ?? defaultScheduledInvocation.timeoutMilliseconds,
+              },
               updatedAt: new Date().toISOString(),
+              ...kept,
             };
             const stateIdentity = source;
             const saved = yield* mapFailure(
@@ -1071,42 +1353,154 @@ const followerCommandsLayer = (
               }),
             );
             if (!cleared.ok) return yield* cleared.error;
+            // Retire what the new enrollment superseded. A rotation's previous
+            // credential no longer authenticates, so only the local item goes;
+            // a replaced identity is also revoked on its Source.
+            const previousIdentity = previous === undefined
+              || previous.credentialReference === prepared.credentialReference
+              ? undefined
+              : rotated
+              ? yield* machine.removeCredential(previous.credentialReference).pipe(
+                Effect.match({
+                  onSuccess: () => ({ follower: previous.follower.id, credentialRemoved: true }),
+                  onFailure: () => ({ follower: previous.follower.id, credentialRemoved: false }),
+                }),
+              )
+              : yield* revokeFollowerEnrollment({
+                endpoint: previous.source.endpoint,
+                tlsFingerprint: previous.source.tlsFingerprint,
+                credentialReference: previous.credentialReference,
+              }).pipe(
+                Effect.provideService(MachineState, machine),
+                Effect.match({
+                  onSuccess: () => ({ follower: previous.follower.id, revoked: true, detail: "revoked on its Source" }),
+                  onFailure: (error) => ({
+                    follower: previous.follower.id,
+                    revoked: false,
+                    detail: `${error.message}; revoke it on its Source with \`canonfig source revoke ${previous.follower.id}\``,
+                  }),
+                }),
+                Effect.tap(() => machine.removeCredential(previous.credentialReference).pipe(Effect.ignore)),
+              );
             return payload({
               follower,
               selectedProfile,
               source: prepared.source,
+              rotated,
+              resets,
+              previousIdentity,
             });
           }),
+      unenroll: () =>
+        Effect.gen(function*() {
+          const configuration = yield* mapFailure(
+            repository.getFollowerSynchronizationConfiguration(),
+          );
+          if (configuration === undefined) {
+            return payload({
+              unenrolled: false,
+              detail: "this machine is not enrolled; nothing was removed",
+            });
+          }
+          const follower = configuration.follower.id;
+          // Revoke on the Source first, while the credential still exists.
+          // An unreachable Source does not keep the machine enrolled: the
+          // reply says so and names the command to run there.
+          const source = yield* revokeFollowerEnrollment({
+            endpoint: configuration.source.endpoint,
+            tlsFingerprint: configuration.source.tlsFingerprint,
+            credentialReference: configuration.credentialReference,
+          }).pipe(
+            Effect.provideService(MachineState, machine),
+            Effect.match({
+              onSuccess: () => ({ revoked: true, detail: "revoked on the Source" }),
+              onFailure: (error) => ({
+                revoked: false,
+                detail: `${error.message}; revoke it on the Source with \`canonfig source revoke ${follower}\``,
+              }),
+            }),
+          );
+          yield* machine.removeCredential(configuration.credentialReference).pipe(Effect.ignore);
+          const stillStored = yield* machine.loadCredential({
+            reference: configuration.credentialReference,
+          }).pipe(Effect.match({ onSuccess: () => true, onFailure: () => false }));
+          if (stillStored) {
+            // Keep the record that names the item, so a retry can remove it.
+            return yield* new CliCommandFailure({
+              category: "human-action-required",
+              message:
+                "the follower credential could not be removed from this machine's credential store; unlock the store for this session and run `canonfig follower unenroll` again",
+            });
+          }
+          const secrets = yield* clearTransferredSecrets().pipe(
+            Effect.provideService(MachineState, machine),
+            Effect.match({
+              onSuccess: (names) => ({ removed: names, detail: undefined }),
+              onFailure: (error) => ({ removed: [], detail: error.message }),
+            }),
+          );
+          yield* mapFailure(repository.removeFollowerSynchronizationConfiguration());
+          return payload({
+            unenrolled: true,
+            follower,
+            sourceRevoked: source.revoked,
+            sourceDetail: source.detail,
+            credentialRemoved: true,
+            removedSecrets: secrets.removed,
+            secretsDetail: secrets.detail,
+            note:
+              "files Canonfig applied stay in place; a native schedule, if installed, still starts `canonfig sync`: remove it with `canonfig schedule remove`",
+          });
+        }),
       synchronize: (input) => {
         // Only the rendered native job passes --scheduled, so the fire
         // record is evidence the real scheduler started this process.
         const scheduled = input.scheduled === true;
-        const record = (outcome: string) =>
-          scheduled ? recordScheduleFire(statePath, outcome) : Effect.void;
+        const record = (outcome: string, reason?: string) =>
+          scheduled ? recordScheduleFire(statePath, outcome, reason) : Effect.void;
+        const run: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(synchronizeFollower(
+          statePath,
+          input.mode,
+          undefined,
+          scheduled || input.noInput,
+        ).pipe(
+          Effect.provideService(StateRepository, repository),
+          Effect.provideService(MachineState, machine),
+          Effect.provideService(Synchronization, synchronization),
+          Effect.provideService(AgentResolution, agentResolution),
+          Effect.provideService(ScheduleManager, schedules),
+        )).pipe(Effect.flatMap(outcomePayload));
         return record("started").pipe(
-          Effect.andThen(mapFailure(synchronizeFollower(
-            statePath,
-            input.mode,
-            undefined,
-            scheduled || input.noInput,
-          ).pipe(
-            Effect.provideService(StateRepository, repository),
-            Effect.provideService(MachineState, machine),
-            Effect.provideService(Synchronization, synchronization),
-            Effect.provideService(AgentResolution, agentResolution),
-            Effect.provideService(ScheduleManager, schedules),
-          )).pipe(Effect.flatMap(outcomePayload))),
+          // A scheduled run restarts a down managed tunnel once, and a
+          // transport failure while the tunnel is down reports the tunnel.
+          Effect.andThen(repository.getFollowerSynchronizationConfiguration().pipe(
+            Effect.catch(() => Effect.succeed(undefined)),
+            Effect.flatMap((configuration) =>
+              withManagedTunnel(
+                {
+                  stateDirectory: join(dirname(statePath), "tunnel"),
+                  sourceEndpoint: configuration?.source.endpoint,
+                  restart: scheduled,
+                },
+                (failure: CliCommandFailure) => failure.category === "transport",
+                run,
+              )
+            ),
+            Effect.provideService(Tunnel, tunnel),
+            Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
+          )),
           Effect.flatMap((result) =>
             record("completed").pipe(Effect.as(result))
           ),
           Effect.catch((error) =>
-            record("failed").pipe(Effect.flatMap(() => Effect.fail(error)))
+            record("failed", fireFailureReason(error)).pipe(Effect.flatMap(() => Effect.fail(error)))
           ),
         );
       },
       abandon: () =>
         mapFailure(abandonFollowerRun(statePath).pipe(
           Effect.provideService(StateRepository, repository),
+          Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
       recover: () =>
         mapFailure(recoverFollower(statePath).pipe(
@@ -1122,6 +1516,17 @@ const followerCommandsLayer = (
           ).pipe(
             Effect.flatMap((configuration) =>
               Effect.gen(function*() {
+                const machineRole = yield* mapFailure(
+                  enrollment.source().pipe(
+                    Effect.map((source) => ({
+                      role: "source" as const,
+                      sourceFingerprint: source.source.publicKeyFingerprint,
+                      tlsFingerprint: source.tlsFingerprint,
+                    })),
+                    Effect.catchTag("SourceNotInitializedError", () =>
+                      Effect.succeed({ role: "unconfigured" as const })),
+                  ),
+                );
                 const tunnelReport = yield* mapFailure(tunnel.tunnelStatus({
                   stateDirectory: join(dirname(statePath), "tunnel"),
                 }));
@@ -1131,6 +1536,7 @@ const followerCommandsLayer = (
                     detail,
                   });
                   return {
+                    machineRole,
                     lifecycle: {
                       discovered: notReached("no Source endpoint is configured"),
                       selected: notReached("no profile is selected"),
@@ -1159,10 +1565,30 @@ const followerCommandsLayer = (
                   appliedRevisions: revisions,
                 }).pipe(Effect.provideService(MachineState, machine));
                 const receipt = yield* completionReceipt(configuration);
+                const deployment = yield* mapFailure(
+                  repository.latestDeploymentReceipt(configuration.follower.id),
+                );
+                const openRun = state.activeRecovery === undefined
+                  ? undefined
+                  : openRunReport(state.activeRecovery, yield* runLockHolder(statePath));
                 return {
+                  machineRole: {
+                    role: "follower" as const,
+                    follower: configuration.follower.id,
+                    sourceFingerprint: configuration.source.signingFingerprint,
+                    tlsFingerprint: configuration.source.tlsFingerprint,
+                  },
                   ...state,
+                  activeRecovery: openRun,
                   localOverlay: configuration.localOverlay ?? [],
-                  lifecycle,
+                  lifecycle: {
+                    ...lifecycle,
+                    converged: followerConvergence(
+                      lifecycle.converged,
+                      openRun,
+                      deployment?.outcome,
+                    ),
+                  },
                   tunnel: tunnelReport,
                   completionReceipt: receipt,
                 };
@@ -1180,6 +1606,9 @@ const followerCommandsLayer = (
                       : undefined;
                     const base = {
                       ...state,
+                      activeRecovery: state.activeRecovery === undefined
+                        ? undefined
+                        : openRunReport(state.activeRecovery, yield* runLockHolder(statePath)),
                       localOverlay: configuration?.follower.id === follower
                         ? configuration.localOverlay ?? []
                         : [],
@@ -1377,29 +1806,60 @@ const followerCommandsLayer = (
         // Record the decision before installing it, so the schedule survives
         // the next apply and `schedule status` compares against it rather than
         // against a built-in default.
-        persistScheduleOverride(repository, {
-          kind: "schedule",
-          schedule: input.schedule,
-          executable: input.executable,
-        }).pipe(
-          Effect.andThen(mapFailure(schedules.update(input))),
-          Effect.map(payload),
-        ),
-      scheduleStatus: () =>
-        effectiveScheduleInput(repository).pipe(
-          Effect.flatMap((input) =>
-            input === undefined
-              ? Effect.succeed(payload({ state: "disabled" }))
-              : mapFailure(schedules.status(input)).pipe(
-                Effect.map((status) => {
-                  const fires = readScheduleFires(statePath);
-                  const lastFire = fires[fires.length - 1];
-                  return payload(lastFire === undefined
-                    ? { ...status, lastFire: undefined }
-                    : { ...status, lastFire });
-                }),
-              )
+        "profileDefault" in input
+          ? mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+            Effect.flatMap((configuration) =>
+              configuration?.scheduleDefault === undefined
+                ? Effect.fail(new CliCommandFailure({
+                  category: "usage-or-configuration",
+                  message: configuration === undefined
+                    ? "canonfig schedule set --default needs an enrolled follower; enroll, then apply the selected profile first"
+                    : "the selected profile declares no scheduleDefault (or no revision has been applied yet); run `canonfig sync --apply`, or choose a calendar with `canonfig schedule set <calendar>`",
+                }))
+                : persistScheduleOverride(repository, { kind: "inherit" }).pipe(
+                  Effect.andThen(mapFailure(schedules.update({
+                    schedule: syncScheduleFromDefault(configuration.scheduleDefault),
+                  }))),
+                  Effect.map(payload),
+                )
+            ),
+          )
+          : persistScheduleOverride(repository, {
+            kind: "schedule",
+            schedule: input.schedule,
+            executable: input.executable,
+          }).pipe(
+            Effect.andThen(mapFailure(schedules.update(input))),
+            Effect.map(payload),
           ),
+      scheduleStatus: () =>
+        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+          Effect.flatMap((configuration) => {
+            const input = desiredScheduleInput(
+              configuration?.scheduleOverride,
+              configuration?.scheduleDefault,
+            );
+            if (input === undefined) {
+              // No decision; a job an earlier release installed may still run.
+              return mapFailure(schedules.status()).pipe(
+                Effect.map((native) =>
+                  payload(native.state === "not-installed"
+                    ? { state: "not-selected", detail: unscheduledDetail(configuration) }
+                    : { state: "unmanaged", detail: unmanagedScheduleDetail, nativeState: native.state })
+                ),
+              );
+            }
+            const fires = readScheduleFires(statePath);
+            return mapFailure(schedules.status(input)).pipe(
+              Effect.map((status) =>
+                payload({
+                  ...status,
+                  lastFire: fires.at(-1),
+                  unattendedRuns: describeUnattendedRuns(fires).text,
+                })
+              ),
+            );
+          }),
         ),
       removeSchedule: () =>
         persistScheduleOverride(repository, { kind: "disabled" }).pipe(
@@ -1412,7 +1872,7 @@ const followerCommandsLayer = (
             path: input.invitationPath,
           }));
           const sshHostKey = yield* Effect.tryPromise({
-            try: () => readFile(input.sshHostKeyPath, "utf8"),
+            try: async () => (await readFile(input.sshHostKeyPath, "utf8")).trim(),
             catch: () =>
               new CliCommandFailure({
                 category: "usage-or-configuration",
@@ -1453,13 +1913,19 @@ const followerCommandsLayer = (
           }));
           return payload(report);
         }),
+      restartTunnel: (input) =>
+        mapFailure(tunnel.restartTunnel({
+          stateDirectory: join(dirname(statePath), "tunnel"),
+          timeoutMilliseconds: input.timeoutMilliseconds,
+        })).pipe(Effect.map(payload)),
       tunnelStatus: () =>
         mapFailure(tunnel.tunnelStatus({
           stateDirectory: join(dirname(statePath), "tunnel"),
         })).pipe(Effect.map(payload)),
-      stopTunnel: () =>
+      stopTunnel: (input) =>
         mapFailure(tunnel.stopTunnel({
           stateDirectory: join(dirname(statePath), "tunnel"),
+          forget: input.forget,
         })).pipe(Effect.map(payload)),
       doctor: (input) =>
         // Probe the configuration a run would actually use. Enrollment moves
@@ -1469,30 +1935,41 @@ const followerCommandsLayer = (
         Effect.all([
           mapFailure(repository.getFollowerSynchronizationConfiguration()),
           effectiveScheduleInput(repository),
+          tunnel.tunnelStatus({ stateDirectory: join(dirname(statePath), "tunnel") }).pipe(
+            Effect.catch(() => Effect.succeed(undefined)),
+          ),
         ]).pipe(
-          Effect.flatMap(([configuration, schedule]) =>
-            runDoctorProbes({
+          Effect.flatMap(([configuration, schedule, tunnelReport]) => {
+            const source = configuration === undefined
+              ? doctorSource
+              : {
+                endpoint: configuration.source.endpoint,
+                tlsFingerprint: configuration.source.tlsFingerprint,
+                credentialReference: configuration.credentialReference,
+              };
+            return runDoctorProbes({
               ...input,
               statePath,
               policyPath,
               agentPolicy: configuration?.agentPolicy,
               schedule,
-              lastFire: readScheduleFires(statePath).at(-1),
-              source: configuration === undefined
-                ? doctorSource
-                : {
-                  endpoint: configuration.source.endpoint,
-                  tlsFingerprint: configuration.source.tlsFingerprint,
-                  credentialReference: configuration.credentialReference,
-                },
+              fires: readScheduleFires(statePath),
+              unscheduledDetail: configuration === undefined
+                ? undefined
+                : unscheduledDetail(configuration),
+              source,
+              tunnel: tunnelReport !== undefined
+                  && tunnelCarriesSource(tunnelReport, source?.endpoint)
+                ? tunnelReport
+                : undefined,
               agent: configuration?.agentHarness === undefined
                 ? doctorAgent
                 : {
                   adapter: configuration.agentHarness.kind,
                   executable: configuration.agentHarness.executable,
                 },
-            })
-          ),
+            });
+          }),
         ).pipe(
           Effect.provideService(MachineState, machine),
           Effect.provideService(ScheduleManager, schedules),
@@ -1574,14 +2051,20 @@ const machineLayer = (statePath: string): Layer.Layer<MachineState> => {
   // The enrolled policy wins: it is what a scheduled run has to rely on.
   const credentialPolicy = enrolledCredentialPolicy(statePath)
     ?? credentialPolicyFromEnvironment();
-  switch (process.platform) {
-    case "darwin":
-      return macosMachineStateLayer({ credentialPolicy });
-    case "win32":
-      return windowsMachineStateLayer({ credentialPolicy });
-    default:
-      return linuxMachineStateLayer({ credentialPolicy });
-  }
+  const base = (() => {
+    switch (process.platform) {
+      case "darwin":
+        return macosMachineStateLayer({ credentialPolicy });
+      case "win32":
+        return windowsMachineStateLayer({ credentialPolicy });
+      default:
+        return linuxMachineStateLayer({ credentialPolicy });
+    }
+  })();
+  // Every runtime consumer must understand the references written by the
+  // shared-secret CLI. On macOS this also keeps credential values off argv by
+  // using the versioned keychain-hex codec for enrollment and secret bindings.
+  return nativeSecretStoreLayer(base);
 };
 
 /**
@@ -1611,6 +2094,9 @@ export const runtimeLayer = (
   );
   const schedule = scheduleManagerLayer.pipe(Layer.provide(machine));
   const tunnel = TunnelLive;
+  const sourceService = sourceServiceLayer({ stateDirectory: dirname(statePath) }).pipe(
+    Layer.provide(machine),
+  );
   const synchronization = SynchronizationLive.pipe(
     Layer.provide(Layer.merge(state, machine)),
   );
@@ -1627,6 +2113,7 @@ export const runtimeLayer = (
     synchronization,
     tunnel,
     agentResolution,
+    sourceService,
   );
   return Layer.mergeAll(
     sourceCommandsLayer.pipe(Layer.provide(dependencies)),

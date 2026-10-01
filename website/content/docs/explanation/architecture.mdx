@@ -1,6 +1,6 @@
 ---
 title: "Explanation: architecture, authority, determinism, credentials, and rollback"
-description: Understand Canonfig's authority model, determinism, credentials, and rollback guarantees.
+description: Understand Canonfig's authority model, determinism, credentials, transaction boundary, and rollback guarantees.
 ---
 
 Canonfig has exactly one **Source Machine** per installation. The Source Machine owns canonical configuration; **Follower Machines** consume it without becoming additional authorities.
@@ -8,24 +8,30 @@ Canonfig has exactly one **Source Machine** per installation. The Source Machine
 ## System shape
 
 ```text
-Source files → ProfileCatalog → Profile Change Proposal
-                                  ↓ explicit review
-                           signed Profile Revision
-                                  ↓ pinned HTTPS
-CLI or schedule → Synchronization → MachineState
-                         ↘ StateRepository
-                          ↘ AgentResolution, only when eligible
+authored profile file ─┐
+                       ├→ ProfileCatalog → signed Profile Revision
+tool scan → proposal ──┘     (explicit review)      ↓ pinned HTTPS
+CLI or native schedule → Synchronization → MachineState
+                              ↘ StateRepository
+                               ↘ AgentResolution, only when eligible
 ```
+
+You author file, directory, config, and skill resources in a profile file.
+`source scan` is tool discovery only: it proposes `tool` resources from evidence
+in the files you name and never proposes anything else. Publication validates
+the profile, resolves each `source` path inside the profile's directory,
+computes content digests, checks pinned installer versions, and signs one
+immutable revision.
 
 ## Authority and credentials
 
-Canonfig separates profile authority, transport trust, follower authentication, and local credentials. 
+Canonfig separates profile authority, transport trust, follower authentication, and local credentials.
 
-The Source Machine signs canonical Profile Revision payloads. Followers verify the signing fingerprint pinned at enrollment and verify every content digest. Profile Revisions are immutable after publication.
+The Source Machine signs canonical Profile Revision payloads. Followers verify the signing fingerprint pinned at enrollment and verify every content digest. Profile Revisions are immutable after publication; republishing earlier content creates a new revision with the next sequence number.
 
-Transport trust relies on pinning the source HTTPS certificate fingerprint at enrollment. Later synchronization rejects unexpected TLS certificates, invalid signatures, digest mismatches, or revoked credentials.
+Transport trust relies on pinning the source HTTPS certificate fingerprint at enrollment. Later synchronization rejects unexpected TLS certificates, invalid signatures, digest mismatches, or revoked credentials. The Source serves loopback only; a follower on another host reaches it through the managed SSH tunnel, which pins the SSH host key as well.
 
-Profile credential resources remain local references and are never copied into revisions. Operators may separately opt a follower into shared-secret transfer by enrolling it with the `canonfig:secrets` group. Those values travel only over the existing authenticated, certificate-pinned HTTPS channel, are written directly to platform secret storage (Linux Secret Service, macOS Keychain, Windows Credential Manager), and are never written to the ordinary state database or JSON manifest. Secrets received from a source are not re-shared by followers.
+Each follower has its own revocable credential in its native credential store, and the Source keeps its keys in its own store, named per state directory. Profile credential resources remain local references and are never copied into revisions. Operators may separately opt a follower into shared-secret transfer by enrolling it with the `canonfig:secrets` group. Those values travel only over the existing authenticated, certificate-pinned HTTPS channel, are written directly to platform secret storage (Linux Secret Service, macOS Keychain, Windows Credential Manager) and read back to confirm the exact bytes, and are never written to the ordinary state database or JSON manifest. Secrets received from a source are not re-shared by followers. See [Security and credentials](/reference/security).
 
 ## Determinism and agents
 
@@ -34,16 +40,26 @@ Canonfig evaluates four kinds of action:
 1. **Deterministic**: Canonfig chooses one safe action from declared facts. Runs before any agent work.
 2. **Agent proposal**: A Configuration Agent suggests a bounded resolution. Never changes a published revision.
 3. **Agent apply**: A pre-authorized harness executes within explicit bounds. Completion requires independent verification.
-4. **Human Action Required**: A required human-only step (like login) is missing. Canonfig records exact instructions and stops.
+4. **Human Action Required**: A required human-only step (like login, or unlocking a credential store) is missing. Canonfig records exact instructions and stops that resource.
 
 An agent statement is not proof. Canonfig captures process output and changed paths, then runs the Profile Resource's independent verification. Only that verification establishes Convergence.
 
-## Incremental transfer and rollback
+## Incremental transfer
 
-Profile Revisions and their blobs are immutable and content-addressed. Follower transfer is incremental: cached blobs are reused after digest verification.
+Profile Revisions and their blobs are immutable and content-addressed. Follower transfer is incremental: cached blobs are reused after digest verification. Free disk space is checked on each target's filesystem and on the cache before a run is recorded or a blob is downloaded.
 
-Canonfig records the complete Synchronization Plan before mutation and journals each action before and after execution. When a deterministic action fails, Canonfig rolls back earlier file and directory mutations from that run in reverse order using recorded rollback material, sibling temporary files, durability synchronization, and atomic rename.
+## The transaction boundary
+
+Canonfig records the complete Synchronization Plan before mutation and journals each action before and after execution. One run is one transaction for filesystem and configuration changes:
+
+- **A failed deterministic action rolls back the whole run.** Canonfig restores every file, directory, and config it already changed in that run, in reverse order, including resources that do not depend on the failed one. It uses the recorded rollback material, sibling temporary files, durability synchronization, and atomic rename, then restores the prior ownership records. The run ends `Failed` (exit 7) and names what failed: "resource `<id>` could not be applied to `<target>`: `<cause>`".
+- **Tool installs are not rolled back.** Package installation, login, and arbitrary agent commands cannot promise rollback. Canonfig records their evidence, and the next run's verification finds an installed tool in place.
+- **Human Action Required and Follower Drift stop the run without rolling back.** Actions run in plan order. When one reaches a resource that needs a login, a local credential, a repair of an unparseable follower config file, or a drift decision, the actions before it that already verified stay applied, the blocked resource is left unchanged, and every later action is skipped rather than run. `sync --plan` already lists the blocked resource, as `human-action` with its reason or as `drift-conflict`. Repair the cause, then run `sync --apply` again to apply the skipped resources.
+
+A failed run is all-or-nothing on purpose: a half-applied profile, where one config key arrived and a related hook did not, is harder to reason about than either state. After you fix the reported cause, the next `sync --apply` reapplies everything that was rolled back or skipped.
+
+An interrupted run (a crash, kill, reboot, or full disk) stays open until `canonfig recover` resumes or rolls it back, or `canonfig abandon` closes it. Recovery compares each target with both the pre-run and the intended bytes and stops, keeping both the file and the snapshot, when a later local edit matches neither. See [Recover](/how-to/recover).
 
 <Callout title="External installers are not rolled back" type="info">
-  Package installation, login, and arbitrary agent commands cannot promise full rollback. Canonfig records their evidence and reruns idempotent verification, but does not claim third-party installers are reversed.
+  Canonfig records installer evidence and reruns idempotent verification, but does not claim third-party installers are reversed.
 </Callout>

@@ -1,5 +1,5 @@
-import { lstat, readFile, readlink } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { lstat, readFile, readlink, realpath } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
 
@@ -13,6 +13,7 @@ import {
 } from "../domain/brand.ts";
 import {
   normalizeMachineProfile,
+  ProfileContractError,
   type MachineProfile,
   type ManagedFileInput,
   type ProfileGroup,
@@ -27,11 +28,14 @@ import { RevisionImmutableError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { compileProfileCandidate } from "./compiler.ts";
 import type { DiscoveryScanResult } from "./discovery.ts";
+import { publicationCredentialIssue } from "./publication-credentials.ts";
 import {
+  EmptyPublicationError,
   InvalidPublicationInputError,
   InvalidPublicationResourcesError,
   InvalidPublicationSignatureError,
   PublicationSigningError,
+  PublicationSourceError,
   PublicationReviewRequiredError,
   type ProfileCatalogPublishError,
   UnresolvedPublicationProposalError,
@@ -68,7 +72,8 @@ export interface PublicationProfileMetadata {
   readonly groups?: ReadonlyArray<ProfileGroup> | undefined;
   /**
    * Directory containing the authored profile. Relative file `source` values
-   * are resolved here, never against the process working directory.
+   * are resolved here, never against the process working directory, and must
+   * stay inside it.
    */
   readonly directory?: string | undefined;
   readonly resources?: ReadonlyArray<ProfileResourceInput> | undefined;
@@ -80,6 +85,8 @@ export interface PublishProfileInput {
   readonly profile: PublicationProfileMetadata;
   readonly review: PublicationReview;
   readonly publishedAt: string;
+  /** Sign a revision with no resources. Without it, an empty publication fails. */
+  readonly allowEmpty?: boolean | undefined;
 }
 
 /**
@@ -183,10 +190,9 @@ const resourceForTool = (tool: DiscoveredTool): ProfileResourceInput => ({
       ),
     login: { required: false },
   },
-  verify: {
-    method: "command",
-    command: [...tool.verify.command],
-  },
+  verify: tool.verify.method === "command"
+    ? { method: "command", command: [...tool.verify.command] }
+    : { method: "executable-present", executable: tool.verify.executable },
 });
 
 const skillFilesDigest = (
@@ -353,20 +359,60 @@ const machineProfileFor = (
   };
 };
 
-const sourcePath = (directory: string | undefined, source: string): string => {
-  if (isAbsolute(source)) return source;
-  if (directory === undefined) {
-    throw new Error(`relative resource source ${source} has no authored profile directory`);
+/** `..` as a whole path segment, in either separator style. */
+const parentSegment = /(?:^|[\\/])\.\.(?:[\\/]|$)/u;
+
+/**
+ * Resolve an authored `source` strictly inside the profile directory. The
+ * containment check runs on the real path, so neither `..` nor a symlink at
+ * any depth can make the Source sign content from elsewhere on its disk. A
+ * source that is itself a symlink to something inside the directory is still
+ * published as that symlink; a link meant to point elsewhere is authored as
+ * `symlinkTo`.
+ */
+const resolveSourcePath = async (
+  resource: string,
+  directory: string | undefined,
+  source: string,
+): Promise<string> => {
+  const failure = (reason: string) =>
+    new PublicationSourceError({ resource, path: source, reason });
+  if (isAbsolute(source) || win32.isAbsolute(source)) {
+    throw failure("absolute paths are not allowed; write the source relative to the profile file's directory");
   }
-  return resolve(directory, source);
+  if (parentSegment.test(source)) {
+    throw failure("\"..\" segments are not allowed; keep the source inside the profile file's directory");
+  }
+  if (directory === undefined) {
+    throw failure("a relative source needs the authored profile file (--profile-file) it is relative to");
+  }
+  const root = await realpath(directory);
+  const path = resolve(root, source);
+  let target: string;
+  try {
+    target = await realpath(path);
+  } catch (cause) {
+    const code = cause instanceof Error && "code" in cause ? String(cause.code) : String(cause);
+    throw failure(
+      `${path} cannot be resolved (${code}); a source must exist inside the profile directory ${root}, and a link to a path that exists only on followers is authored as "symlinkTo"`,
+    );
+  }
+  const fromRoot = relative(root, target);
+  if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    throw failure(
+      `${path} resolves to ${target}, outside the profile directory ${root}; copy the content into the profile directory, or author an intentional link as "symlinkTo"`,
+    );
+  }
+  return path;
 };
 
 const resolveManagedFile = async (
+  resource: string,
   file: ManagedFileInput,
   directory: string | undefined,
 ): Promise<ManagedFileInput> => {
   if (file.symlinkTo !== undefined || file.source === undefined) return file;
-  const path = sourcePath(directory, file.source);
+  const path = await resolveSourcePath(resource, directory, file.source);
   const status = await lstat(path);
   if (status.isSymbolicLink()) {
     return {
@@ -376,7 +422,13 @@ const resolveManagedFile = async (
       symlinkTo: await readlink(path),
     };
   }
-  if (!status.isFile()) throw new Error(`resource source ${file.source} is not a file or symlink`);
+  if (!status.isFile()) {
+    throw new PublicationSourceError({
+      resource,
+      path: file.source,
+      reason: `${path} is not a regular file or symlink`,
+    });
+  }
   const content = await readFile(path);
   const mode = file.mode ?? (status.mode & 0o7777);
   return {
@@ -388,12 +440,13 @@ const resolveManagedFile = async (
   };
 };
 
-const resolveResourceSources = async (
+const resolveResourceSource = async (
   resource: ProfileResourceInput,
   directory: string | undefined,
 ): Promise<ProfileResourceInput> => {
   if (resource.spec.kind === "file") {
     const resolved = await resolveManagedFile(
+      resource.id,
       { path: "", ...resource.spec },
       directory,
     );
@@ -404,10 +457,32 @@ const resolveResourceSources = async (
     return resource;
   }
   const files = await Promise.all(
-    resource.spec.files.map((file) => resolveManagedFile(file, directory)),
+    resource.spec.files.map((file) => resolveManagedFile(resource.id, file, directory)),
   );
   return { ...resource, spec: { ...resource.spec, files } };
 };
+
+/**
+ * Replace every authored `source` with the bytes it names, read from inside
+ * `directory` (the authored profile file's directory). Publication and
+ * `canonfig source digest` share this so both see the same content.
+ */
+export const resolveResourceSources = (
+  resources: ReadonlyArray<ProfileResourceInput>,
+  directory: string | undefined,
+): Effect.Effect<
+  ReadonlyArray<ProfileResourceInput>,
+  PublicationSourceError | InvalidPublicationInputError
+> =>
+  Effect.tryPromise({
+    try: () => Promise.all(resources.map((resource) => resolveResourceSource(resource, directory))),
+    catch: (cause) =>
+      cause instanceof PublicationSourceError
+        ? cause
+        : new InvalidPublicationInputError({
+          reason: `resource source could not be read: ${String(cause)}`,
+        }),
+  });
 
 
 interface UnsignedRevision {
@@ -450,14 +525,15 @@ export const makePublication = (
           reason: `invalid publication metadata: ${String(cause)}`,
         }),
       });
-      const resolvedResources = yield* Effect.tryPromise({
-        try: () => Promise.all(unresolvedProfile.resources.map((resource) =>
-          resolveResourceSources(resource, input.profile.directory)
-        )),
-        catch: (cause) => new InvalidPublicationInputError({
-          reason: `resource source could not be read: ${String(cause)}`,
-        }),
-      });
+      if (unresolvedProfile.resources.length === 0 && input.allowEmpty !== true) {
+        return yield* new EmptyPublicationError({
+          scannedPaths: [...input.proposal.scannedPaths],
+        });
+      }
+      const resolvedResources = yield* resolveResourceSources(
+        unresolvedProfile.resources,
+        input.profile.directory,
+      );
       const profile = normalizeMachineProfile({
         ...unresolvedProfile,
         resources: resolvedResources,
@@ -466,40 +542,67 @@ export const makePublication = (
       if (errors.length > 0) {
         return yield* Effect.fail(new InvalidPublicationResourcesError(errors));
       }
+      const credentialIssue = publicationCredentialIssue(profile.resources);
+      if (credentialIssue !== undefined) {
+        return yield* new InvalidPublicationInputError({ reason: credentialIssue });
+      }
 
       const encoded = yield* Effect.try({
         try: () => compileProfileCandidate(profile),
-        catch: (cause) => new InvalidPublicationInputError({
-          reason: `resource bytes could not be encoded: ${String(cause)}`,
-        }),
+        catch: (cause) =>
+          cause instanceof ProfileContractError
+            ? new InvalidPublicationResourcesError(cause.errors)
+            : new InvalidPublicationInputError({
+              reason: `resource bytes could not be encoded: ${String(cause)}`,
+            }),
       });
       const canonicalBytes = encoded.canonicalBytes;
       const digest = encoded.digest;
-      const id = Schema.decodeUnknownSync(ProfileRevisionId)(
-        `${profile.id}:${digest}`,
-      );
-      const existing = yield* repository.findRevision(id);
-      if (existing !== undefined) {
-        if (
-          existing.profileId !== profile.id
-          || existing.digest !== digest
-          || existing.canonicalBytes !== canonicalBytes
-        ) {
+
+      // Publishing the content that is already latest is idempotent. Storing
+      // its blobs again repairs a Source that lost blob rows.
+      const latest = yield* repository.getLatestRevision(profile.id);
+      if (latest !== undefined && latest.digest === digest) {
+        if (latest.canonicalBytes !== canonicalBytes) {
           return yield* new RevisionImmutableError({
-            revision: id,
-            message: "content-addressed revision identity names different content",
+            revision: latest.id,
+            message: "the latest revision digest names different content",
           });
         }
         yield* repository.publishRevision({
-          revision: existing,
+          revision: latest,
           blobs: encoded.blobs,
           approval: publicationApproval(input),
         });
-        return existing;
+        return latest;
       }
 
-      const latest = yield* repository.getLatestRevision(profile.id);
+      // Any other content becomes the next sequence, including content an
+      // older revision already carries: publishing it again is how an author
+      // restores it, and followers always take the highest sequence. The id
+      // is content-addressed; when that id is taken by the older revision,
+      // the new one appends its sequence.
       const sequence = (latest?.sequence ?? 0) + 1;
+      const contentId = Schema.decodeUnknownSync(ProfileRevisionId)(
+        `${profile.id}:${digest}`,
+      );
+      const earlier = yield* repository.findRevision(contentId);
+      if (
+        earlier !== undefined
+        && (
+          earlier.profileId !== profile.id
+          || earlier.digest !== digest
+          || earlier.canonicalBytes !== canonicalBytes
+        )
+      ) {
+        return yield* new RevisionImmutableError({
+          revision: contentId,
+          message: "content-addressed revision identity names different content",
+        });
+      }
+      const id = earlier === undefined
+        ? contentId
+        : Schema.decodeUnknownSync(ProfileRevisionId)(`${contentId}:${sequence}`);
       const unsigned: UnsignedRevision = {
         id,
         profileId: profile.id,

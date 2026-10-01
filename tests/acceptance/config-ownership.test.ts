@@ -12,7 +12,7 @@ import { ConfigValue } from "../../src/domain/resource.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { sha256BytesHex, sha256Hex } from "../../src/profile/profile-codec.ts";
 import {
-  getConfigPath, parseConfigDocument, removeConfigPath, serializeConfigDocument,
+  editConfigText, getConfigPath, parseConfigDocument, removeConfigPath, serializeConfigDocument,
   setConfigPath, type ConfigDocument,
 } from "../../src/synchronization/config-codec.ts";
 import { defaultSynchronizationExecutionLimits } from "../../src/synchronization/executor.ts";
@@ -123,13 +123,136 @@ describe("Local Overlay subtree ownership", () => {
       expect(planResource(planning([source], [local]))).toMatchObject([{ kind: "human-action" }]);
     },
   );
-  it("does not delete an old parent containing a newly local child", () => {
-    expect(planResource(planning([], ["mcp.server.command"], ["mcp.server"]))).toMatchObject([{ kind: "no-op" }]);
+  it("keeps an old parent containing a newly local child and names it in the plan", () => {
+    const [action] = planResource(planning([], ["mcp.server.command"], ["mcp.server"]));
+    expect(action).toMatchObject({ kind: "write-config", detail: { retains: ["mcp.server"] } });
+    expect(action?.detail).not.toHaveProperty("removes");
+    expect(action?.detail).toHaveProperty("retentionNotice", expect.stringContaining("mcp.server"));
   });
   it("prunes an unrelated old subtree while retaining Local Overlay ownership", () => {
     expect(planResource(planning([], ["mcp.server.command"], ["mcp.server", "mcp.other"]))).toMatchObject([
-      { kind: "write-config", detail: { removes: ["mcp.other"] } },
+      { kind: "write-config", detail: { removes: ["mcp.other"], retains: ["mcp.server"] } },
     ]);
+  });
+  it("blocks only this resource when its follower file does not parse", () => {
+    const context = planning(["mcp.server"], []);
+    const [action] = planResource({
+      ...context,
+      observed: { state: "unverifiable", reason: "~/.example/settings.json is not valid JSON: expected a JSON value at line 3 column 8" },
+    });
+    expect(action).toMatchObject({ kind: "human-action", detail: { reason: expect.stringContaining("~/.example/settings.json") } });
+  });
+});
+
+describe("in-place config edits", () => {
+  const sets = (entries: Record<string, ConfigValue>) =>
+    Object.entries(entries).map(([path, value]) => ({ path, value }));
+
+  it("reads a commented JSON file as JSONC and keeps its comments when merging", () => {
+    const text = [
+      "{",
+      "  // user comment: keep my theme",
+      "  \"theme\": \"Dracula\", /* inline */",
+      "  \"mcpServers\": {",
+      "    \"local-only\": { \"command\": \"local\" },",
+      "  },",
+      "  \"ratio\": 1.0",
+      "}",
+      "",
+    ].join("\n");
+    expect(parseConfigDocument("json", text)).toEqual({ theme: "Dracula", mcpServers: { "local-only": { command: "local" } }, ratio: 1 });
+    const edited = editConfigText("json", text, { sets: sets({ "mcpServers.docs": mcp }) });
+    expect(edited).toContain("// user comment: keep my theme");
+    expect(edited).toContain("/* inline */");
+    expect(edited).toContain("\"ratio\": 1.0");
+    expect(parseConfigDocument("json", edited)).toEqual({
+      theme: "Dracula",
+      mcpServers: { "local-only": { command: "local" }, docs: mcp },
+      ratio: 1,
+    });
+    const removed = editConfigText("json", edited, { removes: ["mcpServers.docs"], sets: [] });
+    expect(parseConfigDocument("json", removed)).toEqual(parseConfigDocument("json", text));
+    expect(removed).toContain("// user comment: keep my theme");
+  });
+
+  it("reports the line and column of JSON it cannot parse", () => {
+    expect(() => parseConfigDocument("json", "{\n  // comment\n  \"a\": }\n")).toThrow(/line 3 column 8/u);
+  });
+
+  it("keeps TOML comments, float literals and unrelated values byte-exact", () => {
+    const text = [
+      "# Local Codex settings - keep this comment",
+      "model = \"local-model\"",
+      "ratio = 1.0",
+      "released = 1979-05-27T07:32:00Z",
+      "",
+      "[mcp_servers.local_only]",
+      "command = \"local-mcp\" # keep",
+      "",
+      "[mcp_servers.docs]",
+      "command = \"old\"",
+      "",
+    ].join("\n");
+    const edited = editConfigText("toml", text, {
+      sets: sets({ "mcp_servers.docs": { command: "npx", args: ["-y"] }, ratio: 2, "canonfig.hooks": hooks }),
+    });
+    expect(edited).toContain("# Local Codex settings - keep this comment");
+    expect(edited).toContain("command = \"local-mcp\" # keep");
+    expect(edited).toContain("released = 1979-05-27T07:32:00Z");
+    expect(edited).toContain("ratio = 2.0");
+    expect(getConfigPath(parseConfigDocument("toml", edited), "mcp_servers.docs")).toEqual({ command: "npx", args: ["-y"] });
+    expect(getConfigPath(parseConfigDocument("toml", edited), "canonfig.hooks")).toEqual(hooks);
+    const removed = editConfigText("toml", edited, { removes: ["mcp_servers.docs", "canonfig.hooks"], sets: [] });
+    expect(removed).toContain("command = \"local-mcp\" # keep");
+    expect(parseConfigDocument("toml", removed)).not.toHaveProperty("canonfig");
+  });
+
+  it("refuses to write null into TOML instead of dropping it", () => {
+    expect(() => editConfigText("toml", "a = 1\n", { sets: [{ path: "b", value: null }] }))
+      .toThrow(/TOML has no null value/u);
+  });
+
+  it("keeps YAML comments and anchors and quotes YAML 1.1 keywords it writes", () => {
+    const text = [
+      "# Hermes local config - keep this comment",
+      "defaults: &defaults",
+      "  timeout: 1.0 # inline",
+      "server:",
+      "  <<: *defaults",
+      "  name: local",
+      "other:",
+      "  timeout: 1.0",
+      "",
+    ].join("\n");
+    const edited = editConfigText("yaml", text, {
+      sets: sets({ "hooks.flags": { yes: "yes", no_bool: "no", on: "on", date: "2001-12-14" }, "other.timeout": 3 }),
+    });
+    expect(edited).toContain("# Hermes local config - keep this comment");
+    expect(edited).toContain("defaults: &defaults");
+    expect(edited).toContain("<<: *defaults");
+    expect(edited).toContain("timeout: 1.0 # inline");
+    expect(edited).toContain("timeout: 3.0");
+    expect(edited).toContain("\"yes\": \"yes\"");
+    expect(edited).toContain("no_bool: \"no\"");
+    expect(edited).toContain("\"on\": \"on\"");
+    expect(edited).toContain("date: \"2001-12-14\"");
+    expect(serializeConfigDocument("yaml", { off: "off" })).toBe("\"off\": \"off\"\n");
+  });
+
+  it("fails rather than change a YAML alias that shares an owned value", () => {
+    const text = "defaults: &defaults\n  timeout: 1\nserver: *defaults\n";
+    expect(() => editConfigText("yaml", text, { sets: sets({ "defaults.timeout": 2 }) }))
+      .toThrow(/without changing values outside the owned keys/u);
+  });
+
+  it("addresses a literal dotted key with an escaped path", () => {
+    const document: ConfigDocument = {};
+    setConfigPath(document, "amp\\.mcpServers.docs", "x");
+    expect(document).toEqual({ "amp.mcpServers": { docs: "x" } });
+    expect(configPathsOverlap("amp\\.mcpServers", "amp.mcpServers")).toBe(false);
+    expect(() => profileWithKeys([{ path: "amp\\mcpServers", value: true }])).toThrow();
+    expect(parseConfigDocument("toml", editConfigText("toml", "", { sets: sets({ "amp\\.mcpServers.docs": "x" }) })))
+      .toEqual({ "amp.mcpServers": { docs: "x" } });
   });
 });
 

@@ -26,6 +26,7 @@ export default defineProject({
       "tests/machine-state-macos.test.ts",
       "tests/machine-state-windows.test.ts",
       "tests/schedule-manager.test.ts",
+      "tests/source-service.test.ts",
       "tests/skills.test.ts",
       "tests/keychain-session-probe.test.ts",
       "tests/upgrade-gate.test.ts",

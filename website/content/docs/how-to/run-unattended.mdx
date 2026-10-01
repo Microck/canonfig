@@ -1,0 +1,349 @@
+---
+title: "How-to: run Canonfig unattended"
+description: Keep the Source serving and followers syncing without a person at the keyboard, including after a reboot, on each supported platform.
+---
+
+Unattended operation needs three things to keep working on their own:
+
+1. the **Source Machine** serving revisions (`canonfig source serve`, supervised
+   by a native user service);
+2. each **Follower Machine** running its native schedule, which runs
+   `canonfig sync --apply --no-input --scheduled`;
+3. on both machines, a credential store that the background process can read
+   without a prompt.
+
+A follower that reaches the Source through a managed SSH tunnel also needs that
+tunnel, which a scheduled run restarts for you once if it went down.
+
+On Linux, recovery from a systemd job starts SSH in a separate transient user
+service. The sync job keeps systemd's normal cgroup cleanup, but its exit no
+longer kills the recovered route. `canonfig tunnel stop` stops the tunnel's
+service and subprocesses and records a deliberate stop, which scheduled sync
+respects. `canonfig tunnel start` can recreate it using the recorded SSH, TLS,
+and signing pins. This recovery requires `systemd-run` and a reachable user
+manager; a native ownership failure never falls back to a detached process.
+
+## Supported modes
+
+| Platform | Source service runs | Follower schedule runs | Not supported |
+| --- | --- | --- | --- |
+| Linux | while you are logged in; at boot and after logout once lingering is on | the same | nothing extra, but see [headless credential storage](#headless-linux-credential-storage) |
+| macOS | while you are logged in to the desktop session | the same, with the login Keychain unlocked | a Mac nobody is logged in to |
+| Windows | from your logon while you stay logged on | the same | a machine where you are logged off |
+
+Canonfig installs only per-user jobs. It never installs a system service and
+never runs `sudo` for you.
+
+## Keep the Source serving
+
+On machine A, after `canonfig source init`:
+
+```bash
+canonfig source service install
+canonfig source service status
+```
+
+`install` accepts the same `--host` and `--port` as `source serve` (default
+`127.0.0.1` and `17342`) and records them in `~/.canonfig/source-service.json`.
+It refuses when another `canonfig source serve` already answers on that port
+outside the service manager; stop that one first. After starting the service it
+waits up to 20 seconds until the endpoint answers with this Source's pinned TLS
+and signing identity. If it does not, `install` fails with exit 7 and leaves the
+service installed so you can read its logs.
+
+What `install` creates:
+
+| Platform | Service | Restart behavior | Logs |
+| --- | --- | --- | --- |
+| Linux | systemd user unit `~/.config/systemd/user/canonfig-source.service` | restarted 30 s after a failed exit, without a start-count cutoff | `journalctl --user -u canonfig-source.service` |
+| macOS | LaunchAgent `~/Library/LaunchAgents/dev.canonfig.source.plist`, loaded into `gui/<uid>` | restarted after a failed exit, at most every 10 s | `~/.canonfig/source-service.log` |
+| Windows | Task Scheduler task `Canonfig\canonfig-source`, at logon of the current user | restarted every minute on failure, up to 999 times | Task Scheduler history (Event Viewer: `Microsoft-Windows-TaskScheduler/Operational`) |
+
+Platform notes:
+
+- **Linux.** The unit is enabled for `default.target`, so it starts with your
+  user manager. `install` does **not** turn on lingering. Without it the user
+  manager, and the Source, stop when you log out. `source service status` says
+  whether lingering is on and prints the command to enable it. Linger does not
+  unlock an encrypted login keyring. The Source must load its signing and TLS
+  credentials when it starts, so an installed, enabled unit is not proof that
+  it can serve before login. Verify `serving` in the intended operating mode.
+  The unit carries `HOME`, a bounded `PATH`, and
+  `CANONFIG_LOCAL_CREDENTIAL_ROOT` when that is set at install time.
+- **macOS.** Run `install` from a terminal in the logged-in desktop session,
+  not over SSH: the agent is loaded into that session's `gui/<uid>` domain and
+  reads the Source keys from the login Keychain.
+- **Windows.** A Task Scheduler task cannot carry environment variables from
+  your shell. If `CANONFIG_LOCAL_CREDENTIAL_ROOT` is set only in the current
+  shell, `install` refuses and asks you to make it permanent, then open a new
+  terminal and run `install` again:
+
+  ```text
+  setx CANONFIG_LOCAL_CREDENTIAL_ROOT "C:\Users\you\.canonfig\credentials"
+  ```
+
+### Read the service status
+
+`canonfig source service status` reports a `state`, the manager's view
+(installed, enabled, active, PID), whether the endpoint serves the pinned
+identity (`serving`), the `supportedModes` for this platform, `linger` on
+Linux, where the `logs` are, and a `detail` line.
+
+| State | Meaning | Exit | What to do |
+| --- | --- | ---: | --- |
+| `running` | The service runs and the endpoint answers with this Source's identity | 0 | nothing |
+| `not-installed` | No Canonfig Source service on this machine | 0 | `canonfig source service install` |
+| `not-running` | Installed, but the manager does not run it | 3 | read the logs, fix the cause, run `install` again |
+| `not-serving` | Running, but the endpoint does not answer with the pinned identity | 3 | read the logs for the reason, fix it, run `install` again |
+| `drifted` | The installed definition differs from what `install` renders now, for example after the Node.js or Canonfig path changed | 4 | `canonfig source service install` |
+
+To stop supervising the Source:
+
+```bash
+canonfig source service remove
+```
+
+`remove` stops the service and deletes the unit, agent, or task and the
+host/port record. It reports `removed`, or `unchanged` when nothing was
+installed.
+
+If `canonfig source serve` cannot load the Source keys from the native store,
+unlock that store in the session that runs the service before installing it.
+The error explains that Linux linger extends the manager lifecycle, not keyring
+access, and asks you to verify that `source service status` reports `serving: true`.
+
+## Keep followers syncing
+
+On each follower, choose a schedule:
+
+```bash
+canonfig schedule set daily@09:00
+canonfig schedule status
+```
+
+See [Manage schedules](/how-to/manage-schedules) for calendars, time zones, and
+schedule states. What each platform needs for the job to fire:
+
+- **Linux:** the systemd user manager must be running. It runs from login to
+  logout, or all the time once lingering is on.
+- **macOS:** you must be logged in to the desktop session, and the login
+  Keychain must be unlocked. The job runs in the `gui/<uid>` launchd domain.
+- **Windows:** you must be logged on. Canonfig's tasks use normal process
+  priority so credential-store helpers are not starved behind foreground
+  work. An older below-normal task is reported as mismatched; run
+  `canonfig schedule set` again with your existing schedule to replace it.
+
+### Turn on lingering (Linux)
+
+Lingering starts your systemd user manager at boot and keeps it running after
+you log out. The Source service and the follower schedule both depend on it for
+logged-out operation:
+
+```bash
+loginctl enable-linger "$USER"
+loginctl show-user "$USER" --property=Linger
+```
+
+Whether you may change your own linger setting depends on the machine's polkit
+rules. If `loginctl` refuses, run it with `sudo`:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+While lingering is off, `doctor` and `schedule status` warn: "the systemd user
+manager stops when you log out (Linger=no), so the job only runs while you are
+logged in; run `loginctl enable-linger <user>` to run it while logged out".
+
+If a command that talks to the user manager runs in a session with no user bus,
+it stops with exit 3: "the systemd user manager is not reachable: this session
+has no user session bus (DBUS_SESSION_BUS_ADDRESS or $XDG_RUNTIME_DIR/bus). Run
+this from a login session of `<user>`, or enable linger with `loginctl
+enable-linger <user>` so the user manager runs without a login, then retry."
+
+### macOS over SSH
+
+Over SSH, the login Keychain is locked even when you are logged in at the
+desktop. Canonfig then says so and names the way out:
+
+> The login Keychain is locked in this SSH or background session. To continue
+> in this session, run `security unlock-keychain ~/Library/Keychains/login.keychain-db`
+> and retry; the unlock lasts only for this session and does not carry over to
+> new SSH sessions, the desktop session, or scheduled runs. Scheduled runs need
+> the logged-in desktop session (launchd domain gui/`<uid>`).
+
+So `security unlock-keychain` is a fix for one interactive SSH session only.
+Install the Source service and the follower schedule from the desktop session,
+and keep that session logged in.
+
+## Bring the tunnel back after a reboot or outage
+
+A follower on another host reaches the Source through the tunnel that
+`canonfig tunnel start --invitation ...` created during enrollment. That first
+start records what the tunnel needs in `~/.canonfig/tunnel/tunnel-config.json`
+(mode `0600`): the SSH host, port, and user, the pinned SSH host key, the
+forward, and the TLS and Source signing pins. You do not need to keep the
+invitation.
+
+Start order matters: **the Source first, then the tunnel.** After A reboots or
+the network drops, check the Source on A, then restart the tunnel on B:
+
+```bash
+canonfig source service status
+canonfig tunnel start
+canonfig tunnel status
+```
+
+`canonfig tunnel start` without `--invitation` restarts the recorded tunnel and
+accepts only `--timeout-ms`. With no record it fails with exit 2 and tells you to
+run the full `tunnel start --invitation ... --ssh-host ... --ssh-user ...
+--ssh-host-key-file ...` command once.
+
+`tunnel status` reports `running`, `down` (recorded as running, but the process
+is gone), `stopped`, or `not-configured`, plus whether it is `restartable` and
+the `recovery` command.
+
+You usually do not need to restart it by hand. A **scheduled** run restarts a
+`down` tunnel once before it fetches, when the follower's Source endpoint is the
+tunnel's local endpoint. A manual `canonfig sync` does not restart it, and
+nothing restarts a tunnel you stopped:
+
+```bash
+canonfig tunnel stop
+canonfig tunnel stop --forget
+```
+
+`stop` stops the SSH process and keeps the record, marked stopped. `stop
+--forget` also deletes the record, so the next start needs the invitation and
+SSH options again.
+
+The tunnel runs `ssh` with `BatchMode=yes`, so SSH to A must authenticate
+without a prompt. A scheduled run cannot type a key passphrase.
+
+### Tunnel errors
+
+| Message starts with | Meaning |
+| --- | --- |
+| "the Source is unreachable because the managed tunnel `https://127.0.0.1:17342` is down" | The tunnel is not running. Run `canonfig tunnel start`. Exit 6. |
+| "the Source is unreachable because the managed tunnel ... is stopped" | You stopped it. Run `canonfig tunnel start`. Exit 6. |
+| "the Source is reached through the managed tunnel ..., which is down (...), and restarting it failed" | A scheduled run tried the restart. Fix the named cause, then run `canonfig tunnel start`. |
+| "SSH to `user@host` is connected, but the Source at 127.0.0.1:17342 on that host is not answering through the tunnel" | SSH works; the Source on A is not serving. Start it (`canonfig source service install`), then `canonfig tunnel start`. |
+| "the SSH process for `user@host` exited before the tunnel was ready" | SSH itself failed; the message includes the end of the SSH log. |
+| "SSH to `user@host` did not open the forward at ..." | SSH connected but did not open the forward within the timeout. |
+| "nothing answered at the Source endpoint 127.0.0.1:17342 (ECONNREFUSED)" | Nothing listens locally: start the Source, or the tunnel if the endpoint goes through one. |
+
+## Headless Linux credential storage
+
+Canonfig keeps Source keys and follower credentials in the Secret Service
+(for example GNOME Keyring). A background process has to reach it over the
+user's D-Bus session bus. Canonfig uses `DBUS_SESSION_BUS_ADDRESS` when it is
+set, and otherwise `$XDG_RUNTIME_DIR/bus` when that is a socket. So a scheduled
+run or the Source service works as long as `XDG_RUNTIME_DIR` is set, which the
+systemd user manager does for its own jobs.
+
+<Callout title="dbus-run-session is not a fix" type="warning">
+  Do not wrap Canonfig in `dbus-run-session`. It starts a private, empty bus
+  whose keyring is not your login keyring and asks for a graphical prompt that
+  nobody can answer. Earlier documentation suggested it; it does not work.
+</Callout>
+
+To check storage the way a background job sees it, run the bootstrap with an
+almost empty environment:
+
+```bash
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+env -i HOME=$HOME PATH=$PATH XDG_RUNTIME_DIR=/run/user/$(id -u) canonfig secrets bootstrap
+```
+
+If `/run/user/<uid>/bus` does not exist, no user manager runs for you right now,
+for example because you are logged out and lingering is off. Turn lingering on
+(see above) and try again.
+
+The login keyring must also be **unlocked**. It unlocks when you log in with
+your password. If it is locked, commands fail with a local credential-store
+error that names the store and the command to run (exit 3), and nothing is sent
+to the Source.
+
+### Local-file credential policy
+
+Use this only when the machine has no Secret Service and storing credentials as
+plaintext files with mode `0600` under your home directory is acceptable.
+Choose it before the first credential is written, by setting
+`CANONFIG_LOCAL_CREDENTIAL_ROOT`:
+
+```bash
+CANONFIG_LOCAL_CREDENTIAL_ROOT="$HOME/.canonfig/credentials" canonfig secrets bootstrap
+```
+
+The result names the `local-file` policy and reports the storage as
+unencrypted.
+
+- **Follower:** set the variable when you run `follower enroll` as well.
+  Enrollment records the policy in the follower's state, so scheduled runs use
+  it without the variable.
+- **Source:** the Source reads the variable on every command. Export it in your
+  shell profile so `source init`, `source publish`, and `source service install`
+  all see it; `install` copies it into the service definition.
+
+## What doctor and status tell you
+
+Run these after setup and whenever something looks stuck:
+
+```bash
+canonfig doctor --no-input
+canonfig status
+```
+
+- **Credential store.** A locked or unreachable store is a local problem, not
+  an authentication failure: exit 3 (Human Action Required), with the store's
+  own recovery text. The `source` probe says "this machine's credential store
+  could not return the follower credential, so no Source request was made",
+  followed by what to run. The follower was not revoked; it could not read its
+  own credential.
+- **Lingering.** On Linux, the linger warning quoted above.
+- **Last unattended run.** "the last unattended run failed at `<time>`:
+  `<reason>`; the last completed one was at `<time>`", "no unattended run has
+  completed yet", or "an unattended run started at `<time>` and recorded no
+  outcome (still running, or killed)". The status completion receipt carries
+  the same text.
+- **Tunnel.** When the Source endpoint goes through the managed tunnel, the
+  `source` probe includes the tunnel's lifecycle in `details.tunnel`. A
+  transport failure while the tunnel is down reads "configured source is
+  unreachable because the managed tunnel `<endpoint>` is down" with
+  `canonfig tunnel start` as the recovery.
+- **Schedule.** Any state that means the job will not run as chosen fails the
+  `scheduler` probe; see [Manage schedules](/how-to/manage-schedules#inspect-a-schedule).
+
+See [Diagnostics](/reference/diagnostics) for every probe.
+
+## Checklist
+
+On the Source Machine:
+
+- [ ] `canonfig source service status` reports `running` and `serving`.
+- [ ] Linux, logged-out operation: `loginctl show-user "$USER" --property=Linger`
+      prints `Linger=yes`.
+- [ ] macOS: the service was installed from the desktop session, and that
+      session stays logged in.
+- [ ] After a reboot (and, on Linux with lingering, without logging in), the
+      status is still `running`.
+
+On each Follower Machine:
+
+- [ ] `canonfig schedule status` reports `current`, with the `timezone` and
+      `nextRun` you expect.
+- [ ] Linux, logged-out operation: lingering is on.
+- [ ] Linux: `env -i HOME=$HOME PATH=$PATH XDG_RUNTIME_DIR=/run/user/$(id -u)
+      canonfig secrets bootstrap` succeeds, or the follower uses the local-file
+      policy.
+- [ ] Remote Source: `canonfig tunnel status` reports `running`, and SSH to the
+      Source host works without a prompt.
+- [ ] `canonfig doctor --no-input` shows no failed probe and no last-run
+      failure.
+- [ ] After the scheduled time, `canonfig status` shows `scheduled` as
+      `verified` in the completion receipt.
+
+If the last check fails, the receipt and `doctor` name the reason of the last
+unattended run. On Linux, the native logs are in
+`journalctl --user -u canonfig-sync.service` for the follower job and
+`journalctl --user -u canonfig-source.service` for the Source service.

@@ -13,7 +13,7 @@ import {
   RecipeSourceMetadata as RecipeSourceMetadataSchema,
   RecipeIndexPolicy as RecipeIndexPolicySchema,
   RecipeMethod as RecipeMethodSchema,
-  recipeValidationError,
+  recipeValidationIssue,
 } from "./recipe-versions.ts";
 
 /**
@@ -233,12 +233,7 @@ const ToolRecipeRefSchema = Schema.Struct({
 });
 
 export const ToolRecipeRef = ToolRecipeRefSchema.check(
-  Schema.makeFilter((recipe) => {
-    const reason = recipeValidationError(recipe);
-    return reason === undefined
-      ? undefined
-      : { path: ["version"], issue: reason };
-  }),
+  Schema.makeFilter(recipeValidationIssue),
 );
 export type ToolRecipeRef = Schema.Schema.Type<typeof ToolRecipeRef>;
 
@@ -405,12 +400,7 @@ const ToolRecipeSchema = Schema.Struct({
   ])),
 });
 export const ToolRecipe = ToolRecipeSchema.check(
-  Schema.makeFilter((recipe) => {
-    const reason = recipeValidationError(recipe);
-    return reason === undefined
-      ? undefined
-      : { path: ["version"], issue: reason };
-  }),
+  Schema.makeFilter(recipeValidationIssue),
 );
 export type ToolRecipe = Schema.Schema.Type<typeof ToolRecipe>;
 

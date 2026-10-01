@@ -1,5 +1,5 @@
-import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { Effect, Layer, Schema } from "effect";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   evaluateCli,
@@ -27,8 +27,11 @@ import {
   SetupCommands,
   type SetupCommandsService,
 } from "../src/cli/setup-commands.ts";
+import { BlobTransferProgress } from "../src/enrollment/blob-transfer-progress.ts";
+import { clientReviewSteps, plannedFileChanges } from "../src/synchronization/client-review.ts";
 import { profileFileFailure } from "../src/runtime/layers.ts";
 import { decodeMachineProfileJsonc } from "../src/domain/profile.ts";
+import { PlannedAction } from "../src/domain/synchronization.ts";
 
 interface Invocation {
   readonly route: string;
@@ -48,6 +51,7 @@ const invitation = Buffer.from(JSON.stringify({
 const recordingLayers = (
   invocations: Array<Invocation>,
   failure?: CliFailureCategory,
+  synchronize?: FollowerCommandsService["synchronize"],
 ) => {
   const invoke = (
     route: string,
@@ -66,7 +70,11 @@ const recordingLayers = (
     initialize: () => invoke("source.init"),
     scan: (input) => invoke("source.scan", input),
     publish: (input) => invoke("source.publish", input),
+    digest: (input) => invoke("source.digest", input),
     serve: (input) => invoke("source.serve", input),
+    installService: (input) => invoke("source.service.install", input),
+    serviceStatus: () => invoke("source.service.status"),
+    removeService: () => invoke("source.service.remove"),
     invite: (input) => invoke("source.invite", input),
     revoke: (input) => invoke("source.revoke", input),
     listProfiles: () => invoke("profile.list"),
@@ -74,7 +82,7 @@ const recordingLayers = (
   };
   const follower: FollowerCommandsService = {
     enroll: (input) => invoke("follower.enroll", input),
-    synchronize: (input) => invoke("sync", input),
+    synchronize: synchronize ?? ((input) => invoke("sync", input)),
     recover: (input) => invoke("recover", input),
     abandon: () => invoke("abandon", {}),
     status: (input) => invoke("status", input),
@@ -91,8 +99,9 @@ const recordingLayers = (
     removeSchedule: () => invoke("schedule.remove"),
     doctor: () => invoke("doctor"),
     startTunnel: (input) => invoke("tunnel.start", input),
+    restartTunnel: (input) => invoke("tunnel.restart", input),
     tunnelStatus: () => invoke("tunnel.status"),
-    stopTunnel: () => invoke("tunnel.stop"),
+    stopTunnel: (input) => invoke("tunnel.stop", input),
   };
   const setup: SetupCommandsService = {
     plan: (input) => invoke("setup.plan", input),
@@ -110,6 +119,7 @@ const recordingLayers = (
 const execute = async (
   arguments_: ReadonlyArray<string>,
   failure?: CliFailureCategory,
+  synchronize?: FollowerCommandsService["synchronize"],
 ) => {
   const stdout: Array<string> = [];
   const stderr: Array<string> = [];
@@ -122,7 +132,7 @@ const execute = async (
   };
   await Effect.runPromise(
     runCli(arguments_, io).pipe(
-      Effect.provide(recordingLayers(invocations, failure)),
+      Effect.provide(recordingLayers(invocations, failure, synchronize)),
     ),
   );
   return {
@@ -157,6 +167,7 @@ describe("typed CLI command boundary", () => {
       "--reviewer",
       "operator",
     ], "source.publish"],
+    [["source", "digest", "--profile-file", "profile.jsonc", "--resource", "codex-config"], "source.digest"],
     [["source", "serve"], "source.serve"],
     [[
       "source",
@@ -226,8 +237,14 @@ describe("typed CLI command boundary", () => {
       "--ssh-host-key-file",
       "/tmp/source-host-key.pub",
     ], "tunnel.start"],
+    [["tunnel", "start"], "tunnel.restart"],
+    [["tunnel", "start", "--timeout-ms", "5000"], "tunnel.restart"],
     [["tunnel", "status"], "tunnel.status"],
     [["tunnel", "stop"], "tunnel.stop"],
+    [["tunnel", "stop", "--forget"], "tunnel.stop"],
+    [["source", "service", "install", "--port", "17400"], "source.service.install"],
+    [["source", "service", "status"], "source.service.status"],
+    [["source", "service", "remove"], "source.service.remove"],
     [[
       "setup",
       "plan",
@@ -243,6 +260,7 @@ describe("typed CLI command boundary", () => {
     [["setup", "status"], "setup.status"],
     [["schedule", "set", "daily@00:00"], "schedule.set"],
     [["schedule", "set", "weekly:Mon@12:30"], "schedule.set"],
+    [["schedule", "set", "--default"], "schedule.set"],
     [["schedule", "status"], "schedule.status"],
     [["schedule", "remove"], "schedule.remove"],
   ] as const)("routes %j through %s", async (arguments_, expectedRoute) => {
@@ -377,7 +395,18 @@ describe("typed CLI command boundary", () => {
       proposalPath: "proposal.json",
       profilePath: "profile.jsonc",
       reviewer: "operator",
+      allowEmpty: false,
     });
+    const empty = await execute([
+      "source",
+      "publish",
+      "--profile-file",
+      "profile.jsonc",
+      "--reviewer",
+      "operator",
+      "--allow-empty",
+    ]);
+    expect(empty.invocations[0]?.input).toMatchObject({ allowEmpty: true });
   });
 
   it("emits a CLI envelope for a usage error when --json is requested", async () => {
@@ -484,6 +513,13 @@ describe("typed CLI command boundary", () => {
     expect(result.stderr).toContain("Missing required option: --profile");
   });
 
+  it("restarts the recorded tunnel only when no new configuration is given", async () => {
+    const result = await execute(["tunnel", "start", "--ssh-host", "source.example"]);
+    expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
+    expect(result.invocations).toEqual([]);
+    expect(result.stderr).toContain("pass --invitation to configure a new tunnel");
+  });
+
   it("reports the exit code it set, so source serve can wait only on success", async () => {
     // `source serve` keeps the process alive; main.ts decides that from this
     // result, because runCli turns every failure into an exit code rather than
@@ -512,6 +548,8 @@ describe("typed CLI command boundary", () => {
       ["source", "revoke", "not valid"],
       ["follower", "enroll", "not-base64", "--name", "host"],
       ["schedule", "set", "weekly:Funday@99:00"],
+      ["schedule", "set", "--default", "daily@04:00"],
+      ["schedule", "set", "--default", "--timezone", "Europe/Paris"],
       ["source", "invite", "--endpoint", "http://example.test"],
       ["agent", "harness", "unsupported", "--executable", "agent"],
       [
@@ -591,15 +629,179 @@ describe("typed CLI command boundary", () => {
 });
 
 describe("CLI rendering and exit semantics", () => {
-  it("renders stable human and JSON envelopes", async () => {
+  it("renders human summaries and stable JSON envelopes", async () => {
     const human = await execute(["profile", "list"]);
-    expect(human.stdout).toBe(
-      "profile.list completed\n{\n  \"route\": \"profile.list\"\n}\n",
-    );
+    expect(human.stdout).toBe("profile.list completed\nroute: profile.list\n");
     const machine = await execute(["profile", "list", "--json"]);
     expect(machine.stdout).toBe(
       "{\"schema\":\"canonfig.cli/v1\",\"command\":\"profile.list\",\"status\":\"success\",\"exitCode\":0,\"message\":\"profile.list completed\",\"data\":{\"route\":\"profile.list\"}}\n",
     );
+  });
+
+  it("ends a human failure with its exit code and category, without raw JSON", async () => {
+    const result = await execute(["doctor"], "transport");
+    expect(result.stderr).toBe(
+      "transport failure\ncredential: [REDACTED]\nexit 6: transport\n",
+    );
+  });
+
+  it("summarizes a sync plan as actions and the next command", () => {
+    const rendered = renderCliResult({
+      command: "sync.plan",
+      message: "sync.plan completed",
+      exitCode: CliExitCode.success,
+      data: {
+        mode: "plan",
+        revision: "workstation:abc",
+        downloadedBlobs: 1,
+        reusedBlobs: 0,
+        agentResolutions: [],
+        plan: {
+          encoded: "{\"actions\":[]}",
+          agentTasks: [],
+          actions: [{
+            id: "action:codex:0:write-config",
+            kind: "write-config",
+            resource: "codex",
+            before: [],
+            detail: {
+              kind: "write-config",
+              target: "~/.codex/config.toml",
+              keys: ["model"],
+              retains: ["mcp_servers.old"],
+              retentionNotice: "mcp_servers.old stays because a Local Overlay key overlaps it",
+            },
+          }],
+        },
+      },
+    }, "human");
+    expect(rendered).toContain("write-config");
+    expect(rendered).toContain("~/.codex/config.toml  keys: model");
+    expect(rendered).toMatch(/\n {6}retains: mcp_servers\.old\n {6}mcp_servers\.old stays because a Local Overlay key overlaps it\n/u);
+    expect(rendered).toContain("Apply these actions with: canonfig sync --apply");
+    expect(rendered).not.toContain("encoded");
+    expect(rendered).not.toContain("{");
+  });
+
+  it("says why a planned human-action blocks its resource and what to do", () => {
+    const rendered = renderCliResult({
+      command: "sync.plan",
+      message: "sync.plan completed",
+      exitCode: CliExitCode.success,
+      data: {
+        mode: "plan",
+        revision: "workstation:abc",
+        plan: {
+          agentTasks: [],
+          actions: [{
+            id: "action:antigravity:0:human-action",
+            kind: "human-action",
+            resource: "antigravity",
+            before: [],
+            detail: {
+              kind: "human-action",
+              reason: "~/.agents/mcp_config.json is not valid JSON: expected a property name at line 2 column 10",
+              instructions: "Fix ~/.agents/mcp_config.json, then run synchronization again.",
+            },
+          }],
+        },
+      },
+    }, "human");
+    expect(rendered).toMatch(
+      /human-action +antigravity\n {6}~\/\.agents\/mcp_config\.json is not valid JSON: expected a property name at line 2 column 10\n {6}Fix ~\/\.agents\/mcp_config\.json, then run synchronization again\.\n/u,
+    );
+  });
+
+  it("shows a plan's installer warning in full, command included", () => {
+    const command = `canonfig installer set npm --executable "C:\\Program Files\\nodejs\\node.exe" --arg "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js"`;
+    const warning = `installer npm: No installer binding is set for npm, and PATH resolves it to the Windows command shim C:\\Program Files\\nodejs\\npm.cmd, which cannot run without a shell. Bind npm to Node and its own entrypoint instead, then retry:\n${command}`;
+    const rendered = renderCliResult({
+      command: "sync.plan",
+      message: "sync.plan completed",
+      exitCode: CliExitCode.success,
+      data: {
+        mode: "plan",
+        plan: { actions: [{ kind: "install-tool", resource: "cli", detail: { kind: "install-tool", toolId: "cli", method: "npm" } }] },
+        warnings: [warning],
+      },
+    }, "human");
+    expect(rendered).toContain(`warnings:\n  - ${warning.split("\n")[0]}\n    ${command}\n`);
+    expect(rendered).not.toContain("details shortened");
+  });
+
+  // Converged means client files were written, not loaded by Codex or Antigravity.
+  it("names client checks only for changed hooks and MCP servers", () => {
+    const actions = Schema.decodeUnknownSync(Schema.Array(PlannedAction))([
+      { kind: "write-file", target: "/home/u/.codex/hooks.json", digest: "d".repeat(64) },
+      { kind: "write-config", target: "/home/u/.agents/mcp_config.json", keys: ["mcpServers.docs"] },
+      { kind: "write-config", target: "/home/u/.agents/mcp_config.json", keys: ["mcpServers.more"] },
+      { kind: "write-config", target: "/home/u/.agents/mcp_config.json", keys: ["theme"] },
+      { kind: "write-config", target: "/home/u/.codex/config.toml", keys: ["model"] },
+    ].map((detail, index) => ({
+      id: `action-${String(index)}`, resource: "client", kind: detail.kind, detail, before: [],
+    })));
+    const steps = clientReviewSteps(plannedFileChanges(actions));
+    expect(steps.map((step) => [step.client, step.target])).toEqual([
+      ["codex", "/home/u/.codex/hooks.json"],
+      ["antigravity", "/home/u/.agents/mcp_config.json"],
+    ]);
+    const rendered = renderCliResult({
+      command: "sync.apply",
+      message: "sync.apply completed",
+      exitCode: CliExitCode.success,
+      data: { mode: "apply", outcome: { outcome: "Converged" }, clientSteps: steps.map((step) => ({ ...step })) },
+    }, "human");
+    expect(rendered).toContain("still to do in each client (Canonfig cannot check this; clientLoaded stays not-verified):");
+    expect(rendered).toContain("codex /home/u/.codex/hooks.json");
+    expect(rendered).toContain("antigravity /home/u/.agents/mcp_config.json");
+    expect(steps[1]?.step).toMatch(/invoke a managed MCP tool/u);
+  });
+
+  it("keeps fields a summary does not recognize visible in human output", () => {
+    const rendered = renderCliResult({
+      command: "status",
+      message: "status completed",
+      exitCode: CliExitCode.success,
+      data: {
+        machineRole: { role: "follower", follower: "follower-1" },
+        lifecycle: { converged: { reached: false, detail: "an interrupted run is open" } },
+        lastUnattendedRun: { outcome: "failed", reason: "login Keychain is locked" },
+      },
+    }, "human");
+    expect(rendered).toContain("[ ] converged   an interrupted run is open");
+    expect(rendered).toContain("reason: login Keychain is locked");
+  });
+
+  it("does not show follower lifecycle rows on an unenrolled Source", () => {
+    const rendered = renderCliResult({
+      command: "status",
+      message: "status completed",
+      exitCode: CliExitCode.success,
+      data: {
+        machineRole: { role: "source", sourceFingerprint: "aa", tlsFingerprint: "bb" },
+        lifecycle: { enrolled: { reached: false, detail: "this machine is not enrolled" } },
+      },
+    }, "human");
+    expect(rendered).toContain("follower lifecycle: not applicable on the Source Machine");
+    expect(rendered).not.toContain("this machine is not enrolled");
+  });
+
+  it("shows a non-passing doctor probe's recovery under the probe", () => {
+    const rendered = renderCliResult({
+      command: "doctor",
+      message: "doctor completed",
+      exitCode: CliExitCode.success,
+      data: {
+        schema: "canonfig.doctor/v1",
+        status: "degraded",
+        probes: [
+          { name: "runtime", status: "pass", message: "runtime is supported", details: { platform: "linux" } },
+          { name: "credentials", status: "warning", message: "bus unavailable", details: { recovery: "run the bootstrap" } },
+        ],
+      },
+    }, "human");
+    expect(rendered).toMatch(/warning +credentials +bus unavailable\n +recovery: run the bootstrap/u);
+    expect(rendered).not.toContain("platform: linux");
   });
 
   it.each([
@@ -617,6 +819,36 @@ describe("CLI rendering and exit semantics", () => {
     expect(result.stderr).toContain(`"exitCode":${exitCode}`);
     expect(result.stderr).not.toContain("must-not-leak");
     expect(result.stderr).toContain("[REDACTED]");
+  });
+
+  // Usability 15: a large revision downloaded for minutes with no output.
+  it("shows a long blob download on stderr for a person, never in --json or scheduled runs", async () => {
+    const mebibyte = 1024 * 1024;
+    const downloading: FollowerCommandsService["synchronize"] = () => Effect.gen(function*() {
+      const report = yield* BlobTransferProgress;
+      const first = { blob: "a".repeat(64), blobIndex: 1, blobCount: 2, blobBytes: 4 * mebibyte, total: 5 * mebibyte };
+      report({ ...first, blobReceived: mebibyte, received: mebibyte });
+      // Within the interval of the start: quiet.
+      report({ ...first, blobReceived: 2 * mebibyte, received: 2 * mebibyte });
+      vi.setSystemTime(Date.now() + 1500);
+      report({ ...first, blobReceived: 3 * mebibyte, received: 3 * mebibyte });
+      report({ ...first, blobReceived: 4 * mebibyte, received: 4 * mebibyte });
+      report({ ...first, blob: "b".repeat(64), blobIndex: 2, blobBytes: mebibyte, blobReceived: mebibyte, received: 5 * mebibyte });
+      return { mode: "apply" };
+    });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const human = await execute(["sync", "--apply"], undefined, downloading);
+      expect(human.stderr).toBe(
+        "downloading blob 1/2 (aaaaaaaaaaaa): 3.0 MiB of 4.0 MiB; 3.0 MiB of 5.0 MiB in total\n"
+          + "downloaded 2 blob(s), 5.0 MiB in 2 s\n",
+      );
+      for (const arguments_ of [["sync", "--apply", "--json"], ["sync", "--apply", "--no-input", "--scheduled"]]) {
+        expect((await execute(arguments_, undefined, downloading)).stderr).toBe("");
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("recursively redacts secret values while preserving references", () => {
@@ -637,22 +869,38 @@ describe("CLI rendering and exit semantics", () => {
     expect(evaluateCli(["--help"])._tag).toBe("Help");
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",
-      text: "3.2.1",
+      text: "4.0.0",
       exitCode: 0,
     });
   });
 });
 
 describe("authored profile validation detail", () => {
-  it("names the underlying contract complaint within bounds", () => {
-    const failure = profileFileFailure(new Error("Expected 2 | undefined at [version]"));
-    expect(failure.category).toBe("usage-or-configuration");
-    expect(failure.message).toContain("authored profile file is malformed or invalid");
-    expect(failure.message).toContain("Expected 2 | undefined");
-  });
   it("falls back safely for empty and unknown causes", () => {
     expect(profileFileFailure(new Error("   ")).message).toContain("profile validation failed");
     expect(profileFileFailure("boom").message).toContain("unknown validation failure");
+  });
+
+  it("does not treat arbitrary error text as a trusted schema diagnostic", () => {
+    const failure = profileFileFailure(new Error("Expected profile-disposable-value at [version]"));
+    expect(failure.category).toBe("usage-or-configuration");
+    expect(failure.message).toContain("profile validation failed");
+    expect(failure.message).not.toContain("profile-disposable-value");
+  });
+
+  it("drops reported input from typed schema failures", () => {
+    let cause: unknown;
+    try {
+      Schema.decodeUnknownSync(Schema.String)(
+        { value: "profile-disposable-value" },
+        { reportInput: true },
+      );
+    } catch (error) {
+      cause = error;
+    }
+    const failure = profileFileFailure(cause);
+    expect(failure.message).toContain("Expected string");
+    expect(failure.message).not.toContain("profile-disposable-value");
   });
 
   it("never echoes parser excerpts from profile contents", () => {
@@ -687,5 +935,125 @@ describe("authored profile validation detail", () => {
     const failure = profileFileFailure(cause);
     expect(failure.message).toContain("resources");
     expect(failure.message).not.toContain("MARKER-ABC-123");
+  });
+
+  it.each([
+    {
+      name: "index URL user information",
+      fields: {
+        indexPolicy: {
+          url: "https://operator:profile-disposable-value@example.test/simple",
+          reviewedBy: "reviewer",
+          reviewedAt: "2026-09-30T00:00:00Z",
+        },
+      },
+      field: "indexPolicy",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "index URL query credential",
+      fields: {
+        indexPolicy: {
+          url: "https://example.test/simple?token=profile-disposable-value",
+          reviewedBy: "reviewer",
+          reviewedAt: "2026-09-30T00:00:00Z",
+        },
+      },
+      field: "indexPolicy",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "symbolic index URL query credential",
+      fields: {
+        indexPolicy: {
+          url: "https://example.test/simple?token=${API_TOKEN}",
+          reviewedBy: "reviewer",
+          reviewedAt: "2026-09-30T00:00:00Z",
+        },
+      },
+      field: "indexPolicy",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "empty index URL query credential",
+      fields: {
+        indexPolicy: {
+          url: "https://example.test/simple?token=",
+          reviewedBy: "reviewer",
+          reviewedAt: "2026-09-30T00:00:00Z",
+        },
+      },
+      field: "indexPolicy",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "unsupported version",
+      fields: { version: "profile-disposable-value/invalid" },
+      field: "version",
+      reason: "installer uv cannot honor requested version",
+    },
+    {
+      name: "unsafe registry package",
+      fields: {
+        method: "npm",
+        package: "https://operator:profile-disposable-value@example.test/tool.tgz",
+      },
+      field: "package",
+      reason: "npm-family package must be an exact registry name",
+    },
+    {
+      name: "missing build executable bounds",
+      fields: {
+        buildPolicy: {
+          mode: "required",
+          reviewedBy: "profile-disposable-value",
+          reviewedAt: "2026-09-30T00:00:00Z",
+          paths: [],
+          origins: [],
+          capabilities: ["execute"],
+          steps: [],
+        },
+      },
+      field: "buildPolicy",
+      reason: "executables",
+    },
+  ])("reports the correct field and actionable reason for $name without rejected values", ({ fields, field, reason }) => {
+    let cause: unknown;
+    try {
+      decodeMachineProfileJsonc(JSON.stringify({
+        id: "invalid-recipe",
+        version: 2,
+        name: "Invalid recipe",
+        groups: [],
+        resources: [{
+          id: "tool",
+          kind: "tool",
+          target: "~/.local/bin/tool",
+          spec: {
+            kind: "tool",
+            toolId: "tool",
+            recipes: [{
+              platform: "linux",
+              method: "uv",
+              package: "tool",
+              version: "1.2.3",
+              ...fields,
+            }],
+          },
+          verify: { method: "executable-present", executable: "tool" },
+        }],
+      }));
+    } catch (error) {
+      cause = error;
+    }
+    expect(cause).toBeDefined();
+    const failure = profileFileFailure(cause);
+    expect(failure.message).toContain(field);
+    expect(failure.message).toContain(reason);
+    expect(failure.message).not.toContain("profile-disposable-value");
+    if (field === "indexPolicy") {
+      expect(failure.message).toContain("url");
+      expect(failure.message).not.toMatch(/recipes[^\n]*version/u);
+    }
   });
 });

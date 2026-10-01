@@ -5,6 +5,10 @@ and use [numbered choices](questions.md) for every unresolved field and approval
 
 ## Inspect first
 
+For a sandboxed agent, first follow
+[setup-agent execution permissions](completion.md#setup-agent-execution-permissions).
+Inspect the actual follower's native user context, not a sandbox substitute.
+
 Observe the current user, platform, runtime, installed version, secure credential
 provider, native scheduler, role, selected profile, pins, last run, and drift:
 
@@ -44,10 +48,13 @@ Never put literal tokens in an agent tool call or create an unsupported file fla
 
 ## Install and enroll
 
-Use an approved user-level install only when needed:
+Use an approved user-level install only when needed.
+
+For an existing 3.2.x installation, do not replace its package or state.
+Set up 4.0.0 separately using the [fresh-install guide](../../../website/content/docs/how-to/upgrade.mdx).
 
 ```bash
-npm install --global @microck/canonfig@3.2.1
+npm install --global @microck/canonfig@4.0.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```
@@ -68,11 +75,28 @@ Resume the unchanged journal instead of repeating discovery or approval.
 
 Required secure noninteractive storage uses Secret Service, Keychain, or Credential
 Manager. Do not silently downgrade to a plaintext policy. Missing required storage
-remains Human Action Required.
+remains Human Action Required (exit 3), and the message names the store and the
+command to run:
+
+- Linux over SSH or in a background session: Secret Service is reached through
+  `DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus`; set
+  `XDG_RUNTIME_DIR=/run/user/$(id -u)` when it is unset. `dbus-run-session` is
+  not a remedy. Without a user manager, lingering starts one (human decision).
+- macOS over SSH: the login Keychain starts locked;
+  `security unlock-keychain ~/Library/Keychains/login.keychain-db`, typed by the
+  operator, unlocks it for that SSH session only, never for scheduled runs.
 
 The source is an exact loopback HTTPS origin. A Tailscale IP/MagicDNS name is not
-that endpoint; an operator-managed TLS-transparent tunnel is separate. Verify
-source process/tunnel availability and preserve TLS/signing pins.
+that endpoint. For a remote Source, start Canonfig's managed tunnel after the
+Source is serving, with the Source's SSH host public key read on the Source:
+
+```bash
+canonfig tunnel start --invitation ./canonfig-invite --ssh-host source.example --ssh-user operator --ssh-host-key-file ./source-host-key.pub
+```
+
+The tunnel pins the SSH host key, TLS certificate, and signing key separately
+and records itself, so `canonfig tunnel start` alone restarts it later without
+the invitation. Preserve TLS/signing pins.
 
 With the locally supplied invitation file and explicitly selected name/profile:
 
@@ -88,6 +112,11 @@ independently revocable credentials, pinned TLS/signing fingerprints, and an
 authorized profile revision. Refuse invalid/exposed/expired/replayed material
 and request a fresh invitation; never reset trust or suppress verification.
 
+An already enrolled machine is re-enrolled only on request. The same name with a
+new invitation rotates the credential and keeps local settings. `--replace`
+creates a new identity, revokes the old one, and resets agent policy, harness
+and secret bindings, schedule choice, and overlays; it needs explicit approval.
+
 Inspect granted groups without printing the invitation. If `canonfig:secrets` is
 present, explain the automatic transfer on successful apply and obtain explicit
 sharing consent before first apply in either mode. Discovery or mode selection
@@ -95,8 +124,9 @@ does not grant this authority.
 
 ## First plan and apply
 
+Enrollment with `--profile` already selected the profile; do not select it again.
+
 ```bash
-canonfig profile select workstation
 canonfig sync --plan
 ```
 
@@ -126,32 +156,48 @@ A downloaded blob is not Convergence. Inspect the actual recorded outcome and
 fresh evidence; exit zero alone is not enough. An approved shared-secret transfer
 must be checked separately and reported using names/references only.
 
+After apply, give the client trust steps; Canonfig never copies trust between
+machines. Restart Claude Code and review `/hooks` if it reports hooks changed
+outside the app; trust project folders in Claude Code and Codex; open `/hooks` in
+Codex to trust hooks from `~/.codex/hooks.json`; for Antigravity MCP config,
+start `agy` in the project and invoke a managed tool to check the server.
+`clientLoaded` stays `not-verified`; report it that way.
+
 ## Schedule last, only when selected
 
 Offer Keep existing/manual / verified profile default / proposed daily or weekly
 calendar / Other. Timezone and executable path remain editable, separately in
 Advanced. Do not invent local working hours. Manual operation is a valid choice,
-not permission to delete an existing schedule.
+not permission to delete an existing schedule. Sync never installs a profile
+`scheduleDefault`; it reports "schedule available" until the operator accepts it.
 
 After first convergence and explicit scheduling selection, use the chosen values
 rather than copying this illustrative calendar:
 
 ```bash
 canonfig schedule set daily@09:00 --timezone Europe/Madrid
+canonfig schedule set --default
 canonfig schedule status
 ```
 
-Native jobs execute:
+Use `--default` only for the profile default choice; it takes no calendar,
+timezone, or executable. `schedule set` prints the resolved zone and next run,
+runs nothing immediately, and warns when the time falls into a daylight-saving
+gap in the next 12 months; recommend a time outside the change window. Native
+jobs execute:
 
 ```text
-canonfig sync --apply --no-input
+canonfig sync --apply --no-input --scheduled
 ```
 
 Verify the systemd user timer, launchd user agent, or per-user Task Scheduler
 under the same user, with executable, noninteractive secure storage, source,
-tunnel when needed, and visible failures. A schedule resource in the profile is
-also a scheduling mutation: review it before apply. Disabled/drifted or unavailable
-jobs cannot count as verified automatic operation.
+tunnel when needed, and visible failures. Linux jobs run while logged out only
+with lingering; macOS jobs need the logged-in desktop session; Windows jobs run
+while the user is logged on. A job disabled or deleted outside Canonfig is
+respected and reported as "automation disabled outside Canonfig", never
+recreated. Disabled/drifted/overridden or unavailable jobs cannot count as
+verified automatic operation.
 
 ## Resume, recovery, and drift
 
@@ -164,6 +210,8 @@ canonfig recover --no-input --json
 ```
 
 Recovery uses the journal, not a new revision or invented rollback of installers.
+When Canonfig reports the run cannot be recovered, `canonfig abandon` closes it
+without rollback (approval required), then `canonfig sync --apply` reconciles.
 For Human Action Required show resource, reason, and exact non-secret instruction.
 For drift offer numbered Preserve local edit / Review restoring Source content /
 Rework eligible local config ownership / Other. An arbitrary edited skill cannot
@@ -173,6 +221,7 @@ Replan after resolution; never force ownership to escape an error.
 ## Completion
 
 Report actual identity/name, profile/revision, groups, pins, verified convergence,
-authorized secret outcome, and requested scheduler state. Plan-only work is
-complete only as a plan-only request, never as a configured follower. Report
-selected remote devices separately until they have their own evidence.
+authorized secret outcome, client trust steps given, and requested scheduler
+state. Plan-only work is complete only as a plan-only request, never as a
+configured follower. The Source has no fleet view: report selected remote
+devices separately until each has its own `canonfig status` evidence.

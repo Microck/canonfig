@@ -5,45 +5,135 @@ description: Resume an interrupted synchronization or resolve non-converged outc
 
 Canonfig records the complete Synchronization Plan before mutation and journals each action. **Follower Drift** and **Human Action Required** are deliberate outcomes that preserve the reason Canonfig did not proceed.
 
+## What one run changes, and what it rolls back
+
+A Synchronization Run is one transaction for filesystem and configuration
+changes. If any deterministic action fails, for example because a target is
+not writable, Canonfig restores every file, directory, and config it had
+already changed in that run, in reverse order, including resources that do not
+depend on the failed one. Resources that depend on the failed one are not
+written. The run ends `Failed` (exit 7), and apply, `status`, and the
+completion receipt name the resource and its target, for example
+`resource claude-settings could not be applied to ~/.claude/settings.json:
+atomically write file failed: EACCES: permission denied`.
+
+Two things are outside that transaction:
+
+- **Tool installs are not rolled back.** A package that an installer already
+  installed stays installed; the next run's verification finds it in place.
+- **Human Action Required and Follower Drift stop the run without rolling
+  back.** Actions run in plan order. When one reaches a resource that needs a
+  login, a local credential, a repair of an unparseable follower config file,
+  or a drift decision, the actions before it that already verified stay
+  applied, the blocked resource is left unchanged, and every later action is
+  skipped, not run. `sync --plan` lists the blocked resource, as
+  `human-action` with its reason or as `drift-conflict`.
+
+Fix the reported cause, then run `canonfig sync --apply` again. The next run
+reapplies everything that was rolled back or skipped.
+
 ## Resume an interrupted run
 
-Recover after a run finishes as `Interrupted` or if the process stops during apply. First, inspect the status:
+A run is interrupted when the process stops during apply: a crash, a kill, a
+reboot, or a full disk. Inspect it first:
 
 ```bash
 canonfig status
 ```
 
-Resume the recorded plan:
+While a run is open, `converged` is not reached, and status shows the open run
+with each planned action's journaled state, how many actions finished, and the
+next step. Then resume it:
 
 ```bash
 canonfig recover
 ```
 
-Recovery uses the persisted action journal; it does not guess from partial filesystem changes. If there is no recoverable run, the command returns a usage error rather than inventing work.
+Recovery uses the persisted action journal and rollback snapshots; it does not
+guess from partial filesystem changes. If there is no recoverable run, the
+command returns a usage error rather than inventing work. It also removes
+Canonfig's own temporary files (`.cf-<12 hex>.tmp`) next to the run's targets.
+
+Recovery never races a live run. `sync --apply`, `recover`, and `abandon` take
+an exclusive run lock. While another Canonfig process holds it, they stop with
+exit 4: "another canonfig process (PID N) has been running `<operation>` for
+this follower since `<time>`; wait for it to finish, then retry". A lock left by
+a killed process is taken over automatically.
+
+### A file was edited after the interruption
+
+Before it restores anything, recovery compares the current bytes of every
+target with the content from before the run and with what the run was writing.
+If a target matches neither, someone edited it after the interruption.
+Recovery then stops with Human Action Required (exit 3), names the file,
+changes nothing, and keeps both the file and the snapshot. Either:
+
+1. keep your edit somewhere else, or restore one of the two versions, then run
+   `canonfig recover` again; or
+2. run `canonfig abandon` to keep the files exactly as they are.
+
+### Close a run that cannot be recovered
+
+```bash
+canonfig abandon
+```
+
+`abandon` is the terminal close for a run `recover` cannot resolve, such as one
+whose revision is no longer authorized or whose follower now selects another
+profile. It is not a rollback: whatever the run already applied stays applied,
+and the next run reconciles it like any other follower state.
+
+Recover an open run with the release and state that created it. Recovery after
+an in-place upgrade from 3.2.x to 4.0.0 is unsupported and unverified; see
+[the fresh-install guide](/how-to/upgrade) before replacing any installation.
 
 Before changing an existing file or managed directory, Canonfig captures its permissions in the rollback journal. Rollback restores POSIX modes on Linux and macOS. On Windows it also restores the owner, group, and discretionary access rules, including inheritance flags. It does not capture Windows audit rules. Directory permissions are restored after their children so restrictive permissions do not block recovery.
 
 If Windows refuses to restore a captured owner or access rule, recovery remains failed and retains the journal and backups. Resolve the reported permission error before retrying recovery. A numeric mode alone is not a complete Windows permission backup.
 
+## Not enough disk space
+
+Before a run is recorded, and again before content downloads, Canonfig checks
+free space on the filesystem of each target and of its cache. When space is
+short it stops with exit 7, "the filesystem holding `<path>` needs N bytes free
+but only M are available; nothing was changed". No run is opened, so there is
+nothing to recover: free space and run the command again.
+
 ## Resolve Follower Drift
 
-For every managed skill file, Canonfig compares three digests: target, desired, and last-applied.
+Drift applies to resources whose policy protects local edits: skills
+(`replace-if-unmodified`) and the Source section of `append-local` files. For
+each managed file, Canonfig compares three digests: the target, the desired
+content, and what it last applied. (A `replace` file is Source-owned: a local
+edit to it is replaced by the next apply.)
 
-When the observed file does not match the desired file, and the observed file differs from what Canonfig last applied, Canonfig marks it as **Follower Drift** and preserves the follower content. It does not automatically merge modified canonical skills.
+When the observed file differs both from the desired content and from what
+Canonfig last applied, someone changed it on the follower. Canonfig marks it as
+**Follower Drift** (exit 4) and keeps the follower's content. It never merges
+or overwrites a locally modified skill.
 
-1. Inspect the recorded follower state to identify the drifted resource:
+1. Find the drifted resource:
    ```bash
    canonfig status
    ```
-2. Decide whether to keep the follower copy, restore the source revision, or move follower-owned changes into a Local Overlay.
-3. Apply your choice manually or via overlay, then rerun synchronization.
+2. Decide which version to keep:
+   - **Keep the Source version:** move the local copy aside (or delete it) and
+     run `canonfig sync --apply`. A missing target is reinstalled.
+   - **Keep the local change for everyone:** copy it to the Source, publish a
+     new revision there, and sync.
+   - **Keep the local change on this follower only:** for a `config` key, claim
+     it with a Local Overlay (`canonfig overlay set <resource-id> --target
+     <path> --key <config.path>`). Files and skills cannot move into a Local
+     Overlay.
+3. Run synchronization again.
 
 ## Complete Human Action Required
 
-Canonfig records **Human Action Required** when a person must complete a step before the desired state can be verified, such as:
+Canonfig records **Human Action Required** (exit 3) when a person must complete a step before the desired state can be verified, such as:
 
 - a login that cannot be completed noninteractively
-- unavailable secure credential storage
+- a locked or unavailable credential store (the message names the store and the command to run)
+- a follower config file that does not parse (the message names the file, line, and column)
 - an agent policy forbidding a required capability (elevation, restart, reboot)
 - an ambiguous action under `deterministic-only`
 

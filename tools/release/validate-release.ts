@@ -160,7 +160,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const metadata = Schema.decodeUnknownSync(PackageMetadata)(
     JSON.parse(readFileSync(metadataPath, "utf8")),
   );
-  if (metadata.name !== "@microck/canonfig" || metadata.version !== "3.2.1") {
+  if (metadata.name !== "@microck/canonfig" || metadata.version !== "4.0.0") {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
@@ -172,9 +172,8 @@ const validatePackageMetadata = (metadataPath: string): void => {
   }
   const runtimeDependencies = Object.keys(metadata.dependencies).sort();
   const expectedRuntimeDependencies = [
-    "@effect/platform-node",
-    "@effect/platform-node-shared",
-    "@effect/sql-sqlite-node",
+    "@canonfig/effect-platform-node-shared",
+    "@canonfig/effect-sql-sqlite-node",
     "effect",
     "selfsigned",
     "smol-toml",
@@ -194,16 +193,15 @@ const validatePackageMetadata = (metadataPath: string): void => {
 const validatePackageContents = (
   artifact: typeof PackedArtifact.Type,
 ): void => {
-  if (artifact.name !== "@microck/canonfig" || artifact.version !== "3.2.1") {
+  if (artifact.name !== "@microck/canonfig" || artifact.version !== "4.0.0") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
   // The public compiler ships its transitive declaration graph so consumers
   // get the same recursive profile contract without private dist imports. The
-  // CLI also includes byte-resource transport and staged MCP qualification.
-  // Release budget guards against accidental bulk (precedent #128: 340k→341k).
-  // Bumped for the #134 redaction feature (341,295 packed); still tight
-  // enough to catch bulk while leaving ~700B headroom.
-  if (artifact.size > 342_000 || artifact.unpackedSize > 1_700_000) {
+  // 4.0 byte transport, Source service, and client configuration modules bring
+  // the measured package to 426,943 packed / 2,013,419 unpacked bytes. Keep
+  // a small margin while still rejecting unintended assets or stale output.
+  if (artifact.size > 440_000 || artifact.unpackedSize > 2_100_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -257,7 +255,7 @@ const validateBinary = (executable: string): void => {
 
   const version = invokeExecutable(executable, ["--version"]);
   requireSuccess("packed executable version", version);
-  if (version.stdout !== "3.2.1\n" || version.stderr !== "") {
+  if (version.stdout !== "4.0.0\n" || version.stderr !== "") {
     fail("packed executable version output is invalid");
   }
 

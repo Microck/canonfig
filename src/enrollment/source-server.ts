@@ -23,8 +23,10 @@ import {
   InvitationNotFoundError,
   InvitationReplayError,
   InvalidFollowerCredentialError,
+  LegacyRevisionFormatError,
   MalformedEnrollmentRequestError,
   RevokedFollowerCredentialError,
+  SourceCredentialMismatchError,
   SourceNotInitializedError,
   TransportIntegrityError,
   TransportResourceNotFoundError,
@@ -43,6 +45,13 @@ import {
   type SourceServerHandle,
   type StartSourceServerInput,
 } from "./enrollment.types.ts";
+import {
+  announcedVersion,
+  canonfigVersionHeader,
+  peerVersionCompatible,
+  versionMismatchMessage,
+} from "./version-handshake.ts";
+import { buildIdentity } from "../runtime/build-identity.ts";
 
 const maximumRequestBytes = 64 * 1024;
 const defaultMaximumMetadataBytes = 1024 * 1024;
@@ -107,6 +116,7 @@ const sendJson = (
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(encoded),
     "cache-control": "no-store",
+    [canonfigVersionHeader]: buildIdentity.packageVersion,
   });
   response.end(encoded);
 };
@@ -116,6 +126,7 @@ const errorStatus = (error: EnrollmentError): number => {
   if (
     error instanceof EnrollmentSourceMismatchError
     || error instanceof EnrollmentFingerprintMismatchError
+    || error instanceof LegacyRevisionFormatError
   ) return 409;
   if (
     error instanceof InvitationNotFoundError
@@ -193,8 +204,10 @@ export const asEnrollmentError = (error: Error): EnrollmentError => {
     || error instanceof InvitationNotFoundError
     || error instanceof InvitationReplayError
     || error instanceof InvalidFollowerCredentialError
+    || error instanceof LegacyRevisionFormatError
     || error instanceof MalformedEnrollmentRequestError
     || error instanceof RevokedFollowerCredentialError
+    || error instanceof SourceCredentialMismatchError
     || error instanceof SourceNotInitializedError
     || error instanceof TransportIntegrityError
     || error instanceof TransportResourceNotFoundError
@@ -211,40 +224,30 @@ export const startSourceServer = (
   input: StartSourceServerInput = {},
 ): Effect.Effect<
   SourceServerHandle,
-  EnrollmentConfigurationError,
+  EnrollmentConfigurationError | CredentialStorageError | SourceCredentialMismatchError,
   Enrollment | MachineState
 > =>
   Effect.gen(function*() {
     const enrollment = yield* Enrollment;
     const machine = yield* MachineState;
-    const source = yield* enrollment.source().pipe(
-      Effect.mapError(() =>
-        new EnrollmentConfigurationError({
-          operation: "start enrollment server",
-          message: "source enrollment identity is unavailable",
-        })
+    // The TLS key and certificate are checked against the recorded
+    // fingerprint (and moved under this state directory's credential
+    // namespace when an earlier release stored them account-globally), so the
+    // server never presents another Source's identity. A local store failure
+    // keeps its native recovery text.
+    const credentials = yield* enrollment.sourceCredentials().pipe(
+      Effect.mapError((error) =>
+        error instanceof CredentialStorageError || error instanceof SourceCredentialMismatchError
+          ? error
+          : new EnrollmentConfigurationError({
+            operation: "start enrollment server",
+            message: "source enrollment identity is unavailable",
+          })
       ),
     );
-    const key = yield* machine.loadCredential({
-      reference: source.tlsKeyReference,
-    }).pipe(
-      Effect.mapError(() =>
-        new EnrollmentConfigurationError({
-          operation: "load source TLS key",
-          message: "source TLS credentials are unavailable",
-        })
-      ),
-    );
-    const certificate = yield* machine.loadCredential({
-      reference: source.tlsCertificateReference,
-    }).pipe(
-      Effect.mapError(() =>
-        new EnrollmentConfigurationError({
-          operation: "load source TLS certificate",
-          message: "source TLS credentials are unavailable",
-        })
-      ),
-    );
+    const source = credentials.material;
+    const key = credentials.tlsPrivateKey;
+    const certificate = credentials.tlsCertificate;
     const requestedHostname = input.hostname === undefined
       ? "127.0.0.1"
       : input.hostname;
@@ -275,6 +278,24 @@ export const startSourceServer = (
             sendJson(response, 200, {
               source: source.source,
               tlsFingerprint: source.tlsFingerprint,
+            });
+            return;
+          }
+          // The descriptor above stays open to every release, so readiness
+          // probes and status can still reach a skewed Source and read its
+          // version. Everything else is refused across release lines before
+          // an invitation is spent or a revision is shaped for the wrong
+          // follower.
+          const followerVersion = announcedVersion(request.headers[canonfigVersionHeader]);
+          if (!peerVersionCompatible(followerVersion)) {
+            sendJson(response, 409, {
+              // A follower from before this handshake renders only the
+              // message of the failures it knows, and a malformed request is
+              // one of those.
+              error: followerVersion === undefined
+                ? "MalformedEnrollmentRequestError"
+                : "SourceVersionMismatchError",
+              message: versionMismatchMessage(buildIdentity.packageVersion, followerVersion),
             });
             return;
           }
@@ -457,6 +478,7 @@ export const startSourceServer = (
                 "content-length": 0,
                 "accept-ranges": "bytes",
                 "cache-control": "no-store",
+                [canonfigVersionHeader]: buildIdentity.packageVersion,
               });
               response.end();
               return;
@@ -473,6 +495,7 @@ export const startSourceServer = (
               "content-range": `bytes ${start}-${end}/${blob.totalBytes}`,
               "accept-ranges": "bytes",
               "cache-control": "no-store",
+              [canonfigVersionHeader]: buildIdentity.packageVersion,
             });
             response.end(blob.content);
             return;

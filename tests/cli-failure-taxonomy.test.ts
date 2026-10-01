@@ -91,9 +91,13 @@ describe("CLI failure taxonomy", () => {
     ).toBe("no published profile revision rev-7");
     expect(
       describeRuntimeError(
-        Object.assign(new Error(""), { _tag: "ExecutableNotFoundError", name: "canonfig" }),
+        Object.assign(new Error(""), {
+          _tag: "ExecutableNotFoundError",
+          executable: "canonfig",
+          searched: ["/home/user/.local/bin", "/usr/bin"],
+        }),
       ).message,
-    ).toBe("canonfig was not found on PATH");
+    ).toBe("canonfig was not found (searched: /home/user/.local/bin, /usr/bin)");
     expect(
       describeRuntimeError(
         Object.assign(new Error(""), {

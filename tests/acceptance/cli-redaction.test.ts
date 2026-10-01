@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { CliExitCode } from "../../src/cli/exit-codes.ts";
-import { isSecretField, redactArguments, redactText } from "../../src/cli/redaction.ts";
+import { redactArguments, redactText } from "../../src/cli/redaction.ts";
+import { isSecretField } from "../../src/secrets/credential-policy.ts";
 import { renderCliResult, renderUsageFailure, sanitizeCliData } from "../../src/cli/render.ts";
 
 const secret = "disposable-redaction-fixture";
@@ -39,6 +40,16 @@ describe("credential-safe CLI output", () => {
       env: { SERVICE_API_KEY: "[REDACTED]", PATH: "/usr/bin" },
       environment: [{ name: "SERVICE_TOKEN", value: "[REDACTED]" }],
       headers: { Authorization: "[REDACTED]" },
+    });
+  });
+
+  it("shows a value that only names an environment variable, and still redacts literals", () => {
+    expect(sanitizeCliData({
+      headers: { Authorization: "Bearer ${API_TOKEN}", "X-Api-Key": "{env:SERVICE_KEY}" },
+      env: { GITHUB_TOKEN: "$GITHUB_TOKEN", OTHER_TOKEN: "Bearer ${API_TOKEN}-suffix" },
+    })).toEqual({
+      env: { GITHUB_TOKEN: "$GITHUB_TOKEN", OTHER_TOKEN: "[REDACTED]" },
+      headers: { Authorization: "Bearer ${API_TOKEN}", "X-Api-Key": "{env:SERVICE_KEY}" },
     });
   });
 

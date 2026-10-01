@@ -27,7 +27,7 @@ const profile = `{
           }
         }]
       },
-      "verify": { "method": "digest", "digest": "${"a".repeat(64)}" }
+      "verify": { "method": "digest" }
     },
     {
       "id": "portable-tool",

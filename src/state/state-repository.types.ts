@@ -130,6 +130,12 @@ export interface EnrollmentSourceRecord {
   readonly tlsKeyReference: CredentialReference;
   readonly tlsCertificateReference: CredentialReference;
   readonly tlsFingerprint: CertificateFingerprint;
+  /**
+   * Stable per-state-directory id that namespaces the Source's native
+   * credential items. Absent for a Source initialized before namespacing,
+   * whose items still use the legacy account-global names.
+   */
+  readonly credentialNamespace?: string | undefined;
 }
 
 export interface CreateEnrollmentInvitationInput {

@@ -135,7 +135,7 @@ The Source Machine owns JSONC authoring files under its Canonfig source director
   tools.jsonc
 ```
 
-`profile.jsonc` declares groups, resources, policies, dependencies, and an optional inherited schedule default. A Machine Profile does not apply a schedule: the native synchronization job belongs to the Follower Machine, which either inherits the profile default or chooses its own with `canonfig schedule set`. Reconciling that job happens after a converged run rather than as part of one, so a follower whose native scheduler does not work still converges. `tools.jsonc` is an agent-readable catalog of every discovered CLI or tool, including invocation evidence, upstream URL, supported platforms, installation recipes, verification, configuration files, and login requirements.
+`profile.jsonc` declares groups, resources, policies, dependencies, and an optional suggested schedule default. A Machine Profile does not apply a schedule: the native synchronization job belongs to the Follower Machine, which accepts the profile's suggestion with `canonfig schedule set --default` or chooses its own calendar with `canonfig schedule set`. Sync never installs, re-enables, or recreates a job; when no decision exists it only reports that a schedule is available. Reconciling that job happens after a converged run rather than as part of one, so a follower whose native scheduler does not work still converges. `tools.jsonc` is an agent-readable catalog of every discovered CLI or tool, including invocation evidence, upstream URL, supported platforms, installation recipes, verification, configuration files, and login requirements.
 
 Publishing converts JSONC into a canonical encoded Profile Revision. Comments and authoring layout never affect the revision digest. The accepted proposal digest, reviewer, and signed revision digest commit in the same SQLite transaction as the immutable revision.
 
@@ -230,7 +230,7 @@ reserved or ambiguous on that platform.
 
 ## Tool discovery and installation
 
-Discovery scans configured agent instruction files, tool configuration, hooks, MCP definitions, executable references, and known package-manager metadata. Markdown prose alone is not executable evidence. Canonfig records the file, line, command shape, and resolved executable or package when available.
+Discovery scans the agent instruction files, tool configuration, hooks, MCP definitions, executable references, and known package-manager metadata that the operator names. It runs no processes. Markdown prose alone is not executable evidence. Canonfig records the file, line, command shape, and resolved executable or package when available. Discovery proposes only `tool` resources; file, directory, config, and skill resources are authored in the profile file.
 
 Each tool entry contains:
 
@@ -263,8 +263,9 @@ and option-like values are rejected. Homebrew, winget, uv, cargo, and apt use
 their corresponding safe version grammars. An immutable reviewed artifact may
 carry its exact version in its canonical source metadata when the package
 manager supports that artifact form. A method that cannot represent a
-requested version fails closed before its installer is spawned; an unversioned
-recipe becomes Human Action Required and never reaches executable lookup.
+requested version fails closed before its installer is spawned. Publication
+refuses an automatic recipe without an exact version, so an unversioned recipe
+never reaches a follower.
 
 Recipe methods are closed to the supported set: npm, pnpm, bun, brew, homebrew,
 winget, uv, cargo, apt, and source. Unknown methods are rejected during
@@ -329,7 +330,17 @@ private path is retained when explicitly reviewed; origins are never substituted
 for a reviewed simple-index path. Index URLs reject credentials, fragments,
 non-HTTPS schemes, and non-simple paths before executable lookup. The uv action
 always supplies `--no-config`, the approved full `--default-index`, an exact
-version, and `--no-build` under the default build policy.
+version, `--no-python-downloads` (with `UV_PYTHON_DOWNLOADS=never` in the child
+environment, so uv never fetches an interpreter), and `--no-build` under the
+default build policy.
+
+A bare verifier executable resolves first in the directories where the tool's
+recipes install executables on that platform (for example the uv tool bin
+directory, the npm global prefix, `~/.cargo/bin`, or the WinGet links
+directory), then `~/.local/bin`, then `PATH`, which in a scheduled run is the
+job's bounded `PATH`. A missing executable fails verification and lists every
+directory searched. A failed installer's error carries the last 20 lines
+(at most 1536 characters) of its output, redacted.
 
 When no recipe is unambiguous, Canonfig creates an Agent Task containing the upstream URL and discovery evidence. The Configuration Agent may propose a recipe. The controlled executor applies it only under the configured agent policy, and verification must pass before the tool converges.
 
@@ -419,14 +430,14 @@ with a missing, conflicting, truncated, or aborted range is discarded before
 the cache entry is atomically trusted; denial is returned before any blob length
 header is written.
 
-A run outcome is one of `Converged`, `HumanActionRequired`, `FollowerDrift`, `Failed`, or `Interrupted`. If a deterministic action fails, Canonfig rolls back earlier file and directory mutations from that run in reverse order and restores their prior ownership records. External operations that cannot guarantee rollback remain visible and recoverable. Canonfig never reports convergence because some actions succeeded.
+A run outcome is one of `Converged`, `HumanActionRequired`, `FollowerDrift`, `Failed`, or `Interrupted`. A run is one transaction for filesystem and configuration changes: if a deterministic action fails, Canonfig rolls back every file, directory, and config mutation of that run in reverse order, including resources independent of the failed one, restores their prior ownership records, and reports `resource <id> could not be applied to <target>: <cause>`. Tool installs are outside that transaction and are not rolled back. A resource that ends in Human Action Required does not roll back the others. External operations that cannot guarantee rollback remain visible and recoverable. Canonfig never reports convergence because some actions succeeded.
 
 ## Failure and recovery
 
 Before each mutation, Canonfig writes an action journal entry and any rollback material needed for owned files. File writes use a sibling temporary file, durability sync where supported, and atomic rename.
 
-If a later deterministic action fails, the executor rolls back earlier file and
-directory mutations from the same run in reverse order. It restores the prior
+If a later deterministic action fails, the executor rolls back earlier file,
+directory, and config mutations from the same run in reverse order. It restores the prior
 Applied Resource Record, or removes a newly created record, only after the
 filesystem rollback succeeds.
 
@@ -447,7 +458,7 @@ Followers use native schedulers:
 - macOS: launchd user agent
 - Windows: Task Scheduler
 
-There is no built-in schedule. A follower either inherits an optional profile default after its first converged apply or explicitly selects its own calendar. Native jobs invoke `canonfig sync --apply --no-input --scheduled`; the application does not keep a follower daemon running. A schedule is verified only when its native definition is current and a scheduled invocation has completed.
+There is no built-in schedule. A follower accepts an optional profile default with `canonfig schedule set --default` or explicitly selects its own calendar; sync never installs one and never recreates or re-enables a job disabled outside Canonfig. Native jobs invoke `canonfig sync --apply --no-input --scheduled`; the application does not keep a follower daemon running. A schedule is verified only when its effective native state is current and a scheduled invocation has completed.
 
 `canonfig status --json` renders a completion receipt from durable revision,
 deployment, action-journal, scheduler, and build evidence. Publication, apply,
@@ -467,7 +478,7 @@ Canonfig uses matching, exactly pinned Effect v4 packages. Until Effect v4 is st
 - Long-lived source serving uses scoped resources and fibers.
 - Tests use matching `@effect/vitest`, `it.effect`, temporary SQLite, real temporary filesystems, loopback HTTPS, and test layers. Module mocking and method spying are forbidden.
 
-The live SQLite implementation uses `@effect/sql-sqlite-node`, rather than depending directly on the experimental `node:sqlite` interface.
+The live SQLite implementation uses `@effect/sql-sqlite-node`, rather than depending directly on the experimental `node:sqlite` interface. It and `@effect/platform-node-shared` are installed through the npm aliases `@canonfig/effect-sql-sqlite-node` and `@canonfig/effect-platform-node-shared`, pinned to the exact `effect` version.
 
 ## Setup controller
 
@@ -495,12 +506,18 @@ canonfig setup status
 
 canonfig source init
 canonfig source scan --file AGENTS.md
+canonfig source digest --profile-file profile.jsonc
+canonfig source publish --profile-file profile.jsonc --reviewer operator
 canonfig source publish --proposal proposal.json --profile workstation --name Workstation --reviewer operator
 canonfig source serve
+canonfig source service install
 canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite
 canonfig source revoke follower-one
 
 cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
+canonfig follower unenroll
+canonfig tunnel start
+canonfig tunnel stop --forget
 canonfig sync --plan
 canonfig recover --no-input
 canonfig status --json
@@ -509,10 +526,11 @@ canonfig overlay set resource-one --target config.json --key config.path
 canonfig overlay remove resource-one
 canonfig doctor --no-input
 canonfig schedule set daily@00:00
+canonfig schedule set --default
 canonfig schedule remove
 ```
 
-Commands print human-readable output by default and stable JSON with `--json`. Expected outcomes have distinct exit codes so schedulers and agents can distinguish drift, human action, operational failure, and invalid input.
+Commands print a concise human-readable summary by default (the message, one line per action or probe, and `exit N: <category>` on failure) and the stable `canonfig.cli/v1` JSON envelope with `--json`. Expected outcomes have distinct exit codes so schedulers and agents can distinguish drift, human action, operational failure, and invalid input. The complete command surface is `canonfig --help`.
 
 ## Repository layout
 

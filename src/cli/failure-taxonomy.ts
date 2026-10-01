@@ -20,13 +20,17 @@ export interface TaggedRuntimeError extends Error {
   readonly availableBytes?: bigint | undefined;
   readonly collection?: string | undefined;
   readonly command?: ReadonlyArray<string> | undefined;
+  readonly computedDigest?: string | undefined;
   readonly conflictsWith?: string | undefined;
   readonly creatingIdentity?: string | null | undefined;
+  readonly creatingStateFormat?: number | null | undefined;
   readonly creatingVersion?: string | null | undefined;
   readonly currentIdentity?: string | undefined;
+  readonly currentStateFormat?: number | undefined;
   readonly currentVersion?: string | undefined;
   readonly cycle?: ReadonlyArray<string> | undefined;
   readonly decision?: string | undefined;
+  readonly declaredDigest?: string | undefined;
   readonly dependency?: string | undefined;
   readonly desiredKind?: string | undefined;
   readonly digest?: string | undefined;
@@ -45,24 +49,28 @@ export interface TaggedRuntimeError extends Error {
   readonly maximumBytes?: number | undefined;
   readonly maximumOutputBytes?: number | undefined;
   readonly method?: string | undefined;
-  // `ExecutableNotFoundError` declares a field named `name`, which shadows
-  // `Error.name`. That is why its string form used to be just the executable
-  // name: the field, not the type. It is declared non-optional here because
-  // `Error.name` always has a value, and only that error's entry reads it.
+  // Declared non-optional because `Error.name` always has a value; entries
+  // that read it are errors that declare a `name` field of their own.
   readonly name: string;
   readonly observedState?: string | undefined;
   readonly operation?: string | undefined;
   readonly outcome?: string | undefined;
   readonly package?: string | undefined;
   readonly path?: string | undefined;
+  readonly paths?: ReadonlyArray<string> | undefined;
+  readonly pid?: number | undefined;
   readonly requiredBytes?: bigint | undefined;
   readonly policy?: string | undefined;
   readonly publishedKind?: string | undefined;
   readonly reason?: string | undefined;
+  readonly scannedPaths?: ReadonlyArray<string> | undefined;
+  readonly searched?: ReadonlyArray<string> | undefined;
   readonly reasons?: ReadonlyArray<string> | undefined;
   readonly recovery?: string | undefined;
   readonly reference?: string | undefined;
   readonly resource?: string | undefined;
+  readonly since?: string | undefined;
+  readonly snapshot?: string | undefined;
   readonly revision?: string | undefined;
   readonly run?: string | undefined;
   readonly state?: string | undefined;
@@ -239,7 +247,7 @@ export const failureTaxonomy = {
   ),
   InvalidRecipeError: describe(
     "usage-or-configuration",
-    (error) => `resource ${text(error.id)} declares an invalid installation recipe`,
+    (error) => `resource ${text(error.id)} declares an invalid installation recipe: ${text(error.reason)}`,
   ),
   InvalidTargetError: describe(
     "usage-or-configuration",
@@ -275,7 +283,12 @@ export const failureTaxonomy = {
   ),
   VerificationContentMismatchError: describe(
     "usage-or-configuration",
-    (error) => `resource ${text(error.id)} declares verification content its method does not use`,
+    (error) => `resource ${text(error.id)} declares ${text(error.method)} verification that does not match its content: ${text(error.reason)}`,
+  ),
+  VerificationDigestMismatchError: describe(
+    "usage-or-configuration",
+    (error) =>
+      `resource ${text(error.id)} declares verify.digest ${text(error.declaredDigest)}, but its published content has digest ${text(error.computedDigest)}. Set verify.digest to ${text(error.computedDigest)}, or omit it and publish computes it ('canonfig source digest' prints it)`,
   ),
   VerificationKindMismatchError: describe(
     "usage-or-configuration",
@@ -352,6 +365,19 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) => `the publication input is not valid: ${text(error.reason)}`,
   ),
+  EmptyPublicationError: describe(
+    "usage-or-configuration",
+    (error) =>
+      `nothing to publish: the profile declares no resources and ${
+        (error.scannedPaths ?? []).length === 0
+          ? "no proposal was given"
+          : `the proposal from ${list(error.scannedPaths)} found no accepted tool or skill`
+      }. Author resources in a profile file and publish it with --profile-file, or pass --allow-empty to publish an empty revision on purpose`,
+  ),
+  PublicationSourceError: describe(
+    "usage-or-configuration",
+    (error) => `resource ${text(error.resource)} cannot publish source ${text(error.path)}: ${text(error.reason)}`,
+  ),
   PublicationNotConfiguredError: describe(
     "usage-or-configuration",
     (error) =>
@@ -391,7 +417,8 @@ export const failureTaxonomy = {
   // Machine and scheduler configuration.
   ExecutableNotFoundError: describe(
     "usage-or-configuration",
-    (error) => `${text(error.name)} was not found on PATH`,
+    (error) =>
+      `${text(error.executable)} was not found (searched: ${list(error.searched) || "no directories"})`,
   ),
   FileSizeLimitError: describe(
     "usage-or-configuration",
@@ -456,6 +483,23 @@ export const failureTaxonomy = {
   TunnelProcessError: declared(
     "transport",
     (error) => `${text(error.operation)} could not manage the SSH tunnel process`,
+  ),
+  TunnelDownError: declared(
+    "transport",
+    (error) =>
+      `the managed tunnel ${text(error.endpoint)} is down; run \`canonfig tunnel start\``,
+  ),
+  SourceServiceConfigurationError: declared(
+    "usage-or-configuration",
+    (error) => `${text(error.operation)} cannot be configured on this machine`,
+  ),
+  SourceServiceManagerError: declared(
+    "human-action-required",
+    (error) => `the native service manager could not ${text(error.operation)}`,
+  ),
+  SourceServiceVerificationError: declared(
+    "verification-or-apply-failure",
+    (error) => `${text(error.operation)} did not converge: ${text(error.state)}`,
   ),
   MalformedEnrollmentRequestError: declared(
     "usage-or-configuration",
@@ -522,6 +566,11 @@ export const failureTaxonomy = {
     "human-action-required",
     (error) => `the rollback material for run ${text(error.run)} is not intact`,
   ),
+  RecoveryLocalEditError: describe(
+    "human-action-required",
+    (error) =>
+      `${list(error.paths)} changed after run ${text(error.run)} was interrupted: the current content matches neither the content before the run nor what the run was writing, so recovery stopped without changing anything. The file and the pre-run snapshot ${text(error.snapshot)} are kept. Save your edit elsewhere or restore one of those versions, then run 'canonfig recover' again, or run 'canonfig abandon' to keep the files as they are`,
+  ),
 
   // Agent harness refusals. A refused, timed-out or unusable proposal is work a
   // person must finish, not a failed apply, because resolution happens before
@@ -567,12 +616,30 @@ export const failureTaxonomy = {
   ActiveRunExistsError: describe(
     "conflict-or-drift",
     (error) =>
-      `follower ${text(error.follower)} has a run still open; run 'canonfig recover' first`,
+      `follower ${text(error.follower)} has a run still open; run 'canonfig recover' first, or 'canonfig abandon' to close it without rollback when it cannot be recovered`,
+  ),
+  RunLockHeldError: describe(
+    "conflict-or-drift",
+    (error) =>
+      error.pid === undefined
+        ? `another canonfig process is starting '${text(error.operation ?? "a run")}' for this follower (lock ${text(error.path)}); wait a moment, then retry`
+        : `another canonfig process (PID ${count(error.pid)}) has been running '${text(error.operation)}' for this follower since ${text(error.since)}; wait for it to finish, then retry. If PID ${count(error.pid)} is not a canonfig process, delete ${text(error.path)} and retry`,
   ),
   UpgradeGateError: describe(
     "conflict-or-drift",
-    (error) =>
-      `run ${text(error.run)} was created by canonfig ${text(error.creatingVersion ?? "unknown")} (source ${text(error.creatingIdentity ?? "unknown")}); this is canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}). finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`,
+    (error) => {
+      const creatingFormat = error.creatingStateFormat === null
+          || error.creatingStateFormat === undefined
+        ? "unknown"
+        : String(error.creatingStateFormat);
+      const currentFormat = count(error.currentStateFormat);
+      // The same build can meet a run recorded under another state format;
+      // naming that build twice told the operator to use the build already
+      // running.
+      return error.creatingIdentity === error.currentIdentity
+        ? `run ${text(error.run)} was recorded in state format ${creatingFormat}, but this canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}) uses state format ${currentFormat}. finish the run with a build that uses state format ${creatingFormat} or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the migration`
+        : `run ${text(error.run)} was created by canonfig ${text(error.creatingVersion ?? "unknown")} (source ${text(error.creatingIdentity ?? "unknown")}, state format ${creatingFormat}); this is canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}, state format ${currentFormat}). finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`;
+    },
   ),
   DuplicateFollowerIdentityError: declared(
     "conflict-or-drift",
@@ -582,9 +649,25 @@ export const failureTaxonomy = {
     "conflict-or-drift",
     (error) => `the enrollment state conflicts: ${text(error.reason)}`,
   ),
+  SourceCredentialMismatchError: declared(
+    "conflict-or-drift",
+    () => "the Source credentials in the native store belong to a different Source identity",
+  ),
   RevisionImmutableError: declared(
     "conflict-or-drift",
     (error) => `profile revision ${text(error.revision)} is published and cannot change`,
+  ),
+  // Installing one release line everywhere is configuration, not tampering:
+  // a skewed Source and follower used to fail with digest errors.
+  SourceVersionMismatchError: declared(
+    "usage-or-configuration",
+    () => "the Source Machine and this follower run canonfig releases that do not interoperate",
+  ),
+  // Only the Source operator can resolve it, by publishing the profile again.
+  LegacyRevisionFormatError: declared(
+    "human-action-required",
+    () =>
+      "a revision published by an earlier canonfig release cannot be served; publish the profile again on the Source Machine",
   ),
 
   // Credentials, signatures and invitations.
@@ -674,10 +757,13 @@ export const failureTaxonomy = {
     (error) =>
       `rollback material for run ${text(error.run)} could not be cleaned up (${text(error.outcome)})`,
   ),
-  InsufficientDiskError: declared(
+  InsufficientDiskError: describe(
     "verification-or-apply-failure",
-    (error) =>
-      `${text(error.path)} needs ${error.requiredBytes?.toString() ?? "unknown"} free bytes for this run but only ${error.availableBytes?.toString() ?? "unknown"} are available; nothing was changed`,
+    (error) => {
+      const amount = (bytes: bigint | undefined) =>
+        bytes === undefined ? "unknown" : `${bytes.toString()} bytes (${(bytes / 1048576n).toString()} MiB)`;
+      return `the filesystem holding ${text(error.path)} needs ${amount(error.requiredBytes)} free but only ${amount(error.availableBytes)} are available; nothing was changed. Free space there, then retry`;
+    },
   ),
   ScheduleVerificationError: declared(
     "verification-or-apply-failure",

@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import type {
+  SetupDiscoveryInput,
   SetupInventory,
   SetupItemRecord,
   SetupItemStatus,
@@ -17,28 +18,18 @@ const asJson = <Value>(value: Value) =>
 
 /**
  * The plan digest covers intent, decisions, exclusions, bounded inventory,
- * and exact executable items. Runtime evidence and qualified provenance are
- * outputs of applying that plan; including them would invalidate approval.
+ * authoring-file fingerprints and exact executable items. Runtime evidence
+ * and qualified provenance are apply outputs, not approval inputs.
  */
 export const setupPlanDigest = (input: {
   readonly role: SetupRole;
-  readonly scope?: SetupRequestScope | undefined;
+  readonly scope: SetupRequestScope;
   readonly intent: string;
   readonly exclusions: ReadonlyArray<string>;
   readonly inventory: SetupInventory;
   readonly items: ReadonlyArray<SetupPlanItem>;
+  readonly discoveryInputs: ReadonlyArray<SetupDiscoveryInput>;
 }): string => {
-  // Journals written before request scopes existed carry no scope key;
-  // the legacy branch reproduces their digest for upgrade comparison.
-  if (input.scope === undefined) {
-    return sha256Hex(canonicalJson(asJson({
-      role: input.role,
-      intent: input.intent,
-      exclusions: input.exclusions,
-      inventory: input.inventory,
-      items: input.items,
-    })));
-  }
   return sha256Hex(canonicalJson(asJson({
     role: input.role,
     scope: input.scope,
@@ -46,6 +37,7 @@ export const setupPlanDigest = (input: {
     exclusions: input.exclusions,
     inventory: input.inventory,
     items: input.items,
+    discoveryInputs: input.discoveryInputs,
   })));
 };
 

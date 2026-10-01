@@ -1,6 +1,8 @@
-import { Effect } from "effect";
-import { SqliteMigrator } from "@effect/sql-sqlite-node";
+import { Effect, Schema } from "effect";
+import { SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { SqlClient } from "effect/unstable/sql";
+
+import { legacyResourceFileBlobs } from "../profile/legacy-revision.ts";
 
 /**
  * Explicit, append-only migration set. Migrations are tracked by Effect SQL,
@@ -416,6 +418,92 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         receipt_json TEXT NOT NULL,
         PRIMARY KEY (run_id, action_id, attempt)
       )
+    `;
+  }),
+  // Source keyring items used account-global names, so two Canonfig state
+  // directories of one OS account overwrote each other's Source identity.
+  // Items are now namespaced by a stable id stored here; NULL marks a Source
+  // whose items still carry the legacy account-global names.
+  "0018_enrollment_source_credential_namespace": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      ALTER TABLE enrollment_source
+      ADD COLUMN credential_namespace TEXT
+    `;
+  }),
+  // Releases before 3.2.1 signed file bodies inline in the revision's
+  // profile, and resource_blobs, which the Source now serves file bytes from,
+  // did not exist, so an upgraded Source refused every revision it had
+  // published. Backfill the file blobs of each legacy resource that
+  // profile_revision_blobs indexes, and index them like a revision of this
+  // release. Inserts are content-addressed, so a repeat is harmless, and the
+  // Source still verifies each revision's signature before serving a byte.
+  "0019_legacy_revision_blobs": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    const rows = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({
+      blob_id: Schema.String,
+      revision_id: Schema.String,
+      resource_id: Schema.String,
+      canonical_bytes: Schema.String,
+    })))(yield* sql`
+      SELECT
+        profile_revision_blobs.blob_id,
+        profile_revision_blobs.revision_id,
+        profile_revision_blobs.resource_id,
+        profile_revisions.canonical_bytes
+      FROM profile_revision_blobs
+      JOIN profile_revisions ON profile_revisions.id = profile_revision_blobs.revision_id
+      ORDER BY profile_revision_blobs.revision_id, profile_revision_blobs.resource_id
+    `);
+    for (const row of rows) {
+      const blobs = legacyResourceFileBlobs(
+        row.canonical_bytes,
+        row.resource_id,
+        row.blob_id,
+      );
+      for (const blob of blobs) {
+        yield* sql`
+          INSERT OR IGNORE INTO resource_blobs (id, content)
+          VALUES (${blob.id}, ${blob.content})
+        `;
+        yield* sql`
+          INSERT OR IGNORE INTO profile_revision_blobs (blob_id, revision_id, resource_id)
+          VALUES (${blob.id}, ${row.revision_id}, ${row.resource_id})
+        `;
+      }
+    }
+  }),
+  // Deployment receipts began with 3.2.0, so status after an upgrade denied
+  // every synchronization an earlier release had completed. Record those runs
+  // with what is actually known about them: an unrecorded build before 3.2.0,
+  // and state format 1, the run format that predates receipts.
+  "0020_legacy_deployment_receipts": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      INSERT OR IGNORE INTO deployment_receipts (
+        run_id,
+        follower_id,
+        package_version,
+        build_identity,
+        state_format,
+        outcome,
+        recorded_at
+      )
+      SELECT
+        id,
+        follower_id,
+        'before 3.2.0',
+        'unrecorded',
+        1,
+        status,
+        completed_at
+      FROM synchronization_runs
+      WHERE creating_identity IS NULL
+        AND completed_at IS NOT NULL
+        AND status <> 'applying'
     `;
   }),
 });

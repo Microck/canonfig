@@ -7,6 +7,7 @@ import {
   commandSkillArtifacts,
   enabledHooks,
   hasEnabledMcpServers,
+  mcpOptionDiagnostics,
   ruleDocuments,
   ruleMarkdown,
   skillArtifacts,
@@ -25,6 +26,12 @@ export const antigravityAdapter: HarnessAdapter = {
     const artifacts: DesiredArtifact[] = [];
     const diagnostics: Diagnostic[] = [];
     if (hasEnabledMcpServers(context)) {
+      diagnostics.push(...mcpOptionDiagnostics(
+        context,
+        "antigravity",
+        ["timeoutMs", "enabledTools", "disabledTools", "cwd", "sse transport discriminator"],
+        ".agents/mcp_config.json projection",
+      ));
       artifacts.push({
         kind: "json", path: ".agents/mcp_config.json", owner: "antigravity",
         operations: [{ kind: "managed-map", path: ["mcpServers"], entries: antigravityMcpMap(context), collision: "error" }],

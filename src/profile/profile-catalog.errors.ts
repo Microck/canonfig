@@ -2,6 +2,8 @@ import { Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 
 import type { ProfileValidationError } from "../domain/profile.ts";
+import type { SourceCredentialMismatchError } from "../enrollment/enrollment.errors.ts";
+import type { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import type { StateRepositoryError } from "../state/state-repository.errors.ts";
 
 export class DiscoveryFilesystemError extends TaggedError<DiscoveryFilesystemError>()(
@@ -87,15 +89,42 @@ export class InvalidPublicationSignatureError extends TaggedError<InvalidPublica
   },
 ) {}
 
+/**
+ * A publication with no resources that the author did not explicitly ask
+ * for. `scannedPaths` names what the proposal scanned, if anything.
+ */
+export class EmptyPublicationError extends TaggedError<EmptyPublicationError>()(
+  "EmptyPublicationError",
+  {
+    scannedPaths: Schema.Array(Schema.String),
+  },
+) {}
+
+/** An authored resource `source` that cannot be read from inside the profile directory. */
+export class PublicationSourceError extends TaggedError<PublicationSourceError>()(
+  "PublicationSourceError",
+  {
+    resource: Schema.String,
+    path: Schema.String,
+    reason: Schema.String,
+  },
+) {}
+
 export type ProfileCatalogPublishError =
   | PublicationNotConfiguredError
   | PublicationReviewRequiredError
   | UnresolvedPublicationProposalError
+  | EmptyPublicationError
+  | PublicationSourceError
   | InvalidPublicationResourcesError
   | InvalidPublicationInputError
   | PublicationSigningError
   | InvalidPublicationSignatureError
-  | StateRepositoryError;
+  | StateRepositoryError
+  // The signing key could not be read from, or does not match, the native
+  // credential store: a local condition with its own recovery text.
+  | CredentialStorageError
+  | SourceCredentialMismatchError;
 
 export type ProfileCatalogRevisionError =
   | PublicationNotConfiguredError

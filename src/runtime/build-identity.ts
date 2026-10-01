@@ -11,22 +11,32 @@
  * A checkout run straight from source (tsx, the test suite) has no compiled
  * identity and says so with "unbuilt" rather than inventing one.
  */
-// SAFETY: the minifier replaces this global with the JSON text of the
-// identity; a source checkout reads undefined from the global object.
-const globalWithIdentity = globalThis as {
-  __CANONFIG_BUILD_IDENTITY__?: string;
-};
-
-// The substituted text was written by tools/release/minify-cli.ts with
-// exactly this shape.
-const substituted = globalWithIdentity.__CANONFIG_BUILD_IDENTITY__;
+// Source execution leaves this ambient global undeclared, so reading it
+// throws a ReferenceError there; the release minifier replaces the bare
+// identifier with the embedded JSON string in every compiled module.
+declare const __CANONFIG_BUILD_IDENTITY__: string | undefined;
+const substituted = ((): string | undefined => {
+  try {
+    return __CANONFIG_BUILD_IDENTITY__;
+  } catch (cause) {
+    if (cause instanceof ReferenceError) return undefined;
+    throw cause;
+  }
+})();
 
 // SAFETY: parsing that text cannot produce another shape.
 const embedded = substituted === undefined
   ? { sourceDigest: "unbuilt", commit: null }
   : (JSON.parse(substituted) as { sourceDigest: string; commit: string | null });
 
-export const packageVersion = "3.2.1";
+export const packageVersion = "4.0.0";
+
+export const minimumSupportedNodeMajor = 24;
+
+export const nodeRuntimeIsSupported = (version: string): boolean => {
+  const match = /^(\d+)\./u.exec(version);
+  return match !== null && Number(match[1]) >= minimumSupportedNodeMajor;
+};
 
 export interface BuildIdentity {
   readonly packageVersion: string;

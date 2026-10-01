@@ -133,6 +133,48 @@ describe("profile discovery", () => {
       .toEqual(["missing-upstream", "unresolved-executable"]);
   });
 
+  it("does not accept an npm runner as evidence of the package's executable", async () => {
+    const mcp = await fixture(".claude.json", JSON.stringify({
+      mcpServers: {
+        everything: {
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-everything@2026.8.31", "stdio"],
+        },
+      },
+    }));
+    const scan = async (files: ReadonlyArray<{ path: string }>) => Effect.runPromise(scanDiscovery({
+      files,
+      path: fixtureBin,
+    }));
+
+    const withoutBin = await scan([{ path: mcp }]);
+    expect(withoutBin.tools.find((tool) => tool.id === "server-everything")).toMatchObject({
+      reviewStatus: "needs-review",
+      verify: { method: "executable-present" },
+    });
+    expect(withoutBin.agentTasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolId: "server-everything", reason: "unresolved-executable" }),
+    ]));
+
+    const lock = await fixture("package-lock.json", JSON.stringify({
+      packages: {
+        "node_modules/@modelcontextprotocol/server-everything": {
+          version: "2026.8.31",
+          bin: { "mcp-server-everything": "dist/index.js" },
+        },
+      },
+    }));
+    const withBin = await scan([{ path: mcp }, { path: lock }]);
+    expect(withBin.tools.find((tool) => tool.id === "server-everything")).toMatchObject({
+      executable: "mcp-server-everything",
+      reviewStatus: "needs-review",
+      verify: { method: "executable-present", executable: "mcp-server-everything" },
+    });
+    expect(withBin.agentTasks.some((task) =>
+      task.toolId === "server-everything" && task.reason === "unresolved-executable"
+    )).toBe(false);
+  });
+
   it("does not turn npm git dependencies into deterministic recipes", async () => {
     const agents = await fixture("AGENTS.md", [
       "```sh",
@@ -204,6 +246,7 @@ describe("profile discovery", () => {
           "install",
           "binary-tool==1.0.0",
           "--no-build",
+          "--no-python-downloads",
           "--no-config",
           "--default-index=https://pypi.org/simple",
         ],
@@ -221,6 +264,7 @@ describe("profile discovery", () => {
           "tool",
           "install",
           "sdist-tool==2.0.0",
+          "--no-python-downloads",
           "--no-config",
           "--default-index=https://pypi.org/simple",
         ],
@@ -415,6 +459,7 @@ describe("profile discovery", () => {
         "install",
         "uv-tool==5.0.0",
         "--no-build",
+        "--no-python-downloads",
         "--no-config",
         "--default-index=https://pypi.org/simple",
       ],
@@ -606,5 +651,124 @@ describe("profile discovery", () => {
     );
     expect(parseError).toBeInstanceOf(DiscoveryParseError);
     expect(parseError).toMatchObject({ path: malformed, format: "json" });
+  });
+
+  it("identifies the pinned uv package behind uvx and uv tool invocations", async () => {
+    const agents = await fixture("AGENTS.md", [
+      "```sh",
+      "uvx mcp-server-fetch==2025.4.7",
+      "uv tool install ruff==0.6.9",
+      "uvx --from 'black==24.8.0' black --check .",
+      "```",
+      "",
+    ].join("\n"));
+
+    const result = await Effect.runPromise(scanDiscovery({
+      files: [{ path: agents, kind: "agents" }],
+      path: fixtureBin,
+    }));
+
+    expect(result.tools.map((tool) => tool.id).sort()).toEqual(["black", "mcp-server-fetch", "ruff"]);
+    expect(result.tools.find((tool) => tool.id === "ruff")?.recipes).toEqual([
+      expect.objectContaining({ method: "uv", package: "ruff", version: "0.6.9" }),
+    ]);
+    expect(result.tools.find((tool) => tool.id === "mcp-server-fetch")?.recipes).toEqual([
+      expect.objectContaining({ method: "uv", package: "mcp-server-fetch", version: "2025.4.7" }),
+    ]);
+    expect(result.tools.find((tool) => tool.id === "black")?.recipes).toEqual([
+      expect.objectContaining({ method: "uv", package: "black", version: "24.8.0" }),
+    ]);
+  });
+
+  it("keeps an incomplete canonfig.tools entry as needs-review evidence", async () => {
+    const metadata = await fixture("package.json", JSON.stringify({
+      canonfig: { tools: [{ id: "acme-internal-cli", upstream: "https://acme.example/cli" }] },
+    }));
+
+    const result = await Effect.runPromise(scanDiscovery({
+      files: [{ path: metadata, kind: "package-metadata" }],
+      path: fixtureBin,
+    }));
+
+    const tool = result.tools.find((candidate) => candidate.id === "acme-internal-cli");
+    expect(tool).toMatchObject({ reviewStatus: "needs-review", upstream: "https://acme.example/cli", recipes: [] });
+    expect(tool?.evidence[0]).toMatchObject({ incomplete: ["ecosystem", "name"], reviewStatus: "needs-review" });
+    expect(result.agentTasks.map((task) => task.reason)).toContain("incomplete-declaration");
+  });
+
+  it("reports shadowed PATH copies as ambiguous, with version evidence", async () => {
+    const stale = join(directory, "stale-bin");
+    const current = join(directory, "home", ".local", "bin");
+    await mkdir(stale, { recursive: true });
+    await mkdir(current, { recursive: true });
+    await writeFile(join(stale, "fdtool"), "#!/bin/sh\necho fdtool 1.0.0\n");
+    await writeFile(join(current, "fdtool"), "#!/bin/sh\necho fdtool 2.0.0\n");
+    await chmod(join(stale, "fdtool"), 0o755);
+    await chmod(join(current, "fdtool"), 0o755);
+    const hooks = await fixture("hooks.sh", "fdtool --index\n");
+
+    const result = await Effect.runPromise(scanDiscovery({
+      files: [{ path: hooks, kind: "hooks" }],
+      path: [stale, current].join(":"),
+    }));
+
+    const evidence = result.tools.find((tool) => tool.id === "fdtool")?.evidence[0];
+    expect(evidence).toMatchObject({
+      resolvedExecutable: join(stale, "fdtool"),
+      confidence: "review",
+      reviewStatus: "needs-review",
+    });
+    expect(evidence?.candidates?.map((candidate) => candidate.path)).toEqual([
+      join(stale, "fdtool"),
+      join(current, "fdtool"),
+    ]);
+    expect(evidence?.candidates?.every((candidate) => /^[0-9a-f]{64}$/u.test(candidate.sha256 ?? ""))).toBe(true);
+    const task = result.agentTasks.find((candidate) => candidate.reason === "ambiguous-executable");
+    expect(task?.observedEvidence.join("\n")).toContain(join(current, "fdtool"));
+  });
+
+  it("retains package versions whose entry points have identical bytes", async () => {
+    const binaries: Array<string> = [];
+    for (const version of ["1.6.0", "1.5.0"]) {
+      const root = join(directory, version, "node_modules", "copied-tool");
+      const bin = join(root, "bin");
+      await mkdir(bin, { recursive: true });
+      await writeFile(join(root, "package.json"), JSON.stringify({ name: "copied-tool", version }));
+      await writeFile(join(bin, "copied-tool"), "#!/usr/bin/env node\nconsole.log(require('../package.json').version);\n");
+      await chmod(join(bin, "copied-tool"), 0o755);
+      binaries.push(bin);
+    }
+    const hooks = await fixture("hooks.sh", "copied-tool --index\n");
+    const result = await Effect.runPromise(scanDiscovery({
+      files: [{ path: hooks, kind: "hooks" }],
+      path: binaries.join(":"),
+    }));
+    const evidence = result.tools.find((tool) => tool.id === "copied-tool")?.evidence[0];
+    expect(evidence?.resolvedExecutable).toBe(join(binaries[0]!, "copied-tool"));
+    expect(evidence?.candidates?.map((candidate) => ({
+      path: candidate.path,
+      packageVersion: candidate.packageVersion,
+    }))).toEqual([
+      { path: join(binaries[0]!, "copied-tool"), packageVersion: "copied-tool@1.6.0" },
+      { path: join(binaries[1]!, "copied-tool"), packageVersion: "copied-tool@1.5.0" },
+    ]);
+    expect(evidence?.candidates?.[0]?.sha256).toBe(evidence?.candidates?.[1]?.sha256);
+    expect(result.agentTasks.some((task) => task.reason === "ambiguous-executable")).toBe(true);
+  });
+
+  it("verifies an MCP server by presence instead of launching it", async () => {
+    const mcp = await fixture("mcp.json", JSON.stringify({
+      mcpServers: { everything: { command: "rg", args: ["--stdio"] } },
+    }));
+
+    const result = await Effect.runPromise(scanDiscovery({
+      files: [{ path: mcp, kind: "mcp" }],
+      path: fixtureBin,
+    }));
+
+    expect(result.tools.find((tool) => tool.id === "rg")?.verify).toEqual({
+      method: "executable-present",
+      executable: "rg",
+    });
   });
 });

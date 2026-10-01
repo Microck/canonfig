@@ -44,6 +44,24 @@ const FEATURE_LEVEL_WEIGHT: Record<SupportLevel, number> = {
   unsupported: 4,
 };
 
+/**
+ * Adapter warnings that report a value the projection dropped, skipped,
+ * rounded or re-typed. `--strict` rejects lossy mappings, so it turns these
+ * into errors, which block apply.
+ */
+const LOSSY_DIAGNOSTIC_CODES: Record<string, true> = {
+  MCP_OPTION_UNSUPPORTED: true,
+  MCP_OPTION_COERCED: true,
+  MCP_TRANSPORT_UNSUPPORTED: true,
+  HOOK_EVENT_UNSUPPORTED: true,
+  HOOK_TIMEOUT_ROUNDED: true,
+  HERMES_PROFILE_MCP_REQUIRED: true,
+  HERMES_PROFILE_HOOKS_REQUIRED: true,
+  HERMES_PROFILE_PERMISSIONS_REQUIRED: true,
+  KIMI_PROFILE_HOOKS_REQUIRED: true,
+  KIMI_PROFILE_PERMISSIONS_REQUIRED: true,
+};
+
 function usedFeatures(config: BuildContext["config"]): Feature[] {
   const used: Feature[] = ["instructions"];
   if (config.instructions.rules.length > 0) used.push("rules");
@@ -214,7 +232,13 @@ export class HarnessConfigurationCompiler {
       configPath: loaded.path,
       targets,
       artifacts: deduplicateExactReplaceArtifacts(artifacts),
-      diagnostics,
+      diagnostics: options.strict === true
+        ? diagnostics.map((diagnostic) =>
+          diagnostic.level === "warning" && LOSSY_DIAGNOSTIC_CODES[diagnostic.code] === true
+            ? { ...diagnostic, level: "error" as const, message: `${diagnostic.message} --strict rejects this lossy mapping.` }
+            : diagnostic
+        )
+        : diagnostics,
     };
   }
 

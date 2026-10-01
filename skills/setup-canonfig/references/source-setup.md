@@ -35,11 +35,14 @@ proposals must show their timezone and remain editable.
 
 ## Install and initialize
 
-Install only when necessary, then create the Source bootstrap plan from approved
-discovery files:
+Install only when necessary, then create the Source bootstrap plan. `--file`
+names approved tool-discovery inputs only; it never selects synced content.
+
+For an existing 3.2.x installation, do not replace its package or state.
+Set up 4.0.0 separately using the [fresh-install guide](../../../website/content/docs/how-to/upgrade.mdx).
 
 ```bash
-npm install --global @microck/canonfig@3.2.1
+npm install --global @microck/canonfig@4.0.0
 canonfig --version
 canonfig setup plan --role source --file AGENTS.md --intent "prepare source"
 canonfig setup approve --approver operator
@@ -51,22 +54,40 @@ canonfig doctor --no-input --timeout-ms 5000
 Show the exact setup digest before approval; use actual approved file paths and
 operator identity, or omit `--file` when none was selected. Source preflight
 must prove signing and TLS key storage before initialization. The journaled
-apply is resumable and initialization is idempotent. Report the Source owner and
-location without displaying key material.
+apply is resumable, and `source init` refuses to replace an existing Source
+identity. Report the Source owner and location without displaying key material.
 
-## Discover and author
+## Discover tools and author the profile
 
-Scan only approved explicit files. Example:
+`source scan` is tool discovery only. Scan only approved explicit files:
 
 ```bash
-canonfig source scan --file AGENTS.md --file package.json
+canonfig source scan --file ~/.codex/config.toml --file ~/.claude.json
 ```
 
-Summarize accepted and needs-review evidence, login requirements, skills, tool
-recipes, and unresolved Agent Tasks. Do not execute discovered prose or infer
-package equivalence across platforms. Prefer an authored JSONC Machine Profile
-for files, configs, skills, tools, credentials, schedules, groups, dependencies,
-and verified per-platform recipes.
+It proposes `tool` resources (for example the pinned package behind an MCP
+server command) and runs no processes. It never proposes file, config, or skill
+resources. Summarize accepted and needs-review evidence, login requirements,
+tool recipes, and unresolved Agent Tasks. Do not execute discovered prose or
+infer package equivalence across platforms.
+
+Synced files, configs, and skills come from an authored JSONC Machine Profile,
+for example `~/canonfig.profile.jsonc`, the same route as the
+[tutorial](https://github.com/Microck/canonfig/blob/main/website/content/docs/tutorials/first-sync.mdx).
+Placing it in the home directory lets each `source` path point at the real
+file. Rules to apply while authoring:
+
+- `source` is relative to the profile file's directory, has no `..`, and must
+  resolve inside that directory after symlinks.
+- For file, directory, config, and skill resources write
+  `"verify": { "method": "digest" }` and omit `digest`; publication computes
+  it. A hand-written digest must match.
+- A `config` key owns the whole value at its path; other keys in the file stay
+  the follower's. `~/.claude.json` also holds account state, so manage only
+  entries such as `mcpServers.<name>`, never the whole file.
+- A skill lists every file it contains. Claude Code reads `~/.claude/skills`;
+  Codex reads `~/.agents/skills`.
+- Automatic installer recipes need an exact `version`. Leave secrets out.
 
 Show compact editable resource rows: ID/kind, target, groups, dependencies,
 ownership/policy, recipe/version, and independent verification. Simple drills
@@ -92,11 +113,18 @@ supported merge-config keys, not arbitrary skill-tree or target-path overrides.
 ## Publication gate
 
 Validate unique IDs, dependencies, cycles, group references, nonoverlapping safe
-targets, policy compatibility, platform recipes, and independent verification.
-Show the exact profile, groups, calendar, resources, discovery inputs, and any
-blockers. Hash reviewed input files and recheck before publication; publication
-with `--proposal` rescans that input. If it changed, review the changed candidate.
-Do not invent a validation/dry-run flag absent from the installed CLI.
+targets, policy compatibility, platform recipes, and independent verification,
+then check the profile. This reads every `source` like publication and signs
+nothing:
+
+```bash
+canonfig source digest --profile-file ~/canonfig.profile.jsonc
+```
+
+Show the exact profile, groups, calendar, resources, digests, discovery inputs,
+and any blockers. `source digest` is the dry run; do not invent another
+validation flag. Publication with `--proposal` rescans that input; if it
+changed, review the changed candidate.
 
 ```text
 Question: PUBLISH — Publish this exact Machine Profile as a new immutable revision?
@@ -113,28 +141,41 @@ After explicit publication approval, use actual reviewed paths, reviewer, and
 returned revision IDs, not the illustrative IDs below:
 
 ```bash
-canonfig source publish --profile-file ~/.canonfig/source/profile.jsonc --reviewer operator
+canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer operator
 canonfig profile list
 canonfig profile show revision-one
 ```
 
 Add `--proposal <approved-input>` only for reviewed discovery input to merge.
-Do not duplicate publication on resume merely to demonstrate success.
+Publishing unchanged content returns the latest revision unchanged, so a resume
+does not need to publish again. A profile with no resources is refused.
 
 ## Serving, invitations, and shared secrets
 
-Serve loopback only. Example for an explicitly approved group:
+Followers fetch from the Source whenever they sync, so keep it serving as a
+native user service rather than a foreground terminal:
 
 ```bash
-canonfig source serve --host 127.0.0.1 --port 17342
+canonfig source service install
+canonfig source service status
 canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m --group developers
 ```
 
+`install` waits until the endpoint answers with the pinned identity. On Linux,
+linger lets the user manager start the service at boot and keep managing it after
+logout (a human decision: `loginctl enable-linger <user>`). It does not unlock an
+encrypted login keyring. The service must be able to load its signing and TLS
+credentials when it starts in the intended session. Check `serving` as well as
+the installed service and linger state; a locked keyring at startup is not a
+healthy login-free Source. On macOS, run `install` from the desktop session, not over SSH;
+logged-out operation is not supported. For a trial,
+`canonfig source serve --host 127.0.0.1 --port 17342` runs it in the foreground.
+
 Omit `--group` when no group is intended. Tailscale peers are not valid direct
 invitation endpoints. For a remote machine, use Canonfig's managed,
-TLS-transparent loopback tunnel with the invitation and a separately verified
-SSH host public-key file. Record the follower-local loopback origin separately
-from the source host.
+TLS-transparent loopback tunnel with the invitation and the Source's SSH host
+public key, read on the Source itself. Start the Source before the tunnel.
+Record the follower-local loopback origin separately from the source host.
 
 Offer numbered choices for follower identity, selected profile, declared groups,
 lifetime, secure delivery, and any shared-secret grant. Recommend minimum scope,
@@ -146,10 +187,13 @@ follower has consumed the envelope.
 `canonfig:secrets` is separate authority. Before granting it, review what the
 installed sharing contract makes available; do not imply unsupported per-name
 access controls. A new grant requires explicit approval, not Use recommendations.
-Set approved values through stdin only, without printing them:
+Set approved values through stdin only, without printing them. Piped input is
+stored byte for byte, so a trailing newline from `echo` becomes part of the
+secret; use `printf '%s'`. Values are non-empty UTF-8 without NUL, at most 16384
+bytes, and the pipe must close within 10 seconds:
 
 ```bash
-printf %s "$GITHUB_TOKEN" | canonfig secrets set github-token
+printf '%s' "$GITHUB_TOKEN" | canonfig secrets set github-token
 ```
 
 ## Completion

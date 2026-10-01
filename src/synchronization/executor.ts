@@ -1,6 +1,6 @@
-import { Clock, Effect, Option, Schema } from "effect";
-import { statfs } from "node:fs/promises";
-import { dirname } from "node:path";
+import { Clock, Effect, Schema } from "effect";
+import type { statfs } from "node:fs/promises";
+import { posix, win32 } from "node:path";
 
 import {
   ContentDigest,
@@ -9,7 +9,6 @@ import {
   ResourceId,
   type ActionId,
 } from "../domain/brand.ts";
-import type { PublishedResource } from "../domain/profile.ts";
 import type {
   AppliedResourceRecord,
   DriftConflict,
@@ -17,8 +16,13 @@ import type {
   PlannedAction,
   SynchronizationOutcome,
 } from "../domain/synchronization.ts";
-import type { MachineStateError } from "../machine/machine-state.errors.ts";
+import { requireFreeSpace, type DiskRequirement } from "../machine/disk-space.ts";
+import type {
+  InsufficientDiskError,
+  MachineStateError,
+} from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import type { MachinePath } from "../machine/machine-state.types.ts";
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import { redactKnownValues } from "../cli/redaction.ts";
 import {
@@ -33,12 +37,10 @@ import {
   type ResourceVerification,
 } from "./resource-executors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
-import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import type { ScheduleManagerError } from "../schedule/schedule-manager.errors.ts";
 import type { StateRepositoryError } from "../state/state-repository.errors.ts";
 import type { VerificationEvidence } from "../state/state-repository.types.ts";
 import {
-  InsufficientDiskError,
   InvalidExecutionPlanError,
   MissingExecutionResourceError,
   type SynchronizationExecutionInputError,
@@ -86,6 +88,29 @@ const redact = (
   // using the message alone would drop the tag from reasons such as
   // `MissingArtifactError: digest="..."`.
   return redactKnownValues(String(value), secrets).slice(0, 2048);
+};
+
+/**
+ * The failure reason of one action names its resource and target. A raw
+ * filesystem error named the temporary sibling being written
+ * (`…/.settings.json.canonfig-…: EACCES`), so an operator could not tell which
+ * resource was blocked, or where.
+ */
+const actionFailureReason = (
+  state: ActionState,
+  error: Parameters<typeof redact>[0],
+  secrets: ReadonlyArray<string>,
+): string => {
+  const detail = state.action.detail;
+  const target = "target" in detail ? detail.target : state.context.resource.target;
+  const cause = "_tag" in error && error._tag === "MachineFilesystemError"
+    // Node appends the syscall and the temporary path it was touching.
+    ? `${error.operation} failed: ${error.message.replace(/, \w+ '[^']*'(?: -> '[^']*')?$/u, "")}`
+    : String(error);
+  return redactKnownValues(
+    `resource ${state.action.resource} could not be applied to ${target}: ${cause}`,
+    secrets,
+  ).slice(0, 2048);
 };
 
 export const executionLimits = (
@@ -142,6 +167,9 @@ export const cleanupRollbackSnapshots = (
       );
     }
     if (retained.size > 0) return;
+    // An interrupted atomic write of a rollback manifest leaves a Canonfig
+    // temporary sibling here, outside every managed target cleaned by recover.
+    yield* machine.removeTemporaryEntries({ directory, recursive: false });
     yield* machine.removeEmptyDirectory({ path: directory }).pipe(
       Effect.catchTag("MachineFilesystemError", (error) =>
         /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
@@ -539,7 +567,9 @@ const agentActionResult = (
       );
       return {
         kind: "failed",
-        reason: `verification failed for agent task ${state.action.resource}`,
+        reason: `verification failed for agent task ${state.action.resource}${
+          verification.reason === undefined ? "" : `: ${verification.reason}`
+        }`,
       } satisfies ActionResult;
     }
     yield* journal(
@@ -698,7 +728,9 @@ export const executeSynchronizationAction = (
         );
         return {
           kind: "failed",
-          reason: `verification failed for resource ${state.action.resource}`,
+          reason: `verification failed for resource ${state.action.resource}${
+            verification.reason === undefined ? "" : `: ${verification.reason}`
+          }`,
         } satisfies ActionResult;
       }
       const appliedResource = appliedResourceFor(input, state, yield* now());
@@ -744,10 +776,10 @@ export const executeSynchronizationAction = (
         rollbackPrepared(prepared).pipe(
           Effect.match({
             onSuccess: (): ActionResult => ({
-              kind: "failed", reason: redact(error, input.knownSecrets ?? []),
+              kind: "failed", reason: actionFailureReason(state, error, input.knownSecrets ?? []),
             }),
             onFailure: (rollbackError): ActionResult => ({
-              kind: "failed", reason: redact(rollbackError, input.knownSecrets ?? []),
+              kind: "failed", reason: actionFailureReason(state, rollbackError, input.knownSecrets ?? []),
               rollbackFailed: true, rollbackReference: prepared?.rollbackReference,
             }),
           }),
@@ -784,61 +816,121 @@ const completeSkipped = (
   );
 
 /**
- * Aggregate disk requirement of one run, before anything is mutated: every
- * artifact is written once and a rollback snapshot may duplicate what it
- * replaces, so double the artifact bytes plus a fixed margin covers the
- * run's worst case. An unverifiable filesystem (statfs unavailable) is not
- * treated as a blocker.
+ * Disk requirement of one run, checked before its run record exists. Each
+ * target's filesystem must hold the bytes written to it: the temporary copy
+ * sits beside the old content until the rename. The rollback cache must hold
+ * a snapshot of what is replaced, estimated by the same bytes. Every
+ * filesystem also keeps a fixed margin. Only HOME was measured before, so a
+ * target on another filesystem passed the preflight and failed mid-run. A
+ * path that cannot be resolved or measured is not a blocker: the run itself
+ * reports that target precisely.
  */
-const diskRequirementBytes = (input: SynchronizationRunInput): bigint =>
-  BigInt(
-    input.artifacts.reduce((total, artifact) => total + artifact.content.byteLength, 0)
-      * 2
-      + 4 * 1024 * 1024,
-  );
-
 export const preflightDisk = (
   input: SynchronizationRunInput,
-  statfsImpl: typeof statfs = statfs,
-): Effect.Effect<void, InsufficientDiskError | MachineStateError, MachineState> =>
-  Effect.flatMap(MachineState, (machine) =>
-    Effect.flatMap(machine.userDirectories(), (directories) =>
-      Effect.flatMap(
-        Effect.promise(async () => {
-          // The managed home may not exist yet: walk up to the nearest
-          // existing ancestor, which sits on the same filesystem.
-          let candidate: string = directories.home.absolute;
-          for (;;) {
-            try {
-              await statfsImpl(candidate);
-              return candidate;
-            } catch (error) {
-              const parent = dirname(candidate);
-              if (
-                parent === candidate
-                || !(error instanceof Error && "code" in error && error.code === "ENOENT")
-              ) {
-                throw error;
-              }
-              candidate = parent;
-            }
-          }
-        }),
-        (existingPath) => Effect.flatMap(
-          Effect.promise(() => statfsImpl(existingPath)),
-          (usage) => {
-            const availableBytes = BigInt(usage.bavail) * BigInt(usage.bsize);
-            const requiredBytes = diskRequirementBytes(input);
-            return availableBytes >= requiredBytes
-              ? Effect.void
-              : Effect.fail(new InsufficientDiskError({
-                path: directories.home.absolute,
-                requiredBytes,
-                availableBytes,
-              }));
-          },
-        ),
-      )));
+  statfsImpl?: typeof statfs,
+): Effect.Effect<void, InsufficientDiskError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const directories = yield* machine.userDirectories().pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+    const artifactBytes = new Map(input.artifacts.map((artifact) => [
+      artifact.digest,
+      BigInt(artifact.content.byteLength),
+    ]));
+    const desired = new Map(input.revision.desired.map((entry) => [
+      entry.resource,
+      entry.desired,
+    ]));
+    const requirements: Array<DiskRequirement> = [];
+    let snapshotBytes = 0n;
+    for (const action of input.plan.actions) {
+      const detail = action.detail;
+      const resource = desired.get(action.resource);
+      let written: ReadonlyArray<string>;
+      if (detail.kind === "write-file") {
+        written = [detail.digest];
+      } else if (detail.kind === "write-config") {
+        written = resource?.kind === "config" ? [resource.digest] : [];
+      } else if (detail.kind === "mirror-directory") {
+        const adds = new Set(detail.adds);
+        written = resource?.kind === "directory" || resource?.kind === "skill"
+          ? resource.files.filter((file) => adds.has(file.path)).map((file) => file.digest)
+          : [];
+      } else {
+        continue;
+      }
+      const bytes = written.reduce(
+        (total, digest) => total + (artifactBytes.get(digest) ?? 0n),
+        0n,
+      );
+      if (bytes === 0n) continue;
+      const target = yield* machine.normalizePath({ path: detail.target }).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
+      if (target === undefined) continue;
+      requirements.push({ path: target.absolute, bytes });
+      snapshotBytes += bytes;
+    }
+    if (directories !== undefined) {
+      requirements.push({ path: directories.cache.absolute, bytes: snapshotBytes });
+    }
+    yield* requireFreeSpace(requirements, statfsImpl);
+  });
+
+/**
+ * Clean Canonfig's own temporary entries around every filesystem target of a
+ * run. A killed run leaves them behind: a directory tree that still holds one
+ * cannot be rolled back (`rmdir` fails with ENOTEMPTY, so `recover` failed on
+ * every attempt), and a large file's temporary copy is litter nothing else
+ * removes. Parents of targets are cleaned without descending; managed trees
+ * are cleaned throughout.
+ */
+export const removeRunTemporaryEntries = (
+  actions: ReadonlyArray<PlannedAction>,
+): Effect.Effect<ReadonlyArray<string>, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const directories = new Map<string, { readonly directory: MachinePath; recursive: boolean }>();
+    const include = (directory: MachinePath, recursive: boolean): void => {
+      const key = `${directory.platform}:${directory.platform === "windows"
+        ? directory.absolute.toLowerCase()
+        : directory.absolute}`;
+      const existing = directories.get(key);
+      if (existing === undefined) {
+        directories.set(key, { directory, recursive });
+      } else if (recursive) {
+        existing.recursive = true;
+      }
+    };
+    for (const action of actions) {
+      const detail = action.detail;
+      if (
+        detail.kind !== "write-file"
+        && detail.kind !== "write-config"
+        && detail.kind !== "mirror-directory"
+        && detail.kind !== "remove-resource"
+      ) {
+        continue;
+      }
+      const target = yield* machine.normalizePath({ path: detail.target });
+      include({
+        platform: target.platform,
+        absolute: (target.platform === "windows" ? win32 : posix).dirname(target.absolute),
+      }, false);
+      if (
+        detail.kind === "mirror-directory"
+        || (detail.kind === "remove-resource" && detail.paths.length > 0)
+      ) {
+        include(target, true);
+      }
+    }
+    const removed: Array<string> = [];
+    for (const { directory, recursive } of directories.values()) {
+      removed.push(...yield* machine.removeTemporaryEntries({ directory, recursive }));
+    }
+    return removed;
+  });
 
 /** Execute one already-recorded plan. The caller owns startRun ordering. */
 export const executeSynchronizationPlan = (
@@ -849,7 +941,6 @@ export const executeSynchronizationPlan = (
   StateRepository | MachineState
 > =>
   Effect.gen(function*() {
-    yield* preflightDisk(input);
     const states = yield* executionContexts(input, executionLimits(input));
     const completedActions: Array<ActionId> = [];
     const verified = new Set<ResourceId>();

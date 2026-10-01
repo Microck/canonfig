@@ -1,4 +1,4 @@
-import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-node";
+import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import type { SqlError } from "effect/unstable/sql/SqlError";
@@ -84,6 +84,7 @@ import type {
 } from "./state-repository.types.ts";
 import { stateFormatVersion, stateMigrations } from "./state-schema.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
+import { storedRevisionJson } from "../profile/legacy-revision.ts";
 import type { LocalOverlayEntry } from "../synchronization/synchronization.types.ts";
 
 const CountRow = Schema.Struct({ count: Schema.Number });
@@ -205,6 +206,7 @@ const EnrollmentSourceRow = Schema.Struct({
   tls_key_reference: CredentialReference,
   tls_certificate_reference: CredentialReference,
   tls_fingerprint: CertificateFingerprint,
+  credential_namespace: Schema.NullOr(Schema.String),
 });
 const EnrollmentInvitationRow = Schema.Struct({
   intended_source_fingerprint: CertificateFingerprint,
@@ -317,13 +319,6 @@ const makeRepository = Effect.gen(function*() {
         message: String(error),
       })
     ),
-  );
-  // A pending enrollment has not issued an active follower credential. Any
-  // process restart makes its remote outcome ambiguous, so fail closed by
-  // discarding the pending marker; the invitation remains unconsumed and can
-  // be safely retried because no active follower identity was issued.
-  yield* sql`DELETE FROM pending_enrollments`.pipe(
-    Effect.mapError(sqlError("discard ambiguous pending enrollments")),
   );
 
   const saveSourceIdentity = Effect.fn("StateRepository.saveSourceIdentity")(
@@ -479,6 +474,21 @@ const makeRepository = Effect.gen(function*() {
     );
   });
 
+  const removeFollowerSynchronizationConfiguration = Effect.fn(
+    "StateRepository.removeFollowerSynchronizationConfiguration",
+  )(function*(): Effect.fn.Return<boolean, StateRepositoryError> {
+    const removed = yield* statusCount(
+      sql,
+      sql`SELECT count(*) AS count FROM follower_sync_configuration WHERE singleton = 1`,
+      "follower synchronization configuration",
+      "1",
+    );
+    yield* sql`DELETE FROM follower_sync_configuration WHERE singleton = 1`.pipe(
+      Effect.mapError(sqlError("remove follower synchronization configuration")),
+    );
+    return removed > 0;
+  });
+
   const saveLocalOverlay = Effect.fn("StateRepository.saveLocalOverlay")(
     function*(input: SaveLocalOverlayInput): Effect.fn.Return<void, StateRepositoryError> {
       const configuration = yield* getFollowerSynchronizationConfiguration();
@@ -577,19 +587,22 @@ const makeRepository = Effect.gen(function*() {
             signing_key_reference,
             tls_key_reference,
             tls_certificate_reference,
-            tls_fingerprint
+            tls_fingerprint,
+            credential_namespace
           ) VALUES (
             1,
             ${source.signingKeyReference},
             ${source.tlsKeyReference},
             ${source.tlsCertificateReference},
-            ${source.tlsFingerprint}
+            ${source.tlsFingerprint},
+            ${source.credentialNamespace ?? null}
           )
           ON CONFLICT(singleton) DO UPDATE SET
             signing_key_reference = excluded.signing_key_reference,
             tls_key_reference = excluded.tls_key_reference,
             tls_certificate_reference = excluded.tls_certificate_reference,
-            tls_fingerprint = excluded.tls_fingerprint
+            tls_fingerprint = excluded.tls_fingerprint,
+            credential_namespace = excluded.credential_namespace
         `;
       });
       yield* sql.withTransaction(transaction).pipe(
@@ -607,7 +620,8 @@ const makeRepository = Effect.gen(function*() {
           enrollment_source.signing_key_reference,
           enrollment_source.tls_key_reference,
           enrollment_source.tls_certificate_reference,
-          enrollment_source.tls_fingerprint
+          enrollment_source.tls_fingerprint,
+          enrollment_source.credential_namespace
         FROM enrollment_source
         INNER JOIN source_identity ON source_identity.singleton = enrollment_source.singleton
         WHERE enrollment_source.singleton = 1
@@ -624,13 +638,16 @@ const makeRepository = Effect.gen(function*() {
         keyId: row.key_id,
         publicKeyFingerprint: row.public_key_fingerprint,
       }).pipe(Effect.mapError(decodeError("source identity", "1")));
-      return {
+      const source = {
         identity,
         signingKeyReference: row.signing_key_reference,
         tlsKeyReference: row.tls_key_reference,
         tlsCertificateReference: row.tls_certificate_reference,
         tlsFingerprint: row.tls_fingerprint,
       };
+      return row.credential_namespace === null
+        ? source
+        : { ...source, credentialNamespace: row.credential_namespace };
     },
   );
 
@@ -803,24 +820,6 @@ const makeRepository = Effect.gen(function*() {
           message: "the invitation is already pending finalization",
         });
       }
-      const identityRows = yield* sql`
-        SELECT revoked
-        FROM followers
-        WHERE id = ${input.follower.id}
-      `;
-      const identities = yield* decodeRows(
-        Schema.Struct({ revoked: Schema.Number }),
-        identityRows,
-        "follower identity",
-        input.follower.id,
-      );
-      const existingIdentity = identities[0];
-      if (existingIdentity !== undefined && existingIdentity.revoked !== 1) {
-        return yield* new EnrollmentStateConflictError({
-          reason: "follower-identity-conflict",
-          message: "the follower identity is already enrolled",
-        });
-      }
       const invitationGroups = yield* parseJson(
         Schema.Array(GroupName),
         invitation.groups_json,
@@ -952,12 +951,8 @@ const makeRepository = Effect.gen(function*() {
           "follower identity",
           input.follower,
         );
-        if (identities[0] !== undefined && identities[0].revoked !== 1) {
-          return yield* new EnrollmentStateConflictError({
-            reason: "follower-identity-conflict",
-            message: "the follower identity is already enrolled",
-          });
-        }
+        // An active identity is rotated: its credential digest and reference
+        // are replaced below, which retires the previous credential.
         const invitationRows = yield* sql`
           SELECT used_at, expires_at
           FROM enrollment_invitations
@@ -1395,7 +1390,7 @@ const makeRepository = Effect.gen(function*() {
       if (row === undefined) return yield* new RevisionNotFoundError({ revision });
       return yield* parseJson(
         ProfileRevisionSchema,
-        row.revision_json,
+        storedRevisionJson(row.revision_json),
         "profile revision",
         revision,
       );
@@ -1419,7 +1414,7 @@ const makeRepository = Effect.gen(function*() {
       if (row === undefined) return undefined;
       return yield* parseJson(
         ProfileRevisionSchema,
-        row.revision_json,
+        storedRevisionJson(row.revision_json),
         "profile revision",
         revision,
       );
@@ -1445,7 +1440,7 @@ const makeRepository = Effect.gen(function*() {
       if (row === undefined) return undefined;
       return yield* parseJson(
         ProfileRevisionSchema,
-        row.revision_json,
+        storedRevisionJson(row.revision_json),
         "profile revision",
         profile,
       );
@@ -1469,7 +1464,7 @@ const makeRepository = Effect.gen(function*() {
       for (const row of decoded) {
         revisions.push(yield* parseJson(
           ProfileRevisionSchema,
-          row.revision_json,
+          storedRevisionJson(row.revision_json),
           "profile revision",
           "all",
         ));
@@ -2546,6 +2541,7 @@ const makeRepository = Effect.gen(function*() {
     registerFollower,
     saveFollowerSynchronizationConfiguration,
     getFollowerSynchronizationConfiguration,
+    removeFollowerSynchronizationConfiguration,
     saveLocalOverlay,
     removeLocalOverlay,
     listLocalOverlays,

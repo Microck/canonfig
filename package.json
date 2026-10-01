@@ -1,6 +1,6 @@
 {
   "name": "@microck/canonfig",
-  "version": "3.2.1",
+  "version": "4.0.0",
   "description": "one-way configuration synchronizer: publish a canonical AI agent setup from one Source Machine and converge Linux, macOS, and Windows Follower Machines",
   "author": "Microck <contact@micr.dev>",
   "license": "MIT",
@@ -57,9 +57,8 @@
     "website:build": "npm run build --workspace @canonfig/website"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.0-rc.112",
-    "@effect/platform-node-shared": "4.0.0-rc.112",
-    "@effect/sql-sqlite-node": "4.0.0-rc.112",
+    "@canonfig/effect-platform-node-shared": "npm:@effect/platform-node-shared@4.0.0-rc.112",
+    "@canonfig/effect-sql-sqlite-node": "npm:@effect/sql-sqlite-node@4.0.0-rc.112",
     "effect": "4.0.0-rc.112",
     "selfsigned": "^5.5.0",
     "smol-toml": "1.6.1",
@@ -77,11 +76,6 @@
   },
   "overrides": {
     "effect": "4.0.0-rc.112",
-    "@effect/platform": "4.0.0-rc.112",
-    "@effect/platform-node": "4.0.0-rc.112",
-    "@effect/platform-node-shared": "4.0.0-rc.112",
-    "@effect/sql": "4.0.0-rc.112",
-    "@effect/sql-sqlite-node": "4.0.0-rc.112",
     "@effect/vitest": "4.0.0-rc.112"
   }
 }

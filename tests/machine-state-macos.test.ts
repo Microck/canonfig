@@ -102,7 +102,7 @@ describe("macOS native scheduler inspection", () => {
       layerFor(undefined),
       Effect.flatMap(MachineState, (machine) => machine.installSchedulerJob(rendered)),
     );
-    expect(invocations.map((argv) => argv[0])).toEqual(["bootout", "bootstrap"]);
+    expect(invocations.map((argv) => argv[0])).toEqual(["bootout", "enable", "bootstrap"]);
 
     // Running as the agent's own process: the plist is written and launchd
     // picks it up on the next login, but nothing boots this process out.
@@ -126,21 +126,29 @@ describe("macOS native scheduler inspection", () => {
     expect(invocations).toEqual([]);
   });
 
-  it("distinguishes an unloaded service from a launchctl inspection failure", async () => {
+  it("distinguishes a booted-out, disabled, and uninspectable launchd agent", async () => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-macos-scheduler-"));
     const home = join(root, "home");
+    let disabledList = "";
     const unloadedLayer = macosMachineStateLayer({
       credentialPolicy: { kind: "local-file", path: join(root, "credentials") },
       environment: environment(root),
-      launchctlRunner: () =>
-        Effect.succeed({
-          exitCode: 113,
-          signal: null,
-          standardOutput: new Uint8Array(),
-          standardError: new TextEncoder().encode(
-            "Could not find service \"dev.canonfig.sync\" in domain for user",
-          ),
-        }),
+      launchctlRunner: (arguments_) =>
+        Effect.succeed(arguments_[0] === "print-disabled"
+          ? {
+            exitCode: 0,
+            signal: null,
+            standardOutput: new TextEncoder().encode(`disabled services = {\n${disabledList}}\n`),
+            standardError: new Uint8Array(),
+          }
+          : {
+            exitCode: 113,
+            signal: null,
+            standardOutput: new Uint8Array(),
+            standardError: new TextEncoder().encode(
+              "Could not find service \"dev.canonfig.sync\" in domain for user",
+            ),
+          }),
     });
     try {
       const rendered = await runWith(
@@ -171,15 +179,25 @@ describe("macOS native scheduler inspection", () => {
           };
         }),
       );
+      // Booted out outside Canonfig: the plist is there, launchd will not
+      // fire it (CF-44 on macOS).
       expect(unloaded.inspection).toMatchObject({
         installed: true,
-        enabled: false,
+        enabled: true,
+        active: false,
       });
       expect(unloaded.snapshot).toMatchObject({
         state: "present",
         active: false,
         enabled: false,
       });
+      // `launchctl disable` persists outside the plist (CF-46 on macOS).
+      disabledList = "\t\"dev.canonfig.canonfig-sync\" => disabled\n";
+      const disabled = await runWith(
+        unloadedLayer,
+        Effect.flatMap(MachineState, (machine) => machine.inspectSchedulerJob(rendered)),
+      );
+      expect(disabled).toMatchObject({ installed: true, enabled: false });
 
       const failedLayer = macosMachineStateLayer({
         credentialPolicy: { kind: "local-file", path: join(root, "credentials") },
@@ -256,50 +274,18 @@ describe.skipIf(!qualification)("gui LaunchAgent keychain qualification", () => 
       const { writeFileSync } = require("node:fs");
       const sentinel = "canonfig-session-probe write check";
       const service = "dev.canonfig.session-probe.${identifier}";
-      const script = [
-        "ObjC.import('Foundation');",
-        "ObjC.import('Security');",
-        "function run() {",
-        "  const bytes = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;",
-        "  const payload = JSON.parse(ObjC.unwrap($.NSString.alloc.initWithDataEncoding(bytes, $.NSUTF8StringEncoding)));",
-        "  const query = $.NSMutableDictionary.dictionary;",
-        "  query.setObjectForKey(ObjC.castRefToObject($.kSecClassGenericPassword), ObjC.castRefToObject($.kSecClass));",
-        "  query.setObjectForKey($(payload.service), ObjC.castRefToObject($.kSecAttrService));",
-        "  query.setObjectForKey($('canonfig-session-probe'), ObjC.castRefToObject($.kSecAttrAccount));",
-        "  if (payload.operation === 'add') {",
-        "    const attributes = $.NSMutableDictionary.dictionary;",
-        "    attributes.setObjectForKey($(payload.hexadecimal).dataUsingEncoding($.NSUTF8StringEncoding), ObjC.castRefToObject($.kSecValueData));",
-        "    const status = $.SecItemAdd(query, null);",
-        "    if (status !== 0) throw Error('add failed: ' + status);",
-        "    return '';",
-        "  }",
-        "  if (payload.operation === 'load') {",
-        "    query.setObjectForKey($.NSNumber.numberWithBool(true), ObjC.castRefToObject($.kSecReturnData));",
-        "    const output = Ref();",
-        "    const status = $.SecItemCopyMatching(query, output);",
-        "    if (status !== 0) throw Error('load failed: ' + status);",
-        "    return ObjC.unwrap($.NSString.alloc.initWithDataEncoding(ObjC.castRefToObject(output[0]), $.NSUTF8StringEncoding));",
-        "  }",
-        "  const status = $.SecItemDelete(query);",
-        "  if (status !== 0) throw Error('delete failed: ' + status);",
-        "  return '';",
-        "}",
-      ].join("\\n");
-      const input = (operation) => JSON.stringify({
-        operation,
-        service,
-        hexadecimal: Buffer.from(sentinel, "utf8").toString("hex"),
-      });
+      const identity = ["-a", "canonfig-session-probe", "-s", service];
+      const run = (args) => spawnSync("/usr/bin/security", args);
       const outcome = { ok: false, stage: "add" };
       try {
-        const add = spawnSync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script], { input: input("add") });
+        const add = run(["add-generic-password", "-U", ...identity, "-w", sentinel]);
         if (add.status !== 0) throw new Error(String(add.stderr));
-        const load = spawnSync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script], { input: input("load") });
+        const load = run(["find-generic-password", ...identity, "-w"]);
         if (load.status !== 0 || load.stdout.toString().trim() !== sentinel) {
           outcome.stage = "load";
           throw new Error(String(load.stderr) + load.stdout.toString());
         }
-        const remove = spawnSync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script], { input: input("delete") });
+        const remove = run(["delete-generic-password", ...identity]);
         if (remove.status !== 0) throw new Error(String(remove.stderr));
         outcome.ok = true;
       } catch (error) {
@@ -319,8 +305,9 @@ describe.skipIf(!qualification)("gui LaunchAgent keychain qualification", () => 
 </dict></plist>`;
     await writeFile(plist, plistContent);
     const uid = process.getuid?.() ?? 0;
-    const launchctl = spawnSync("/bin/launchctl", ["bootstrap", `gui/${uid}`, plist]);
+    const bootstrap = spawnSync("/bin/launchctl", ["bootstrap", `gui/${uid}`, plist]);
     try {
+      expect(bootstrap.status).toBe(0);
       // launchd exposes no completion signal for a RunAtLoad agent, so the
       // only way to await the run is polling its outcome file. A fixed sleep
       // would just guess at agent startup time.
