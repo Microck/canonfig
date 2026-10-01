@@ -53,6 +53,7 @@ import {
   getRevisionMetadata,
   listRevisions,
   retrieveBlob,
+  probeSourceDescriptor,
 } from "../../src/enrollment/follower-client.ts";
 import {
   BlobTransferProgress,
@@ -350,8 +351,11 @@ const publishFixtureRevision = (
     };
   }));
 
-const start = async (setup: Fixture): Promise<SourceServerHandle> => {
-  const server = await setup.runtime.runPromise(startSourceServer());
+const start = async (
+  setup: Fixture,
+  hostname = "127.0.0.1",
+): Promise<SourceServerHandle> => {
+  const server = await setup.runtime.runPromise(startSourceServer({ hostname }));
   openServers.push(server);
   return server;
 };
@@ -441,10 +445,10 @@ describe("authenticated content-addressed transport", () => {
     });
   });
 
-  it("filters groups, incrementally caches blobs, resumes, and converges without downloads", async () => {
+  it.each(["127.0.0.1", "::1"])("filters groups, caches and resumes authenticated blobs over %s", async (hostname) => {
     const setup = fixture();
     const published = await publishFixtureRevision(setup);
-    const server = await start(setup);
+    const server = await start(setup, hostname);
     const enrolled = await enroll(setup, server);
     const input = transportInput(server, enrolled);
     const cacheDirectory = join(setup.root, "cache");
@@ -485,6 +489,38 @@ describe("authenticated content-addressed transport", () => {
     expect(converged.downloadedBlobs).toBe(0);
     expect(converged.reusedBlobs).toBe(2);
     expect(server.blobRequests()).toBe(3);
+  });
+
+  it("rejects a pinned IPv6 endpoint whose certificate only covers IPv4 before HTTP", async () => {
+    const certificate = await generate([{ name: "commonName", value: "wrong-ip-source" }], {
+      keyType: "ec",
+      curve: "P-256",
+      extensions: [{ name: "subjectAltName", altNames: [{ type: 7, ip: "127.0.0.1" }] }],
+    });
+    let requests = 0;
+    const server = createHttpsServer(
+      { key: certificate.private, cert: certificate.cert },
+      (_request, response) => {
+        requests += 1;
+        response.writeHead(503);
+        response.end();
+      },
+    );
+    await new Promise<void>((resolve) => server.listen(0, "::1", resolve));
+    try {
+      const address = server.address();
+      if (address === null || Schema.is(Schema.String)(address)) throw new Error("no address");
+      const refused = await Effect.runPromise(Effect.flip(probeSourceDescriptor({
+        endpoint: `https://[::1]:${address.port}`,
+        tlsFingerprint: decode(CertificateFingerprint)(
+          new X509Certificate(certificate.cert).fingerprint256.replaceAll(":", "").toLowerCase(),
+        ),
+      })));
+      expect(refused).toBeInstanceOf(EnrollmentTransportError);
+      expect(requests).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("reports blob progress and resumes an interrupted fetch from the verified cached blobs", async () => {

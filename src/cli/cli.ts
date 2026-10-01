@@ -220,6 +220,7 @@ const parseOptions = (
   arguments_: ReadonlyArray<string>,
   valueOptions: ReadonlySet<string>,
   switchOptions: ReadonlySet<string>,
+  literalValueOption?: string,
 ): Options => {
   const positionals: Array<string> = [];
   const values = new Map<string, Array<string>>();
@@ -239,7 +240,7 @@ const parseOptions = (
     }
     if (!valueOptions.has(argument)) throw new Error(`Unknown option: ${argument}`);
     const value = arguments_[index + 1];
-    if (value === undefined || value.startsWith("-")) {
+    if (value === undefined || (value.startsWith("-") && argument !== literalValueOption)) {
       throw new Error(`Option requires a value: ${argument}`);
     }
     index += 1;
@@ -455,6 +456,7 @@ const evaluateTunnelCommand = (
       "--timeout-ms",
     ]),
     new Set(),
+    "--ssh-argument",
   );
   if (options.positionals.length > 0) {
     return invalid("tunnel start accepts only named options");

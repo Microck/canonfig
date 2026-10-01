@@ -138,7 +138,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     usage: [
       "tunnel start --invitation <path> --ssh-host <host> --ssh-user <user> --ssh-host-key-file <path>",
       "  [--ssh-port <port>] [--local-host <127.0.0.1|::1>] [--local-port <port>]",
-      "  [--ssh-executable <path>] [--ssh-argument <arg>...] [--timeout-ms <ms>]",
+      "  [--ssh-executable <path>] [--ssh-argument <arg>]... [--timeout-ms <ms>]",
       "tunnel start [--timeout-ms <ms>]",
       "tunnel status",
       "tunnel stop [--forget]",

@@ -11,6 +11,7 @@ import {
 } from "../domain/brand.ts";
 import { canonicalLoopbackHostname } from "../enrollment/source-server.ts";
 import { canonfigVersionHeader } from "../enrollment/version-handshake.ts";
+import { checkSourceServerIdentity } from "../enrollment/tls-identity.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import { credentialFailureDetail } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
@@ -162,6 +163,7 @@ const requestSecrets = (
           method: "GET",
           ca: certificate.pem,
           rejectUnauthorized: true,
+          checkServerIdentity: checkSourceServerIdentity,
           minVersion: "TLSv1.2",
           headers,
         }, (response) => {

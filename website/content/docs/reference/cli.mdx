@@ -286,6 +286,16 @@ forward, TLS and signing pins) in `~/.canonfig/tunnel/tunnel-config.json`, mode
 `--invitation` restarts from that record and accepts only `--timeout-ms`.
 Without a record it fails with exit 2 and names the first-start command.
 
+`--ssh-host` accepts a hostname, IPv4 address, or unbracketed IPv6 address;
+specify its port separately with `--ssh-port`. Repeat `--ssh-argument` for each
+literal OpenSSH argument, including flags beginning with `-`. For a reviewed
+non-default identity file, add
+`--ssh-argument -i --ssh-argument ~/.ssh/source_ed25519` to the first-start
+command. These arguments do not permit host-key bypass or extra forwards.
+IPv6 loopback forwards are bracketed for OpenSSH without changing the pins.
+IPv6 HTTPS connections verify the actual peer certificate's IP SAN as well as
+the trusted certificate and pinned Source identities.
+
 `tunnel stop` stops the SSH process and keeps the record marked stopped, so
 nothing restarts it automatically. `tunnel stop --forget` also deletes the
 record. `tunnel status` reports `running`, `down`, `stopped`, or

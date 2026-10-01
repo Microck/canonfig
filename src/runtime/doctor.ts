@@ -34,6 +34,7 @@ import {
 } from "../schedule/schedule-manager.types.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import type { TunnelStatusReport } from "../enrollment/tunnel.types.ts";
+import { checkSourceServerIdentity } from "../enrollment/tls-identity.ts";
 
 export const doctorProbeNames = [
   "runtime",
@@ -350,6 +351,7 @@ const sourceProbe = (
               method: "GET",
               ca: certificate,
               rejectUnauthorized: true,
+              checkServerIdentity: checkSourceServerIdentity,
               minVersion: "TLSv1.2",
               headers: {
                 authorization: `Bearer ${Redacted.value(credential)}`,

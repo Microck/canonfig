@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 
 import { Schema } from "effect";
 
@@ -21,7 +22,11 @@ const tunnelConfigurationFields = {
   sshHost: Schema.String.check(
     Schema.isMinLength(1),
     Schema.isMaxLength(255),
-    Schema.isPattern(sshHostPattern),
+    Schema.makeFilter((host) =>
+      sshHostPattern.test(host) || isIP(host) === 6
+        ? undefined
+        : "expected an SSH hostname, IPv4 address or unbracketed IPv6 address"
+    ),
   ),
   sshPort: Schema.Int.check(
     Schema.isGreaterThanOrEqualTo(1),

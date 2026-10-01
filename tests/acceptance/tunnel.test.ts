@@ -220,9 +220,9 @@ describe("managed enrollment tunnel", () => {
     expect(error._tag).toBe("TunnelHostKeyBypassError");
   });
 
-  it.skipIf(process.platform === "win32")(
-    "classifies an unknown or changed SSH host key as an identity failure",
-    async () => {
+  it.skipIf(process.platform === "win32").each(["source.example", "2001:db8::1234"])(
+    "classifies an unknown or changed SSH host key for %s as an identity failure",
+    async (sshHost) => {
       const root = await temporaryRoot();
       const executable = join(root, "fake-ssh");
       await writeFile(executable, "#!/bin/sh\necho 'Host key verification failed' >&2\nexit 255\n");
@@ -230,7 +230,7 @@ describe("managed enrollment tunnel", () => {
 
       const error = await Effect.runPromise(Effect.flip(
         Effect.flatMap(Tunnel, (tunnel) => tunnel.startTunnel({
-          sshHost: "source.example",
+          sshHost,
           sshPort: 22,
           sshUser: "operator",
           sshHostKey: `ssh-ed25519 ${Buffer.alloc(32, 1).toString("base64")}`,

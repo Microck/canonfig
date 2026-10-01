@@ -64,6 +64,13 @@ pins are not migrated by this procedure.
   credential unlock instead of exhausting a boot-time start quota. Failed starts
   remain visible in status and the native journal; identity and storage policy
   are unchanged.
+- Managed tunnels accept literal dash-prefixed OpenSSH arguments through
+  repeated `--ssh-argument` options and validate IPv6 SSH destinations.
+  IPv6 loopback forwarding is bracketed correctly; SSH, TLS and signing pins
+  and host-key bypass rejection are unchanged.
+- IPv6 Source HTTPS verifies the actual peer certificate's IP SAN directly,
+  avoiding Node's IPv6-to-IDNA hostname conversion failure without weakening
+  CA validation or the pinned Source identities.
 
 These changes do not establish an in-place migration path or prove fleet
 convergence on a live installation.

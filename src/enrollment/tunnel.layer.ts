@@ -131,7 +131,7 @@ const buildSshArguments = (
   "-o",
   "ConnectTimeout=10",
   "-L",
-  `${localBind(input.localHost)}:${input.localPort}:${input.remoteHost}:${input.remotePort}`,
+  `${localBind(input.localHost)}:${input.localPort}:${localBind(input.remoteHost)}:${input.remotePort}`,
   "-p",
   String(input.sshPort),
   ...extra,

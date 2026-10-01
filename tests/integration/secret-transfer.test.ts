@@ -185,12 +185,15 @@ const fixture = (): Fixture => {
 
 const group = (name: string) => Schema.decodeUnknownSync(GroupName)(name);
 
-const start = async (setup: Fixture): Promise<SourceServerHandle> => {
+const start = async (
+  setup: Fixture,
+  hostname = "127.0.0.1",
+): Promise<SourceServerHandle> => {
   await setup.runtime.runPromise(Effect.gen(function*() {
     const enrollment = yield* Enrollment;
     yield* enrollment.initializeSource();
   }));
-  const server = await setup.runtime.runPromise(startSourceServer());
+  const server = await setup.runtime.runPromise(startSourceServer({ hostname }));
   openServers.push(server);
   return server;
 };
@@ -295,11 +298,11 @@ const storedValue = async (
 };
 
 describe("secure secret transfer", () => {
-  it("moves authorized secrets over pinned TLS and removes stale source values", async () => {
+  it.each(["127.0.0.1", "::1"])("transfers authorized secrets over pinned TLS at %s and removes stale values", async (hostname) => {
     const setup = fixture();
     const secretValue = "github-token-value-that-never-belongs-in-json";
     await setup.runtime.runPromise(storeSecret("github-token", secretValue));
-    const server = await start(setup);
+    const server = await start(setup, hostname);
     const enrolled = await enroll(setup, server, [group(SECRET_SHARE_GROUP)]);
 
     const fetched = await runFollower(setup, fetchSharedSecrets({

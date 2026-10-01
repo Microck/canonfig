@@ -131,13 +131,16 @@ const runFollower = <Value, Failure>(
   effect: Effect.Effect<Value, Failure, MachineState>,
 ): Promise<Value> => Effect.runPromise(effect.pipe(Effect.provide(setup.followerMachine)));
 
-const start = async (setup: Fixture): Promise<SourceServerHandle> => {
+const start = async (
+  setup: Fixture,
+  hostname = "127.0.0.1",
+): Promise<SourceServerHandle> => {
   const server = await runSource(
     setup,
     Effect.gen(function*() {
       const enrollment = yield* Enrollment;
       yield* enrollment.initializeSource();
-      return yield* startSourceServer();
+      return yield* startSourceServer({ hostname });
     }),
   );
   openServers.push(server);
@@ -230,9 +233,9 @@ describe("loopback HTTPS enrollment", () => {
     }
   });
 
-  it("enrolls a deterministic follower with pinned source identity and initial groups", async () => {
+  it.each(["127.0.0.1", "::1"])("enrolls and authenticates a pinned follower over %s with initial groups", async (hostname) => {
     const setup = fixture();
-    const server = await start(setup);
+    const server = await start(setup, hostname);
     const groups = [
       decode(GroupName)("base"),
       decode(GroupName)("operators"),
@@ -252,7 +255,7 @@ describe("loopback HTTPS enrollment", () => {
       }),
     );
 
-    expect(server.endpoint).toMatch(/^https:\/\/127\.0\.0\.1:\d+$/u);
+    expect(new URL(server.endpoint).hostname).toBe(hostname === "::1" ? "[::1]" : hostname);
     expect(server.fingerprint).toBe(grant.tlsFingerprint);
     expect(enrolled.follower.id).toMatch(/^follower-[a-f0-9]{32}$/u);
     expect(enrolled.follower.groups).toEqual(groups);

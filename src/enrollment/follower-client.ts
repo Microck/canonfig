@@ -39,6 +39,7 @@ import {
 } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { BlobTransferProgress } from "./blob-transfer-progress.ts";
+import { checkSourceServerIdentity } from "./tls-identity.ts";
 import {
   DuplicateFollowerIdentityError,
   EnrollmentFingerprintMismatchError,
@@ -219,6 +220,7 @@ const requestJson = (
           method,
           ca: certificate.pem,
           rejectUnauthorized: true,
+          checkServerIdentity: checkSourceServerIdentity,
           minVersion: "TLSv1.2",
           headers,
         }, (response) => {
@@ -709,6 +711,7 @@ export const probeSourceDescriptor = (
             method: "GET",
             ca: pem,
             rejectUnauthorized: true,
+            checkServerIdentity: checkSourceServerIdentity,
             minVersion: "TLSv1.2",
             headers: {
               accept: "application/json",
@@ -928,6 +931,7 @@ const transportRequest = (
           method: "GET",
           ca: certificate.pem,
           rejectUnauthorized: true,
+          checkServerIdentity: checkSourceServerIdentity,
           minVersion: "TLSv1.2",
           headers,
         }, (response) => {
