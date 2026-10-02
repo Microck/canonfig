@@ -968,6 +968,13 @@ const appendLocalOutput = (
     if (detail.kind !== "write-file") {
       return yield* new InvalidExecutionPlanError({ message: "append-local requires a write-file or removal action" });
     }
+    if (detail.retainedLocalDigest !== undefined
+      && (before.state !== "regular" || before.digest !== detail.retainedLocalDigest
+        || current?.kind !== "unmanaged")) {
+      return yield* new InvalidExecutionPlanError({
+        message: `First-adoption local text changed after planning: ${before.path}. Replan and review synchronization.`,
+      });
+    }
     const currentSourceDigest = current?.kind === "managed" ? sha256Hex(current.source) : undefined;
     if (current !== undefined && (current.kind === "managed"
       ? currentSourceDigest !== detail.previousSourceDigest && currentSourceDigest !== desired.digest

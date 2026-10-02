@@ -15,6 +15,23 @@ Filter disabled integrations before collecting their configuration. An exposure
 that already happened still requires credential rotation through its owner;
 redacting later output does not revoke the exposed credential.
 
+## Private first-adoption review
+
+An existing instruction file can contain secrets that no syntax detector
+recognizes. Ordinary append-local plans therefore never include its text.
+`canonfig sync --plan --review-local` explicitly writes exact Source additions,
+retained local text and proposed composed text to local JSON review files.
+Only metadata and the protected file paths cross the CLI output boundary.
+
+Review files use Canonfig's protected native filesystem writes: private `0700`
+directories and `0600` files on POSIX, and user-only ACLs on Windows. They are
+not redacted, because redaction would prevent exact review. They are not
+published, attached to run journals or sent to agents. Inspect them only with a
+local editor, never paste them into logs, chat or diagnostic reports, and delete
+their `adoption-review-<id>` directory when finished. A failed command may leave
+protected partial reviews; inspect and delete those too. Normal planning never
+creates this secret-bearing material.
+
 ## Published configuration
 
 Publication rejects recognizable literal credentials in config keys before

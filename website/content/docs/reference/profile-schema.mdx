@@ -296,6 +296,35 @@ preserves a differing existing file in full as local text. If it exactly matches
 Source, Canonfig adds the markers without duplicating the text. A missing file
 starts with no local additions. Make a backup before choosing a new policy.
 
+Before first adoption of a differing file, run:
+
+```sh
+canonfig sync --plan --review-local
+```
+
+The ordinary plan reports that the whole existing file will remain local and
+names this command. The explicit option writes a private JSON review for each
+first adoption under a unique `adoption-review-<id>` directory in the machine's
+Canonfig data directory. Open the reported file in a local editor. Its
+`sourceAddition` is the exact Source text, `retainedLocal` is the exact local
+suffix, and `proposedText` is the complete file that apply will write, including
+the ownership markers. JSON escapes preserve whitespace, CRLF, Unicode and
+trailing newlines. Source-like duplicate text in the existing file remains local;
+Canonfig does not infer authorship.
+
+These files may contain local secrets. Canonfig restricts the review directory
+to mode `0700` and files to `0600` on POSIX, and uses its native user-only ACL
+protection on Windows. It does not print the text, include it in the plan or run
+journal, publish it, or upload it. Do not paste the review into chat or diagnostic
+reports. Delete the reported review directory after inspecting it, including any
+partial reviews from a failed command. Ordinary planning creates no review files.
+
+The review records the revision, plan digest and both content digests. Changed,
+unreadable or symlink targets stop review generation rather than producing a
+different review silently. If either input changes after review, generate and
+inspect a new review before applying. `--review-local` is only for interactive
+planning; it cannot be combined with `--apply`, `--no-input` or `--scheduled`.
+
 Later syncs replace only the Source section. They preserve local text, including
 its whitespace and line endings, and do not append another copy. Changing or
 removing an existing Source section produces drift; move intentional edits below
@@ -430,11 +459,11 @@ Any other backslash in a path is rejected at publication and by
   resources applied before it stay applied, and later ones are skipped. Repair
   the file, then run `sync --apply` again to apply the rest.
 
-When ownership changes between a parent object and one of its children, dropped
-Source keys are removed before the new values are written. Unrelated settings
-remain untouched. An old parent that contains a newly local child is retained
-rather than deleting local state. The plan discloses this: the `write-config`
-action lists the retained keys under `retains`, with a notice explaining that a
-Local Overlay key overlaps them and that their current values, including
-earlier Source-written ones, stay. Review that retained subtree when changing
-ownership. Normal rollback restores the exact previous file.
+When ownership narrows from a parent object to its children, Canonfig updates
+the declared children and preserves the other fields, including values the
+Source wrote earlier. When ownership expands to the parent, its declared value
+replaces that object without a separate deletion of the formerly owned children.
+Dropped keys outside the new ownership are removed unless a Local Overlay
+claims them. The `write-config` action lists retained ancestors or local keys
+under `retains` and explains why their values stay. Review the retained subtree
+when changing ownership. Normal rollback restores the exact previous file.

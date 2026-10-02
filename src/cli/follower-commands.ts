@@ -25,6 +25,8 @@ export interface SynchronizeInput {
   readonly noInput: boolean;
   /** Set by the rendered native job, so fired evidence is not fakeable. */
   readonly scheduled?: boolean | undefined;
+  /** Write exact append-local adoption reviews to protected local files, never output. */
+  readonly reviewLocal?: boolean | undefined;
 }
 
 export interface RecoverInput {

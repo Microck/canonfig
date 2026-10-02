@@ -98,6 +98,7 @@ export type CliCommand =
     readonly noInput: boolean;
     /** Only the rendered native job passes this; it keys the fire evidence. */
     readonly scheduled: boolean;
+    readonly reviewLocal: boolean;
   }
   | { readonly _tag: "Recover"; readonly noInput: boolean }
   | { readonly _tag: "Abandon" }
@@ -896,17 +897,22 @@ const evaluateCommand = (
         new Set(),
         // --scheduled is set by the rendered native job; typing it by hand
         // is harmless but pointless without the scheduler's provenance.
-        new Set(["--plan", "--apply", "--no-input", "--scheduled"]),
+        new Set(["--plan", "--apply", "--no-input", "--scheduled", "--review-local"]),
       );
       if (options.positionals.length > 0) return invalid("sync accepts no positional arguments");
       if (options.switches.has("--plan") && options.switches.has("--apply")) {
         return invalid("--plan and --apply are mutually exclusive");
+      }
+      if (options.switches.has("--review-local")
+        && (options.switches.has("--apply") || options.switches.has("--scheduled") || options.switches.has("--no-input"))) {
+        return invalid("--review-local requires an interactive --plan, not --apply, --scheduled, or --no-input");
       }
       return command({
         _tag: "Synchronize",
         mode: options.switches.has("--apply") ? "apply" : "plan",
         noInput: options.switches.has("--no-input"),
         scheduled: options.switches.has("--scheduled"),
+        reviewLocal: options.switches.has("--review-local"),
       }, format);
     }
     if (area === "abandon") {
@@ -1093,6 +1099,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         mode: value.mode,
         noInput: value.noInput,
         scheduled: value.scheduled,
+        reviewLocal: value.reviewLocal,
       });
     case "Recover": return yield* follower.recover({ noInput: value.noInput });
     case "Abandon": return yield* follower.abandon();

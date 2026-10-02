@@ -310,7 +310,13 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
         outline.lines.push(
           `  ${column(textOf(action.kind), 16)} ${column(textOf(action.resource), 24)} ${actionTarget(detail)}`.trimEnd(),
         );
-        for (const notice of actionNotices(detail)) pushText(outline, "      ", "", notice);
+        for (const notice of actionNotices(detail)) {
+          if (detail?.retainedLocalDigest !== undefined) {
+            outline.lines.push(`      ${notice}`);
+          } else {
+            pushText(outline, "      ", "", notice);
+          }
+        }
       }
       if (actions.length > maximumListItems) {
         outline.elided = true;
@@ -341,8 +347,16 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
   outlineRest(
     outline,
     data,
-    ["mode", "revision", "downloadedBlobs", "reusedBlobs", "plan", "outcome", "agentResolutions", "warnings", "clientSteps"],
+    ["mode", "revision", "downloadedBlobs", "reusedBlobs", "plan", "outcome", "agentResolutions", "warnings", "clientSteps", "adoptionReviews"],
   );
+  const adoptionReviews = recordsOf(data.adoptionReviews);
+  if (adoptionReviews.length > 0) {
+    outline.lines.push("private adoption reviews (may contain secrets; inspect locally, never share or upload):");
+    for (const review of adoptionReviews) {
+      outline.lines.push(`  ${textOf(review.resource) ?? ""}: ${textOf(review.path) ?? ""}`);
+    }
+    outline.lines.push("  Open each JSON file locally. Delete its adoption-review directory when finished.");
+  }
   // Unshortened: a warning ends with the exact command that resolves it.
   const warnings = isList(data.warnings) ? data.warnings.map(textOf).filter((warning) => warning !== undefined) : [];
   if (warnings.length > 0) {

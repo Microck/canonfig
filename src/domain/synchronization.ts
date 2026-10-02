@@ -77,6 +77,8 @@ export type ActionDetail =
      * addition, so the operator is told explicitly.
      */
     readonly adoptionNotice?: string | undefined;
+    /** Exact unmanaged bytes retained locally; no text enters the public plan. */
+    readonly retainedLocalDigest?: string | undefined;
   }
   | {
     readonly kind: "write-config";
@@ -320,6 +322,7 @@ export const ActionDetailSchema = Schema.Union([
     mode: Schema.optional(Schema.Int),
     previousSourceDigest: Schema.optional(ContentDigest),
     adoptionNotice: Schema.optional(Schema.NonEmptyString),
+    retainedLocalDigest: Schema.optional(ContentDigest),
   }),
   Schema.Struct({
     kind: Schema.Literal("write-config"),

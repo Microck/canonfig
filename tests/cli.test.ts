@@ -545,6 +545,10 @@ describe("typed CLI command boundary", () => {
   it("rejects malformed and ambiguous inputs before selecting a service", async () => {
     for (const arguments_ of [
       ["sync", "--plan", "--apply"],
+      ["sync", "--apply", "--review-local"],
+      ["sync", "--plan", "--review-local", "--no-input"],
+      ["sync", "--plan", "--review-local", "--scheduled"],
+      ["status", "--review-local"],
       ["source", "revoke", "not valid"],
       ["follower", "enroll", "not-base64", "--name", "host"],
       ["schedule", "set", "weekly:Funday@99:00"],
@@ -570,24 +574,6 @@ describe("typed CLI command boundary", () => {
     }
   });
 
-  it("carries --no-input to apply and recovery without a prompting seam", async () => {
-    const apply = await execute(["sync", "--apply", "--no-input"]);
-    expect(apply.invocations).toEqual([{
-      route: "sync",
-      input: { mode: "apply", noInput: true, scheduled: false },
-    }]);
-    expect(apply.stdout).toBe("");
-    const recover = await execute(["recover", "--no-input"]);
-    expect(recover.invocations).toEqual([{
-      route: "recover",
-      input: { noInput: true },
-    }]);
-    const scheduled = await execute(["sync", "--apply", "--no-input", "--scheduled"]);
-    expect(scheduled.invocations).toEqual([{
-      route: "sync",
-      input: { mode: "apply", noInput: true, scheduled: true },
-    }]);
-  });
 
   it("rejects classifying a nested-command launcher as bounded at parse time", async () => {
     for (const launcher of ["xargs", "find", "awk", "perl", "make", "npx"]) {

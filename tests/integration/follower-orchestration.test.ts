@@ -3,14 +3,15 @@ import {
   sign,
 } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
-import { chmod, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { renderCliResult } from "../../src/cli/render.ts";
 import { AgentResolutionLive } from "../../src/agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../../src/agent/agent-resolution.service.ts";
 import { DeniedAgentCapabilityError } from "../../src/agent/agent-resolution.errors.ts";
@@ -279,22 +280,109 @@ describe("production follower orchestration", () => {
     })).pipe(Effect.provide(followerRepository)));
     const application = Layer.mergeAll(followerRepository, followerMachine, AgentResolutionLive,
       SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, followerMachine))));
-    const sync = (mode: "plan" | "apply" = "apply") => Effect.runPromise(synchronizeFollower(followerDatabase, mode).pipe(Effect.provide(application)));
+    const sync = (mode: "plan" | "apply" = "apply", reviewLocal = false) => Effect.runPromise(
+      synchronizeFollower(followerDatabase, mode, undefined, false, reviewLocal).pipe(Effect.provide(application)),
+    );
     const text = async () => parseTextComposition(await readFile(target));
     await mkdir(join(followerRoot, "home"), { recursive: true });
-    const local = "Existing rules\r\n\uFEFF東京\n";
+    const secretMarker = "c6-private-local-fixture-opaque-value";
+    const local = `Source one\nExisting rules\r\n\uFEFF東京\n${"long local text ".repeat(40)}\n${secretMarker}\n`;
     await writeFile(target, local);
-    expect((await sync("plan")).plan.actions).toEqual(expect.arrayContaining([
+    const ordinaryPlan = await sync("plan");
+    expect(ordinaryPlan.plan.actions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: "write-file",
-        detail: expect.objectContaining({
-          adoptionNotice: expect.stringContaining("cannot tell an old shared rule"),
-        }),
+        detail: expect.objectContaining({ retainedLocalDigest: sha256Hex(local) }),
       }),
     ]));
+    expect(JSON.stringify(ordinaryPlan)).not.toContain(secretMarker);
+    expect(JSON.stringify(ordinaryPlan)).not.toContain("Existing rules");
+    expect(ordinaryPlan.adoptionReviews).toBeUndefined();
+    const reviewedPlan = await sync("plan", true);
+    const reviewPath = reviewedPlan.adoptionReviews![0]!.path;
+    const review = JSON.parse(await readFile(reviewPath, "utf8"));
+    expect(review).toMatchObject({
+      schema: "canonfig.adoption-review/v1",
+      planDigest: ordinaryPlan.plan.digest,
+      retainedLocalDigest: sha256Hex(local),
+      sourceDigest: sha256Hex("Source one\n"),
+      sourceAddition: "Source one\n",
+      retainedLocal: local,
+    });
+    expect(parseTextComposition(new TextEncoder().encode(review.proposedText))).toEqual({
+      kind: "managed", source: "Source one\n", local,
+    });
+    expect((await stat(reviewPath)).mode & 0o777).toBe(0o600);
+    expect((await stat(dirname(reviewPath))).mode & 0o777).toBe(0o700);
+    for (const format of ["human", "json"] as const) {
+      const rendered = renderCliResult({
+        command: "sync.plan", message: "sync.plan completed", exitCode: 0,
+        data: Schema.decodeUnknownSync(Schema.MutableJson)(JSON.parse(JSON.stringify(reviewedPlan))),
+      }, format);
+      expect(rendered).not.toContain(secretMarker);
+      expect(rendered).not.toContain("Existing rules");
+      expect(rendered).toContain(reviewPath);
+      expect(rendered).toContain("canonfig sync --plan --review-local");
+    }
+    await rm(dirname(reviewPath), { recursive: true });
+
+    // Change the actual target between observation and the private review read.
+    const machine = await Effect.runPromise(MachineState.pipe(Effect.provide(followerMachine)));
+    for (const change of ["content", "symlink", "removed"] as const) {
+      let targetReads = 0;
+      const changedMachine = {
+        ...machine,
+        readFile: (input: Parameters<typeof machine.readFile>[0]) => Effect.gen(function*() {
+          if (input.path.absolute === target && ++targetReads === 2) {
+            if (change === "content") {
+              yield* Effect.promise(() => writeFile(target, "Changed local text\n"));
+            } else if (change === "symlink") {
+              yield* Effect.promise(async () => {
+                await unlink(target);
+                await symlink(join(root, "missing-review-target"), target);
+              });
+            } else {
+              yield* Effect.promise(() => unlink(target));
+            }
+          }
+          return yield* machine.readFile(input);
+        }),
+      };
+      await expect(Effect.runPromise(
+        synchronizeFollower(followerDatabase, "plan", undefined, false, true).pipe(
+          Effect.provideService(MachineState, changedMachine), Effect.provide(application),
+        ),
+      )).rejects.toMatchObject(change === "content"
+        ? { _tag: "FollowerSynchronizationConfigurationError", reason: "stale" }
+        : { _tag: "MachineFilesystemError", operation: "read file" });
+      await rm(target, { force: true });
+      await writeFile(target, local);
+    }
+    // Applying the same plan must reject local changes made before rollback capture.
+    const changedBeforeCapture = {
+      ...machine,
+      digestFile: (input: Parameters<typeof machine.digestFile>[0]) => Effect.gen(function*() {
+        if (input.path.absolute === target) {
+          yield* Effect.promise(() => writeFile(target, "Changed before first adoption\n"));
+        }
+        return yield* machine.digestFile(input);
+      }),
+    };
+    const changedLayer = Layer.succeed(MachineState, changedBeforeCapture);
+    const changedApplication = Layer.mergeAll(followerRepository, changedLayer, AgentResolutionLive,
+      SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, changedLayer))));
+    const refused = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "apply").pipe(
+        Effect.provide(changedApplication),
+      ),
+    );
+    expect(refused.outcome).toMatchObject({ outcome: "Failed" });
+    expect(await readFile(target, "utf8")).toBe("Changed before first adoption\n");
+    await writeFile(target, local);
     expect(await readFile(target, "utf8")).toBe(local);
     expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
     expect(await text()).toEqual({ kind: "managed", source: "Source one\n", local });
+    expect(review.proposedText).toBe(await readFile(target, "utf8"));
     const adopted = await readFile(target, "utf8");
     const added = "New local rule\r\n";
     await writeFile(target, adopted + added);
@@ -329,9 +417,20 @@ describe("production follower orchestration", () => {
     expect(await readFile(target, "utf8")).toBe(local + added);
     expect((await sync("plan")).plan.actions).toEqual([]);
 
-    // A fresh adoption of identical text introduces ownership without a copy.
-    await writeFile(target, "Source three");
+    // Empty first-adoption text is retained exactly, without delimiter guessing.
+    await writeFile(target, "");
+    await publish("Source three\r\n");
+    const emptyPlan = await sync("plan", true);
+    const emptyReview = JSON.parse(await readFile(emptyPlan.adoptionReviews![0]!.path, "utf8"));
+    expect(emptyReview.retainedLocal).toBe("");
+    expect(parseTextComposition(new TextEncoder().encode(emptyReview.proposedText))).toEqual({
+      kind: "managed", source: "Source three\r\n", local: "",
+    });
+    await rm(dirname(emptyPlan.adoptionReviews![0]!.path), { recursive: true });
     await publish("Source three");
+    // Identical Source text introduces ownership without a local copy.
+    await writeFile(target, "Source three");
+    expect((await sync("plan", true)).adoptionReviews).toEqual([]);
     expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
     expect(await text()).toEqual({ kind: "managed", source: "Source three", local: "" });
     await unlink(target);

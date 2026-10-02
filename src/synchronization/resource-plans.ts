@@ -57,6 +57,7 @@ interface WriteFileActionDetail {
   mode?: number;
   previousSourceDigest?: string;
   adoptionNotice?: string;
+  retainedLocalDigest?: string;
 }
 
 interface WriteFileDraft extends ResourceActionDraft {
@@ -589,7 +590,8 @@ const planAppendLocal = (context: ResourcePlanningContext): ReadonlyArray<Resour
         kind: "write-file",
         detail: {
           ...draft.detail,
-          adoptionNotice: `First adoption of ${context.resource.target}: the existing file differs from the Source payload, so its current content is preserved as follower-local text. Canonfig cannot tell an old shared rule from a deliberate local addition; move shared rules into the Source profile to manage them.`,
+          adoptionNotice: "First adoption preserves the entire differing file as local text. Canonfig cannot tell an old shared rule from a deliberate local addition. Inspect exact Source and retained local text before applying: canonfig sync --plan --review-local",
+          retainedLocalDigest: current,
         },
       }];
     }
@@ -646,22 +648,25 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
   // three-way operation: leaving them behind meant a key dropped from the
   // profile kept its old value forever and the plan read `no-op`, so only
   // removing the whole resource ever removed a key.
-  const declared = new Set(context.desired.keys);
+  const declaredKeys = context.desired.keys;
+  const declared = new Set(declaredKeys);
   const dropped = sortedUnique(
     (context.applied?.ownedKeys ?? []).filter((key) => !declared.has(key)),
   );
-  // A key the follower claimed through its Local Overlay is the follower's,
-  // not Canonfig's, so it stays even though the profile stopped declaring it.
-  // Comparing values per key would need the applied value of each owned key,
-  // which the Applied Resource Record does not store; the Local Overlay is the
-  // mechanism this product already gives an operator to say "this key is mine".
+  // Changing ownership between an object and its children is not removal.
+  // Pruning the old ancestor would also erase newly unowned sibling fields.
+  // A whole-object write replaces former child ownership without a separate delete.
   const prunable = dropped.filter((key) =>
-    !context.overlayKeys.some((local) => configPathsOverlap(key, local))
+    !declaredKeys.some((declaredKey) => configPathsOverlap(key, declaredKey))
+    && !context.overlayKeys.some((local) => configPathsOverlap(key, local))
   );
-  const retained = dropped.filter((key) => !prunable.includes(key));
+  const retained = dropped.filter((key) =>
+    declaredKeys.some((declaredKey) => declaredKey.startsWith(`${key}.`))
+    || context.overlayKeys.some((local) => configPathsOverlap(key, local))
+  );
   const retention = retained.length === 0 ? {} : {
     retains: retained,
-    retentionNotice: `Canonfig no longer manages ${retained.join(", ")} in ${context.resource.target}: the revision stopped declaring ${retained.length === 1 ? "it" : "them"}, and Local Overlay keys overlap, so the current values stay, including anything the Source wrote there earlier. Edit or remove stale values by hand.`,
+    retentionNotice: `Canonfig no longer owns all of ${retained.join(", ")} in ${context.resource.target}: ownership narrowed or Local Overlay keys overlap. Values outside the current Source-owned keys stay, including anything the Source wrote there earlier. Edit or remove stale values by hand.`,
   };
   if (prunable.length > 0) {
     return [{

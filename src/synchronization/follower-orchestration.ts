@@ -26,7 +26,7 @@ import {
   type VerificationInput,
 } from "../domain/profile.ts";
 import type { ObservedResourceState } from "../domain/synchronization.ts";
-import { parseTextComposition } from "../domain/text-composition.ts";
+import { composeTextFile, parseTextComposition } from "../domain/text-composition.ts";
 import type { AppliedResourceRecord } from "../domain/synchronization.ts";
 import {
   fetchRevision,
@@ -1402,6 +1402,81 @@ export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTa
   },
 );
 
+/**
+ * Exact adoption text stays in protected local files, outside the plan, journal,
+ * and CLI payload. Re-read and compare to the plan before creating a review.
+ */
+const writeAdoptionReviews = Effect.fn("FollowerOrchestration.writeAdoptionReviews")(
+  function*(plan: PlannedSynchronization, artifacts: ReadonlyArray<SynchronizationArtifact>) {
+    const machine = yield* MachineState;
+    const reviews: Array<{ resource: string; target: string; path: string }> = [];
+    const adoptions = plan.actions.filter((action) =>
+      action.detail.kind === "write-file" && action.detail.retainedLocalDigest !== undefined
+    );
+    if (adoptions.length === 0) return reviews;
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    const encoder = new TextEncoder();
+    const directories = yield* machine.userDirectories();
+    const root = yield* machine.normalizePath({
+      path: `canonfig/adoption-review-${randomUUID()}`, base: directories.data,
+    });
+    yield* machine.ensureDirectory({ path: root, mode: 0o700 });
+    for (const action of adoptions) {
+      const detail = action.detail;
+      if (detail.kind !== "write-file") continue;
+      const target = yield* machine.normalizePath({ path: detail.target });
+      const kind = yield* machine.inspectPath(target);
+      if (kind.kind !== "regular") {
+        return yield* configurationError("stale", "An adoption review target is no longer a regular file. Replan synchronization.");
+      }
+      const bytes = yield* machine.readFile({
+        path: target, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes,
+      });
+      if (sha256BytesHex(bytes) !== detail.retainedLocalDigest) {
+        return yield* configurationError("stale", "An adoption review target changed after planning. Replan synchronization.");
+      }
+      const current = yield* Effect.try({
+        try: () => parseTextComposition(bytes),
+        catch: () => configurationError("stale", "An adoption review target is no longer valid unmanaged UTF-8 text. Replan synchronization."),
+      });
+      if (current.kind !== "unmanaged") {
+        return yield* configurationError("stale", "An adoption review target is already managed. Replan synchronization.");
+      }
+      const sourceBytes = artifacts.find((entry) => entry.digest === detail.digest)?.content;
+      if (sourceBytes === undefined || sha256BytesHex(sourceBytes) !== detail.digest) {
+        return yield* configurationError("stale", "The verified Source text for an adoption review is unavailable. Replan synchronization.");
+      }
+      const source = yield* Effect.try({
+        try: () => decoder.decode(sourceBytes),
+        catch: () => configurationError("invalid-profile", "The Source text for an adoption review is not valid UTF-8."),
+      });
+      const proposed = composeTextFile(source, current);
+      if (proposed.byteLength > defaultSynchronizationExecutionLimits.maximumFileBytes) {
+        return yield* configurationError("invalid-profile", "The composed adoption text exceeds the supported file size.");
+      }
+      const path = yield* machine.normalizePath({ path: `${reviews.length + 1}.json`, base: root });
+      const review = {
+        schema: "canonfig.adoption-review/v1",
+        revision: plan.revision,
+        planDigest: plan.digest,
+        resource: action.resource,
+        target: detail.target,
+        sourceDigest: detail.digest,
+        retainedLocalDigest: detail.retainedLocalDigest,
+        sourceAddition: source,
+        retainedLocal: current.local === source ? "" : current.local,
+        proposedText: decoder.decode(proposed),
+      };
+      yield* machine.atomicWrite({
+        path, mode: 0o600,
+        content: encoder.encode(`${JSON.stringify(review, undefined, 2)}\n`),
+      });
+      reviews.push({ resource: action.resource, target: detail.target, path: path.absolute });
+    }
+    return reviews;
+  },
+);
+
 export const synchronizeFollower = Effect.fn(
   "FollowerOrchestration.synchronize",
 )(function*(
@@ -1409,7 +1484,11 @@ export const synchronizeFollower = Effect.fn(
   mode: "plan" | "apply",
   signal?: AbortSignal,
   scheduled = false,
+  reviewLocal = false,
 ) {
+  if (reviewLocal && (mode !== "plan" || scheduled)) {
+    return yield* configurationError("invalid-profile", "Local adoption reviews require an interactive plan.");
+  }
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
   const synchronization = yield* Synchronization;
@@ -1506,6 +1585,9 @@ export const synchronizeFollower = Effect.fn(
     const warnings = yield* installerRefusals(planned.plan.actions.flatMap((action) =>
       action.detail.kind === "install-tool" ? [action.detail.method] : []
     ));
+    const adoptionReviews = reviewLocal
+      ? yield* writeAdoptionReviews(planned.plan, hydrated.artifacts)
+      : undefined;
     return {
       mode,
       revision: selected.id,
@@ -1515,6 +1597,7 @@ export const synchronizeFollower = Effect.fn(
       agentResolutions: planned.agentResolutions,
       schedule,
       warnings: warnings.length === 0 ? undefined : warnings,
+      adoptionReviews,
     };
   }
   const outcome = yield* synchronization.run({

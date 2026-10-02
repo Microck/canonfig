@@ -1463,6 +1463,7 @@ const followerCommandsLayer = (
           input.mode,
           undefined,
           scheduled || input.noInput,
+          input.reviewLocal === true,
         ).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),

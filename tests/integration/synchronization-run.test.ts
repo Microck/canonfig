@@ -3029,6 +3029,94 @@ process.exit(1);
     expect(getConfigPath(document, "agent.model")).toBe("review-model");
   });
 
+  it.each(["json", "jsonc", "toml", "yaml"] as const)(
+    "preserves newly unowned sibling fields when %s ownership narrows to child keys",
+    async (format) => {
+      const base = fileFixture(temporaryDirectory(), `run-config-narrow-${format}`);
+      mkdirSync(dirname(base.target), { recursive: true });
+      const current = serializeConfigDocument(format, {
+        theme: "dark",
+        mcpServers: {
+          a: { command: "node", args: ["b", "a"], timeout: 30, env: { LOCAL: "2" } },
+          sibling: { command: "mine" },
+          ab: { command: "retired" },
+        },
+      });
+      writeFileSync(base.target, current);
+      const desiredDocument = {};
+      setConfigPath(desiredDocument, "mcpServers.a.command", "uvx");
+      setConfigPath(desiredDocument, "mcpServers.a.args", ["new", "old"]);
+      const desiredBytes = new TextEncoder().encode(
+        serializeConfigDocument(format, desiredDocument),
+      );
+      const digest = sha256BytesHex(desiredBytes);
+      const resource: PublishedResource = {
+        ...base.revision.resources[0]!,
+        kind: "config",
+        policy: "merge",
+      };
+      const desired: DesiredResource = {
+        kind: "config",
+        digest,
+        format,
+        keys: ["mcpServers.a.command", "mcpServers.a.args"],
+      };
+      const revision: PlanningProfileRevision = {
+        ...base.revision,
+        resources: [resource],
+        desired: [{
+          resource: resource.id,
+          desired,
+          verification: { method: "digest", digest },
+        }],
+      };
+      const plan = Effect.runSync(planSynchronization({
+        revision,
+        follower: follower.id,
+        observedState: {
+          platform: "linux",
+          resources: [{
+            resource: resource.id,
+            observed: {
+              state: "present",
+              digest: sha256BytesHex(new TextEncoder().encode(current)),
+              executable: false,
+            },
+          }],
+          availableBlobs: [],
+        },
+        localOverlay: [],
+        appliedResources: [{
+          resource: resource.id,
+          revision: "previous",
+          digest: sha256BytesHex(new TextEncoder().encode(current)),
+          appliedAt: "2026-08-15T00:00:00Z",
+          kind: "config",
+          policy: "merge",
+          target: resource.target,
+          ownedKeys: ["mcpServers.a", "mcpServers.ab"],
+          configFormat: format,
+        }],
+      }));
+      const artifact = { digest, content: desiredBytes };
+      const outcome = await seedAndRun({
+        ...base,
+        revision,
+        artifact,
+        input: { ...base.input, plan, revision, artifacts: [artifact] },
+      });
+
+      expect(outcome.outcome).toBe("Converged");
+      expect(parseConfigDocument(format, await readFile(base.target, "utf8"))).toEqual({
+        theme: "dark",
+        mcpServers: {
+          a: { command: "uvx", args: ["new", "old"], timeout: 30, env: { LOCAL: "2" } },
+          sibling: { command: "mine" },
+        },
+      });
+    },
+  );
+
   it("fails the action when an owned config key crosses a scalar on disk", async () => {
     const base = fileFixture(temporaryDirectory(), "run-config-scalar");
     mkdirSync(dirname(base.target), { recursive: true });

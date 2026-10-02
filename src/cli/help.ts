@@ -85,10 +85,12 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     title: "Synchronization",
     areas: ["sync"],
     usage: [
-      "sync [--plan | --apply] [--no-input]",
+      "sync [--plan | --apply] [--no-input] [--review-local]",
     ],
     notes: [
-      "--plan (the default) downloads and compares without changing the machine.",
+      "--plan (the default) downloads and compares without changing managed targets.",
+      "--review-local with --plan writes exact append-local first-adoption reviews to protected",
+      "local JSON files. They may contain secrets: inspect locally, never share or upload them.",
       "--apply journals every action and verifies each resource independently.",
       "--no-input never prompts. Native schedules run: sync --apply --no-input --scheduled",
     ],

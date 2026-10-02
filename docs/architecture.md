@@ -217,6 +217,18 @@ retain overlapping or contradictory text, which the operator can edit in the
 local suffix. Daily synchronization never infers local additions from a new
 text diff and never publishes them back to Source.
 
+First-adoption write actions carry `retainedLocalDigest`, not local text.
+`sync --plan --review-local` verifies that observation again, then writes exact
+Source text, retained local text and proposed composed text to a unique protected
+directory under the Canonfig data directory. The review includes the revision
+and deterministic plan digest; its path is reported separately and never alters
+the plan. Native protected writes enforce private permissions and Windows ACLs.
+Only the explicit option creates this potentially secret-bearing material.
+Operators inspect it locally and delete the review directory afterward.
+Execution checks the retained digest against its rollback snapshot before first
+adoption, so a target changed after planning cannot silently replace reviewed
+bytes. Reviews do not approve future plans; changes require another review.
+
 Resource dependencies form a directed acyclic graph. Canonfig observes independent resources with bounded concurrency and applies actions in dependency order. Mutating actions for one target are serialized.
 
 Publication rejects distinct resource IDs that claim the same normalized filesystem
