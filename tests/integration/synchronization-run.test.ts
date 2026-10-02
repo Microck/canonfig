@@ -3031,10 +3031,11 @@ process.exit(1);
 
   it.each(["json", "jsonc", "toml", "yaml"] as const)(
     "preserves newly unowned sibling fields when %s ownership narrows to child keys",
-    async (format) => {
-      const base = fileFixture(temporaryDirectory(), `run-config-narrow-${format}`);
+    async (syntax) => {
+      const format = syntax === "jsonc" ? "json" : syntax;
+      const base = fileFixture(temporaryDirectory(), `run-config-narrow-${syntax}`);
       mkdirSync(dirname(base.target), { recursive: true });
-      const current = serializeConfigDocument(format, {
+      const serialized = serializeConfigDocument(format, {
         theme: "dark",
         mcpServers: {
           a: { command: "node", args: ["b", "a"], timeout: 30, env: { LOCAL: "2" } },
@@ -3042,6 +3043,7 @@ process.exit(1);
           ab: { command: "retired" },
         },
       });
+      const current = syntax === "jsonc" ? `// local config comment\n${serialized}` : serialized;
       writeFileSync(base.target, current);
       const desiredDocument = {};
       setConfigPath(desiredDocument, "mcpServers.a.command", "uvx");

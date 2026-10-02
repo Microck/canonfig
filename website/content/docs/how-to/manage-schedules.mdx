@@ -22,12 +22,17 @@ Synchronize every day at 09:00 in this machine's time zone:
 canonfig schedule set daily@09:00
 ```
 
-Synchronize on chosen weekdays, in a named IANA time zone:
+On Linux, synchronize on chosen weekdays in a named IANA time zone:
 
 ```bash
 canonfig schedule set weekly:Mon@12:30 --timezone Europe/Paris
 canonfig schedule set weekly:Mon,Thu@12:30
 ```
+
+Only Linux supports `--timezone`. macOS and Windows reject an explicit named
+zone because their native calendar jobs cannot preserve that binding.
+Use a daily or weekly schedule without `--timezone` on those platforms.
+It follows the machine's local time zone.
 
 Weekdays are `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, and `Sun`; the time is
 24-hour `HH:mm`. Cron and platform-native expressions are not accepted.
@@ -65,8 +70,9 @@ applied yet.
 ## Time zones, daylight saving, and missed runs
 
 - **Local time follows the machine.** Without `--timezone`, the job runs at that
-  wall-clock time in the machine's current time zone. With `--timezone`, it runs
-  at that time in the named zone.
+  wall-clock time in the machine's current time zone. On Linux, `--timezone`
+  binds that time to the named zone instead. macOS and Windows use local time
+  and reject `--timezone`; they do not silently discard it.
 - **A time that has already passed today** does not run now. The next run is the
   next occurrence. (Earlier releases started a catch-up run immediately.)
 - **Missed runs.** On Linux, a run missed while the machine was off or the user
