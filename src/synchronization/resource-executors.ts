@@ -187,6 +187,7 @@ const readIfPresent = (
 
 const captureStoredFile = (
   path: MachinePath,
+  maximumBytes?: number | undefined,
 ): Effect.Effect<StoredFile, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -208,7 +209,7 @@ const captureStoredFile = (
     if (symlink !== undefined) {
       return { path: path.absolute, state: "symlink", target: symlink };
     }
-    const digest = yield* machine.digestFile({ path });
+    const digest = yield* machine.digestFile({ path, maximumBytes });
     const permissions = yield* machine.snapshotPermissions(path);
     return {
       path: path.absolute,
@@ -223,6 +224,7 @@ const restoreStoredFile = (
   reference: string,
   root?: MachinePath | undefined,
   directoryPermissions: "restore" | "writable" = "restore",
+  maximumBytes?: number | undefined,
 ): Effect.Effect<void, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -285,7 +287,7 @@ const restoreStoredFile = (
         return;
       }
       case "regular": {
-        const content = { file: backupFile(reference, entry.path), digest: entry.digest };
+        const content = { file: backupFile(reference, entry.path), digest: entry.digest, maximumBytes };
         if (root === undefined) {
           yield* machine.atomicWrite({ path, content, permissions: entry.permissions });
         } else {
@@ -577,12 +579,22 @@ const captureRollback = (
           && !sameMachinePath(path, root)
           ? Effect.succeed({ path: path.absolute, state: "absent" } as const)
           : Effect.gen(function*() {
-            const entry = yield* captureStoredFile(path);
+            const appendLocalTarget = context.resource.policy === "append-local"
+              && paths.some((target) => sameMachinePath(target, path));
+            const maximumBytes = appendLocalTarget ? context.limits.maximumFileBytes : undefined;
+            const entry = yield* captureStoredFile(path, maximumBytes);
+            const detail = context.action.detail;
+            if (appendLocalTarget && detail.kind === "write-file" && detail.retainedLocalDigest !== undefined
+              && (entry.state !== "regular" || entry.digest !== detail.retainedLocalDigest)) {
+              return yield* new InvalidExecutionPlanError({
+                message: `First-adoption local text changed after planning: ${path.absolute}. Replan and review synchronization.`,
+              });
+            }
             if (entry.state === "regular") {
               const backup = yield* machine.normalizePath({ path: backupFile(rollbackPath.absolute, entry.path) });
               yield* machine.atomicWrite({
                 path: backup,
-                content: { file: entry.path, digest: entry.digest },
+                content: { file: entry.path, digest: entry.digest, maximumBytes },
                 mode: 0o600,
               });
             }
@@ -1028,7 +1040,7 @@ const restoreAppendLocal = (context: ResourceExecutionContext, stored: ReadonlyA
     const before = yield* textSnapshot(stored);
     const path = yield* targetPath(before.path);
     yield* inspectTextTarget(path);
-    const current = yield* captureStoredFile(path);
+    const current = yield* captureStoredFile(path, context.limits.maximumFileBytes);
     if (sameTextSnapshot(current, before)) return;
     const { content, mode } = yield* appendLocalOutput(context, before, reference);
     // The intended write has a portable mode, not the preimage's native ACL.
@@ -1038,7 +1050,7 @@ const restoreAppendLocal = (context: ResourceExecutionContext, stored: ReadonlyA
     if (!matchesAfter) {
       return yield* new InvalidExecutionPlanError({ message: `append-local target changed after the action: ${before.path}. Inspect the retained rollback backup before recovering.` });
     }
-    yield* restoreStoredFile(before, reference);
+    yield* restoreStoredFile(before, reference, undefined, "restore", context.limits.maximumFileBytes);
   });
 
 const prepareAppendLocal = (context: ResourceExecutionContext, target: string) =>
@@ -1050,7 +1062,7 @@ const prepareAppendLocal = (context: ResourceExecutionContext, target: string) =
     const { content, mode } = yield* appendLocalOutput(context, before, rollback.reference);
     const execute = Effect.gen(function*() {
       yield* inspectTextTarget(path);
-      const current = yield* captureStoredFile(path);
+      const current = yield* captureStoredFile(path, context.limits.maximumFileBytes);
       if (!sameTextSnapshot(current, before)) {
         return yield* new InvalidExecutionPlanError({ message: `append-local target changed while preparing: ${target}. Replan synchronization.` });
       }

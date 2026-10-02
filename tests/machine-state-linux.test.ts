@@ -174,12 +174,22 @@ describe("portable safe-root mutation", () => {
               target: outsidePath.absolute,
             },
           });
+          const bounded = yield* machine.mutateWithinRoot({
+            root: managedPath,
+            path: targetPath,
+            mutation: {
+              kind: "write",
+              content: { file: source, digest: sourceDigest, maximumBytes: 6 },
+            },
+          }).pipe(Effect.exit);
+          expect(bounded._tag).toBe("Failure");
+          expect(readFileSync(target, "utf8")).toBe("outside");
           yield* machine.mutateWithinRoot({
             root: managedPath,
             path: targetPath,
             mutation: {
               kind: "write",
-              content: { file: source, digest: sourceDigest },
+              content: { file: source, digest: sourceDigest, maximumBytes: 7 },
             },
           });
         }).pipe(Effect.provide(linuxMachineStateLayer({

@@ -431,6 +431,12 @@ describe("production follower orchestration", () => {
     // Identical Source text introduces ownership without a local copy.
     await writeFile(target, "Source three");
     expect((await sync("plan", true)).adoptionReviews).toEqual([]);
+    const refusedEqualAdoption = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "apply").pipe(Effect.provide(changedApplication)),
+    );
+    expect(refusedEqualAdoption.outcome).toMatchObject({ outcome: "Failed" });
+    expect(await readFile(target, "utf8")).toBe("Changed before first adoption\n");
+    await writeFile(target, "Source three");
     expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
     expect(await text()).toEqual({ kind: "managed", source: "Source three", local: "" });
     await unlink(target);

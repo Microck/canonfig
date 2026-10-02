@@ -36,6 +36,10 @@ export const writeFileContent = async (
   if (!isAbsolute(path) || path.includes("\0")) {
     throw new Error("file source must be an absolute path without NUL bytes");
   }
+  const maximumBytes = content.maximumBytes ?? Number.MAX_SAFE_INTEGER;
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
+    throw new Error("file source byte limit must be a nonnegative safe integer");
+  }
   const source = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const opened = await source.stat();
@@ -43,6 +47,9 @@ export const writeFileContent = async (
     if (!opened.isFile() || !visible.isFile()
       || opened.dev !== visible.dev || opened.ino !== visible.ino) {
       throw new Error(`file source is not a stable regular file: ${path}`);
+    }
+    if (opened.size > maximumBytes) {
+      throw new Error(`file source exceeds the ${maximumBytes}-byte limit: ${path}`);
     }
     const hash = createHash("sha256");
     const chunk = Buffer.allocUnsafe(64 * 1024);

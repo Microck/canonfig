@@ -1412,6 +1412,7 @@ const writeAdoptionReviews = Effect.fn("FollowerOrchestration.writeAdoptionRevie
     const reviews: Array<{ resource: string; target: string; path: string }> = [];
     const adoptions = plan.actions.filter((action) =>
       action.detail.kind === "write-file" && action.detail.retainedLocalDigest !== undefined
+        && action.detail.adoptionNotice !== undefined
     );
     if (adoptions.length === 0) return reviews;
     const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });

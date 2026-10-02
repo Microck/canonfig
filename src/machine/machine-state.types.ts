@@ -34,6 +34,7 @@ export interface EnsureDirectoryInput {
 export type FileContent = Uint8Array | {
   readonly file: string;
   readonly digest: ContentDigest;
+  readonly maximumBytes?: number | undefined;
 };
 
 /** Persisted rollback permissions, distinct from the desired portable mode. */

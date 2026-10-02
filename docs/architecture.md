@@ -204,6 +204,8 @@ not the follower-owned suffix; observation also retains the whole-file digest.
 The persisted write action records the previous Source digest, so execution and
 recovery cannot overwrite an unexpected edit to that section. Rollback captures
 the whole file and its permissions before composition, just as for replacement.
+The text-file byte limit applies before rollback hashing and copying. It does
+not impose the text limit on binary replacement resources.
 Restoration requires the exact pre-write or expected post-write state. If local
 text changes after a write, rollback stops without overwriting it and retains the
 action's backup for manual recovery. Terminal cleanup removes the other action
@@ -217,8 +219,9 @@ retain overlapping or contradictory text, which the operator can edit in the
 local suffix. Daily synchronization never infers local additions from a new
 text diff and never publishes them back to Source.
 
-First-adoption write actions carry `retainedLocalDigest`, not local text.
-`sync --plan --review-local` verifies that observation again, then writes exact
+First-adoption writes for existing files carry `retainedLocalDigest`, not local
+text, including when the file exactly matches Source.
+`sync --plan --review-local` verifies differing files again, then writes exact
 Source text, retained local text and proposed composed text to a unique protected
 directory under the Canonfig data directory. The review includes the revision
 and deterministic plan digest; its path is reported separately and never alters

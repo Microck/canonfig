@@ -595,7 +595,9 @@ const planAppendLocal = (context: ResourcePlanningContext): ReadonlyArray<Resour
         },
       }];
     }
-    return [draft];
+    return [current === undefined ? draft : {
+      ...draft, detail: { ...draft.detail, retainedLocalDigest: current },
+    }];
   }
   const sourceObserved = { ...observed, digest: observed.managedSourceDigest };
   // Reuse the file permission and three-way drift rules with the owned payload.
