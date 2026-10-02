@@ -53,6 +53,26 @@ machineStateContract("Linux", {
 });
 
 describe("portable safe-root mutation", () => {
+  it("reads a bounded prefix without weakening the whole-file size limit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-read-prefix-"));
+    try {
+      const file = join(root, "bytes");
+      writeFileSync(file, Buffer.from([0, 1, 255, 4]));
+      await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: file });
+        const prefix = yield* machine.readFile({ path, maximumBytes: 4, prefixBytes: 3 });
+        expect([...prefix]).toEqual([0, 1, 255]);
+        const refused = yield* machine.readFile({
+          path, maximumBytes: 3, prefixBytes: 1,
+        }).pipe(Effect.flip);
+        expect(refused._tag).toBe("FileSizeLimitError");
+      }).pipe(Effect.provide(linuxMachineStateLayer({ environment: environment(root) }))));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("lists every entry beneath a managed directory without following symlinks out", async () => {
     // Observation only ever inspected owned and desired paths, so a file the
     // operator added was invisible and therefore unremovable, which made

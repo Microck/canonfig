@@ -539,9 +539,14 @@ which installs fail with Human Action Required instead of falling back to
 `PATH`. Methods are `apt`, `brew`, `bun`, `cargo`, `npm`, `pnpm`, `uv`, and
 `winget`.
 
-On Windows, `npm.cmd` and other command shims cannot run without a shell, which
-Canonfig never enables. Bind npm to `node.exe` plus `npm-cli.js` (see
+Bind npm to `node.exe` plus `npm-cli.js` on Windows (see
 [Cross-platform behavior](/reference/cross-platform#windows-package-managers)).
+For bare npm/pnpm tool verifiers, an approved Node binding also launches the
+installed Node script: the scheduled job does not need that Node directory in
+`PATH`. Canonfig resolves POSIX bin symlinks and decodes standard Windows Node
+command-shim entrypoints without enabling a shell or modifying `PATH`.
+Unsupported shims fail explicitly; absolute verification commands keep their
+declared executable.
 
 ## JSON envelope
 

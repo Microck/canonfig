@@ -62,6 +62,8 @@ export type AtomicWriteInput = {
 export interface ReadFileInput {
   readonly path: MachinePath;
   readonly maximumBytes: number;
+  /** Read only this leading byte count; maximumBytes still bounds the whole file. */
+  readonly prefixBytes?: number;
 }
 
 export interface RemoveFileInput {

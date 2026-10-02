@@ -196,6 +196,7 @@ const assertStableRegularHandle = async (
 const regularFileBytes = async (
   path: string,
   maximumBytes: number,
+  prefixBytes?: number,
 ): Promise<Buffer> => {
   const handle = await open(
     path,
@@ -208,6 +209,17 @@ const regularFileBytes = async (
     await assertStableRegularHandle(path, handle, metadata);
     if (metadata.size > maximumBytes) {
       throw new FileSizeLimitError({ path, maximumBytes });
+    }
+    if (prefixBytes !== undefined) {
+      const bytes = Buffer.allocUnsafe(Math.min(metadata.size, prefixBytes));
+      let total = 0;
+      while (total < bytes.byteLength) {
+        const result = await handle.read(bytes, total, bytes.byteLength - total, null);
+        if (result.bytesRead === 0) break;
+        total += result.bytesRead;
+      }
+      await assertStableRegularHandle(path, handle, metadata);
+      return bytes.subarray(0, total);
     }
     const chunks: Array<Buffer> = [];
     let total = 0;
@@ -797,8 +809,15 @@ const readBounded = (
         maximumBytes: input.maximumBytes,
       });
     }
+    if (input.prefixBytes !== undefined
+      && (!Number.isSafeInteger(input.prefixBytes) || input.prefixBytes < 0)) {
+      return yield* new FileSizeLimitError({
+        path,
+        maximumBytes: input.prefixBytes,
+      });
+    }
     return yield* Effect.tryPromise({
-      try: () => regularFileBytes(path, input.maximumBytes),
+      try: () => regularFileBytes(path, input.maximumBytes, input.prefixBytes),
       catch: (cause) =>
         cause instanceof FileSizeLimitError
           ? cause

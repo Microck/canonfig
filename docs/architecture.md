@@ -357,6 +357,15 @@ job's bounded `PATH`. A missing executable fails verification and lists every
 directory searched. A failed installer's error carries the last 20 lines
 (at most 1536 characters) of its output, redacted.
 
+For npm/pnpm recipes bound to Node and an explicit package-manager entrypoint,
+bare Node-script verifiers use that same approved Node executable. Canonfig
+reads only a bounded file header after resolving executable symlinks. Standard
+Windows Node shim launch lines become direct Node-plus-script arguments; shell
+text is never executed and conflicting or unsupported entrypoints fail closed.
+Native binaries and explicit absolute verification commands retain their own
+executable. The native process environment, including scheduler `PATH`, is
+unchanged.
+
 When no recipe is unambiguous, Canonfig creates an Agent Task containing the upstream URL and discovery evidence. The Configuration Agent may propose a recipe. The controlled executor applies it only under the configured agent policy, and verification must pass before the tool converges.
 
 ## Agent execution policy

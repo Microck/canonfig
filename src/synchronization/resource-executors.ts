@@ -27,7 +27,7 @@ import {
   type MachineStateError,
 } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import { FilePermissionSnapshot, type MachinePath } from "../machine/machine-state.types.ts";
+import { FilePermissionSnapshot, type InstallDestinationHint, type MachinePath } from "../machine/machine-state.types.ts";
 import {
   directoryVerificationDigest,
   sha256BytesHex,
@@ -2064,6 +2064,84 @@ const missingVerifierReason = (error: ExecutableNotFoundError): string =>
     error.searched.join(", ") || "no directories"
   })`;
 
+const regularExecutablePath = (executable: MachinePath) => Effect.gen(function*() {
+  const machine = yield* MachineState;
+  let path = executable;
+  for (let depth = 0; depth < 40; depth++) {
+    const kind = yield* machine.inspectPath(path);
+    if (kind.kind !== "symlink") return kind.kind === "regular" ? path : undefined;
+    const target = yield* machine.readSymlink(path);
+    path = yield* machine.normalizePath({
+      path: path.platform === "windows"
+        ? win32.resolve(win32.dirname(path.absolute), target)
+        : resolve(dirname(path.absolute), target),
+    });
+  }
+  return undefined;
+});
+
+/** npm bin scripts use the same approved Node binding as their installer. */
+const toolVerifierInvocation = (
+  executable: MachinePath,
+  arguments_: ReadonlyArray<string>,
+  methods: ReadonlyArray<InstallDestinationHint>,
+) => Effect.gen(function*() {
+  const node = methods.find((hint) =>
+    (hint.method === "npm" || hint.method === "pnpm")
+    && hint.installer !== undefined
+    && /(?:^|[\\/])node(?:\.exe)?$/i.test(hint.installer.absolute)
+  )?.installer;
+  if (node === undefined) return { executable, arguments: arguments_ };
+  const windowsShim = executable.platform === "windows" && /\.(?:cmd|bat)$/i.test(executable.absolute);
+  if (executable.platform === "windows" && !windowsShim) return { executable, arguments: arguments_ };
+  const machine = yield* MachineState;
+  const script = yield* regularExecutablePath(executable);
+  if (script === undefined) {
+    return yield* new InvalidExecutionPlanError({
+      message: `npm verification executable is not a regular file: ${executable.absolute}`,
+    });
+  }
+  const header = decoder.decode(yield* machine.readFile({
+    path: script,
+    maximumBytes: Number.MAX_SAFE_INTEGER,
+    prefixBytes: 4096,
+  }));
+  if (windowsShim) {
+    // Decode only Node launch lines in npm/pnpm-generated shims; never execute
+    // their shell text, expand environment expressions or run cmd.exe.
+    const launch = /(?:^|[\s&|(])(?:node(?:\.exe)?|"%_prog%"|"%~dp0%?[\\/]node(?:\.exe)?")\s+"%(?:dp0%|~dp0%?)[\\/]([^"\r\n]+)"\s+%\*/gi;
+    let entrypoint: string | undefined;
+    for (const match of header.matchAll(launch)) {
+      if (match[0].includes("%_prog%") && !/SET "_prog=node"/i.test(header)) continue;
+      const relativeScript = match[1]!;
+      if (relativeScript.includes("%") || win32.isAbsolute(relativeScript)) continue;
+      const target = win32.resolve(win32.dirname(script.absolute), relativeScript);
+      if (entrypoint !== undefined && entrypoint !== target) {
+        return yield* new InvalidExecutionPlanError({ message: "npm verification shim has conflicting Node entrypoints" });
+      }
+      entrypoint = target;
+    }
+    if (entrypoint === undefined) {
+      return yield* new InvalidExecutionPlanError({
+        message: `npm verification shim has no supported direct Node launch: ${script.absolute}`,
+      });
+    }
+    return { executable: node, arguments: [entrypoint, ...arguments_] };
+  }
+  const newline = header.indexOf("\n");
+  const firstLine = newline < 0 ? header : header.slice(0, newline);
+  const shebang = /^#![ \t]*(?:\/usr\/bin\/env[ \t]+(?:-S[ \t]+)?node|\/[^ \t]+\/node)(?:[ \t]+([^\r\n]*))?\r?$/.exec(firstLine);
+  if (shebang === null) return { executable, arguments: arguments_ };
+  const options = shebang[1]?.trim();
+  if (options !== undefined && /["'\\]/.test(options)) {
+    return yield* new InvalidExecutionPlanError({ message: "npm verification Node shebang requires a direct verification command" });
+  }
+  return {
+    executable: node,
+    arguments: [...(options ? options.split(/\s+/) : []), script.absolute, ...arguments_],
+  };
+});
+
 const verifyCommand = (
   context: ResourceExecutionContext,
   command: ReadonlyArray<string>,
@@ -2079,11 +2157,14 @@ const verifyCommand = (
     }
     const machine = yield* MachineState;
     const method = `${proves === "client-load" ? "client-load" : "command"}:${name}`;
+    const bareName = !isAbsolute(name) && !win32.isAbsolute(name)
+      && !name.includes("/") && !name.includes("\\");
+    const installMethods = bareName ? yield* verifierInstallMethods(context) : [];
     const executable = isAbsolute(name) || win32.isAbsolute(name)
       ? yield* machine.normalizePath({ path: name })
       : yield* machine.findExecutable({
         name,
-        installMethods: yield* verifierInstallMethods(context),
+        installMethods,
       }).pipe(
         Effect.map((found) => found.path),
         Effect.catchTag("ExecutableNotFoundError", (error) => Effect.succeed(error)),
@@ -2091,9 +2172,11 @@ const verifyCommand = (
     if (executable instanceof ExecutableNotFoundError) {
       return { passed: false, method, reason: missingVerifierReason(executable) };
     }
+    const invocation = bareName
+      ? yield* toolVerifierInvocation(executable, arguments_, installMethods)
+      : { executable, arguments: arguments_ };
     const result = yield* machine.runProcess({
-      executable,
-      arguments: arguments_,
+      ...invocation,
       timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
       maximumOutputBytes: context.limits.maximumProcessOutputBytes,
     });
@@ -2265,23 +2348,13 @@ const verifyExecutable = (
     // only this verification path before checking the final file's mode.
     if (executable.includes("/") || executable.includes("\\")) {
       return yield* Effect.gen(function*() {
-        let path = yield* machine.normalizePath({ path: executable });
-        for (let depth = 0; depth < 40; depth++) {
-          const kind = yield* machine.inspectPath(path);
-          if (kind.kind === "symlink") {
-            const target = yield* machine.readSymlink(path);
-            const absolute = path.platform === "windows"
-              ? win32.resolve(win32.dirname(path.absolute), target)
-              : resolve(dirname(path.absolute), target);
-            path = yield* machine.normalizePath({ path: absolute });
-            continue;
-          }
-          if (kind.kind !== "regular") return { passed: false, method };
-          if (path.platform === "windows") return { passed: true, method };
-          const permissions = yield* machine.permissions(path);
-          return { passed: (permissions.mode & 0o111) !== 0, method };
-        }
-        return { passed: false, method };
+        const path = yield* regularExecutablePath(
+          yield* machine.normalizePath({ path: executable }),
+        );
+        if (path === undefined) return { passed: false, method };
+        if (path.platform === "windows") return { passed: true, method };
+        const permissions = yield* machine.permissions(path);
+        return { passed: (permissions.mode & 0o111) !== 0, method };
       }).pipe(Effect.catch(() => Effect.succeed({ passed: false, method })));
     }
     return yield* machine.findExecutable({

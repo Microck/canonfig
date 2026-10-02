@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 // The binding stores what fs/promises.realpath returns, which on Windows
 // expands 8.3 short names that fs.realpathSync leaves alone. Resolve the
 // expected paths the same way, or the two spellings of one file disagree.
@@ -20,7 +20,7 @@ import {
   checkInstallerBinding, installerRefusals, loadInstallerBinding, loadInstallerState, removeInstallerBinding,
   resolveInstallerInvocation, saveInstallerBinding, unboundInstallerRecovery,
 } from "../../src/synchronization/installer-bindings.ts";
-import { prepareResourceAction, verifyResource } from "../../src/synchronization/resource-executors.ts";
+import { prepareResourceAction, verifyResource, type ResourceExecutionContext } from "../../src/synchronization/resource-executors.ts";
 import { runInstallerCli } from "../../src/runtime/installer-cli.ts";
 import { installerArguments, isInstallerCommand } from "../../src/runtime/command-routing.ts";
 
@@ -154,6 +154,49 @@ describe("local installer binding contract", () => {
     expect(qualification.qualification?.ready).toBe(true);
     const result = JSON.parse(readFileSync(f.output, "utf8"));
     expect(result).toEqual({ argv: ["install", "--global", "fixture-package@1.2.3", "--ignore-scripts"], path: "" });
+  }, 30_000);
+
+  it("runs an npm bin through its approved Node with an empty scheduler PATH", async () => {
+    const f = fixture();
+    await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
+    const windows = process.platform === "win32";
+    const bin = windows ? join(f.home, "AppData", "Roaming", "npm") : join(f.home, ".local", "bin");
+    const script = join(bin, "node_modules", "fixture-tool", "bin with spaces", "cli.js");
+    mkdirSync(join(bin, "node_modules", "fixture-tool", "bin with spaces"), { recursive: true });
+    writeFileSync(script, [
+      "#!/usr/bin/env node",
+      "if ((process.env.PATH ?? process.env.Path ?? '') !== '') throw new Error('PATH was changed');",
+      "console.log('computed:' + process.argv.slice(2).map(Number).reduce((sum, n) => sum + n, 0));",
+      "//" + "padding".repeat(1000),
+    ].join("\n"));
+    const command = join(bin, windows ? "fixture-tool.cmd" : "fixture-tool");
+    if (windows) {
+      writeFileSync(command, 'SET "_prog=node"\r\n"%_prog%" "%dp0%\\node_modules\\fixture-tool\\bin with spaces\\cli.js" %*\r\n');
+    } else {
+      chmodSync(script, 0o755);
+      symlinkSync(script, command);
+    }
+    const resource = Schema.decodeUnknownSync(ResourceId)("fixture-tool");
+    const context: ResourceExecutionContext = {
+      run: Schema.decodeUnknownSync(RunId)("fixture-tool-run"),
+      action: {
+        id: Schema.decodeUnknownSync(ActionId)("fixture-tool-check"), resource,
+        kind: "no-op", detail: { kind: "no-op", reason: "installed" }, dependsOn: [],
+      },
+      resource: { id: resource, kind: "tool", policy: "ensure", target: "fixture-tool", dependsOn: [], blobs: [] },
+      desired: {
+        kind: "tool", toolId: "fixture-tool", loginRequired: false,
+        recipes: [{
+          platform: windows ? "windows" : process.platform === "darwin" ? "macos" : "linux",
+          method: "npm", package: "fixture-tool", version: "1.0.0",
+        }],
+      },
+      verification: { method: "command", command: ["fixture-tool", "4", "5"], expectContains: "computed:9" },
+      artifacts: new Map(),
+      limits: { maximumFileBytes: 1024, processTimeoutMilliseconds: 10_000, maximumProcessOutputBytes: 16_384, verificationConcurrency: 1 },
+    };
+    const result = await Effect.runPromise(verifyResource(context).pipe(Effect.provide(f.layer)));
+    expect(result).toMatchObject({ passed: true, method: "command:fixture-tool", exitCode: 0 });
   }, 30_000);
 
   it("repairs and removes malformed regular bindings, and keeps identical writes idempotent", async () => {

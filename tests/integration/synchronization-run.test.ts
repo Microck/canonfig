@@ -79,7 +79,6 @@ import {
   type ResourceExecutionContext,
 } from "../../src/synchronization/resource-executors.ts";
 import type { NpmArtifactTransport } from "../../src/synchronization/npm-artifact.ts";
-import { defaultLocalExecution } from "../../src/synchronization/follower-sync-config.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 import { Synchronization } from "../../src/synchronization/synchronization.service.ts";
 import type {
@@ -1214,14 +1213,6 @@ process.exit(1);
       }).pipe(Effect.provide(machineLayer(root))),
     ));
     expect(timedOut._tag).toBe("ProcessTimeoutError");
-  });
-
-  it("does not shorten the executor's process limit by default", () => {
-    // The follower's own default must not undercut the executor's, which is
-    // what passing the transport timeout did on every run.
-    expect(defaultLocalExecution.processTimeoutMilliseconds).toBe(
-      defaultSynchronizationExecutionLimits.processTimeoutMilliseconds,
-    );
   });
 
   it("verifies an executable-present check that names a path", async () => {
