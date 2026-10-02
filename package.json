@@ -61,7 +61,7 @@
     "@canonfig/effect-sql-sqlite-node": "npm:@effect/sql-sqlite-node@4.0.0-rc.112",
     "effect": "4.0.0-rc.112",
     "selfsigned": "^5.5.0",
-    "smol-toml": "1.6.1",
+    "smol-toml": "1.9.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
