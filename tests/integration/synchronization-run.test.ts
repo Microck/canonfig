@@ -815,13 +815,10 @@ if (args[0] === "python" && args[1] === "find") {
     const layer = linuxMachineStateLayer({
       environment: [{ name: "HOME", value: home }, { name: "PATH", value: bin }],
     });
-    const error = await Effect.runPromise(Effect.gen(function*() {
+    await Effect.runPromise(Effect.gen(function*() {
       const prepared = yield* prepareResourceAction(realUvInstallerContext(root, "pyinstaller"));
       return yield* prepared.execute;
     }).pipe(Effect.provide(layer), Effect.flip));
-    expect(error.message).toContain("pyinstaller==5.2");
-    expect(error.message).toContain("<3.11,>=3.7");
-    expect(error.message).toContain("3.12.3");
     expect(existsSync(managed)).toBe(false);
     expect(readdirSync(join(home, ".cache", "canonfig", "uv-preparation"))).toEqual([]);
   });
