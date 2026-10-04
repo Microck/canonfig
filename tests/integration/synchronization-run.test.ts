@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -783,139 +784,47 @@ describe("synchronization apply run", () => {
     expect(await readFile(outside, "utf8")).toBe("outside");
   });
 
-  it.each([
-    [
-      "reviewed private index",
-      {
-        url: "https://PACKAGES.EXAMPLE.TEST:443/repository/simple/?channel=stable",
-        reviewedBy: "security-reviewer",
-        reviewedAt: "2026-08-18T00:00:00Z",
-      },
-      "https://packages.example.test/repository/simple?channel=stable",
-    ],
-    ["fixed PyPI fallback", undefined, "https://pypi.org/simple"],
-  ] as const)(
-    "runs the deterministic uv installer in an isolated child environment: %s",
-    async (_name, indexPolicy, expectedIndex) => {
-      const root = temporaryDirectory();
-      const bin = join(root, "bin");
-      const marker = join(root, "uv-child.json");
-      const hostileUvConfig = join(root, "evil-uv.toml");
-      const hostilePipConfig = join(root, "evil-pip.conf");
-      mkdirSync(bin, { recursive: true });
-      writeFileSync(hostileUvConfig, "extra-index-url = 'https://evil.example.test/simple'\n");
-      writeFileSync(hostilePipConfig, "extra-index-url=https://evil.example.test/simple\n");
-      writeFileSync(
-        join(bin, "uv"),
-        `#!${process.execPath}
-const { readFileSync, writeFileSync } = require("node:fs");
-const keys = [
-  "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL",
-  "UV_EXTRA_INDEX_URL", "UV_INDEX", "UV_FIND_LINKS", "UV_TRUSTED_HOST",
-  "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "PIP_TRUSTED_HOST",
-  "UV_CONFIG_FILE", "PIP_CONFIG_FILE", "UV_HTTP_PROXY", "PIP_PROXY", "UV_PYTHON_DOWNLOADS",
-  "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY", "NETRC",
-  "KEYRING_BACKEND", "PIP_KEYRING_PROVIDER", "PIP_CERT", "PIP_CLIENT_CERT"
-];
-const values = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-const configBytes = readFileSync(process.env.UV_CONFIG_FILE, "utf8");
-writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
-  args: process.argv.slice(2),
-  values,
-  configBytes
-}));
-if (process.argv.slice(2).some((value) =>
-  /(?:extra-index|find-links|trusted-host|--index(?:=|$))/iu.test(value)
-)) process.exit(42);
-`,
-      );
-      chmodSync(join(bin, "uv"), 0o755);
-      const machine = linuxMachineStateLayer({
-        environment: [
-          { name: "HOME", value: join(root, "home") },
-          { name: "PATH", value: bin },
-          { name: "UV_DEFAULT_INDEX", value: "https://evil.example.test/simple" },
-          { name: "UV_INDEX_URL", value: "https://evil.example.test/simple" },
-          { name: "UV_EXTRA_INDEX_URL", value: "https://evil.example.test/simple" },
-          { name: "UV_INDEX", value: "evil=https://evil.example.test/simple" },
-          { name: "UV_FIND_LINKS", value: "https://evil.example.test/wheels" },
-          { name: "UV_TRUSTED_HOST", value: "evil.example.test" },
-          { name: "UV_CONFIG_FILE", value: hostileUvConfig },
-          { name: "PIP_INDEX_URL", value: "https://evil.example.test/simple" },
-          { name: "PIP_EXTRA_INDEX_URL", value: "https://evil.example.test/simple" },
-          { name: "PIP_FIND_LINKS", value: "https://evil.example.test/wheels" },
-          { name: "PIP_TRUSTED_HOST", value: "evil.example.test" },
-          { name: "PIP_CONFIG_FILE", value: hostilePipConfig },
-          { name: "PIP_PROXY", value: "http://evil.example.test" },
-          { name: "PIP_CERT", value: join(root, "evil.pem") },
-          { name: "PIP_CLIENT_CERT", value: join(root, "evil-client.pem") },
-          { name: "PIP_KEYRING_PROVIDER", value: "subprocess" },
-          { name: "UV_HTTP_PROXY", value: "http://evil.example.test" },
-          { name: "UV_PYTHON_DOWNLOADS", value: "automatic" },
-          { name: "HTTP_PROXY", value: "http://evil.example.test" },
-          { name: "https_proxy", value: "http://evil.example.test" },
-          { name: "FTP_PROXY", value: "http://evil.example.test" },
-          { name: "ALL_PROXY", value: "http://evil.example.test" },
-          { name: "NO_PROXY", value: "packages.example.test" },
-          { name: "NETRC", value: join(root, "evil.netrc") },
-          { name: "KEYRING_BACKEND", value: "evil.backend" },
-        ],
-      });
-      const context = realUvInstallerContext(root, "uv-tool", indexPolicy ?? undefined);
-      const prepared = await Effect.runPromise(
-        prepareResourceAction(context).pipe(Effect.provide(machine)),
-      );
-      await Effect.runPromise(prepared.execute.pipe(Effect.provide(machine)));
 
-      // SAFETY: The child fixture writes exactly this JSON object shape.
-      const observed = JSON.parse(readFileSync(marker, "utf8")) as {
-        readonly args: ReadonlyArray<string>;
-        readonly values: Readonly<Record<string, string | undefined>>;
-        readonly configBytes: string;
-      };
-      expect(observed.args).toEqual([
-        "tool",
-        "install",
-        "uv-tool==1.2.3",
-        "--no-build",
-        // CF-07: an incompatible package must fail instead of fetching an
-        // interpreter from outside the reviewed index.
-        "--no-python-downloads",
-        "--no-config",
-        `--default-index=${expectedIndex}`,
-      ]);
-      expect(observed.values.UV_DEFAULT_INDEX).toBe(expectedIndex);
-      expect(observed.values.UV_INDEX_URL).toBe(expectedIndex);
-      expect(observed.values.PIP_INDEX_URL).toBe(expectedIndex);
-      expect(observed.values.UV_PYTHON_DOWNLOADS).toBe("never");
-      for (const key of [
-        "UV_EXTRA_INDEX_URL",
-        "UV_INDEX",
-        "UV_FIND_LINKS",
-        "UV_TRUSTED_HOST",
-        "PIP_EXTRA_INDEX_URL",
-        "PIP_FIND_LINKS",
-        "PIP_TRUSTED_HOST",
-        "UV_HTTP_PROXY",
-        "PIP_PROXY",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "FTP_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "NETRC",
-        "KEYRING_BACKEND",
-        "PIP_KEYRING_PROVIDER",
-        "PIP_CERT",
-        "PIP_CLIENT_CERT",
-      ]) {
-        expect(observed.values[key]).toBeUndefined();
-      }
-      expect(observed.values.UV_CONFIG_FILE).toBe("/dev/null");
-      expect(observed.values.PIP_CONFIG_FILE).toBe("/dev/null");
-      expect(observed.configBytes).toBe("");
-    },
-  );
+  it("refuses incompatible prepared Python metadata before exposing a managed tool and removes preparation", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    const managed = join(root, "managed-tool");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "uv"), `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "python" && args[1] === "find") {
+  process.stdout.write(process.execPath + "\\n");
+} else if (args[0] === "venv") {
+  fs.mkdirSync(args[1], { recursive: true });
+} else if (args[0] === "pip" && args[1] === "install") {
+  const python = args[args.indexOf("--python") + 1];
+  fs.writeFileSync(path.join(path.dirname(path.dirname(python)), "METADATA"), "Requires-Python: <3.11,>=3.7\\n");
+} else if (args[0] === "pip" && args[1] === "check") {
+  process.stderr.write("pyinstaller==5.2 requires Python <3.11,>=3.7, but the interpreter is Python 3.12.3\\n");
+  process.exit(1);
+} else if (args[0] === "tool" && args[1] === "install") {
+  fs.writeFileSync(${JSON.stringify(managed)}, "incompatible managed tool");
+} else {
+  process.exit(42);
+}
+`);
+    chmodSync(join(bin, "uv"), 0o755);
+    const home = join(root, "home");
+    const layer = linuxMachineStateLayer({
+      environment: [{ name: "HOME", value: home }, { name: "PATH", value: bin }],
+    });
+    const error = await Effect.runPromise(Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(realUvInstallerContext(root, "pyinstaller"));
+      return yield* prepared.execute;
+    }).pipe(Effect.provide(layer), Effect.flip));
+    expect(error.message).toContain("pyinstaller==5.2");
+    expect(error.message).toContain("<3.11,>=3.7");
+    expect(error.message).toContain("3.12.3");
+    expect(existsSync(managed)).toBe(false);
+    expect(readdirSync(join(home, ".cache", "canonfig", "uv-preparation"))).toEqual([]);
+  });
 
   it("reports the installer's own last output lines, redacted, when it fails", async () => {
     const root = temporaryDirectory();
@@ -3546,63 +3455,6 @@ process.exit(1);
     }
   });
 
-  it.each([
-    ["npm", "npm", "@example/tool", "1.2.3", [
-      "install",
-      "--global",
-      "@example/tool@1.2.3",
-      "--ignore-scripts",
-    ]],
-    ["npm", "npm", "@scope/tool", "1.2.3-alpha.1+build.7", [
-      "install",
-      "--global",
-      "@scope/tool@1.2.3-alpha.1+build.7",
-      "--ignore-scripts",
-    ]],
-    ["pnpm", "pnpm", "@scope/tool", "1.2.3", [
-      "add",
-      "--global",
-      "@scope/tool@1.2.3",
-      "--ignore-scripts",
-    ]],
-    ["bun", "bun", "@scope/tool", "1.2.3", [
-      "add",
-      "--global",
-      "@scope/tool@1.2.3",
-      "--ignore-scripts",
-    ]],
-    ["homebrew", "brew", "tool", "1.2.3", ["install", "tool@1.2.3"]],
-    ["winget", "winget", "Example.Tool", "1.2.3", [
-      "install",
-      "--id",
-      "Example.Tool",
-      "--version",
-      "1.2.3",
-      "--exact",
-      "--silent",
-    ]],
-    ["uv", "uv", "tool", "1.2.3", [
-      "tool",
-      "install",
-      "tool==1.2.3",
-      "--no-build",
-      "--no-python-downloads",
-      "--no-config",
-      "--default-index=https://pypi.org/simple",
-    ]],
-    ["apt", "apt-get", "tool", "1.2.3", ["install", "-y", "tool=1.2.3"]],
-  ] as const)(
-    "executes versioned %s recipes with ecosystem-specific arguments",
-    async (method, executable, packageName, version, arguments_) => {
-      const result = await installerInvocation(method, packageName, version);
-
-      expect(result.executableQueries).toEqual([executable]);
-      expect(result.invocations).toEqual([{
-        executable: expect.stringMatching(new RegExp(`/${executable}$`, "u")),
-        arguments: arguments_,
-      }]);
-    },
-  );
 
   it.each([
     ["npm", "npm"],

@@ -28,6 +28,7 @@ import {
 } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { FilePermissionSnapshot, type InstallDestinationHint, type MachinePath } from "../machine/machine-state.types.ts";
+import { temporaryEntryName } from "../machine/temporary-entries.ts";
 import {
   directoryVerificationDigest,
   sha256BytesHex,
@@ -1777,8 +1778,7 @@ const installInvocation = (
         { name: "UV_CONFIG_FILE", value: process.platform === "win32" ? "NUL" : "/dev/null" },
         { name: "PIP_CONFIG_FILE", value: process.platform === "win32" ? "NUL" : "/dev/null" },
         { name: "UV_DEFAULT_INDEX", value: pythonIndex! },
-        // An incompatible package must fail with uv's own Python-version
-        // message, not fetch an interpreter from outside the reviewed index.
+        // Interpreter downloads are outside the reviewed package index.
         { name: "UV_PYTHON_DOWNLOADS", value: "never" },
         { name: "UV_INDEX_URL", value: pythonIndex! },
         { name: "PIP_INDEX_URL", value: pythonIndex! },
@@ -1844,44 +1844,89 @@ const installInvocation = (
       : method === "cargo" && version !== undefined
       ? ["install", packageName, "--version", version, "--locked"]
       : ["install", packageName];
-    const result = yield* machine.runProcess({
-      executable: installer.executable,
-      arguments: [...installer.arguments, ...arguments_],
-      timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
-      maximumOutputBytes: context.limits.maximumProcessOutputBytes,
-      environment: packageEnvironment,
-      environmentUnset: method === "uv"
-        ? [
-          "HTTP_PROXY",
-          "HTTPS_PROXY",
-          "FTP_PROXY",
-          "ALL_PROXY",
-          "NO_PROXY",
-          "NETRC",
-          "CURL_CA_BUNDLE",
-          "REQUESTS_CA_BUNDLE",
-          "SSL_CERT_FILE",
-          "SSL_CERT_DIR",
-          "PYTHONHTTPSVERIFY",
-          "PYTHON_KEYRING_BACKEND",
-          "KEYRING_BACKEND",
-        ]
-        : undefined,
-      environmentUnsetPrefixes: method === "uv"
-        ? ["UV_", "PIP_"]
-        : npmFamily
-        ? ["NPM_CONFIG_", "PNPM_CONFIG_", "BUN_CONFIG_"]
-        : undefined,
-    });
-    if (result.exitCode !== 0) {
-      const diagnostic = installerDiagnostic(result.standardError, result.standardOutput);
-      return yield* new ActionExecutionError({
-        action: context.action.id,
-        message: diagnostic.length === 0
-          ? `installer ${method} exited with ${String(result.exitCode)} and printed no diagnostic`
-          : `installer ${method} exited with ${String(result.exitCode)}; its last output lines:\n${diagnostic}`,
-      });
+    const runInstaller = (arguments_: ReadonlyArray<string>) =>
+      machine.runProcess({
+        executable: installer.executable,
+        arguments: [...installer.arguments, ...arguments_],
+        timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
+        maximumOutputBytes: context.limits.maximumProcessOutputBytes,
+        environment: packageEnvironment,
+        environmentUnset: method === "uv"
+          ? [
+            "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY",
+            "NETRC", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE",
+            "SSL_CERT_DIR", "PYTHONHTTPSVERIFY", "PYTHON_KEYRING_BACKEND", "KEYRING_BACKEND",
+          ]
+          : undefined,
+        environmentUnsetPrefixes: method === "uv"
+          ? ["UV_", "PIP_"]
+          : npmFamily
+          ? ["NPM_CONFIG_", "PNPM_CONFIG_", "BUN_CONFIG_"]
+          : undefined,
+      }).pipe(Effect.flatMap((result) => {
+        if (result.exitCode === 0) return Effect.succeed(result);
+        const diagnostic = installerDiagnostic(result.standardError, result.standardOutput);
+        return Effect.fail(new ActionExecutionError({
+          action: context.action.id,
+          message: diagnostic.length === 0
+            ? `installer ${method} exited with ${String(result.exitCode)} and printed no diagnostic`
+            : `installer ${method} exited with ${String(result.exitCode)}; its last output lines:\n${diagnostic}`,
+        }));
+      }));
+    if (method !== "uv") {
+      yield* runInstaller(arguments_);
+      return;
     }
+
+    // UV's resolver deliberately ignores Requires-Python upper bounds. Its
+    // installed-metadata check enforces the full range, including dependencies.
+    // Resolve into a private disposable venv before exposing a managed tool.
+    const directories = yield* machine.userDirectories();
+    const staging = yield* machine.normalizePath({
+      path: join(directories.cache.absolute, "canonfig", "uv-preparation", temporaryEntryName()),
+    });
+    yield* machine.ensureDirectory({ path: staging, mode: 0o700 });
+    const venv = join(staging.absolute, temporaryEntryName());
+    const venvPython = process.platform === "win32"
+      ? join(venv, "Scripts", "python.exe")
+      : join(venv, "bin", "python");
+    const cleanup = machine.removeTemporaryEntries({ directory: staging, recursive: false }).pipe(
+      Effect.andThen(machine.removeEmptyDirectory({ path: staging })),
+      Effect.orDie,
+    );
+    yield* Effect.gen(function*() {
+      const found = yield* runInstaller(["python", "find", "--no-config", "--no-python-downloads"]);
+      const python = new TextDecoder().decode(found.standardOutput).trim();
+      if (!isAbsolute(python) || python.includes("\n") || python.includes("\r") || python.includes("\0")) {
+        return yield* new ActionExecutionError({
+          action: context.action.id,
+          message: "uv did not identify one installed Python interpreter; no tool was installed",
+        });
+      }
+      yield* runInstaller([
+        "venv", venv, "--python", python, "--no-config", "--no-python-downloads",
+      ]);
+      yield* runInstaller([
+        "pip", "install", `${packageName}==${version!}`, "--python", venvPython,
+        ...(buildPolicy.mode === "scripts-disabled" ? ["--no-build"] : []),
+        "--no-python-downloads", "--no-config", `--default-index=${pythonIndex!}`,
+      ]);
+      yield* runInstaller([
+        "pip", "check", "--python", venvPython, "--offline", "--no-config", "--no-python-downloads",
+      ]);
+      const frozen = yield* runInstaller([
+        "pip", "freeze", "--python", venvPython, "--offline", "--no-config", "--no-python-downloads",
+      ]);
+      const constraints = yield* machine.normalizePath({
+        path: join(staging.absolute, temporaryEntryName()),
+      });
+      yield* machine.atomicWrite({ path: constraints, content: frozen.standardOutput, mode: 0o600 });
+      // Reuse the validated interpreter and prepared cache, not a fresh online
+      // resolution that could introduce an unchecked package or dependency.
+      yield* runInstaller([
+        ...arguments_, "--python", python, "--offline", "--constraints", constraints.absolute,
+      ]);
+    }).pipe(Effect.ensuring(cleanup));
   });
 
 /** Prepare deterministic work. Preparation stores rollback material before owned-file mutation. */
