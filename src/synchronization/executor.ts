@@ -8,6 +8,7 @@ import {
   ProfileRevisionId,
   ResourceId,
   type ActionId,
+  type RunId,
 } from "../domain/brand.ts";
 import type {
   AppliedResourceRecord,
@@ -888,10 +889,12 @@ export const preflightDisk = (
  */
 export const removeRunTemporaryEntries = (
   actions: ReadonlyArray<PlannedAction>,
+  run: RunId,
 ): Effect.Effect<ReadonlyArray<string>, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const directories = new Map<string, { readonly directory: MachinePath; recursive: boolean }>();
+    let uvPreparation: MachinePath | undefined;
     const include = (directory: MachinePath, recursive: boolean): void => {
       const key = `${directory.platform}:${directory.platform === "windows"
         ? directory.absolute.toLowerCase()
@@ -905,6 +908,19 @@ export const removeRunTemporaryEntries = (
     };
     for (const action of actions) {
       const detail = action.detail;
+      if (detail.kind === "install-tool" && detail.method === "uv") {
+        if (uvPreparation === undefined) {
+          const userDirectories = yield* machine.userDirectories();
+          const cache = userDirectories.cache;
+          uvPreparation = yield* machine.normalizePath({
+            path: (cache.platform === "windows" ? win32 : posix).join(
+              cache.absolute, "canonfig", "uv-preparation", sha256Hex(run),
+            ),
+          });
+          include(uvPreparation, false);
+        }
+        continue;
+      }
       if (
         detail.kind !== "write-file"
         && detail.kind !== "write-config"
@@ -928,6 +944,13 @@ export const removeRunTemporaryEntries = (
     const removed: Array<string> = [];
     for (const { directory, recursive } of directories.values()) {
       removed.push(...yield* machine.removeTemporaryEntries({ directory, recursive }));
+    }
+    if (uvPreparation !== undefined) {
+      yield* machine.removeEmptyDirectory({ path: uvPreparation }).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? Effect.void : Effect.fail(error)
+        ),
+      );
     }
     return removed;
   });

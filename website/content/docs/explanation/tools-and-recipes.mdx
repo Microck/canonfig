@@ -150,8 +150,9 @@ with `--no-python-downloads` and `UV_PYTHON_DOWNLOADS=never`, set after the
 inherited `UV_` variables are cleared, so an inherited setting cannot turn
 downloads back on.
 
-Canonfig selects an installed interpreter and prepares the exact package in
-a private disposable virtual environment. `uv pip check` checks the complete
+Canonfig selects a system interpreter independently of active virtual environments
+and project Python pins, then prepares the exact package in a private disposable
+virtual environment. `uv pip check` checks the complete
 `Requires-Python` range, including upper bounds and dependencies. uv's resolver
 alone ignores upper Python bounds. An incompatible package fails with uv's
 metadata diagnostic before Canonfig exposes a managed tool.
@@ -160,6 +161,10 @@ After that check, Canonfig freezes the prepared package versions and installs
 the tool offline with those constraints and the same interpreter. Preparation
 uses the approved index and the same build policy as the final install.
 Canonfig removes its private preparation directory on success or failure.
+Cancellation waits for the current bounded installer command to finish before
+cleanup. Cleanup failures remain typed errors and retain recovery evidence.
+Recovery or abandonment removes only that run's preparation, not another run's
+active environment. External installer changes are not rolled back.
 
 ## npm configuration isolation
 

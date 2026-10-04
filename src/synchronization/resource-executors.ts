@@ -1844,8 +1844,8 @@ const installInvocation = (
       : method === "cargo" && version !== undefined
       ? ["install", packageName, "--version", version, "--locked"]
       : ["install", packageName];
-    const runInstaller = (arguments_: ReadonlyArray<string>) =>
-      machine.runProcess({
+    const runInstaller = (arguments_: ReadonlyArray<string>) => {
+      const execution = machine.runProcess({
         executable: installer.executable,
         arguments: [...installer.arguments, ...arguments_],
         timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
@@ -1856,6 +1856,7 @@ const installInvocation = (
             "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY",
             "NETRC", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE",
             "SSL_CERT_DIR", "PYTHONHTTPSVERIFY", "PYTHON_KEYRING_BACKEND", "KEYRING_BACKEND",
+            "VIRTUAL_ENV", "CONDA_PREFIX",
           ]
           : undefined,
         environmentUnsetPrefixes: method === "uv"
@@ -1873,6 +1874,10 @@ const installInvocation = (
             : `installer ${method} exited with ${String(result.exitCode)}; its last output lines:\n${diagnostic}`,
         }));
       }));
+      // Wait for the bounded subprocess to close before releasing its venv.
+      // Cancellation is observed between commands; external installs are not rolled back.
+      return method === "uv" ? Effect.uninterruptible(execution) : execution;
+    };
     if (method !== "uv") {
       yield* runInstaller(arguments_);
       return;
@@ -1882,51 +1887,63 @@ const installInvocation = (
     // installed-metadata check enforces the full range, including dependencies.
     // Resolve into a private disposable venv before exposing a managed tool.
     const directories = yield* machine.userDirectories();
-    const staging = yield* machine.normalizePath({
-      path: join(directories.cache.absolute, "canonfig", "uv-preparation", temporaryEntryName()),
+    const preparation = yield* machine.normalizePath({
+      path: join(directories.cache.absolute, "canonfig", "uv-preparation", sha256Hex(context.run)),
     });
-    yield* machine.ensureDirectory({ path: staging, mode: 0o700 });
+    const staging = yield* machine.normalizePath({
+      path: join(preparation.absolute, temporaryEntryName()),
+    });
     const venv = join(staging.absolute, temporaryEntryName());
     const venvPython = process.platform === "win32"
       ? join(venv, "Scripts", "python.exe")
       : join(venv, "bin", "python");
     const cleanup = machine.removeTemporaryEntries({ directory: staging, recursive: false }).pipe(
       Effect.andThen(machine.removeEmptyDirectory({ path: staging })),
-      Effect.orDie,
+      Effect.andThen(machine.removeEmptyDirectory({ path: preparation }).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          /\b(?:ENOENT|ENOTEMPTY)\b/u.test(error.message) ? Effect.void : Effect.fail(error)
+        ),
+      )),
     );
-    yield* Effect.gen(function*() {
-      const found = yield* runInstaller(["python", "find", "--no-config", "--no-python-downloads"]);
-      const python = new TextDecoder().decode(found.standardOutput).trim();
-      if (!isAbsolute(python) || python.includes("\n") || python.includes("\r") || python.includes("\0")) {
-        return yield* new ActionExecutionError({
-          action: context.action.id,
-          message: "uv did not identify one installed Python interpreter; no tool was installed",
+    yield* Effect.acquireUseRelease(
+      machine.ensureDirectory({ path: staging, mode: 0o700 }),
+      () => Effect.gen(function*() {
+        const found = yield* runInstaller([
+          "python", "find", "--system", "--no-project", "--no-config", "--no-python-downloads",
+        ]);
+        const python = new TextDecoder().decode(found.standardOutput).trim();
+        if (!isAbsolute(python) || python.includes("\n") || python.includes("\r") || python.includes("\0")) {
+          return yield* new ActionExecutionError({
+            action: context.action.id,
+            message: "uv did not identify one installed Python interpreter; no tool was installed",
+          });
+        }
+        yield* runInstaller([
+          "venv", venv, "--python", python, "--no-config", "--no-python-downloads",
+        ]);
+        yield* runInstaller([
+          "pip", "install", `${packageName}==${version!}`, "--python", venvPython,
+          ...(buildPolicy.mode === "scripts-disabled" ? ["--no-build"] : []),
+          "--no-python-downloads", "--no-config", `--default-index=${pythonIndex!}`,
+        ]);
+        yield* runInstaller([
+          "pip", "check", "--python", venvPython, "--offline", "--no-config", "--no-python-downloads",
+        ]);
+        const frozen = yield* runInstaller([
+          "pip", "freeze", "--python", venvPython, "--offline", "--no-config", "--no-python-downloads",
+        ]);
+        const constraints = yield* machine.normalizePath({
+          path: join(staging.absolute, temporaryEntryName()),
         });
-      }
-      yield* runInstaller([
-        "venv", venv, "--python", python, "--no-config", "--no-python-downloads",
-      ]);
-      yield* runInstaller([
-        "pip", "install", `${packageName}==${version!}`, "--python", venvPython,
-        ...(buildPolicy.mode === "scripts-disabled" ? ["--no-build"] : []),
-        "--no-python-downloads", "--no-config", `--default-index=${pythonIndex!}`,
-      ]);
-      yield* runInstaller([
-        "pip", "check", "--python", venvPython, "--offline", "--no-config", "--no-python-downloads",
-      ]);
-      const frozen = yield* runInstaller([
-        "pip", "freeze", "--python", venvPython, "--offline", "--no-config", "--no-python-downloads",
-      ]);
-      const constraints = yield* machine.normalizePath({
-        path: join(staging.absolute, temporaryEntryName()),
-      });
-      yield* machine.atomicWrite({ path: constraints, content: frozen.standardOutput, mode: 0o600 });
-      // Reuse the validated interpreter and prepared cache, not a fresh online
-      // resolution that could introduce an unchecked package or dependency.
-      yield* runInstaller([
-        ...arguments_, "--python", python, "--offline", "--constraints", constraints.absolute,
-      ]);
-    }).pipe(Effect.ensuring(cleanup));
+        yield* machine.atomicWrite({ path: constraints, content: frozen.standardOutput, mode: 0o600 });
+        // Reuse the validated interpreter and prepared cache, not a fresh online
+        // resolution that could introduce an unchecked package or dependency.
+        yield* runInstaller([
+          ...arguments_, "--python", python, "--offline", "--constraints", constraints.absolute,
+        ]);
+      }),
+      () => cleanup,
+    );
   });
 
 /** Prepare deterministic work. Preparation stores rollback material before owned-file mutation. */

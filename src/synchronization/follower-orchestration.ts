@@ -1674,7 +1674,7 @@ export const abandonFollowerRun = Effect.fn(
   // Canonfig's own temporary files from the killed run go first, so the next
   // run does not see them as foreign content. A failure here leaves the run
   // open with its evidence.
-  yield* removeRunTemporaryEntries(recovery.run.plan.actions);
+  yield* removeRunTemporaryEntries(recovery.run.plan.actions, recovery.run.id);
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
   );

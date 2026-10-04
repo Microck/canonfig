@@ -13,6 +13,7 @@ import {
   statSync,
   symlinkSync,
   writeFileSync,
+  watch,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile, type statfs } from "node:fs/promises";
@@ -65,6 +66,7 @@ import {
   defaultSynchronizationExecutionLimits,
   executeSynchronizationAction,
   executionContexts,
+  removeRunTemporaryEntries,
   preflightDisk,
 } from "../../src/synchronization/executor.ts";
 import {
@@ -820,6 +822,65 @@ if (args[0] === "python" && args[1] === "find") {
       return yield* prepared.execute;
     }).pipe(Effect.provide(layer), Effect.flip));
     expect(existsSync(managed)).toBe(false);
+    expect(readdirSync(join(home, ".cache", "canonfig", "uv-preparation"))).toEqual([]);
+  });
+
+  it("recovers a killed Python preparation without touching another run's live preparation", async () => {
+    const root = temporaryDirectory();
+    const home = join(root, "home");
+    const context = realUvInstallerContext(root, "pyinstaller");
+    const cache = join(home, ".cache", "canonfig", "uv-preparation");
+    const abandoned = join(cache, sha256Hex(context.run));
+    const other = join(cache, sha256Hex("another-live-run"), ".cf-111111111111.tmp");
+    mkdirSync(join(abandoned, ".cf-222222222222.tmp", "venv"), { recursive: true });
+    writeFileSync(join(abandoned, ".cf-222222222222.tmp", "venv", "METADATA"), "Requires-Python: <3.11\n");
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(other, "METADATA"), "another run's installed metadata");
+    const layer = linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }] });
+    await Effect.runPromise(
+      removeRunTemporaryEntries([context.action], context.run).pipe(Effect.provide(layer)),
+    );
+    expect(existsSync(abandoned)).toBe(false);
+    expect(readFileSync(join(other, "METADATA"), "utf8")).toBe("another run's installed metadata");
+  });
+
+  it("waits for a bounded preparation process to close before cancellation removes its venv", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "uv"), `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "python") process.stdout.write(process.execPath + "\\n");
+else if (args[0] === "venv") fs.mkdirSync(args[1], { recursive: true });
+else if (args[0] === "pip" && args[1] === "install") {
+  fs.writeFileSync(${JSON.stringify(join(root, "started"))}, String(process.pid));
+  setInterval(() => {}, 1000);
+} else process.exit(42);
+`);
+    chmodSync(join(bin, "uv"), 0o755);
+    const home = join(root, "home");
+    const context = realUvInstallerContext(root, "pyinstaller");
+    const bounded = { ...context, limits: { ...context.limits, processTimeoutMilliseconds: 500 } };
+    let signalReady!: () => void;
+    const ready = new Promise<void>((resolve) => { signalReady = resolve; });
+    const watcher = watch(root, (_event, filename) => {
+      if (filename === "started") signalReady();
+    });
+    try {
+      await Effect.runPromise(Effect.gen(function*() {
+        const prepared = yield* prepareResourceAction(bounded);
+        const fiber = yield* Effect.forkChild(prepared.execute);
+        yield* Effect.promise(() => ready);
+        yield* Fiber.interrupt(fiber);
+      }).pipe(Effect.provide(linuxMachineStateLayer({
+        environment: [{ name: "HOME", value: home }, { name: "PATH", value: bin }],
+      }))));
+    } finally {
+      watcher.close();
+    }
+    const pid = Number(readFileSync(join(root, "started"), "utf8"));
+    expect(() => process.kill(pid, 0)).toThrow();
     expect(readdirSync(join(home, ".cache", "canonfig", "uv-preparation"))).toEqual([]);
   });
 

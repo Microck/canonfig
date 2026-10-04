@@ -477,7 +477,7 @@ export const recoverSynchronizationPlan = (
     }
     // A killed run leaves its temporary files behind. A directory that still
     // holds one cannot be restored (rmdir fails with ENOTEMPTY).
-    yield* removeRunTemporaryEntries(plan.actions).pipe(
+    yield* removeRunTemporaryEntries(plan.actions, recovery.run.id).pipe(
       Effect.mapError((error) =>
         integrityError(recovery, `cannot remove temporary files of the interrupted run: ${String(error)}`)
       ),
