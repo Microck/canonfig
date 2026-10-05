@@ -585,19 +585,17 @@ const planAppendLocal = (context: ResourcePlanningContext): ReadonlyArray<Resour
   if (observed.managedSourceDigest === undefined) {
     const draft = writeFile(context, desired.digest, false, desired.mode);
     const current = observedDigest(context);
-    if (current !== undefined && current !== desired.digest) {
+    if (current !== undefined) {
       return [{
         kind: "write-file",
         detail: {
           ...draft.detail,
-          adoptionNotice: "First adoption preserves the entire differing file as local text. Canonfig cannot tell an old shared rule from a deliberate local addition. Inspect exact Source and retained local text before applying: canonfig sync --plan --review-local",
+          adoptionNotice: "First adoption preserves the entire existing file as local text. Matching Source bytes do not establish ownership. Inspect exact Source and retained local text before applying: canonfig sync --plan --review-local",
           retainedLocalDigest: current,
         },
       }];
     }
-    return [current === undefined ? draft : {
-      ...draft, detail: { ...draft.detail, retainedLocalDigest: current },
-    }];
+    return [draft];
   }
   const sourceObserved = { ...observed, digest: observed.managedSourceDigest };
   // Reuse the file permission and three-way drift rules with the owned payload.

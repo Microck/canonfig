@@ -237,7 +237,7 @@ describe("production follower orchestration", () => {
     const publish = async (content?: string) => {
       sequence += 1;
       const profile: MachineProfile = {
-        id: profileId, version: 2, name: "Local instructions", groups: [],
+        id: profileId, version: 2, name: `Local instructions ${sequence}`, groups: [],
         resources: content === undefined ? [] : [{
           id: resourceId, kind: "file", policy: "append-local", target, dependsOn: [],
           spec: { kind: "file", content, executable: false, mode: 0o600 },
@@ -428,9 +428,7 @@ describe("production follower orchestration", () => {
     });
     await rm(dirname(emptyPlan.adoptionReviews![0]!.path), { recursive: true });
     await publish("Source three");
-    // Identical Source text introduces ownership without a local copy.
     await writeFile(target, "Source three");
-    expect((await sync("plan", true)).adoptionReviews).toEqual([]);
     const refusedEqualAdoption = await Effect.runPromise(
       synchronizeFollower(followerDatabase, "apply").pipe(Effect.provide(changedApplication)),
     );
@@ -438,7 +436,12 @@ describe("production follower orchestration", () => {
     expect(await readFile(target, "utf8")).toBe("Changed before first adoption\n");
     await writeFile(target, "Source three");
     expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
-    expect(await text()).toEqual({ kind: "managed", source: "Source three", local: "" });
+    await publish("Source four");
+    expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
+    await publish();
+    expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(await readFile(target, "utf8")).toBe("Source three");
+    await publish("Source three");
     await unlink(target);
     expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
     expect(await text()).toEqual({ kind: "managed", source: "Source three", local: "" });

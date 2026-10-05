@@ -188,11 +188,6 @@ describe("append-local text contract", () => {
       .toEqual({ kind: "managed", source: "new Source", local });
   });
 
-  it("does not duplicate identical adopted text", () => {
-    expect(parseTextComposition(composeTextFile("same\n", { kind: "unmanaged", local: "same\n" })))
-      .toEqual({ kind: "managed", source: "same\n", local: "" });
-  });
-
   it.each([
     sourceTextStart,
     sourceTextEnd,

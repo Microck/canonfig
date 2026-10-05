@@ -292,11 +292,13 @@ Follower-local instructions
 ```
 
 Edit local instructions below the closing marker. On first adoption, Canonfig
-preserves a differing existing file in full as local text. If it exactly matches
-Source, Canonfig adds the markers without duplicating the text. A missing file
-starts with no local additions. Make a backup before choosing a new policy.
+preserves the entire existing file as local text, even when it exactly matches
+Source. Matching bytes do not prove Source ownership: the initial file therefore
+contains both the marked Source text and the retained local copy. Source updates
+or retirement preserve that original local copy. A missing file starts with no
+local additions. Make a backup before choosing a new policy.
 
-Before first adoption of a differing file, run:
+Before first adoption of any existing file, run:
 
 ```sh
 canonfig sync --plan --review-local
@@ -343,7 +345,7 @@ content before replacing a file, but it does not lock external editors.
 Source content cannot contain these reserved markers or NUL characters, and
 symlinks and executable files cannot use this policy.
 
-This is text composition, not a semantic merge. A differing file adopted for the
+This is text composition, not a semantic merge. An existing file adopted for the
 first time can contain older shared rules as well as local rules. Canonfig does
 not guess which to discard or which conflicting instruction takes precedence.
 Review that local text once; it remains follower-owned and is never uploaded.

@@ -52,17 +52,14 @@ export const parseTextComposition = (bytes: Uint8Array): TextComposition => {
 };
 
 /**
- * First adoption retains the whole differing file. Without an owned baseline,
- * a diff cannot distinguish an old shared rule from a deliberate local one.
+ * First adoption retains the whole existing file, even when it equals Source.
+ * Without an owned baseline, a diff cannot distinguish old shared from local text.
  * Once marked, only the explicit local suffix survives Source replacement.
  */
 export const composeTextFile = (
   source: string,
   current?: TextComposition,
 ): Uint8Array => {
-  const local = current === undefined
-    || (current.kind === "unmanaged" && current.local === source)
-    ? ""
-    : current.local;
+  const local = current?.local ?? "";
   return encoder.encode(`${sourceTextStart}\n${source}\n${sourceTextEnd}\n\n${local}`);
 };

@@ -1465,7 +1465,7 @@ const writeAdoptionReviews = Effect.fn("FollowerOrchestration.writeAdoptionRevie
         sourceDigest: detail.digest,
         retainedLocalDigest: detail.retainedLocalDigest,
         sourceAddition: source,
-        retainedLocal: current.local === source ? "" : current.local,
+        retainedLocal: current.local,
         proposedText: decoder.decode(proposed),
       };
       yield* machine.atomicWrite({
