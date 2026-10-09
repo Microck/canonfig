@@ -10,6 +10,9 @@ pins are not migrated by this procedure.
 
 ## Changes
 
+- The website dependency graph uses source-map-js 1.2.2, addressing the
+  indexed-source-map denial-of-service advisory
+  [GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q).
 - Native file sources publish raw bytes as immutable per-file SHA-256 blobs
   rather than embedding a whole resource's file content in signed JSON.
   Signed metadata carries each byte digest and length. File, directory, and
