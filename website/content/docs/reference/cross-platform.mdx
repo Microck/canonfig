@@ -37,6 +37,30 @@ so any file name the filesystem accepts can be a target. Symlink, permission,
 cancellation, timeout, and output-limit behavior is implemented by each real
 platform adapter and returns typed errors when unavailable.
 
+### Windows path length and symbolic links
+
+Unless Windows long paths are enabled, Windows file calls and `icacls` stop at
+MAX_PATH (260 characters including the terminator), and a new directory must
+leave room for an 8.3 name. Canonfig reads `LongPathsEnabled` under
+`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`; a missing or unreadable
+value counts as disabled. `canonfig sync --plan` and the apply preflight
+measure each target with the temporary names a write adds and refuse an
+over-limit target before anything is recorded or created:
+
+```powershell
+# As administrator; takes effect for new sessions.
+Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1
+```
+
+Or shorten the target. If an apply fails after creating new parent directories
+for a target, rollback and `canonfig recover` remove the directories that run
+created, deepest first and only while they are empty. Directories that
+existed before the run, and anything else in them, stay.
+
+Creating a symbolic link on Windows needs Developer Mode or the
+`SeCreateSymbolicLinkPrivilege` user right ("Create symbolic links"). Without
+either, the action fails with a message naming both.
+
 <Callout title="Equivalent does not mean identical" type="info">
   A resource can have the same desired capability on all platforms while using
   different package names, scheduler definitions, credential providers, path

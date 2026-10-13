@@ -2092,6 +2092,9 @@ export const linuxMachineStateLayer = (
 
       return MachineState.of({
         normalizePath,
+        // PATH_MAX is far beyond any target; each name's 255-byte limit is
+        // already met by Canonfig's fixed-length temporary names.
+        pathLengthLimit: () => Effect.succeed(undefined),
         userDirectories,
         ensureDirectory,
         atomicWrite,

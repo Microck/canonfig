@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -152,6 +152,74 @@ describe("setup controller decisions", () => {
           );
           expect(preflight.credentialStorage.kind).toBe("unavailable");
         }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // secret-tool as libsecret runs it: with no Secret Service provider on the
+  // bus every operation fails; with one, items persist in FAKE_SECRET_STORE.
+  const fakeSecretTool = `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const [operation, ...rest] = process.argv.slice(2);
+if (process.env.FAKE_SECRET_PROVIDER !== "running") {
+  process.stderr.write("secret-tool: The name org.freedesktop.secrets was not provided by any .service files\\n");
+  process.exit(1);
+}
+const attributes = operation === "store" ? rest.slice(1) : rest;
+const item = path.join(process.env.FAKE_SECRET_STORE, Buffer.from(attributes.join("=")).toString("hex"));
+if (operation === "store") { fs.writeFileSync(item, fs.readFileSync(0)); process.exit(0); }
+if (!fs.existsSync(item)) process.exit(1);
+if (operation === "lookup") { process.stdout.write(fs.readFileSync(item)); process.exit(0); }
+if (operation === "clear") { fs.rmSync(item); process.exit(0); }
+process.exit(2);
+`;
+
+  it.runIf(process.platform === "linux").each(["stopped", "running"] as const)(
+    "proves Source key storage with a disposable probe, not provider presence (provider %s)",
+    async (provider) => {
+      const root = mkdtempSync(join(tmpdir(), "canonfig-setup-secret-service-"));
+      const home = join(root, "home");
+      const bin = join(root, "bin");
+      const store = join(root, "store");
+      mkdirSync(home);
+      mkdirSync(bin);
+      mkdirSync(store);
+      writeFileSync(join(bin, "secret-tool"), fakeSecretTool, { mode: 0o755 });
+      const layer = linuxMachineStateLayer({
+        environment: [
+          { name: "HOME", value: home },
+          { name: "PATH", value: `${bin}:${dirname(process.execPath)}` },
+          // A reachable bus address and secret-tool on PATH: provider presence.
+          { name: "DBUS_SESSION_BUS_ADDRESS", value: "unix:path=/nonexistent/canonfig-test-bus" },
+          { name: "FAKE_SECRET_STORE", value: store },
+          { name: "FAKE_SECRET_PROVIDER", value: provider },
+        ],
+        credentialPolicy: { kind: "secure-store" },
+      });
+      try {
+        if (provider === "stopped") {
+          const error = await Effect.runPromise(Effect.flip(runSetupPreflight("source").pipe(Effect.provide(layer))));
+          expect(error).toMatchObject({ _tag: "SetupError", category: "prerequisite" });
+          expect(error.message).toContain("cannot be a Source");
+          expect(error.message).toContain("did not accept a disposable write");
+          expect(error.message).toContain("before initialization");
+          expect(error.recovery).toContain("Secret Service provider");
+          // Narrow scopes create no keys and do not need the probe.
+          const narrow = await Effect.runPromise(runSetupPreflight("source", "cli-only").pipe(Effect.provide(layer)));
+          expect(narrow.credentialStorage).toMatchObject({ verification: "provider-presence" });
+        } else {
+          const preflight = await Effect.runPromise(runSetupPreflight("source").pipe(Effect.provide(layer)));
+          expect(preflight.credentialStorage).toEqual({
+            kind: "secure-noninteractive",
+            provider: "secret-service",
+            verification: "session-probe",
+          });
+        }
+        // The probe item never outlives the preflight.
+        expect(readdirSync(store)).toEqual([]);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

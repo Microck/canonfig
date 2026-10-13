@@ -106,6 +106,19 @@ const StoredFileSchema = Schema.Union([
   }),
 ]);
 
+/**
+ * An ancestor directory of a target that did not exist when the snapshot was
+ * taken. The write creates it; rollback removes it again, deepest first and
+ * only while it is empty. A directory that existed before is never recorded,
+ * so it is never removed.
+ */
+const CreatedParentSchema = Schema.Struct({
+  path: Schema.NonEmptyString,
+  state: Schema.Literal("created-parent"),
+});
+
+const RollbackEntrySchema = Schema.Union([StoredFileSchema, CreatedParentSchema]);
+
 /** Derived locally, never accepted as a path from persisted metadata. */
 const backupFile = (reference: string, target: string): string =>
   `${reference}.${sha256Hex(target)}.bin`;
@@ -456,6 +469,111 @@ const deepestPathFirst = <Value>(
     )
     .map(({ value }) => value);
 
+type CreatedParent = typeof CreatedParentSchema.Type;
+
+const parentOf = (path: MachinePath): MachinePath => ({
+  platform: path.platform,
+  absolute: path.platform === "windows" ? win32.dirname(path.absolute) : dirname(path.absolute),
+});
+
+/** Every proper ancestor of a path, nearest first, as plain path text. */
+const ancestorsOf = (path: MachinePath): ReadonlyArray<string> => {
+  const ancestors: Array<string> = [];
+  for (let current = path, parent = parentOf(path); parent.absolute !== current.absolute;
+    current = parent, parent = parentOf(parent)) {
+    ancestors.push(parent.absolute);
+  }
+  return ancestors;
+};
+
+/**
+ * The paths an action creates parents for: its managed root, whose own
+ * ancestors the root snapshot does not cover, or each unrooted target.
+ */
+const outermostTargets = (
+  paths: ReadonlyArray<MachinePath>,
+  root: MachinePath | undefined,
+): ReadonlyArray<MachinePath> => root === undefined ? paths : [root];
+
+/**
+ * Ancestors of the outermost targets that do not exist yet. Writing a target
+ * creates them, so rollback must remove them again. The walk stops at the
+ * first ancestor that exists in any form: that one and everything above it
+ * belonged to the machine before the run.
+ */
+const missingAncestors = (
+  targets: ReadonlyArray<MachinePath>,
+): Effect.Effect<ReadonlyArray<CreatedParent>, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const missing = new Map<string, CreatedParent>();
+    for (const target of targets) {
+      for (let ancestor = parentOf(target); ; ancestor = parentOf(ancestor)) {
+        if (missing.has(machinePathKey(ancestor))) break;
+        const present = yield* machine.inspectPath(ancestor).pipe(
+          Effect.as(true),
+          Effect.catchTag("MachineFilesystemError", (error) =>
+            error.message.includes("ENOENT")
+              ? Effect.succeed(false)
+              // ENOTDIR: something above is not a directory, so the write
+              // cannot create this one either.
+              : error.message.includes("ENOTDIR")
+              ? Effect.succeed(true)
+              : Effect.fail(error)
+          ),
+        );
+        if (present) break;
+        missing.set(machinePathKey(ancestor), { path: ancestor.absolute, state: "created-parent" });
+        if (parentOf(ancestor).absolute === ancestor.absolute) break;
+      }
+    }
+    return deepestPathFirst([...missing.values()], (parent) => parent.path);
+  });
+
+/**
+ * Remove the parents a write created, deepest first. A parent that holds
+ * anything but Canonfig's own temporary entries, or that is no longer a plain
+ * directory, is kept along with everything above it. After a crash, an
+ * interrupted parent publication can also leave its staging directory in the
+ * nearest pre-existing ancestor; recovery removes that one too.
+ */
+const removeCreatedParents = (
+  parents: ReadonlyArray<CreatedParent>,
+  afterCrash: boolean,
+): Effect.Effect<void, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    if (parents.length === 0) return;
+    const machine = yield* MachineState;
+    const deepest = deepestPathFirst(parents, (parent) => parent.path);
+    for (const parent of deepest) {
+      const path = yield* machine.normalizePath({ path: parent.path });
+      const kind = yield* machine.inspectPath(path).pipe(
+        Effect.map((object) => object.kind),
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? Effect.succeed(undefined) : Effect.fail(error)
+        ),
+      );
+      if (kind === undefined) continue;
+      if (kind !== "directory") return;
+      yield* machine.removeTemporaryEntries({ directory: path, recursive: false });
+      const removed = yield* machine.removeEmptyDirectory({ path }).pipe(
+        Effect.as(true),
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          /\b(?:ENOTEMPTY|EEXIST)\b/u.test(error.message)
+            ? Effect.succeed(false)
+            : /\bENOENT\b/u.test(error.message)
+            ? Effect.succeed(true)
+            : Effect.fail(error)
+        ),
+      );
+      if (!removed) return;
+    }
+    if (afterCrash) {
+      const outermost = yield* machine.normalizePath({ path: deepest.at(-1)!.path });
+      yield* machine.removeTemporaryEntries({ directory: parentOf(outermost), recursive: false });
+    }
+  });
+
 type StoredDirectory = Extract<StoredFile, { readonly state: "directory" }>;
 
 /**
@@ -603,13 +721,15 @@ const captureRollback = (
             return entry;
           }),
     );
+    const createdParents = yield* missingAncestors(outermostTargets(paths, root));
     yield* machine.atomicWrite({
       path: rollbackPath,
-      content: encoder.encode(JSON.stringify(stored)),
+      content: encoder.encode(JSON.stringify([...stored, ...createdParents])),
     });
-    const restore = context.resource.policy === "append-local"
+    const restore = (context.resource.policy === "append-local"
       ? restoreAppendLocal(context, stored, rollbackPath.absolute)
-      : restoreStoredFiles(stored, rollbackPath.absolute, root);
+      : restoreStoredFiles(stored, rollbackPath.absolute, root)
+    ).pipe(Effect.andThen(removeCreatedParents(createdParents, false)));
     return { reference: rollbackPath.absolute, stored, restore };
   });
 
@@ -665,7 +785,11 @@ const loadRollbackMaterial = (
   context: ResourceExecutionContext,
   reference: string,
 ): Effect.Effect<
-  { readonly stored: ReadonlyArray<StoredFile>; readonly root: MachinePath | undefined },
+  {
+    readonly stored: ReadonlyArray<StoredFile>;
+    readonly createdParents: ReadonlyArray<CreatedParent>;
+    readonly root: MachinePath | undefined;
+  },
   SynchronizationExecutionInputError | MachineStateError,
   MachineState
 > =>
@@ -687,10 +811,25 @@ const loadRollbackMaterial = (
       });
     }
     const expectedPaths = yield* rollbackPaths(context);
+    const root = context.action.detail.kind === "mirror-directory"
+      || (
+        context.action.detail.kind === "remove-resource"
+        && (context.resource.kind === "directory" || context.resource.kind === "skill")
+      )
+      ? yield* targetPath(context.action.detail.target)
+      : undefined;
+    // A created parent can only be an ancestor of the root or of an unrooted
+    // target; anything else in the material is not this action's to remove.
+    const allowedParents = new Set(
+      outermostTargets(expectedPaths, root).flatMap(ancestorsOf),
+    );
     // Only metadata is inline. Allow escaped paths and native symlink text,
     // independently of the size of any regular-file preimage.
-    const maximumBytes = expectedPaths.reduce((total, path) => total
-      + Buffer.byteLength(JSON.stringify(path.absolute)) + 256 * 1024, 2);
+    const maximumBytes = [...allowedParents].reduce(
+      (total, path) => total + Buffer.byteLength(JSON.stringify(path)) + 64,
+      expectedPaths.reduce((total, path) => total
+        + Buffer.byteLength(JSON.stringify(path.absolute)) + 256 * 1024, 2),
+    );
     if (!Number.isSafeInteger(maximumBytes)) {
       return yield* new InvalidExecutionPlanError({
         message: `rollback material is too large for action ${context.action.id}`,
@@ -700,8 +839,8 @@ const loadRollbackMaterial = (
       path: actualReference,
       maximumBytes,
     });
-    const stored = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(Schema.Array(StoredFileSchema)),
+    const entries = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Schema.Array(RollbackEntrySchema)),
     )(decoder.decode(bytes)).pipe(
       Effect.mapError((error) =>
         new InvalidExecutionPlanError({
@@ -709,24 +848,21 @@ const loadRollbackMaterial = (
         })
       ),
     );
+    const stored = entries.filter((entry): entry is StoredFile => entry.state !== "created-parent");
+    const createdParents = entries.filter((entry): entry is CreatedParent => entry.state === "created-parent");
     const allowed = new Set(expectedPaths.map((path) => path.absolute));
     if (
       stored.length !== allowed.size
       || stored.some((entry) => !allowed.has(entry.path))
       || new Set(stored.map((entry) => entry.path)).size !== stored.length
+      || createdParents.some((entry) => !allowedParents.has(entry.path))
+      || new Set(createdParents.map((entry) => entry.path)).size !== createdParents.length
     ) {
       return yield* new InvalidExecutionPlanError({
         message: `rollback material targets do not match action ${context.action.id}`,
       });
     }
-    const root = context.action.detail.kind === "mirror-directory"
-      || (
-        context.action.detail.kind === "remove-resource"
-        && (context.resource.kind === "directory" || context.resource.kind === "skill")
-      )
-      ? yield* targetPath(context.action.detail.target)
-      : undefined;
-    return { stored, root };
+    return { stored, createdParents, root };
   });
 
 /** Restore a persisted, owned-file rollback snapshot. */
@@ -739,12 +875,13 @@ export const restoreRollbackReference = (
   MachineState
 > =>
   Effect.gen(function*() {
-    const { stored, root } = yield* loadRollbackMaterial(context, reference);
+    const { stored, createdParents, root } = yield* loadRollbackMaterial(context, reference);
     if (context.resource.policy === "append-local") {
       yield* restoreAppendLocal(context, stored, reference);
     } else {
       yield* restoreStoredFiles(stored, reference, root);
     }
+    yield* removeCreatedParents(createdParents, true);
   });
 
 /** What one action leaves at one path. `undefined` means it leaves it as it was. */
@@ -1841,6 +1978,14 @@ const installInvocation = (
         "tool",
         "install",
         version === undefined ? packageName : `${packageName}==${version}`,
+        // Every planned uv install is a fresh install or a repair: the
+        // executable is missing, the version differs, or the qualified binding
+        // is not this one. Without --reinstall, uv reports a tool it still
+        // lists at the same version as "already installed" and exits 0 without
+        // restoring a deleted entrypoint, so verification failed on every
+        // apply. --reinstall installs normally when the tool is absent. It is
+        // not --force, which would also overwrite an executable uv does not own.
+        "--reinstall",
         ...(buildPolicy.mode === "scripts-disabled" ? ["--no-build"] : []),
         "--no-python-downloads",
         "--no-config",

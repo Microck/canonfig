@@ -18,12 +18,14 @@ import type {
   SynchronizationOutcome,
 } from "../domain/synchronization.ts";
 import { requireFreeSpace, type DiskRequirement } from "../machine/disk-space.ts";
-import type {
-  InsufficientDiskError,
-  MachineStateError,
+import {
+  type InsufficientDiskError,
+  type MachineStateError,
+  PathTooLongError,
 } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachinePath } from "../machine/machine-state.types.ts";
+import { mutationPathLengths, type PathMutationKind } from "../machine/temporary-entries.ts";
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import { redactKnownValues } from "../cli/redaction.ts";
 import {
@@ -877,6 +879,89 @@ export const preflightDisk = (
       requirements.push({ path: directories.cache.absolute, bytes: snapshotBytes });
     }
     yield* requireFreeSpace(requirements, statfsImpl);
+  });
+
+/**
+ * Refuse a plan that would hand Windows a path it cannot take. With long
+ * paths disabled, Win32 file calls and icacls stop at MAX_PATH (260 with the
+ * terminator) and a new directory must leave room for an 8.3 name (12 fewer).
+ * A file target beyond that used to fail partway through the apply, after
+ * protected parents had already been created one level at a time. Each path
+ * is measured with the staging and guard names the writer adds. A path that
+ * cannot be resolved is not a blocker: the run itself reports it precisely.
+ */
+export const preflightPathLengths = (
+  actions: ReadonlyArray<PlannedAction>,
+  desired: SynchronizationRunInput["revision"]["desired"],
+): Effect.Effect<void, PathTooLongError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const limit = yield* machine.pathLengthLimit();
+    if (limit === undefined) return;
+    // Lengths below exclude the terminator, which the limit includes.
+    const maximumFile = limit.maximum - 1;
+    const maximumDirectory = maximumFile - (limit.longPathsEnabled ? 0 : 12);
+    const desiredByResource = new Map(desired.map((entry) => [entry.resource, entry.desired]));
+    const resolve = (path: string, base?: MachinePath) =>
+      machine.normalizePath({ path, base }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    const check = (path: MachinePath | undefined, kind: PathMutationKind, guarded: boolean) =>
+      Effect.gen(function*() {
+        if (path === undefined) return;
+        const lengths = mutationPathLengths(path.absolute, path.platform === "windows" ? win32 : posix, kind, guarded);
+        const fileExcess = lengths.file - maximumFile;
+        const directoryExcess = lengths.directory - maximumDirectory;
+        if (fileExcess <= 0 && directoryExcess <= 0) return;
+        const [requiredLength, maximumLength, what] = fileExcess >= directoryExcess
+          ? [lengths.file, maximumFile, "file paths"]
+          : [lengths.directory, maximumDirectory, "new directory paths"];
+        return yield* new PathTooLongError({
+          path: path.absolute,
+          requiredLength,
+          maximumLength,
+          message: `${path.absolute} needs ${requiredLength} characters including Canonfig's staging names, `
+            + `but this machine accepts ${what} of at most ${maximumLength} characters`
+            + `${limit.longPathsEnabled ? "" : ` because Windows long paths are not enabled (MAX_PATH is ${limit.maximum})`}. `
+            + "Nothing was changed. "
+            + (limit.longPathsEnabled
+              ? "Choose a shorter target path."
+              : "Enable Windows long paths (set the DWORD LongPathsEnabled to 1 under "
+                + "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem, then start a new session) "
+                + "or choose a shorter target path."),
+        });
+      });
+    for (const action of actions) {
+      const detail = action.detail;
+      if (detail.kind === "write-file" || detail.kind === "write-config") {
+        yield* check(yield* resolve(detail.target), "write", false);
+      } else if (detail.kind === "mirror-directory") {
+        const root = yield* resolve(detail.target);
+        if (root === undefined) continue;
+        yield* check(root, "directory", false);
+        const resource = desiredByResource.get(action.resource);
+        const directories = new Set(
+          resource?.kind === "directory" || resource?.kind === "skill"
+            ? (resource.directories ?? []).map((entry) => entry.path)
+            : [],
+        );
+        for (const relative of directories) {
+          yield* check(yield* resolve(relative, root), "directory", true);
+        }
+        for (const relative of detail.adds) {
+          if (directories.has(relative)) continue;
+          yield* check(yield* resolve(relative, root), "write", true);
+        }
+        for (const relative of detail.removes) {
+          yield* check(yield* resolve(relative, root), "remove", true);
+        }
+      } else if (detail.kind === "remove-resource") {
+        const target = yield* resolve(detail.target);
+        if (target === undefined) continue;
+        yield* check(target, "remove", false);
+        for (const relative of detail.paths) {
+          yield* check(yield* resolve(relative, target), "remove", true);
+        }
+      }
+    }
   });
 
 /**

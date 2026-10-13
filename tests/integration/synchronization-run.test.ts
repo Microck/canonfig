@@ -49,6 +49,7 @@ import type {
   SynchronizationOutcome,
 } from "../../src/domain/synchronization.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { MachineFilesystemError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
@@ -68,6 +69,7 @@ import {
   executionContexts,
   removeRunTemporaryEntries,
   preflightDisk,
+  preflightPathLengths,
 } from "../../src/synchronization/executor.ts";
 import {
   getConfigPath,
@@ -823,6 +825,66 @@ if (args[0] === "python" && args[1] === "find") {
     }).pipe(Effect.provide(layer), Effect.flip));
     expect(existsSync(managed)).toBe(false);
     expect(readdirSync(join(home, ".cache", "canonfig", "uv-preparation"))).toEqual([]);
+  });
+
+  it("reinstalls a uv tool whose executable was deleted while uv still lists it", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    const toolBin = join(root, "tool-bin");
+    const state = join(root, "uv-state.json");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(toolBin, { recursive: true });
+    // A stateful stand-in with uv's own semantics: `tool install` of a tool it
+    // already lists at that version is a no-op that exits 0 and leaves a
+    // deleted entrypoint missing, unless --reinstall (or --force) is passed.
+    writeFileSync(join(bin, "uv"), `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const state = ${JSON.stringify(state)};
+const entrypoint = path.join(${JSON.stringify(toolBin)}, "uv-tool");
+const installed = fs.existsSync(state) ? JSON.parse(fs.readFileSync(state, "utf8")) : {};
+if (args[0] === "python" && args[1] === "find") {
+  process.stdout.write(process.execPath + "\\n");
+} else if (args[0] === "venv") {
+  fs.mkdirSync(args[1], { recursive: true });
+} else if (args[0] === "pip") {
+  if (args[1] === "freeze") process.stdout.write("pyinstaller==1.2.3\\n");
+} else if (args[0] === "tool" && args[1] === "list") {
+  for (const [name, version] of Object.entries(installed)) process.stdout.write(name + " v" + version + "\\n- uv-tool\\n");
+} else if (args[0] === "tool" && args[1] === "install") {
+  const [name, version] = args[2].split("==");
+  if (installed[name] === version && !args.includes("--reinstall") && !args.includes("--force")) {
+    process.stderr.write("\`" + args[2] + "\` is already installed\\n");
+  } else {
+    installed[name] = version;
+    fs.writeFileSync(state, JSON.stringify(installed));
+    fs.writeFileSync(entrypoint, "#!/bin/sh\\n", { mode: 0o755 });
+  }
+} else {
+  process.exit(42);
+}
+`);
+    chmodSync(join(bin, "uv"), 0o755);
+    const home = join(root, "home");
+    const layer = linuxMachineStateLayer({
+      environment: [{ name: "HOME", value: home }, { name: "PATH", value: `${bin}:${toolBin}` }],
+    });
+    const context = realUvInstallerContext(root, "pyinstaller");
+    const install = Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(context);
+      yield* prepared.execute;
+      return yield* verifyResource(context);
+    }).pipe(Effect.provide(layer));
+
+    expect((await Effect.runPromise(install)).passed).toBe(true);
+    rmSync(join(toolBin, "uv-tool"));
+    expect(JSON.parse(readFileSync(state, "utf8"))).toEqual({ pyinstaller: "1.2.3" });
+    expect((await Effect.runPromise(verifyResource(context).pipe(Effect.provide(layer)))).passed).toBe(false);
+
+    // The repair the planner schedules for the missing executable.
+    expect((await Effect.runPromise(install)).passed).toBe(true);
+    expect(existsSync(join(toolBin, "uv-tool"))).toBe(true);
   });
 
   it("recovers a killed Python preparation without touching another run's live preparation", async () => {
@@ -3209,6 +3271,193 @@ process.exit(1);
     const outcome = await seedAndRun(fixture, machine);
     expect(outcome.outcome).toBe("Failed");
     expect(await readFile(fixture.target, "utf8")).toBe("original");
+  });
+
+  /** The file fixture, retargeted at a path below parents that may not exist. */
+  const nestedFileFixture = (root: string, run: string, ...parents: ReadonlyArray<string>): Fixture => {
+    const base = fileFixture(root, run);
+    const target = join(root, "home", ...parents, "settings.json");
+    const action = base.input.plan.actions[0]!;
+    if (action.detail.kind !== "write-file") throw new Error("file fixture did not produce a write");
+    const resource = { ...base.revision.resources[0]!, target };
+    const revision = { ...base.revision, resources: [resource] };
+    return {
+      ...base,
+      target,
+      revision,
+      input: {
+        ...base.input,
+        revision,
+        plan: reencodePlan({
+          ...base.input.plan,
+          actions: [{ ...action, detail: { ...action.detail, target } }],
+        }),
+      },
+    };
+  };
+
+  /** Writes the target for real, parents included, then reports a failure. */
+  const failAfterWriting = (fixture: Fixture) =>
+    decorateMachine(fixture.root, (service) => ({
+      ...service,
+      atomicWrite: (input) =>
+        input.path.absolute === fixture.target
+          ? service.atomicWrite(input).pipe(Effect.andThen(Effect.fail(new MachineFilesystemError({
+            operation: "restrict Windows ACL",
+            path: input.path.absolute,
+            message: "icacls did not apply the requested current-user ACL",
+          }))))
+          : service.atomicWrite(input),
+    }));
+
+  it("removes the parents a failed write created and keeps the ones that existed", async () => {
+    const fixture = nestedFileFixture(temporaryDirectory(), "run-created-parents", "kept", "new", "deeper");
+    const kept = join(fixture.root, "home", "kept");
+    mkdirSync(kept, { recursive: true });
+    writeFileSync(join(fixture.root, "home", "sibling.txt"), "sibling");
+
+    const outcome = await seedAndRun(fixture, failAfterWriting(fixture));
+
+    expect(outcome.outcome).toBe("Failed");
+    // The pre-existing parent stays even though it is empty; the two
+    // directories the write created below it are gone.
+    expect(readdirSync(kept)).toEqual([]);
+    // `.cache` holds the run's rollback material, outside the target tree.
+    expect(readdirSync(join(fixture.root, "home")).sort()).toEqual([".cache", "kept", "sibling.txt"]);
+  });
+
+  it("removes an empty created parent but keeps one that gained foreign content", async () => {
+    const fixture = nestedFileFixture(temporaryDirectory(), "run-created-home", "new", "deeper");
+    const machine = decorateMachine(fixture.root, (service) => ({
+      ...service,
+      atomicWrite: (input) =>
+        input.path.absolute === fixture.target
+          ? service.atomicWrite(input).pipe(
+            // Something else writes into a directory the run created.
+            Effect.andThen(Effect.promise(() => writeFile(join(fixture.root, "home", "new", "foreign.txt"), "keep"))),
+            Effect.andThen(Effect.fail(new MachineFilesystemError({
+              operation: "test write",
+              path: input.path.absolute,
+              message: "injected failure",
+            }))),
+          )
+          : service.atomicWrite(input),
+    }));
+
+    const outcome = await seedAndRun(fixture, machine);
+
+    expect(outcome.outcome).toBe("Failed");
+    expect(existsSync(join(fixture.root, "home", "new", "deeper"))).toBe(false);
+    expect(readdirSync(join(fixture.root, "home", "new"))).toEqual(["foreign.txt"]);
+  });
+
+  it("removes created parents when recovery replays persisted rollback material", async () => {
+    const fixture = nestedFileFixture(temporaryDirectory(), "run-created-recover", "existing", "a", "b");
+    const existing = join(fixture.root, "home", "existing");
+    mkdirSync(existing, { recursive: true });
+    const states = await Effect.runPromise(executionContexts(fixture.input, defaultSynchronizationExecutionLimits));
+    const context = states[0]!.context;
+    const reference = await Effect.runPromise(Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(context);
+      yield* prepared.execute;
+      return prepared.rollbackReference!;
+    }).pipe(Effect.provide(machineLayer(fixture.root))));
+    expect(await readFile(fixture.target, "utf8")).toBe("canonical content");
+    expect(JSON.parse(await readFile(reference, "utf8"))).toEqual(expect.arrayContaining([
+      { path: join(existing, "a", "b"), state: "created-parent" },
+      { path: join(existing, "a"), state: "created-parent" },
+    ]));
+    // A crash during parent publication leaves a staging directory in the
+    // nearest parent that existed before the run.
+    mkdirSync(join(existing, ".cf-0123456789ab.tmp"));
+
+    // A fresh process: only the persisted material says what was created.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await Effect.runPromise(restoreRollbackReference(context, reference).pipe(
+        Effect.provide(machineLayer(fixture.root)),
+      ));
+      expect(readdirSync(existing)).toEqual([]);
+    }
+  });
+
+  it("rejects rollback material that names a parent outside the target's ancestry", async () => {
+    const fixture = nestedFileFixture(temporaryDirectory(), "run-created-tamper", "a");
+    const states = await Effect.runPromise(executionContexts(fixture.input, defaultSynchronizationExecutionLimits));
+    const context = states[0]!.context;
+    const reference = await Effect.runPromise(Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(context);
+      return prepared.rollbackReference!;
+    }).pipe(Effect.provide(machineLayer(fixture.root))));
+    const outside = join(fixture.root, "unrelated");
+    mkdirSync(outside);
+    const stored = await readFile(reference, "utf8");
+    await writeFile(reference, `${stored.slice(0, -1)},${JSON.stringify({ path: outside, state: "created-parent" })}]`);
+
+    const error = await Effect.runPromise(Effect.flip(restoreRollbackReference(context, reference).pipe(
+      Effect.provide(machineLayer(fixture.root)),
+    )));
+    expect(error).toMatchObject({ _tag: "InvalidExecutionPlanError" });
+    expect(existsSync(outside)).toBe(true);
+  });
+
+  const pathLimitMachine = (root: string, limit: { readonly maximum: number; readonly longPathsEnabled: boolean }) =>
+    decorateMachine(root, (service) => ({ ...service, pathLengthLimit: () => Effect.succeed(limit) }));
+
+  it("refuses a target beyond MAX_PATH before recording or creating anything", async () => {
+    const root = temporaryDirectory();
+    const parents = Array.from({ length: 30 }, (_, index) => `parent-${String(index).padStart(2, "0")}`);
+    const fixture = nestedFileFixture(root, "run-long-path", ...parents);
+    expect(fixture.target.length).toBeGreaterThan(260);
+
+    const error = await Effect.runPromise(Effect.flip(Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower });
+      const { desired: _, blobs: __, ...persistable } = fixture.revision;
+      yield* repository.publishRevision({ revision: persistable });
+      return yield* (yield* Synchronization).run(fixture.input);
+    }).pipe(Effect.provide(applicationLayer(fixture, pathLimitMachine(root, { maximum: 260, longPathsEnabled: false }))))));
+
+    // The staging directory beside the target is the first path to break the
+    // 248-character directory limit (MAX_PATH less room for an 8.3 name).
+    expect(error).toMatchObject({ _tag: "PathTooLongError", path: fixture.target, maximumLength: 247 });
+    const described = describeRuntimeError(error);
+    expect(described.category).toBe("usage-or-configuration");
+    expect(described.message).toContain("MAX_PATH is 260");
+    expect(described.message).toContain("LongPathsEnabled");
+    expect(described.message).toContain("Nothing was changed");
+    const open = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) => repository.loadRecovery(follower.id))
+        .pipe(Effect.provide(stateRepositoryLayer(fixture.database))),
+    );
+    expect(open).toBeUndefined();
+    expect(existsSync(join(root, "home"))).toBe(false);
+  });
+
+  it("counts the staging names the writer adds, not only the target", async () => {
+    const root = temporaryDirectory();
+    // The target alone fits in MAX_PATH; its staged content file does not.
+    const fill = 259 - join(root, "home", "x", "settings.json").length - 5;
+    const fixture = nestedFileFixture(root, "run-staging-path", "x".repeat(fill + 1));
+    expect(fixture.target.length).toBeLessThan(260);
+
+    const error = await Effect.runPromise(Effect.flip(
+      preflightPathLengths(fixture.input.plan.actions, fixture.revision.desired).pipe(
+        Effect.provide(pathLimitMachine(root, { maximum: 260, longPathsEnabled: false })),
+      ),
+    ));
+    expect(error).toMatchObject({ _tag: "PathTooLongError", path: fixture.target });
+    expect(error.requiredLength).toBeGreaterThan(259);
+  });
+
+  it("applies a target beyond MAX_PATH when long paths are enabled", async () => {
+    const root = temporaryDirectory();
+    const parents = Array.from({ length: 30 }, (_, index) => `parent-${String(index).padStart(2, "0")}`);
+    const fixture = nestedFileFixture(root, "run-long-path-enabled", ...parents);
+
+    const outcome = await seedAndRun(fixture, pathLimitMachine(root, { maximum: 32_767, longPathsEnabled: true }));
+
+    expect(outcome.outcome).toBe("Converged");
+    expect(await readFile(fixture.target, "utf8")).toBe("canonical content");
   });
 
   it("records Interrupted when cancellation reaches an in-flight mutation", async () => {

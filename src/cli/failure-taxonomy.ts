@@ -757,6 +757,12 @@ export const failureTaxonomy = {
     (error) =>
       `rollback material for run ${text(error.run)} could not be cleaned up (${text(error.outcome)})`,
   ),
+  // The target is valid, but this machine cannot take a path that long until
+  // the operator enables Windows long paths or shortens the target.
+  PathTooLongError: declared(
+    "usage-or-configuration",
+    (error) => `${text(error.path)} is longer than this machine accepts`,
+  ),
   InsufficientDiskError: describe(
     "verification-or-apply-failure",
     (error) => {

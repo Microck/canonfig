@@ -19,6 +19,7 @@ import type {
   MachineDirectoryEntry,
   MachineObject,
   NormalizePathInput,
+  PathLengthLimit,
   ProcessInvocation,
   ProcessResult,
   ReadFileInput,
@@ -42,6 +43,12 @@ export class MachineState extends Context.Service<MachineState, {
     input: NormalizePathInput,
   ) => Effect.Effect<MachinePath, MachineStateError>;
   readonly userDirectories: () => Effect.Effect<UserDirectories, MachineStateError>;
+  /**
+   * The path length limit a run preflight checks planned targets against
+   * (Windows MAX_PATH while long paths are disabled). Undefined when the
+   * platform imposes no limit Canonfig has to check.
+   */
+  readonly pathLengthLimit: () => Effect.Effect<PathLengthLimit | undefined>;
   readonly ensureDirectory: (
     input: EnsureDirectoryInput,
   ) => Effect.Effect<void, MachineStateError>;

@@ -95,7 +95,10 @@ which version it has installed. These queries only read installer state:
 run). If the installer reports a version other than the recipe's `version`,
 the plan is `install-tool` with `replaces` set to the installed version, and
 apply installs the pin over it, downgrading if needed. For winget that adds
-`--force` and for apt `--allow-downgrades`. After a pinned install the
+`--force` and for apt `--allow-downgrades`. `uv tool install` always runs with
+`--reinstall`: uv otherwise skips a tool it still lists at that version, so an
+executable deleted from under uv was never restored. npm, pnpm, and Cargo
+reinstall a missing executable without a flag. After a pinned install the
 installer must report the pinned version, otherwise the action fails with
 "installer `<method>` exited successfully but reports `<package>` `<installed>`
 installed, not the pinned `<version>`". When the installer does not list the

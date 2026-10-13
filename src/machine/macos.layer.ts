@@ -589,6 +589,7 @@ export const macosMachineStateLayer = (
               ?? join(home, "Library", "Caches"),
           ),
         }),
+        pathLengthLimit: machine.pathLengthLimit,
         ensureDirectory: (input) =>
           requireMacosPath(input.path).pipe(
             Effect.flatMap((path) => machine.ensureDirectory({ ...input, path })),

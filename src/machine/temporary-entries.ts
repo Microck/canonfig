@@ -20,6 +20,57 @@ export const temporaryEntryName = (): string =>
 export const guardEntryName = (): string =>
   `.cf-${randomBytes(6).toString("hex")}.guard`;
 
+/** Characters in every `temporaryEntryName()` and `guardEntryName()`. */
+export const temporaryEntryNameLength = ".cf-000000000000.tmp".length;
+export const guardEntryNameLength = ".cf-000000000000.guard".length;
+
+/** The file a staged write creates inside its private staging directory. */
+export const stagedContentName = "content";
+
+/** Windows records a path's semantic mode in this alternate data stream. */
+export const permissionIntentStream = ":canonfig.mode";
+
+/** What a planned mutation does at one path. */
+export type PathMutationKind = "write" | "directory" | "remove";
+
+/**
+ * The longest file path and the longest new directory path one mutation hands
+ * to native tools. Windows checks the two against different limits.
+ */
+export interface MutationPathLengths {
+  readonly file: number;
+  readonly directory: number;
+}
+
+/**
+ * The longest paths a mutation of `path` makes Canonfig hand to the operating
+ * system and its native tools (icacls, PowerShell). A write stages its content
+ * at `<parent>\.cf-<hex>.tmp\content` and records the semantic mode in
+ * `<path>:canonfig.mode`; a directory also gets that stream. A guarded
+ * mutation inside a managed root first moves the top entry into a guard
+ * directory beside it (`<root>\.cf-<hex>.guard\<top>...`), which adds one
+ * component to every path below the root. Each new parent is staged beside
+ * itself, which is never longer than the target's own staging directory.
+ */
+export const mutationPathLengths = (
+  path: string,
+  pathApi: typeof posix | typeof win32,
+  kind: PathMutationKind,
+  guarded: boolean,
+): MutationPathLengths => {
+  const guard = guarded ? 1 + guardEntryNameLength : 0;
+  const target = path.length + guard;
+  if (kind === "remove") return { file: target, directory: 0 };
+  if (kind === "directory") {
+    return { file: target + permissionIntentStream.length, directory: target };
+  }
+  const staging = pathApi.dirname(path).length + guard + 1 + temporaryEntryNameLength;
+  return {
+    file: Math.max(target + permissionIntentStream.length, staging + 1 + stagedContentName.length),
+    directory: staging,
+  };
+};
+
 const temporaryPattern = /^\.cf-[0-9a-f]{12}\.tmp$/u;
 const guardPattern = /^\.cf-[0-9a-f]{12}\.guard$/u;
 // Names written by releases before the fixed-length shape. Only a run those

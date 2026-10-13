@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 
-import type { InsufficientDiskError } from "../machine/machine-state.errors.ts";
+import type { InsufficientDiskError, PathTooLongError } from "../machine/machine-state.errors.ts";
 import type { ScheduleManagerError } from "../schedule/schedule-manager.errors.ts";
 
 export class DuplicatePlannerInputError extends TaggedError<DuplicatePlannerInputError>()(
@@ -232,6 +232,7 @@ export type SynchronizationExecutionInputError =
   | ActionExecutionError
   | RollbackCleanupError
   | InsufficientDiskError
+  | PathTooLongError
   | ScheduleManagerError;
 
 export type SynchronizationRecoveryError =

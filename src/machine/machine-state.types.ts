@@ -59,6 +59,15 @@ export type AtomicWriteInput = {
   readonly content: FileContent;
 } & FilePermissionPolicy;
 
+/**
+ * The longest path, terminator included, that Win32 file calls and native
+ * tools accept on this machine, and whether Windows long paths are enabled.
+ */
+export interface PathLengthLimit {
+  readonly maximum: number;
+  readonly longPathsEnabled: boolean;
+}
+
 export interface ReadFileInput {
   readonly path: MachinePath;
   readonly maximumBytes: number;

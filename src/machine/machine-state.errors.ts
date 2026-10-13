@@ -103,6 +103,21 @@ export class InsufficientDiskError extends TaggedError<InsufficientDiskError>()(
   },
 ) {}
 
+/**
+ * A planned mutation would hand a path to the operating system that is longer
+ * than this machine accepts. Raised by the run preflight, before anything is
+ * written: otherwise the run fails partway, after creating parents.
+ */
+export class PathTooLongError extends TaggedError<PathTooLongError>()(
+  "PathTooLongError",
+  {
+    path: Schema.String,
+    requiredLength: Schema.Number,
+    maximumLength: Schema.Number,
+    message: Schema.String,
+  },
+) {}
+
 export type MachineStateError =
   | InvalidMachinePathError
   | MachineFilesystemError

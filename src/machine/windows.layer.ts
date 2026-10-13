@@ -51,6 +51,7 @@ import type {
   FileContent,
   MachinePath,
   NormalizePathInput,
+  PathLengthLimit,
   ProcessEnvironmentEntry,
   ProcessResult,
   RenderedSchedulerJob,
@@ -107,6 +108,35 @@ const errorCode = (cause: unknown): string | undefined =>
   cause instanceof Error && "code" in cause
     ? String(cause.code)
     : undefined;
+
+export const windowsFileSystemKey = "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem";
+
+/**
+ * The path limit `reg query <FileSystem> /v LongPathsEnabled` reports. Any
+ * answer other than an enabled DWORD, including a missing value or a failed
+ * query, leaves MAX_PATH (260, terminating NUL included) in force. Enabled
+ * long paths lift Win32 file calls to the 32,767-character Unicode limit.
+ */
+export const windowsPathLimitFromRegistry = (output: string | undefined): PathLengthLimit =>
+  output !== undefined
+    && /^\s*LongPathsEnabled\s+REG_DWORD\s+0x0*[1-9a-f][0-9a-f]*\s*$/imu.test(output)
+    ? { maximum: 32_767, longPathsEnabled: true }
+    : { maximum: 260, longPathsEnabled: false };
+
+export const windowsSymlinkPrerequisite =
+  "Windows refused to create a symbolic link (EPERM). Creating symbolic links requires Developer Mode "
+  + "(Settings > System > For developers) or the SeCreateSymbolicLinkPrivilege user right "
+  + "(\"Create symbolic links\"); enable one for this account, sign in again, then retry";
+
+/** Node names the failed syscall in the message: `EPERM: ..., symlink 'a' -> 'b'`. */
+const withSymlinkPrerequisite = (error: MachineStateError): MachineStateError =>
+  error._tag === "MachineFilesystemError" && /\bEPERM\b.*\bsymlink\b/u.test(error.message)
+    ? new MachineFilesystemError({
+      operation: error.operation,
+      path: error.path,
+      message: `${error.message}. ${windowsSymlinkPrerequisite}`,
+    })
+    : error;
 
 const removeWindowsManagedLeaf = async (path: string): Promise<void> => {
   try {
@@ -625,6 +655,12 @@ export const windowsMachineStateLayer = (
       "System32",
       "schtasks.exe",
     );
+  const reg = environmentValue(environment, "CANONFIG_REG")
+    ?? win32.join(
+      environmentValue(environment, "SystemRoot") ?? "C:\\Windows",
+      "System32",
+      "reg.exe",
+    );
   const localAppData = environmentValue(environment, "LOCALAPPDATA")
     ?? win32.join(home, "AppData", "Local");
   const currentUser = windowsAccountPrincipal(environment, home);
@@ -668,6 +704,23 @@ export const windowsMachineStateLayer = (
               }))
           ),
         );
+      // Read once per process: changing LongPathsEnabled needs a new process
+      // to take effect anyway. A failed query keeps MAX_PATH.
+      const pathLengthLimit = yield* Effect.cached(
+        machine.runProcess({
+          executable: { platform: "linux", absolute: reg },
+          arguments: ["query", windowsFileSystemKey, "/v", "LongPathsEnabled"],
+          timeoutMilliseconds: 10_000,
+          maximumOutputBytes: 64 * 1024,
+        }).pipe(
+          Effect.map((result) =>
+            windowsPathLimitFromRegistry(
+              result.exitCode === 0 ? Buffer.from(result.standardOutput).toString("utf8") : undefined,
+            )
+          ),
+          Effect.catch(() => Effect.succeed(windowsPathLimitFromRegistry(undefined))),
+        ),
+      );
       const writeSemanticMode = (
         path: string,
         mode: number,
@@ -1061,7 +1114,7 @@ export const windowsMachineStateLayer = (
                 : Effect.promise(() => rm(guard, { recursive: true, force: true }).catch(() => undefined))
             )),
           );
-        }).pipe(Effect.uninterruptible);
+        }).pipe(Effect.uninterruptible, Effect.mapError(withSymlinkPrerequisite));
       const secureStoreAvailable = Effect.promise(() =>
         options.credentialStoreAccess !== "unavailable"
           && process.platform === "win32"
@@ -1430,6 +1483,7 @@ export const windowsMachineStateLayer = (
           data: windowsPath(localAppData),
           cache: windowsPath(localAppData),
         }),
+        pathLengthLimit: () => pathLengthLimit,
         ensureDirectory: (input) =>
           requireWindowsPath(input.path).pipe(
             Effect.flatMap((path) =>
@@ -1481,6 +1535,7 @@ export const windowsMachineStateLayer = (
         replaceSymlink: (input) =>
           requireWindowsPath(input.path).pipe(
             Effect.flatMap((path) => machine.replaceSymlink({ ...input, path })),
+            Effect.mapError(withSymlinkPrerequisite),
           ),
         readSymlink: (path) =>
           requireWindowsPath(path).pipe(

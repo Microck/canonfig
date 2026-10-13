@@ -348,7 +348,11 @@ published profile decides which files are synced. Planning has no side effects:
 installer probes run with Corepack downloads and rustup auto-install disabled,
 and a rustup proxy is not run until rustup has been configured, so such a tool
 is reported unverified. A full Source plan fails before initialization when
-signing and TLS key storage is unavailable. `--scope cli-only` verifies only
+signing and TLS key storage is unavailable. When the native provider is only
+known to be present (Linux Secret Service, Windows Credential Manager), the
+full Source plan proves access first: it stores, reads back, and deletes a
+disposable non-secret item, and fails with the prerequisite if the provider
+is not running or not unlocked. `--scope cli-only` verifies only
 that the CLI runs (no identities, schedules, or remote connections);
 `--scope project-only` also installs accepted recipes for missing executables
 but creates no identity. Disabled declarations do not enter the plan. An

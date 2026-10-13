@@ -10,6 +10,26 @@ pins are not migrated by this procedure.
 
 ## Changes
 
+- On Windows with long paths disabled, `sync --plan` and the apply preflight
+  refuse a target whose path, with Canonfig's staging names, exceeds MAX_PATH,
+  naming the limit and the `LongPathsEnabled` remedy. Such a target used to
+  pass planning and fail partway through the apply. Rollback and `recover` now
+  also remove the parent directories a failed write created (deepest first,
+  only while empty); previously they persisted after rollback. A Windows
+  symlink refused with EPERM names its prerequisite: Developer Mode or
+  `SeCreateSymbolicLinkPrivilege`.
+- A uv tool whose executable was deleted while uv still listed it is repaired.
+  Canonfig planned a reinstall on every apply, but `uv tool install` reported
+  the tool as already installed and exited 0, so verification failed each
+  time. Canonfig now passes `--reinstall` (not `--force`, which would also
+  overwrite an executable uv does not own). npm, pnpm, and Cargo already
+  reinstall a missing executable.
+- A full Source `setup plan` no longer reports success when the native
+  credential provider is merely present. With Secret Service (or Credential
+  Manager) installed but not running or unlocked, the plan passed and
+  `source-init` failed at apply. The preflight now stores, reads back, and
+  deletes a disposable non-secret item and stops with the prerequisite if
+  that fails; the inventory records `session-probe` when it succeeds.
 - A changed version pin on an already-installed tool is now enforced. Planning
   asks the recipe's installer which version is installed (`uv tool list`,
   `npm`/`pnpm`/`bun` global listings, `winget list`, `dpkg-query`, Cargo's

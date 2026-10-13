@@ -1,13 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { arch, release, userInfo } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
 
-import { Effect, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 
 import { SourceNotInitializedError } from "../enrollment/enrollment.errors.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import type { MachineStateError } from "../machine/machine-state.errors.ts";
+import { credentialFailureDetail, type MachineStateError } from "../machine/machine-state.errors.ts";
 import type { MachinePath, ProcessResult } from "../machine/machine-state.types.ts";
 import { canonicalJson, sha256BytesHex, sha256Hex, type JsonValue } from "../profile/profile-codec.ts";
 import { scanDiscovery } from "../profile/discovery.ts";
@@ -188,6 +189,34 @@ const credentialInventory = (
     }),
   );
 
+const keyStorageProbeValue = "canonfig setup key-storage probe";
+
+/**
+ * Store, read back, and delete a fixed non-secret value under a unique name,
+ * through the same MachineState calls source-init uses for its keys. The item
+ * is removed whatever happens after it was stored; no existing credential is
+ * read or touched. Fails with the reason access is not proven.
+ */
+const proveKeyStorage = (
+  machine: MachineState["Service"],
+): Effect.Effect<void, string> =>
+  Effect.acquireUseRelease(
+    machine.storeCredential({
+      name: `canonfig-setup-probe:${randomUUID()}`,
+      value: Redacted.make(keyStorageProbeValue),
+    }).pipe(Effect.mapError((cause) => `store: ${credentialFailureDetail(cause)}`)),
+    (reference) =>
+      machine.loadCredential({ reference }).pipe(
+        Effect.mapError((cause) => `read-back: ${credentialFailureDetail(cause)}`),
+        Effect.flatMap((loaded) =>
+          Redacted.value(loaded) === keyStorageProbeValue
+            ? Effect.void
+            : Effect.fail("read-back: the provider returned different bytes than were stored")
+        ),
+      ),
+    (reference) => machine.removeCredential(reference).pipe(Effect.ignore),
+  );
+
 /**
  * Operation-specific preflight, including Source signing/TLS key storage.
  * A fresh headless Source reports the precise missing prerequisites here,
@@ -215,19 +244,45 @@ export const runSetupPreflight = (
       Effect.mapError((cause) =>
         fail("setup preflight", `machine directories could not be read: ${cause.message}`, "state")),
     );
-    const credentialStorage = yield* credentialInventory(machine);
+    const capability = yield* credentialInventory(machine);
     // Narrow requests create no identity, so missing key storage is not a
     // prerequisite for them.
-    if (role === "source" && requestScope === "full" && credentialStorage.kind === "unavailable") {
-      return yield* fail(
+    const needsKeyStorage = role === "source" && requestScope === "full";
+    const keyStorageBlocked = (recovery: string | undefined, detail: string) =>
+      fail(
         "setup preflight",
-        "this machine cannot be a Source: key storage is unavailable "
-        + `(${credentialStorage.recovery ?? "no recovery reported"}). Canonfig stores the Source signing key, `
+        `this machine cannot be a Source: ${detail}. Canonfig stores the Source signing key, `
         + "the TLS key, and the TLS certificate before initialization, so setup stops here.",
         "prerequisite",
-        credentialStorage.recovery,
+        recovery,
+      );
+    if (needsKeyStorage && capability.kind === "unavailable") {
+      return yield* keyStorageBlocked(
+        capability.recovery,
+        `key storage is unavailable (${capability.recovery ?? "no recovery reported"})`,
       );
     }
+    // Provider presence is not proven access: secret-tool on PATH and a
+    // session bus say nothing about whether a Secret Service provider is
+    // running and unlocked, so a full Source plan reported success and
+    // source-init failed at apply. Prove it the way source-init will use it,
+    // with a disposable store, read-back, and delete of a non-secret value.
+    const credentialStorage = needsKeyStorage
+        && capability.kind === "secure-noninteractive"
+        && capability.verification === "provider-presence"
+      ? yield* proveKeyStorage(machine).pipe(
+        Effect.as({ ...capability, verification: "session-probe" }),
+        Effect.catch((cause) =>
+          Effect.fail(keyStorageBlocked(
+            "Start and unlock the platform credential provider for this user (on Linux a Secret Service "
+              + "provider such as gnome-keyring on the session bus), or explicitly select the local-file "
+              + "credential policy, then plan again.",
+            `the ${capability.provider ?? "native"} credential provider is installed but did not accept a `
+              + `disposable write and read-back in this session (${cause})`,
+          ))
+        ),
+      )
+      : capability;
     return {
       platform: directories.home.platform,
       home: directories.home.absolute,

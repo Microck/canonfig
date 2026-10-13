@@ -70,6 +70,7 @@ import {
 import { planSynchronization } from "./planner.ts";
 import {
   defaultSynchronizationExecutionLimits,
+  preflightPathLengths,
   removeRunTemporaryEntries,
 } from "./executor.ts";
 import { withRunLock } from "./run-lock.ts";
@@ -1561,6 +1562,9 @@ export const synchronizeFollower = Effect.fn(
     localOverlay: configuration.localOverlay ?? [],
     appliedResources,
   });
+  // `sync --plan` must not accept a target this machine cannot write; the
+  // apply repeats the check before it records the run.
+  yield* preflightPathLengths(plan.actions, hydrated.revision.desired);
   const noAgentResolutions: ReadonlyArray<AgentResolutionOutcome> = [];
   // `agent-propose` records a proposal and stops, which is what the operator
   // documentation and the glossary describe. Apply used to skip resolution

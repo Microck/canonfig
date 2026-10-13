@@ -30,6 +30,7 @@ import {
   windowsTaskRegistration,
   windowsTaskTriggerEnabled,
   windowsWeekdaysMatch,
+  windowsPathLimitFromRegistry,
 } from "../src/machine/windows.layer.ts";
 import { machineStateContract } from "./contract/machine-state.contract.ts";
 
@@ -290,6 +291,51 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe("Windows long path limit", () => {
+  it("reads LongPathsEnabled from reg query output and assumes MAX_PATH otherwise", () => {
+    const output = (value: string) =>
+      `\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\FileSystem\r\n    LongPathsEnabled    REG_DWORD    ${value}\r\n\r\n`;
+    const classic = { maximum: 260, longPathsEnabled: false };
+    expect(windowsPathLimitFromRegistry(output("0x1"))).toEqual({ maximum: 32_767, longPathsEnabled: true });
+    expect(windowsPathLimitFromRegistry(output("0x0"))).toEqual(classic);
+    expect(windowsPathLimitFromRegistry(undefined)).toEqual(classic);
+    expect(windowsPathLimitFromRegistry("ERROR: The system was unable to find the specified registry key or value.")).toEqual(classic);
+  });
+
+  // A real executable stands in for reg.exe; the adapter runs it like the
+  // native tool and reads only its exit code and output.
+  it.skipIf(process.platform === "win32").each([
+    { exit: 0, value: "0x1", expected: { maximum: 32_767, longPathsEnabled: true } },
+    { exit: 0, value: "0x0", expected: { maximum: 260, longPathsEnabled: false } },
+    { exit: 1, value: "0x1", expected: { maximum: 260, longPathsEnabled: false } },
+  ])("queries the FileSystem key through reg (exit $exit, $value)", async ({ exit, value, expected }) => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-reg-"));
+    try {
+      const reg = join(root, "reg");
+      const log = join(root, "arguments");
+      await writeFile(reg, [
+        "#!/bin/sh",
+        `printf '%s\\n' "$@" > '${log}'`,
+        `printf '    LongPathsEnabled    REG_DWORD    ${value}\\n'`,
+        `exit ${exit}`,
+        "",
+      ].join("\n"), { mode: 0o755 });
+      const limit = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        return yield* machine.pathLengthLimit();
+      }).pipe(Effect.provide(windowsMachineStateLayer({
+        environment: [...environment(root), { name: "CANONFIG_REG", value: reg }],
+      }))));
+      expect(limit).toEqual(expected);
+      expect((await readFile(log, "utf8")).trim().split("\n")).toEqual([
+        "query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "/v", "LongPathsEnabled",
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Windows ACL command rendering", () => {
