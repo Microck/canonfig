@@ -10,6 +10,23 @@ pins are not migrated by this procedure.
 
 ## Changes
 
+- A changed version pin on an already-installed tool is now enforced. Planning
+  asks the recipe's installer which version is installed (`uv tool list`,
+  `npm`/`pnpm`/`bun` global listings, `winget list`, `dpkg-query`, Cargo's
+  install metadata) and plans `install-tool` with `replaces` when it differs
+  from the pin; previously a present executable planned `no-op` and the old
+  version stayed. winget reinstalls with `--force` and apt with
+  `--allow-downgrades`. After a pinned install the installer must report the
+  pin, or the action fails.
+- `source digest` and `source publish` hash and store file sources in
+  streams, so peak memory no longer grows with file size (a 200 MiB file
+  peaked at about 1.47 GB during publish; it now stays near 170 MB). State
+  migration `0021_resource_blob_chunks` stores new blobs as 1 MiB chunks;
+  blobs stored by earlier versions stay readable. Digests and signatures are
+  unchanged. An older binary cannot serve blobs stored as chunks.
+- Windows `schedule status` and `doctor` warn that the Task Scheduler task
+  runs only while the user is logged on, and name a scheduled run that was
+  skipped while nobody was logged on.
 - The website dependency graph uses source-map-js 1.2.2, addressing the
   indexed-source-map denial-of-service advisory
   [GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q).

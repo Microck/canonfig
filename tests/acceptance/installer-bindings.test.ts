@@ -34,6 +34,8 @@ const fixture = () => {
   writeFileSync(entry, [
     "const fs = require('node:fs');",
     "if (process.argv[2] === '--version') console.log('1.0.0-fixture');",
+    // npm ls exits 1 when the package is not installed globally.
+    "else if (process.argv[2] === 'ls') process.exit(1);",
     `else fs.writeFileSync(${JSON.stringify(output)}, JSON.stringify({argv:process.argv.slice(2),path:process.env.PATH??process.env.Path??''}));`,
   ].join("\n"));
   const environment = Object.entries({

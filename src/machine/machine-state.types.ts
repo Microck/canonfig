@@ -301,6 +301,19 @@ export interface SchedulerInspection {
   /** The next start time as the native scheduler reports it. */
   readonly nextElapse?: string | undefined;
   readonly lastResult?: SchedulerRunResult | undefined;
+  /**
+   * When the native scheduler last started the job, whatever its result,
+   * including a run still in progress. Windows only.
+   */
+  readonly lastStartedAt?: string | undefined;
+  /** When the installed native job was registered, if the scheduler records it. Windows only. */
+  readonly registeredAt?: string | undefined;
+  /**
+   * Windows: the task's principal uses an InteractiveToken logon, so Task
+   * Scheduler starts it only while the user is logged on and does not catch
+   * up a run skipped while logged off.
+   */
+  readonly runsOnlyWhileLoggedOn?: boolean | undefined;
   /** Linux: whether the user manager keeps running while the user is logged out. */
   readonly lingering?: boolean | undefined;
   /** macOS: system timezone changed since boot; this launchd session may retain the old zone. */

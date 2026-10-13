@@ -448,8 +448,15 @@ ownership decisions survive synchronization and process restart.
 Signed revision metadata contains file paths, modes, symlink targets, blob
 digests, and exact byte lengths, but never embeds file content. At publication,
 inline UTF-8/base64 values and `source` paths (resolved relative to the authored
-profile file) become immutable per-file blobs. Followers request each authorized
-blob through its selected revision in verified bounded byte ranges. A response
+profile file) become immutable per-file blobs. A `source` file is hashed by
+streaming it from disk (`canonfig source digest` uses the same path), then
+streamed again into the Source state database as fixed 1 MiB chunks
+(`resource_blob_chunks`, committed with a `resource_blob_manifests` row in one
+transaction); a file that changed between the two reads fails publication.
+Memory use does not grow with file size. Blobs stored as one `resource_blobs`
+row before chunking stay readable. Followers request each authorized
+blob through its selected revision in verified bounded byte ranges, which the
+Source writes from the stored chunks without joining them. A response
 with a missing, conflicting, truncated, or aborted range is discarded before
 the cache entry is atomically trusted; denial is returned before any blob length
 header is written.

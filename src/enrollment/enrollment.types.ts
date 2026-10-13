@@ -156,7 +156,9 @@ export interface AuthorizedBlobRangeInput {
 }
 
 export interface AuthorizedBlobRange {
-  readonly content: Uint8Array;
+  /** The range's bytes in order, written to the response one by one. */
+  readonly chunks: ReadonlyArray<Uint8Array>;
+  readonly byteLength: number;
   readonly totalBytes: number;
 }
 

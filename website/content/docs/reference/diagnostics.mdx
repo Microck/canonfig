@@ -95,7 +95,10 @@ for systemd, `systemctl --user show`, including drop-ins. `details` carries the
   completed yet, the last unattended run failed ("the last unattended run
   failed at `<time>`: `<reason>`; the last completed one was at `<time>`"), a
   run started and recorded no outcome, or Linux lingering is off ("run
-  `loginctl enable-linger <user>` to run it while logged out"). Binding-only
+  `loginctl enable-linger <user>` to run it while logged out"), the Windows
+  task only runs while you are logged on, or a Windows run due while nobody
+  was logged on did not start ("the scheduled run at `<time>` did not
+  start"). Binding-only
   drift after an upgrade and a job installed by an earlier release without a
   follower decision (`unmanaged`) are warnings too.
 - **Pass** when the job is current and the native scheduler has run it.

@@ -84,8 +84,24 @@ explicitly. `toolId` remains the portable resource identity.
 
 Planning does not run verification commands. Presence allows `ensure` to leave
 an existing installation in place; the declared verification still checks it
-during apply. A present entry file alone does not prove the expected version,
-working dependencies, or a signed-in session.
+during apply. A present entry file alone does not prove working dependencies
+or a signed-in session.
+
+When the tool is present, planning also asks the selected recipe's installer
+which version it has installed. These queries only read installer state:
+`uv tool list --offline`, `npm ls --global --json` (offline), `pnpm ls
+--global --json`, `bun pm ls --global`, `winget list --id <id> --exact`,
+`dpkg-query` for apt, and Cargo's `.crates2.json` file (`cargo` itself is not
+run). If the installer reports a version other than the recipe's `version`,
+the plan is `install-tool` with `replaces` set to the installed version, and
+apply installs the pin over it, downgrading if needed. For winget that adds
+`--force` and for apt `--allow-downgrades`. After a pinned install the
+installer must report the pinned version, otherwise the action fails with
+"installer `<method>` exited successfully but reports `<package>` `<installed>`
+installed, not the pinned `<version>`". When the installer does not list the
+package, for example because the executable came from somewhere else, or for
+Homebrew, whose versioned formula name already carries the version, the
+present tool is left in place.
 
 ## Verification lookup
 

@@ -35,6 +35,19 @@ export interface ProfileCompilerOptions {
   readonly platforms?: ReadonlyArray<PlatformName> | undefined;
 }
 
+/**
+ * A regular file an authored `source` names, hashed by streaming it from
+ * disk. The compiler never reads it; publication streams it into storage and
+ * checks the bytes still match `blob`.
+ */
+export interface ResolvedSourceFile {
+  readonly path: string;
+  readonly blob: typeof BlobId.Type;
+  readonly bytes: number;
+}
+
+export type ResolvedSourceFiles = ReadonlyMap<string, ResolvedSourceFile>;
+
 export type ProfileCompilerInput = MachineProfileAuthoring | MachineProfile;
 
 export interface CompiledPlatformProfile {
@@ -57,10 +70,10 @@ export interface CompiledProfile extends CompiledProfileCandidate {
   readonly projections: ReadonlyArray<CompiledPlatformProfile>;
 }
 
-export interface CompiledResourceBlob {
-  readonly id: typeof BlobId.Type;
-  readonly content: Uint8Array;
-}
+/** In-memory bytes from inline content, or a source file streamed at storage time. */
+export type CompiledResourceBlob =
+  | { readonly id: typeof BlobId.Type; readonly content: Uint8Array }
+  | { readonly id: typeof BlobId.Type; readonly bytes: number; readonly path: string };
 
 interface MaterializedProfileResources {
   readonly resources: ReadonlyArray<PublishedResource>;
@@ -124,8 +137,9 @@ const inlineBytes = (file: {
 
 const materializeResources = (
   profile: MachineProfile,
+  sources: ResolvedSourceFiles | undefined,
 ): MaterializedProfileResources => {
-  const stored = new Map<typeof BlobId.Type, Uint8Array>();
+  const stored = new Map<typeof BlobId.Type, CompiledResourceBlob>();
   type PublishedManagedFile = Extract<
     PublishedResourceSpec,
     { readonly kind: "directory" }
@@ -139,9 +153,29 @@ const materializeResources = (
         symlinkTo: file.symlinkTo,
       };
     }
+    if (file.source !== undefined) {
+      const resolved = sources?.get(file.source);
+      if (resolved === undefined) {
+        throw new Error("resource source must be resolved before compilation");
+      }
+      if (!stored.has(resolved.blob)) {
+        stored.set(resolved.blob, {
+          id: resolved.blob,
+          bytes: resolved.bytes,
+          path: resolved.path,
+        });
+      }
+      return {
+        path: file.path,
+        blob: resolved.blob,
+        bytes: resolved.bytes,
+        executable: file.executable ?? false,
+        mode: file.mode,
+      };
+    }
     const content = inlineBytes(file);
     const id = Schema.decodeUnknownSync(BlobId)(sha256BytesHex(content));
-    stored.set(id, content);
+    stored.set(id, { id, content });
     return {
       path: file.path,
       blob: id,
@@ -178,10 +212,7 @@ const materializeResources = (
     };
     return resource.groups === undefined ? base : { ...base, groups: resource.groups };
   });
-  return {
-    resources,
-    blobs: [...stored].map(([id, content]) => ({ id, content })),
-  };
+  return { resources, blobs: [...stored.values()] };
 };
 
 /**
@@ -243,9 +274,10 @@ const contentDigestsFor = (
  */
 export const profileContentDigests = (
   input: ProfileCompilerInput,
+  sources?: ResolvedSourceFiles | undefined,
 ): ReadonlyArray<ResourceContentDigest> => {
   const profile = decodeInput(input);
-  return contentDigestsFor(profile, materializeResources(profile));
+  return contentDigestsFor(profile, materializeResources(profile, sources));
 };
 
 /**
@@ -282,9 +314,10 @@ const completeVerification = (
 /** Compile the exact normalized candidate consumed by publication. */
 export const compileProfileCandidate = (
   input: ProfileCompilerInput,
+  sources?: ResolvedSourceFiles | undefined,
 ): CompiledProfileCandidate => {
   const decoded = decodeInput(input);
-  const materialized = materializeResources(decoded);
+  const materialized = materializeResources(decoded, sources);
   const profile = completeVerification(decoded, materialized);
   const canonicalBytes = canonicalJson(asJson({
     ...profile,

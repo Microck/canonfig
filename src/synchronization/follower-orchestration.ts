@@ -74,6 +74,8 @@ import {
 } from "./executor.ts";
 import { withRunLock } from "./run-lock.ts";
 import { installerRefusals, toolInstallMethods } from "./installer-bindings.ts";
+import { installedToolVersion } from "./installed-tool-version.ts";
+import { selectToolRecipe } from "./resource-plans.ts";
 import { clientReviewSteps, plannedFileChanges } from "./client-review.ts";
 import type {
   AvailableBlob,
@@ -84,6 +86,13 @@ import type {
   SynchronizationArtifact,
   SynchronizationAgentConfiguration,
 } from "./synchronization.types.ts";
+
+/**
+ * A version query only reads installer state, so it gets a short bound; a
+ * query that does not finish leaves the version unknown and `ensure` keeps
+ * the present tool.
+ */
+const installedVersionTimeoutMilliseconds = 60_000;
 
 const decoder = new TextDecoder();
 
@@ -731,24 +740,37 @@ const observe = (
           ?? (verification.method === "executable-present"
             ? verification.executable
             : decoded.resource.target);
-        if (executable.includes("/") || executable.includes("\\")) {
-          return yield* machine.normalizePath({ path: executable }).pipe(
+        const present = executable.includes("/") || executable.includes("\\")
+          ? yield* machine.normalizePath({ path: executable }).pipe(
             Effect.flatMap((path) => machine.permissions(path)),
-            Effect.as({
-              state: "present",
-              digest: sha256Hex(executable),
-              executable: true,
-            } as const),
-            Effect.catch(() => Effect.succeed({ state: "absent" } as const)),
+            Effect.as(true),
+            Effect.catch(() => Effect.succeed(false)),
+          )
+          : yield* machine.findExecutable({
+            name: executable,
+            installMethods: yield* toolInstallMethods(desired.recipes),
+          }).pipe(
+            Effect.as(true),
+            Effect.catch(() => Effect.succeed(false)),
           );
-        }
-        return yield* machine.findExecutable({
-          name: executable,
-          installMethods: yield* toolInstallMethods(desired.recipes),
-        }).pipe(
-          Effect.as({ state: "present", digest: sha256Hex(executable), executable: true } as const),
-          Effect.catch(() => Effect.succeed({ state: "absent" } as const)),
-        );
+        if (!present) return { state: "absent" } as const;
+        // The executable says nothing about its version; ask the installer
+        // the plan would use, so a changed pin plans a reinstall.
+        const recipe = selectToolRecipe(desired, platform);
+        const installedVersion = recipe?.version === undefined
+          ? undefined
+          : yield* installedToolVersion({
+            method: recipe.method,
+            package: recipe.package,
+            timeoutMilliseconds: installedVersionTimeoutMilliseconds,
+            maximumOutputBytes: defaultSynchronizationExecutionLimits.maximumProcessOutputBytes,
+          });
+        return {
+          state: "present",
+          digest: sha256Hex(executable),
+          executable: true,
+          installedVersion,
+        } as const;
       }).pipe(
         Effect.catch((error) =>
           Effect.succeed({ state: "unverifiable", reason: String(error) } as const)

@@ -1562,6 +1562,44 @@ describe("stable planning and bounded resolution", () => {
     expect(JSON.parse(unversioned.encoded).actions[0].detail.kind).toBe("human-action");
   });
 
+  it("reinstalls a present tool whose installer reports a version other than the pin", () => {
+    const subject = resource("isort", "tool", "ensure");
+    const desired: DesiredResource = {
+      kind: "tool",
+      toolId: "isort",
+      recipes: [{ platform: "linux", method: "uv", package: "isort", version: "5.13.2" }],
+      loginRequired: false,
+    };
+    const present = (installedVersion?: string): ObservedResourceState => ({
+      state: "present",
+      digest: sha256Hex("isort"),
+      executable: true,
+      installedVersion,
+    });
+    const planFor = (observed: ObservedResourceState) =>
+      runPlan(plannerInput([subject], { desired: [desired], observed: [observed] }));
+
+    const changed = planFor(present("6.0.1"));
+    expect(changed.actions[0]?.detail).toEqual({
+      kind: "install-tool",
+      toolId: "isort",
+      method: "uv",
+      package: "isort",
+      version: "5.13.2",
+      replaces: "6.0.1",
+    });
+    expect(JSON.parse(changed.encoded).actions[0].detail.replaces).toBe("6.0.1");
+    // Equal versions, a PEP 440 case difference, and a version the installer
+    // cannot report all leave the present tool alone.
+    expect(planFor(present("5.13.2")).actions.map((action) => action.kind)).toEqual(["no-op"]);
+    expect(planFor(present()).actions.map((action) => action.kind)).toEqual(["no-op"]);
+    const prerelease = runPlan(plannerInput([subject], {
+      desired: [{ ...desired, recipes: [{ ...desired.recipes[0]!, version: "6.0.0RC1" }] }],
+      observed: [present("6.0.0rc1")],
+    }));
+    expect(prerelease.actions.map((action) => action.kind)).toEqual(["no-op"]);
+  });
+
   it("routes remote npm-family artifacts without integrity to Human Action Required", () => {
     const subject = resource("tool", "tool", "ensure");
     const plan = runPlan(plannerInput(

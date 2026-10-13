@@ -55,6 +55,7 @@ import {
   parseConfigDocument,
 } from "./config-codec.ts";
 import { configValuesEqual } from "./config-value.ts";
+import { installedToolVersion, installedVersionMatches } from "./installed-tool-version.ts";
 import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
 import {
   isMissingAutomaticRecipeVersion,
@@ -1560,6 +1561,7 @@ const installInvocation = (
   buildPolicy: BuildPolicy = { mode: "scripts-disabled" },
   source?: RecipeSource | undefined,
   indexPolicy?: RecipeIndexPolicy | undefined,
+  replaces?: string | undefined,
 ): Effect.Effect<
   void,
   MachineStateError | ActionExecutionError | InvalidExecutionPlanError,
@@ -1828,7 +1830,12 @@ const installInvocation = (
       : method === "winget"
       ? version === undefined
         ? ["install", "--id", packageName, "--silent"]
-        : ["install", "--id", packageName, "--version", version, "--exact", "--silent"]
+        : [
+          "install", "--id", packageName, "--version", version, "--exact", "--silent",
+          // winget's install flow upgrades but will not move to an older
+          // version without --force (hash checks still apply).
+          ...(replaces === undefined ? [] : ["--force"]),
+        ]
       : method === "uv"
       ? [
         "tool",
@@ -1840,7 +1847,12 @@ const installInvocation = (
         `--default-index=${pythonIndex!}`,
       ]
       : method === "apt"
-      ? ["install", "-y", version === undefined ? packageName : `${packageName}=${version}`]
+      ? [
+        "install", "-y",
+        // apt-get -y refuses a downgrade to the pinned version without it.
+        ...(replaces === undefined ? [] : ["--allow-downgrades"]),
+        version === undefined ? packageName : `${packageName}=${version}`,
+      ]
       : method === "cargo" && version !== undefined
       ? ["install", packageName, "--version", version, "--locked"]
       : ["install", packageName];
@@ -1946,6 +1958,32 @@ const installInvocation = (
     );
   });
 
+/**
+ * After a pinned install, the installer must report the pinned version. An
+ * installer can exit 0 and leave another version in place (winget skips an
+ * older version without --force), and a version-agnostic verifier such as
+ * `executable-present` cannot tell. A version the installer cannot report is
+ * left to the declared verification.
+ */
+const confirmInstalledVersion = (
+  context: ResourceExecutionContext,
+  detail: Extract<PlannedAction["detail"], { readonly kind: "install-tool" }>,
+) => Effect.gen(function*() {
+  if (detail.version === undefined) return;
+  const installed = yield* installedToolVersion({
+    method: detail.method,
+    package: detail.package,
+    timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
+    maximumOutputBytes: context.limits.maximumProcessOutputBytes,
+  });
+  if (installed === undefined || installedVersionMatches(detail.method, installed, detail.version)) return;
+  return yield* new ActionExecutionError({
+    action: context.action.id,
+    message:
+      `installer ${detail.method} exited successfully but reports ${detail.package} ${installed} installed, not the pinned ${detail.version}`,
+  });
+});
+
 /** Prepare deterministic work. Preparation stores rollback material before owned-file mutation. */
 export const prepareResourceAction = (
   context: ResourceExecutionContext,
@@ -1970,7 +2008,8 @@ export const prepareResourceAction = (
           detail.buildPolicy,
           detail.source,
           detail.indexPolicy,
-        ),
+          detail.replaces,
+        ).pipe(Effect.andThen(confirmInstalledVersion(context, detail))),
       });
     case "transfer-blob":
       return artifact(context.artifacts, detail.blob).pipe(

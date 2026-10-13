@@ -123,7 +123,14 @@ export interface ScheduleStatus {
   readonly lastNativeRun?: SchedulerRunResult | undefined;
   /** Linux: whether the user manager keeps running while logged out. */
   readonly lingering?: boolean | undefined;
-  /** Conditions under which a selected run will not happen: DST gaps, no linger. */
+  /** Windows: the task runs only while the user is logged on (InteractiveToken logon). */
+  readonly runsOnlyWhileLoggedOn?: boolean | undefined;
+  /**
+   * Windows: the most recent due start of a logged-on-only task that did not
+   * happen, because nobody was logged on or the machine was off.
+   */
+  readonly missedRun?: string | undefined;
+  /** Conditions under which a selected run will not or did not happen: DST gaps, no linger, logged-on-only, a missed run. */
   readonly warnings: ReadonlyArray<string>;
 }
 

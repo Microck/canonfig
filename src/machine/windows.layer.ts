@@ -460,9 +460,46 @@ export const windowsRecurrenceIntervalMatches = (
 export const windowsTaskTriggerEnabled = (trigger: string): boolean =>
   xmlElement(trigger, "Enabled") !== "false";
 
+/** Task Scheduler's runtime answer: `State|LastTaskResult|LastRunTime|NextRunTime`. */
+export const parseWindowsTaskRuntime = (output: string) => {
+  const fields = /^(-?\d+)\|(-?\d+)\|([^|]*)\|([^|]*)$/u.exec(output.trim());
+  if (fields === null) return undefined;
+  const lastTaskResult = Number(fields[2]);
+  const lastStartedAt = fields[3] === "" || Number.isNaN(Date.parse(fields[3]!)) ? undefined : fields[3];
+  // 0x41303: the task has not run yet; 0x41301: it is running now.
+  const ran = lastTaskResult !== 0x41303 && lastTaskResult !== 0x41301 && lastStartedAt !== undefined;
+  return {
+    state: Number(fields[1]),
+    nextRun: fields[4] === "" || Number.isNaN(Date.parse(fields[4]!)) ? undefined : fields[4],
+    lastStartedAt: lastTaskResult === 0x41303 ? undefined : lastStartedAt,
+    lastResult: ran
+      ? {
+        succeeded: lastTaskResult === 0,
+        detail: `Task Scheduler last result 0x${(lastTaskResult >>> 0).toString(16)}`,
+        at: lastStartedAt,
+      }
+      : undefined,
+  };
+};
+
+/**
+ * What the exported task XML says about when the task was registered and
+ * whether its principal can run without a logged-on user. Tasks registered by
+ * earlier releases carry no registration date.
+ */
+export const windowsTaskRegistration = (xml: string) => {
+  const date = xmlElement(xmlElement(xml, "RegistrationInfo") ?? "", "Date");
+  const logonType = xmlElement(xmlElement(xml, "Principal") ?? "", "LogonType");
+  return {
+    registeredAt: date === undefined || Number.isNaN(Date.parse(date)) ? undefined : date,
+    runsOnlyWhileLoggedOn: logonType === undefined ? undefined : logonType === "InteractiveToken",
+  };
+};
+
 const windowsTaskXml = (
   definition: WindowsTaskDefinition,
   principal: string,
+  registeredAt: string,
 ): string => {
   const schedule = definition.weekdays === undefined
     ? "<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>"
@@ -472,7 +509,7 @@ const windowsTaskXml = (
   return [
     '<?xml version="1.0" encoding="UTF-16"?>',
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
-    `<RegistrationInfo><Description>${escapeXml(definition.description)}</Description></RegistrationInfo>`,
+    `<RegistrationInfo><Date>${registeredAt}</Date><Description>${escapeXml(definition.description)}</Description></RegistrationInfo>`,
     `<Triggers><CalendarTrigger><StartBoundary>2000-01-01T${definition.localTime}:00</StartBoundary>`,
     `<Enabled>true</Enabled>${schedule}</CalendarTrigger></Triggers>`,
     `<Principals><Principal id="Author"><UserId>${escapeXml(principal)}</UserId>`,
@@ -1229,26 +1266,11 @@ export const windowsMachineStateLayer = (
           "$Next=if($Task.NextRunTime.Year -lt 2000){''}else{$Task.NextRunTime.ToUniversalTime().ToString('o')}",
           "[Console]::Out.Write(('{0}|{1}|{2}|{3}' -f [int]$Task.State,[int]$Task.LastTaskResult,$Last,$Next))",
         ].join(";"), schedulerTimeoutMilliseconds).pipe(
-          Effect.map((probe) => {
-            const fields = /^(-?\d+)\|(-?\d+)\|([^|]*)\|([^|]*)$/u.exec(
-              Buffer.from(probe.standardOutput).toString("utf8").trim(),
-            );
-            if (probe.exitCode !== 0 || fields === null) return undefined;
-            const lastTaskResult = Number(fields[2]);
-            // 0x41303: the task has not run yet; 0x41301: it is running now.
-            const ran = lastTaskResult !== 0x41303 && lastTaskResult !== 0x41301 && fields[3] !== "";
-            return {
-              state: Number(fields[1]),
-              nextRun: fields[4] === "" ? undefined : fields[4],
-              lastResult: ran
-                ? {
-                  succeeded: lastTaskResult === 0,
-                  detail: `Task Scheduler last result 0x${(lastTaskResult >>> 0).toString(16)}`,
-                  at: fields[3],
-                }
-                : undefined,
-            };
-          }),
+          Effect.map((probe) =>
+            probe.exitCode === 0
+              ? parseWindowsTaskRuntime(Buffer.from(probe.standardOutput).toString("utf8"))
+              : undefined
+          ),
           Effect.catch(() => Effect.succeed(undefined)),
         );
       const nativeScheduler: SchedulerBackend = {
@@ -1295,6 +1317,7 @@ export const windowsMachineStateLayer = (
                 && schedule !== undefined
                 && intervalMatches
                 && weekdaysMatch;
+              const registration = windowsTaskRegistration(xml);
               return taskRuntimeState(expected.serviceName).pipe(
                 Effect.map((runtime): SchedulerInspection => ({
                   installed: true,
@@ -1310,6 +1333,9 @@ export const windowsMachineStateLayer = (
                   active: windowsTaskTriggerEnabled(trigger) && runtime?.state !== 1,
                   nextElapse: runtime?.nextRun,
                   lastResult: runtime?.lastResult,
+                  lastStartedAt: runtime?.lastStartedAt,
+                  registeredAt: registration.registeredAt,
+                  runsOnlyWhileLoggedOn: registration.runsOnlyWhileLoggedOn,
                 })),
               );
             }),
@@ -1361,7 +1387,9 @@ export const windowsMachineStateLayer = (
             }))
             : createScheduledTask(
               definition.serviceName,
-              windowsTaskXml(desired, currentUser),
+              // The registration time lets `schedule status` tell a run
+              // skipped while logged off from one before the task existed.
+              windowsTaskXml(desired, currentUser, new Date().toISOString().replace(/\.\d{3}Z$/u, "Z")),
             );
         },
         remove: (definition) =>

@@ -14,6 +14,7 @@ import { macosCalendar } from "./macos-schedule.ts";
 import {
   daylightSavingGapWarning,
   nextScheduledRun,
+  previousScheduledRun,
   resolvedScheduleTimezone,
 } from "./schedule-calendar.ts";
 import {
@@ -150,6 +151,34 @@ const lingerUser = (): string => {
 const macosTimezoneRecovery =
   "the macOS time zone changed after boot; launchd may retain the old zone even if the job is reinstalled. Reboot the Mac, sign in to the graphical session, then check `canonfig schedule status` before relying on scheduled runs";
 
+const windowsLoggedOnOnlyWarning =
+  "the Task Scheduler task uses an interactive logon, so it only runs while you are logged on to Windows; a run due while you are logged off or the machine is off is skipped, not caught up";
+
+/**
+ * Task Scheduler may start a trigger a little late; a run due within this
+ * window is not yet reported as missed.
+ */
+const missedRunGraceMilliseconds = 5 * 60 * 1000;
+
+/**
+ * The most recent due start a logged-on-only Windows task did not make: the
+ * calendar selected it after the task was registered and after its last start.
+ * Undefined when no run was missed or the scheduler cannot say, such as a task
+ * from an earlier release that never ran and records no registration time.
+ */
+const missedLoggedOnRun = (
+  schedule: NormalizedSyncSchedule,
+  inspection: SchedulerInspection,
+): string | undefined => {
+  if (inspection.runsOnlyWhileLoggedOn !== true) return undefined;
+  const due = previousScheduledRun(schedule, Date.now() - missedRunGraceMilliseconds);
+  const known = [inspection.lastStartedAt, inspection.registeredAt]
+    .flatMap((value) => value === undefined ? [] : [Date.parse(value)])
+    .filter((value) => !Number.isNaN(value));
+  if (due === undefined || known.length === 0) return undefined;
+  return Date.parse(due) > Math.max(...known) ? due : undefined;
+};
+
 /** The effective state of the native job with what it means for the user. */
 const statusFrom = (
   schedule: NormalizedSyncSchedule,
@@ -187,11 +216,18 @@ const statusFrom = (
     }
   })();
   const gap = daylightSavingGapWarning(schedule, definition.platform);
+  const missedRun = state === "current" ? missedLoggedOnRun(schedule, inspection) : undefined;
   const warnings = [
     ...(gap === undefined ? [] : [gap]),
     ...(definition.platform === "linux" && inspection.lingering === false
       ? [`the systemd user manager stops when you log out (Linger=no), so the job only runs while you are logged in; run \`loginctl enable-linger ${lingerUser()}\` to run it while logged out`]
       : []),
+    ...(definition.platform === "windows" && inspection.runsOnlyWhileLoggedOn === true
+      ? [windowsLoggedOnOnlyWarning]
+      : []),
+    ...(missedRun === undefined
+      ? []
+      : [`the scheduled run at ${missedRun} did not start (last start ${inspection.lastStartedAt ?? "never"}): Task Scheduler skipped it because no user was logged on or the machine was off, and it does not catch up skipped runs. Run \`canonfig sync --apply\` now, and stay logged on at the scheduled time`]),
     ...(inspection.timezoneChangedSinceBoot && state !== "timezone-changed"
       ? [macosTimezoneRecovery]
       : []),
@@ -209,6 +245,8 @@ const statusFrom = (
     effectiveCalendar: inspection.effectiveCalendar,
     lastNativeRun: inspection.lastResult,
     lingering: inspection.lingering,
+    runsOnlyWhileLoggedOn: inspection.runsOnlyWhileLoggedOn,
+    missedRun,
     warnings,
   };
 };

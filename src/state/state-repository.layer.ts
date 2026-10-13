@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { open } from "node:fs/promises";
+
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
@@ -80,6 +83,7 @@ import type {
   StartRunInput,
   StateSnapshot,
   StoredEnrollmentInvitation,
+  StoredResourceBlob,
   VerificationEvidence,
 } from "./state-repository.types.ts";
 import { stateFormatVersion, stateMigrations } from "./state-schema.ts";
@@ -94,14 +98,26 @@ const RevisionBlobCandidateRow = Schema.Struct({
   revision_id: ProfileRevisionId,
   resource_id: ResourceId,
 });
-const ResourceBlobRangeRow = Schema.Struct({
-  content: Schema.Unknown,
-  total_bytes: Schema.Number,
-});
 const ResourceBlobRangeHexRow = Schema.Struct({
   content_hex: Schema.String,
   total_bytes: Schema.Number,
 });
+const ResourceBlobManifestRow = Schema.Struct({
+  total_bytes: Schema.Number,
+  chunk_bytes: Schema.Number,
+});
+const LegacyResourceBlobLengthRow = Schema.Struct({ total_bytes: Schema.Number });
+const LegacyResourceBlobSliceRow = Schema.Struct({ content: Schema.Uint8Array });
+const ResourceBlobChunkRow = Schema.Struct({
+  chunk_index: Schema.Number,
+  content: Schema.Uint8Array,
+});
+
+/**
+ * Bytes per resource_blob_chunks row. Storing, verifying, and serving a blob
+ * holds at most a few chunks in memory, whatever the blob's size.
+ */
+export const resourceBlobChunkBytes = 1024 * 1024;
 const RunStatusRow = Schema.Struct({
   follower_id: Schema.String,
   status: Schema.String,
@@ -1236,46 +1252,157 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
+  /** SHA-256 of a chunked blob's stored bytes, read one chunk at a time. */
+  const storedChunkedBlobDigest = Effect.fn("StateRepository.storedChunkedBlobDigest")(
+    function*(blob: typeof ContentDigest.Type, totalBytes: number, chunkBytes: number) {
+      const hash = createHash("sha256");
+      let bytes = 0;
+      const chunks = Math.ceil(totalBytes / chunkBytes);
+      for (let index = 0; index < chunks; index += 1) {
+        const rows = yield* sql`
+          SELECT chunk_index, content
+          FROM resource_blob_chunks
+          WHERE blob_id = ${blob} AND chunk_index = ${index}
+        `;
+        const chunk = (yield* decodeRows(ResourceBlobChunkRow, rows, "resource blob chunk", blob))[0];
+        if (chunk === undefined) return undefined;
+        hash.update(chunk.content);
+        bytes += chunk.content.byteLength;
+      }
+      return bytes === totalBytes ? hash.digest("hex") : undefined;
+    },
+  );
+
+  /**
+   * Store one blob as fixed-size chunks, hashing as it writes, or verify the
+   * copy already stored. Only one chunk of the blob is in memory at a time; a
+   * file blob is read from disk again, and a file that changed since it was
+   * hashed fails the publication instead of storing other bytes.
+   */
+  const storeResourceBlob = Effect.fn("StateRepository.storeResourceBlob")(
+    function*(revision: ProfileRevisionIdType, blob: StoredResourceBlob) {
+      const expectedBytes = "content" in blob ? blob.content.byteLength : blob.bytes;
+      const differentContent = new RevisionImmutableError({
+        revision,
+        message: `resource blob ${blob.id} names different immutable content`,
+      });
+      if ("content" in blob && sha256BytesHex(blob.content) !== blob.id) {
+        return yield* new RevisionImmutableError({
+          revision,
+          message: `resource blob ${blob.id} does not match its digest`,
+        });
+      }
+      const manifestRows = yield* sql`
+        SELECT total_bytes, chunk_bytes
+        FROM resource_blob_manifests
+        WHERE id = ${blob.id}
+      `;
+      const manifest = (yield* decodeRows(
+        ResourceBlobManifestRow,
+        manifestRows,
+        "resource blob manifest",
+        blob.id,
+      ))[0];
+      if (manifest !== undefined) {
+        // Content addressing makes the stored digest the whole comparison.
+        const stored = manifest.total_bytes === expectedBytes
+          ? yield* storedChunkedBlobDigest(blob.id, manifest.total_bytes, manifest.chunk_bytes)
+          : undefined;
+        if (stored !== blob.id) return yield* differentContent;
+        return;
+      }
+      // A blob stored before chunking is one resource_blobs row. It stays
+      // where it is and is compared one chunk-sized slice at a time.
+      const legacyRows = yield* sql`
+        SELECT length(content) AS total_bytes FROM resource_blobs WHERE id = ${blob.id}
+      `;
+      const legacy = (yield* decodeRows(
+        LegacyResourceBlobLengthRow,
+        legacyRows,
+        "resource blob",
+        blob.id,
+      ))[0];
+      if (legacy !== undefined) {
+        if (legacy.total_bytes !== expectedBytes) return yield* differentContent;
+        const hash = createHash("sha256");
+        for (let offset = 0; offset < legacy.total_bytes; offset += resourceBlobChunkBytes) {
+          const slices = yield* sql`
+            SELECT substr(content, ${offset + 1}, ${resourceBlobChunkBytes}) AS content
+            FROM resource_blobs
+            WHERE id = ${blob.id}
+          `;
+          const slice = (yield* decodeRows(LegacyResourceBlobSliceRow, slices, "resource blob", blob.id))[0];
+          if (slice === undefined) return yield* differentContent;
+          hash.update(slice.content);
+        }
+        if (hash.digest("hex") !== blob.id) return yield* differentContent;
+        return;
+      }
+      yield* sql`
+        INSERT INTO resource_blob_manifests (id, total_bytes, chunk_bytes)
+        VALUES (${blob.id}, ${expectedBytes}, ${resourceBlobChunkBytes})
+      `;
+      const hash = createHash("sha256");
+      let written = 0;
+      const insertChunk = (index: number, content: Uint8Array) => {
+        hash.update(content);
+        written += content.byteLength;
+        return sql`
+          INSERT INTO resource_blob_chunks (blob_id, chunk_index, content)
+          VALUES (${blob.id}, ${index}, ${content})
+        `;
+      };
+      if ("content" in blob) {
+        for (let offset = 0, index = 0; offset < blob.content.byteLength; offset += resourceBlobChunkBytes, index += 1) {
+          yield* insertChunk(index, blob.content.subarray(offset, offset + resourceBlobChunkBytes));
+        }
+      } else {
+        const unreadable = (cause: unknown) =>
+          new RevisionImmutableError({
+            revision,
+            message: `resource source ${blob.path} could not be read while publishing: ${String(cause)}`,
+          });
+        yield* Effect.acquireUseRelease(
+          Effect.tryPromise({ try: () => open(blob.path, "r"), catch: unreadable }),
+          (handle) =>
+            Effect.gen(function*() {
+              // SQLite copies a bound value, so one buffer serves every chunk.
+              const buffer = Buffer.allocUnsafe(resourceBlobChunkBytes);
+              for (let index = 0; ; index += 1) {
+                let filled = 0;
+                while (filled < buffer.byteLength) {
+                  const { bytesRead } = yield* Effect.tryPromise({
+                    try: () => handle.read(buffer, filled, buffer.byteLength - filled, null),
+                    catch: unreadable,
+                  });
+                  if (bytesRead === 0) break;
+                  filled += bytesRead;
+                }
+                if (filled > 0) yield* insertChunk(index, buffer.subarray(0, filled));
+                if (filled < buffer.byteLength || written > expectedBytes) return;
+              }
+            }),
+          (handle) => Effect.promise(() => handle.close()),
+        );
+      }
+      if (written !== expectedBytes || hash.digest("hex") !== blob.id) {
+        return yield* new RevisionImmutableError({
+          revision,
+          message: "content" in blob
+            ? `resource blob ${blob.id} does not match its digest`
+            : `resource source ${blob.path} changed while it was being published; publish again`,
+        });
+      }
+    },
+  );
+
   const publishRevision = Effect.fn("StateRepository.publishRevision")(
     function*(input: PublishRevisionInput): Effect.fn.Return<void, StateRepositoryError> {
       const revision = input.revision;
       const encoded = encodeJson(revision);
       const transaction = Effect.gen(function*() {
         for (const blob of input.blobs ?? []) {
-          if (sha256BytesHex(blob.content) !== blob.id) {
-            return yield* new RevisionImmutableError({
-              revision: revision.id,
-              message: `resource blob ${blob.id} does not match its digest`,
-            });
-          }
-          const inserted = yield* sql`
-            INSERT OR IGNORE INTO resource_blobs (id, content)
-            VALUES (${blob.id}, ${blob.content})
-            RETURNING id
-          `;
-          if (inserted.length === 0) {
-            const storedRows = yield* sql`
-              SELECT content, length(content) AS total_bytes
-              FROM resource_blobs
-              WHERE id = ${blob.id}
-            `;
-            const stored = yield* decodeRows(
-              ResourceBlobRangeRow,
-              storedRows,
-              "resource blob",
-              blob.id,
-            );
-            const storedContent = stored[0]?.content;
-            if (
-              !(storedContent instanceof Uint8Array)
-              || !Buffer.from(storedContent).equals(Buffer.from(blob.content))
-            ) {
-              return yield* new RevisionImmutableError({
-                revision: revision.id,
-                message: `resource blob ${blob.id} names different immutable content`,
-              });
-            }
-          }
+          yield* storeResourceBlob(revision.id, blob);
         }
         const existingRows = yield* sql`
           SELECT revision_json
@@ -1521,6 +1648,53 @@ const makeRepository = Effect.gen(function*() {
         message: "range bounds must be positive safe integers",
       });
     }
+    const manifestRows = yield* sql`
+      SELECT total_bytes, chunk_bytes
+      FROM resource_blob_manifests
+      WHERE id = ${input.blob}
+    `.pipe(Effect.mapError(sqlError("read resource blob manifest")));
+    const manifest = (yield* decodeRows(
+      ResourceBlobManifestRow,
+      manifestRows,
+      "resource blob manifest",
+      input.blob,
+    ))[0];
+    if (manifest !== undefined) {
+      const end = Math.min(manifest.total_bytes, input.offset + input.maximumBytes);
+      if (end <= input.offset) {
+        return { chunks: [], byteLength: 0, totalBytes: manifest.total_bytes };
+      }
+      const first = Math.floor(input.offset / manifest.chunk_bytes);
+      const last = Math.floor((end - 1) / manifest.chunk_bytes);
+      const rows = yield* sql`
+        SELECT chunk_index, content
+        FROM resource_blob_chunks
+        WHERE blob_id = ${input.blob} AND chunk_index BETWEEN ${first} AND ${last}
+        ORDER BY chunk_index
+      `.pipe(Effect.mapError(sqlError("read resource blob range")));
+      const stored = yield* decodeRows(ResourceBlobChunkRow, rows, "resource blob range", input.blob);
+      const chunks: Array<Uint8Array> = [];
+      let byteLength = 0;
+      for (const [position, row] of stored.entries()) {
+        const chunkStart = row.chunk_index * manifest.chunk_bytes;
+        if (row.chunk_index !== first + position || row.content.byteLength > manifest.chunk_bytes) break;
+        const piece = row.content.subarray(
+          Math.max(0, input.offset - chunkStart),
+          Math.min(row.content.byteLength, end - chunkStart),
+        );
+        chunks.push(piece);
+        byteLength += piece.byteLength;
+      }
+      if (byteLength !== end - input.offset) {
+        return yield* new RepositoryDecodeError({
+          entity: "resource blob range",
+          id: input.blob,
+          message: "stored blob chunks are missing or inconsistent with the blob length",
+        });
+      }
+      return { chunks, byteLength, totalBytes: manifest.total_bytes };
+    }
+    // Blobs stored before chunking: SQLite slices the one row.
     const rows = yield* sql`
       SELECT
         hex(substr(content, ${input.offset + 1}, ${input.maximumBytes})) AS content_hex,
@@ -1543,10 +1717,8 @@ const makeRepository = Effect.gen(function*() {
         message: "stored blob range has invalid hexadecimal content",
       });
     }
-    return {
-      content: Buffer.from(row.content_hex, "hex"),
-      totalBytes: row.total_bytes,
-    };
+    const content = Buffer.from(row.content_hex, "hex");
+    return { chunks: [content], byteLength: content.byteLength, totalBytes: row.total_bytes };
   });
 
   const loadAppliedResources = Effect.fn(

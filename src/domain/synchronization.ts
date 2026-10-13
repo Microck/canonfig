@@ -104,7 +104,7 @@ export type ActionDetail =
   }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
   | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }
-  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined; readonly provenance?: InstallerRecipeProvenanceType | undefined }
+  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; /** The different version the installer reported before this install. */ readonly replaces?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined; readonly provenance?: InstallerRecipeProvenanceType | undefined }
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
   | { readonly kind: "agent-task"; readonly taskId: AgentTaskId; readonly summary: string }
@@ -227,6 +227,11 @@ export type ObservedResourceState =
      */
     readonly objectKind?: ObservedObjectKind | undefined;
     readonly symlinkTo?: string | undefined;
+    /**
+     * Tools: the version the selected recipe's installer reports as
+     * installed, when it lists the package. Undefined when it cannot say.
+     */
+    readonly installedVersion?: string | undefined;
   }
   | {
     readonly state: "directory";
@@ -282,6 +287,7 @@ const InstallToolActionDetailSchema = Schema.Struct({
   method: AutomaticRecipeMethod,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
+  replaces: Schema.optional(Schema.NonEmptyString),
   indexPolicy: Schema.optional(RecipeIndexPolicy),
   source: Schema.optional(Schema.Union([
     Schema.NonEmptyString,
@@ -476,6 +482,7 @@ export const ObservedResourceStateSchema = Schema.Union([
     mode: Schema.optional(Schema.Int),
     objectKind: Schema.optional(ObservedObjectKind),
     symlinkTo: Schema.optional(Schema.NonEmptyString),
+    installedVersion: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     state: Schema.Literal("directory"),

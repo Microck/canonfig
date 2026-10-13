@@ -7,7 +7,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import type { ScheduleDefault } from "../src/domain/profile.ts";
 import { macosMachineStateLayer } from "../src/machine/macos.layer.ts";
-import type { SchedulerBackend } from "../src/machine/machine-state.types.ts";
+import type { SchedulerBackend, SchedulerInspection } from "../src/machine/machine-state.types.ts";
 import { windowsMachineStateLayer } from "../src/machine/windows.layer.ts";
 import { scheduleManagerContract } from "./contract/schedule-manager.contract.ts";
 import { ScheduleHumanActionRequiredError } from "../src/schedule/schedule-manager.errors.ts";
@@ -17,7 +17,11 @@ import {
   desiredScheduleInput,
   syncScheduleFromDefault,
 } from "../src/schedule/schedule-manager.types.ts";
-import { daylightSavingGapWarning, nextScheduledRun } from "../src/schedule/schedule-calendar.ts";
+import {
+  daylightSavingGapWarning,
+  nextScheduledRun,
+  previousScheduledRun,
+} from "../src/schedule/schedule-calendar.ts";
 import { stableRuntimeExecutable } from "../src/schedule/schedule-command.ts";
 
 const linuxEnvironment = [
@@ -153,6 +157,116 @@ describe("schedule calendar semantics", () => {
       .toBe("2026-09-02T11:30:00.000Z");
     expect(nextScheduledRun({ kind: "daily", localTime: "01:30", timezone: "America/New_York" }, now))
       .toBe("2026-09-02T05:30:00.000Z");
+  });
+
+  it("finds the most recent start already due, across weekly gaps", () => {
+    expect(previousScheduledRun({ kind: "daily", localTime: "11:30", timezone: "UTC" }, now))
+      .toBe("2026-09-01T11:30:00.000Z");
+    expect(previousScheduledRun({ kind: "daily", localTime: "12:30", timezone: "UTC" }, now))
+      .toBe("2026-08-31T12:30:00.000Z");
+    // 2026-09-01 is a Tuesday; the previous Friday is 2026-08-28.
+    expect(previousScheduledRun(
+      { kind: "weekly", weekdays: ["Fri"], localTime: "09:00", timezone: "UTC" },
+      now,
+    )).toBe("2026-08-28T09:00:00.000Z");
+  });
+});
+
+describe("Windows logged-on-only task status", () => {
+  // H4: a run skipped while nobody was logged on left `schedule status`
+  // reporting current, "installed and armed", with no warning.
+  const hour = 60 * 60 * 1000;
+  const twoHoursAgo = new Date(Date.now() - 2 * hour);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  // Windows reads the calendar in the machine's own zone.
+  const input = {
+    executable: "C:\\Program Files\\Canonfig\\canonfig.exe",
+    schedule: {
+      kind: "daily",
+      localTime: `${pad(twoHoursAgo.getHours())}:${pad(twoHoursAgo.getMinutes())}`,
+    },
+  } as const;
+  const statusWith = (runtime: Partial<SchedulerInspection>) => {
+    const scheduler: SchedulerBackend = {
+      inspect: () => Effect.succeed({
+        installed: true,
+        enabled: true,
+        active: true,
+        matches: true,
+        calendarMatches: true,
+        ...runtime,
+      }),
+      snapshot: () => Effect.die("unused"),
+      install: () => Effect.void,
+      remove: () => Effect.void,
+      restore: () => Effect.void,
+    };
+    const machine = windowsMachineStateLayer({
+      credentialPolicy: { kind: "local-file", path: "C:\\Users\\Follower\\.canonfig\\credentials" },
+      environment: windowsEnvironment,
+      schedulerBackend: scheduler,
+    });
+    return Effect.runPromise(Effect.flatMap(ScheduleManager, (manager) => manager.status(input)).pipe(
+      Effect.provide(scheduleManagerLayer.pipe(Layer.provide(machine))),
+    ));
+  };
+
+  it("warns about a run skipped while logged off and names the missed time", async () => {
+    const lastStart = new Date(Date.now() - 26 * hour).toISOString();
+    const status = await statusWith({
+      runsOnlyWhileLoggedOn: true,
+      registeredAt: new Date(Date.now() - 30 * hour).toISOString(),
+      lastStartedAt: lastStart,
+      lastResult: { succeeded: true, detail: "Task Scheduler last result 0x0", at: lastStart },
+      nextElapse: new Date(Date.now() + 22 * hour).toISOString(),
+    });
+    const due = previousScheduledRun(input.schedule)!;
+    expect(status.state).toBe("current");
+    expect(status.runsOnlyWhileLoggedOn).toBe(true);
+    expect(status.missedRun).toBe(due);
+    expect(status.warnings).toHaveLength(2);
+    expect(status.warnings[0]).toContain("only runs while you are logged on");
+    expect(status.warnings[1]).toContain(`the scheduled run at ${due} did not start`);
+    expect(status.warnings[1]).toContain("no user was logged on");
+  });
+
+  it("only states the logged-on limitation when the last due run started", async () => {
+    const status = await statusWith({
+      runsOnlyWhileLoggedOn: true,
+      registeredAt: new Date(Date.now() - 30 * hour).toISOString(),
+      lastStartedAt: new Date(twoHoursAgo.getTime() + 60_000).toISOString(),
+    });
+    expect(status.missedRun).toBeUndefined();
+    expect(status.warnings).toEqual([expect.stringContaining("only runs while you are logged on")]);
+  });
+
+  it("does not count a time that passed before the task was registered", async () => {
+    // `schedule set` never starts a run for a time already passed today.
+    const status = await statusWith({
+      runsOnlyWhileLoggedOn: true,
+      registeredAt: new Date(Date.now() - hour).toISOString(),
+    });
+    expect(status.missedRun).toBeUndefined();
+    expect(status.warnings).toHaveLength(1);
+  });
+
+  it("reports a never-started task as missed once a due time passes after registration", async () => {
+    // LastTaskResult 0x41303 (has not run) yields no last start.
+    const status = await statusWith({
+      runsOnlyWhileLoggedOn: true,
+      registeredAt: new Date(Date.now() - 30 * hour).toISOString(),
+    });
+    expect(status.missedRun).toBe(previousScheduledRun(input.schedule));
+    expect(status.warnings[1]).toContain("(last start never)");
+  });
+
+  it("adds no logged-on warning for a task that can run while logged off", async () => {
+    const status = await statusWith({
+      runsOnlyWhileLoggedOn: false,
+      lastStartedAt: new Date(Date.now() - 26 * hour).toISOString(),
+    });
+    expect(status.missedRun).toBeUndefined();
+    expect(status.warnings).toEqual([]);
   });
 });
 

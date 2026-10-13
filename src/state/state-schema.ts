@@ -506,6 +506,31 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         AND status <> 'applying'
     `;
   }),
+  // A resource_blobs row holds a whole file in one SQLite value, so storing,
+  // comparing, or serving a blob needed copies of the whole file in memory
+  // and a large Source file could exhaust it. New blobs are written as
+  // fixed-size chunks; a manifest row is inserted in the same transaction as
+  // the chunks, so a blob is visible only once complete. Rows already in
+  // resource_blobs stay readable and are served as they are.
+  "0021_resource_blob_chunks": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS resource_blob_manifests (
+        id TEXT PRIMARY KEY,
+        total_bytes INTEGER NOT NULL CHECK (total_bytes >= 0),
+        chunk_bytes INTEGER NOT NULL CHECK (chunk_bytes > 0)
+      )
+    `;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS resource_blob_chunks (
+        blob_id TEXT NOT NULL REFERENCES resource_blob_manifests(id),
+        chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+        content BLOB NOT NULL,
+        PRIMARY KEY (blob_id, chunk_index)
+      )
+    `;
+  }),
 });
 
 /** Bumped by every migration that changes what a stored run means. */

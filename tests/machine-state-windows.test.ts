@@ -20,12 +20,14 @@ import {
 
 import {
   decodeWindowsTaskXml,
+  parseWindowsTaskRuntime,
   windowsMachineStateLayer,
   windowsAccountPrincipal,
   windowsPrivateAclArguments,
   windowsRecurrenceIntervalMatches,
   windowsTaskQueryReportsAbsence,
   windowsTaskProbeReportsAbsence,
+  windowsTaskRegistration,
   windowsTaskTriggerEnabled,
   windowsWeekdaysMatch,
 } from "../src/machine/windows.layer.ts";
@@ -409,6 +411,44 @@ describe("Windows Task Scheduler inspection", () => {
     expect(windowsTaskTriggerEnabled("<Enabled>false</Enabled>")).toBe(false);
     expect(windowsTaskTriggerEnabled("<StartBoundary>2000-01-01T00:00:00</StartBoundary>"))
       .toBe(true);
+  });
+
+  it("reads the logon type and registration time from the exported task", () => {
+    // H4: the task's InteractiveToken logon is what skips runs while logged off.
+    const native = "<Task><RegistrationInfo><Date>2026-10-13T07:20:00Z</Date><Description>d</Description>"
+      + "</RegistrationInfo><Principals><Principal id=\"Author\"><UserId>S-1-5-21-1</UserId>"
+      + "<LogonType>InteractiveToken</LogonType></Principal></Principals></Task>";
+    expect(windowsTaskRegistration(native)).toEqual({
+      registeredAt: "2026-10-13T07:20:00Z",
+      runsOnlyWhileLoggedOn: true,
+    });
+    expect(windowsTaskRegistration(native.replace("InteractiveToken", "Password")))
+      .toMatchObject({ runsOnlyWhileLoggedOn: false });
+    // Tasks from earlier releases carry no registration date.
+    expect(windowsTaskRegistration("<Task><RegistrationInfo><Description>d</Description></RegistrationInfo></Task>"))
+      .toEqual({ registeredAt: undefined, runsOnlyWhileLoggedOn: undefined });
+  });
+
+  it("keeps the last start time separate from the last completed result", () => {
+    // Observed after a 07:34 trigger was skipped while logged off.
+    expect(parseWindowsTaskRuntime("3|0|2026-10-13T07:22:01.0000000Z|2026-10-14T07:34:00.0000000Z"))
+      .toEqual({
+        state: 3,
+        nextRun: "2026-10-14T07:34:00.0000000Z",
+        lastStartedAt: "2026-10-13T07:22:01.0000000Z",
+        lastResult: {
+          succeeded: true,
+          detail: "Task Scheduler last result 0x0",
+          at: "2026-10-13T07:22:01.0000000Z",
+        },
+      });
+    // 0x41303 (267011): the task has not run yet.
+    expect(parseWindowsTaskRuntime("3|267011||2026-10-13T07:01:00.0000000Z"))
+      .toMatchObject({ lastStartedAt: undefined, lastResult: undefined });
+    // 0x41301: running now; it started, but has no result yet.
+    expect(parseWindowsTaskRuntime("4|267009|2026-10-13T07:39:01.0000000Z|"))
+      .toMatchObject({ lastStartedAt: "2026-10-13T07:39:01.0000000Z", lastResult: undefined, nextRun: undefined });
+    expect(parseWindowsTaskRuntime("garbage")).toBeUndefined();
   });
 
   it("distinguishes a missing task from scheduler query failures", () => {

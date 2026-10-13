@@ -17,6 +17,7 @@ import {
   isMissingAutomaticRecipeVersion,
   recipeSourceDetails,
 } from "../domain/recipe-versions.ts";
+import { installedVersionMatches } from "./installed-tool-version.ts";
 import {
   installerRecipeProvenance,
   type InstallerRecipeProvenance,
@@ -43,6 +44,7 @@ interface InstallToolActionDetail {
   method: AutomaticRecipeMethod;
   package: string;
   version?: string;
+  replaces?: string;
   indexPolicy?: ToolRecipe["indexPolicy"];
   source?: ToolRecipe["source"];
   buildPolicy?: BuildPolicy;
@@ -913,6 +915,30 @@ const qualifiedRecipeProvenance = (
   });
 };
 
+/**
+ * The one recipe `ensure` installs a tool with on `platform`. Qualified tools
+ * also need this process's architecture. Observation queries this recipe's
+ * installer for the installed version, so both sides must pick the same one.
+ */
+export const selectToolRecipe = (
+  desired: Extract<DesiredResource, { readonly kind: "tool" }>,
+  platform: ResourcePlanningContext["platform"],
+): ToolRecipe | undefined =>
+  [...desired.recipes]
+    .filter((candidate) =>
+      candidate.platform === platform
+      && (
+        desired.qualification === undefined
+        || candidate.architecture === process.arch
+      )
+    )
+    .sort((left, right) =>
+      compareText(
+        `${left.method}\0${left.package}\0${left.version ?? ""}\0${JSON.stringify(left.source)}`,
+        `${right.method}\0${right.package}\0${right.version ?? ""}\0${JSON.stringify(right.source)}`,
+      )
+    )[0];
+
 const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
   if (context.desired.kind !== "tool") {
     throw new InvalidObservedStateError({
@@ -925,23 +951,19 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   if (context.observed.state === "unverifiable") {
     return [unresolvedAgentTask(context, `Verify or install tool ${context.desired.toolId}`)];
   }
-  if (qualification === undefined && context.observed.state === "present") {
+  const recipe = selectToolRecipe(context.desired, context.platform);
+  // The installed version, when the recipe's installer reports one that
+  // differs from the pin. A present executable alone left a tool at its old
+  // version after the profile pinned a new one.
+  const replaces = context.observed.state === "present"
+      && context.observed.installedVersion !== undefined
+      && recipe?.version !== undefined
+      && !installedVersionMatches(recipe.method, context.observed.installedVersion, recipe.version)
+    ? context.observed.installedVersion
+    : undefined;
+  if (qualification === undefined && context.observed.state === "present" && replaces === undefined) {
     return [noOp()];
   }
-  const recipe = [...context.desired.recipes]
-    .filter((candidate) =>
-      candidate.platform === context.platform
-      && (
-        qualification === undefined
-        || candidate.architecture === process.arch
-      )
-    )
-    .sort((left, right) =>
-      compareText(
-        `${left.method}\0${left.package}\0${left.version ?? ""}\0${JSON.stringify(left.source)}`,
-        `${right.method}\0${right.package}\0${right.version ?? ""}\0${JSON.stringify(right.source)}`,
-      )
-    )[0];
   if (recipe === undefined) {
     return [unresolvedAgentTask(context, `Find an installation recipe for ${context.desired.toolId}`)];
   }
@@ -960,7 +982,7 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   if (context.desired.qualification?.exclusion !== undefined) {
     return [noOp(provenance)];
   }
-  if (context.observed.state === "present") {
+  if (context.observed.state === "present" && replaces === undefined) {
     if (provenance === undefined) return [noOp()];
     if (context.applied?.installerRecipe?.fingerprint === provenance.fingerprint) {
       return [noOp(provenance)];
@@ -1045,6 +1067,7 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     package: recipe.package,
   };
   if (recipe.version !== undefined) detail.version = recipe.version;
+  if (replaces !== undefined) detail.replaces = replaces;
   if (recipe.indexPolicy !== undefined) detail.indexPolicy = recipe.indexPolicy;
   if (recipe.source !== undefined) detail.source = recipe.source;
   if (recipe.buildPolicy !== undefined) detail.buildPolicy = recipe.buildPolicy;

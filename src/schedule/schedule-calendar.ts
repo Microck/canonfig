@@ -87,18 +87,19 @@ interface ScheduledDay {
   readonly instant: number | undefined;
 }
 
-/** Each day, from today in the schedule's zone, the schedule selects. */
+/** Each day, from `firstOffset` days after today in the schedule's zone, the schedule selects. */
 function* scheduledDays(
   schedule: Exclude<NormalizedSyncSchedule, { readonly kind: "custom" }>,
   timezone: string,
   now: number,
   days: number,
+  firstOffset = 0,
 ): Generator<ScheduledDay> {
   const [hourText, minuteText] = schedule.localTime.split(":");
   const hour = Number(hourText);
   const minute = Number(minuteText);
   const today = wallClock(now, timezone);
-  for (let offset = 0; offset <= days; offset += 1) {
+  for (let offset = firstOffset; offset <= days; offset += 1) {
     const calendar = new Date(Date.UTC(today.year, today.month - 1, today.day) + offset * DAY);
     // getUTCDay is Sunday-first; scheduleWeekdays is Monday-first.
     const weekday = scheduleWeekdays[(calendar.getUTCDay() + 6) % 7]!;
@@ -125,6 +126,23 @@ export const nextScheduledRun = (
     }
   }
   return undefined;
+};
+
+/**
+ * The most recent start the calendar selected at or before `now`, if canonfig
+ * can compute it. A weekly schedule selects at least one day in any 8.
+ */
+export const previousScheduledRun = (
+  schedule: NormalizedSyncSchedule,
+  now: number = Date.now(),
+): string | undefined => {
+  if (schedule.kind === "custom") return undefined;
+  const timezone = resolvedScheduleTimezone(schedule);
+  let previous: number | undefined;
+  for (const day of scheduledDays(schedule, timezone, now, 0, -8)) {
+    if (day.instant !== undefined && day.instant <= now) previous = day.instant;
+  }
+  return previous === undefined ? undefined : new Date(previous).toISOString();
 };
 
 const gapBehavior = {

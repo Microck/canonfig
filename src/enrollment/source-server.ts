@@ -483,21 +483,22 @@ export const startSourceServer = (
               response.end();
               return;
             }
-            if (start >= blob.totalBytes || blob.content.byteLength === 0) {
+            if (start >= blob.totalBytes || blob.byteLength === 0) {
               throw new MalformedEnrollmentRequestError({
                 message: "blob range starts beyond the authorized content",
               });
             }
-            const end = start + blob.content.byteLength - 1;
+            const end = start + blob.byteLength - 1;
             response.writeHead(206, {
               "content-type": "application/octet-stream",
-              "content-length": blob.content.byteLength,
+              "content-length": blob.byteLength,
               "content-range": `bytes ${start}-${end}/${blob.totalBytes}`,
               "accept-ranges": "bytes",
               "cache-control": "no-store",
               [canonfigVersionHeader]: buildIdentity.packageVersion,
             });
-            response.end(blob.content);
+            for (const chunk of blob.chunks) response.write(chunk);
+            response.end();
             return;
           }
           sendJson(response, 404, {

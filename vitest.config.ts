@@ -31,6 +31,7 @@ export default defineProject({
       "tests/keychain-session-probe.test.ts",
       "tests/upgrade-gate.test.ts",
       "tests/synchronization-planner.test.ts",
+      "tests/installed-tool-version.test.ts",
       "tests/contract/**/*.test.ts",
       "tests/integration/**/*.test.ts",
       "tests/acceptance/**/*.test.ts",

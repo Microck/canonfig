@@ -1,5 +1,17 @@
-import { generateKeyPairSync, sign, verify } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -209,9 +221,18 @@ describe("reviewed profile publication", () => {
         SELECT
           (SELECT COUNT(*) FROM profile_revisions) AS revisions,
           (SELECT COUNT(*) FROM resource_blobs) AS blobs,
+          (SELECT COUNT(*) FROM resource_blob_manifests) AS blobManifests,
+          (SELECT COUNT(*) FROM resource_blob_chunks) AS blobChunks,
           (SELECT COUNT(*) FROM profile_revision_blobs) AS revisionBlobs,
           (SELECT COUNT(*) FROM revision_approvals) AS approvals
-      `).get()).toEqual({ revisions: 0, blobs: 0, revisionBlobs: 0, approvals: 0 });
+      `).get()).toEqual({
+        revisions: 0,
+        blobs: 0,
+        blobManifests: 0,
+        blobChunks: 0,
+        revisionBlobs: 0,
+        approvals: 0,
+      });
     } finally {
       database.close();
     }
@@ -868,7 +889,7 @@ describe("reviewed profile publication", () => {
       });
     expect(result.ranges.every((range) => range !== undefined)).toBe(true);
     expect(result.ranges.filter((range) => range?.totalBytes !== 0)
-      .every((range) => range?.content.byteLength === 3)).toBe(true);
+      .every((range) => range?.byteLength === 3)).toBe(true);
     expect(result.revision.canonicalBytes).not.toContain(png.toString("base64"));
     expect(result.revision.canonicalBytes).not.toContain("\"content\"");
   });
@@ -1106,6 +1127,57 @@ describe("reviewed profile publication", () => {
       .toEqual([sha256Hex("inside\n")]);
     expect(signing.calls).toEqual({ signed: 1, verified: 1 });
   });
+
+  it("hashes, stores, and digests source files without memory that grows with their size", () => {
+    const fixture = workspace();
+    const profileDirectory = join(fixture.directory, "profile");
+    mkdirSync(profileDirectory);
+    const mebibyte = 1024 * 1024;
+    // A cheap deterministic pattern, distinct per mebibyte so every chunk differs.
+    const block = Buffer.alloc(mebibyte);
+    for (let index = 0; index < block.length; index += 1) block[index] = (index * 31) & 0xff;
+    const writePattern = (name: string, mebibytes: number) => {
+      const hash = createHash("sha256");
+      const descriptor = openSync(join(profileDirectory, name), "w");
+      for (let index = 0; index < mebibytes; index += 1) {
+        block.writeUInt32BE(index, 0);
+        block.write(name, 4);
+        hash.update(block);
+        writeSync(descriptor, block);
+      }
+      closeSync(descriptor);
+      return hash.digest("hex");
+    };
+    writePattern("warm.bin", 32);
+    writePattern("medium.bin", 32);
+    const largeDigest = writePattern("large.bin", 160);
+    const script = join(import.meta.dirname, "fixtures", "publication", "publish-large-source.mts");
+    const output = join(fixture.directory, "result.json");
+    const child = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--expose-gc", script, fixture.database, profileDirectory, output],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 120_000 },
+    );
+    expect(child.status, child.stderr).toBe(0);
+    // SAFETY: the child writes exactly this JSON shape.
+    const result = JSON.parse(readFileSync(output, "utf8")) as {
+      readonly mediumGrowthKiB: number;
+      readonly largeGrowthKiB: number;
+      readonly digest: string;
+      readonly blobBytes: number;
+      readonly rangeBytes: number;
+      readonly rangeChunks: number;
+    };
+    expect(result.digest).toBe(largeDigest);
+    expect(result.blobBytes).toBe(160 * mebibyte);
+    expect(result.rangeBytes).toBe(8 * mebibyte);
+    expect(result.rangeChunks).toBe(8);
+    // The large file is 128 MiB bigger than the medium one. Holding a file
+    // whole adds at least one copy of it, and the old base64 and single-row
+    // SQLite path added about six (~770 MiB here). Streaming adds a bounded
+    // amount of collectable garbage that does not track file size.
+    expect(result.largeGrowthKiB - result.mediumGrowthKiB).toBeLessThan(64 * 1024);
+  }, 180_000);
 
   it("computes omitted digests as followers do and rejects a wrong one before signing", async () => {
     const fixture = workspace();

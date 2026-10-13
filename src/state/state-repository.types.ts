@@ -21,11 +21,13 @@ import type { LocalOverlayEntry } from "../synchronization/synchronization.types
 import type { McpQualificationReceipt } from "../domain/mcp-qualification.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
+import type { CompiledResourceBlob } from "../profile/compiler.ts";
 
-export interface StoredResourceBlob {
-  readonly id: ContentDigest;
-  readonly content: Uint8Array;
-}
+/**
+ * Bytes held in memory, or a regular file the repository streams into
+ * fixed-size chunks, checking it against `id` and `bytes` as it writes.
+ */
+export type StoredResourceBlob = CompiledResourceBlob;
 
 export interface PublishRevisionInput {
   readonly revision: ProfileRevision;
@@ -45,7 +47,10 @@ export interface ReadResourceBlobRangeInput {
 }
 
 export interface ResourceBlobRange {
-  readonly content: Uint8Array;
+  /** The requested bytes in order, as stored; never joined into one buffer. */
+  readonly chunks: ReadonlyArray<Uint8Array>;
+  /** Sum of the chunks' lengths. */
+  readonly byteLength: number;
   readonly totalBytes: number;
 }
 

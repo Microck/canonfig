@@ -1,9 +1,12 @@
-import { lstat, readFile, readlink, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { lstat, readlink, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
 
 import {
+  BlobId,
   ProfileRevisionId,
   ResourceId,
   Timestamp,
@@ -26,7 +29,11 @@ import {
 import type { Platform } from "../domain/resource.ts";
 import { RevisionImmutableError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
-import { compileProfileCandidate } from "./compiler.ts";
+import {
+  compileProfileCandidate,
+  type ResolvedSourceFile,
+  type ResolvedSourceFiles,
+} from "./compiler.ts";
 import type { DiscoveryScanResult } from "./discovery.ts";
 import { publicationCredentialIssue } from "./publication-credentials.ts";
 import {
@@ -406,10 +413,24 @@ const resolveSourcePath = async (
   return path;
 };
 
+/** Hash a regular file by streaming it, so memory stays bounded by the stream buffer. */
+const digestSourceFile = async (path: string): Promise<{ readonly blob: string; readonly bytes: number }> => {
+  const hash = createHash("sha256");
+  let bytes = 0;
+  for await (const chunk of createReadStream(path)) {
+    // Without an encoding, a file read stream yields Buffers.
+    if (!Buffer.isBuffer(chunk)) throw new TypeError(`${path} read stream yielded text`);
+    hash.update(chunk);
+    bytes += chunk.byteLength;
+  }
+  return { blob: hash.digest("hex"), bytes };
+};
+
 const resolveManagedFile = async (
   resource: string,
   file: ManagedFileInput,
   directory: string | undefined,
+  sources: Map<string, ResolvedSourceFile>,
 ): Promise<ManagedFileInput> => {
   if (file.symlinkTo !== undefined || file.source === undefined) return file;
   const path = await resolveSourcePath(resource, directory, file.source);
@@ -429,12 +450,16 @@ const resolveManagedFile = async (
       reason: `${path} is not a regular file or symlink`,
     });
   }
-  const content = await readFile(path);
+  const digested = await digestSourceFile(path);
+  sources.set(file.source, {
+    path,
+    blob: Schema.decodeUnknownSync(BlobId)(digested.blob),
+    bytes: digested.bytes,
+  });
   const mode = file.mode ?? (status.mode & 0o7777);
   return {
     path: file.path,
-    content: content.toString("base64"),
-    encoding: "base64",
+    source: file.source,
     executable: file.executable ?? ((mode & 0o111) !== 0),
     mode,
   };
@@ -443,12 +468,14 @@ const resolveManagedFile = async (
 const resolveResourceSource = async (
   resource: ProfileResourceInput,
   directory: string | undefined,
+  sources: Map<string, ResolvedSourceFile>,
 ): Promise<ProfileResourceInput> => {
   if (resource.spec.kind === "file") {
     const resolved = await resolveManagedFile(
       resource.id,
       { path: "", ...resource.spec },
       directory,
+      sources,
     );
     const { path: _, ...spec } = resolved;
     return { ...resource, spec: { kind: "file", ...spec } };
@@ -457,25 +484,40 @@ const resolveResourceSource = async (
     return resource;
   }
   const files = await Promise.all(
-    resource.spec.files.map((file) => resolveManagedFile(resource.id, file, directory)),
+    resource.spec.files.map((file) => resolveManagedFile(resource.id, file, directory, sources)),
   );
   return { ...resource, spec: { ...resource.spec, files } };
 };
 
+/** Resources whose `source` files were hashed, with the digests the compiler consumes. */
+export interface ResolvedResourceSources {
+  readonly resources: ReadonlyArray<ProfileResourceInput>;
+  readonly sources: ResolvedSourceFiles;
+}
+
 /**
- * Replace every authored `source` with the bytes it names, read from inside
- * `directory` (the authored profile file's directory). Publication and
- * `canonfig source digest` share this so both see the same content.
+ * Hash every authored `source` read from inside `directory` (the authored
+ * profile file's directory) by streaming it; symlink sources become
+ * `symlinkTo`. File bytes are never held whole in memory: publication streams
+ * them into storage again and rejects a file that changed in between.
+ * Publication and `canonfig source digest` share this so both see the same
+ * content.
  */
 export const resolveResourceSources = (
   resources: ReadonlyArray<ProfileResourceInput>,
   directory: string | undefined,
 ): Effect.Effect<
-  ReadonlyArray<ProfileResourceInput>,
+  ResolvedResourceSources,
   PublicationSourceError | InvalidPublicationInputError
 > =>
   Effect.tryPromise({
-    try: () => Promise.all(resources.map((resource) => resolveResourceSource(resource, directory))),
+    try: async () => {
+      const sources = new Map<string, ResolvedSourceFile>();
+      const resolved = await Promise.all(
+        resources.map((resource) => resolveResourceSource(resource, directory, sources)),
+      );
+      return { resources: resolved, sources };
+    },
     catch: (cause) =>
       cause instanceof PublicationSourceError
         ? cause
@@ -530,13 +572,13 @@ export const makePublication = (
           scannedPaths: [...input.proposal.scannedPaths],
         });
       }
-      const resolvedResources = yield* resolveResourceSources(
+      const resolved = yield* resolveResourceSources(
         unresolvedProfile.resources,
         input.profile.directory,
       );
       const profile = normalizeMachineProfile({
         ...unresolvedProfile,
-        resources: resolvedResources,
+        resources: resolved.resources,
       });
       const errors = validateMachineProfile(profile);
       if (errors.length > 0) {
@@ -548,7 +590,7 @@ export const makePublication = (
       }
 
       const encoded = yield* Effect.try({
-        try: () => compileProfileCandidate(profile),
+        try: () => compileProfileCandidate(profile, resolved.sources),
         catch: (cause) =>
           cause instanceof ProfileContractError
             ? new InvalidPublicationResourcesError(cause.errors)

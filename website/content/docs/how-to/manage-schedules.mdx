@@ -119,6 +119,15 @@ On Linux, `doctor` and `status` warn when lingering is off: "the systemd user
 manager stops when you log out (Linger=no), so the job only runs while you are
 logged in; run `loginctl enable-linger <user>` to run it while logged out".
 
+On Windows, the task uses an interactive logon, and `doctor` and `status` always
+warn: "the Task Scheduler task uses an interactive logon, so it only runs while
+you are logged on to Windows; a run due while you are logged off or the machine
+is off is skipped, not caught up". When the most recent due run did not start,
+they add a warning naming it: "the scheduled run at `<time>` did not start
+(last start `<time>`): Task Scheduler skipped it because no user was logged on
+or the machine was off". The state stays `current` because the task is still
+armed for its next run. Run `canonfig sync --apply` to catch up by hand.
+
 A follower that reaches its Source through a managed tunnel also needs that
 tunnel. A scheduled run restarts a tunnel that went down once before fetching.
 See [Run Canonfig unattended](/how-to/run-unattended).

@@ -214,6 +214,121 @@ describe("production follower orchestration", () => {
     await expect(readFile(join(followerRoot, "missing.js"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.each([
+    { installerHonorsPin: true, outcome: "Converged" },
+    { installerHonorsPin: false, outcome: "Failed" },
+  ])("reinstalls a present uv tool at its new pin and checks the installed version (installer honors pin: $installerHonorsPin)", async ({ installerHonorsPin, outcome }) => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-tool-pin-"));
+    directories.push(root);
+    const followerRoot = join(root, "follower");
+    const followerDatabase = join(root, "follower.sqlite");
+    const bin = join(followerRoot, "bin");
+    const localBin = join(followerRoot, "home", ".local", "bin");
+    const state = join(root, "installed-version");
+    const calls = join(root, "uv-calls");
+    await mkdir(bin, { recursive: true });
+    await mkdir(localBin, { recursive: true });
+    // The tool installed by an earlier revision that pinned 6.0.1.
+    await writeFile(join(localBin, "isort"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await writeFile(state, "6.0.1");
+    // A uv that keeps the installed version in a file, as `uv tool list`
+    // reports it, and installs exactly the requested `isort==<version>`.
+    await writeFile(join(bin, "uv"), `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, args.join(" ") + "\\n");
+if (args[0] === "tool" && args[1] === "list") {
+  process.stdout.write("isort v" + fs.readFileSync(${JSON.stringify(state)}, "utf8") + "\\n- isort\\n");
+} else if (args[0] === "python" && args[1] === "find") {
+  process.stdout.write(process.execPath + "\\n");
+} else if (args[0] === "venv") {
+  fs.mkdirSync(args[1], { recursive: true });
+} else if (args[0] === "pip") {
+  if (args[1] === "freeze") process.stdout.write("isort==5.13.2\\n");
+} else if (args[0] === "tool" && args[1] === "install") {
+  const requested = args.find((arg) => arg.startsWith("isort=="));
+  if (${String(installerHonorsPin)}) fs.writeFileSync(${JSON.stringify(state)}, requested.slice("isort==".length));
+} else {
+  process.exit(42);
+}
+`, { mode: 0o755 });
+    const sourceLayer = EnrollmentLive.pipe(
+      Layer.provideMerge(stateRepositoryLayer(join(root, "source.sqlite"))),
+      Layer.provideMerge(machineLayer(join(root, "source"))),
+    );
+    const sourceRuntime = ManagedRuntime.make(sourceLayer);
+    runtimes.push(sourceRuntime);
+    const profileId = decode(ProfileId)("tool-pin");
+    await sourceRuntime.runPromise(Effect.gen(function*() {
+      const source = yield* (yield* Enrollment).initializeSource();
+      const privateKey = createPrivateKey(Redacted.value(yield* (yield* MachineState).loadCredential({ reference: source.signingKeyReference })));
+      const compiled = compileProfileCandidate({
+        id: profileId, version: 2, name: "Tool pin", groups: [],
+        resources: [{
+          id: "t-isort", target: "isort", kind: "tool", policy: "ensure", dependsOn: [],
+          verify: { method: "executable-present", executable: "isort" },
+          spec: {
+            kind: "tool", toolId: "isort",
+            recipes: [{ platform: "linux", method: "uv", package: "isort", version: "5.13.2" }],
+          },
+        }],
+      });
+      const unsigned = {
+        id: decode(ProfileRevisionId)(`${profileId}:${compiled.digest}`), profileId, sequence: 1,
+        canonicalBytes: compiled.canonicalBytes, digest: compiled.digest, publishedAt: "2026-10-13T00:00:00Z",
+        groups: [], signingKeyId: source.source.keyId, resources: compiled.resources,
+      };
+      yield* (yield* StateRepository).publishRevision({
+        revision: { ...unsigned, signature: decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(revisionSigningPayload(unsigned)), privateKey).toString("base64url")}`) },
+        blobs: compiled.blobs,
+      });
+    }));
+    const server = await sourceRuntime.runPromise(startSourceServer().pipe(Effect.provide(sourceLayer)));
+    servers.push(server);
+    const invitation = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.createInvitation({
+      endpoint: server.endpoint, expiresInMilliseconds: 60_000,
+    })));
+    const followerMachine = machineLayer(followerRoot);
+    const enrolled = await Effect.runPromise(enrollFollower({ invitation, followerName: "Pin follower" }).pipe(Effect.provide(followerMachine)));
+    const followerRepository = stateRepositoryLayer(followerDatabase);
+    await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.saveFollowerSynchronizationConfiguration({
+      sourceIdentity: enrolled.source,
+      configuration: {
+        schemaVersion: 1, follower: { ...enrolled.follower, credentialReference: enrolled.credentialReference },
+        selectedProfile: profileId,
+        source: { endpoint: server.endpoint, tlsFingerprint: enrolled.tlsFingerprint, signingFingerprint: enrolled.source.publicKeyFingerprint },
+        credentialReference: enrolled.credentialReference,
+        cacheDirectory: join(root, "cache"), stateLocation: followerDatabase,
+        agentPolicy: "deterministic-only", scheduledInvocation: defaultScheduledInvocation, updatedAt: "2026-10-13T00:00:00Z",
+      },
+    })).pipe(Effect.provide(followerRepository)));
+    const application = Layer.mergeAll(followerRepository, followerMachine, AgentResolutionLive,
+      SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, followerMachine))));
+
+    const planned = await Effect.runPromise(synchronizeFollower(followerDatabase, "plan").pipe(Effect.provide(application)));
+    expect(planned.plan.actions.filter((action) => action.resource === "t-isort")).toEqual([
+      expect.objectContaining({
+        kind: "install-tool",
+        detail: expect.objectContaining({ version: "5.13.2", replaces: "6.0.1" }),
+      }),
+    ]);
+    // Planning only listed the installed tools.
+    expect((await readFile(calls, "utf8")).trim().split("\n").every((call) => call.startsWith("tool list"))).toBe(true);
+
+    const applied = await Effect.runPromise(synchronizeFollower(followerDatabase, "apply").pipe(Effect.provide(application)));
+    expect(applied.outcome).toMatchObject({ outcome });
+    if (installerHonorsPin) {
+      expect(await readFile(state, "utf8")).toBe("5.13.2");
+      const replanned = await Effect.runPromise(synchronizeFollower(followerDatabase, "plan").pipe(Effect.provide(application)));
+      expect(replanned.plan.actions.filter((action) => action.resource === "t-isort").map((action) => action.kind))
+        .toEqual(["no-op"]);
+    } else {
+      expect(applied.outcome).toMatchObject({
+        reason: expect.stringContaining("reports isort 6.0.1 installed, not the pinned 5.13.2"),
+      });
+    }
+  });
+
   it("keeps follower text across adoption, local edits, Source replacement, and removal", async () => {
     const root = mkdtempSync(join(tmpdir(), "canonfig-text-orchestration-"));
     directories.push(root);

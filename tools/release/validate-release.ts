@@ -198,10 +198,12 @@ const validatePackageContents = (
   }
   // The public compiler ships its transitive declaration graph so consumers
   // get the same recursive profile contract without private dist imports. The
-  // 4.0 byte transport, Source service, and client configuration modules bring
-  // the measured package to 426,943 packed / 2,013,419 unpacked bytes. Keep
-  // a small margin while still rejecting unintended assets or stale output.
-  if (artifact.size > 440_000 || artifact.unpackedSize > 2_100_000) {
+  // 4.0 byte transport, Source service, and client configuration modules, plus
+  // installed-version checks, chunked blob storage and Windows schedule
+  // warnings, bring the measured package to 441,827 packed / 2,068,904
+  // unpacked bytes. Keep a small margin while still rejecting unintended
+  // assets or stale output.
+  if (artifact.size > 455_000 || artifact.unpackedSize > 2_150_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );

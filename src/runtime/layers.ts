@@ -569,12 +569,16 @@ const sourceCommandsLayer: Layer.Layer<
               message: `profile ${authored.id} in ${input.profilePath} declares no resource ${input.resource}`,
             });
           }
-          const resources = yield* mapFailure(resolveResourceSources(
+          const resolved = yield* mapFailure(resolveResourceSources(
             authored.resources,
             dirname(input.profilePath),
           ));
           const digests = yield* Effect.try({
-            try: () => profileContentDigests({ ...authored, resources }),
+            try: () =>
+              profileContentDigests(
+                { ...authored, resources: resolved.resources },
+                resolved.sources,
+              ),
             catch: (cause) =>
               cause instanceof ProfileContractError
                 ? invalidResourcesFailure(cause.errors)
