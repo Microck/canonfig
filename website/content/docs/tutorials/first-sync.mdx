@@ -27,6 +27,17 @@ On both machines you need Node.js 24 or newer, npm, and the same user account
 you run Claude Code and Codex under. If A and B are different hosts, B also
 needs SSH access to A.
 
+If Node.js is missing, install it from [nodejs.org](https://nodejs.org/en/download)
+or your package manager. Without administrator rights, unpack the official
+binary archive into your home directory, add its `bin` directory (Windows: the
+unpacked folder) to your user `PATH`, and point npm at a user-writable prefix
+with `npm config set prefix ~/.local` on Linux or macOS. On Windows the default
+`%APPDATA%\npm` prefix is already user-writable.
+
+Canonfig manages your client's configuration; it does not install the client.
+Install Claude Code or Codex on each machine yourself before you check that a
+machine is client-functional.
+
 This tutorial starts from new 4.0.0 installations. If either account already
 uses 3.2.x, preserve that installation and follow the
 [fresh-install guide](/how-to/upgrade) on separate machines or OS accounts.

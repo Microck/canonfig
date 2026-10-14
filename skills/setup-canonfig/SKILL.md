@@ -234,6 +234,12 @@ Preserve pins, identity, SQLite state, journals, cache, follower edits, and harn
 ownership records. Resume from evidence; do not reinstall, reenroll, republish,
 reset trust, or force ownership just because setup is invoked again.
 
+A machine set up with the direct commands (`source init`, `source publish`,
+`follower enroll`, `sync --apply`, `schedule set`) has no setup journal. An
+empty journal does not mean setup is missing: read `canonfig status --json`,
+`canonfig source service status --json` and `canonfig schedule status --json`,
+and treat those as the completed-stage evidence instead of rerunning setup.
+
 ### 5. Verify and report
 
 Use the completion checklist in both modes. Separate discovered, selected,
