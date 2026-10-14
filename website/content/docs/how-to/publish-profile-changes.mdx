@@ -1,0 +1,204 @@
+---
+title: "How-to: update and republish a profile"
+description: Change what followers receive, add or remove resources, pin tools, and roll profile content back by publishing again.
+---
+
+Followers never pull files from the Source Machine's disk. They receive only
+what you publish, as signed, immutable **Profile Revisions**. Every change,
+whether new content, a new resource, or a removal, is the same loop on the
+Source:
+
+1. edit the source files or the profile file;
+2. check the profile with `canonfig source digest`;
+3. publish it with `canonfig source publish`;
+4. followers apply the new revision at their next scheduled run, or at once
+   with `canonfig sync --apply`.
+
+This guide assumes the profile from the
+[first-sync tutorial](/tutorials/first-sync). The
+[profile reference](/reference/profile-schema) lists every field.
+
+## Decide where the profile lives
+
+Every `source` path is relative to the profile file's directory, must not
+contain `..`, and must resolve (after following symlinks) inside that
+directory. That leaves two layouts.
+
+**Profile in your home directory.** Put the profile at
+`~/canonfig.profile.jsonc`, as in the tutorial. Sources such as
+`.claude/CLAUDE.md` point at the live files, so editing
+`~/.claude/CLAUDE.md` and publishing is the whole update. The catch: whatever
+you publish is exactly what is on A's disk at that moment, including
+experiments.
+
+**Profile in a dedicated directory or Git repository.** Keep the profile and
+copies of the managed files together, for example in `~/canonfig-profile`, and
+copy a file in when you want followers to get it:
+
+```bash
+mkdir -p ~/canonfig-profile/claude
+cp ~/.claude/CLAUDE.md ~/canonfig-profile/claude/CLAUDE.md
+git -C ~/canonfig-profile add -A
+git -C ~/canonfig-profile commit -m "Update CLAUDE.md"
+```
+
+In `~/canonfig-profile/profile.jsonc`, the source is then `claude/CLAUDE.md`.
+You can review a change before publishing it, and the Git history gives you
+every earlier state. A symlink inside that directory that points back at
+`~/.claude/CLAUDE.md` does not work: its real path is outside the profile
+directory, so publication refuses it. Copy the file instead. (A link that
+should exist as a link on followers is authored with `symlinkTo`.)
+
+Config resources usually carry their values inline in `spec.keys`, so you edit
+them in the profile file in either layout.
+
+## Check, then publish
+
+```bash
+canonfig source digest --profile-file ~/canonfig.profile.jsonc
+canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer "$USER"
+```
+
+`source digest` reads the profile exactly as publication does, including every
+`source` file, and prints each resource's content digest. It never signs or
+publishes, and it exits 0 even when a declared digest does not match, so you can
+use it to find the right value. Add `--resource <id>` to check one resource.
+
+`source publish` validates again, signs, and prints the profile, the revision
+sequence, and each resource. Typical refusals, all exit 2 before anything is
+signed:
+
+| Message | Fix |
+| --- | --- |
+| "resource `<id>` cannot publish source `<src>`: ..." | The source is absolute, contains `..`, resolves outside the profile directory, is missing, or is not a regular file or symlink. |
+| "resource `<id>` declares verify.digest `<declared>`, but its published content has digest `<computed>`" | Set `verify.digest` to the computed value, or omit `digest` and keep `"verify": { "method": "digest" }` so publish computes it. |
+| "authored profile file `<path>` could not be read" | The `--profile-file` path is wrong. |
+| "authored profile file is malformed or invalid: ..." | The message lists up to five problems, each with its path in the file. |
+| "... cannot be carried exactly: integers must be between -9007199254740991 and 9007199254740991 ..." | Canonfig does not round numbers; write a larger value as a string if its consumer accepts one. |
+
+## What republishing does
+
+- **Same content as the latest revision:** publish returns that latest
+  revision unchanged, with the same ID and sequence. Nothing new reaches
+  followers.
+- **Anything else**, including content equal to an **older** revision: a new
+  revision with the next sequence number. Afterwards the latest revision is
+  always what you just published.
+
+Followers take the highest sequence. So republishing older content is the
+supported way to **roll back profile content**. With the Git layout:
+
+```bash
+git -C ~/canonfig-profile checkout HEAD~1 -- .
+canonfig source digest --profile-file ~/canonfig-profile/profile.jsonc
+canonfig source publish --profile-file ~/canonfig-profile/profile.jsonc --reviewer "$USER"
+```
+
+Followers then move forward to that new sequence, which has the old content.
+There is no command that makes followers go back to an earlier sequence number.
+
+A profile with no resources is refused: "nothing to publish: the profile
+declares no resources and the proposal from `<paths>` found no accepted tool or
+skill. Author resources in a profile file and publish it with --profile-file, or
+pass --allow-empty to publish an empty revision on purpose".
+
+## Add, change, or remove resources
+
+Add a resource by adding an entry to `resources` with a new, unique `id`,
+running `source digest`, and publishing. What followers do with each kind of
+change:
+
+| Change on the Source | What a follower does at its next apply |
+| --- | --- |
+| New or changed `file` (policy `replace`) | Writes it. The file is Source-owned: a local edit on the follower is overwritten. |
+| New or changed `config` keys (policy `merge`) | Sets the owned keys and leaves every other key in the file alone. |
+| Config key dropped from the profile | Removes the key it owned, unless the follower claimed it with a Local Overlay. |
+| New or changed `skill` (policy `replace-if-unmodified`) | Updates the skill if nobody changed it on the follower. A locally edited skill is kept and reported as Follower Drift (exit 4); see [Recover](/how-to/recover#resolve-follower-drift). |
+| Resource removed from the profile | Removes the file, keys, or skill it wrote, but only if they still match what it last applied. A copy changed on the follower is left in place. |
+| `tool` or `credential` resource removed | Nothing is uninstalled or deleted. Installed tools and local credentials are never removed automatically. |
+
+To keep a key on one follower only, claim it there with
+`canonfig overlay set <resource-id> --target <path> --key <config.path>`. Files
+and skills cannot be claimed that way.
+
+## Add tools
+
+`source scan` is tool discovery only. It reads the files you name and proposes
+`tool` resources, for example the npm package behind an MCP server command. It
+never proposes file, config, or skill resources:
+
+```bash
+canonfig source scan --file ~/.codex/config.toml --file ~/.claude.json
+```
+
+Each proposed tool is `accepted` or `needs-review`. Evidence needs review when
+the scan cannot settle it on its own: inline Markdown prose, an incomplete
+`canonfig.tools` entry, or several copies of an executable on `PATH`. The scan
+output lists those under "needs review".
+
+There are two ways to publish tools.
+
+**Merge the accepted tools of a file into your profile.** `--proposal <path>`
+scans that file at publish time and adds its accepted tools to the resources in
+the profile file. A resource in the profile file with the same `id` as a
+discovered tool wins:
+
+```bash
+canonfig source publish --profile-file ~/canonfig.profile.jsonc --proposal ~/.codex/config.toml --reviewer "$USER"
+```
+
+If that file has any evidence that needs review, publication stops with Human
+Action Required (exit 3): "the proposal has evidence that needs review: ...".
+A proposal with unreviewed evidence cannot be published with `--proposal`.
+
+**Author the tool resource yourself.** This is the way out of needs-review
+evidence, and it gives you full control. Add a `tool` resource with a recipe
+per platform and an exact version:
+
+```jsonc title="a tool resource in ~/canonfig.profile.jsonc"
+{
+  "id": "typescript",
+  "kind": "tool",
+  "target": "tsc",
+  "spec": {
+    "kind": "tool",
+    "toolId": "typescript",
+    "recipes": [
+      { "platform": "linux", "method": "npm", "package": "typescript", "version": "5.6.3" },
+      { "platform": "macos", "method": "npm", "package": "typescript", "version": "5.6.3" }
+    ]
+  },
+  "verify": { "method": "executable-present", "executable": "tsc" }
+}
+```
+
+Use the real package name and the exact version you tested on A. Every
+automatic installer recipe (npm, pnpm, bun, brew, apt, winget, uv, cargo) must
+pin an exact `version`. A recipe without one is refused at publish, not later on
+a follower, for example: "installer uv requires an exact "version" so every
+follower installs the same build".
+
+On the follower, apply installs the tool with the recipe for its platform when
+the tool is missing, then runs the declared verification. The example has no
+Windows recipe, so a Windows follower would report Human Action Required for
+it. See [Tool discovery and Installation Recipes](/explanation/tools-and-recipes)
+for recipe fields and how verifiers find executables.
+
+## Get the change to followers
+
+A follower applies the latest revision at its next scheduled run. To see and
+apply it right away, on the follower:
+
+```bash
+canonfig sync --plan
+canonfig sync --apply
+```
+
+The plan names every action, for example `write-file` or `write-config` with
+the keys it sets, and what it will remove. After apply,
+`canonfig status` shows the applied revision in the completion receipt. If the
+new revision needs a person on the follower, such as a login, a drifted skill,
+or a follower config file that does not parse, the plan and the result say
+which resource and why. Apply stops at that resource: resources applied before
+it stay applied, later ones are skipped until you repair it and run
+`sync --apply` again; see [Recover](/how-to/recover).

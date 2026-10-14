@@ -41,10 +41,14 @@ Do not call a degraded, partially applied, or merely downloaded follower
 ### Source Machine
 
 - intended user owns one Source identity;
-- profile authoring and discovery inputs are identified;
+- the authored profile file is identified, `canonfig source digest` passed on
+  it, and tool-discovery inputs (`--file`) are listed separately;
 - requested publication has revision ID, profile ID, sequence, digest, and
   publication time;
 - `profile show` matches the reviewed candidate;
+- `canonfig source service status` reports `running` when followers must sync
+  unattended, with the platform's unattended mode stated (Linux lingering on or
+  off, macOS desktop session, Windows logon);
 - unresolved evidence or recipes are reported rather than silently accepted.
 
 ### Follower Machine
@@ -53,11 +57,62 @@ Do not call a degraded, partially applied, or merely downloaded follower
 - source TLS and signing fingerprints reported as pinned, without exposing key
   material;
 - selected profile, revision, and groups reported;
-- final status independently reports `Converged`;
+- this follower's own `canonfig status` independently reports `Converged`;
 - credential references resolve through Secret Service, Keychain, or Credential
   Manager as appropriate;
+- client trust and hook review steps given (see below), with `clientLoaded`
+  reported as `not-verified`;
 - requested schedule matches the systemd user timer, launchd user agent, or
-  per-user Task Scheduler task.
+  per-user Task Scheduler task; `scheduled` in the completion receipt becomes
+  `verified` only after a real scheduled run completed.
+
+The Source has no fleet view. On the Source, `canonfig status --follower <id>`
+shows only that follower's enrollment. Each follower's own `canonfig status` is
+its completion evidence; report followers without that evidence as pending.
+
+### Setup-agent execution permissions
+
+Run Canonfig as the intended machine user. A project sandbox is not proof of
+access to that user's state, credential provider, or native scheduler.
+
+State commands can open SQLite for writing even when they only report status.
+Authorize access to the user's Canonfig state directory, normally
+`~/.canonfig`, including SQLite sidecars. Once that directory exists, Codex can
+use its supported scoped directory grant, for example:
+
+```bash
+codex --sandbox workspace-write --ask-for-approval on-request --add-dir "$HOME/.canonfig"
+```
+
+If the state directory does not exist yet, run the approved initial Canonfig
+setup command through the agent's per-command native execution approval, then
+grant the created state directory. Keep the selected project context; do not
+grant the entire home directory or change state-file permissions.
+
+The directory grant does not authorize native Secret Service, Keychain,
+Credential Manager, or scheduler IPC. Request the agent's supported
+per-command approval for the exact required Canonfig diagnostic or setup
+command in the intended user's native session. Preserve the original blocked
+probe. Without that access, report credential or scheduler inspection as
+blocked or indeterminate, not broken, ready, or verified. Do not weaken the
+credential policy or bypass the agent sandbox globally.
+
+### Client trust after apply
+
+`Converged` means files are in place and verified, not that a client accepted
+them. Canonfig never copies trust decisions between machines. Tell the operator:
+
+- Claude Code: restart it; if it reports hooks changed outside the app, review
+  them in `/hooks`; trust each project folder when asked.
+- Codex: trust each project directory when asked; hooks from
+  `~/.codex/hooks.json` load in a review state and do not run until trusted in
+  `/hooks`.
+- Antigravity CLI: start `agy` in the project and invoke a managed MCP tool
+  to confirm that the changed server loaded.
+
+`clientLoaded` stays `not-verified` unless the profile declares a verification
+that proves a client loaded the resource. Never report it as verified from file
+evidence.
 
 ### Project harness
 
@@ -96,7 +151,7 @@ Setup result: complete
 Machine
 - role: Follower Machine
 - name: laptop
-- Canonfig: 3.2.1
+- Canonfig: 4.0.0
 
 Trust
 - Source endpoint: https://127.0.0.1:17342
@@ -114,6 +169,10 @@ Schedule
 - daily@09:00 Europe/Madrid
 - mechanism: native user scheduler
 - state: current
+
+Clients
+- clientLoaded: not-verified
+- trust and hook review: steps given for Claude Code and Codex
 
 Unresolved
 - none

@@ -130,7 +130,7 @@ Detected: <verified existing/profile schedule and local timezone, when known>
 Recommended: 1 — preserve a working schedule, or remain manual until first convergence.
 Options:
 1. Keep existing / remain manual — make no scheduler change.
-2. Use <verified profile default> — follow the Source's calendar.
+2. Use <verified profile default> — install the Source's suggested calendar with `schedule set --default`.
 3. Daily at <proposed time and timezone> — use an explicitly labelled proposal.
 4. Other (type your own) — give a supported daily/weekly calendar and timezone.
 ```

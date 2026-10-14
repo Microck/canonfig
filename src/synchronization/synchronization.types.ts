@@ -26,7 +26,6 @@ import type {
 import type { McpQualificationInput } from "../domain/mcp-qualification.ts";
 import type { AgentHarnessConfiguration } from "../agent/agent-resolution.types.ts";
 import type { AgentResolution } from "../agent/agent-resolution.service.ts";
-import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
 
 /** Transfer metadata is deliberately separate from a resource's Apply Policy. */
 export interface AvailableBlob {

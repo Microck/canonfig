@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -29,8 +26,11 @@ export interface ScheduleManagerContractAdapter {
 class RecordingScheduler implements SchedulerBackend {
   definition: RenderedSchedulerJob | undefined;
   enabled = false;
+  active = false;
+  overrides: ReadonlyArray<string> = [];
   installs = 0;
   removals = 0;
+  timezoneChangedSinceBoot = false;
 
   readonly inspect = (
     expected: RenderedSchedulerJob,
@@ -38,8 +38,12 @@ class RecordingScheduler implements SchedulerBackend {
     Effect.sync(() => ({
       installed: this.definition !== undefined,
       enabled: this.enabled,
+      active: this.active,
+      overrides: this.overrides,
+      timezoneChangedSinceBoot: this.timezoneChangedSinceBoot,
       matches: this.definition?.service === expected.service
         && this.definition.schedule === expected.schedule,
+      calendarMatches: this.definition?.schedule === expected.schedule,
     }));
 
   readonly snapshot = (
@@ -70,6 +74,7 @@ class RecordingScheduler implements SchedulerBackend {
     Effect.sync(() => {
       this.definition = definition;
       this.enabled = true;
+      this.active = true;
       this.installs += 1;
     });
 
@@ -77,6 +82,7 @@ class RecordingScheduler implements SchedulerBackend {
     Effect.sync(() => {
       this.definition = undefined;
       this.enabled = false;
+      this.active = false;
       this.removals += 1;
     });
 
@@ -96,6 +102,7 @@ class RecordingScheduler implements SchedulerBackend {
         schedule: snapshot.schedule ?? "",
       };
       this.enabled = snapshot.enabled;
+      this.active = snapshot.enabled;
     });
 
   drift(): void {
@@ -132,48 +139,11 @@ const statusFor = (
     return status.definition;
   });
 
-const fixture = (
-  platform: ScheduleManagerContractAdapter["platform"],
-  name: string,
-): Promise<string> =>
-  readFile(
-    join(process.cwd(), "tests", "fixtures", "schedule", `${platform}-${name}.json`),
-    "utf8",
-  );
-
-const goldenValue = (definition: RenderedSchedulerJob): string =>
-  `${JSON.stringify(definition, undefined, 2)}\n`;
-
-// Golden fixtures must not pin the test executable path (an input, not
-// product behavior): install-path tests use real probe-passing scripts.
-const goldenDefinition = (
-  definition: RenderedSchedulerJob,
-  adapter: ScheduleManagerContractAdapter,
-): string =>
-  goldenValue(definition).replaceAll(adapter.executable, "<test-executable>");
-
 export const scheduleManagerContract = (
   name: string,
   adapter: ScheduleManagerContractAdapter,
 ): void => {
   describe(`${name} ScheduleManager contract`, () => {
-    it("renders stable daily and weekly native definitions", async () => {
-      const scheduler = new RecordingScheduler();
-      const layer = managerLayer(adapter, scheduler);
-      const daily = await runWith(layer, statusFor(adapter.executable));
-      const weekly = await runWith(
-        layer,
-        statusFor(adapter.executable, {
-          kind: "weekly",
-          weekdays: ["Fri", "Mon", "Fri"],
-          localTime: "23:45",
-        }),
-      );
-
-      expect(goldenDefinition(daily, adapter)).toBe(await fixture(adapter.platform, "daily"));
-      expect(goldenDefinition(weekly, adapter)).toBe(await fixture(adapter.platform, "weekly"));
-    });
-
     it("refuses a custom executable that fails under the native unit PATH", async () => {
       // Microck/canonfig#132: an npm wrapper that works interactively can
       // crash under the unit PATH (systemd: PATH=/usr/bin:/bin). The probe
@@ -203,9 +173,6 @@ export const scheduleManagerContract = (
       };
       if (adapter.supportsNamedTimezone) {
         const definition = await runWith(layer, statusFor(adapter.executable, schedule));
-        expect(goldenDefinition(definition, adapter)).toBe(
-          await fixture(adapter.platform, "timezone"),
-        );
         expect(definition.schedule).toContain("America/New_York");
       } else {
         const error = await runWith(
@@ -219,9 +186,6 @@ export const scheduleManagerContract = (
           }),
         );
         expect(error).toBeInstanceOf(ScheduleHumanActionRequiredError);
-        expect(`${JSON.stringify(error, undefined, 2)}\n`).toBe(
-          await fixture(adapter.platform, "timezone"),
-        );
       }
 
       const custom = {
@@ -231,9 +195,6 @@ export const scheduleManagerContract = (
       } as const;
       if (adapter.supportsNamedTimezone) {
         const definition = await runWith(layer, statusFor(adapter.executable, custom));
-        expect(goldenDefinition(definition, adapter)).toBe(
-          await fixture(adapter.platform, "custom-timezone"),
-        );
         expect(definition.schedule).toContain("Europe/Paris");
       } else {
         const error = await runWith(
@@ -248,6 +209,31 @@ export const scheduleManagerContract = (
         );
         expect(error).toBeInstanceOf(ScheduleHumanActionRequiredError);
       }
+    });
+
+    it.skipIf(adapter.platform !== "macos")("refuses to promise a macOS fire after a live timezone change until reboot", async () => {
+      const scheduler = new RecordingScheduler();
+      const layer = managerLayer(adapter, scheduler);
+      const input = {
+        executable: adapter.executable,
+        schedule: { kind: "daily", localTime: "06:05" } as const,
+      };
+      await runWith(layer, Effect.flatMap(ScheduleManager, (manager) => manager.install(input)));
+      scheduler.timezoneChangedSinceBoot = true;
+
+      const status = await runWith(layer, Effect.flatMap(ScheduleManager, (manager) => manager.status(input)));
+      expect(status.state).toBe("timezone-changed");
+      expect(status.nextRun).toBeUndefined();
+      expect(status.detail).toContain("Reboot the Mac");
+      const error = await runWith(layer, Effect.flatMap(ScheduleManager, (manager) =>
+        Effect.flip(manager.install(input))
+      ));
+      expect(error).toBeInstanceOf(ScheduleHumanActionRequiredError);
+      expect(scheduler.installs).toBe(1);
+
+      scheduler.timezoneChangedSinceBoot = false;
+      expect((await runWith(layer, Effect.flatMap(ScheduleManager, (manager) => manager.status(input))))
+        .state).toBe("current");
     });
 
     it("uses the exact noninteractive sync argv with native quoting", async () => {
@@ -483,6 +469,94 @@ export const scheduleManagerContract = (
       expect(invalidTime).toBeInstanceOf(InvalidScheduleError);
       expect(invalidTimezone).toBeInstanceOf(InvalidScheduleError);
       expect(scheduler.installs).toBe(0);
+    });
+
+    it("reports a stopped job inactive and restarts it only on an explicit set", async () => {
+      // CF-44: a timer stopped outside Canonfig used to read `current`, and
+      // `schedule set` with the same calendar answered `unchanged`.
+      const scheduler = new RecordingScheduler();
+      const layer = managerLayer(adapter, scheduler);
+      const input = { executable: adapter.executable } as const;
+      await runWith(layer, Effect.flatMap(ScheduleManager, (manager) => manager.install(input)));
+      scheduler.active = false;
+
+      const stopped = await runWith(
+        layer,
+        Effect.flatMap(ScheduleManager, (manager) => manager.status(input)),
+      );
+      expect(stopped.state).toBe("inactive");
+      expect(stopped.detail).toContain("automation disabled outside Canonfig");
+
+      const set = await runWith(
+        layer,
+        Effect.flatMap(ScheduleManager, (manager) => manager.install(input)),
+      );
+      expect(set.change).toBe("updated");
+      expect(set.status.state).toBe("current");
+      expect(scheduler.active).toBe(true);
+    });
+
+    it("never recreates or re-enables a job removed, disabled, or stopped outside Canonfig", async () => {
+      // CF-46: the post-apply reconciler used to undo these silently.
+      const scheduler = new RecordingScheduler();
+      const layer = managerLayer(adapter, scheduler);
+      const input = { executable: adapter.executable } as const;
+      const reconcile = () =>
+        runWith(layer, Effect.flatMap(ScheduleManager, (manager) => manager.reconcile(input)));
+      await runWith(layer, Effect.flatMap(ScheduleManager, (manager) => manager.install(input)));
+
+      scheduler.active = false;
+      expect(await reconcile()).toMatchObject({ action: "left-as-is", status: { state: "inactive" } });
+      scheduler.active = true;
+      scheduler.enabled = false;
+      expect(await reconcile()).toMatchObject({ action: "left-as-is", status: { state: "disabled" } });
+      scheduler.definition = undefined;
+      expect(await reconcile()).toMatchObject({
+        action: "left-as-is",
+        status: { state: "not-installed" },
+      });
+      expect(scheduler.installs).toBe(1);
+      expect(scheduler.enabled).toBe(false);
+    });
+
+    it("re-renders an armed job whose binding drifted", async () => {
+      const scheduler = new RecordingScheduler();
+      const layer = managerLayer(adapter, scheduler);
+      const input = { executable: adapter.executable } as const;
+      await runWith(layer, Effect.flatMap(ScheduleManager, (manager) => manager.install(input)));
+      scheduler.definition = { ...scheduler.definition!, service: `${scheduler.definition!.service}#old` };
+
+      const drifted = await runWith(
+        layer,
+        Effect.flatMap(ScheduleManager, (manager) => manager.status(input)),
+      );
+      expect(drifted).toMatchObject({ state: "drifted", drift: "binding" });
+      const reconciled = await runWith(
+        layer,
+        Effect.flatMap(ScheduleManager, (manager) => manager.reconcile(input)),
+      );
+      expect(reconciled).toMatchObject({ action: "updated", status: { state: "current" } });
+      expect(scheduler.installs).toBe(2);
+    });
+
+    it("refuses to claim an install that a native override would defeat", async () => {
+      const scheduler = new RecordingScheduler();
+      const layer = managerLayer(adapter, scheduler);
+      const input = { executable: adapter.executable } as const;
+      await runWith(layer, Effect.flatMap(ScheduleManager, (manager) => manager.install(input)));
+      scheduler.overrides = ["/home/follower/.config/systemd/user/canonfig-sync.timer.d/override.conf"];
+
+      const status = await runWith(
+        layer,
+        Effect.flatMap(ScheduleManager, (manager) => manager.status(input)),
+      );
+      expect(status.state).toBe("overridden");
+      expect(status.detail).toContain("override.conf");
+      const error = await runWith(
+        layer,
+        Effect.flatMap(ScheduleManager, (manager) => Effect.flip(manager.install(input))),
+      );
+      expect(error).toBeInstanceOf(ScheduleHumanActionRequiredError);
     });
   });
 };

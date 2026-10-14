@@ -61,6 +61,7 @@ export const setupCommandsLayer = (
         plan: (input) => run(planSetup({
           roleText: input.role,
           scopeText: input.scope,
+          modeText: input.mode,
           files: input.files,
           intent: input.intent,
         }, journalPath)),

@@ -52,6 +52,8 @@ Run from a clean checkout with Node.js 24:
 
 ```bash
 npm ci
+npm audit --audit-level=low
+npm audit --omit=dev --audit-level=low
 npm run typecheck
 npm run lint
 npm test
@@ -63,6 +65,10 @@ git diff --check
 The pull request must also pass Linux, macOS, Windows, packed CLI, native
 credential-store, and acceptance jobs. Resolve all CodeRabbit P0, P1, and P2
 findings before merge.
+
+Resolve dependency advisories before freezing the release candidate. A lockfile
+change requires rebuilding and repeating acceptance on the new candidate;
+receipts for the previous artifact do not transfer.
 
 ## 5. Publish
 

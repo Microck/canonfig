@@ -2,15 +2,27 @@ import type { Hook } from "../core/schema.ts";
 import type { BuildContext, Diagnostic, TargetId } from "../core/types.ts";
 
 export function hookCommand(target: TargetId, hook: Hook): string {
-  return `node \".canonfig/.runtime/hook-runner.mjs\" --hook ${hook.id} --target ${target} --event ${hook.event}`;
+  // Antigravity executes project hooks from .agents, beside hooks.json.
+  const runner = target === "antigravity" ? "../.canonfig/.runtime/hook-runner.mjs" : ".canonfig/.runtime/hook-runner.mjs";
+  return `node "${runner}" --hook ${hook.id} --target ${target} --event ${hook.event}`;
 }
 
 export function enabledHooks(context: BuildContext): Hook[] {
   return context.config.hooks.filter((hook) => hook.enabled);
 }
 
-function timeoutSeconds(timeoutMs: number): number {
-  return Math.max(1, Math.ceil(timeoutMs / 1000));
+/** Whole-second hook timeout; a rounded value is reported so `--strict` can reject it. */
+function timeoutSeconds(target: TargetId, hook: Hook, diagnostics: Diagnostic[]): number {
+  const seconds = Math.max(1, Math.ceil(hook.timeoutMs / 1000));
+  if (seconds * 1000 !== hook.timeoutMs) {
+    diagnostics.push({
+      level: "warning",
+      code: "HOOK_TIMEOUT_ROUNDED",
+      target,
+      message: `${target} takes hook timeouts in whole seconds, so hook ${hook.id} timeoutMs ${hook.timeoutMs} was rounded up to ${seconds}s.`,
+    });
+  }
+  return seconds;
 }
 
 export const CLAUDE_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
@@ -86,7 +98,7 @@ export function claudeStyleHooks(
       hooks: [{
         type: "command",
         command: hookCommand(context.target, hook),
-        timeout: timeoutSeconds(hook.timeoutMs),
+        timeout: timeoutSeconds(context.target, hook, diagnostics),
       }],
     };
     (hooks[nativeEvent] ??= []).push(entry);
@@ -158,7 +170,7 @@ export function copilotHooks(context: BuildContext): { hooks: Record<string, unk
       bash: command,
       powershell: command,
       cwd: ".",
-      timeoutSec: timeoutSeconds(hook.timeoutMs),
+      timeoutSec: timeoutSeconds("copilot-cli", hook, diagnostics),
       ...(event === "preToolUse" || event === "postToolUse" ? { matcher: ".*" } : {}),
     });
   }
@@ -189,7 +201,7 @@ export function antigravityHooks(context: BuildContext): { entries: Record<strin
     const handler = {
       type: "command",
       command: hookCommand("antigravity", hook),
-      timeout: timeoutSeconds(hook.timeoutMs),
+      timeout: timeoutSeconds("antigravity", hook, diagnostics),
     };
     entries[`canonfig-${hook.id}`] = {
       enabled: true,

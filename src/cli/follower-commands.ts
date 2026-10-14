@@ -15,6 +15,7 @@ export interface FollowerEnrollInput {
   readonly invitation: EnrollmentInvitationGrant;
   readonly followerName: string;
   readonly selectedProfile?: ProfileId | undefined;
+  readonly timeoutMilliseconds?: number | undefined;
   /** Replace a completed enrollment instead of refusing. */
   readonly replace: boolean;
 }
@@ -24,6 +25,8 @@ export interface SynchronizeInput {
   readonly noInput: boolean;
   /** Set by the rendered native job, so fired evidence is not fakeable. */
   readonly scheduled?: boolean | undefined;
+  /** Write exact append-local adoption reviews to protected local files, never output. */
+  readonly reviewLocal?: boolean | undefined;
 }
 
 export interface RecoverInput {
@@ -35,10 +38,13 @@ export interface DoctorCommandInput {
   readonly timeoutMilliseconds: number;
 }
 
-export interface ScheduleInput {
-  readonly schedule: SyncSchedule;
-  readonly executable?: string | undefined;
-}
+export type ScheduleInput =
+  | {
+    readonly schedule: SyncSchedule;
+    readonly executable?: string | undefined;
+  }
+  /** `schedule set --default`: follow the selected profile's scheduleDefault. */
+  | { readonly profileDefault: true };
 
 export interface LocalOverlayInput {
   readonly resource: ResourceId;
@@ -63,6 +69,13 @@ export interface FollowerCommandsService {
   readonly enroll: (
     input: FollowerEnrollInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  /**
+   * Remove this machine's enrollment: revoke its identity on the Source when
+   * the Source answers, then delete the local follower credential, the
+   * shared secrets received through the enrollment, and the enrollment
+   * record.
+   */
+  readonly unenroll: () => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly abandon: () => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly synchronize: (
     input: SynchronizeInput,
@@ -102,8 +115,14 @@ export interface FollowerCommandsService {
   readonly startTunnel: (
     input: TunnelStartCommandInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  /** Restart from the recorded tunnel configuration; no invitation needed. */
+  readonly restartTunnel: (
+    input: { readonly timeoutMilliseconds?: number | undefined },
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly tunnelStatus: () => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly stopTunnel: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly stopTunnel: (
+    input: { readonly forget: boolean },
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
 }
 
 export class FollowerCommands extends Context.Service<

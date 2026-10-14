@@ -1,3 +1,5 @@
+import { userInfo } from "node:os";
+import { dirname } from "node:path";
 import { Effect, Layer } from "effect";
 
 import { MachineState } from "../machine/machine-state.service.ts";
@@ -5,9 +7,16 @@ import type {
   MachinePlatform,
   RenderedSchedulerJob,
   SchedulerCalendar,
+  SchedulerInspection,
 } from "../machine/machine-state.types.ts";
 import { linuxCalendar } from "./linux-schedule.ts";
 import { macosCalendar } from "./macos-schedule.ts";
+import {
+  daylightSavingGapWarning,
+  nextScheduledRun,
+  previousScheduledRun,
+  resolvedScheduleTimezone,
+} from "./schedule-calendar.ts";
 import {
   InvalidScheduleError,
   ScheduleHumanActionRequiredError,
@@ -20,7 +29,9 @@ import {
   normalizeSyncSchedule,
   type ScheduleChange,
   type NormalizedSyncSchedule,
+  type ScheduleReconciliation,
   type ScheduleSnapshot,
+  type ScheduleState,
   type ScheduleStatus,
   type SetScheduleInput,
   type SyncSchedule,
@@ -114,14 +125,130 @@ const calendarFor = (
   }
 };
 
-const stateOf = (
-  installed: boolean,
-  enabled: boolean,
-  matches: boolean,
-): ScheduleStatus["state"] => {
-  if (!installed) return "not-installed";
-  if (!matches) return "drifted";
-  return enabled ? "current" : "disabled";
+const stateOf = (inspection: SchedulerInspection): ScheduleState => {
+  if (!inspection.installed) return "not-installed";
+  if (!inspection.enabled) return "disabled";
+  if (inspection.timezoneChangedSinceBoot) return "timezone-changed";
+  // Undefined means the backend cannot observe runtime state, not "stopped".
+  // Checked before drift: a stopped job must never look like one the
+  // reconciler may re-render and thereby restart.
+  if (inspection.active === false) return "inactive";
+  if ((inspection.overrides?.length ?? 0) > 0) return "overridden";
+  return inspection.matches ? "current" : "drifted";
+};
+
+const disabledOutsideCanonfig = (what: string): string =>
+  `automation disabled outside Canonfig: the native job ${what}, so scheduled synchronization will not run. Run \`canonfig schedule set\` to restore it, or \`canonfig schedule remove\` to confirm manual operation.`;
+
+const lingerUser = (): string => {
+  try {
+    return userInfo().username;
+  } catch {
+    return "$USER";
+  }
+};
+
+const macosTimezoneRecovery =
+  "the macOS time zone changed after boot; launchd may retain the old zone even if the job is reinstalled. Reboot the Mac, sign in to the graphical session, then check `canonfig schedule status` before relying on scheduled runs";
+
+const windowsLoggedOnOnlyWarning =
+  "the Task Scheduler task uses an interactive logon, so it only runs while you are logged on to Windows; a run due while you are logged off or the machine is off is skipped, not caught up";
+
+/**
+ * Task Scheduler may start a trigger a little late; a run due within this
+ * window is not yet reported as missed.
+ */
+const missedRunGraceMilliseconds = 5 * 60 * 1000;
+
+/**
+ * The most recent due start a logged-on-only Windows task did not make: the
+ * calendar selected it after the task was registered and after its last start.
+ * Undefined when no run was missed or the scheduler cannot say, such as a task
+ * from an earlier release that never ran and records no registration time.
+ */
+const missedLoggedOnRun = (
+  schedule: NormalizedSyncSchedule,
+  inspection: SchedulerInspection,
+): string | undefined => {
+  if (inspection.runsOnlyWhileLoggedOn !== true) return undefined;
+  const due = previousScheduledRun(schedule, Date.now() - missedRunGraceMilliseconds);
+  const known = [inspection.lastStartedAt, inspection.registeredAt]
+    .flatMap((value) => value === undefined ? [] : [Date.parse(value)])
+    .filter((value) => !Number.isNaN(value));
+  if (due === undefined || known.length === 0) return undefined;
+  return Date.parse(due) > Math.max(...known) ? due : undefined;
+};
+
+/** The effective state of the native job with what it means for the user. */
+const statusFrom = (
+  schedule: NormalizedSyncSchedule,
+  definition: RenderedSchedulerJob,
+  inspection: SchedulerInspection,
+): ScheduleStatus => {
+  const state = stateOf(inspection);
+  const drift = state === "drifted"
+    ? inspection.calendarMatches === true ? "binding" as const : "calendar" as const
+    : undefined;
+  const nextRun = state === "current"
+    ? nextScheduledRun(schedule) ?? inspection.nextElapse
+    : undefined;
+  const detail = (() => {
+    switch (state) {
+      case "not-installed":
+        return disabledOutsideCanonfig("is missing");
+      case "disabled":
+        return disabledOutsideCanonfig("is disabled");
+      case "inactive":
+        return disabledOutsideCanonfig("is installed but stopped");
+      case "overridden":
+        return `a native override changes the Canonfig job (${inspection.overrides!.join(", ")}); `
+          + `the effective calendar is ${inspection.effectiveCalendar ?? "unknown"}. Remove the override and run \`systemctl --user daemon-reload\`, or run \`canonfig schedule remove\` and manage the job yourself.`;
+      case "timezone-changed":
+        return macosTimezoneRecovery;
+      case "drifted":
+        return drift === "binding"
+          ? "the native job keeps its calendar but was rendered by a different Canonfig build (runtime or entrypoint); the next `canonfig sync --apply` re-renders it"
+          : "the native job was changed outside Canonfig; the next `canonfig sync --apply` or `canonfig schedule set` restores the selected calendar";
+      case "current":
+        return nextRun === undefined
+          ? "the native job is installed and armed"
+          : `the native job is installed and armed; next run ${nextRun}`;
+    }
+  })();
+  const gap = daylightSavingGapWarning(schedule, definition.platform);
+  const missedRun = state === "current" ? missedLoggedOnRun(schedule, inspection) : undefined;
+  const warnings = [
+    ...(gap === undefined ? [] : [gap]),
+    ...(definition.platform === "linux" && inspection.lingering === false
+      ? [`the systemd user manager stops when you log out (Linger=no), so the job only runs while you are logged in; run \`loginctl enable-linger ${lingerUser()}\` to run it while logged out`]
+      : []),
+    ...(definition.platform === "windows" && inspection.runsOnlyWhileLoggedOn === true
+      ? [windowsLoggedOnOnlyWarning]
+      : []),
+    ...(missedRun === undefined
+      ? []
+      : [`the scheduled run at ${missedRun} did not start (last start ${inspection.lastStartedAt ?? "never"}): Task Scheduler skipped it because no user was logged on or the machine was off, and it does not catch up skipped runs. Run \`canonfig sync --apply\` now, and stay logged on at the scheduled time`]),
+    ...(inspection.timezoneChangedSinceBoot && state !== "timezone-changed"
+      ? [macosTimezoneRecovery]
+      : []),
+  ];
+  return {
+    state,
+    platform: definition.platform,
+    schedule,
+    definition,
+    detail,
+    drift,
+    timezone: resolvedScheduleTimezone(schedule),
+    nextRun,
+    overrides: inspection.overrides,
+    effectiveCalendar: inspection.effectiveCalendar,
+    lastNativeRun: inspection.lastResult,
+    lingering: inspection.lingering,
+    runsOnlyWhileLoggedOn: inspection.runsOnlyWhileLoggedOn,
+    missedRun,
+    warnings,
+  };
 };
 
 const snapshotsEqual = (
@@ -139,22 +266,26 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
       ): Effect.Effect<void, ScheduleManagerError> =>
         Effect.gen(function*() {
           // A custom --executable may be an npm wrapper with an env-based
-          // shebang. The systemd unit runs with PATH=/usr/bin:/bin (and
-          // launchd agents start from a minimal PATH), so a wrapper that
-          // works interactively can crash on fire (Box lane: shell Node
-          // v24, unit Node v20, undici import crash). Probe the exact
-          // custom executable under the unit PATH before claiming success;
-          // the default path pins process.execPath and needs no probe.
+          // shebang. Probe it under the same bounded PATH rendered into the
+          // native unit before claiming success. The runtime's own directory
+          // is included so user-managed Node installations keep working;
+          // shell startup state is still excluded.
           // Windows is skipped: Task Scheduler launches absolute PE paths
           // with the user environment, so no PATH-resolved interpreter
           // stands between the unit and its runtime. Canonfig requires
           // Node >= 24 (engines).
           const probed = yield* machine.normalizePath({ path: rawPath });
           if (probed.platform === "windows") return;
+          const nativePath = [...new Set([
+            dirname(probed.absolute),
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+          ])].join(":");
           const probe = yield* machine.runProcess({
             executable: probed,
             arguments: ["--version"],
-            environment: [{ name: "PATH", value: "/usr/bin:/bin" }],
+            environment: [{ name: "PATH", value: nativePath }],
             timeoutMilliseconds: 10_000,
             maximumOutputBytes: 64 * 1024,
           }).pipe(Effect.catch(() => Effect.succeed(null)));
@@ -165,7 +296,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
             return yield* new ScheduleHumanActionRequiredError({
               action: "install a scheduled sync whose executable runs under the native scheduler",
               recovery:
-                `The custom executable ${probed.absolute} ${detail} with PATH=/usr/bin:/bin (native scheduler environment, Node >= 24 required). Retry without --executable to pin the running interpreter (${process.execPath} ${process.version}), or install Node >= 24 where the scheduler can see it.`,
+                `The custom executable ${probed.absolute} ${detail} with PATH=${nativePath} (native scheduler environment, Node >= 24 required). Retry without --executable to pin the running interpreter (${process.execPath} ${process.version}), or install Node >= 24 where the scheduler can see it.`,
             });
           }
         });
@@ -173,7 +304,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
       const definition = Effect.fn("ScheduleManager.definition")(
         function*(input: SetScheduleInput = {}): Effect.fn.Return<
           {
-            readonly schedule: SyncSchedule;
+            readonly schedule: NormalizedSyncSchedule;
             readonly definition: RenderedSchedulerJob;
           },
           ScheduleManagerError
@@ -200,16 +331,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
         > {
           const desired = yield* definition(input);
           const inspection = yield* machine.inspectSchedulerJob(desired.definition);
-          return {
-            state: stateOf(
-              inspection.installed,
-              inspection.enabled,
-              inspection.matches,
-            ),
-            platform: desired.definition.platform,
-            schedule: desired.schedule,
-            definition: desired.definition,
-          };
+          return statusFrom(desired.schedule, desired.definition, inspection);
         },
       );
 
@@ -261,37 +383,61 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
             yield* verifyCustomExecutable(input.executable);
           }
           const desired = yield* definition(input);
-          const before = yield* machine.inspectSchedulerJob(desired.definition);
-          if (before.installed && before.enabled && before.matches) {
-            return {
-              change: "unchanged",
-              status: {
-                state: "current",
-                platform: desired.definition.platform,
-                schedule: desired.schedule,
-                definition: desired.definition,
-              },
-            };
+          const inspection = yield* machine.inspectSchedulerJob(desired.definition);
+          const before = statusFrom(desired.schedule, desired.definition, inspection);
+          if (inspection.timezoneChangedSinceBoot) {
+            return yield* new ScheduleHumanActionRequiredError({
+              action: "arm the macOS schedule after a timezone change",
+              recovery: macosTimezoneRecovery,
+            });
           }
+          if (before.state === "current") return { change: "unchanged", status: before };
+          // Rewriting the unit cannot undo a drop-in: the job would stay
+          // overridden while the command claimed success.
+          if (before.state === "overridden") {
+            return yield* new ScheduleHumanActionRequiredError({
+              action: "install the Canonfig scheduled synchronization",
+              recovery: before.detail,
+            });
+          }
+          // A stopped, disabled, or deleted job is restored here: an explicit
+          // install is the user's decision, unlike the post-apply reconciler.
           yield* machine.installSchedulerJob(desired.definition);
-          const after = yield* machine.inspectSchedulerJob(desired.definition);
-          const afterState = stateOf(after.installed, after.enabled, after.matches);
-          if (afterState !== "current") {
+          const after = statusFrom(
+            desired.schedule,
+            desired.definition,
+            yield* machine.inspectSchedulerJob(desired.definition),
+          );
+          if (after.state !== "current") {
             return yield* new ScheduleVerificationError({
-              operation: before.installed ? "update" : "install",
-              state: afterState,
-              message: "native scheduler did not converge to the requested definition",
+              operation: before.state === "not-installed" ? "install" : "update",
+              state: after.state,
+              message: `native scheduler did not converge to the requested definition: ${after.detail}`,
             });
           }
           return {
-            change: before.installed ? "updated" : "installed",
-            status: {
-              state: afterState,
-              platform: desired.definition.platform,
-              schedule: desired.schedule,
-              definition: desired.definition,
-            },
+            change: before.state === "not-installed" ? "installed" : "updated",
+            status: after,
           };
+        },
+      );
+
+      /**
+       * The post-apply reconciler. It re-renders drift in a job that is armed,
+       * and leaves anything the user did outside Canonfig as is: a deleted,
+       * disabled, stopped, or overridden job is reported, never recreated or
+       * re-enabled behind the user's back.
+       */
+      const reconcile = Effect.fn("ScheduleManager.reconcile")(
+        function*(input: SetScheduleInput = {}): Effect.fn.Return<
+          ScheduleReconciliation,
+          ScheduleManagerError
+        > {
+          const before = yield* inspect(input);
+          if (before.state === "current") return { action: "unchanged", status: before };
+          if (before.state !== "drifted") return { action: "left-as-is", status: before };
+          const updated = yield* upsert(input);
+          return { action: "updated", status: updated.status };
         },
       );
 
@@ -308,7 +454,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           if (after.installed) {
             return yield* new ScheduleVerificationError({
               operation: "remove",
-              state: stateOf(after.installed, after.enabled, after.matches),
+              state: stateOf(after),
               message: "native scheduler still reports the schedule as installed",
             });
           }
@@ -322,6 +468,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
         snapshot,
         restore,
         update: upsert,
+        reconcile,
         status: inspect,
         remove,
       });

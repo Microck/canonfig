@@ -1,12 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 // The binding stores what fs/promises.realpath returns, which on Windows
 // expands 8.3 short names that fs.realpathSync leaves alone. Resolve the
 // expected paths the same way, or the two spellings of one file disagree.
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { Effect, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
 import { installerRecipeProvenance } from "../../src/domain/mcp-qualification.ts";
@@ -14,9 +14,15 @@ import { isLocalInstallerPath, parseInstallerBinding } from "../../src/domain/in
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
-import { checkInstallerBinding, loadInstallerBinding, removeInstallerBinding, resolveInstallerInvocation, saveInstallerBinding } from "../../src/synchronization/installer-bindings.ts";
-import { prepareResourceAction, verifyResource } from "../../src/synchronization/resource-executors.ts";
-import { installerArguments, isInstallerCommand, runInstallerCli } from "../../src/runtime/installer-cli.ts";
+import { ExecutableNotFoundError, MachineFilesystemError } from "../../src/machine/machine-state.errors.ts";
+import { MachineState } from "../../src/machine/machine-state.service.ts";
+import {
+  checkInstallerBinding, installerRefusals, loadInstallerBinding, loadInstallerState, removeInstallerBinding,
+  resolveInstallerInvocation, saveInstallerBinding, unboundInstallerRecovery,
+} from "../../src/synchronization/installer-bindings.ts";
+import { prepareResourceAction, verifyResource, type ResourceExecutionContext } from "../../src/synchronization/resource-executors.ts";
+import { runInstallerCli } from "../../src/runtime/installer-cli.ts";
+import { installerArguments, isInstallerCommand } from "../../src/runtime/command-routing.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -28,6 +34,8 @@ const fixture = () => {
   writeFileSync(entry, [
     "const fs = require('node:fs');",
     "if (process.argv[2] === '--version') console.log('1.0.0-fixture');",
+    // npm ls exits 1 when the package is not installed globally.
+    "else if (process.argv[2] === 'ls') process.exit(1);",
     `else fs.writeFileSync(${JSON.stringify(output)}, JSON.stringify({argv:process.argv.slice(2),path:process.env.PATH??process.env.Path??''}));`,
   ].join("\n"));
   const environment = Object.entries({
@@ -148,6 +156,49 @@ describe("local installer binding contract", () => {
     expect(qualification.qualification?.ready).toBe(true);
     const result = JSON.parse(readFileSync(f.output, "utf8"));
     expect(result).toEqual({ argv: ["install", "--global", "fixture-package@1.2.3", "--ignore-scripts"], path: "" });
+  }, 30_000);
+
+  it("runs an npm bin through its approved Node with an empty scheduler PATH", async () => {
+    const f = fixture();
+    await Effect.runPromise(saveInstallerBinding("npm", process.execPath, [f.entry]).pipe(Effect.provide(f.layer)));
+    const windows = process.platform === "win32";
+    const bin = windows ? join(f.home, "AppData", "Roaming", "npm") : join(f.home, ".local", "bin");
+    const script = join(bin, "node_modules", "fixture-tool", "bin with spaces", "cli.js");
+    mkdirSync(join(bin, "node_modules", "fixture-tool", "bin with spaces"), { recursive: true });
+    writeFileSync(script, [
+      "#!/usr/bin/env node",
+      "if ((process.env.PATH ?? process.env.Path ?? '') !== '') throw new Error('PATH was changed');",
+      "console.log('computed:' + process.argv.slice(2).map(Number).reduce((sum, n) => sum + n, 0));",
+      "//" + "padding".repeat(1000),
+    ].join("\n"));
+    const command = join(bin, windows ? "fixture-tool.cmd" : "fixture-tool");
+    if (windows) {
+      writeFileSync(command, 'SET "_prog=node"\r\n"%_prog%" "%dp0%\\node_modules\\fixture-tool\\bin with spaces\\cli.js" %*\r\n');
+    } else {
+      chmodSync(script, 0o755);
+      symlinkSync(script, command);
+    }
+    const resource = Schema.decodeUnknownSync(ResourceId)("fixture-tool");
+    const context: ResourceExecutionContext = {
+      run: Schema.decodeUnknownSync(RunId)("fixture-tool-run"),
+      action: {
+        id: Schema.decodeUnknownSync(ActionId)("fixture-tool-check"), resource,
+        kind: "no-op", detail: { kind: "no-op", reason: "installed" }, dependsOn: [],
+      },
+      resource: { id: resource, kind: "tool", policy: "ensure", target: "fixture-tool", dependsOn: [], blobs: [] },
+      desired: {
+        kind: "tool", toolId: "fixture-tool", loginRequired: false,
+        recipes: [{
+          platform: windows ? "windows" : process.platform === "darwin" ? "macos" : "linux",
+          method: "npm", package: "fixture-tool", version: "1.0.0",
+        }],
+      },
+      verification: { method: "command", command: ["fixture-tool", "4", "5"], expectContains: "computed:9" },
+      artifacts: new Map(),
+      limits: { maximumFileBytes: 1024, processTimeoutMilliseconds: 10_000, maximumProcessOutputBytes: 16_384, verificationConcurrency: 1 },
+    };
+    const result = await Effect.runPromise(verifyResource(context).pipe(Effect.provide(f.layer)));
+    expect(result).toMatchObject({ passed: true, method: "command:fixture-tool", exitCode: 0 });
   }, 30_000);
 
   it("repairs and removes malformed regular bindings, and keeps identical writes idempotent", async () => {
@@ -283,4 +334,122 @@ describe("local installer binding contract", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout).data.bindings).toEqual([]);
   }, 30_000);
+});
+
+// Usability 6: on Windows, PATH resolves npm to npm.cmd, which Canonfig cannot
+// run without a shell. The Windows machine layer runs here on any host with
+// Windows-shaped paths; the double answers executable lookup and file kinds.
+describe("Windows npm command shims", () => {
+  const nodejs = "C:\\Program Files\\nodejs";
+  const node = `${nodejs}\\node.exe`;
+  const npmCli = `${nodejs}\\node_modules\\npm\\bin\\npm-cli.js`;
+  const bindingCommand = `canonfig installer set npm --executable "${node}" --arg "${npmCli}"`;
+  const installers = "C:\\Users\\operator\\.canonfig\\installers";
+  const windowsFollower = (input: {
+    readonly executables: Readonly<Record<string, string>>;
+    readonly files: ReadonlyArray<string>;
+    readonly bindings?: Readonly<Record<string, string>>;
+  }) => Layer.effect(MachineState, Effect.gen(function*() {
+    const base = yield* MachineState;
+    const bindings = input.bindings ?? {};
+    const missing = (path: string) => new MachineFilesystemError({
+      operation: "inspect path", path, message: `ENOENT: no such file or directory, lstat '${path}'`,
+    });
+    return MachineState.of({
+      ...base,
+      findExecutable: (query) => {
+        const path = input.executables[query.name];
+        return path === undefined
+          ? Effect.fail(new ExecutableNotFoundError({ executable: query.name, searched: [nodejs] }))
+          : Effect.succeed({ name: query.name, path: { platform: "windows" as const, absolute: path } });
+      },
+      inspectPath: (path) =>
+        path.absolute === installers && Object.keys(bindings).length > 0
+          ? Effect.succeed({ kind: "directory" as const })
+          : input.files.includes(path.absolute) || path.absolute in bindings
+          ? Effect.succeed({ kind: "regular" as const })
+          : Effect.fail(missing(path.absolute)),
+      readFile: (read) => {
+        const content = bindings[read.path.absolute];
+        return content === undefined
+          ? Effect.fail(missing(read.path.absolute))
+          : Effect.succeed(new TextEncoder().encode(content));
+      },
+    });
+  })).pipe(Layer.provide(windowsMachineStateLayer({
+    environment: [
+      { name: "USERPROFILE", value: "C:\\Users\\operator" },
+      { name: "APPDATA", value: "C:\\Users\\operator\\AppData\\Roaming" },
+      { name: "LOCALAPPDATA", value: "C:\\Users\\operator\\AppData\\Local" },
+      { name: "PATH", value: nodejs },
+      { name: "PATHEXT", value: ".COM;.EXE;.BAT;.CMD" },
+    ],
+  })));
+  const runWindows = <Value, Failure>(
+    layer: Layer.Layer<MachineState>,
+    effect: Effect.Effect<Value, Failure, MachineState>,
+  ) => Effect.runPromise(effect.pipe(Effect.provide(layer)));
+
+  it("warns in the plan and names the node.exe plus npm-cli.js binding for an unbound npm.cmd", async () => {
+    const layer = windowsFollower({
+      executables: { npm: `${nodejs}\\npm.cmd`, node, uv: "C:\\Users\\operator\\.local\\bin\\uv.exe" },
+      files: [node, npmCli],
+    });
+    expect(await runWindows(layer, installerRefusals(["npm", "uv", "npm"]))).toEqual([
+      `installer npm: No installer binding is set for npm, and PATH resolves it to the Windows command shim ${nodejs}\\npm.cmd, which cannot run without a shell. Bind npm to Node and its own entrypoint instead, then retry:\n${bindingCommand}`,
+    ]);
+    const refusal = await runWindows(layer, Effect.flip(resolveInstallerInvocation("npm")));
+    expect(refusal).toMatchObject({ _tag: "HumanActionRequiredError" });
+    expect(refusal._tag === "HumanActionRequiredError" ? refusal.recovery : "").toContain(bindingCommand);
+
+    const output = { stdout: "", stderr: "", exitCode: -1 };
+    const io = {
+      writeStdout: (text: string) => { output.stdout += text; },
+      writeStderr: (text: string) => { output.stderr += text; },
+      setExitCode: (code: number) => { output.exitCode = code; },
+    };
+    await runWindows(layer, runInstallerCli(["check", "npm"], io));
+    expect(output.exitCode).toBe(3);
+    expect(output.stderr).toContain(bindingCommand);
+    await runWindows(layer, runInstallerCli(["list", "--json"], io));
+    expect(JSON.parse(output.stdout).data).toEqual({
+      bindings: [],
+      suggestions: [{ method: "npm", shim: `${nodejs}\\npm.cmd`, command: bindingCommand }],
+    });
+  });
+
+  it("takes npm-cli.js beside an npm.cmd upgraded into %APPDATA% and node.exe from PATH", async () => {
+    const roaming = "C:\\Users\\operator\\AppData\\Roaming\\npm";
+    const roamingCli = `${roaming}\\node_modules\\npm\\bin\\npm-cli.js`;
+    const layer = windowsFollower({
+      executables: { npm: `${roaming}\\npm.cmd`, node },
+      files: [node, npmCli, roamingCli],
+    });
+    expect(await runWindows(layer, unboundInstallerRecovery("npm"))).toBe(
+      `No installer binding is set for npm, and PATH resolves it to the Windows command shim ${roaming}\\npm.cmd, which cannot run without a shell. Bind npm to Node and its own entrypoint instead, then retry:\ncanonfig installer set npm --executable "${node}" --arg "${roamingCli}"`,
+    );
+  });
+
+  it("names the shim a recorded binding points to, and gives the shape when npm-cli.js is missing", async () => {
+    const shim = `${nodejs}\\npm.cmd`;
+    const pointsAtShim = windowsFollower({
+      executables: { npm: shim, node },
+      files: [node, npmCli],
+      bindings: {
+        [`${installers}\\npm.json`]: JSON.stringify({
+          schema: "canonfig.installer/v1", method: "npm", platform: "windows", executable: shim, arguments: [],
+        }),
+      },
+    });
+    const refusal = await runWindows(pointsAtShim, Effect.flip(loadInstallerState("npm")));
+    expect(refusal).toMatchObject({
+      _tag: "HumanActionRequiredError",
+      recovery: `The installer binding for npm names the Windows command shim ${shim}, which cannot run without a shell. Bind npm to Node and its own entrypoint instead, then retry:\n${bindingCommand}`,
+    });
+
+    const noEntrypoint = windowsFollower({ executables: { npm: shim, node }, files: [node] });
+    expect(await runWindows(noEntrypoint, unboundInstallerRecovery("npm"))).toBe(
+      `No installer binding is set for npm, and PATH resolves it to the Windows command shim ${shim}, which cannot run without a shell. Bind npm to node.exe plus npm-cli.js with canonfig installer set npm --executable <node.exe> --arg <entrypoint>, then retry. Do not enable a shell.`,
+    );
+  });
 });

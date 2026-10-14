@@ -42,8 +42,12 @@ canonfig harness doctor
 
 Use repeatable `--target <id>` or comma-separated `--targets <ids>` to select
 specific harnesses. `--strict` rejects mappings classified as `shim`, `lossy`,
-or `unsupported`. `--force` is required to take ownership of an existing native
-entry or externally edited generated file. Canonfig rejects a directory that
+or `unsupported`: with it, `plan` and `apply` fail on every lossy or coerced MCP
+and hook mapping (`MCP_OPTION_UNSUPPORTED`, `MCP_TRANSPORT_UNSUPPORTED`,
+`MCP_OPTION_COERCED`, `HOOK_TIMEOUT_ROUNDED`, `HOOK_EVENT_UNSUPPORTED`, and the
+`*_PROFILE_*_REQUIRED` diagnostics); without it those are warnings. `--force`
+is required to take ownership of an existing native entry or externally edited
+generated file. Canonfig rejects a directory that
 contains more than one supported harness config format instead of silently
 selecting one.
 

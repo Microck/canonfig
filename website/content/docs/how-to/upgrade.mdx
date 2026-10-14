@@ -1,0 +1,131 @@
+---
+title: "How-to: move to Canonfig 4.0.0"
+description: Preserve an existing 3.2.x installation and set up a separate 4.0.0 Source and followers.
+---
+
+Canonfig 4.0.0 is a fresh-install baseline. An in-place upgrade of a 3.2.x
+Source or follower is unsupported and unverified. The signed revision wire
+format changed. Do not install 4.0.0 over an existing 3.2.x package, point it
+at an existing state directory, or expect existing revisions, enrollments,
+credentials, and schedules to carry over. No automatic migration from 3.2.x
+is provided here.
+
+## Version boundary
+
+The new Source and every new follower must run the same `major.minor` release
+line. A 4.0.0 Source refuses requests from 3.2.x followers; a 4.0.0 follower
+also refuses a 3.2.x Source. The failure reports "source/follower version
+mismatch" rather than a digest or tampering error. Installing 4.0.0 on one
+machine in an existing 3.2.x fleet does not upgrade that fleet.
+
+## Preserve the existing installation
+
+1. On each existing machine, record the installed package version, role,
+   profile, schedule, and any unfinished run **if the old CLI can start**.
+   Published older packages may fail even on `canonfig --version`; in that case
+   record the installed package metadata without trying to repair it in place.
+   Preserve any unfinished run and its old installation. Do not use 4.0.0 to
+   recover an old run or claim that the old state was migrated.
+2. Choose a time when Canonfig commands and native scheduled jobs are not
+   running. Make a separate, access-restricted backup of each machine's
+   Canonfig state directory (`~/.canonfig` on the documented POSIX setup),
+   installed package, and the authored profile and files it references. Keep
+   the Source and each follower's backups distinct. Check the backup exists
+   and protect it as sensitive material: state can contain enrollment and
+   transport information, and an authored profile may contain private paths
+   or values. Do not put backups, invitation files, or private keys in source
+   control, chat, or diagnostic output.
+3. Record which native credential store the old account uses. The state
+   directory backup does **not** include items held in Secret Service, Keychain,
+   or Credential Manager. Keep the old account and its credential store intact.
+   A state copy alone is not a verified rollback or migration method.
+
+Leave the existing package, state directory, service, schedules, and credential
+items untouched while setting up 4.0.0. Do not remove or overwrite them to make
+space for the new install. Prefer separate machines. If you use isolated OS
+accounts on the same host, give the new account a distinct npm prefix and
+check that its `canonfig` command resolves to that prefix. A default global
+npm install may replace the package used by the old account. If you cannot
+isolate the package, state, and credential store, stop here.
+
+## Set up a new 4.0.0 Source
+
+Use a separate machine or OS account with its own package installation, state
+directory, native credential store, and service. On Linux or macOS, install
+Node.js 24 or newer and npm under that new account, then use an account-local
+npm prefix so a system-wide install cannot replace the old package:
+
+```bash
+npm install --global --prefix "$HOME/.local" @microck/canonfig@4.0.0
+export PATH="$HOME/.local/bin:$PATH"
+canonfig --version
+canonfig doctor --no-input
+canonfig source init
+```
+
+Use that `PATH` for the new account's later commands. On Windows, use a
+separate machine or an isolated account with a verified distinct npm global
+prefix and command path; see the [Windows installation branch](https://github.com/Microck/canonfig/blob/main/skills/install-canonfig/references/windows.md).
+
+`source init` creates a **new** signing identity and TLS certificate. Do not
+copy the old Source's database, keys, published revisions, or service definition
+into this state directory. Review the old authored profile and its source files
+for private values; copy only the approved, non-secret authoring inputs into
+the new account, keeping the profile's relative paths valid. If shared secrets
+are needed, enter them separately through the new Source's native credential
+store after review, not through a profile or a shell argument. Check and
+publish the reviewed profile on the new Source:
+
+```bash
+canonfig source digest --profile-file ~/canonfig.profile.jsonc
+canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer "$USER"
+```
+
+Start the new Source with `canonfig source service install` on a separate
+host, then check `canonfig source service status`. The default loopback port
+is 17342. If the old Source also runs on this host, first select an unused,
+distinct loopback port and pass `--host 127.0.0.1 --port <new-port>` to the
+new service install command. Use that port in the new invitation endpoint
+and the follower tunnel. Do not stop or reconfigure the old service to free
+its port.
+
+The new Source publishes a new revision under a new identity. This is not a
+conversion of an old signed revision. See [the first-sync tutorial](/tutorials/first-sync)
+for a complete profile and service configuration. Keep the old Source and the
+new Source's endpoints distinct.
+
+## Enroll new 4.0.0 followers
+
+On each separate follower machine or isolated OS account, install
+`@microck/canonfig@4.0.0` using a distinct package path as above and run
+`canonfig doctor --no-input`. On the new Source, issue a new short-lived
+invitation for that follower. On Linux or macOS, use the new service's actual
+port in the endpoint (replace `17342` below if you chose another port):
+
+```bash
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ./new-canonfig-invite --expires 15m
+```
+
+Transfer the protected invitation through an authenticated channel. For a
+remote Source, also obtain its SSH host public key directly from the new
+Source. Follow the [first-sync enrollment steps](/tutorials/first-sync) to
+start a pinned tunnel if needed. On a new Linux or macOS follower, pipe the
+invitation from a protected local file:
+
+```bash
+cat ./new-canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
+```
+
+Use the profile ID you published and an identity chosen for that follower.
+Remove temporary invitation copies after enrollment. The new follower pins
+the new Source identity and receives its own credential. Do not copy an old
+enrollment, invitation, TLS pin, follower credential, policy, or schedule
+into the new installation.
+
+Review `canonfig sync --plan` against the intended targets and existing local
+files before deciding whether to run `canonfig sync --apply`. Install a new
+schedule only after choosing its time, for example with
+`canonfig schedule set daily@09:00`. A former follower's schedule is not
+carried over. Review `canonfig status` and client trust prompts after apply.
+This procedure does not establish that an old installation can be restored
+from a backup or that the new fleet has converged.

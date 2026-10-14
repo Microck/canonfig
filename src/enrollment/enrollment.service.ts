@@ -13,6 +13,7 @@ import type {
   EnrollFollowerRequest,
   EnrollFollowerResponse,
   EnrollmentInvitationGrant,
+  SourceCredentials,
   SourceEnrollmentMaterial,
 } from "./enrollment.types.ts";
 
@@ -21,6 +22,15 @@ export class Enrollment extends Context.Service<Enrollment, {
   ) => Effect.Effect<SourceEnrollmentMaterial, EnrollmentError>;
   readonly source: (
   ) => Effect.Effect<SourceEnrollmentMaterial, EnrollmentError>;
+  /**
+   * Load the Source's keys and certificate from the native store, verified
+   * against the recorded fingerprints. A Source initialized by an earlier
+   * release has account-global item names; those items are used only when
+   * they match this Source's fingerprints, and are then copied under this
+   * state directory's own credential namespace.
+   */
+  readonly sourceCredentials: (
+  ) => Effect.Effect<SourceCredentials, EnrollmentError>;
   readonly createInvitation: (
     input: CreateInvitationInput,
   ) => Effect.Effect<EnrollmentInvitationGrant, EnrollmentError>;

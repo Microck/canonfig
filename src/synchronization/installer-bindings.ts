@@ -1,5 +1,6 @@
 import { realpath } from "node:fs/promises";
-import { Effect, Schema } from "effect";
+import { win32 } from "node:path";
+import { Effect, Option, Schema } from "effect";
 import {
   installerBindingFor,
   installerMethods,
@@ -10,7 +11,7 @@ import {
 } from "../domain/installer-binding.ts";
 import { HumanActionRequiredError, type MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import type { MachinePath } from "../machine/machine-state.types.ts";
+import type { InstallDestinationHint, MachinePath } from "../machine/machine-state.types.ts";
 
 const unavailable = (recovery: string) => new HumanActionRequiredError({
   action: "configure the local installer binding", recovery,
@@ -39,6 +40,121 @@ const inspectOptional = (path: MachinePath) => Effect.gen(function*() {
     /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? Effect.succeed(undefined) : Effect.fail(error)
   ));
 });
+
+const isWindowsShim = (path: string): boolean => /\.(?:cmd|bat)$/iu.test(path);
+
+const ShimMethod = Schema.Literals(["npm", "pnpm"]);
+
+/** Where npm installs the JavaScript entrypoint each Windows command shim runs. */
+const shimEntrypoints = {
+  npm: ["node_modules", "npm", "bin", "npm-cli.js"],
+  pnpm: ["node_modules", "pnpm", "bin", "pnpm.cjs"],
+} satisfies Record<typeof ShimMethod.Type, ReadonlyArray<string>>;
+
+/** The Node plus entrypoint pair that replaces a Windows npm or pnpm shim. */
+export interface WindowsNodeBinding {
+  readonly shim: string;
+  readonly executable: string;
+  readonly entrypoint: string;
+  /** The exact command that records this binding. */
+  readonly command: string;
+}
+
+/**
+ * The binding for the Windows command shim `shim`, when both halves exist.
+ *
+ * `npm.cmd` only starts `node` on npm's own entrypoint, and Canonfig never
+ * starts a shell, so it runs that pair directly. The entrypoint is where npm
+ * installs it beside the shim (the Node.js installer and `npm install -g npm`
+ * both use this layout); node.exe is taken beside the shim, as the shim does,
+ * or else from PATH the way the Windows machine layer finds any executable.
+ */
+const nodeBindingForShim = (
+  method: string,
+  shim: string,
+): Effect.Effect<WindowsNodeBinding | undefined, never, MachineState> => Effect.gen(function*() {
+  const machine = yield* MachineState;
+  if (!Schema.is(ShimMethod)(method) || !isWindowsShim(shim)) return undefined;
+  const entry = shimEntrypoints[method];
+  const isRegularFile = (absolute: string) => machine.normalizePath({ path: absolute }).pipe(
+    Effect.flatMap(machine.inspectPath),
+    Effect.map((object) => object.kind === "regular"),
+    Effect.orElseSucceed(() => false),
+  );
+  const directory = win32.dirname(shim);
+  const entrypoint = win32.join(directory, ...entry);
+  if (!(yield* isRegularFile(entrypoint))) return undefined;
+  const besideShim = win32.join(directory, "node.exe");
+  const executable = (yield* isRegularFile(besideShim))
+    ? besideShim
+    : yield* machine.findExecutable({ name: "node" }).pipe(
+      Effect.map((found) => /\.exe$/iu.test(found.path.absolute) ? found.path.absolute : undefined),
+      Effect.orElseSucceed(() => undefined),
+    );
+  if (executable === undefined) return undefined;
+  return {
+    shim,
+    executable,
+    entrypoint,
+    command: `canonfig installer set ${method} --executable "${executable}" --arg "${entrypoint}"`,
+  };
+});
+
+/**
+ * The binding a Windows machine needs for `method`, when PATH resolves it to a
+ * command shim that Canonfig cannot run; undefined when no shim is in the way.
+ */
+export const windowsNodeBinding = (
+  method: string,
+): Effect.Effect<WindowsNodeBinding | undefined, never, MachineState> => Effect.gen(function*() {
+  const machine = yield* MachineState;
+  const found = yield* machine.findExecutable({ name: method }).pipe(Effect.option);
+  if (Option.isNone(found) || found.value.path.platform !== "windows") return undefined;
+  return yield* nodeBindingForShim(method, found.value.path.absolute);
+});
+
+/**
+ * `lead` names where the shim came from; the rest says what to run instead.
+ * The command gets a line of its own so a shortened human rendering keeps it.
+ */
+const shimRecovery = (lead: string, method: string, binding: WindowsNodeBinding | undefined): string =>
+  binding === undefined
+    ? `${lead}, which cannot run without a shell. Bind ${method} to node.exe plus ${method === "pnpm" ? "pnpm.cjs" : "npm-cli.js"} with canonfig installer set ${method} --executable <node.exe> --arg <entrypoint>, then retry. Do not enable a shell.`
+    : `${lead}, which cannot run without a shell. Bind ${method} to Node and its own entrypoint instead, then retry:\n${binding.command}`;
+
+/** No binding is recorded and PATH resolves `method` to the Windows shim `shim`. */
+const unboundShimRecovery = (method: string, shim: string) =>
+  Effect.map(nodeBindingForShim(method, shim), (binding) => shimRecovery(
+    `No installer binding is set for ${method}, and PATH resolves it to the Windows command shim ${shim}`,
+    method,
+    binding,
+  ));
+
+/**
+ * What to do when no binding is recorded for `method`: bind it, and on a
+ * Windows machine whose PATH resolves it to a command shim, exactly how.
+ */
+export const unboundInstallerRecovery = (
+  method: string,
+): Effect.Effect<string, never, MachineState> => Effect.gen(function*() {
+  const machine = yield* MachineState;
+  const found = yield* machine.findExecutable({ name: method }).pipe(Effect.option);
+  if (Option.isNone(found) || found.value.path.platform !== "windows" || !isWindowsShim(found.value.path.absolute)) {
+    return "Run installer set with the existing executable and optional JavaScript entrypoint, then retry.";
+  }
+  return yield* unboundShimRecovery(method, found.value.path.absolute);
+});
+
+/** The executable a binding document names, even when it is not a valid binding. */
+const namedExecutable = (text: string): string | undefined => {
+  try {
+    return Option.getOrUndefined(
+      Schema.decodeUnknownOption(Schema.Struct({ executable: Schema.String }))(JSON.parse(text)),
+    )?.executable;
+  } catch {
+    return undefined;
+  }
+};
 
 const removalRecordSchema = "canonfig.installer-removed/v1";
 
@@ -98,6 +214,14 @@ export const loadInstallerState = (method: string): Effect.Effect<InstallerBindi
       return { status: "bound", binding } as const;
     }
     if (isRemovalRecord(text)) return { status: "removed" } as const;
+    const named = namedExecutable(text);
+    if (paths.platform === "windows" && named !== undefined && isWindowsShim(named)) {
+      return yield* unavailable(shimRecovery(
+        `The installer binding for ${paths.method} names the Windows command shim ${named}`,
+        paths.method,
+        yield* nodeBindingForShim(paths.method, named),
+      ));
+    }
     return yield* unavailable("The local installer binding is invalid; review and replace it with installer set.");
   });
 
@@ -123,9 +247,10 @@ const inspectBindingFiles = (binding: InstallerBinding) => Effect.gen(function*(
 export const checkInstallerBinding = (binding: InstallerBinding) => Effect.gen(function*() {
   const machine = yield* MachineState;
   const executable = yield* inspectBindingFiles(binding);
+  // Native npm startup under software-emulated Windows can take minutes.
   const result = yield* machine.runProcess({
     executable, arguments: [...binding.arguments, "--version"],
-    timeoutMilliseconds: 5_000, maximumOutputBytes: 16 * 1024,
+    timeoutMilliseconds: 300_000, maximumOutputBytes: 16 * 1024,
   });
   if (result.exitCode !== 0) return yield* unavailable("The exact bound installer failed its bounded --version check. Inspect it locally; no package was installed.");
   return { binding, verified: true as const, scope: "current-process" as const };
@@ -149,10 +274,21 @@ export const saveInstallerBinding = (
     }),
     catch: () => unavailable("The selected installer executable or entrypoint cannot be resolved."),
   });
-  const binding = yield* Effect.try({
-    try: () => installerBindingFor(paths.method, paths.platform, resolved.executable, resolved.arguments),
-    catch: () => unavailable("Use an absolute native installer path, or Node with an absolute npm-cli.js/pnpm.cjs entrypoint. Shell expressions and shims are not bindings."),
-  });
+  let binding: InstallerBinding | undefined;
+  try {
+    binding = installerBindingFor(paths.method, paths.platform, resolved.executable, resolved.arguments);
+  } catch {
+    binding = undefined;
+  }
+  if (binding === undefined) {
+    return yield* unavailable(paths.platform === "windows" && isWindowsShim(resolved.executable)
+      ? shimRecovery(
+        `${resolved.executable} is a Windows command shim`,
+        paths.method,
+        yield* nodeBindingForShim(paths.method, resolved.executable),
+      )
+      : "Use an absolute native installer path, or Node with an absolute npm-cli.js/pnpm.cjs entrypoint. Shell expressions and shims are not bindings.");
+  }
   yield* checkInstallerBinding(binding);
   const rootKind = yield* inspectOptional(paths.root);
   if (rootKind !== undefined && rootKind.kind !== "directory") return yield* unavailable("The installer binding directory is not a regular directory.");
@@ -245,8 +381,54 @@ export const resolveInstallerInvocation = (
   }
   const name = normalized === "apt" ? "apt-get" : normalized;
   const found = yield* machine.findExecutable({ name });
-  if (found.path.platform === "windows" && /\.(?:cmd|bat)$/iu.test(found.path.absolute)) {
-    return yield* unavailable("Windows command shims cannot run with shell:false. Bind npm to node.exe plus npm-cli.js (or pnpm to pnpm.cjs), then retry. Do not enable a shell.");
+  if (found.path.platform === "windows" && isWindowsShim(found.path.absolute)) {
+    return yield* unavailable(yield* unboundShimRecovery(normalized, found.path.absolute));
   }
   return { executable: found.path, arguments: [] };
+});
+
+/**
+ * The installers a plan would run that this machine refuses, one line each.
+ *
+ * The plan used to look runnable and the refusal came only during apply, for
+ * instance on Windows, where PATH resolves npm to npm.cmd. Only refusals the
+ * operator acts on are listed; an installer that is not installed at all
+ * fails the apply naming the directories it searched.
+ */
+export const installerRefusals = (
+  methods: ReadonlyArray<string>,
+): Effect.Effect<ReadonlyArray<string>, never, MachineState> =>
+  Effect.forEach([...new Set(methods)], (method) =>
+    resolveInstallerInvocation(method).pipe(
+      Effect.match({
+        onSuccess: () => undefined,
+        onFailure: (error) =>
+          error instanceof HumanActionRequiredError ? `installer ${method}: ${error.recovery}` : undefined,
+      }),
+    )).pipe(Effect.map((refusals) => refusals.filter((refusal) => refusal !== undefined)));
+
+/**
+ * Where a verifier looks for a tool before PATH: one hint per recipe method
+ * for this platform. npm and Homebrew place tools beside their own
+ * executable, so their hint carries the installer Canonfig would run; an
+ * installer that does not resolve only drops that one directory.
+ */
+export const toolInstallMethods = (
+  recipes: ReadonlyArray<{ readonly platform: string; readonly method: string }>,
+): Effect.Effect<ReadonlyArray<InstallDestinationHint>, never, MachineState> => Effect.gen(function*() {
+  const machine = yield* MachineState;
+  const platform = yield* machine.userDirectories().pipe(
+    Effect.map((directories) => directories.home.platform),
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+  const methods = [...new Set(
+    recipes.filter((recipe) => recipe.platform === platform).map((recipe) => recipe.method),
+  )];
+  return yield* Effect.forEach(methods, (method) =>
+    ["npm", "pnpm", "brew", "homebrew"].includes(method)
+      ? resolveInstallerInvocation(method).pipe(
+        Effect.map((installer): InstallDestinationHint => ({ method, installer: installer.executable })),
+        Effect.catch(() => Effect.succeed<InstallDestinationHint>({ method })),
+      )
+      : Effect.succeed<InstallDestinationHint>({ method }));
 });

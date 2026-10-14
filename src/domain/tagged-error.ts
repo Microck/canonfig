@@ -42,9 +42,14 @@ export const TaggedError = <Self = never>() =>
         // The enumerable own properties are `_tag` and the declared fields, in
         // declaration order; `message` and `stack` are non-enumerable.
         get(this: Error) {
+          // `JSON.stringify` throws on a bigint, which turned the message of
+          // any error with a byte-count field (InsufficientDiskError) into an
+          // uncaught TypeError instead of a diagnostic.
           return Object.entries(this)
             .filter(([name]) => name !== "_tag")
-            .map(([name, value]) => `${name}=${JSON.stringify(value)}`)
+            .map(([name, value]) =>
+              `${name}=${Schema.is(Schema.BigInt)(value) ? value.toString() : JSON.stringify(value)}`
+            )
             .join(" ");
         },
         configurable: true,

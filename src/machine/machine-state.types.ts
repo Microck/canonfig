@@ -34,6 +34,7 @@ export interface EnsureDirectoryInput {
 export type FileContent = Uint8Array | {
   readonly file: string;
   readonly digest: ContentDigest;
+  readonly maximumBytes?: number | undefined;
 };
 
 /** Persisted rollback permissions, distinct from the desired portable mode. */
@@ -58,9 +59,20 @@ export type AtomicWriteInput = {
   readonly content: FileContent;
 } & FilePermissionPolicy;
 
+/**
+ * The longest path, terminator included, that Win32 file calls and native
+ * tools accept on this machine, and whether Windows long paths are enabled.
+ */
+export interface PathLengthLimit {
+  readonly maximum: number;
+  readonly longPathsEnabled: boolean;
+}
+
 export interface ReadFileInput {
   readonly path: MachinePath;
   readonly maximumBytes: number;
+  /** Read only this leading byte count; maximumBytes still bounds the whole file. */
+  readonly prefixBytes?: number;
 }
 
 export interface RemoveFileInput {
@@ -69,6 +81,12 @@ export interface RemoveFileInput {
 
 export interface RemoveEmptyDirectoryInput {
   readonly path: MachinePath;
+}
+
+export interface RemoveTemporaryEntriesInput {
+  readonly directory: MachinePath;
+  /** Also clean every directory beneath it, without following links. */
+  readonly recursive: boolean;
 }
 
 export interface ValidatePathWithinRootInput {
@@ -137,9 +155,21 @@ export type SetPermissionsInput = {
   | { readonly mode?: never; readonly permissions: FilePermissionSnapshot }
 );
 
+/** A recipe method whose Canonfig install destination a lookup searches, and its resolved installer. */
+export interface InstallDestinationHint {
+  readonly method: string;
+  readonly installer?: MachinePath | undefined;
+}
+
 export interface ExecutableQuery {
   readonly name: string;
+  /** Replaces the PATH entries of the machine environment. */
   readonly searchPath?: ReadonlyArray<MachinePath> | undefined;
+  /**
+   * Recipe methods whose install destinations are searched before PATH, so a
+   * tool Canonfig installed resolves under a scheduler-bounded PATH too.
+   */
+  readonly installMethods?: ReadonlyArray<InstallDestinationHint> | undefined;
 }
 
 export interface DiscoveredExecutable {
@@ -245,10 +275,58 @@ export interface RenderedSchedulerJob {
   readonly schedule: string;
 }
 
+/** The last run the native scheduler itself recorded for the job. */
+export interface SchedulerRunResult {
+  readonly succeeded: boolean;
+  readonly detail: string;
+  readonly at?: string | undefined;
+}
+
+/**
+ * The effective native state of the Canonfig job, not only its files.
+ *
+ * A job whose files match can still never fire: stopped or unloaded outside
+ * Canonfig, or overridden by a native drop-in. Those are reported through
+ * `active` and `overrides` instead of folding into `enabled`/`matches`.
+ */
 export interface SchedulerInspection {
   readonly installed: boolean;
+  /** Enabled to run: systemd unit file state, launchd not disabled, Task Scheduler Enabled. */
   readonly enabled: boolean;
+  /** The installed native definition equals the rendered one, binding and calendar. */
   readonly matches: boolean;
+  /**
+   * Armed to fire now: systemd ActiveState, launchd service loaded, Task
+   * Scheduler trigger enabled and task not disabled. Undefined when the
+   * backend cannot observe runtime state.
+   */
+  readonly active?: boolean | undefined;
+  /** Whether the installed calendar alone equals the rendered one, when observable. */
+  readonly calendarMatches?: boolean | undefined;
+  /** Native overrides that change the effective job, such as systemd drop-ins. */
+  readonly overrides?: ReadonlyArray<string> | undefined;
+  /** The calendar the native scheduler reports it will actually use. */
+  readonly effectiveCalendar?: string | undefined;
+  /** The next start time as the native scheduler reports it. */
+  readonly nextElapse?: string | undefined;
+  readonly lastResult?: SchedulerRunResult | undefined;
+  /**
+   * When the native scheduler last started the job, whatever its result,
+   * including a run still in progress. Windows only.
+   */
+  readonly lastStartedAt?: string | undefined;
+  /** When the installed native job was registered, if the scheduler records it. Windows only. */
+  readonly registeredAt?: string | undefined;
+  /**
+   * Windows: the task's principal uses an InteractiveToken logon, so Task
+   * Scheduler starts it only while the user is logged on and does not catch
+   * up a run skipped while logged off.
+   */
+  readonly runsOnlyWhileLoggedOn?: boolean | undefined;
+  /** Linux: whether the user manager keeps running while the user is logged out. */
+  readonly lingering?: boolean | undefined;
+  /** macOS: system timezone changed since boot; this launchd session may retain the old zone. */
+  readonly timezoneChangedSinceBoot?: boolean | undefined;
 }
 
 /**

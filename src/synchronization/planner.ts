@@ -38,7 +38,7 @@ import {
 } from "./synchronization.errors.ts";
 import {
   isMissingAutomaticRecipeVersion,
-  recipeValidationError,
+  recipeValidationIssue,
 } from "../domain/recipe-versions.ts";
 import {
   desiredDirectoryEntries,
@@ -308,7 +308,7 @@ const validateResourceInputs = (
     }
     if (desired.kind === "tool") {
       for (const recipe of desired.recipes) {
-        const reason = recipeValidationError(recipe);
+        const reason = recipeValidationIssue(recipe)?.reason;
         if (reason !== undefined && !isMissingAutomaticRecipeVersion(recipe)) {
           return new PlannerInvalidRecipeError({
             resource: resource.id,

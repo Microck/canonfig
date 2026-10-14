@@ -4,14 +4,17 @@ import {
   generateKeyPairSync,
   sign,
   verify,
+  X509Certificate,
 } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, readdir, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
+import { generate } from "selfsigned";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -23,19 +26,24 @@ import {
   ResourceId,
   SourceSignature,
 } from "../../src/domain/brand.ts";
-import type {
-  MachineProfile,
-  ProfileRevision,
-  PublishedResource,
+import {
+  type MachineProfile,
+  type ProfileRevision,
+  type PublishedResource,
 } from "../../src/domain/profile.ts";
 import {
   RevokedFollowerCredentialError,
   EnrollmentTransportError,
+  LegacyRevisionFormatError,
   TransportIntegrityError,
   TransportInterruptedError,
   TransportResourceNotFoundError,
   TransportSizeLimitError,
 } from "../../src/enrollment/enrollment.errors.ts";
+import { SourceVersionMismatchError } from "../../src/enrollment/enrollment.errors.ts";
+import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
+import { buildIdentity } from "../../src/runtime/build-identity.ts";
+import { peerVersionCompatible } from "../../src/enrollment/version-handshake.ts";
 import { EnrollmentLive } from "../../src/enrollment/enrollment.layer.ts";
 import { Enrollment } from "../../src/enrollment/enrollment.service.ts";
 import {
@@ -45,7 +53,12 @@ import {
   getRevisionMetadata,
   listRevisions,
   retrieveBlob,
+  probeSourceDescriptor,
 } from "../../src/enrollment/follower-client.ts";
+import {
+  BlobTransferProgress,
+  type BlobTransferEvent,
+} from "../../src/enrollment/blob-transfer-progress.ts";
 import { startSourceServer } from "../../src/enrollment/source-server.ts";
 import type {
   FollowerEnrollment,
@@ -55,13 +68,17 @@ import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
+  digestOf,
   sha256BytesHex,
   sha256Hex,
   type JsonValue,
 } from "../../src/profile/profile-codec.ts";
 import { revisionSigningPayload } from "../../src/profile/publication.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
+import { stateMigrations as v220StateMigrations } from "../fixtures/upgrade/v2.2.0-state-schema.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
+import { describeRuntimeError } from "../../src/cli/failure-taxonomy.ts";
+import { stateMigrations as v315StateMigrations } from "../fixtures/upgrade/v3.1.5-state-schema.ts";
 
 const decode = Schema.decodeUnknownSync;
 const temporaryDirectories: Array<string> = [];
@@ -334,8 +351,11 @@ const publishFixtureRevision = (
     };
   }));
 
-const start = async (setup: Fixture): Promise<SourceServerHandle> => {
-  const server = await setup.runtime.runPromise(startSourceServer());
+const start = async (
+  setup: Fixture,
+  hostname = "127.0.0.1",
+): Promise<SourceServerHandle> => {
+  const server = await setup.runtime.runPromise(startSourceServer({ hostname }));
   openServers.push(server);
   return server;
 };
@@ -425,10 +445,10 @@ describe("authenticated content-addressed transport", () => {
     });
   });
 
-  it("filters groups, incrementally caches blobs, resumes, and converges without downloads", async () => {
+  it.each(["127.0.0.1", "::1"])("filters groups, caches and resumes authenticated blobs over %s", async (hostname) => {
     const setup = fixture();
     const published = await publishFixtureRevision(setup);
-    const server = await start(setup);
+    const server = await start(setup, hostname);
     const enrolled = await enroll(setup, server);
     const input = transportInput(server, enrolled);
     const cacheDirectory = join(setup.root, "cache");
@@ -469,6 +489,81 @@ describe("authenticated content-addressed transport", () => {
     expect(converged.downloadedBlobs).toBe(0);
     expect(converged.reusedBlobs).toBe(2);
     expect(server.blobRequests()).toBe(3);
+  });
+
+  it("rejects a pinned IPv6 endpoint whose certificate only covers IPv4 before HTTP", async () => {
+    const certificate = await generate([{ name: "commonName", value: "wrong-ip-source" }], {
+      keyType: "ec",
+      curve: "P-256",
+      extensions: [{ name: "subjectAltName", altNames: [{ type: 7, ip: "127.0.0.1" }] }],
+    });
+    let requests = 0;
+    const server = createHttpsServer(
+      { key: certificate.private, cert: certificate.cert },
+      (_request, response) => {
+        requests += 1;
+        response.writeHead(503);
+        response.end();
+      },
+    );
+    await new Promise<void>((resolve) => server.listen(0, "::1", resolve));
+    try {
+      const address = server.address();
+      if (address === null || Schema.is(Schema.String)(address)) throw new Error("no address");
+      const refused = await Effect.runPromise(Effect.flip(probeSourceDescriptor({
+        endpoint: `https://[::1]:${address.port}`,
+        tlsFingerprint: decode(CertificateFingerprint)(
+          new X509Certificate(certificate.cert).fingerprint256.replaceAll(":", "").toLowerCase(),
+        ),
+      })));
+      expect(refused).toBeInstanceOf(EnrollmentTransportError);
+      expect(requests).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("reports blob progress and resumes an interrupted fetch from the verified cached blobs", async () => {
+    const setup = fixture();
+    const published = await publishFixtureRevision(setup);
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const cacheDirectory = join(setup.root, "cache");
+    const request = {
+      ...transportInput(server, enrolled),
+      revisionId: published.revision.id,
+      cacheDirectory,
+    };
+    const events: Array<BlobTransferEvent> = [];
+    const controller = new AbortController();
+    // The connection drops right after the first blob arrives.
+    const interrupted = await Effect.runPromise(Effect.flip(
+      fetchRevision({ ...request, signal: controller.signal }).pipe(
+        Effect.provideService(BlobTransferProgress, (event) => {
+          events.push(event);
+          if (event.blobReceived === event.blobBytes) controller.abort();
+        }),
+        Effect.provide(setup.followerMachine),
+      ),
+    ));
+    expect(interrupted).toBeInstanceOf(TransportInterruptedError);
+    // Smallest blob first, with its own bytes and the fetch's running total.
+    const shared = Buffer.byteLength("shared\n");
+    const alpha = Buffer.byteLength("alpha-1\n");
+    expect(events).toEqual([{
+      blob: sha256BytesHex(Buffer.from("shared\n")),
+      blobIndex: 1,
+      blobCount: 2,
+      blobReceived: shared,
+      blobBytes: shared,
+      received: shared,
+      total: shared + alpha,
+    }]);
+    expect(await readdir(join(cacheDirectory, "blobs"))).toEqual([events[0]!.blob]);
+
+    const resumed = await runFollower(setup, fetchRevision(request));
+    expect(resumed).toMatchObject({ downloadedBlobs: 1, reusedBlobs: 1 });
+    expect(server.blobRequests()).toBe(2);
   });
 
   it("uses the persisted blob index across historical revisions and invalidates cached validation", async () => {
@@ -794,5 +889,355 @@ describe("authenticated content-addressed transport", () => {
     expect(result.downloadedBlobs).toBe(0);
     expect(result.reusedBlobs).toBe(2);
     expect(secondServer.blobRequests()).toBe(0);
+  });
+});
+
+interface LegacyPublication {
+  readonly revisionId: string;
+  readonly signature: string;
+  readonly contents: Readonly<Record<"plain" | "alpha", string>>;
+}
+
+/**
+ * Leaves `setup.database` exactly as a 3.1.5 Source left it: that release's
+ * schema, a Source identity, and one revision published in its format, with
+ * each file body inline in the signed profile and the resource blob index
+ * naming the digest of the whole spec.
+ */
+const legacySourceState = async (
+  setup: Fixture,
+  options: {
+    readonly migrations?: typeof v315StateMigrations;
+    readonly alphaSpecKind?: string;
+    /** Adds what only v2.x could publish: a schedule resource and a named-timezone default. */
+    readonly v2Schedule?: boolean;
+  } = {},
+): Promise<LegacyPublication> => {
+  await Effect.runPromise(
+    SqliteMigrator.run({ loader: options.migrations ?? v315StateMigrations }).pipe(
+      Effect.provide(SqliteClient.layer({ filename: setup.database })),
+    ),
+  );
+  const signing = generateKeyPairSync("ed25519");
+  const fingerprint = sha256BytesHex(
+    signing.publicKey.export({ type: "spki", format: "der" }),
+  );
+  const certificate = await generate([{ name: "commonName", value: "canonfig-loopback" }], {
+    algorithm: "sha256",
+    keyType: "ec",
+    curve: "P-256",
+    extensions: [{ name: "subjectAltName", altNames: [{ type: 7, ip: "127.0.0.1" }] }],
+  });
+  const store = (name: string, value: string) =>
+    Effect.runPromise(
+      Effect.flatMap(MachineState, (machine) =>
+        machine.storeCredential({ name, value: Redacted.make(value) })).pipe(
+          Effect.provide(setup.sourceMachine),
+        ),
+    );
+  const signingKeyReference = await store(
+    "canonfig-source-signing-key",
+    signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+  );
+  const tlsKeyReference = await store("canonfig-source-tls-key", certificate.private);
+  const tlsCertificateReference = await store(
+    "canonfig-source-tls-certificate",
+    certificate.cert,
+  );
+  const contents = { plain: "published by 3.1.5\n", alpha: "alpha group only\n" };
+  const scheduleDefault = options.v2Schedule === true
+    ? { scheduleDefault: { type: "daily", at: "09:00", timezone: "Europe/Paris" } }
+    : {};
+  const profile = {
+    id: "legacy-profile",
+    version: 2,
+    name: "Legacy profile",
+    groups: [{ name: "alpha" }],
+    resources: [
+      {
+        id: "legacy-plain",
+        kind: "file",
+        policy: "replace",
+        target: "~/.legacy-plain",
+        dependsOn: [],
+        spec: { kind: "file", content: contents.plain, executable: false },
+        verify: { method: "digest", digest: sha256Hex(contents.plain) },
+      },
+      {
+        id: "legacy-alpha",
+        kind: "file",
+        policy: "replace",
+        target: "~/.legacy-alpha",
+        groups: ["alpha"],
+        dependsOn: ["legacy-plain"],
+        spec: {
+          kind: options.alphaSpecKind ?? "file",
+          content: contents.alpha,
+          executable: true,
+          mode: 0o755,
+        },
+        verify: { method: "digest", digest: sha256Hex(contents.alpha) },
+      },
+      {
+        id: "legacy-link",
+        kind: "file",
+        policy: "replace",
+        target: "~/.legacy-link",
+        dependsOn: [],
+        spec: { kind: "file", content: "", executable: false, symlinkTo: "/etc/hostname" },
+        verify: { method: "symlink", target: "/etc/hostname" },
+      },
+      ...(options.v2Schedule === true
+        ? [{
+          id: "legacy-schedule",
+          kind: "schedule",
+          policy: "replace",
+          target: "canonfig-sync",
+          dependsOn: [],
+          spec: {
+            kind: "schedule",
+            calendar: { type: "daily", at: "09:00" },
+            timezone: "Europe/Paris",
+          },
+          verify: { method: "executable-present", executable: "canonfig" },
+        }]
+        : []),
+    ],
+    ...scheduleDefault,
+  };
+  const resources = profile.resources.map(({ spec, verify: _, ...resource }) => ({
+    ...resource,
+    blobs: [digestOf(asJson(spec))],
+  }));
+  // Signed exactly as the old release signed it, retired kinds included.
+  const signedResources: ReadonlyArray<PublishedResource> = JSON.parse(JSON.stringify(resources));
+  const canonicalBytes = canonicalJson(asJson(profile));
+  const digest = sha256Hex(canonicalBytes);
+  const unsigned = {
+    id: decode(ProfileRevisionId)(`${profile.id}:${digest}`),
+    profileId: decode(ProfileId)(profile.id),
+    sequence: 1,
+    canonicalBytes,
+    digest,
+    publishedAt: "2026-06-01T09:00:00Z",
+    resources: signedResources,
+    groups: [{ name: group("alpha") }],
+    signingKeyId: `ed25519:${fingerprint}`,
+  };
+  const signature = `ed25519:${
+    sign(null, Buffer.from(revisionSigningPayload(unsigned)), signing.privateKey)
+      .toString("base64url")
+  }`;
+  const { signingKeyId: _, ...stored } = unsigned;
+  const database = new DatabaseSync(setup.database);
+  try {
+    database.prepare(
+      "INSERT INTO source_identity (singleton, key_id, public_key_fingerprint) VALUES (1, ?, ?)",
+    ).run(`ed25519:${fingerprint}`, fingerprint);
+    database.prepare(
+      `INSERT INTO enrollment_source (
+        singleton, signing_key_reference, tls_key_reference,
+        tls_certificate_reference, tls_fingerprint
+      ) VALUES (1, ?, ?, ?, ?)`,
+    ).run(
+      signingKeyReference,
+      tlsKeyReference,
+      tlsCertificateReference,
+      new X509Certificate(certificate.cert).fingerprint256.replaceAll(":", "").toLowerCase(),
+    );
+    database.prepare(
+      `INSERT INTO profile_revisions (
+        id, profile_id, sequence, canonical_bytes, digest, signature,
+        published_at, revision_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      unsigned.id,
+      unsigned.profileId,
+      unsigned.sequence,
+      canonicalBytes,
+      digest,
+      signature,
+      unsigned.publishedAt,
+      JSON.stringify({ ...stored, signature, ...scheduleDefault }),
+    );
+    for (const resource of resources) {
+      database.prepare(
+        "INSERT INTO profile_revision_blobs (blob_id, revision_id, resource_id) VALUES (?, ?, ?)",
+      ).run(resource.blobs[0]!, unsigned.id, resource.id);
+    }
+  } finally {
+    database.close();
+  }
+  return { revisionId: unsigned.id, signature, contents };
+};
+
+describe("Source upgraded from a release before 3.2.1", () => {
+  it("serves a revision the earlier release published", async () => {
+    const setup = fixture();
+    const legacy = await legacySourceState(setup);
+    // The first use of the runtime opens the 3.1.5 state and migrates it.
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const fetched = await runFollower(setup, fetchRevision({
+      ...transportInput(server, enrolled),
+      revisionId: legacy.revisionId,
+      cacheDirectory: join(setup.root, "legacy-cache"),
+    }));
+
+    expect(fetched.metadata.sourceSignature).toBe(legacy.signature);
+    expect(fetched.metadata.resources.map((resource) => resource.id)).toEqual([
+      "legacy-plain",
+      "legacy-alpha",
+      "legacy-link",
+    ]);
+    const bodies = await Promise.all(
+      fetched.blobs.map((blob) => readFile(blob.path, "utf8")),
+    );
+    expect(bodies.sort()).toEqual([legacy.contents.alpha, legacy.contents.plain].sort());
+    const alpha = fetched.metadata.resources.find((resource) => resource.id === "legacy-alpha");
+    expect(alpha?.spec).toEqual({
+      kind: "file",
+      blob: sha256BytesHex(Buffer.from(legacy.contents.alpha)),
+      bytes: Buffer.byteLength(legacy.contents.alpha),
+      executable: true,
+      mode: 0o755,
+    });
+    const link = fetched.metadata.resources.find((resource) => resource.id === "legacy-link");
+    expect(link?.spec).toMatchObject({ kind: "file", symlinkTo: "/etc/hostname" });
+    expect(link?.blobs).toEqual([]);
+  });
+
+  it("refuses a legacy revision it cannot represent by name, not as tampering", async () => {
+    const setup = fixture();
+    const legacy = await legacySourceState(setup, { alphaSpecKind: "schedule" });
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const refused = await Effect.runPromise(Effect.flip(
+      getRevisionMetadata({
+        ...transportInput(server, enrolled),
+        revisionId: legacy.revisionId,
+      }).pipe(Effect.provide(setup.followerMachine)),
+    ));
+    expect(refused).toBeInstanceOf(LegacyRevisionFormatError);
+    const described = describeRuntimeError(refused);
+    expect(described.category).toBe("human-action-required");
+    expect(described.message).toContain(legacy.revisionId);
+    expect(described.message).toContain("canonfig source publish");
+  });
+
+  it("lists and serves a v2.2.0 revision carrying a retired schedule resource and timezone", async () => {
+    const setup = fixture();
+    const legacy = await legacySourceState(setup, {
+      migrations: v220StateMigrations,
+      v2Schedule: true,
+    });
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const input = transportInput(server, enrolled);
+    const listed = await runFollower(setup, listRevisions(input));
+    expect(listed.revisions.map((revision) => revision.id)).toEqual([legacy.revisionId]);
+    const fetched = await runFollower(setup, fetchRevision({
+      ...input,
+      revisionId: legacy.revisionId,
+      cacheDirectory: join(setup.root, "v2-cache"),
+    }));
+    expect(fetched.metadata.resources.map((resource) => resource.id)).toEqual([
+      "legacy-plain",
+      "legacy-alpha",
+      "legacy-link",
+    ]);
+    expect(fetched.metadata.scheduleDefault).toBeUndefined();
+    expect(fetched.downloadedBlobs).toBe(2);
+  });
+});
+
+describe("Source/follower version handshake", () => {
+  it("accepts the 4.0 release line but rejects a 3.2.x peer", () => {
+    expect(peerVersionCompatible("4.0.1")).toBe(true);
+    expect(peerVersionCompatible("3.2.2")).toBe(false);
+  });
+
+  it("refuses a follower from before the handshake with a version message it renders", async () => {
+    const setup = fixture();
+    await publishFixtureRevision(setup);
+    const server = await start(setup);
+    const endpoint = new URL(server.endpoint);
+    // A follower before 3.2.1 sends no version header and renders only the
+    // message of the failures it knows.
+    const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const request = httpsRequest({
+        hostname: endpoint.hostname,
+        port: endpoint.port,
+        path: "/v1/transport/revisions",
+        method: "GET",
+        rejectUnauthorized: false,
+        headers: { authorization: `Bearer ${"a".repeat(43)}` },
+      }, (incoming) => {
+        const chunks: Array<Buffer> = [];
+        incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+        incoming.on("end", () =>
+          resolve({
+            status: incoming.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString("utf8"),
+          }));
+      });
+      request.once("error", reject);
+      request.end();
+    });
+    expect(response.status).toBe(409);
+    expect(JSON.parse(response.body)).toMatchObject({
+      error: "MalformedEnrollmentRequestError",
+      message: expect.stringContaining(
+        `source/follower version mismatch: source ${buildIdentity.packageVersion} vs follower before 3.2.1`,
+      ),
+    });
+  });
+
+  it("reports a Source that announces no version as a version mismatch, not tampering", async () => {
+    const setup = fixture();
+    const certificate = await generate([{ name: "commonName", value: "old-source" }], {
+      keyType: "ec",
+      curve: "P-256",
+      extensions: [{ name: "subjectAltName", altNames: [{ type: 7, ip: "127.0.0.1" }] }],
+    });
+    const oldSource = createHttpsServer(
+      { key: certificate.private, cert: certificate.cert },
+      (request, response) => {
+        request.resume();
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ revisions: [] }));
+      },
+    );
+    await new Promise<void>((resolve) => oldSource.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = oldSource.address();
+      if (address === null || Schema.is(Schema.String)(address)) throw new Error("no address");
+      const credentialReference = await runFollower(
+        setup,
+        Effect.flatMap(MachineState, (machine) =>
+          machine.storeCredential({
+            name: "canonfig-follower-skew",
+            value: Redacted.make("b".repeat(43)),
+          })),
+      );
+      const refused = await Effect.runPromise(Effect.flip(
+        listRevisions({
+          endpoint: `https://127.0.0.1:${address.port}`,
+          tlsFingerprint: decode(CertificateFingerprint)(
+            new X509Certificate(certificate.cert).fingerprint256.replaceAll(":", "").toLowerCase(),
+          ),
+          credentialReference,
+          sourceFingerprint: "c".repeat(64),
+        }).pipe(Effect.provide(setup.followerMachine)),
+      ));
+      expect(refused).toBeInstanceOf(SourceVersionMismatchError);
+      const described = describeRuntimeError(refused);
+      expect(described.category).toBe("usage-or-configuration");
+      expect(described.message).toContain(
+        `source/follower version mismatch: source before 3.2.1 vs follower ${buildIdentity.packageVersion}`,
+      );
+    } finally {
+      await new Promise<void>((resolve) => oldSource.close(() => resolve()));
+    }
   });
 });

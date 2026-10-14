@@ -42,6 +42,14 @@ export interface SourcePublishInput {
   readonly name?: string | undefined;
   readonly profilePath?: string | undefined;
   readonly reviewer: string;
+  /** Publish a revision with no resources on purpose. */
+  readonly allowEmpty?: boolean | undefined;
+}
+
+export interface SourceDigestInput {
+  readonly profilePath: string;
+  /** Report only this resource. */
+  readonly resource?: string | undefined;
 }
 
 export interface SourceServeInput {
@@ -65,9 +73,18 @@ export interface SourceCommandsService {
   readonly publish: (
     input: SourcePublishInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly digest: (
+    input: SourceDigestInput,
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly serve: (
     input: SourceServeInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  /** Supervised Source: install `source serve` as a native user service. */
+  readonly installService: (
+    input: SourceServeInput,
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly serviceStatus: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly removeService: () => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly invite: (
     input: SourceInviteInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;

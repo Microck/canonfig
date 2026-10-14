@@ -96,15 +96,6 @@ const failure = (message: string): SecretTransferError =>
   new SecretTransferError({ category: "storage", operation, message });
 
 /**
- * Compare secret bytes while tolerating provider framing. Providers append a
- * trailing newline to lookup output; that framing is stripped before the
- * comparison. Anything else, including leading whitespace or an interior
- * newline difference, still fails.
- */
-export const secretBytesEqual = (expected: string, actual: string): boolean =>
-  expected === actual || expected === actual.replace(/(\r\n|\n|\r)+$/u, "");
-
-/**
  * Compare lookup attributes while tolerating provider-added metadata. Every
  * expected attribute must match exactly; extra attributes the provider added
  * (schemas, timestamps, labels) are ignored.
@@ -130,8 +121,11 @@ const secretToolPackages =
 const providerPackages =
   "install and enable a Secret Service provider (for example gnome-keyring with its daemon enabled for the user session)";
 
+// dbus-run-session is not a remedy: its private bus activates a second,
+// empty keyring that needs a graphical prompter and never reaches the login
+// keyring, so nothing stored there helps a later run.
 const busRecovery =
-  "Run inside a user D-Bus session (an existing graphical or ssh login session, dbus-run-session, or a systemd --user service), then retry.";
+  "Run canonfig with your user session bus: set XDG_RUNTIME_DIR=/run/user/$(id -u) (canonfig then uses $XDG_RUNTIME_DIR/bus) or DBUS_SESSION_BUS_ADDRESS. If that socket does not exist, keep the systemd user manager running without a login session with `sudo loginctl enable-linger $USER`. Do not use dbus-run-session: its private bus cannot reach the login keyring.";
 
 const lockRecovery =
   "Start and unlock a Secret Service provider for this user session, then retry.";
@@ -171,7 +165,8 @@ const verifyBootstrapProbe = (
       }
     }
     const bytes = yield* host.loadProbeBytes(probe.stored.reference);
-    if (!secretBytesEqual(Redacted.value(probe.value), bytes)) {
+    // Byte-exact: a provider that changes even a trailing newline fails.
+    if (Redacted.value(probe.value) !== bytes) {
       return yield* failure("the provider did not return the stored credential bytes");
     }
   });
@@ -372,7 +367,7 @@ export const runLinuxCredentialBootstrap = (
     }
     if (capability.kind === "unavailable") {
       if (host.sessionBusAddress() === undefined) {
-        return yield* failure(`the Secret Service bus is unavailable. ${busRecovery}`);
+        return yield* failure(`the Secret Service bus is unavailable. ${capability.recovery}`);
       }
       return yield* secretServiceBootstrap(host, options, true);
     }

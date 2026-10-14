@@ -505,6 +505,8 @@ const packageManagerConfigurationEnvironment = (
     return [
       { name: "UV_CONFIG_FILE", value: emptyConfiguration },
       { name: "PIP_CONFIG_FILE", value: emptyConfiguration },
+      // An agent-run uv must never fetch an interpreter outside the reviewed index.
+      { name: "UV_PYTHON_DOWNLOADS", value: "never" },
     ];
   }
   if (manager === "pip") {

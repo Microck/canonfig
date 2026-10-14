@@ -11,6 +11,7 @@ import { generate } from "selfsigned";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
+import { HumanActionRequiredError } from "../src/machine/machine-state.errors.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { doctorProbeNames, runDoctorProbes } from "../src/runtime/doctor.ts";
 import { credentialReadiness, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
@@ -78,7 +79,7 @@ describe("doctor probes", () => {
     ]));
   });
 
-  it("isolates a bounded source failure and reports remaining probes", () => {
+  it("isolates a local credential-store failure and reports remaining probes", () => {
     const home = mkdtempSync(resolve(tmpdir(), "canonfig-doctor-failure-"));
     const secret = "must-not-leak-doctor-secret";
     const result = executeDoctor(
@@ -90,7 +91,7 @@ describe("doctor probes", () => {
         CANONFIG_SOURCE_CREDENTIAL_REFERENCE: secret,
       },
     );
-    expect(result.status).toBe(5);
+    expect(result.status).toBe(3);
     expect(result.stdout).toBe("");
     expect(result.stderr).not.toContain(secret);
     const envelope = JSON.parse(result.stderr);
@@ -98,7 +99,7 @@ describe("doctor probes", () => {
       schema: "canonfig.cli/v1",
       command: "doctor",
       status: "error",
-      exitCode: 5,
+      exitCode: 3,
       data: {
         schema: "canonfig.doctor/v1",
         status: "unhealthy",
@@ -109,7 +110,8 @@ describe("doctor probes", () => {
       expect.objectContaining({
         name: "source",
         status: "fail",
-        category: "authentication-or-revocation",
+        category: "human-action-required",
+        message: expect.stringContaining("no Source request was made"),
       }),
       expect.objectContaining({ name: "agent-adapter" }),
     ]));
@@ -223,6 +225,102 @@ describe("doctor source probe response lifecycle", () => {
   });
 });
 
+// Reading the follower credential is local: a locked keyring or Keychain, or
+// a missing session bus, must never read as a Source authentication failure.
+describe("doctor local credential evidence", () => {
+  const unreachableSource = {
+    endpoint: "https://127.0.0.1:9",
+    tlsFingerprint: "a".repeat(64),
+    credentialReference: "fixture:credential",
+  };
+
+  const run = (
+    overrides: Partial<MachineState["Service"]>,
+    timeoutMilliseconds = 5_000,
+  ) => {
+    const machine = Layer.effect(MachineState, Effect.gen(function*() {
+      const base = yield* MachineState;
+      return MachineState.of({ ...base, ...overrides });
+    })).pipe(Layer.provide(linuxMachineStateLayer()));
+    const home = mkdtempSync(resolve(tmpdir(), "canonfig-doctor-local-credential-"));
+    const statePath = join(home, "state.sqlite");
+    return Effect.runPromise(runDoctorProbes({
+      noInput: true,
+      timeoutMilliseconds,
+      statePath,
+      policyPath: join(home, "policy.json"),
+      source: unreachableSource,
+    }).pipe(
+      Effect.provide(Layer.mergeAll(
+        machine,
+        stateRepositoryLayer(statePath),
+        scheduleManagerLayer.pipe(Layer.provide(machine)),
+      )),
+    ));
+  };
+  const probe = (
+    report: { readonly probes: ReadonlyArray<{ readonly name: string }> },
+    name: string,
+  ) => report.probes.find((candidate) => candidate.name === name);
+
+  it("reports a failed credential read as a local failure with its recovery text", async () => {
+    const report = await run({
+      loadCredential: () => Effect.fail(new HumanActionRequiredError({
+        action: "unlock the Secret Service collection",
+        recovery: "run the fixture unlock command in this session",
+      })),
+    });
+    const source = probe(report, "source");
+    expect(source).toMatchObject({
+      status: "fail",
+      category: "human-action-required",
+    });
+    expect(source).toHaveProperty(
+      "message",
+      expect.stringContaining(
+        "unlock the Secret Service collection: run the fixture unlock command in this session",
+      ),
+    );
+    expect(JSON.stringify(source)).not.toContain("authentication");
+  });
+
+  it("reports a credential read that outlives the probe timeout as local, not transport", async () => {
+    const report = await run({ loadCredential: () => Effect.never }, 300);
+    expect(probe(report, "source")).toMatchObject({
+      status: "fail",
+      category: "human-action-required",
+      details: { stage: "credential-load" },
+    });
+  });
+
+  it("upgrades provider presence to credential-load evidence once the credential was read", async () => {
+    const presence = {
+      kind: "secure-noninteractive",
+      provider: "secret-service",
+      verification: "provider-presence",
+    } as const;
+    const loaded = await run({
+      credentialCapability: () => Effect.succeed(presence),
+      loadCredential: () => Effect.succeed(Redacted.make("disposable-test-credential")),
+    });
+    expect(probe(loaded, "credentials")).toMatchObject({
+      status: "pass",
+      details: { verification: "credential-load", writeAccessVerified: false },
+    });
+    const refused = await run({
+      credentialCapability: () => Effect.succeed(presence),
+      loadCredential: () => Effect.fail(new HumanActionRequiredError({
+        action: "unlock",
+        recovery: "fixture",
+      })),
+    });
+    expect(probe(refused, "credentials")).toMatchObject({
+      status: "warning",
+      details: { verification: "provider-presence" },
+    });
+  });
+});
+
 describe("readiness evidence", () => {
   it.each(["secret-service", "keychain", "credential-manager"] as const)(
     "does not equate %s presence with usable unattended storage",
@@ -254,28 +352,42 @@ describe("readiness evidence", () => {
     },
   );
 
-  it("does not expose credential storage paths or untrusted recovery text", () => {
-    const result = credentialReadiness({ kind: "unavailable", recovery: "secret fixture" });
-    expect(JSON.stringify(result)).not.toContain("secret fixture");
+  it("passes the capability recovery through without exposing local credential paths", () => {
+    const result = credentialReadiness({
+      kind: "unavailable",
+      recovery: "run the fixture unlock command in this session",
+    });
+    expect(result.status).toBe("warning");
+    expect(result.message).toContain("run the fixture unlock command in this session");
+    expect(result.details).toMatchObject({
+      kind: "unavailable",
+      recovery: "run the fixture unlock command in this session",
+    });
     const local = credentialReadiness({
       kind: "local-file", path: { platform: "linux", absolute: "/private/fixture" },
     });
     expect(JSON.stringify(local)).not.toContain("/private/fixture");
   });
 
-  it.each(["current", "not-installed", "disabled", "drifted"] as const)(
+  const scheduleStatus = (
+    state: ScheduleStatus["state"],
+    extra: Partial<ScheduleStatus> = {},
+  ): ScheduleStatus => ({
+    state, platform: "linux", schedule: { kind: "daily", localTime: "04:00" },
+    definition: {
+      platform: "linux", mechanism: "systemd-user-timer",
+      serviceName: "canonfig", service: "fixture", schedule: "fixture",
+    },
+    detail: `fixture ${state}`, timezone: "UTC", warnings: [],
+    ...extra,
+  });
+
+  it.each(["current", "not-installed", "disabled", "inactive", "overridden", "drifted"] as const)(
     "reports the requested %s schedule without inventing an execution receipt",
     (state) => {
-      const status: ScheduleStatus = {
-        state, platform: "linux", schedule: { kind: "daily", localTime: "04:00" },
-        definition: {
-          platform: "linux", mechanism: "systemd-user-timer",
-          serviceName: "canonfig", service: "fixture", schedule: "fixture",
-        },
-      };
-      const result = scheduledDefinitionReadiness(status);
+      const result = scheduledDefinitionReadiness(scheduleStatus(state));
       // A green renderer alone is a warning until the native scheduler is
-      // observed firing the job.
+      // observed firing the job; a job that will not fire fails.
       expect(result.status).toBe(state === "current" ? "warning" : "fail");
       expect(result.details?.scheduledExecutionVerified).toBe(false);
       expect(result.details?.definitionVerified).toBe(state === "current");
@@ -283,31 +395,43 @@ describe("readiness evidence", () => {
     },
   );
 
-  it.each(["current"] as const)(
-    "marks %s schedules verified only with recorded fire evidence",
-    (state) => {
-      const status: ScheduleStatus = {
-        state, platform: "linux", schedule: { kind: "daily", localTime: "04:00" },
-        definition: {
-          platform: "linux", mechanism: "systemd-user-timer",
-          serviceName: "canonfig", service: "fixture", schedule: "fixture",
-        },
-      };
-      const fired = scheduledDefinitionReadiness(status, {
-        at: "2026-09-12T04:00:05Z", outcome: "completed",
-      });
-      expect(fired.status).toBe("pass");
-      expect(fired.details).toMatchObject({
-        scheduledExecutionVerified: true,
-        lastFiredAt: "2026-09-12T04:00:05Z",
-        lastFiredOutcome: "completed",
-      });
-      // A failed scheduled apply still proves the scheduler fired the job.
-      const failedFire = scheduledDefinitionReadiness(status, {
-        at: "2026-09-12T04:00:05Z", outcome: "failed",
-      });
-      expect(failedFire.status).toBe("pass");
-      expect(failedFire.details?.scheduledExecutionVerified).toBe(true);
-    },
-  );
+  it("warns instead of failing when only another build's binding differs", () => {
+    // After an upgrade the old unit keeps firing on the same calendar until
+    // the next apply re-renders it (CF-59).
+    const result = scheduledDefinitionReadiness(scheduleStatus("drifted", { drift: "binding" }));
+    expect(result.status).toBe("warning");
+  });
+
+  it("marks current schedules verified only by a completed unattended run", () => {
+    const status = scheduleStatus("current");
+    const fired = scheduledDefinitionReadiness(status, [
+      { at: "2026-09-12T04:00:00Z", outcome: "started" },
+      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
+    ]);
+    expect(fired.status).toBe("pass");
+    expect(fired.details).toMatchObject({
+      scheduledExecutionVerified: true,
+      lastFiredAt: "2026-09-12T04:00:05Z",
+      lastFiredOutcome: "completed",
+    });
+    // The scheduler fired the job, but the run failed: doctor says so, with
+    // the reason and the last success, instead of passing (CF-48).
+    const failedFire = scheduledDefinitionReadiness(status, [
+      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
+      { at: "2026-09-13T04:00:03Z", outcome: "failed", reason: "human-action-required: keychain locked" },
+    ]);
+    expect(failedFire.status).toBe("warning");
+    expect(failedFire.details?.scheduledExecutionVerified).toBe(true);
+    expect(failedFire.message).toContain("keychain locked");
+    expect(failedFire.message).toContain("2026-09-12T04:00:05Z");
+  });
+
+  it("warns when the job cannot run while the user is logged out", () => {
+    const status = scheduleStatus("current", { warnings: ["linger fixture"] });
+    const result = scheduledDefinitionReadiness(status, [
+      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
+    ]);
+    expect(result.status).toBe("warning");
+    expect(result.message).toContain("linger fixture");
+  });
 });

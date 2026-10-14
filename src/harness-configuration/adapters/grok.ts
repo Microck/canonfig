@@ -8,6 +8,7 @@ import {
   commandMarkdown,
   enabledHooks,
   GROK_EVENT_MAP,
+  grokMcpDiagnostics,
   grokMcpToml,
   ruleDocuments,
   skillArtifacts,
@@ -29,7 +30,10 @@ export const grokAdapter: HarnessAdapter = {
     artifacts.push(...await skillArtifacts(context, ".grok/skills", "grok-build"));
 
     const mcp = grokMcpToml(context);
-    if (mcp) artifacts.push({ kind: "toml", path: ".grok/config.toml", owner: "grok-build", blocks: [{ marker: "mcp-servers", content: mcp }] });
+    if (mcp) {
+      diagnostics.push(...grokMcpDiagnostics(context));
+      artifacts.push({ kind: "toml", path: ".grok/config.toml", owner: "grok-build", blocks: [{ marker: "mcp-servers", content: mcp }] });
+    }
 
     if (enabledHooks(context).length > 0) {
       const compiled = claudeStyleHooks(context, GROK_EVENT_MAP);

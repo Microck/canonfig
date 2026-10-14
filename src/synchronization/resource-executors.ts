@@ -1,11 +1,9 @@
 import { Effect, Schema } from "effect";
-import { dirname, isAbsolute, join, relative, win32 } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
 
 import { ContentDigest, CredentialReference, type RunId } from "../domain/brand.ts";
 import {
-  ResourceSpecInputSchema,
   type PublishedResource,
-  type ResourceSpecInput,
   type VerificationInput,
 } from "../domain/profile.ts";
 import {
@@ -23,16 +21,20 @@ import {
   type McpQualificationStage,
   type McpQualificationStageEvidence,
 } from "../domain/mcp-qualification.ts";
-import { MachineFilesystemError, type MachineStateError } from "../machine/machine-state.errors.ts";
+import {
+  ExecutableNotFoundError,
+  MachineFilesystemError,
+  type MachineStateError,
+} from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import { FilePermissionSnapshot, type MachinePath } from "../machine/machine-state.types.ts";
+import { FilePermissionSnapshot, type InstallDestinationHint, type MachinePath } from "../machine/machine-state.types.ts";
+import { temporaryEntryName } from "../machine/temporary-entries.ts";
 import {
   directoryVerificationDigest,
   sha256BytesHex,
   sha256Hex,
 } from "../profile/profile-codec.ts";
 import {
-  type SetScheduleInput,
   type SyncSchedule,
 } from "../schedule/schedule-manager.types.ts";
 import {
@@ -48,17 +50,17 @@ import type {
   SynchronizationExecutionLimits,
 } from "./synchronization.types.ts";
 import {
+  editConfigText,
   getConfigPath,
   parseConfigDocument,
-  removeConfigPath,
-  serializeConfigDocument,
-  setConfigPath,
 } from "./config-codec.ts";
+import { configValuesEqual } from "./config-value.ts";
+import { installedToolVersion, installedVersionMatches } from "./installed-tool-version.ts";
 import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
 import {
   isMissingAutomaticRecipeVersion,
   recipeSourceDetails,
-  recipeValidationError,
+  recipeValidationIssue,
   canonicalRecipeIndexUrl,
   defaultPythonIndex,
   npmVersionFromTarballSource,
@@ -70,7 +72,8 @@ import {
   type NpmArtifactTransport,
 } from "./npm-artifact.ts";
 import { relativePathAncestors } from "./resource-plans.ts";
-import { resolveInstallerInvocation } from "./installer-bindings.ts";
+import { resolveInstallerInvocation, toolInstallMethods } from "./installer-bindings.ts";
+import { redactText } from "../cli/redaction.ts";
 
 const isUnboundedNonNpmPackage = (value: string): boolean =>
   /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
@@ -102,6 +105,19 @@ const StoredFileSchema = Schema.Union([
     target: Schema.NonEmptyString,
   }),
 ]);
+
+/**
+ * An ancestor directory of a target that did not exist when the snapshot was
+ * taken. The write creates it; rollback removes it again, deepest first and
+ * only while it is empty. A directory that existed before is never recorded,
+ * so it is never removed.
+ */
+const CreatedParentSchema = Schema.Struct({
+  path: Schema.NonEmptyString,
+  state: Schema.Literal("created-parent"),
+});
+
+const RollbackEntrySchema = Schema.Union([StoredFileSchema, CreatedParentSchema]);
 
 /** Derived locally, never accepted as a path from persisted metadata. */
 const backupFile = (reference: string, target: string): string =>
@@ -146,6 +162,8 @@ export interface ResourceVerification {
   readonly observedDigest?: string | undefined;
   readonly exitCode?: number | undefined;
   readonly qualification?: McpQualificationReceipt | undefined;
+  /** Why a failed verification failed, when that is more than "it did not pass". */
+  readonly reason?: string | undefined;
 }
 
 const encoder = new TextEncoder();
@@ -184,6 +202,7 @@ const readIfPresent = (
 
 const captureStoredFile = (
   path: MachinePath,
+  maximumBytes?: number | undefined,
 ): Effect.Effect<StoredFile, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -205,7 +224,7 @@ const captureStoredFile = (
     if (symlink !== undefined) {
       return { path: path.absolute, state: "symlink", target: symlink };
     }
-    const digest = yield* machine.digestFile({ path });
+    const digest = yield* machine.digestFile({ path, maximumBytes });
     const permissions = yield* machine.snapshotPermissions(path);
     return {
       path: path.absolute,
@@ -220,6 +239,7 @@ const restoreStoredFile = (
   reference: string,
   root?: MachinePath | undefined,
   directoryPermissions: "restore" | "writable" = "restore",
+  maximumBytes?: number | undefined,
 ): Effect.Effect<void, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -282,7 +302,7 @@ const restoreStoredFile = (
         return;
       }
       case "regular": {
-        const content = { file: backupFile(reference, entry.path), digest: entry.digest };
+        const content = { file: backupFile(reference, entry.path), digest: entry.digest, maximumBytes };
         if (root === undefined) {
           yield* machine.atomicWrite({ path, content, permissions: entry.permissions });
         } else {
@@ -449,6 +469,111 @@ const deepestPathFirst = <Value>(
     )
     .map(({ value }) => value);
 
+type CreatedParent = typeof CreatedParentSchema.Type;
+
+const parentOf = (path: MachinePath): MachinePath => ({
+  platform: path.platform,
+  absolute: path.platform === "windows" ? win32.dirname(path.absolute) : dirname(path.absolute),
+});
+
+/** Every proper ancestor of a path, nearest first, as plain path text. */
+const ancestorsOf = (path: MachinePath): ReadonlyArray<string> => {
+  const ancestors: Array<string> = [];
+  for (let current = path, parent = parentOf(path); parent.absolute !== current.absolute;
+    current = parent, parent = parentOf(parent)) {
+    ancestors.push(parent.absolute);
+  }
+  return ancestors;
+};
+
+/**
+ * The paths an action creates parents for: its managed root, whose own
+ * ancestors the root snapshot does not cover, or each unrooted target.
+ */
+const outermostTargets = (
+  paths: ReadonlyArray<MachinePath>,
+  root: MachinePath | undefined,
+): ReadonlyArray<MachinePath> => root === undefined ? paths : [root];
+
+/**
+ * Ancestors of the outermost targets that do not exist yet. Writing a target
+ * creates them, so rollback must remove them again. The walk stops at the
+ * first ancestor that exists in any form: that one and everything above it
+ * belonged to the machine before the run.
+ */
+const missingAncestors = (
+  targets: ReadonlyArray<MachinePath>,
+): Effect.Effect<ReadonlyArray<CreatedParent>, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const missing = new Map<string, CreatedParent>();
+    for (const target of targets) {
+      for (let ancestor = parentOf(target); ; ancestor = parentOf(ancestor)) {
+        if (missing.has(machinePathKey(ancestor))) break;
+        const present = yield* machine.inspectPath(ancestor).pipe(
+          Effect.as(true),
+          Effect.catchTag("MachineFilesystemError", (error) =>
+            error.message.includes("ENOENT")
+              ? Effect.succeed(false)
+              // ENOTDIR: something above is not a directory, so the write
+              // cannot create this one either.
+              : error.message.includes("ENOTDIR")
+              ? Effect.succeed(true)
+              : Effect.fail(error)
+          ),
+        );
+        if (present) break;
+        missing.set(machinePathKey(ancestor), { path: ancestor.absolute, state: "created-parent" });
+        if (parentOf(ancestor).absolute === ancestor.absolute) break;
+      }
+    }
+    return deepestPathFirst([...missing.values()], (parent) => parent.path);
+  });
+
+/**
+ * Remove the parents a write created, deepest first. A parent that holds
+ * anything but Canonfig's own temporary entries, or that is no longer a plain
+ * directory, is kept along with everything above it. After a crash, an
+ * interrupted parent publication can also leave its staging directory in the
+ * nearest pre-existing ancestor; recovery removes that one too.
+ */
+const removeCreatedParents = (
+  parents: ReadonlyArray<CreatedParent>,
+  afterCrash: boolean,
+): Effect.Effect<void, MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    if (parents.length === 0) return;
+    const machine = yield* MachineState;
+    const deepest = deepestPathFirst(parents, (parent) => parent.path);
+    for (const parent of deepest) {
+      const path = yield* machine.normalizePath({ path: parent.path });
+      const kind = yield* machine.inspectPath(path).pipe(
+        Effect.map((object) => object.kind),
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? Effect.succeed(undefined) : Effect.fail(error)
+        ),
+      );
+      if (kind === undefined) continue;
+      if (kind !== "directory") return;
+      yield* machine.removeTemporaryEntries({ directory: path, recursive: false });
+      const removed = yield* machine.removeEmptyDirectory({ path }).pipe(
+        Effect.as(true),
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          /\b(?:ENOTEMPTY|EEXIST)\b/u.test(error.message)
+            ? Effect.succeed(false)
+            : /\bENOENT\b/u.test(error.message)
+            ? Effect.succeed(true)
+            : Effect.fail(error)
+        ),
+      );
+      if (!removed) return;
+    }
+    if (afterCrash) {
+      const outermost = yield* machine.normalizePath({ path: deepest.at(-1)!.path });
+      yield* machine.removeTemporaryEntries({ directory: parentOf(outermost), recursive: false });
+    }
+  });
+
 type StoredDirectory = Extract<StoredFile, { readonly state: "directory" }>;
 
 /**
@@ -574,25 +699,37 @@ const captureRollback = (
           && !sameMachinePath(path, root)
           ? Effect.succeed({ path: path.absolute, state: "absent" } as const)
           : Effect.gen(function*() {
-            const entry = yield* captureStoredFile(path);
+            const appendLocalTarget = context.resource.policy === "append-local"
+              && paths.some((target) => sameMachinePath(target, path));
+            const maximumBytes = appendLocalTarget ? context.limits.maximumFileBytes : undefined;
+            const entry = yield* captureStoredFile(path, maximumBytes);
+            const detail = context.action.detail;
+            if (appendLocalTarget && detail.kind === "write-file" && detail.retainedLocalDigest !== undefined
+              && (entry.state !== "regular" || entry.digest !== detail.retainedLocalDigest)) {
+              return yield* new InvalidExecutionPlanError({
+                message: `First-adoption local text changed after planning: ${path.absolute}. Replan and review synchronization.`,
+              });
+            }
             if (entry.state === "regular") {
               const backup = yield* machine.normalizePath({ path: backupFile(rollbackPath.absolute, entry.path) });
               yield* machine.atomicWrite({
                 path: backup,
-                content: { file: entry.path, digest: entry.digest },
+                content: { file: entry.path, digest: entry.digest, maximumBytes },
                 mode: 0o600,
               });
             }
             return entry;
           }),
     );
+    const createdParents = yield* missingAncestors(outermostTargets(paths, root));
     yield* machine.atomicWrite({
       path: rollbackPath,
-      content: encoder.encode(JSON.stringify(stored)),
+      content: encoder.encode(JSON.stringify([...stored, ...createdParents])),
     });
-    const restore = context.resource.policy === "append-local"
+    const restore = (context.resource.policy === "append-local"
       ? restoreAppendLocal(context, stored, rollbackPath.absolute)
-      : restoreStoredFiles(stored, rollbackPath.absolute, root);
+      : restoreStoredFiles(stored, rollbackPath.absolute, root)
+    ).pipe(Effect.andThen(removeCreatedParents(createdParents, false)));
     return { reference: rollbackPath.absolute, stored, restore };
   });
 
@@ -641,14 +778,18 @@ const rollbackPaths = (
   });
 
 /**
- * Restore a persisted, owned-file rollback snapshot. Both the reference and
+ * Load a persisted, owned-file rollback snapshot. Both the reference and
  * every stored target are re-derived from the immutable action before use.
  */
-export const restoreRollbackReference = (
+const loadRollbackMaterial = (
   context: ResourceExecutionContext,
   reference: string,
 ): Effect.Effect<
-  void,
+  {
+    readonly stored: ReadonlyArray<StoredFile>;
+    readonly createdParents: ReadonlyArray<CreatedParent>;
+    readonly root: MachinePath | undefined;
+  },
   SynchronizationExecutionInputError | MachineStateError,
   MachineState
 > =>
@@ -670,10 +811,25 @@ export const restoreRollbackReference = (
       });
     }
     const expectedPaths = yield* rollbackPaths(context);
+    const root = context.action.detail.kind === "mirror-directory"
+      || (
+        context.action.detail.kind === "remove-resource"
+        && (context.resource.kind === "directory" || context.resource.kind === "skill")
+      )
+      ? yield* targetPath(context.action.detail.target)
+      : undefined;
+    // A created parent can only be an ancestor of the root or of an unrooted
+    // target; anything else in the material is not this action's to remove.
+    const allowedParents = new Set(
+      outermostTargets(expectedPaths, root).flatMap(ancestorsOf),
+    );
     // Only metadata is inline. Allow escaped paths and native symlink text,
     // independently of the size of any regular-file preimage.
-    const maximumBytes = expectedPaths.reduce((total, path) => total
-      + Buffer.byteLength(JSON.stringify(path.absolute)) + 256 * 1024, 2);
+    const maximumBytes = [...allowedParents].reduce(
+      (total, path) => total + Buffer.byteLength(JSON.stringify(path)) + 64,
+      expectedPaths.reduce((total, path) => total
+        + Buffer.byteLength(JSON.stringify(path.absolute)) + 256 * 1024, 2),
+    );
     if (!Number.isSafeInteger(maximumBytes)) {
       return yield* new InvalidExecutionPlanError({
         message: `rollback material is too large for action ${context.action.id}`,
@@ -683,8 +839,8 @@ export const restoreRollbackReference = (
       path: actualReference,
       maximumBytes,
     });
-    const stored = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(Schema.Array(StoredFileSchema)),
+    const entries = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Schema.Array(RollbackEntrySchema)),
     )(decoder.decode(bytes)).pipe(
       Effect.mapError((error) =>
         new InvalidExecutionPlanError({
@@ -692,28 +848,220 @@ export const restoreRollbackReference = (
         })
       ),
     );
+    const stored = entries.filter((entry): entry is StoredFile => entry.state !== "created-parent");
+    const createdParents = entries.filter((entry): entry is CreatedParent => entry.state === "created-parent");
     const allowed = new Set(expectedPaths.map((path) => path.absolute));
     if (
       stored.length !== allowed.size
       || stored.some((entry) => !allowed.has(entry.path))
       || new Set(stored.map((entry) => entry.path)).size !== stored.length
+      || createdParents.some((entry) => !allowedParents.has(entry.path))
+      || new Set(createdParents.map((entry) => entry.path)).size !== createdParents.length
     ) {
       return yield* new InvalidExecutionPlanError({
         message: `rollback material targets do not match action ${context.action.id}`,
       });
     }
-    const root = context.action.detail.kind === "mirror-directory"
-      || (
-        context.action.detail.kind === "remove-resource"
-        && (context.resource.kind === "directory" || context.resource.kind === "skill")
-      )
-      ? yield* targetPath(context.action.detail.target)
-      : undefined;
+    return { stored, createdParents, root };
+  });
+
+/** Restore a persisted, owned-file rollback snapshot. */
+export const restoreRollbackReference = (
+  context: ResourceExecutionContext,
+  reference: string,
+): Effect.Effect<
+  void,
+  SynchronizationExecutionInputError | MachineStateError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const { stored, createdParents, root } = yield* loadRollbackMaterial(context, reference);
     if (context.resource.policy === "append-local") {
       yield* restoreAppendLocal(context, stored, reference);
     } else {
       yield* restoreStoredFiles(stored, reference, root);
     }
+    yield* removeCreatedParents(createdParents, true);
+  });
+
+/** What one action leaves at one path. `undefined` means it leaves it as it was. */
+type IntendedState =
+  | { readonly state: "absent" }
+  | { readonly state: "directory" }
+  | { readonly state: "regular"; readonly digest: string }
+  | { readonly state: "symlink"; readonly target: string };
+
+const sameContent = (current: StoredFile, expected: StoredFile | IntendedState): boolean => {
+  switch (expected.state) {
+    case "absent":
+    case "directory":
+      return current.state === expected.state;
+    case "regular":
+      return current.state === "regular" && current.digest === expected.digest;
+    case "symlink":
+      return current.state === "symlink" && current.target === expected.target;
+  }
+};
+
+/** The pre-run bytes of a regular snapshot entry, checked against its digest. */
+const snapshotBytes = (
+  context: ResourceExecutionContext,
+  entry: StoredFile,
+  reference: string,
+): Effect.Effect<Uint8Array | undefined, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    if (entry.state !== "regular") return undefined;
+    const machine = yield* MachineState;
+    const bytes = yield* machine.readFile({
+      path: yield* targetPath(backupFile(reference, entry.path)),
+      maximumBytes: context.limits.maximumFileBytes,
+    });
+    if (sha256BytesHex(bytes) !== entry.digest) {
+      return yield* new InvalidExecutionPlanError({
+        message: `rollback backup digest mismatch: ${entry.path}`,
+      });
+    }
+    return bytes;
+  });
+
+const regularState = (content: Uint8Array | undefined): IntendedState =>
+  content === undefined
+    ? { state: "absent" }
+    : { state: "regular", digest: sha256BytesHex(content) };
+
+/**
+ * The state this action writes at each snapshot path, derived from the plan
+ * and the pre-run snapshot exactly as the action itself derives it.
+ */
+const intendedStates = (
+  context: ResourceExecutionContext,
+  stored: ReadonlyArray<StoredFile>,
+  root: MachinePath | undefined,
+  reference: string,
+): Effect.Effect<
+  ReadonlyMap<string, IntendedState>,
+  SynchronizationExecutionInputError | MachineStateError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const detail = context.action.detail;
+    const desired = context.desired;
+    const single = stored[0];
+    const intended = new Map<string, IntendedState>();
+    if (context.resource.policy === "append-local") {
+      const before = yield* textSnapshot(stored);
+      const { content } = yield* appendLocalOutput(context, before, reference);
+      intended.set(before.path, regularState(content));
+      return intended;
+    }
+    switch (detail.kind) {
+      case "write-file":
+        if (single !== undefined) {
+          intended.set(
+            single.path,
+            desired.kind === "file" && desired.symlinkTo !== undefined
+              ? { state: "symlink", target: desired.symlinkTo }
+              : { state: "regular", digest: detail.digest },
+          );
+        }
+        return intended;
+      case "write-config":
+        if (single !== undefined && desired.kind === "config") {
+          intended.set(single.path, regularState(yield* configMergeContent(
+            context,
+            desired,
+            detail.target,
+            detail.keys,
+            detail.removes ?? [],
+            yield* snapshotBytes(context, single, reference),
+          )));
+        }
+        return intended;
+      case "mirror-directory": {
+        if (root === undefined || (desired.kind !== "directory" && desired.kind !== "skill")) {
+          return intended;
+        }
+        const files = new Map(desired.files.map((file) => [file.path, file] as const));
+        const declaredDirectories = new Set((desired.directories ?? []).map((entry) => entry.path));
+        const adds = new Set(detail.adds);
+        const relativeByPath = new Map<string, string>();
+        for (const relative of new Set([...detail.adds, ...detail.removes, ...declaredDirectories])) {
+          relativeByPath.set((yield* normalizeRelative(root, relative)).absolute, relative);
+        }
+        for (const entry of stored) {
+          const relative = relativeByPath.get(entry.path);
+          const file = relative === undefined ? undefined : files.get(relative);
+          intended.set(
+            entry.path,
+            relative === undefined || declaredDirectories.has(relative)
+              // The root and every ancestor of a mutated path end as directories.
+              ? { state: "directory" }
+              : adds.has(relative) && file !== undefined
+              ? file.symlinkTo === undefined
+                ? { state: "regular", digest: file.digest }
+                : { state: "symlink", target: file.symlinkTo }
+              : adds.has(relative)
+              ? { state: "directory" }
+              : { state: "absent" },
+          );
+        }
+        return intended;
+      }
+      case "remove-resource": {
+        if (context.resource.kind === "directory" || context.resource.kind === "skill") {
+          if (root === undefined) return intended;
+          for (const relative of detail.paths) {
+            intended.set((yield* normalizeRelative(root, relative)).absolute, { state: "absent" });
+          }
+          return intended;
+        }
+        if (single === undefined) return intended;
+        if (context.resource.kind === "config" && context.resource.policy !== "replace") {
+          if (desired.kind !== "config") return intended;
+          const before = yield* snapshotBytes(context, single, reference);
+          intended.set(
+            single.path,
+            before === undefined
+              ? { state: "absent" }
+              : regularState(yield* configRemovalContent(desired, detail.target, detail.keys, before)),
+          );
+          return intended;
+        }
+        intended.set(single.path, { state: "absent" });
+        return intended;
+      }
+      default:
+        return intended;
+    }
+  });
+
+/**
+ * Targets of an interrupted action whose current content matches neither the
+ * pre-run snapshot nor what the action writes. Something changed them after
+ * the interruption; restoring the snapshot or re-running the action would
+ * destroy that change, so recovery must stop instead.
+ */
+export const locallyEditedRollbackTargets = (
+  context: ResourceExecutionContext,
+  reference: string,
+): Effect.Effect<
+  ReadonlyArray<string>,
+  SynchronizationExecutionInputError | MachineStateError,
+  MachineState
+> =>
+  Effect.gen(function*() {
+    const { stored, root } = yield* loadRollbackMaterial(context, reference);
+    const intended = yield* intendedStates(context, stored, root, reference);
+    const edited: Array<string> = [];
+    for (const entry of stored) {
+      const path = yield* targetPath(entry.path);
+      const current = yield* captureStoredFile(path);
+      const after = intended.get(entry.path);
+      if (!sameContent(current, entry) && (after === undefined || !sameContent(current, after))) {
+        edited.push(entry.path);
+      }
+    }
+    return edited;
   });
 
 const targetPath = (
@@ -771,6 +1119,13 @@ const appendLocalOutput = (
     if (detail.kind !== "write-file") {
       return yield* new InvalidExecutionPlanError({ message: "append-local requires a write-file or removal action" });
     }
+    if (detail.retainedLocalDigest !== undefined
+      && (before.state !== "regular" || before.digest !== detail.retainedLocalDigest
+        || current?.kind !== "unmanaged")) {
+      return yield* new InvalidExecutionPlanError({
+        message: `First-adoption local text changed after planning: ${before.path}. Replan and review synchronization.`,
+      });
+    }
     const currentSourceDigest = current?.kind === "managed" ? sha256Hex(current.source) : undefined;
     if (current !== undefined && (current.kind === "managed"
       ? currentSourceDigest !== detail.previousSourceDigest && currentSourceDigest !== desired.digest
@@ -824,7 +1179,7 @@ const restoreAppendLocal = (context: ResourceExecutionContext, stored: ReadonlyA
     const before = yield* textSnapshot(stored);
     const path = yield* targetPath(before.path);
     yield* inspectTextTarget(path);
-    const current = yield* captureStoredFile(path);
+    const current = yield* captureStoredFile(path, context.limits.maximumFileBytes);
     if (sameTextSnapshot(current, before)) return;
     const { content, mode } = yield* appendLocalOutput(context, before, reference);
     // The intended write has a portable mode, not the preimage's native ACL.
@@ -834,7 +1189,7 @@ const restoreAppendLocal = (context: ResourceExecutionContext, stored: ReadonlyA
     if (!matchesAfter) {
       return yield* new InvalidExecutionPlanError({ message: `append-local target changed after the action: ${before.path}. Inspect the retained rollback backup before recovering.` });
     }
-    yield* restoreStoredFile(before, reference);
+    yield* restoreStoredFile(before, reference, undefined, "restore", context.limits.maximumFileBytes);
   });
 
 const prepareAppendLocal = (context: ResourceExecutionContext, target: string) =>
@@ -846,7 +1201,7 @@ const prepareAppendLocal = (context: ResourceExecutionContext, target: string) =
     const { content, mode } = yield* appendLocalOutput(context, before, rollback.reference);
     const execute = Effect.gen(function*() {
       yield* inspectTextTarget(path);
-      const current = yield* captureStoredFile(path);
+      const current = yield* captureStoredFile(path, context.limits.maximumFileBytes);
       if (!sameTextSnapshot(current, before)) {
         return yield* new InvalidExecutionPlanError({ message: `append-local target changed while preparing: ${target}. Replan synchronization.` });
       }
@@ -894,20 +1249,48 @@ const prepareWrite = (
     };
   });
 
-const prepareConfig = (
-  context: ResourceExecutionContext,
+type DesiredConfigResource = Extract<DesiredResource, { readonly kind: "config" }>;
+
+/**
+ * The bytes a merge-policy key removal leaves in a config target, given its
+ * bytes before the removal. Only the owned keys are cut from the text; the
+ * rest of the file keeps its comments and layout.
+ */
+export const configRemovalContent = (
+  config: DesiredConfigResource,
   target: string,
   keys: ReadonlyArray<string>,
-  removes: ReadonlyArray<string> = [],
-): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
+  currentBytes: Uint8Array,
+): Effect.Effect<Uint8Array, SynchronizationExecutionInputError> =>
+  Effect.try({
+    try: () => encoder.encode(editConfigText(config.format, decoder.decode(currentBytes), { removes: keys, sets: [] })),
+    catch: (error) =>
+      new InvalidExecutionPlanError({
+        message: `cannot remove keys from config ${target}: ${
+          error instanceof Error ? error.message : String(error)
+        }. The file was left unchanged.`,
+      }),
+  });
+
+/**
+ * The bytes a merge write leaves in a config target, given the target's bytes
+ * before the write (`undefined` when it does not exist). Deterministic, so
+ * recovery can recompute the intended post-run content from a backup.
+ *
+ * The edit is made in place: comments, anchors and every value outside the
+ * owned keys keep their text. A file that does not parse, or an edit that
+ * cannot be written without changing other values, fails the action and the
+ * file is left as it was.
+ */
+export const configMergeContent = (
+  context: ResourceExecutionContext,
+  config: DesiredConfigResource,
+  target: string,
+  keys: ReadonlyArray<string>,
+  removes: ReadonlyArray<string>,
+  currentBytes: Uint8Array | undefined,
+): Effect.Effect<Uint8Array, SynchronizationExecutionInputError> =>
   Effect.gen(function*() {
-    if (context.desired.kind !== "config") {
-      return yield* new InvalidExecutionPlanError({
-        message: `write-config action does not target a config resource: ${context.resource.id}`,
-      });
-    }
-    const config = context.desired;
-    const path = yield* targetPath(target);
     const desiredBytes = yield* artifact(context.artifacts, config.digest);
     const desired = yield* Effect.try({
       try: () =>
@@ -921,43 +1304,49 @@ const prepareConfig = (
           message: String(error),
         }),
     });
-    const currentBytes = yield* readIfPresent(path, context.limits.maximumFileBytes);
-    const current = currentBytes === undefined
-      ? {}
-      : yield* Effect.try({
-        try: () =>
-          parseConfigDocument(
-            config.format,
-            decoder.decode(currentBytes),
-          ),
-        catch: (error) =>
-          new InvalidExecutionPlanError({
-            message: `cannot merge non-object config ${target}: ${String(error)}`,
-          }),
-      });
-    // Prune old ownership before writing new values: a dropped child must not
-    // delete part of the newly written parent (or an old parent its new child).
-    for (const key of removes) {
-      removeConfigPath(current, key);
-    }
-    // An owned key that crosses a scalar on disk (`mcp.server` over
-    // `{"mcp":"disabled"}`) is the operator's config shape, not a defect. Fail
-    // the action like the non-object document above instead of dying.
-    yield* Effect.try({
-      try: () => {
-        for (const key of keys) {
-          const value = getConfigPath(desired, key);
-          if (value !== undefined) setConfigPath(current, key, value);
-        }
-      },
+    // Old ownership is pruned before new values are written: a dropped child
+    // must not delete part of the newly written parent (or an old parent its
+    // new child). An owned key that crosses a scalar on disk (`mcp.server`
+    // over `{"mcp":"disabled"}`) is the operator's config shape, not a defect,
+    // so it fails the action instead of dying.
+    const text = yield* Effect.try({
+      try: () =>
+        editConfigText(
+          config.format,
+          currentBytes === undefined ? undefined : decoder.decode(currentBytes),
+          {
+            removes,
+            sets: keys.flatMap((key) => {
+              const value = getConfigPath(desired, key);
+              return value === undefined ? [] : [{ path: key, value }];
+            }),
+          },
+        ),
       catch: (error) =>
         new InvalidExecutionPlanError({
-          message: `cannot merge config ${target}: ${error instanceof Error ? error.message : String(error)}`,
+          message: `cannot merge config ${target}: ${
+            error instanceof Error ? error.message : String(error)
+          }. The file was left unchanged.`,
         }),
     });
-    const content = encoder.encode(
-      serializeConfigDocument(config.format, current),
-    );
+    return encoder.encode(text);
+  });
+
+const prepareConfig = (
+  context: ResourceExecutionContext,
+  target: string,
+  keys: ReadonlyArray<string>,
+  removes: ReadonlyArray<string> = [],
+): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
+  Effect.gen(function*() {
+    if (context.desired.kind !== "config") {
+      return yield* new InvalidExecutionPlanError({
+        message: `write-config action does not target a config resource: ${context.resource.id}`,
+      });
+    }
+    const path = yield* targetPath(target);
+    const currentBytes = yield* readIfPresent(path, context.limits.maximumFileBytes);
+    const content = yield* configMergeContent(context, context.desired, target, keys, removes, currentBytes);
     const rollback = yield* captureRollback(context, [path]);
     const execute = Effect.gen(function*() {
       const machine = yield* MachineState;
@@ -1177,21 +1566,9 @@ const prepareRemoval = (
             context.limits.maximumFileBytes,
           );
           if (currentBytes === undefined) return;
-          const current = yield* Effect.try({
-            try: () => parseConfigDocument(
-              config.format,
-              decoder.decode(currentBytes),
-            ),
-            catch: (error) => new InvalidExecutionPlanError({
-              message: `cannot remove keys from config ${detail.target}: ${String(error)}`,
-            }),
-          });
-          for (const key of detail.keys) removeConfigPath(current, key);
+          const content = yield* configRemovalContent(config, detail.target, detail.keys, currentBytes);
           const machine = yield* MachineState;
-          yield* machine.atomicWrite({
-            path,
-            content: encoder.encode(serializeConfigDocument(config.format, current)),
-          });
+          yield* machine.atomicWrite({ path, content });
         });
         return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
       }
@@ -1289,6 +1666,30 @@ const prepareRemoval = (
     }
   });
 
+const installerDiagnosticLines = 20;
+const installerDiagnosticCharacters = 1_536;
+
+/**
+ * The installer's own explanation (npm EBADPLATFORM, uv's resolver or
+ * no-wheel text), bounded to its last lines and redacted, so a failed install
+ * says why rather than only which exit code it had.
+ */
+const installerDiagnostic = (
+  standardError: Uint8Array,
+  standardOutput: Uint8Array,
+): string => {
+  const text = decoder.decode(standardError).trim() || decoder.decode(standardOutput).trim();
+  if (text.length === 0) return "";
+  const tail = text.split(/\r?\n/u)
+    .filter((line) => line.trim().length > 0)
+    .slice(-installerDiagnosticLines)
+    .join("\n");
+  const bounded = tail.length > installerDiagnosticCharacters
+    ? `…${tail.slice(-installerDiagnosticCharacters)}`
+    : tail;
+  return redactText(bounded);
+};
+
 const installInvocation = (
   context: ResourceExecutionContext,
   method: string,
@@ -1297,6 +1698,7 @@ const installInvocation = (
   buildPolicy: BuildPolicy = { mode: "scripts-disabled" },
   source?: RecipeSource | undefined,
   indexPolicy?: RecipeIndexPolicy | undefined,
+  replaces?: string | undefined,
 ): Effect.Effect<
   void,
   MachineStateError | ActionExecutionError | InvalidExecutionPlanError,
@@ -1360,13 +1762,13 @@ const installInvocation = (
         message: `ambiguous or source dependency ${packageName} requires a separately bounded execution plan`,
       });
     }
-    const recipeError = recipeValidationError({
+    const recipeError = recipeValidationIssue({
       method,
       package: packageName,
       version,
       source,
       indexPolicy,
-    });
+    })?.reason;
     if (
       recipeError !== undefined
       || isMissingAutomaticRecipeVersion({
@@ -1515,6 +1917,8 @@ const installInvocation = (
         { name: "UV_CONFIG_FILE", value: process.platform === "win32" ? "NUL" : "/dev/null" },
         { name: "PIP_CONFIG_FILE", value: process.platform === "win32" ? "NUL" : "/dev/null" },
         { name: "UV_DEFAULT_INDEX", value: pythonIndex! },
+        // Interpreter downloads are outside the reviewed package index.
+        { name: "UV_PYTHON_DOWNLOADS", value: "never" },
         { name: "UV_INDEX_URL", value: pythonIndex! },
         { name: "PIP_INDEX_URL", value: pythonIndex! },
       ]
@@ -1563,57 +1967,167 @@ const installInvocation = (
       : method === "winget"
       ? version === undefined
         ? ["install", "--id", packageName, "--silent"]
-        : ["install", "--id", packageName, "--version", version, "--exact", "--silent"]
+        : [
+          "install", "--id", packageName, "--version", version, "--exact", "--silent",
+          // winget's install flow upgrades but will not move to an older
+          // version without --force (hash checks still apply).
+          ...(replaces === undefined ? [] : ["--force"]),
+        ]
       : method === "uv"
       ? [
         "tool",
         "install",
         version === undefined ? packageName : `${packageName}==${version}`,
+        // Every planned uv install is a fresh install or a repair: the
+        // executable is missing, the version differs, or the qualified binding
+        // is not this one. Without --reinstall, uv reports a tool it still
+        // lists at the same version as "already installed" and exits 0 without
+        // restoring a deleted entrypoint, so verification failed on every
+        // apply. --reinstall installs normally when the tool is absent. It is
+        // not --force, which would also overwrite an executable uv does not own.
+        "--reinstall",
         ...(buildPolicy.mode === "scripts-disabled" ? ["--no-build"] : []),
+        "--no-python-downloads",
         "--no-config",
         `--default-index=${pythonIndex!}`,
       ]
       : method === "apt"
-      ? ["install", "-y", version === undefined ? packageName : `${packageName}=${version}`]
+      ? [
+        "install", "-y",
+        // apt-get -y refuses a downgrade to the pinned version without it.
+        ...(replaces === undefined ? [] : ["--allow-downgrades"]),
+        version === undefined ? packageName : `${packageName}=${version}`,
+      ]
       : method === "cargo" && version !== undefined
       ? ["install", packageName, "--version", version, "--locked"]
       : ["install", packageName];
-    const result = yield* machine.runProcess({
-      executable: installer.executable,
-      arguments: [...installer.arguments, ...arguments_],
-      timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
-      maximumOutputBytes: context.limits.maximumProcessOutputBytes,
-      environment: packageEnvironment,
-      environmentUnset: method === "uv"
-        ? [
-          "HTTP_PROXY",
-          "HTTPS_PROXY",
-          "FTP_PROXY",
-          "ALL_PROXY",
-          "NO_PROXY",
-          "NETRC",
-          "CURL_CA_BUNDLE",
-          "REQUESTS_CA_BUNDLE",
-          "SSL_CERT_FILE",
-          "SSL_CERT_DIR",
-          "PYTHONHTTPSVERIFY",
-          "PYTHON_KEYRING_BACKEND",
-          "KEYRING_BACKEND",
-        ]
-        : undefined,
-      environmentUnsetPrefixes: method === "uv"
-        ? ["UV_", "PIP_"]
-        : npmFamily
-        ? ["NPM_CONFIG_", "PNPM_CONFIG_", "BUN_CONFIG_"]
-        : undefined,
-    });
-    if (result.exitCode !== 0) {
-      return yield* new ActionExecutionError({
-        action: context.action.id,
-        message: `installer ${method} exited with ${String(result.exitCode)}`,
-      });
+    const runInstaller = (arguments_: ReadonlyArray<string>) => {
+      const execution = machine.runProcess({
+        executable: installer.executable,
+        arguments: [...installer.arguments, ...arguments_],
+        timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
+        maximumOutputBytes: context.limits.maximumProcessOutputBytes,
+        environment: packageEnvironment,
+        environmentUnset: method === "uv"
+          ? [
+            "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY",
+            "NETRC", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE",
+            "SSL_CERT_DIR", "PYTHONHTTPSVERIFY", "PYTHON_KEYRING_BACKEND", "KEYRING_BACKEND",
+            "VIRTUAL_ENV", "CONDA_PREFIX",
+          ]
+          : undefined,
+        environmentUnsetPrefixes: method === "uv"
+          ? ["UV_", "PIP_"]
+          : npmFamily
+          ? ["NPM_CONFIG_", "PNPM_CONFIG_", "BUN_CONFIG_"]
+          : undefined,
+      }).pipe(Effect.flatMap((result) => {
+        if (result.exitCode === 0) return Effect.succeed(result);
+        const diagnostic = installerDiagnostic(result.standardError, result.standardOutput);
+        return Effect.fail(new ActionExecutionError({
+          action: context.action.id,
+          message: diagnostic.length === 0
+            ? `installer ${method} exited with ${String(result.exitCode)} and printed no diagnostic`
+            : `installer ${method} exited with ${String(result.exitCode)}; its last output lines:\n${diagnostic}`,
+        }));
+      }));
+      // Wait for the bounded subprocess to close before releasing its venv.
+      // Cancellation is observed between commands; external installs are not rolled back.
+      return method === "uv" ? Effect.uninterruptible(execution) : execution;
+    };
+    if (method !== "uv") {
+      yield* runInstaller(arguments_);
+      return;
     }
+
+    // UV's resolver deliberately ignores Requires-Python upper bounds. Its
+    // installed-metadata check enforces the full range, including dependencies.
+    // Resolve into a private disposable venv before exposing a managed tool.
+    const directories = yield* machine.userDirectories();
+    const preparation = yield* machine.normalizePath({
+      path: join(directories.cache.absolute, "canonfig", "uv-preparation", sha256Hex(context.run)),
+    });
+    const staging = yield* machine.normalizePath({
+      path: join(preparation.absolute, temporaryEntryName()),
+    });
+    const venv = join(staging.absolute, temporaryEntryName());
+    const venvPython = process.platform === "win32"
+      ? join(venv, "Scripts", "python.exe")
+      : join(venv, "bin", "python");
+    const cleanup = machine.removeTemporaryEntries({ directory: staging, recursive: false }).pipe(
+      Effect.andThen(machine.removeEmptyDirectory({ path: staging })),
+      Effect.andThen(machine.removeEmptyDirectory({ path: preparation }).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          /\b(?:ENOENT|ENOTEMPTY)\b/u.test(error.message) ? Effect.void : Effect.fail(error)
+        ),
+      )),
+    );
+    yield* Effect.acquireUseRelease(
+      machine.ensureDirectory({ path: staging, mode: 0o700 }),
+      () => Effect.gen(function*() {
+        const found = yield* runInstaller([
+          "python", "find", "--system", "--no-project", "--no-config", "--no-python-downloads",
+        ]);
+        const python = new TextDecoder().decode(found.standardOutput).trim();
+        if (!isAbsolute(python) || python.includes("\n") || python.includes("\r") || python.includes("\0")) {
+          return yield* new ActionExecutionError({
+            action: context.action.id,
+            message: "uv did not identify one installed Python interpreter; no tool was installed",
+          });
+        }
+        yield* runInstaller([
+          "venv", venv, "--python", python, "--no-config", "--no-python-downloads",
+        ]);
+        yield* runInstaller([
+          "pip", "install", `${packageName}==${version!}`, "--python", venvPython,
+          ...(buildPolicy.mode === "scripts-disabled" ? ["--no-build"] : []),
+          "--no-python-downloads", "--no-config", `--default-index=${pythonIndex!}`,
+        ]);
+        yield* runInstaller([
+          "pip", "check", "--python", venvPython, "--offline", "--no-config", "--no-python-downloads",
+        ]);
+        const frozen = yield* runInstaller([
+          "pip", "freeze", "--python", venvPython, "--offline", "--no-config", "--no-python-downloads",
+        ]);
+        const constraints = yield* machine.normalizePath({
+          path: join(staging.absolute, temporaryEntryName()),
+        });
+        yield* machine.atomicWrite({ path: constraints, content: frozen.standardOutput, mode: 0o600 });
+        // Reuse the validated interpreter and prepared cache, not a fresh online
+        // resolution that could introduce an unchecked package or dependency.
+        yield* runInstaller([
+          ...arguments_, "--python", python, "--offline", "--constraints", constraints.absolute,
+        ]);
+      }),
+      () => cleanup,
+    );
   });
+
+/**
+ * After a pinned install, the installer must report the pinned version. An
+ * installer can exit 0 and leave another version in place (winget skips an
+ * older version without --force), and a version-agnostic verifier such as
+ * `executable-present` cannot tell. A version the installer cannot report is
+ * left to the declared verification.
+ */
+const confirmInstalledVersion = (
+  context: ResourceExecutionContext,
+  detail: Extract<PlannedAction["detail"], { readonly kind: "install-tool" }>,
+) => Effect.gen(function*() {
+  if (detail.version === undefined) return;
+  const installed = yield* installedToolVersion({
+    method: detail.method,
+    package: detail.package,
+    timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
+    maximumOutputBytes: context.limits.maximumProcessOutputBytes,
+  });
+  if (installed === undefined || installedVersionMatches(detail.method, installed, detail.version)) return;
+  return yield* new ActionExecutionError({
+    action: context.action.id,
+    message:
+      `installer ${detail.method} exited successfully but reports ${detail.package} ${installed} installed, not the pinned ${detail.version}`,
+  });
+});
 
 /** Prepare deterministic work. Preparation stores rollback material before owned-file mutation. */
 export const prepareResourceAction = (
@@ -1639,7 +2153,8 @@ export const prepareResourceAction = (
           detail.buildPolicy,
           detail.source,
           detail.indexPolicy,
-        ),
+          detail.replaces,
+        ).pipe(Effect.andThen(confirmInstalledVersion(context, detail))),
       });
     case "transfer-blob":
       return artifact(context.artifacts, detail.blob).pipe(
@@ -1784,6 +2299,95 @@ const verifyAppendLocal = (context: ResourceExecutionContext, declaredDigest: st
     return { passed: observedDigest === declaredDigest, method: "sha256-source", observedDigest };
   });
 
+/** A tool's own install destinations come first for bare verifier names. */
+const verifierInstallMethods = (context: ResourceExecutionContext) =>
+  context.desired.kind === "tool"
+    ? toolInstallMethods(context.desired.recipes)
+    : Effect.succeed([]);
+
+const missingVerifierReason = (error: ExecutableNotFoundError): string =>
+  `verification executable ${error.executable} was not found (searched: ${
+    error.searched.join(", ") || "no directories"
+  })`;
+
+const regularExecutablePath = (executable: MachinePath) => Effect.gen(function*() {
+  const machine = yield* MachineState;
+  let path = executable;
+  for (let depth = 0; depth < 40; depth++) {
+    const kind = yield* machine.inspectPath(path);
+    if (kind.kind !== "symlink") return kind.kind === "regular" ? path : undefined;
+    const target = yield* machine.readSymlink(path);
+    path = yield* machine.normalizePath({
+      path: path.platform === "windows"
+        ? win32.resolve(win32.dirname(path.absolute), target)
+        : resolve(dirname(path.absolute), target),
+    });
+  }
+  return undefined;
+});
+
+/** npm bin scripts use the same approved Node binding as their installer. */
+const toolVerifierInvocation = (
+  executable: MachinePath,
+  arguments_: ReadonlyArray<string>,
+  methods: ReadonlyArray<InstallDestinationHint>,
+) => Effect.gen(function*() {
+  const node = methods.find((hint) =>
+    (hint.method === "npm" || hint.method === "pnpm")
+    && hint.installer !== undefined
+    && /(?:^|[\\/])node(?:\.exe)?$/i.test(hint.installer.absolute)
+  )?.installer;
+  if (node === undefined) return { executable, arguments: arguments_ };
+  const windowsShim = executable.platform === "windows" && /\.(?:cmd|bat)$/i.test(executable.absolute);
+  if (executable.platform === "windows" && !windowsShim) return { executable, arguments: arguments_ };
+  const machine = yield* MachineState;
+  const script = yield* regularExecutablePath(executable);
+  if (script === undefined) {
+    return yield* new InvalidExecutionPlanError({
+      message: `npm verification executable is not a regular file: ${executable.absolute}`,
+    });
+  }
+  const header = decoder.decode(yield* machine.readFile({
+    path: script,
+    maximumBytes: Number.MAX_SAFE_INTEGER,
+    prefixBytes: 4096,
+  }));
+  if (windowsShim) {
+    // Decode only Node launch lines in npm/pnpm-generated shims; never execute
+    // their shell text, expand environment expressions or run cmd.exe.
+    const launch = /(?:^|[\s&|(])(?:node(?:\.exe)?|"%_prog%"|"%~dp0%?[\\/]node(?:\.exe)?")\s+"%(?:dp0%|~dp0%?)[\\/]([^"\r\n]+)"\s+%\*/gi;
+    let entrypoint: string | undefined;
+    for (const match of header.matchAll(launch)) {
+      if (match[0].includes("%_prog%") && !/SET "_prog=node"/i.test(header)) continue;
+      const relativeScript = match[1]!;
+      if (relativeScript.includes("%") || win32.isAbsolute(relativeScript)) continue;
+      const target = win32.resolve(win32.dirname(script.absolute), relativeScript);
+      if (entrypoint !== undefined && entrypoint !== target) {
+        return yield* new InvalidExecutionPlanError({ message: "npm verification shim has conflicting Node entrypoints" });
+      }
+      entrypoint = target;
+    }
+    if (entrypoint === undefined) {
+      return yield* new InvalidExecutionPlanError({
+        message: `npm verification shim has no supported direct Node launch: ${script.absolute}`,
+      });
+    }
+    return { executable: node, arguments: [entrypoint, ...arguments_] };
+  }
+  const newline = header.indexOf("\n");
+  const firstLine = newline < 0 ? header : header.slice(0, newline);
+  const shebang = /^#![ \t]*(?:\/usr\/bin\/env[ \t]+(?:-S[ \t]+)?node|\/[^ \t]+\/node)(?:[ \t]+([^\r\n]*))?\r?$/.exec(firstLine);
+  if (shebang === null) return { executable, arguments: arguments_ };
+  const options = shebang[1]?.trim();
+  if (options !== undefined && /["'\\]/.test(options)) {
+    return yield* new InvalidExecutionPlanError({ message: "npm verification Node shebang requires a direct verification command" });
+  }
+  return {
+    executable: node,
+    arguments: [...(options ? options.split(/\s+/) : []), script.absolute, ...arguments_],
+  };
+});
+
 const verifyCommand = (
   context: ResourceExecutionContext,
   command: ReadonlyArray<string>,
@@ -1798,15 +2402,27 @@ const verifyCommand = (
       });
     }
     const machine = yield* MachineState;
+    const method = `${proves === "client-load" ? "client-load" : "command"}:${name}`;
+    const bareName = !isAbsolute(name) && !win32.isAbsolute(name)
+      && !name.includes("/") && !name.includes("\\");
+    const installMethods = bareName ? yield* verifierInstallMethods(context) : [];
     const executable = isAbsolute(name) || win32.isAbsolute(name)
-      ? {
+      ? yield* machine.normalizePath({ path: name })
+      : yield* machine.findExecutable({
         name,
-        path: yield* machine.normalizePath({ path: name }),
-      }
-      : yield* machine.findExecutable({ name });
+        installMethods,
+      }).pipe(
+        Effect.map((found) => found.path),
+        Effect.catchTag("ExecutableNotFoundError", (error) => Effect.succeed(error)),
+      );
+    if (executable instanceof ExecutableNotFoundError) {
+      return { passed: false, method, reason: missingVerifierReason(executable) };
+    }
+    const invocation = bareName
+      ? yield* toolVerifierInvocation(executable, arguments_, installMethods)
+      : { executable, arguments: arguments_ };
     const result = yield* machine.runProcess({
-      executable: executable.path,
-      arguments: arguments_,
+      ...invocation,
       timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
       maximumOutputBytes: context.limits.maximumProcessOutputBytes,
     });
@@ -1814,7 +2430,7 @@ const verifyCommand = (
     return {
       passed: result.exitCode === 0
         && (expectContains === undefined || output.includes(expectContains)),
-      method: `${proves === "client-load" ? "client-load" : "command"}:${name}`,
+      method,
       exitCode: result.exitCode ?? undefined,
     };
   });
@@ -1972,35 +2588,33 @@ const verifyExecutable = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const method = `executable:${executable}`;
-    // A verification that names a path is checked by inspecting that path,
-    // which is what observation already does. findExecutable searches PATH and
-    // refuses any name containing a separator, so sending a path through it
-    // could never pass: observation reported the tool present, the planner
-    // planned a no-op, and the no-op then failed the whole run.
+    // An explicit path must resolve to the executable at that exact location.
+    // npm's POSIX global bin entries are symlinks to scripts in its package
+    // tree; inspectPath and permissions intentionally use lstat, so resolve
+    // only this verification path before checking the final file's mode.
     if (executable.includes("/") || executable.includes("\\")) {
-      return yield* machine.normalizePath({ path: executable }).pipe(
-        Effect.flatMap((path) =>
-          machine.inspectPath(path).pipe(
-            Effect.flatMap((kind) =>
-              kind.kind !== "regular"
-                ? Effect.succeed({ passed: false, method })
-                : path.platform === "windows"
-                ? Effect.succeed({ passed: true, method })
-                : machine.permissions(path).pipe(
-                  Effect.map((permissions) => ({
-                    passed: (permissions.mode & 0o111) !== 0,
-                    method,
-                  })),
-                )
-            ),
-          )
-        ),
-        Effect.catch(() => Effect.succeed({ passed: false, method })),
-      );
+      return yield* Effect.gen(function*() {
+        const path = yield* regularExecutablePath(
+          yield* machine.normalizePath({ path: executable }),
+        );
+        if (path === undefined) return { passed: false, method };
+        if (path.platform === "windows") return { passed: true, method };
+        const permissions = yield* machine.permissions(path);
+        return { passed: (permissions.mode & 0o111) !== 0, method };
+      }).pipe(Effect.catch(() => Effect.succeed({ passed: false, method })));
     }
-    return yield* machine.findExecutable({ name: executable }).pipe(
-      Effect.as({ passed: true, method }),
-      Effect.catch(() => Effect.succeed({ passed: false, method })),
+    return yield* machine.findExecutable({
+      name: executable,
+      installMethods: yield* verifierInstallMethods(context),
+    }).pipe(
+      Effect.as<ResourceVerification>({ passed: true, method }),
+      Effect.catch((error) =>
+        Effect.succeed({
+          passed: false,
+          method,
+          reason: error instanceof ExecutableNotFoundError ? missingVerifierReason(error) : undefined,
+        })
+      ),
     );
   });
 
@@ -2172,9 +2786,10 @@ const verifyConfig = (
           message: `cannot verify non-object config ${context.resource.target}: ${String(error)}`,
         }),
     });
+    // Key order is not compared: digests use a canonical sorted form and the
+    // follower file keeps the order its author wrote.
     const passed = keys.every((key) =>
-      JSON.stringify(getConfigPath(observed, key))
-        === JSON.stringify(getConfigPath(desired, key))
+      configValuesEqual(getConfigPath(observed, key), getConfigPath(desired, key))
     );
     return { passed, method: "config-keys" };
   });

@@ -1,7 +1,7 @@
 import type { Readable } from "node:stream";
 
 import { invitationEnvelopeEof, maximumEnvelopeBytes } from
-  "../enrollment/invitation-envelope.ts";
+  "../enrollment/invitation-envelope-format.ts";
 
 /**
  * `--json` is a global option that `evaluateCli` accepts at any position, so it
@@ -31,7 +31,7 @@ export const isPublicEnrollmentCommand = (arguments_: ReadonlyArray<string>): bo
   // only be an invitation carried as an argument.
   for (let index = 0; index < rest.length; index += 1) {
     const argument = rest[index]!;
-    if (argument === "--name" || argument === "--profile") {
+    if (argument === "--name" || argument === "--profile" || argument === "--timeout-ms") {
       index += 1;
       continue;
     }
@@ -39,8 +39,6 @@ export const isPublicEnrollmentCommand = (arguments_: ReadonlyArray<string>): bo
   }
   return false;
 };
-
-export const privateEnrollmentHelp = "  follower enroll --stdin --name <name> --profile <id> [--replace]";
 
 export class EnrollmentInputError extends Error {
   readonly name = "EnrollmentInputError";
@@ -170,19 +168,19 @@ export const privateEnrollmentArguments = (arguments_: ReadonlyArray<string>): R
       stdinCount += 1;
       continue;
     }
-    if (!["--name", "--profile", "--replace"].includes(argument) || seen.has(argument)) {
-      throw new EnrollmentInputError("Private enrollment accepts --stdin, --name, --profile, and --replace once each");
+    if (!["--name", "--profile", "--timeout-ms", "--replace"].includes(argument) || seen.has(argument)) {
+      throw new EnrollmentInputError("Private enrollment accepts --stdin, --name, --profile, --timeout-ms, and --replace once each");
     }
     seen.add(argument);
-    if (argument === "--name" || argument === "--profile") {
+    if (argument === "--name" || argument === "--profile" || argument === "--timeout-ms") {
       const value = command[++index];
       if (value === undefined || value.trim().length === 0 || value.startsWith("-") || /[\0\r\n]/u.test(value)) {
-        throw new EnrollmentInputError("Private enrollment requires nonempty --name and --profile values");
+        throw new EnrollmentInputError(`Private enrollment requires a nonempty ${argument} value`);
       }
     }
   }
   if (stdinCount !== 1 || !seen.has("--name") || !seen.has("--profile")) {
-    throw new EnrollmentInputError("Usage: canonfig follower enroll --stdin --name <name> --profile <id> [--replace]");
+    throw new EnrollmentInputError("Usage: canonfig follower enroll --stdin --name <name> --profile <id> [--replace] [--timeout-ms <milliseconds>]");
   }
   return arguments_.filter((argument) => argument !== "--stdin");
 };

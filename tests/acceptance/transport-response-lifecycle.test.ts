@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, sign, X509Certificate } from "node:crypto";
 import { createServer } from "node:https";
-import type { Socket } from "node:net";
+import { connect, createServer as createTcpServer, type Socket } from "node:net";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,8 +16,11 @@ import {
   listRevisions,
 } from "../../src/enrollment/follower-client.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { HumanActionRequiredError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { canonicalJson, digestOf } from "../../src/profile/profile-codec.ts";
+import { canonfigVersionHeader } from "../../src/enrollment/version-handshake.ts";
+import { buildIdentity } from "../../src/runtime/build-identity.ts";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -93,12 +96,14 @@ const source = async (route: "json" | "list" | "metadata" | "blob") => {
     const bytes = isBlob
       ? blob.subarray(rangeStart, Math.min(rangeEnd + 1, blob.length))
       : Buffer.from(JSON.stringify(isMetadata ? metadata : { revisions: [] }));
+    const versionHeader = { [canonfigVersionHeader]: buildIdentity.packageVersion };
     const blobHeaders = isBlob
       ? {
+        ...versionHeader,
         "content-range": `bytes ${rangeStart}-${rangeStart + bytes.length - 1}/${blob.length}`,
         "accept-ranges": "bytes",
       }
-      : {};
+      : versionHeader;
     if (!shouldTruncate) {
       response.writeHead(isBlob ? 206 : 200, { "content-length": bytes.length, ...blobHeaders });
       response.end(bytes);
@@ -171,6 +176,49 @@ describe("pinned HTTP response lifecycle", () => {
     if (Option.isSome(result)) expect(result.value._tag).toBe("Failure");
   });
 
+  it("bounds the initial TLS handshake by the configured transport timeout", async () => {
+    const fixture = await source("list");
+    fixture.state.truncate = false;
+    const sourcePort = Number(new URL(fixture.input.endpoint).port);
+    const sockets = new Set<Socket>();
+    let firstHandshake = true;
+    const proxy = createTcpServer((client) => {
+      sockets.add(client);
+      const bridge = () => {
+        const upstream = connect(sourcePort, "127.0.0.1");
+        sockets.add(upstream);
+        upstream.once("close", () => sockets.delete(upstream));
+        upstream.once("error", () => client.destroy());
+        upstream.once("connect", () => client.pipe(upstream).pipe(client));
+      };
+      if (firstHandshake) {
+        firstHandshake = false;
+        // A real socket handshake needs real elapsed time; fake timers cannot
+        // exercise Node's TLS idle timeout across this TCP proxy.
+        const timer = setTimeout(bridge, 600);
+        client.once("close", () => clearTimeout(timer));
+      } else {
+        bridge();
+      }
+      client.once("close", () => sockets.delete(client));
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    cleanup.push(async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) =>
+        proxy.close((error) => error === undefined ? resolve() : reject(error)));
+    });
+    const address = proxy.address();
+    if (address === null || Schema.is(Schema.String)(address)) throw new Error("missing proxy address");
+    const result = await Effect.runPromise(Effect.result(listRevisions({
+      ...fixture.input,
+      endpoint: `https://127.0.0.1:${address.port}`,
+      timeoutMilliseconds: 200,
+    })).pipe(Effect.provide(machine)));
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(result.failure._tag).toBe("EnrollmentTransportError");
+  });
+
   it("never caches partial blob bytes and retries the same revision successfully", async () => {
     const fixture = await source("blob");
     const cache = await mkdtemp(join(tmpdir(), "canonfig-response-"));
@@ -201,5 +249,36 @@ describe("pinned HTTP response lifecycle", () => {
     const repeated = await Effect.runPromise(fetchRevision(input).pipe(Effect.provide(machine)));
     expect(repeated.downloadedBlobs).toBe(0);
     expect(repeated.reusedBlobs).toBe(1);
+  });
+});
+
+// Reading the follower credential is local. A locked keyring or Keychain, or
+// a missing session bus, used to surface as InvalidFollowerCredentialError
+// ("the follower credential is unavailable", exit 5), which reads as a
+// revoked follower and dropped the native recovery text.
+describe("follower credential read failures", () => {
+  const lockedStore = Layer.effect(MachineState, Effect.gen(function*() {
+    const base = yield* MachineState;
+    return MachineState.of({
+      ...base,
+      loadCredential: () => Effect.fail(new HumanActionRequiredError({
+        action: "unlock the Secret Service collection",
+        recovery: "run the fixture unlock command in this session",
+      })),
+    });
+  })).pipe(Layer.provide(linuxMachineStateLayer()));
+
+  it.each([
+    ["authentication", authenticateFollower],
+    ["transport", listRevisions],
+  ] as const)("reports a %s credential read as a local credential-store failure", async (_, call) => {
+    const fixture = await source("json");
+    const error = await Effect.runPromise(
+      Effect.flip(call(fixture.input)).pipe(Effect.provide(lockedStore)),
+    );
+    expect(error._tag).toBe("CredentialStorageError");
+    expect(error.message).toContain(
+      "unlock the Secret Service collection: run the fixture unlock command in this session",
+    );
   });
 });

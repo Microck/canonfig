@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
-
-import { buildToolCatalog } from "../../src/profile/tool-catalog.ts";
 
 const uv = process.env.CANONFIG_TEST_UV ?? "uv";
 const probe = spawnSync(uv, ["--version"], {
@@ -10,29 +11,51 @@ const probe = spawnSync(uv, ["--version"], {
 });
 const available = probe.status === 0 && probe.error === undefined;
 
-// Ordinary offline runs can omit uv, but the native installer CI must never
-// silently skip the command contract it is specifically responsible for.
-describe.runIf(available || process.env.CANONFIG_REQUIRE_UV_TESTS === "1")("native uv command contract", () => {
-  it("accepts the generated no-build recipe without installing or contacting a registry", () => {
-    expect(available, "the native uv job requires a working uv executable").toBe(true);
-    const catalog = buildToolCatalog([{
-      sourcePath: "fixture-package.json",
-      location: { kind: "field", field: "canonfig.tools" },
-      kind: "package-metadata",
-      invocation: ["canonfig-command-fixture"],
-      package: { ecosystem: "uv", name: "canonfig-command-fixture", version: "0.0.1", source: "uv.lock", upstream: "https://example.invalid/fixture" },
-      confidence: "deterministic", reviewStatus: "accepted",
-    }]);
-    const recipe = catalog.tools[0]?.recipes.find((candidate) => candidate.method === "uv");
-    if (recipe === undefined || recipe.method !== "uv") throw new Error("expected a deterministic uv recipe");
-    expect(recipe.command).toContain("--no-build");
-    expect(recipe.command).not.toContain("--only-binary=:all:");
-    const result = spawnSync(uv, [...recipe.command.slice(1), "--help"], {
-      encoding: "utf8", timeout: 5_000, maxBuffer: 256 * 1024, windowsHide: true,
-      env: { ...process.env, UV_OFFLINE: "1", UV_NO_PROGRESS: "1" },
+// Native installer CI must exercise the provider contract, not silently skip it.
+describe.runIf(available || process.env.CANONFIG_REQUIRE_UV_TESTS === "1")("native uv compatibility contract", () => {
+  it.each([false, true])("rejects a Python upper-bound violation in installed metadata (dependency: %s)", (dependency) => {
+    expect(available, "native UV is required").toBe(true);
+    const root = mkdtempSync(join(tmpdir(), "canonfig-uv-compat-"));
+    const run = (args: ReadonlyArray<string>) => spawnSync(uv, [...args, "--no-config", "--no-python-downloads"], {
+      encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true,
     });
-    expect(result.error).toBeUndefined();
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("--no-build");
+    try {
+      const found = run(["python", "find"]);
+      expect(found.status, found.stderr).toBe(0);
+      const python = found.stdout.trim();
+      const wheel = spawnSync(python, ["-I", "-c", `
+import pathlib, sys, zipfile
+root = pathlib.Path(sys.argv[1])
+dependency = sys.argv[2] == 'true'
+def wheel(name, requires_python, requires_dist=''):
+    info = name + '-1.0.dist-info'
+    metadata = 'Metadata-Version: 2.1\\nName: ' + name + '\\nVersion: 1.0\\nRequires-Python: ' + requires_python + '\\n'
+    if requires_dist:
+        metadata += 'Requires-Dist: ' + requires_dist + '\\n'
+    with zipfile.ZipFile(root / (name + '-1.0-py3-none-any.whl'), 'w') as archive:
+        archive.writestr(info + '/METADATA', metadata)
+        archive.writestr(info + '/WHEEL', 'Wheel-Version: 1.0\\nGenerator: canonfig-fixture\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n')
+        archive.writestr(info + '/RECORD', '')
+        archive.writestr(name + '.py', 'raise RuntimeError("fixture package code must not run during metadata validation")\\n')
+wheel('canonfig_incompatible', '<0')
+if dependency:
+    wheel('canonfig_parent', '>=0', 'canonfig_incompatible==1.0')
+`, root, String(dependency)], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+      expect(wheel.status, wheel.stderr).toBe(0);
+      const venv = join(root, "venv");
+      const created = run(["venv", venv, "--python", python]);
+      expect(created.status, created.stderr).toBe(0);
+      const venvPython = process.platform === "win32" ? join(venv, "Scripts", "python.exe") : join(venv, "bin", "python");
+      const installed = run(["pip", "install", "--python", venvPython, "--no-index", "--find-links", root,
+        dependency ? "canonfig_parent==1.0" : "canonfig_incompatible==1.0", "--no-build", "--offline"]);
+      expect(installed.status, installed.stderr).toBe(0);
+      const checked = run(["pip", "check", "--python", venvPython, "--offline"]);
+      expect(checked.status).toBe(1);
+      expect(checked.stderr).toContain("canonfig-incompatible");
+      expect(checked.stderr).toContain("<0");
+      expect(checked.stderr).not.toContain("fixture package code must not run");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

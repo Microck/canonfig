@@ -1,17 +1,22 @@
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readlinkSync,
+  type PathLike,
+  type StatsFs,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
+  watch,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile, type statfs } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -21,6 +26,7 @@ import { Effect, Fiber, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentResolution } from "../../src/agent/agent-resolution.service.ts";
+import { describeRuntimeError } from "../../src/cli/failure-taxonomy.ts";
 import {
   ActionId,
   AgentTaskId,
@@ -43,12 +49,7 @@ import type {
   SynchronizationOutcome,
 } from "../../src/domain/synchronization.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
-import type {
-  RenderedSchedulerJob,
-  SchedulerBackend,
-  SchedulerInspection,
-  SchedulerSnapshot,
-} from "../../src/machine/machine-state.types.ts";
+import { MachineFilesystemError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
@@ -60,19 +61,15 @@ import {
 import type { JsonValue } from "../../src/profile/profile-codec.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
-import { scheduleManagerLayer } from "../../src/schedule/schedule-manager.layer.ts";
-import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
-import { ScheduleVerificationError } from "../../src/schedule/schedule-manager.errors.ts";
-import {
-  SyncScheduleSchema,
-  type SyncSchedule,
-} from "../../src/schedule/schedule-manager.types.ts";
 import { planSynchronization } from "../../src/synchronization/planner.ts";
 import { RollbackCleanupError } from "../../src/synchronization/synchronization.errors.ts";
 import {
   defaultSynchronizationExecutionLimits,
   executeSynchronizationAction,
   executionContexts,
+  removeRunTemporaryEntries,
+  preflightDisk,
+  preflightPathLengths,
 } from "../../src/synchronization/executor.ts";
 import {
   getConfigPath,
@@ -87,7 +84,6 @@ import {
   type ResourceExecutionContext,
 } from "../../src/synchronization/resource-executors.ts";
 import type { NpmArtifactTransport } from "../../src/synchronization/npm-artifact.ts";
-import { defaultLocalExecution } from "../../src/synchronization/follower-sync-config.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 import { Synchronization } from "../../src/synchronization/synchronization.service.ts";
 import type {
@@ -121,74 +117,6 @@ interface Fixture {
   readonly revision: PlanningProfileRevision;
   readonly artifact: SynchronizationArtifact;
   readonly input: SynchronizationRunInput;
-}
-
-class RecordingScheduler implements SchedulerBackend {
-  definition: RenderedSchedulerJob | undefined;
-  readonly installs: Array<RenderedSchedulerJob> = [];
-  removals = 0;
-
-  readonly inspect = (
-    expected: RenderedSchedulerJob,
-  ): Effect.Effect<SchedulerInspection> =>
-    Effect.sync(() => ({
-      installed: this.definition !== undefined,
-      enabled: this.definition !== undefined,
-      matches: this.definition?.service === expected.service
-        && this.definition.schedule === expected.schedule,
-    }));
-
-  readonly snapshot = (
-    expected: RenderedSchedulerJob,
-  ): Effect.Effect<SchedulerSnapshot> =>
-    Effect.sync(() => this.definition === undefined
-      ? {
-        state: "absent" as const,
-        platform: expected.platform,
-        mechanism: expected.mechanism,
-        serviceName: expected.serviceName,
-      }
-      : {
-        state: "present" as const,
-        platform: expected.platform,
-        mechanism: expected.mechanism,
-        serviceName: expected.serviceName,
-        enabled: true,
-        servicePresent: true,
-        schedulePresent: true,
-        service: this.definition.service,
-        schedule: this.definition.schedule,
-      });
-
-  readonly install = (
-    definition: RenderedSchedulerJob,
-  ): Effect.Effect<void> =>
-    Effect.sync(() => {
-      this.definition = definition;
-      this.installs.push(definition);
-    });
-
-  readonly remove = (): Effect.Effect<void> =>
-    Effect.sync(() => {
-      this.definition = undefined;
-      this.removals += 1;
-    });
-
-  readonly restore = (
-    expected: RenderedSchedulerJob,
-    snapshot: SchedulerSnapshot,
-  ): Effect.Effect<void> =>
-    Effect.sync(() => {
-      if (snapshot.state === "absent") {
-        this.definition = undefined;
-        return;
-      }
-      this.definition = {
-        ...expected,
-        service: snapshot.service ?? "",
-        schedule: snapshot.schedule ?? "",
-      };
-    });
 }
 
 const fileFixture = (
@@ -423,57 +351,6 @@ const mirrorContext = (
   };
 };
 
-const scheduleContext = (
-  root: string,
-  previousSchedule?: {
-    readonly kind: "daily";
-    readonly localTime: string;
-  } | undefined,
-): ResourceExecutionContext => {
-  const spec = {
-    kind: "schedule" as const,
-    calendar: { type: "daily" as const, at: "03:30" },
-    timezone: "local",
-  };
-  const content = new TextEncoder().encode(JSON.stringify(spec));
-  const digest = decode(ContentDigest)(sha256BytesHex(content));
-  const resourceId = decode(ResourceId)("schedule");
-  return {
-    run: decode(RunId)("run-schedule"),
-    action: {
-      id: decode(ActionId)("action:schedule:0:write-file"),
-      resource: resourceId,
-      kind: "write-file",
-      detail: {
-        kind: "write-file",
-        target: join(root, "schedule.json"),
-        digest,
-      },
-      before: [],
-    },
-    resource: {
-      id: resourceId,
-      kind: "schedule",
-      policy: "replace",
-      target: join(root, "schedule.json"),
-      dependsOn: [],
-      blobs: [],
-    },
-    desired: {
-      kind: "schedule",
-      digest,
-      schedule: { kind: "daily", localTime: "03:30" },
-    },
-    verification: {
-      method: "command",
-      command: [process.execPath, "--version"],
-    },
-    artifacts: new Map([[digest, { digest, content }]]),
-    limits: defaultSynchronizationExecutionLimits,
-    previousSchedule,
-  };
-};
-
 const follower = decode(FollowerIdentity)({
   id: "follower-1",
   name: "Follower",
@@ -559,141 +436,6 @@ const reencodePlan = (
     })),
   ));
   return { ...plan, encoded, digest: sha256Hex(encoded) };
-};
-
-const scheduleDefaultRunInput = (
-  fixture: Fixture,
-  run: string,
-  operation: "upsert" | "remove" = "upsert",
-): SynchronizationRunInput => {
-  const schedule = { kind: "daily" as const, localTime: "03:30" };
-  const previousSchedule = { kind: "daily" as const, localTime: "02:15" };
-  const action = {
-    id: decode(ActionId)("action:canonfig.schedule-default:0:schedule-default"),
-    resource: decode(ResourceId)("canonfig.schedule-default"),
-    kind: "schedule-default" as const,
-    detail: {
-      kind: "schedule-default" as const,
-      operation,
-      schedule,
-      previousSchedule,
-    },
-    before: [],
-  };
-  const body = {
-    revision: fixture.revision.id,
-    follower: follower.id,
-    requiredBlobs: [],
-    actions: [action],
-    agentTasks: [],
-  };
-  const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(body));
-  return {
-    id: decode(RunId)(run),
-    plan: {
-      ...body,
-      encoded,
-      digest: sha256Hex(encoded),
-    },
-    revision: fixture.revision,
-    artifacts: [],
-  };
-};
-
-const scheduleManagerFor = (controls: {
-  failUpdate: boolean;
-  blockUpdate: boolean;
-  failRemove?: boolean;
-  failAfterMutation?: boolean;
-  initial?: SyncSchedule | undefined;
-  started?: (() => void) | undefined;
-}): ScheduleManager["Service"] => {
-  let current: SyncSchedule | undefined = controls.initial;
-  let blockedOnce = false;
-  const status = (schedule: SyncSchedule) => ({
-    state: current === undefined
-      ? "not-installed" as const
-      : JSON.stringify(current) === JSON.stringify(schedule)
-        ? "current" as const
-        : "drifted" as const,
-    platform: "linux" as const,
-    schedule,
-    definition: {
-      platform: "linux" as const,
-      mechanism: "systemd-user-timer" as const,
-      serviceName: "test",
-      service: "",
-      schedule: "",
-    },
-  });
-  const update = (input?: { readonly schedule?: SyncSchedule }) => {
-    const schedule = input?.schedule ?? { kind: "daily" as const, localTime: "00:00" };
-    if (controls.blockUpdate && !blockedOnce) {
-      blockedOnce = true;
-      controls.started?.();
-      return Effect.never;
-    }
-    if (controls.failUpdate) {
-      if (controls.failAfterMutation) current = schedule;
-      return Effect.fail(new ScheduleVerificationError({
-        operation: "update",
-        state: "failed",
-        message: "injected schedule update failure",
-      }));
-    }
-    current = schedule;
-    return Effect.succeed({
-      change: "updated" as const,
-      status: status(schedule),
-    });
-  };
-  return ScheduleManager.of({
-    install: update,
-    update,
-    inspect: (input) => Effect.succeed(status(
-      input?.schedule ?? { kind: "daily", localTime: "00:00" },
-    )),
-    status: (input) => Effect.succeed(status(
-      input?.schedule ?? { kind: "daily", localTime: "00:00" },
-    )),
-    snapshot: () => Effect.succeed(current === undefined
-      ? {
-        state: "absent" as const,
-        platform: "linux" as const,
-        mechanism: "systemd-user-timer" as const,
-        serviceName: "test",
-      }
-      : {
-        state: "present" as const,
-        platform: "linux" as const,
-        mechanism: "systemd-user-timer" as const,
-        serviceName: "test",
-        enabled: true,
-        servicePresent: true,
-        schedulePresent: true,
-        service: "",
-        schedule: JSON.stringify(current),
-      }),
-    restore: (_input, snapshot) => Effect.sync(() => {
-      current = snapshot.state === "absent"
-        ? undefined
-        : Schema.decodeUnknownSync(SyncScheduleSchema)(
-          JSON.parse(snapshot.schedule ?? "{}"),
-        );
-    }),
-    remove: () => {
-      if (controls.failRemove) {
-        if (controls.failAfterMutation) current = undefined;
-        return Effect.fail(new ScheduleVerificationError({
-          operation: "remove",
-          state: "failed",
-          message: "injected schedule remove failure",
-        }));
-      }
-      current = undefined;
-      return Effect.succeed({ change: "removed" as const });
-    },
-  });
 };
 
 const npmTarballBytes = (
@@ -958,7 +700,13 @@ describe("synchronization apply run", () => {
       follower: follower.id, revision, artifacts: [base.artifact],
     })).pipe(Effect.provide(applicationLayer({ ...base, revision }))));
     if (edited) {
-      await expect(recovery).rejects.toMatchObject({ _tag: "RecoveryIntegrityError" });
+      // A later local edit stops recovery as work for a person, naming the
+      // file; the edit and the snapshot both stay.
+      await expect(recovery).rejects.toMatchObject({
+        _tag: "RecoveryLocalEditError",
+        paths: [context.resource.target],
+        snapshot: reference,
+      });
       expect(await readFile(context.resource.target, "utf8")).toContain("after interruption\n");
       await expect(access(reference)).resolves.toBeUndefined();
     } else {
@@ -1040,134 +788,259 @@ describe("synchronization apply run", () => {
     expect(await readFile(outside, "utf8")).toBe("outside");
   });
 
-  it.each([
-    [
-      "reviewed private index",
-      {
-        url: "https://PACKAGES.EXAMPLE.TEST:443/repository/simple/?channel=stable",
-        reviewedBy: "security-reviewer",
-        reviewedAt: "2026-08-18T00:00:00Z",
-      },
-      "https://packages.example.test/repository/simple?channel=stable",
-    ],
-    ["fixed PyPI fallback", undefined, "https://pypi.org/simple"],
-  ] as const)(
-    "runs the deterministic uv installer in an isolated child environment: %s",
-    async (_name, indexPolicy, expectedIndex) => {
-      const root = temporaryDirectory();
-      const bin = join(root, "bin");
-      const marker = join(root, "uv-child.json");
-      const hostileUvConfig = join(root, "evil-uv.toml");
-      const hostilePipConfig = join(root, "evil-pip.conf");
-      mkdirSync(bin, { recursive: true });
-      writeFileSync(hostileUvConfig, "extra-index-url = 'https://evil.example.test/simple'\n");
-      writeFileSync(hostilePipConfig, "extra-index-url=https://evil.example.test/simple\n");
-      writeFileSync(
-        join(bin, "uv"),
-        `#!${process.execPath}
-const { readFileSync, writeFileSync } = require("node:fs");
-const keys = [
-  "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL",
-  "UV_EXTRA_INDEX_URL", "UV_INDEX", "UV_FIND_LINKS", "UV_TRUSTED_HOST",
-  "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "PIP_TRUSTED_HOST",
-  "UV_CONFIG_FILE", "PIP_CONFIG_FILE", "UV_HTTP_PROXY", "PIP_PROXY",
-  "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY", "NETRC",
-  "KEYRING_BACKEND", "PIP_KEYRING_PROVIDER", "PIP_CERT", "PIP_CLIENT_CERT"
-];
-const values = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
-const configBytes = readFileSync(process.env.UV_CONFIG_FILE, "utf8");
-writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
-  args: process.argv.slice(2),
-  values,
-  configBytes
-}));
-if (process.argv.slice(2).some((value) =>
-  /(?:extra-index|find-links|trusted-host|--index(?:=|$))/iu.test(value)
-)) process.exit(42);
+
+  it("refuses incompatible prepared Python metadata before exposing a managed tool and removes preparation", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    const managed = join(root, "managed-tool");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "uv"), `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "python" && args[1] === "find") {
+  process.stdout.write(process.execPath + "\\n");
+} else if (args[0] === "venv") {
+  fs.mkdirSync(args[1], { recursive: true });
+} else if (args[0] === "pip" && args[1] === "install") {
+  const python = args[args.indexOf("--python") + 1];
+  fs.writeFileSync(path.join(path.dirname(path.dirname(python)), "METADATA"), "Requires-Python: <3.11,>=3.7\\n");
+} else if (args[0] === "pip" && args[1] === "check") {
+  process.stderr.write("pyinstaller==5.2 requires Python <3.11,>=3.7, but the interpreter is Python 3.12.3\\n");
+  process.exit(1);
+} else if (args[0] === "tool" && args[1] === "install") {
+  fs.writeFileSync(${JSON.stringify(managed)}, "incompatible managed tool");
+} else {
+  process.exit(42);
+}
+`);
+    chmodSync(join(bin, "uv"), 0o755);
+    const home = join(root, "home");
+    const layer = linuxMachineStateLayer({
+      environment: [{ name: "HOME", value: home }, { name: "PATH", value: bin }],
+    });
+    await Effect.runPromise(Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(realUvInstallerContext(root, "pyinstaller"));
+      return yield* prepared.execute;
+    }).pipe(Effect.provide(layer), Effect.flip));
+    expect(existsSync(managed)).toBe(false);
+    expect(readdirSync(join(home, ".cache", "canonfig", "uv-preparation"))).toEqual([]);
+  });
+
+  it("reinstalls a uv tool whose executable was deleted while uv still lists it", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    const toolBin = join(root, "tool-bin");
+    const state = join(root, "uv-state.json");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(toolBin, { recursive: true });
+    // A stateful stand-in with uv's own semantics: `tool install` of a tool it
+    // already lists at that version is a no-op that exits 0 and leaves a
+    // deleted entrypoint missing, unless --reinstall (or --force) is passed.
+    writeFileSync(join(bin, "uv"), `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const state = ${JSON.stringify(state)};
+const entrypoint = path.join(${JSON.stringify(toolBin)}, "uv-tool");
+const installed = fs.existsSync(state) ? JSON.parse(fs.readFileSync(state, "utf8")) : {};
+if (args[0] === "python" && args[1] === "find") {
+  process.stdout.write(process.execPath + "\\n");
+} else if (args[0] === "venv") {
+  fs.mkdirSync(args[1], { recursive: true });
+} else if (args[0] === "pip") {
+  if (args[1] === "freeze") process.stdout.write("pyinstaller==1.2.3\\n");
+} else if (args[0] === "tool" && args[1] === "list") {
+  for (const [name, version] of Object.entries(installed)) process.stdout.write(name + " v" + version + "\\n- uv-tool\\n");
+} else if (args[0] === "tool" && args[1] === "install") {
+  const [name, version] = args[2].split("==");
+  if (installed[name] === version && !args.includes("--reinstall") && !args.includes("--force")) {
+    process.stderr.write("\`" + args[2] + "\` is already installed\\n");
+  } else {
+    installed[name] = version;
+    fs.writeFileSync(state, JSON.stringify(installed));
+    fs.writeFileSync(entrypoint, "#!/bin/sh\\n", { mode: 0o755 });
+  }
+} else {
+  process.exit(42);
+}
+`);
+    chmodSync(join(bin, "uv"), 0o755);
+    const home = join(root, "home");
+    const layer = linuxMachineStateLayer({
+      environment: [{ name: "HOME", value: home }, { name: "PATH", value: `${bin}:${toolBin}` }],
+    });
+    const context = realUvInstallerContext(root, "pyinstaller");
+    const install = Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(context);
+      yield* prepared.execute;
+      return yield* verifyResource(context);
+    }).pipe(Effect.provide(layer));
+
+    expect((await Effect.runPromise(install)).passed).toBe(true);
+    rmSync(join(toolBin, "uv-tool"));
+    expect(JSON.parse(readFileSync(state, "utf8"))).toEqual({ pyinstaller: "1.2.3" });
+    expect((await Effect.runPromise(verifyResource(context).pipe(Effect.provide(layer)))).passed).toBe(false);
+
+    // The repair the planner schedules for the missing executable.
+    expect((await Effect.runPromise(install)).passed).toBe(true);
+    expect(existsSync(join(toolBin, "uv-tool"))).toBe(true);
+  });
+
+  it("recovers a killed Python preparation without touching another run's live preparation", async () => {
+    const root = temporaryDirectory();
+    const home = join(root, "home");
+    const context = realUvInstallerContext(root, "pyinstaller");
+    const cache = join(home, ".cache", "canonfig", "uv-preparation");
+    const abandoned = join(cache, sha256Hex(context.run));
+    const other = join(cache, sha256Hex("another-live-run"), ".cf-111111111111.tmp");
+    mkdirSync(join(abandoned, ".cf-222222222222.tmp", "venv"), { recursive: true });
+    writeFileSync(join(abandoned, ".cf-222222222222.tmp", "venv", "METADATA"), "Requires-Python: <3.11\n");
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(other, "METADATA"), "another run's installed metadata");
+    const layer = linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }] });
+    await Effect.runPromise(
+      removeRunTemporaryEntries([context.action], context.run).pipe(Effect.provide(layer)),
+    );
+    expect(existsSync(abandoned)).toBe(false);
+    expect(readFileSync(join(other, "METADATA"), "utf8")).toBe("another run's installed metadata");
+  });
+
+  it("waits for a bounded preparation process to close before cancellation removes its venv", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "uv"), `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "python") process.stdout.write(process.execPath + "\\n");
+else if (args[0] === "venv") fs.mkdirSync(args[1], { recursive: true });
+else if (args[0] === "pip" && args[1] === "install") {
+  fs.writeFileSync(${JSON.stringify(join(root, "started"))}, String(process.pid));
+  setInterval(() => {}, 1000);
+} else process.exit(42);
+`);
+    chmodSync(join(bin, "uv"), 0o755);
+    const home = join(root, "home");
+    const context = realUvInstallerContext(root, "pyinstaller");
+    const bounded = { ...context, limits: { ...context.limits, processTimeoutMilliseconds: 500 } };
+    let signalReady!: () => void;
+    const ready = new Promise<void>((resolve) => { signalReady = resolve; });
+    const watcher = watch(root, (_event, filename) => {
+      if (filename === "started") signalReady();
+    });
+    try {
+      await Effect.runPromise(Effect.gen(function*() {
+        const prepared = yield* prepareResourceAction(bounded);
+        const fiber = yield* Effect.forkChild(prepared.execute);
+        yield* Effect.promise(() => ready);
+        yield* Fiber.interrupt(fiber);
+      }).pipe(Effect.provide(linuxMachineStateLayer({
+        environment: [{ name: "HOME", value: home }, { name: "PATH", value: bin }],
+      }))));
+    } finally {
+      watcher.close();
+    }
+    const pid = Number(readFileSync(join(root, "started"), "utf8"));
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(readdirSync(join(home, ".cache", "canonfig", "uv-preparation"))).toEqual([]);
+  });
+
+  it("reports the installer's own last output lines, redacted, when it fails", async () => {
+    const root = temporaryDirectory();
+    const bin = join(root, "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, "uv"),
+      `#!${process.execPath}
+for (let line = 1; line <= 30; line += 1) process.stderr.write("resolver noise " + line + "\\n");
+process.stderr.write("  auth token=hunter2-secret\\n");
+process.stderr.write("error: Distribution sqlparse==0.1.19 can't be installed because it has no usable wheels\\n");
+process.exit(1);
 `,
-      );
-      chmodSync(join(bin, "uv"), 0o755);
-      const machine = linuxMachineStateLayer({
+    );
+    chmodSync(join(bin, "uv"), 0o755);
+    const machine = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(root, "home") },
+        { name: "PATH", value: bin },
+      ],
+    });
+    const error = await Effect.runPromise(
+      Effect.gen(function*() {
+        const prepared = yield* prepareResourceAction(realUvInstallerContext(root, "sqlparse"));
+        return yield* prepared.execute;
+      }).pipe(Effect.provide(machine), Effect.flip),
+    );
+
+    expect(error.message).toContain("installer uv exited with 1");
+    expect(error.message).toContain("sqlparse==0.1.19 can't be installed because it has no usable wheels");
+    expect(error.message).toContain("token=[REDACTED]");
+    expect(error.message).not.toContain("hunter2-secret");
+    // Bounded to the tail: the earliest lines are dropped.
+    expect(error.message).not.toContain("resolver noise 1\n");
+    expect(error.message).toContain("resolver noise 30");
+  });
+
+  describe("tool verifier lookup", () => {
+    const ruffContext = (root: string): ResourceExecutionContext => {
+      const context = realUvInstallerContext(root, "ruff");
+      return {
+        ...context,
+        desired: {
+          kind: "tool",
+          toolId: "ruff",
+          recipes: [{ platform: "linux", method: "uv", package: "ruff", version: "0.6.9" }],
+          loginRequired: false,
+        },
+        verification: {
+          method: "command",
+          command: ["ruff", "rule", "F401"],
+          expectContains: "unused-import",
+        },
+      };
+    };
+    const machineWithoutLocalBin = (root: string) => {
+      const bin = join(root, "bin");
+      mkdirSync(bin, { recursive: true });
+      // A scheduler-bounded PATH: nothing under the home directory.
+      return linuxMachineStateLayer({
         environment: [
           { name: "HOME", value: join(root, "home") },
           { name: "PATH", value: bin },
-          { name: "UV_DEFAULT_INDEX", value: "https://evil.example.test/simple" },
-          { name: "UV_INDEX_URL", value: "https://evil.example.test/simple" },
-          { name: "UV_EXTRA_INDEX_URL", value: "https://evil.example.test/simple" },
-          { name: "UV_INDEX", value: "evil=https://evil.example.test/simple" },
-          { name: "UV_FIND_LINKS", value: "https://evil.example.test/wheels" },
-          { name: "UV_TRUSTED_HOST", value: "evil.example.test" },
-          { name: "UV_CONFIG_FILE", value: hostileUvConfig },
-          { name: "PIP_INDEX_URL", value: "https://evil.example.test/simple" },
-          { name: "PIP_EXTRA_INDEX_URL", value: "https://evil.example.test/simple" },
-          { name: "PIP_FIND_LINKS", value: "https://evil.example.test/wheels" },
-          { name: "PIP_TRUSTED_HOST", value: "evil.example.test" },
-          { name: "PIP_CONFIG_FILE", value: hostilePipConfig },
-          { name: "PIP_PROXY", value: "http://evil.example.test" },
-          { name: "PIP_CERT", value: join(root, "evil.pem") },
-          { name: "PIP_CLIENT_CERT", value: join(root, "evil-client.pem") },
-          { name: "PIP_KEYRING_PROVIDER", value: "subprocess" },
-          { name: "UV_HTTP_PROXY", value: "http://evil.example.test" },
-          { name: "HTTP_PROXY", value: "http://evil.example.test" },
-          { name: "https_proxy", value: "http://evil.example.test" },
-          { name: "FTP_PROXY", value: "http://evil.example.test" },
-          { name: "ALL_PROXY", value: "http://evil.example.test" },
-          { name: "NO_PROXY", value: "packages.example.test" },
-          { name: "NETRC", value: join(root, "evil.netrc") },
-          { name: "KEYRING_BACKEND", value: "evil.backend" },
         ],
       });
-      const context = realUvInstallerContext(root, "uv-tool", indexPolicy ?? undefined);
-      const prepared = await Effect.runPromise(
-        prepareResourceAction(context).pipe(Effect.provide(machine)),
-      );
-      await Effect.runPromise(prepared.execute.pipe(Effect.provide(machine)));
+    };
 
-      // SAFETY: The child fixture writes exactly this JSON object shape.
-      const observed = JSON.parse(readFileSync(marker, "utf8")) as {
-        readonly args: ReadonlyArray<string>;
-        readonly values: Readonly<Record<string, string | undefined>>;
-        readonly configBytes: string;
-      };
-      expect(observed.args).toEqual([
-        "tool",
-        "install",
-        "uv-tool==1.2.3",
-        "--no-build",
-        "--no-config",
-        `--default-index=${expectedIndex}`,
-      ]);
-      expect(observed.values.UV_DEFAULT_INDEX).toBe(expectedIndex);
-      expect(observed.values.UV_INDEX_URL).toBe(expectedIndex);
-      expect(observed.values.PIP_INDEX_URL).toBe(expectedIndex);
-      for (const key of [
-        "UV_EXTRA_INDEX_URL",
-        "UV_INDEX",
-        "UV_FIND_LINKS",
-        "UV_TRUSTED_HOST",
-        "PIP_EXTRA_INDEX_URL",
-        "PIP_FIND_LINKS",
-        "PIP_TRUSTED_HOST",
-        "UV_HTTP_PROXY",
-        "PIP_PROXY",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "FTP_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "NETRC",
-        "KEYRING_BACKEND",
-        "PIP_KEYRING_PROVIDER",
-        "PIP_CERT",
-        "PIP_CLIENT_CERT",
-      ]) {
-        expect(observed.values[key]).toBeUndefined();
-      }
-      expect(observed.values.UV_CONFIG_FILE).toBe("/dev/null");
-      expect(observed.values.PIP_CONFIG_FILE).toBe("/dev/null");
-      expect(observed.configBytes).toBe("");
-    },
-  );
+    it("finds a tool that exists only in the uv tool bin directory", async () => {
+      const root = temporaryDirectory();
+      const localBin = join(root, "home", ".local", "bin");
+      mkdirSync(localBin, { recursive: true });
+      writeFileSync(join(localBin, "ruff"), "#!/bin/sh\necho 'unused-import (F401)'\n");
+      chmodSync(join(localBin, "ruff"), 0o755);
+
+      const verification = await Effect.runPromise(
+        verifyResource(ruffContext(root)).pipe(Effect.provide(machineWithoutLocalBin(root))),
+      );
+
+      expect(verification).toMatchObject({ passed: true, method: "command:ruff", exitCode: 0 });
+    });
+
+    it("names every directory it searched when the tool is missing", async () => {
+      const root = temporaryDirectory();
+
+      const verification = await Effect.runPromise(
+        verifyResource(ruffContext(root)).pipe(Effect.provide(machineWithoutLocalBin(root))),
+      );
+
+      expect(verification.passed).toBe(false);
+      expect(verification.reason).toBe(
+        `verification executable ruff was not found (searched: ${join(root, "home", ".local", "bin")}, ${
+          join(root, "bin")
+        })`,
+      );
+    });
+  });
 
   it.each([
     "http://packages.example.test/repository/simple",
@@ -1371,14 +1244,6 @@ if (process.argv.slice(2).some((value) =>
     expect(timedOut._tag).toBe("ProcessTimeoutError");
   });
 
-  it("does not shorten the executor's process limit by default", () => {
-    // The follower's own default must not undercut the executor's, which is
-    // what passing the transport timeout did on every run.
-    expect(defaultLocalExecution.processTimeoutMilliseconds).toBe(
-      defaultSynchronizationExecutionLimits.processTimeoutMilliseconds,
-    );
-  });
-
   it("verifies an executable-present check that names a path", async () => {
     // Observation reports such a tool present by inspecting the path, so the
     // planner plans a no-op. Verification called findExecutable, which searches
@@ -1422,6 +1287,17 @@ if (process.argv.slice(2).some((value) =>
       verifyResource(context).pipe(Effect.provide(machineLayer(root))),
     );
     expect(verification.passed).toBe(true);
+    // npm links global bin entries to scripts in its package tree on POSIX.
+    const npmShim = join(root, "opt", "npm-tool");
+    symlinkSync(toolPath, npmShim);
+    const linked = await Effect.runPromise(
+      verifyResource({
+        ...context,
+        resource: { ...context.resource, target: npmShim },
+        verification: { method: "executable-present", executable: npmShim },
+      }).pipe(Effect.provide(machineLayer(root))),
+    );
+    expect(linked.passed).toBe(true);
 
     // A path that exists but is not executable still fails.
     const dataPath = join(root, "opt", "not-a-tool");
@@ -1434,6 +1310,25 @@ if (process.argv.slice(2).some((value) =>
       }).pipe(Effect.provide(machineLayer(root))),
     );
     expect(rejected.passed).toBe(false);
+    const unsafeShim = join(root, "opt", "non-executable-shim");
+    symlinkSync(dataPath, unsafeShim);
+    const unsafe = await Effect.runPromise(
+      verifyResource({
+        ...context,
+        verification: { method: "executable-present", executable: unsafeShim },
+      }).pipe(Effect.provide(machineLayer(root))),
+    );
+    expect(unsafe.passed).toBe(false);
+
+    const cyclicShim = join(root, "opt", "cyclic-shim");
+    symlinkSync(cyclicShim, cyclicShim);
+    const cyclic = await Effect.runPromise(
+      verifyResource({
+        ...context,
+        verification: { method: "executable-present", executable: cyclicShim },
+      }).pipe(Effect.provide(machineLayer(root))),
+    );
+    expect(cyclic.passed).toBe(false);
   });
 
   it("does not follow an intermediate mirror symlink outside the managed root", async () => {
@@ -2006,6 +1901,159 @@ if (process.argv.slice(2).some((value) =>
     },
   );
 
+  it("recovers a skill apply killed with its own temporary files inside the new tree", async () => {
+    // A kill during a skill apply left `.file-000.md.canonfig-<hex>` in a
+    // directory the run had created. Rolling that directory back failed with
+    // ENOTEMPTY on every `recover`, so the follower stayed stuck until someone
+    // deleted the partial tree by hand.
+    const root = temporaryDirectory();
+    const base = fileFixture(root, "run-skill-killed");
+    const target = join(root, "managed-skill");
+    const resource: PublishedResource = {
+      id: decode(ResourceId)("managed-skill"),
+      kind: "skill",
+      policy: "replace-if-unmodified",
+      target,
+      dependsOn: [],
+      blobs: [],
+    };
+    const files = ["SKILL.md", "group-12/nested-2/file-000.md"].map((path) => ({
+      path,
+      digest: base.artifact.digest,
+      executable: false,
+      mode: 0o600,
+    }));
+    const desired: DesiredResource = {
+      kind: "skill",
+      digest: directoryEntriesDigest(files.map((file) => ({ ...file, objectKind: "regular" as const }))),
+      mode: 0o700,
+      directories: [],
+      files,
+    };
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      resources: [resource],
+      desired: [{
+        resource: resource.id,
+        desired,
+        verification: { method: "digest", digest: directoryVerificationDigest(files) },
+      }],
+    };
+    const plan = Effect.runSync(planSynchronization({
+      revision,
+      follower: follower.id,
+      observedState: {
+        platform: "linux",
+        resources: [{ resource: resource.id, observed: { state: "absent" } }],
+        availableBlobs: [],
+      },
+      localOverlay: [],
+      appliedResources: [],
+    }));
+    const fixture: Fixture = { ...base, target, revision, input: { ...base.input, revision, plan } };
+    const unrelated = join(root, "notes.txt");
+    writeFileSync(unrelated, "keep me");
+    const { desired: _, blobs: __, ...persistable } = revision;
+    await Effect.runPromise(Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower });
+      yield* repository.publishRevision({ revision: persistable });
+      yield* repository.startRun({ id: fixture.input.id, follower: follower.id, revision: revision.id,
+        plan, startedAt: "2026-09-07T00:00:00Z" });
+      const states = yield* executionContexts(fixture.input, defaultSynchronizationExecutionLimits);
+      const state = states.find((entry) => entry.action.kind === "mirror-directory");
+      if (state === undefined) throw new Error("missing mirror action");
+      const prepared = yield* prepareResourceAction(state.context);
+      yield* repository.journalAction({ run: fixture.input.id, action: state.action.id,
+        state: "running", recordedAt: "2026-09-07T00:00:01Z", attempt: 1,
+        rollbackReference: prepared.rollbackReference });
+      yield* prepared.execute;
+    }).pipe(Effect.provide(applicationLayer(fixture))));
+    const nested = join(target, "group-12", "nested-2");
+    writeFileSync(join(nested, ".cf-0123456789ab.tmp"), "partial");
+    writeFileSync(join(nested, `.file-000.md.canonfig-${"c".repeat(24)}`), "partial, older release");
+
+    const outcome = await Effect.runPromise(Effect.flatMap(Synchronization, (synchronization) =>
+      synchronization.recover({ follower: follower.id, revision, artifacts: [base.artifact] })
+    ).pipe(Effect.provide(applicationLayer(fixture))));
+
+    expect(outcome.outcome).toBe("Converged");
+    expect(readdirSync(nested)).toEqual(["file-000.md"]);
+    expect(await readFile(join(nested, "file-000.md"), "utf8")).toBe("canonical content");
+    expect(readFileSync(unrelated, "utf8")).toBe("keep me");
+  });
+
+  it("refuses a run that cannot fit before recording it", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-disk-full");
+    // Larger than any filesystem the suite runs on. Only the preflight reads it.
+    const content = new Uint8Array(1);
+    Object.defineProperty(content, "byteLength", { value: 2 ** 50 });
+    const input = { ...fixture.input, artifacts: [{ digest: fixture.artifact.digest, content }] };
+
+    const error = await Effect.runPromise(Effect.flip(Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower });
+      const { desired: _, blobs: __, ...persistable } = fixture.revision;
+      yield* repository.publishRevision({ revision: persistable });
+      return yield* (yield* Synchronization).run(input);
+    }).pipe(Effect.provide(applicationLayer(fixture)))));
+
+    expect(error).toMatchObject({ _tag: "InsufficientDiskError", path: fixture.target });
+    // The message used to throw "Do not know how to serialize a BigInt".
+    expect(String(error)).toContain("requiredBytes=");
+    const described = describeRuntimeError(error);
+    expect(described.category).toBe("verification-or-apply-failure");
+    expect(described.message).toContain(`the filesystem holding ${fixture.target} needs`);
+    const open = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) => repository.loadRecovery(follower.id))
+        .pipe(Effect.provide(stateRepositoryLayer(fixture.database))),
+    );
+    expect(open).toBeUndefined();
+    await expect(access(fixture.target)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  const separateFilesystem = (() => {
+    try {
+      return statSync("/dev/shm").dev !== statSync(tmpdir()).dev ? "/dev/shm" : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
+  it.skipIf(separateFilesystem === undefined)(
+    "measures a target's own filesystem, not only HOME's",
+    async () => {
+      const home = temporaryDirectory();
+      const elsewhere = mkdtempSync(join(separateFilesystem!, "canonfig-target-"));
+      temporaryDirectories.push(elsewhere);
+      const fixture = fileFixture(home);
+      const target = join(elsewhere, "settings.json");
+      const action = fixture.input.plan.actions[0]!;
+      if (action.detail.kind !== "write-file") throw new Error("file fixture did not produce a write");
+      const input: SynchronizationRunInput = {
+        ...fixture.input,
+        plan: reencodePlan({
+          ...fixture.input.plan,
+          actions: [{ ...action, detail: { ...action.detail, target } }],
+        }),
+      };
+      // HOME's filesystem has room; the target's has none.
+      const statfsByFilesystem = async (path: PathLike): Promise<StatsFs> =>
+        // SAFETY: only bsize and bavail feed the estimate.
+        ({ bsize: 4096, bavail: String(path).startsWith(separateFilesystem!) ? 0 : 1_000_000 }) as StatsFs;
+
+      // SAFETY: probe() in src/machine/disk-space.ts calls statfsImpl(path) without
+      // `{ bigint: true }`, so only the Promise<StatsFs> overload is ever exercised.
+      const error = await Effect.runPromise(Effect.flip(
+        preflightDisk(input, statfsByFilesystem as typeof statfs).pipe(
+          Effect.provide(machineLayer(home)),
+        ),
+      ));
+
+      expect(error).toMatchObject({ _tag: "InsufficientDiskError", path: target, availableBytes: 0n });
+    },
+  );
+
   it("rolls back a newly-created directory root to missing", async () => {
     const root = temporaryDirectory();
     const managed = join(root, "managed");
@@ -2323,7 +2371,7 @@ if (process.argv.slice(2).some((value) =>
     // and the reason keeps the tag in front of it.
     expect(outcome).toMatchObject({
       outcome: "Failed",
-      reason: `MissingArtifactError: digest="${fixture.artifact.digest}"`,
+      reason: expect.stringContaining(`: MissingArtifactError: digest="${fixture.artifact.digest}"`),
     });
     const applied = await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>
@@ -3001,6 +3049,96 @@ if (process.argv.slice(2).some((value) =>
     expect(getConfigPath(document, "agent.model")).toBe("review-model");
   });
 
+  it.each(["json", "jsonc", "toml", "yaml"] as const)(
+    "preserves newly unowned sibling fields when %s ownership narrows to child keys",
+    async (syntax) => {
+      const format = syntax === "jsonc" ? "json" : syntax;
+      const base = fileFixture(temporaryDirectory(), `run-config-narrow-${syntax}`);
+      mkdirSync(dirname(base.target), { recursive: true });
+      const serialized = serializeConfigDocument(format, {
+        theme: "dark",
+        mcpServers: {
+          a: { command: "node", args: ["b", "a"], timeout: 30, env: { LOCAL: "2" } },
+          sibling: { command: "mine" },
+          ab: { command: "retired" },
+        },
+      });
+      const current = syntax === "jsonc" ? `// local config comment\n${serialized}` : serialized;
+      writeFileSync(base.target, current);
+      const desiredDocument = {};
+      setConfigPath(desiredDocument, "mcpServers.a.command", "uvx");
+      setConfigPath(desiredDocument, "mcpServers.a.args", ["new", "old"]);
+      const desiredBytes = new TextEncoder().encode(
+        serializeConfigDocument(format, desiredDocument),
+      );
+      const digest = sha256BytesHex(desiredBytes);
+      const resource: PublishedResource = {
+        ...base.revision.resources[0]!,
+        kind: "config",
+        policy: "merge",
+      };
+      const desired: DesiredResource = {
+        kind: "config",
+        digest,
+        format,
+        keys: ["mcpServers.a.command", "mcpServers.a.args"],
+      };
+      const revision: PlanningProfileRevision = {
+        ...base.revision,
+        resources: [resource],
+        desired: [{
+          resource: resource.id,
+          desired,
+          verification: { method: "digest", digest },
+        }],
+      };
+      const plan = Effect.runSync(planSynchronization({
+        revision,
+        follower: follower.id,
+        observedState: {
+          platform: "linux",
+          resources: [{
+            resource: resource.id,
+            observed: {
+              state: "present",
+              digest: sha256BytesHex(new TextEncoder().encode(current)),
+              executable: false,
+            },
+          }],
+          availableBlobs: [],
+        },
+        localOverlay: [],
+        appliedResources: [{
+          resource: resource.id,
+          revision: "previous",
+          digest: sha256BytesHex(new TextEncoder().encode(current)),
+          appliedAt: "2026-08-15T00:00:00Z",
+          kind: "config",
+          policy: "merge",
+          target: resource.target,
+          ownedKeys: ["mcpServers.a", "mcpServers.ab"],
+          configFormat: format,
+        }],
+      }));
+      const artifact = { digest, content: desiredBytes };
+      const outcome = await seedAndRun({
+        ...base,
+        revision,
+        artifact,
+        input: { ...base.input, plan, revision, artifacts: [artifact] },
+      });
+
+      expect(outcome.outcome).toBe("Converged");
+      expect(parseConfigDocument(format, await readFile(base.target, "utf8"))).toEqual({
+        theme: "dark",
+        mcpServers: {
+          a: { command: "uvx", args: ["new", "old"], timeout: 30, env: { LOCAL: "2" } },
+          sibling: { command: "mine" },
+        },
+      });
+    },
+  );
+
   it("fails the action when an owned config key crosses a scalar on disk", async () => {
     const base = fileFixture(temporaryDirectory(), "run-config-scalar");
     mkdirSync(dirname(base.target), { recursive: true });
@@ -3062,7 +3200,7 @@ if (process.argv.slice(2).some((value) =>
     // the reason, which the CLI maps to verification-or-apply-failure.
     expect(outcome).toMatchObject({
       outcome: "Failed",
-      reason: `InvalidExecutionPlanError: cannot merge config ${base.target}: config key path crosses a non-object value: mcp.server`,
+      reason: `resource settings could not be applied to ${base.target}: InvalidExecutionPlanError: cannot merge config ${base.target}: config key path crosses a non-object value: mcp.server. The file was left unchanged.`,
     });
     expect(await readFile(base.target, "utf8")).toBe(current);
   });
@@ -3089,6 +3227,26 @@ if (process.argv.slice(2).some((value) =>
     );
   });
 
+  it("names the blocked resource and its target, not a temporary file, when a target is unwritable", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-unwritable-target");
+    const locked = dirname(fixture.target);
+    // The rollback cache lives under this HOME; only new entries in it are blocked.
+    mkdirSync(join(locked, ".cache", "canonfig", "rollback"), { recursive: true });
+    chmodSync(locked, 0o555);
+    try {
+      const outcome = await seedAndRun(fixture);
+
+      expect(outcome.outcome).toBe("Failed");
+      if (outcome.outcome !== "Failed") return;
+      expect(outcome.reason).toContain(
+        `resource settings could not be applied to ${fixture.target}: atomically write file failed: EACCES`,
+      );
+      expect(outcome.reason).not.toMatch(/\.cf-[0-9a-f]{12}\.tmp|canonfig-[0-9a-f]{24}/u);
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+  });
+
   it("returns Failed and rolls back an owned-file action failure", async () => {
     const fixture = fileFixture(temporaryDirectory(), "run-action-failure");
     mkdirSync(dirname(fixture.target), { recursive: true });
@@ -3113,6 +3271,193 @@ if (process.argv.slice(2).some((value) =>
     const outcome = await seedAndRun(fixture, machine);
     expect(outcome.outcome).toBe("Failed");
     expect(await readFile(fixture.target, "utf8")).toBe("original");
+  });
+
+  /** The file fixture, retargeted at a path below parents that may not exist. */
+  const nestedFileFixture = (root: string, run: string, ...parents: ReadonlyArray<string>): Fixture => {
+    const base = fileFixture(root, run);
+    const target = join(root, "home", ...parents, "settings.json");
+    const action = base.input.plan.actions[0]!;
+    if (action.detail.kind !== "write-file") throw new Error("file fixture did not produce a write");
+    const resource = { ...base.revision.resources[0]!, target };
+    const revision = { ...base.revision, resources: [resource] };
+    return {
+      ...base,
+      target,
+      revision,
+      input: {
+        ...base.input,
+        revision,
+        plan: reencodePlan({
+          ...base.input.plan,
+          actions: [{ ...action, detail: { ...action.detail, target } }],
+        }),
+      },
+    };
+  };
+
+  /** Writes the target for real, parents included, then reports a failure. */
+  const failAfterWriting = (fixture: Fixture) =>
+    decorateMachine(fixture.root, (service) => ({
+      ...service,
+      atomicWrite: (input) =>
+        input.path.absolute === fixture.target
+          ? service.atomicWrite(input).pipe(Effect.andThen(Effect.fail(new MachineFilesystemError({
+            operation: "restrict Windows ACL",
+            path: input.path.absolute,
+            message: "icacls did not apply the requested current-user ACL",
+          }))))
+          : service.atomicWrite(input),
+    }));
+
+  it("removes the parents a failed write created and keeps the ones that existed", async () => {
+    const fixture = nestedFileFixture(temporaryDirectory(), "run-created-parents", "kept", "new", "deeper");
+    const kept = join(fixture.root, "home", "kept");
+    mkdirSync(kept, { recursive: true });
+    writeFileSync(join(fixture.root, "home", "sibling.txt"), "sibling");
+
+    const outcome = await seedAndRun(fixture, failAfterWriting(fixture));
+
+    expect(outcome.outcome).toBe("Failed");
+    // The pre-existing parent stays even though it is empty; the two
+    // directories the write created below it are gone.
+    expect(readdirSync(kept)).toEqual([]);
+    // `.cache` holds the run's rollback material, outside the target tree.
+    expect(readdirSync(join(fixture.root, "home")).sort()).toEqual([".cache", "kept", "sibling.txt"]);
+  });
+
+  it("removes an empty created parent but keeps one that gained foreign content", async () => {
+    const fixture = nestedFileFixture(temporaryDirectory(), "run-created-home", "new", "deeper");
+    const machine = decorateMachine(fixture.root, (service) => ({
+      ...service,
+      atomicWrite: (input) =>
+        input.path.absolute === fixture.target
+          ? service.atomicWrite(input).pipe(
+            // Something else writes into a directory the run created.
+            Effect.andThen(Effect.promise(() => writeFile(join(fixture.root, "home", "new", "foreign.txt"), "keep"))),
+            Effect.andThen(Effect.fail(new MachineFilesystemError({
+              operation: "test write",
+              path: input.path.absolute,
+              message: "injected failure",
+            }))),
+          )
+          : service.atomicWrite(input),
+    }));
+
+    const outcome = await seedAndRun(fixture, machine);
+
+    expect(outcome.outcome).toBe("Failed");
+    expect(existsSync(join(fixture.root, "home", "new", "deeper"))).toBe(false);
+    expect(readdirSync(join(fixture.root, "home", "new"))).toEqual(["foreign.txt"]);
+  });
+
+  it("removes created parents when recovery replays persisted rollback material", async () => {
+    const fixture = nestedFileFixture(temporaryDirectory(), "run-created-recover", "existing", "a", "b");
+    const existing = join(fixture.root, "home", "existing");
+    mkdirSync(existing, { recursive: true });
+    const states = await Effect.runPromise(executionContexts(fixture.input, defaultSynchronizationExecutionLimits));
+    const context = states[0]!.context;
+    const reference = await Effect.runPromise(Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(context);
+      yield* prepared.execute;
+      return prepared.rollbackReference!;
+    }).pipe(Effect.provide(machineLayer(fixture.root))));
+    expect(await readFile(fixture.target, "utf8")).toBe("canonical content");
+    expect(JSON.parse(await readFile(reference, "utf8"))).toEqual(expect.arrayContaining([
+      { path: join(existing, "a", "b"), state: "created-parent" },
+      { path: join(existing, "a"), state: "created-parent" },
+    ]));
+    // A crash during parent publication leaves a staging directory in the
+    // nearest parent that existed before the run.
+    mkdirSync(join(existing, ".cf-0123456789ab.tmp"));
+
+    // A fresh process: only the persisted material says what was created.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await Effect.runPromise(restoreRollbackReference(context, reference).pipe(
+        Effect.provide(machineLayer(fixture.root)),
+      ));
+      expect(readdirSync(existing)).toEqual([]);
+    }
+  });
+
+  it("rejects rollback material that names a parent outside the target's ancestry", async () => {
+    const fixture = nestedFileFixture(temporaryDirectory(), "run-created-tamper", "a");
+    const states = await Effect.runPromise(executionContexts(fixture.input, defaultSynchronizationExecutionLimits));
+    const context = states[0]!.context;
+    const reference = await Effect.runPromise(Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(context);
+      return prepared.rollbackReference!;
+    }).pipe(Effect.provide(machineLayer(fixture.root))));
+    const outside = join(fixture.root, "unrelated");
+    mkdirSync(outside);
+    const stored = await readFile(reference, "utf8");
+    await writeFile(reference, `${stored.slice(0, -1)},${JSON.stringify({ path: outside, state: "created-parent" })}]`);
+
+    const error = await Effect.runPromise(Effect.flip(restoreRollbackReference(context, reference).pipe(
+      Effect.provide(machineLayer(fixture.root)),
+    )));
+    expect(error).toMatchObject({ _tag: "InvalidExecutionPlanError" });
+    expect(existsSync(outside)).toBe(true);
+  });
+
+  const pathLimitMachine = (root: string, limit: { readonly maximum: number; readonly longPathsEnabled: boolean }) =>
+    decorateMachine(root, (service) => ({ ...service, pathLengthLimit: () => Effect.succeed(limit) }));
+
+  it("refuses a target beyond MAX_PATH before recording or creating anything", async () => {
+    const root = temporaryDirectory();
+    const parents = Array.from({ length: 30 }, (_, index) => `parent-${String(index).padStart(2, "0")}`);
+    const fixture = nestedFileFixture(root, "run-long-path", ...parents);
+    expect(fixture.target.length).toBeGreaterThan(260);
+
+    const error = await Effect.runPromise(Effect.flip(Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower });
+      const { desired: _, blobs: __, ...persistable } = fixture.revision;
+      yield* repository.publishRevision({ revision: persistable });
+      return yield* (yield* Synchronization).run(fixture.input);
+    }).pipe(Effect.provide(applicationLayer(fixture, pathLimitMachine(root, { maximum: 260, longPathsEnabled: false }))))));
+
+    // The staging directory beside the target is the first path to break the
+    // 248-character directory limit (MAX_PATH less room for an 8.3 name).
+    expect(error).toMatchObject({ _tag: "PathTooLongError", path: fixture.target, maximumLength: 247 });
+    const described = describeRuntimeError(error);
+    expect(described.category).toBe("usage-or-configuration");
+    expect(described.message).toContain("MAX_PATH is 260");
+    expect(described.message).toContain("LongPathsEnabled");
+    expect(described.message).toContain("Nothing was changed");
+    const open = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) => repository.loadRecovery(follower.id))
+        .pipe(Effect.provide(stateRepositoryLayer(fixture.database))),
+    );
+    expect(open).toBeUndefined();
+    expect(existsSync(join(root, "home"))).toBe(false);
+  });
+
+  it("counts the staging names the writer adds, not only the target", async () => {
+    const root = temporaryDirectory();
+    // The target alone fits in MAX_PATH; its staged content file does not.
+    const fill = 259 - join(root, "home", "x", "settings.json").length - 5;
+    const fixture = nestedFileFixture(root, "run-staging-path", "x".repeat(fill + 1));
+    expect(fixture.target.length).toBeLessThan(260);
+
+    const error = await Effect.runPromise(Effect.flip(
+      preflightPathLengths(fixture.input.plan.actions, fixture.revision.desired).pipe(
+        Effect.provide(pathLimitMachine(root, { maximum: 260, longPathsEnabled: false })),
+      ),
+    ));
+    expect(error).toMatchObject({ _tag: "PathTooLongError", path: fixture.target });
+    expect(error.requiredLength).toBeGreaterThan(259);
+  });
+
+  it("applies a target beyond MAX_PATH when long paths are enabled", async () => {
+    const root = temporaryDirectory();
+    const parents = Array.from({ length: 30 }, (_, index) => `parent-${String(index).padStart(2, "0")}`);
+    const fixture = nestedFileFixture(root, "run-long-path-enabled", ...parents);
+
+    const outcome = await seedAndRun(fixture, pathLimitMachine(root, { maximum: 32_767, longPathsEnabled: true }));
+
+    expect(outcome.outcome).toBe("Converged");
+    expect(await readFile(fixture.target, "utf8")).toBe("canonical content");
   });
 
   it("records Interrupted when cancellation reaches an in-flight mutation", async () => {
@@ -3417,62 +3762,6 @@ if (process.argv.slice(2).some((value) =>
     }
   });
 
-  it.each([
-    ["npm", "npm", "@example/tool", "1.2.3", [
-      "install",
-      "--global",
-      "@example/tool@1.2.3",
-      "--ignore-scripts",
-    ]],
-    ["npm", "npm", "@scope/tool", "1.2.3-alpha.1+build.7", [
-      "install",
-      "--global",
-      "@scope/tool@1.2.3-alpha.1+build.7",
-      "--ignore-scripts",
-    ]],
-    ["pnpm", "pnpm", "@scope/tool", "1.2.3", [
-      "add",
-      "--global",
-      "@scope/tool@1.2.3",
-      "--ignore-scripts",
-    ]],
-    ["bun", "bun", "@scope/tool", "1.2.3", [
-      "add",
-      "--global",
-      "@scope/tool@1.2.3",
-      "--ignore-scripts",
-    ]],
-    ["homebrew", "brew", "tool", "1.2.3", ["install", "tool@1.2.3"]],
-    ["winget", "winget", "Example.Tool", "1.2.3", [
-      "install",
-      "--id",
-      "Example.Tool",
-      "--version",
-      "1.2.3",
-      "--exact",
-      "--silent",
-    ]],
-    ["uv", "uv", "tool", "1.2.3", [
-      "tool",
-      "install",
-      "tool==1.2.3",
-      "--no-build",
-      "--no-config",
-      "--default-index=https://pypi.org/simple",
-    ]],
-    ["apt", "apt-get", "tool", "1.2.3", ["install", "-y", "tool=1.2.3"]],
-  ] as const)(
-    "executes versioned %s recipes with ecosystem-specific arguments",
-    async (method, executable, packageName, version, arguments_) => {
-      const result = await installerInvocation(method, packageName, version);
-
-      expect(result.executableQueries).toEqual([executable]);
-      expect(result.invocations).toEqual([{
-        executable: expect.stringMatching(new RegExp(`/${executable}$`, "u")),
-        arguments: arguments_,
-      }]);
-    },
-  );
 
   it.each([
     ["npm", "npm"],

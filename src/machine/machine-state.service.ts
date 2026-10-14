@@ -19,11 +19,13 @@ import type {
   MachineDirectoryEntry,
   MachineObject,
   NormalizePathInput,
+  PathLengthLimit,
   ProcessInvocation,
   ProcessResult,
   ReadFileInput,
   RemoveEmptyDirectoryInput,
   RemoveFileInput,
+  RemoveTemporaryEntriesInput,
   RenderedSchedulerJob,
   SafeRootMutationInput,
   SchedulerInspection,
@@ -41,6 +43,12 @@ export class MachineState extends Context.Service<MachineState, {
     input: NormalizePathInput,
   ) => Effect.Effect<MachinePath, MachineStateError>;
   readonly userDirectories: () => Effect.Effect<UserDirectories, MachineStateError>;
+  /**
+   * The path length limit a run preflight checks planned targets against
+   * (Windows MAX_PATH while long paths are disabled). Undefined when the
+   * platform imposes no limit Canonfig has to check.
+   */
+  readonly pathLengthLimit: () => Effect.Effect<PathLengthLimit | undefined>;
   readonly ensureDirectory: (
     input: EnsureDirectoryInput,
   ) => Effect.Effect<void, MachineStateError>;
@@ -57,6 +65,14 @@ export class MachineState extends Context.Service<MachineState, {
   readonly removeEmptyDirectory: (
     input: RemoveEmptyDirectoryInput,
   ) => Effect.Effect<void, MachineStateError>;
+  /**
+   * Remove the temporary entries Canonfig itself creates while mutating
+   * (fixed-shape names only) and put back entries a killed mutation left
+   * isolated in a guard. Returns the absolute paths it cleaned.
+   */
+  readonly removeTemporaryEntries: (
+    input: RemoveTemporaryEntriesInput,
+  ) => Effect.Effect<ReadonlyArray<string>, MachineStateError>;
   readonly validatePathWithinRoot: (
     input: ValidatePathWithinRootInput,
   ) => Effect.Effect<void, MachineStateError>;

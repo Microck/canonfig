@@ -2,11 +2,15 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { CredentialReference } from "../src/domain/brand.ts";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
-import { CredentialStorageError } from "../src/machine/machine-state.errors.ts";
+import {
+  CredentialStorageError,
+  credentialFailureDetail,
+} from "../src/machine/machine-state.errors.ts";
 import {
   keychainSessionProbe,
   probeServicePrefix,
@@ -41,14 +45,20 @@ const fakeKeychain = (behavior: FakeKeychainBehavior = {}) => {
   });
   const runner: SecurityRunner = (invocation: KeychainProbeInvocation) =>
     Effect.sync(() => {
-      const payload = JSON.parse(new TextDecoder().decode(invocation.standardInput)) as {
-        operation: string;
-        service: string;
-        account: string;
+      const valueAfter = (flag: string) => {
+        const index = invocation.arguments.indexOf(flag);
+        return index < 0 ? "" : invocation.arguments[index + 1] ?? "";
       };
-      invocations.push(payload);
-      if (!services.includes(payload.service)) services.push(payload.service);
-      switch (payload.operation) {
+      const command = invocation.arguments[0];
+      const operation = command === "add-generic-password"
+        ? "probe-add"
+        : command === "find-generic-password"
+        ? "probe-load"
+        : "probe-delete";
+      const service = valueAfter("-s");
+      invocations.push({ operation, service, account: valueAfter("-a") });
+      if (!services.includes(service)) services.push(service);
+      switch (operation) {
         case "probe-add":
           return result(behavior.addExit ?? 0, new Uint8Array());
         case "probe-load":
@@ -149,8 +159,8 @@ describe("macOS credential capability", () => {
     });
   });
 
-  it("reports unavailable with session guidance when the probe is denied", async () => {
-    const fake = fakeKeychain({ addExit: 45 });
+  it("reports a locked session Keychain with the per-session unlock guidance", async () => {
+    const fake = fakeKeychain({ addExit: 36 });
     const capability = await Effect.runPromise(
       Effect.flatMap(MachineState, (machine) => machine.credentialCapability())
         .pipe(Effect.provide(layerWith(fake.runner))),
@@ -158,9 +168,13 @@ describe("macOS credential capability", () => {
     expect(capability.kind).toBe("unavailable");
     if (capability.kind === "unavailable") {
       expect(capability.recovery).toContain("session probe failed at add");
-      expect(capability.recovery).toContain("graphical session");
+      expect(capability.recovery).toContain("user interaction is not allowed");
+      expect(capability.recovery).toContain(
+        "security unlock-keychain ~/Library/Keychains/login.keychain-db",
+      );
+      expect(capability.recovery).toContain("does not carry over to new SSH sessions");
       expect(capability.recovery).toContain("gui/");
-      expect(capability.recovery.toLowerCase()).not.toContain("unlock the login keychain");
+      expect(capability.recovery).not.toContain("cannot use the login Keychain");
     }
   });
 
@@ -189,10 +203,10 @@ describe("macOS credential capability", () => {
       MachineState,
       Effect.map(MachineState, (machine) => ({
         ...machine,
-        storeCredential: () =>
-          Effect.sync(() => {
+        storeCredential: (input: Parameters<typeof machine.storeCredential>[0]) =>
+          Effect.suspend(() => {
             fallbackWrites += 1;
-            return null as never;
+            return machine.storeCredential(input);
           }),
         credentialCapability: () =>
           Effect.map(
@@ -227,6 +241,32 @@ describe("macOS credential capability", () => {
     );
     expect(nativeWrites).toBe(0);
     expect(fallbackWrites).toBe(1);
-    expect(reference).toBeNull();
+    expect(String(reference)).toMatch(/^local-file:/u);
+  });
+
+  it("keeps the session guidance when a versioned Keychain credential cannot be read", async () => {
+    const lockedKeychain = Layer.effect(
+      MachineState,
+      Effect.map(MachineState, (machine) => ({
+        ...machine,
+        runProcess: () =>
+          Effect.succeed({
+            exitCode: 1,
+            signal: null,
+            standardOutput: new Uint8Array(),
+            standardError: encode("execution error: Error: Keychain read failed: -25308 (-2700)\n"),
+          }),
+      })),
+    ).pipe(Layer.provide(linuxMachineStateLayer()));
+    const error = await Effect.runPromise(
+      Effect.flatMap(MachineState, (machine) => machine.loadCredential({
+        reference: Schema.decodeUnknownSync(CredentialReference)(`keychain-hex:${"ab".repeat(32)}`),
+      })).pipe(Effect.flip, Effect.provide(nativeSecretStoreLayer(lockedKeychain))),
+    );
+    expect(error._tag).toBe("HumanActionRequiredError");
+    const detail = credentialFailureDetail(error);
+    expect(detail).toContain("Keychain status -25308");
+    expect(detail).toContain("the login Keychain is locked in this session");
+    expect(detail).toContain("security unlock-keychain ~/Library/Keychains/login.keychain-db");
   });
 });

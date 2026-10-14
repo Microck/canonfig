@@ -5,6 +5,7 @@ import { Effect, Redacted, Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 
 import { CredentialReference } from "../domain/brand.ts";
+import { credentialFailureDetail } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachinePath } from "../machine/machine-state.types.ts";
 
@@ -95,11 +96,11 @@ export const requireSecureStorage = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const capability = yield* machine.credentialCapability().pipe(
-      Effect.mapError(() =>
+      Effect.mapError((error) =>
         secretError(
           "storage",
           operation,
-          "the platform credential-store capability could not be determined",
+          `the platform credential-store capability could not be determined: ${credentialFailureDetail(error)}`,
         )
       ),
     );
@@ -310,9 +311,16 @@ const removeRetiredReferences = (
     const pending = uniqueReferences(references);
     if (pending.length === 0) return;
     const failed: CredentialReferenceValue[] = [];
+    let firstFailure: string | undefined;
     for (const reference of pending) {
       const removed = yield* machine.removeCredential(reference).pipe(
-        Effect.match({ onFailure: () => false, onSuccess: () => true }),
+        Effect.match({
+          onFailure: (error) => {
+            firstFailure ??= credentialFailureDetail(error);
+            return false;
+          },
+          onSuccess: () => true,
+        }),
       );
       if (!removed) failed.push(reference);
     }
@@ -321,12 +329,12 @@ const removeRetiredReferences = (
       return yield* secretError(
         "storage",
         operation,
-        "obsolete secret credentials remain queued for automatic removal",
+        `obsolete secret credentials remain queued for automatic removal: ${firstFailure}`,
       );
     }
   });
 
-const decodeName = (
+export const decodeSecretName = (
   name: string,
 ): Effect.Effect<string, SecretTransferError> =>
   Schema.decodeUnknownEffect(SecretNameSchema)(name).pipe(
@@ -375,8 +383,12 @@ const storeValue = (
       name: `canonfig-shared-secret:${name}:${randomUUID()}`,
       value: Redacted.make(value),
     }).pipe(
-      Effect.mapError(() =>
-        secretError("storage", "store secret", "secure credential storage is unavailable")
+      Effect.mapError((error) =>
+        secretError(
+          "storage",
+          "store secret",
+          `secure credential storage is unavailable: ${credentialFailureDetail(error)}`,
+        )
       ),
     );
   });
@@ -393,8 +405,12 @@ const loadSecretValues = (
           name: secret.name,
           value: Redacted.value(value),
         })),
-        Effect.mapError(() =>
-          secretError("storage", operation, "a shared credential is unavailable")
+        Effect.mapError((error) =>
+          secretError(
+            "storage",
+            operation,
+            `the shared secret ${secret.name} could not be loaded from secure credential storage: ${credentialFailureDetail(error)}`,
+          )
         ),
       ));
   });
@@ -446,7 +462,7 @@ export const storeSecret = (
 ): Effect.Effect<SharedSecretSummary, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
     yield* requireSecureStorage("store secret");
-    const validName = yield* decodeName(name);
+    const validName = yield* decodeSecretName(name);
     const validValue = yield* decodeValue(value);
     const current = yield* readManifest();
     const previous = current.secrets.find((secret) => secret.name === validName);
@@ -481,7 +497,7 @@ export const removeSecret = (
   name: string,
 ): Effect.Effect<boolean, SecretTransferError, MachineState> =>
   Effect.gen(function*() {
-    const validName = yield* decodeName(name);
+    const validName = yield* decodeSecretName(name);
     const current = yield* readManifest();
     const existing = current.secrets.find((secret) => secret.name === validName);
     if (existing === undefined) return false;
@@ -544,7 +560,7 @@ export const applyTransferredSecrets = (
     yield* requireSecureStorage("apply transferred secrets");
     const incoming = yield* Effect.forEach(payload.secrets, (secret) =>
       Effect.all({
-        name: decodeName(secret.name),
+        name: decodeSecretName(secret.name),
         value: decodeValue(secret.value),
       }).pipe(
         Effect.mapError(() =>

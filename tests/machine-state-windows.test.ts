@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -19,14 +20,17 @@ import {
 
 import {
   decodeWindowsTaskXml,
+  parseWindowsTaskRuntime,
   windowsMachineStateLayer,
   windowsAccountPrincipal,
   windowsPrivateAclArguments,
   windowsRecurrenceIntervalMatches,
   windowsTaskQueryReportsAbsence,
   windowsTaskProbeReportsAbsence,
+  windowsTaskRegistration,
   windowsTaskTriggerEnabled,
   windowsWeekdaysMatch,
+  windowsPathLimitFromRegistry,
 } from "../src/machine/windows.layer.ts";
 import { machineStateContract } from "./contract/machine-state.contract.ts";
 
@@ -143,7 +147,7 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
       // Reconstruct recovery from disk in a fresh process, then replay it.
       // Compare against native observations, not the adapter's snapshot reader.
       for (let attempt = 0; attempt < 2; attempt++) {
-        await promisify(execFile)(process.execPath, ["--input-type=module", "--eval", `
+        await promisify(execFile)(process.execPath, ["--import=tsx", "--input-type=module", "--eval", `
           import { Effect } from "effect";
           import { windowsMachineStateLayer } from "./src/machine/windows.layer.ts";
           import { restoreRollbackReference } from "./src/synchronization/resource-executors.ts";
@@ -289,6 +293,51 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
   }, 30_000);
 });
 
+describe("Windows long path limit", () => {
+  it("reads LongPathsEnabled from reg query output and assumes MAX_PATH otherwise", () => {
+    const output = (value: string) =>
+      `\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\FileSystem\r\n    LongPathsEnabled    REG_DWORD    ${value}\r\n\r\n`;
+    const classic = { maximum: 260, longPathsEnabled: false };
+    expect(windowsPathLimitFromRegistry(output("0x1"))).toEqual({ maximum: 32_767, longPathsEnabled: true });
+    expect(windowsPathLimitFromRegistry(output("0x0"))).toEqual(classic);
+    expect(windowsPathLimitFromRegistry(undefined)).toEqual(classic);
+    expect(windowsPathLimitFromRegistry("ERROR: The system was unable to find the specified registry key or value.")).toEqual(classic);
+  });
+
+  // A real executable stands in for reg.exe; the adapter runs it like the
+  // native tool and reads only its exit code and output.
+  it.skipIf(process.platform === "win32").each([
+    { exit: 0, value: "0x1", expected: { maximum: 32_767, longPathsEnabled: true } },
+    { exit: 0, value: "0x0", expected: { maximum: 260, longPathsEnabled: false } },
+    { exit: 1, value: "0x1", expected: { maximum: 260, longPathsEnabled: false } },
+  ])("queries the FileSystem key through reg (exit $exit, $value)", async ({ exit, value, expected }) => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-reg-"));
+    try {
+      const reg = join(root, "reg");
+      const log = join(root, "arguments");
+      await writeFile(reg, [
+        "#!/bin/sh",
+        `printf '%s\\n' "$@" > '${log}'`,
+        `printf '    LongPathsEnabled    REG_DWORD    ${value}\\n'`,
+        `exit ${exit}`,
+        "",
+      ].join("\n"), { mode: 0o755 });
+      const limit = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        return yield* machine.pathLengthLimit();
+      }).pipe(Effect.provide(windowsMachineStateLayer({
+        environment: [...environment(root), { name: "CANONFIG_REG", value: reg }],
+      }))));
+      expect(limit).toEqual(expected);
+      expect((await readFile(log, "utf8")).trim().split("\n")).toEqual([
+        "query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "/v", "LongPathsEnabled",
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("Windows ACL command rendering", () => {
   it("renders shell-free current-user-only ACL arguments", () => {
     expect(windowsPrivateAclArguments(
@@ -337,6 +386,50 @@ describe("Windows ACL command rendering", () => {
   });
 });
 
+describe.skipIf(process.platform !== "win32")("Windows scheduled task priority repair", () => {
+  it("replaces a starvable existing task with foreground-equivalent priority", async () => {
+    await Effect.runPromise(Effect.gen(function*() {
+      const machine = yield* MachineState;
+      const name = `canonfig-priority-${randomUUID()}`;
+      const rendered = yield* machine.renderSchedulerJob({
+        name,
+        description: "Canonfig scheduled credential priority regression",
+        executable: yield* machine.normalizePath({ path: process.execPath }),
+        arguments: ["--version"],
+        calendar: { kind: "daily", localTime: "00:00" },
+      });
+      try {
+        yield* machine.installSchedulerJob(rendered);
+        const powershell = yield* machine.normalizePath({
+          path: join(process.env.SystemRoot ?? "C:\\Windows",
+            "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        });
+        const changed = yield* machine.runProcess({
+          executable: powershell,
+          arguments: [
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+            "$ErrorActionPreference='Stop';"
+              + "$task=Get-ScheduledTask -TaskPath '\\Canonfig\\' -TaskName $env:CANONFIG_TEST_TASK;"
+              + "$task.Settings.Priority=7;$task|Set-ScheduledTask|Out-Null",
+          ],
+          environment: [{ name: "CANONFIG_TEST_TASK", value: name }],
+          timeoutMilliseconds: 60_000,
+          maximumOutputBytes: 1024 * 1024,
+        });
+        expect(changed.exitCode).toBe(0);
+        const drifted = yield* machine.inspectSchedulerJob(rendered);
+        expect(drifted.installed).toBe(true);
+        expect(drifted.calendarMatches).toBe(true);
+        expect(drifted.matches).toBe(false);
+        yield* machine.installSchedulerJob(rendered);
+        expect((yield* machine.inspectSchedulerJob(rendered)).matches).toBe(true);
+      } finally {
+        yield* machine.removeSchedulerJob(rendered);
+      }
+    }).pipe(Effect.provide(windowsMachineStateLayer())));
+  });
+});
+
 describe("Windows Task Scheduler inspection", () => {
   it("decodes UTF-16LE task exports with a byte-order mark", () => {
     const xml = "<?xml version=\"1.0\"?><Task><Enabled>true</Enabled></Task>";
@@ -364,6 +457,44 @@ describe("Windows Task Scheduler inspection", () => {
     expect(windowsTaskTriggerEnabled("<Enabled>false</Enabled>")).toBe(false);
     expect(windowsTaskTriggerEnabled("<StartBoundary>2000-01-01T00:00:00</StartBoundary>"))
       .toBe(true);
+  });
+
+  it("reads the logon type and registration time from the exported task", () => {
+    // H4: the task's InteractiveToken logon is what skips runs while logged off.
+    const native = "<Task><RegistrationInfo><Date>2026-10-13T07:20:00Z</Date><Description>d</Description>"
+      + "</RegistrationInfo><Principals><Principal id=\"Author\"><UserId>S-1-5-21-1</UserId>"
+      + "<LogonType>InteractiveToken</LogonType></Principal></Principals></Task>";
+    expect(windowsTaskRegistration(native)).toEqual({
+      registeredAt: "2026-10-13T07:20:00Z",
+      runsOnlyWhileLoggedOn: true,
+    });
+    expect(windowsTaskRegistration(native.replace("InteractiveToken", "Password")))
+      .toMatchObject({ runsOnlyWhileLoggedOn: false });
+    // Tasks from earlier releases carry no registration date.
+    expect(windowsTaskRegistration("<Task><RegistrationInfo><Description>d</Description></RegistrationInfo></Task>"))
+      .toEqual({ registeredAt: undefined, runsOnlyWhileLoggedOn: undefined });
+  });
+
+  it("keeps the last start time separate from the last completed result", () => {
+    // Observed after a 07:34 trigger was skipped while logged off.
+    expect(parseWindowsTaskRuntime("3|0|2026-10-13T07:22:01.0000000Z|2026-10-14T07:34:00.0000000Z"))
+      .toEqual({
+        state: 3,
+        nextRun: "2026-10-14T07:34:00.0000000Z",
+        lastStartedAt: "2026-10-13T07:22:01.0000000Z",
+        lastResult: {
+          succeeded: true,
+          detail: "Task Scheduler last result 0x0",
+          at: "2026-10-13T07:22:01.0000000Z",
+        },
+      });
+    // 0x41303 (267011): the task has not run yet.
+    expect(parseWindowsTaskRuntime("3|267011||2026-10-13T07:01:00.0000000Z"))
+      .toMatchObject({ lastStartedAt: undefined, lastResult: undefined });
+    // 0x41301: running now; it started, but has no result yet.
+    expect(parseWindowsTaskRuntime("4|267009|2026-10-13T07:39:01.0000000Z|"))
+      .toMatchObject({ lastStartedAt: "2026-10-13T07:39:01.0000000Z", lastResult: undefined, nextRun: undefined });
+    expect(parseWindowsTaskRuntime("garbage")).toBeUndefined();
   });
 
   it("distinguishes a missing task from scheduler query failures", () => {

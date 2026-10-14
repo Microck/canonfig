@@ -11,6 +11,15 @@ to binary rollback.
   Its name is derived from the immutable action ID and normalized target path.
 - The journal records object kinds, target paths, permission snapshots, and SHA-256 digests.
   It contains no encoded file bodies or caller-chosen backup paths.
+- The journal also lists each ancestor of a target (or of a managed root)
+  that did not exist at capture, as `created-parent`. Writing the target
+  creates those directories. Rollback and recovery remove them deepest first,
+  only while each holds nothing but Canonfig's own temporary entries, and stop
+  at the first one that gained other content. A directory that existed before
+  the run is never recorded, so it is never removed. Recovery also removes a
+  staging directory an interrupted parent publication left in the nearest
+  pre-existing ancestor. Loading rejects a `created-parent` path that is not an
+  ancestor of the action's own target.
 - A permission snapshot contains a POSIX mode on Linux and macOS. On Windows
   it contains the semantic mode and the native owner, group, and DACL security
   descriptor, including inheritance flags. Windows audit rules are not captured.
@@ -23,6 +32,24 @@ to binary rollback.
   digest before replacement, and restores the captured permissions through the
   same guarded mutation. Windows checks the restored descriptor against the
   captured value. Failure retains the journal and preimages.
+- Before restoring anything, recovery compares the current bytes of every
+  snapshot target with both the pre-run content and the state the run intended
+  to write. A target that matches neither was edited after the interruption:
+  recovery stops with Human Action Required, names the file, and keeps both the
+  file and its snapshot.
+- Temporary siblings and guards use short fixed-length names
+  (`.cf-<12hex>.tmp`, `.cf-<12hex>.guard`), so any valid target name up to 255
+  bytes works. Recover and abandon remove only Canonfig's own temporary names
+  inside managed roots.
+- On Windows with long paths disabled, the run preflight (and `sync --plan`)
+  rejects a target whose longest native path exceeds MAX_PATH before any run
+  is recorded or any parent created. The measured path includes the staging
+  directory and `content` file a write adds, the `:canonfig.mode` stream, and
+  the guard directory of a managed-root mutation; new directories must also
+  leave room for an 8.3 name (247 characters). The message names the limit
+  and the `LongPathsEnabled` remedy. The limit is read from
+  `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem` and is MAX_PATH when the
+  value is missing or unreadable.
 - Restore managed directories with writable modes while restoring their children.
   Restore exact directory permissions from the deepest directory up, root last.
 - The same atomic-write path handles byte buffers and file sources. Native

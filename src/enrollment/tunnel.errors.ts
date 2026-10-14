@@ -41,9 +41,23 @@ export class TunnelProcessError extends TaggedError<TunnelProcessError>()(
   },
 ) {}
 
+/**
+ * The follower's Source endpoint is the managed tunnel, and the tunnel is not
+ * carrying traffic. Raised instead of the TLS or transport failure the
+ * follower would otherwise report, so the operator is told what is down.
+ */
+export class TunnelDownError extends TaggedError<TunnelDownError>()(
+  "TunnelDownError",
+  {
+    endpoint: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
 export type TunnelError =
   | TunnelConfigurationError
   | TunnelHostKeyError
   | TunnelHostKeyBypassError
   | TunnelReadinessError
-  | TunnelProcessError;
+  | TunnelProcessError
+  | TunnelDownError;

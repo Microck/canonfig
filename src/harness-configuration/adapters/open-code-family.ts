@@ -14,6 +14,7 @@ import {
   enabledHooks,
   enabledMcpServerEntries,
   hasEnabledMcpServers,
+  mcpOptionDiagnostics,
   openCodeMcpMap,
   skillArtifacts,
 } from "./shared.ts";
@@ -59,6 +60,12 @@ export function createOpenCodeFamilyAdapter(
       artifacts.push(...await skillArtifacts(context, `${root}/skills`, definition.id));
 
       if (hasEnabledMcpServers(context)) {
+        diagnostics.push(...mcpOptionDiagnostics(
+          context,
+          definition.id,
+          ["enabledTools", "disabledTools", "cwd"],
+          `${definition.configPath} projection`,
+        ));
         artifacts.push(
           {
             kind: "json",

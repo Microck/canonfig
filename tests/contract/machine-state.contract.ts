@@ -543,6 +543,7 @@ export const machineStateContract = (
       "stores local-file credentials only when explicitly selected",
       async () => {
       const root = temporaryDirectory();
+      const secret = "\uFEFFcredential-value";
       const stored = await runWith(
         adapter.localFileLayer(root),
         Effect.gen(function*() {
@@ -550,7 +551,7 @@ export const machineStateContract = (
           const capability = yield* machine.credentialCapability();
           const reference = yield* machine.storeCredential({
             name: "source-token",
-            value: Redacted.make("credential-value"),
+            value: Redacted.make(secret),
           });
           const value = yield* machine.loadCredential({ reference });
           const credentialPath = String(reference).slice("local-file:".length);
@@ -570,10 +571,10 @@ export const machineStateContract = (
 
       expect(stored.capability.kind).toBe("local-file");
       expect(stored.reference).not.toContain("source-token");
-      expect(stored.reference).not.toContain("credential-value");
-      expect(stored.value).toBe("credential-value");
+      expect(stored.reference).not.toContain(secret);
+      expect(stored.value).toBe(secret);
       expect(stored.permissions.mode).toBe(0o600);
-      expect(await readFile(stored.credentialPath, "utf8")).toBe("credential-value");
+      expect(await readFile(stored.credentialPath, "utf8")).toBe(secret);
       if (adapter.platform !== "windows") {
         expect((await stat(stored.credentialPath)).mode & 0o777).toBe(0o600);
       }

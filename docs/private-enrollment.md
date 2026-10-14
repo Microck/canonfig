@@ -1,14 +1,21 @@
 # Private enrollment input
 
 Use `canonfig follower enroll --stdin --name <name> --profile <id> [--replace]`
-when a trusted local producer can deliver one invitation through a private pipe.
-The value is not placed in process arguments, the process environment, or a
-Canonfig temporary file. The existing positional invitation interface remains
-available for compatibility.
+to deliver one invitation through a private pipe. The value is not placed in
+process arguments, the process environment, or a Canonfig temporary file.
+Enrollment accepts no other delivery: an invitation passed as a command
+argument is refused, and that envelope must be treated as exposed, discarded,
+and replaced by a fresh `source invite`.
 
-The producer must close its output after writing the opaque base64url invitation.
-Canonfig accepts an optional trailing newline, limits input to 64 KiB, waits at
-most ten seconds for EOF, and never echoes input or includes it in an error.
+The input is exactly the envelope file that `source invite --output` writes:
+one base64url line, then the line `CANONFIG-INVITE-EOF`, each ending in a
+newline. Pipe the file unchanged, for example
+`cat ./canonfig-invite | canonfig follower enroll --stdin ...`. The producer
+must close its output after writing. Canonfig limits input to 16 KiB
+(16384 bytes, the envelope limit in `src/enrollment/invitation-envelope.ts`),
+waits at most ten seconds for EOF, and never echoes input or includes it in an
+error. Input over the limit fails with "Private enrollment input exceeds the
+16384 byte limit"; a missing EOF marker or trailing garbage fails as incomplete.
 Interactive terminals are rejected because ordinary terminal input can echo the
 invitation. A missing name, profile, or unsupported option fails before reading.
 `--help` and `--version` never wait for input.

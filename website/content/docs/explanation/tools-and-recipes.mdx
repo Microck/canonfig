@@ -1,15 +1,21 @@
 ---
 title: Tool discovery and Installation Recipes
-description: Author evidence-backed, platform-specific tool recipes with independent verification.
+description: Author evidence-backed, pinned, platform-specific tool recipes with independent verification.
 ---
 
 A tool Profile Resource uses the `ensure` Apply Policy. Canonfig first selects a
 deterministic **Installation Recipe** for the follower platform. Only ambiguous
 work can become an Agent Task.
 
+Tools are the only resources discovery proposes. File, directory, config, and
+skill resources are always authored in the profile file; see the
+[profile reference](/reference/profile-schema#author-file-config-and-skill-resources).
+
 ## Discovery evidence
 
-Canonfig can discover tool evidence from:
+`canonfig source scan --file <path>` reads only the files you name. It runs no
+processes: it never starts a package manager, a shim, or a discovered tool.
+It can find tool evidence in:
 
 - executable shell blocks in agent instruction Markdown;
 - hooks and MCP configuration;
@@ -18,8 +24,19 @@ Canonfig can discover tool evidence from:
 - explicit `canonfig.tools` package metadata.
 
 Each accepted tool needs an upstream URL and at least one verification method.
-Inline Markdown prose receives `needs-review`; it is never treated as an install
-command.
+Evidence that is not enough to decide becomes `needs-review` with a task that
+says why:
+
+- Inline Markdown prose is never treated as an install command.
+- A `canonfig.tools` entry missing its ecosystem or name is kept with the
+  missing fields listed (`incomplete-declaration`).
+- Several distinct copies of the same executable on `PATH` are listed with
+  their path, version, modification time, and digest (`ambiguous-executable`).
+
+`uvx <package>`, `uvx --from <package> <command>`, and `uv tool install` or
+`uv tool run` invocations with a pinned package (`==` or `@`) become uv recipes.
+MCP servers get `executable-present` verification, so checking one never
+launches the server.
 
 ## Recipe shape
 
@@ -34,31 +51,16 @@ A tool resource can carry independent platform recipes:
     "kind": "tool",
     "toolId": "ripgrep",
     "recipes": [
-      {
-        "platform": "linux",
-        "method": "apt",
-        "package": "ripgrep",
-        "version": "declared-version"
-      },
-      {
-        "platform": "macos",
-        "method": "brew",
-        "package": "ripgrep",
-        "version": "declared-version"
-      },
-      {
-        "platform": "windows",
-        "method": "winget",
-        "package": "BurntSushi.ripgrep.MSVC",
-        "version": "declared-version"
-      }
+      { "platform": "linux", "method": "apt", "package": "ripgrep", "version": "14.1.0-1" },
+      { "platform": "macos", "method": "brew", "package": "ripgrep", "version": "14.1.1" },
+      { "platform": "windows", "method": "winget", "package": "BurntSushi.ripgrep.MSVC", "version": "14.1.1" }
     ],
     "login": { "required": false }
   },
   "verify": {
     "method": "command",
     "command": ["rg", "--version"],
-    "expectContains": "declared-version"
+    "expectContains": "ripgrep 14.1"
   }
 }
 ```
@@ -67,26 +69,78 @@ The package name and installation method are platform facts, not portable
 aliases. Do not infer a Windows package ID from an npm package name or copy a
 Homebrew formula into a Linux recipe.
 
+Every automatic recipe (npm, pnpm, bun, brew, apt, winget, uv, cargo) needs an
+exact `version`. Publication refuses one without it, for example "installer uv
+requires an exact \"version\" so every follower installs the same build", so
+the mistake surfaces on the Source Machine rather than on each follower.
+
 ## Installed tool observation
 
 For command verification, `target` identifies the installed tool: a command
-name on `PATH` or a path to its entry file. Planning checks that target, not
-the first word of the verification command, which may be a shared runtime
-such as Node or Python. An `executable-present` verifier instead names the
-executable to check explicitly. `toolId` remains the portable resource identity.
+name or a path to its entry file. Planning checks that target, not the first
+word of the verification command, which may be a shared runtime such as Node or
+Python. An `executable-present` verifier instead names the executable to check
+explicitly. `toolId` remains the portable resource identity.
 
 Planning does not run verification commands. Presence allows `ensure` to leave
 an existing installation in place; the declared verification still checks it
-during apply. A present entry file alone does not prove the expected version,
-working dependencies, or a signed-in session.
+during apply. A present entry file alone does not prove working dependencies
+or a signed-in session.
+
+When the tool is present, planning also asks the selected recipe's installer
+which version it has installed. These queries only read installer state:
+`uv tool list --offline`, `npm ls --global --json` (offline), `pnpm ls
+--global --json`, `bun pm ls --global`, `winget list --id <id> --exact`,
+`dpkg-query` for apt, and Cargo's `.crates2.json` file (`cargo` itself is not
+run). If the installer reports a version other than the recipe's `version`,
+the plan is `install-tool` with `replaces` set to the installed version, and
+apply installs the pin over it, downgrading if needed. For winget that adds
+`--force` and for apt `--allow-downgrades`. `uv tool install` always runs with
+`--reinstall`: uv otherwise skips a tool it still lists at that version, so an
+executable deleted from under uv was never restored. npm, pnpm, and Cargo
+reinstall a missing executable without a flag. After a pinned install the
+installer must report the pinned version, otherwise the action fails with
+"installer `<method>` exited successfully but reports `<package>` `<installed>`
+installed, not the pinned `<version>`". When the installer does not list the
+package, for example because the executable came from somewhere else, or for
+Homebrew, whose versioned formula name already carries the version, the
+present tool is left in place.
+
+## Verification lookup
+
+A bare command name in a verifier, such as `ruff`, is resolved in this order:
+
+1. the directories where this tool's recipes install executables on this
+   platform: for uv `$XDG_BIN_HOME`, then `$XDG_DATA_HOME/../bin`; for npm its
+   prefix `bin` and the Node directory, plus `%APPDATA%\npm` on Windows; for
+   pnpm `$PNPM_HOME`; for bun `~/.bun/bin`; for cargo `~/.cargo/bin`; for brew
+   the Homebrew prefix `bin`; for winget
+   `%LOCALAPPDATA%\Microsoft\WinGet\Links`;
+2. `~/.local/bin`, always;
+3. `PATH`. In a scheduled run that is the bounded `PATH` of the native job.
+
+apt installs into system directories that every `PATH` already contains. So a
+tool that uv just installed into `~/.local/bin` verifies even when the shell
+`PATH` or the scheduler's `PATH` does not include that directory. When the
+executable is not found anywhere, verification fails and names every directory
+it searched: "verification failed for resource `<id>`: verification executable
+ruff was not found (searched: …)".
 
 ## Setup execution
 
 `canonfig setup plan --role <source|follower> --file <path>` feeds bounded
-declared files through this shipped discovery pipeline. Accepted recipes become
+declared files through this discovery pipeline. Accepted recipes become
 per-resource plan items only when their native installer is present. The plan
 stores the installer executable, argument vector, independent verifier,
 version, source, upstream, and integrity metadata; it never stores shell text.
+
+Planning has no side effects. Installer version probes run with
+`COREPACK_ENABLE_NETWORK=0`, `COREPACK_ENABLE_AUTO_PIN=0`,
+`COREPACK_ENABLE_DOWNLOAD_PROMPT=0`, and `RUSTUP_AUTO_INSTALL=0`, so a Corepack
+or rustup shim cannot download a toolchain or pin a version. A rustup proxy
+such as `cargo` is not run until rustup has a `settings.toml`; the tool is then
+reported unverified, and apply fails that optional item with "run `rustup
+default stable`". A fresh home directory stays untouched by `setup plan`.
 
 After `setup approve`, `setup apply` executes those known recipes directly and
 records verification evidence and provenance in the setup journal. An
@@ -100,6 +154,8 @@ Discovery can resolve deterministic metadata for npm, Homebrew, winget, uv,
 cargo, and source recipes when evidence is sufficient. A source recipe must
 include its upstream repository and bounded build commands.
 
+## uv recipes
+
 For uv recipes, `indexPolicy` may explicitly review a full credential-free
 HTTPS simple-index URL with `reviewedBy` and `reviewedAt`. Private simple-index
 subpaths remain intact. Without that policy, Canonfig uses the fixed
@@ -108,6 +164,27 @@ the full approved `--default-index`, exact package versions, and
 `uv tool install --no-build` under the default build policy. `--only-binary`
 belongs to the pip interface and is not a valid `uv tool install` option.
 
+uv never downloads a Python interpreter for Canonfig. Every uv install runs
+with `--no-python-downloads` and `UV_PYTHON_DOWNLOADS=never`, set after the
+inherited `UV_` variables are cleared, so an inherited setting cannot turn
+downloads back on.
+
+Canonfig selects a system interpreter independently of active virtual environments
+and project Python pins, then prepares the exact package in a private disposable
+virtual environment. `uv pip check` checks the complete
+`Requires-Python` range, including upper bounds and dependencies. uv's resolver
+alone ignores upper Python bounds. An incompatible package fails with uv's
+metadata diagnostic before Canonfig exposes a managed tool.
+
+After that check, Canonfig freezes the prepared package versions and installs
+the tool offline with those constraints and the same interpreter. Preparation
+uses the approved index and the same build policy as the final install.
+Canonfig removes its private preparation directory on success or failure.
+Cancellation waits for the current bounded installer command to finish before
+cleanup. Cleanup failures remain typed errors and retain recovery evidence.
+Recovery or abandonment removes only that run's preparation, not another run's
+active environment. External installer changes are not rolled back.
+
 ## npm configuration isolation
 
 Automatic npm-family installs ignore inherited package-manager configuration.
@@ -115,6 +192,20 @@ Canonfig resets separate user and global npm config files to empty content in
 its cache before each install. The two paths must differ because npm rejects
 loading one path at both configuration levels. These files contain no credentials
 and are reusable cache material, not user settings.
+
+## Installer failures
+
+When an installer exits with an error, the failure includes the end of what it
+printed: "installer `<method>` exited with `<code>`; its last output lines:"
+followed by at most 20 non-empty lines of standard error (or standard output
+when standard error is empty), capped at 1536 characters and redacted. An
+installer that printed nothing is reported as having printed no diagnostic.
+Tool installs are outside the run's rollback: a package already installed stays
+installed. See [the transaction boundary](/explanation/architecture#the-transaction-boundary).
+
+On Windows, `.cmd` and `.bat` shims such as `npm.cmd` cannot run without a
+shell; bind the package manager to its JavaScript entry point instead (see
+[Windows package managers](/reference/cross-platform#windows-package-managers)).
 
 ## Login requirements
 

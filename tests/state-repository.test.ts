@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   ActionId,
+  BlobId,
   CredentialReference,
   ContentDigest,
   ProfileId,
@@ -41,7 +43,11 @@ import {
   RepositorySqlError,
   RevisionImmutableError,
 } from "../src/state/state-repository.errors.ts";
-import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
+import {
+  resourceBlobChunkBytes,
+  stateRepositoryLayer,
+} from "../src/state/state-repository.layer.ts";
+import { sha256BytesHex } from "../src/profile/profile-codec.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
 import {
   defaultScheduledInvocation,
@@ -340,6 +346,161 @@ describe("StateRepository SQLite adapter", () => {
       ).run("revision-1")
     ).toThrow(/immutable/u);
     database.close();
+  });
+
+  it("stores blobs as fixed-size chunks and serves ranges without joining them", async () => {
+    const path = databasePath();
+    const chunk = resourceBlobChunkBytes;
+    const inMemory = randomBytes(chunk * 2 + 17);
+    const onDisk = randomBytes(chunk + 5);
+    const filePath = join(dirname(path), "source.bin");
+    writeFileSync(filePath, onDisk);
+    const memoryId = decode(BlobId)(sha256BytesHex(inMemory));
+    const fileId = decode(BlobId)(sha256BytesHex(onDisk));
+    const ranges = await runWithRepository(
+      path,
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        const blobs = [
+          { id: memoryId, content: inMemory },
+          { id: fileId, bytes: onDisk.byteLength, path: filePath },
+        ];
+        yield* repository.publishRevision({ revision: revision(), blobs });
+        // Republishing verifies the stored chunks instead of writing again.
+        yield* repository.publishRevision({ revision: revision(), blobs });
+        return {
+          spanning: yield* repository.readResourceBlobRange({
+            blob: memoryId,
+            offset: chunk - 3,
+            maximumBytes: chunk + 10,
+          }),
+          tail: yield* repository.readResourceBlobRange({
+            blob: fileId,
+            offset: chunk,
+            maximumBytes: chunk,
+          }),
+          whole: yield* repository.readResourceBlobRange({
+            blob: fileId,
+            offset: 0,
+            maximumBytes: chunk * 4,
+          }),
+        };
+      }),
+    );
+    expect(ranges.spanning?.chunks.length).toBe(3);
+    expect(ranges.spanning?.byteLength).toBe(chunk + 10);
+    expect(ranges.spanning?.totalBytes).toBe(inMemory.byteLength);
+    expect(Buffer.concat(ranges.spanning!.chunks))
+      .toEqual(inMemory.subarray(chunk - 3, chunk * 2 + 7));
+    expect(Buffer.concat(ranges.tail!.chunks)).toEqual(onDisk.subarray(chunk));
+    expect(ranges.whole?.chunks.length).toBe(2);
+    expect(Buffer.concat(ranges.whole!.chunks)).toEqual(onDisk);
+
+    const database = new DatabaseSync(path);
+    try {
+      expect(database.prepare("SELECT count(*) AS count FROM resource_blobs").get())
+        .toEqual({ count: 0 });
+      expect(database.prepare(`
+        SELECT blob_id, count(*) AS chunks, max(length(content)) AS largest, sum(length(content)) AS bytes
+        FROM resource_blob_chunks GROUP BY blob_id ORDER BY bytes
+      `).all().map((row) => ({ ...row }))).toEqual([
+        { blob_id: fileId, chunks: 2, largest: chunk, bytes: onDisk.byteLength },
+        { blob_id: memoryId, chunks: 3, largest: chunk, bytes: inMemory.byteLength },
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps serving and verifying blobs stored as one row before chunking", async () => {
+    const path = databasePath();
+    const content = randomBytes(resourceBlobChunkBytes + 9);
+    const id = decode(BlobId)(sha256BytesHex(content));
+    const corrupted = Buffer.from(content);
+    corrupted[resourceBlobChunkBytes + 2] = corrupted[resourceBlobChunkBytes + 2]! ^ 0xff;
+    const corruptedId = decode(BlobId)(sha256BytesHex(randomBytes(32)));
+    await runWithRepository(path, Effect.gen(function*() {
+      yield* StateRepository;
+    }));
+    const database = new DatabaseSync(path);
+    const insert = database.prepare("INSERT INTO resource_blobs (id, content) VALUES (?, ?)");
+    insert.run(id, content);
+    // A row whose bytes no longer match the id it is stored under.
+    const sameLength = randomBytes(content.byteLength);
+    const sameLengthId = decode(BlobId)(sha256BytesHex(sameLength));
+    insert.run(sameLengthId, corrupted);
+    database.close();
+    const result = await runWithRepository(
+      path,
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        yield* repository.publishRevision({ revision: revision(), blobs: [{ id, content }] });
+        const range = yield* repository.readResourceBlobRange({
+          blob: id,
+          offset: 4,
+          maximumBytes: resourceBlobChunkBytes,
+        });
+        const conflict = yield* Effect.flip(repository.publishRevision({
+          revision: revision(),
+          blobs: [{ id: sameLengthId, content: sameLength }],
+        }));
+        const missing = yield* repository.readResourceBlobRange({
+          blob: corruptedId,
+          offset: 0,
+          maximumBytes: 1,
+        });
+        return { range, conflict, missing };
+      }),
+    );
+    expect(result.range?.totalBytes).toBe(content.byteLength);
+    expect(Buffer.concat(result.range!.chunks))
+      .toEqual(content.subarray(4, 4 + resourceBlobChunkBytes));
+    expect(result.conflict).toBeInstanceOf(RevisionImmutableError);
+    expect(result.conflict.message).toContain("names different immutable content");
+    expect(result.missing).toBeUndefined();
+    const after = new DatabaseSync(path);
+    try {
+      expect(after.prepare("SELECT count(*) AS count FROM resource_blob_chunks").get())
+        .toEqual({ count: 0 });
+    } finally {
+      after.close();
+    }
+  });
+
+  it("refuses a source file that changed after it was hashed and stores nothing", async () => {
+    const path = databasePath();
+    const filePath = join(dirname(path), "source.bin");
+    const hashed = randomBytes(resourceBlobChunkBytes + 3);
+    const changed = Buffer.from(hashed);
+    changed[10] = changed[10]! ^ 0xff;
+    writeFileSync(filePath, changed);
+    const error = await runWithRepository(
+      path,
+      Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        return yield* Effect.flip(repository.publishRevision({
+          revision: revision(),
+          blobs: [{
+            id: decode(BlobId)(sha256BytesHex(hashed)),
+            bytes: hashed.byteLength,
+            path: filePath,
+          }],
+        }));
+      }),
+    );
+    expect(error).toBeInstanceOf(RevisionImmutableError);
+    expect(error.message).toContain("changed while it was being published");
+    const database = new DatabaseSync(path);
+    try {
+      expect(database.prepare(`
+        SELECT
+          (SELECT count(*) FROM resource_blob_manifests) AS manifests,
+          (SELECT count(*) FROM resource_blob_chunks) AS chunks,
+          (SELECT count(*) FROM profile_revisions) AS revisions
+      `).get()).toEqual({ manifests: 0, chunks: 0, revisions: 0 });
+    } finally {
+      database.close();
+    }
   });
 
   it("persists publication approval atomically with its exact revision", async () => {

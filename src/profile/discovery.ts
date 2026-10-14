@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
-import { basename, delimiter, extname, join, resolve } from "node:path";
+import { access, readFile, realpath, stat } from "node:fs/promises";
+import { basename, delimiter, extname, join, resolve, sep } from "node:path";
 
 import { Effect, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
@@ -20,6 +21,7 @@ import {
 import {
   buildToolCatalog,
   type DiscoveredPackageMetadata,
+  type ExecutableCandidate,
   type DiscoveredSkill,
   type DiscoverySourceKind,
   type EvidenceLocation,
@@ -76,31 +78,97 @@ const readDiscoveryFile = (
     }),
   });
 
-const executablePath = async (
+/** Every executable file an invocation can resolve to, in PATH order. */
+const executableMatches = async (
   executable: string,
   pathValue: string,
-): Promise<string | undefined> => {
+): Promise<ReadonlyArray<string>> => {
+  const isExecutableFile = (candidate: string): Promise<boolean> =>
+    access(candidate, constants.X_OK)
+      .then(() => stat(candidate))
+      .then((details) => details.isFile())
+      // A missing or non-executable candidate means resolution continues.
+      .catch(() => false);
   if (executable.includes("/") || executable.includes("\\")) {
     const absolute = resolve(executable);
-    try {
-      await access(absolute, constants.X_OK);
-      const details = await stat(absolute);
-      return details.isFile() ? absolute : undefined;
-    } catch {
-      return undefined;
-    }
+    return await isExecutableFile(absolute) ? [absolute] : [];
   }
+  const matches: Array<string> = [];
   for (const entry of pathValue.split(delimiter).filter((value) => value.length > 0)) {
     const candidate = join(entry, executable);
-    try {
-      await access(candidate, constants.X_OK);
-      const details = await stat(candidate);
-      if (details.isFile()) return candidate;
-    } catch {
-      // A missing or non-executable candidate means resolution continues.
-    }
+    if (!matches.includes(candidate) && await isExecutableFile(candidate)) matches.push(candidate);
+  }
+  return matches;
+};
+
+const maximumDigestBytes = 64 * 1024 * 1024;
+
+/**
+ * `name@version` (npm) or `name==version` (uv) of the package that owns a
+ * copy, read from its manifest. Nothing is executed: a copy may be a shim
+ * that installs on first run, or a server that never exits.
+ */
+const owningPackageVersion = async (realPath: string): Promise<string | undefined> => {
+  const segments = realPath.split(sep);
+  const modules = segments.lastIndexOf("node_modules");
+  if (modules >= 0 && modules + 1 < segments.length) {
+    const depth = segments[modules + 1]!.startsWith("@") ? 3 : 2;
+    const manifest = join(segments.slice(0, modules + depth).join(sep) || sep, "package.json");
+    const parsed = await readFile(manifest, "utf8").then((text) => parseJsonc(text)).catch(() => undefined);
+    const object = parsed === undefined ? undefined : jsonObject(parsed);
+    const name = jsonString(object?.name);
+    const version = jsonString(object?.version);
+    return name === undefined || version === undefined ? undefined : `${name}@${version}`;
+  }
+  const tools = segments.lastIndexOf("tools");
+  if (tools > 0 && segments[tools - 1] === "uv" && tools + 1 < segments.length) {
+    const receipt = join(segments.slice(0, tools + 2).join(sep) || sep, "uv-receipt.toml");
+    const parsed = await readFile(receipt, "utf8")
+      .then((text) => Schema.decodeUnknownSync(Schema.MutableJson)(parseToml(text)))
+      .catch(() => undefined);
+    const tool = parsed === undefined ? undefined : jsonObject(jsonObject(parsed)?.tool ?? null);
+    const requirements = Array.isArray(tool?.requirements) ? tool.requirements : [];
+    const requirement = requirements.length === 0 ? undefined : jsonObject(requirements[0]!);
+    const name = jsonString(requirement?.name);
+    return name === undefined ? undefined : `${name}${jsonString(requirement?.specifier) ?? ""}`;
   }
   return undefined;
+};
+
+/**
+ * The distinct copies behind several PATH matches, with version evidence, or
+ * undefined when they are one file (a symlinked directory) or byte-identical.
+ */
+const distinctCandidates = async (
+  matches: ReadonlyArray<string>,
+): Promise<ReadonlyArray<ExecutableCandidate> | undefined> => {
+  const candidates: Array<ExecutableCandidate> = [];
+  for (const path of matches) {
+    const realPath = await realpath(path).catch(() => path);
+    if (candidates.some((candidate) => candidate.realPath === realPath)) continue;
+    const details = await stat(realPath).catch(() => undefined);
+    if (details === undefined) continue;
+    const sha256 = details.size <= maximumDigestBytes
+      ? await readFile(realPath)
+        .then((bytes) => createHash("sha256").update(bytes).digest("hex"))
+        .catch(() => undefined)
+      : undefined;
+    const packageVersion = await owningPackageVersion(realPath);
+    if (
+      sha256 !== undefined
+      && candidates.some((candidate) =>
+        candidate.sha256 === sha256 && candidate.packageVersion === packageVersion)
+    ) continue;
+    candidates.push({
+      path,
+      realPath,
+      bytes: details.size,
+      modifiedAt: details.mtime.toISOString(),
+      sha256,
+      packageVersion,
+    });
+  }
+  return candidates.length > 1 ? candidates : undefined;
 };
 
 const tokenize = (command: string): ReadonlyArray<string> => {
@@ -191,6 +259,68 @@ const positionalAfter = (
   return tokens.slice(commandIndex + 1).find((token) => !token.startsWith("-"));
 };
 
+/** uv options whose value is the next token, so that token is not the package. */
+const uvOptionsWithValues = new Set([
+  "--with",
+  "--with-editable",
+  "--with-requirements",
+  "--python",
+  "-p",
+  "--index",
+  "--default-index",
+  "--index-url",
+  "--extra-index-url",
+  "--constraints",
+  "-c",
+  "--overrides",
+  "--directory",
+  "--project",
+  "--cache-dir",
+  "--color",
+  "--config-file",
+]);
+
+/**
+ * The package a `uvx …`, `uv tool run …` or `uv tool install …` invocation
+ * names: `--from` when given, otherwise the first positional argument.
+ */
+const uvToolSpecification = (tokens: ReadonlyArray<string>): string | undefined => {
+  let index: number;
+  if (tokens[0] === "uvx") {
+    index = 1;
+  } else {
+    const tool = tokens.indexOf("tool");
+    const subcommand = tokens[tool + 1];
+    if (tool < 1 || (subcommand !== "install" && subcommand !== "run")) return undefined;
+    index = tool + 2;
+  }
+  for (; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--from") return tokens[index + 1];
+    if (token.startsWith("--from=")) return token.slice("--from=".length);
+    if (!token.startsWith("-")) return token;
+    if (uvOptionsWithValues.has(token)) index += 1;
+  }
+  return undefined;
+};
+
+/**
+ * A registry requirement: a PEP 508 name with optional extras, pinned with
+ * `==` (or uvx's `@`), or unpinned. URLs, paths and other sources are not
+ * registry packages and yield nothing.
+ */
+const uvRequirement = (specification: string): ParsedPackageSpecification | undefined => {
+  const match = /^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\[[A-Za-z0-9._,-]+\])?)(.*)$/u.exec(specification);
+  if (match === null) return undefined;
+  const name = match[1]!;
+  const rest = match[2]!.trim();
+  if (rest.length === 0) return { name };
+  const pinned = /^(?:==|@)([A-Za-z0-9][A-Za-z0-9.+!_-]*)$/u.exec(rest);
+  if (pinned !== null) return pinned[1] === "latest" ? { name } : { name, version: pinned[1] };
+  // A range such as `>=1` names the package but pins nothing.
+  return /^(?:[<>!~]=?|==)/u.test(rest) && !/[\s@/]/u.test(rest) ? { name } : undefined;
+};
+
 const metadataFromInvocation = (
   input: ReadonlyArray<string>,
   sourcePath: string,
@@ -234,12 +364,10 @@ const metadataFromInvocation = (
   }
   if (executable === "uv" || executable === "uvx") {
     if (tokens.includes("--")) return undefined;
-    const specification = executable === "uvx"
-      ? tokens.find((token, index) => index > 0 && !token.startsWith("-"))
-      : positionalAfter(tokens, ["install"]);
+    const specification = uvToolSpecification(tokens);
     if (specification === undefined) return undefined;
-    if (isUnboundedPackageSpecification(specification)) return undefined;
-    const parsed = packageSpecification(specification, "==");
+    const parsed = uvRequirement(specification);
+    if (parsed === undefined) return undefined;
     return {
       ecosystem: "uv",
       ...parsed,
@@ -298,8 +426,12 @@ const invocationEvidence = async (
   const packageMetadata = deterministic
     ? metadataFromInvocation(tokens, context.sourcePath)
     : undefined;
-  const resolvedExecutable = deterministic
-    ? await executablePath(executable, context.pathValue)
+  const matches = deterministic ? await executableMatches(executable, context.pathValue) : [];
+  const resolvedExecutable = matches[0];
+  // Shadowed copies matter only when the invocation is the tool itself; an
+  // installer such as npm or uvx is not what the evidence identifies.
+  const candidates = packageMetadata === undefined && matches.length > 1
+    ? await distinctCandidates(matches)
     : undefined;
   return {
     sourcePath: context.sourcePath,
@@ -307,11 +439,12 @@ const invocationEvidence = async (
     kind: kindOverride ?? sourceKindFor(context.fileKind, deterministic),
     invocation: tokens,
     resolvedExecutable,
+    candidates,
     package: packageMetadata,
-    confidence: deterministic
-      ? packageMetadata === undefined && resolvedExecutable === undefined ? "strong" : "deterministic"
-      : "review",
-    reviewStatus: deterministic ? "accepted" : "needs-review",
+    confidence: !deterministic || candidates !== undefined
+      ? "review"
+      : packageMetadata === undefined && resolvedExecutable === undefined ? "strong" : "deterministic",
+    reviewStatus: deterministic && candidates === undefined ? "accepted" : "needs-review",
   };
 };
 
@@ -443,6 +576,8 @@ const repositoryUrl = (value: JsonValue | undefined): string | undefined => {
   return jsonString(object?.url)?.replace(/^git\+/u, "");
 };
 
+const supportedEcosystems = ["npm", "homebrew", "winget", "uv", "cargo", "source"];
+
 const explicitMetadata = (
   value: JsonValue,
   sourcePath: string,
@@ -454,7 +589,7 @@ const explicitMetadata = (
   const source = jsonString(object.source);
   if (
     ecosystem === undefined
-    || !["npm", "homebrew", "winget", "uv", "cargo", "source"].includes(ecosystem)
+    || !supportedEcosystems.includes(ecosystem)
     || name === undefined
   ) {
     return undefined;
@@ -535,9 +670,40 @@ const scanPackageJson = (
   if (Array.isArray(tools)) {
     for (let index = 0; index < tools.length; index += 1) {
       const tool = jsonObject(tools[index]!);
-      if (tool === undefined || !entryIsEnabled(tool, true)) continue;
+      if (tool !== undefined && !entryIsEnabled(tool, true)) continue;
       const metadata = explicitMetadata(tools[index]!, context.sourcePath);
-      if (metadata === undefined) continue;
+      if (metadata === undefined) {
+        // An entry the author wrote is never dropped silently: it is kept as
+        // needs-review evidence naming the fields it lacks.
+        const ecosystem = jsonString(tool?.ecosystem);
+        const incomplete = [
+          ...(tool === undefined ? ["entry (not an object)"] : []),
+          ...(tool !== undefined && (ecosystem === undefined || !supportedEcosystems.includes(ecosystem))
+            ? [ecosystem === undefined ? "ecosystem" : `ecosystem (unsupported: ${ecosystem})`]
+            : []),
+          ...(tool !== undefined && jsonString(tool.name) === undefined ? ["name"] : []),
+        ];
+        const upstream = jsonString(tool?.upstream);
+        records.push({
+          sourcePath: context.sourcePath,
+          location: {
+            kind: "field",
+            field: `canonfig.tools[${index}]`,
+            line: lineForField(text, "tools"),
+          },
+          kind: "package-metadata",
+          invocation: [
+            jsonString(tool?.executable) ?? jsonString(tool?.id) ?? jsonString(tool?.name)
+              ?? `canonfig-tools-${index}`,
+          ],
+          incomplete,
+          upstream,
+          confidence: "review",
+          reviewStatus: "needs-review",
+        });
+        continue;
+      }
+      if (tool === undefined) continue;
       const executable = jsonString(tool.executable) ?? metadata.name;
       records.push({
         sourcePath: context.sourcePath,

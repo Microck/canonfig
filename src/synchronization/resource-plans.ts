@@ -17,6 +17,7 @@ import {
   isMissingAutomaticRecipeVersion,
   recipeSourceDetails,
 } from "../domain/recipe-versions.ts";
+import { installedVersionMatches } from "./installed-tool-version.ts";
 import {
   installerRecipeProvenance,
   type InstallerRecipeProvenance,
@@ -43,6 +44,7 @@ interface InstallToolActionDetail {
   method: AutomaticRecipeMethod;
   package: string;
   version?: string;
+  replaces?: string;
   indexPolicy?: ToolRecipe["indexPolicy"];
   source?: ToolRecipe["source"];
   buildPolicy?: BuildPolicy;
@@ -57,6 +59,7 @@ interface WriteFileActionDetail {
   mode?: number;
   previousSourceDigest?: string;
   adoptionNotice?: string;
+  retainedLocalDigest?: string;
 }
 
 interface WriteFileDraft extends ResourceActionDraft {
@@ -584,12 +587,13 @@ const planAppendLocal = (context: ResourcePlanningContext): ReadonlyArray<Resour
   if (observed.managedSourceDigest === undefined) {
     const draft = writeFile(context, desired.digest, false, desired.mode);
     const current = observedDigest(context);
-    if (current !== undefined && current !== desired.digest) {
+    if (current !== undefined) {
       return [{
         kind: "write-file",
         detail: {
           ...draft.detail,
-          adoptionNotice: `First adoption of ${context.resource.target}: the existing file differs from the Source payload, so its current content is preserved as follower-local text. Canonfig cannot tell an old shared rule from a deliberate local addition; move shared rules into the Source profile to manage them.`,
+          adoptionNotice: "First adoption preserves the entire existing file as local text. Matching Source bytes do not establish ownership. Inspect exact Source and retained local text before applying: canonfig sync --plan --review-local",
+          retainedLocalDigest: current,
         },
       }];
     }
@@ -616,6 +620,18 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
       },
     }];
   }
+  // A follower file that cannot be parsed blocks this resource only; the
+  // executor would otherwise fail mid-run on the same file.
+  if (context.observed.state === "unverifiable") {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `Cannot merge ${context.resource.id} into ${context.resource.target}: ${context.observed.reason}`,
+        instructions: `Fix ${context.resource.target} so it is readable and valid ${context.desired.format.toUpperCase()}, then run synchronization again. Canonfig has not changed the file.`,
+      },
+    }];
+  }
   const conflicts = context.desired.keys.filter((key) =>
     context.overlayKeys.some((local) => configPathsOverlap(key, local))
   );
@@ -634,18 +650,26 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
   // three-way operation: leaving them behind meant a key dropped from the
   // profile kept its old value forever and the plan read `no-op`, so only
   // removing the whole resource ever removed a key.
-  const declared = new Set(context.desired.keys);
+  const declaredKeys = context.desired.keys;
+  const declared = new Set(declaredKeys);
   const dropped = sortedUnique(
     (context.applied?.ownedKeys ?? []).filter((key) => !declared.has(key)),
   );
-  // A key the follower claimed through its Local Overlay is the follower's,
-  // not Canonfig's, so it stays even though the profile stopped declaring it.
-  // Comparing values per key would need the applied value of each owned key,
-  // which the Applied Resource Record does not store; the Local Overlay is the
-  // mechanism this product already gives an operator to say "this key is mine".
+  // Changing ownership between an object and its children is not removal.
+  // Pruning the old ancestor would also erase newly unowned sibling fields.
+  // A whole-object write replaces former child ownership without a separate delete.
   const prunable = dropped.filter((key) =>
-    !context.overlayKeys.some((local) => configPathsOverlap(key, local))
+    !declaredKeys.some((declaredKey) => configPathsOverlap(key, declaredKey))
+    && !context.overlayKeys.some((local) => configPathsOverlap(key, local))
   );
+  const retained = dropped.filter((key) =>
+    declaredKeys.some((declaredKey) => declaredKey.startsWith(`${key}.`))
+    || context.overlayKeys.some((local) => configPathsOverlap(key, local))
+  );
+  const retention = retained.length === 0 ? {} : {
+    retains: retained,
+    retentionNotice: `Canonfig no longer owns all of ${retained.join(", ")} in ${context.resource.target}: ownership narrowed or Local Overlay keys overlap. Values outside the current Source-owned keys stay, including anything the Source wrote there earlier. Edit or remove stale values by hand.`,
+  };
   if (prunable.length > 0) {
     return [{
       kind: "write-config",
@@ -654,16 +678,20 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
         target: context.resource.target,
         keys: sortedUnique(context.desired.keys),
         removes: prunable,
+        ...retention,
       },
     }];
   }
-  if (observedMatchesDesired(context.desired, context.observed)) return [noOp()];
+  // An ownership hand-over is planned even when the values already match, so
+  // the plan says which keys were left behind instead of reading `no-op`.
+  if (retained.length === 0 && observedMatchesDesired(context.desired, context.observed)) return [noOp()];
   return [{
     kind: "write-config",
     detail: {
       kind: "write-config",
       target: context.resource.target,
       keys: sortedUnique(context.desired.keys),
+      ...retention,
     },
   }];
 };
@@ -887,6 +915,30 @@ const qualifiedRecipeProvenance = (
   });
 };
 
+/**
+ * The one recipe `ensure` installs a tool with on `platform`. Qualified tools
+ * also need this process's architecture. Observation queries this recipe's
+ * installer for the installed version, so both sides must pick the same one.
+ */
+export const selectToolRecipe = (
+  desired: Extract<DesiredResource, { readonly kind: "tool" }>,
+  platform: ResourcePlanningContext["platform"],
+): ToolRecipe | undefined =>
+  [...desired.recipes]
+    .filter((candidate) =>
+      candidate.platform === platform
+      && (
+        desired.qualification === undefined
+        || candidate.architecture === process.arch
+      )
+    )
+    .sort((left, right) =>
+      compareText(
+        `${left.method}\0${left.package}\0${left.version ?? ""}\0${JSON.stringify(left.source)}`,
+        `${right.method}\0${right.package}\0${right.version ?? ""}\0${JSON.stringify(right.source)}`,
+      )
+    )[0];
+
 const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
   if (context.desired.kind !== "tool") {
     throw new InvalidObservedStateError({
@@ -899,23 +951,19 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   if (context.observed.state === "unverifiable") {
     return [unresolvedAgentTask(context, `Verify or install tool ${context.desired.toolId}`)];
   }
-  if (qualification === undefined && context.observed.state === "present") {
+  const recipe = selectToolRecipe(context.desired, context.platform);
+  // The installed version, when the recipe's installer reports one that
+  // differs from the pin. A present executable alone left a tool at its old
+  // version after the profile pinned a new one.
+  const replaces = context.observed.state === "present"
+      && context.observed.installedVersion !== undefined
+      && recipe?.version !== undefined
+      && !installedVersionMatches(recipe.method, context.observed.installedVersion, recipe.version)
+    ? context.observed.installedVersion
+    : undefined;
+  if (qualification === undefined && context.observed.state === "present" && replaces === undefined) {
     return [noOp()];
   }
-  const recipe = [...context.desired.recipes]
-    .filter((candidate) =>
-      candidate.platform === context.platform
-      && (
-        qualification === undefined
-        || candidate.architecture === process.arch
-      )
-    )
-    .sort((left, right) =>
-      compareText(
-        `${left.method}\0${left.package}\0${left.version ?? ""}\0${JSON.stringify(left.source)}`,
-        `${right.method}\0${right.package}\0${right.version ?? ""}\0${JSON.stringify(right.source)}`,
-      )
-    )[0];
   if (recipe === undefined) {
     return [unresolvedAgentTask(context, `Find an installation recipe for ${context.desired.toolId}`)];
   }
@@ -934,7 +982,7 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   if (context.desired.qualification?.exclusion !== undefined) {
     return [noOp(provenance)];
   }
-  if (context.observed.state === "present") {
+  if (context.observed.state === "present" && replaces === undefined) {
     if (provenance === undefined) return [noOp()];
     if (context.applied?.installerRecipe?.fingerprint === provenance.fingerprint) {
       return [noOp(provenance)];
@@ -1019,6 +1067,7 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     package: recipe.package,
   };
   if (recipe.version !== undefined) detail.version = recipe.version;
+  if (replaces !== undefined) detail.replaces = replaces;
   if (recipe.indexPolicy !== undefined) detail.indexPolicy = recipe.indexPolicy;
   if (recipe.source !== undefined) detail.source = recipe.source;
   if (recipe.buildPolicy !== undefined) detail.buildPolicy = recipe.buildPolicy;

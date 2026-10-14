@@ -13,41 +13,89 @@ export function hasEnabledMcpServers(context: BuildContext): boolean {
   return enabledMcpServerEntries(context).length > 0;
 }
 
-export function standardMcpProjectionDiagnostics(
+type McpProjectionGap = "timeoutMs" | "enabledTools" | "disabledTools" | "cwd" | "sse transport discriminator";
+
+/**
+ * One warning per MCP server whose canonical options a target projection
+ * drops. The compiler turns these into errors under `--strict`.
+ */
+export function mcpOptionDiagnostics(
   context: BuildContext,
   target: TargetId,
-  includeType = true,
+  gaps: readonly McpProjectionGap[],
+  projection: string,
 ): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   for (const [name, server] of enabledMcpServerEntries(context)) {
-    const omitted: string[] = [];
-    if (server.timeoutMs !== undefined) omitted.push("timeoutMs");
-    if (server.enabledTools?.length) omitted.push("enabledTools");
-    if (server.disabledTools?.length) omitted.push("disabledTools");
-    if (!includeType && server.transport === "sse") omitted.push("sse transport discriminator");
+    const omitted = gaps.filter((gap) => {
+      switch (gap) {
+        case "timeoutMs":
+          return server.timeoutMs !== undefined;
+        case "enabledTools":
+          return (server.enabledTools?.length ?? 0) > 0;
+        case "disabledTools":
+          return (server.disabledTools?.length ?? 0) > 0;
+        case "cwd":
+          return server.transport === "stdio" && server.cwd !== undefined && server.cwd.length > 0;
+        case "sse transport discriminator":
+          return server.transport === "sse";
+      }
+    });
     if (omitted.length > 0) {
       diagnostics.push({
         level: "warning",
         code: "MCP_OPTION_UNSUPPORTED",
         target,
-        message: `${target} cannot represent ${omitted.join(", ")} for MCP server ${name} in its standard JSON projection; those options were omitted.`,
+        message: `${target} cannot represent ${omitted.join(", ")} for MCP server ${name} in its ${projection}; those options were omitted.`,
       });
     }
   }
   return diagnostics;
 }
 
-export function codexMcpDiagnostics(context: BuildContext): Diagnostic[] {
-  return enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] =>
-    server.transport === "sse"
-      ? [{
-        level: "warning",
-        code: "MCP_TRANSPORT_UNSUPPORTED",
-        target: "codex",
-        message: `Codex project MCP config supports streamable HTTP URLs but cannot preserve legacy SSE transport for server ${name}; the URL is emitted as streamable HTTP.`,
-      }]
-      : []
+export function standardMcpProjectionDiagnostics(
+  context: BuildContext,
+  target: TargetId,
+  includeType = true,
+): Diagnostic[] {
+  return mcpOptionDiagnostics(
+    context,
+    target,
+    ["timeoutMs", "enabledTools", "disabledTools", ...(includeType ? [] : ["sse transport discriminator" as const])],
+    "standard JSON projection",
   );
+}
+
+export function codexMcpDiagnostics(context: BuildContext): Diagnostic[] {
+  return [
+    ...mcpOptionDiagnostics(context, "codex", ["timeoutMs"], "project config.toml"),
+    ...enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] =>
+      server.transport === "sse"
+        ? [{
+          level: "warning",
+          code: "MCP_TRANSPORT_UNSUPPORTED",
+          target: "codex",
+          message: `Codex project MCP config supports streamable HTTP URLs but cannot preserve legacy SSE transport for server ${name}; the URL is emitted as streamable HTTP.`,
+        }]
+        : []
+    ),
+  ];
+}
+
+export function grokMcpDiagnostics(context: BuildContext): Diagnostic[] {
+  return [
+    ...mcpOptionDiagnostics(context, "grok-build", ["enabledTools", "disabledTools"], "config.toml"),
+    ...enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] =>
+      server.timeoutMs !== undefined && server.timeoutMs % 1000 !== 0
+        ? [{
+          level: "warning",
+          code: "MCP_OPTION_COERCED",
+          target: "grok-build",
+          message: `Grok takes MCP timeouts in whole seconds, so timeoutMs ${server.timeoutMs} for MCP server ${name} was rounded up to ${Math.ceil(server.timeoutMs / 1000)}s.`,
+        }]
+        : []
+    ),
+  ];
 }
 
 export function standardMcpServer(server: McpServer, includeType = true): Record<string, unknown> {

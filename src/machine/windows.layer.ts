@@ -3,7 +3,6 @@ import {
   access,
   lstat,
   mkdir,
-  mkdtemp,
   open,
   readFile,
   realpath,
@@ -34,9 +33,15 @@ import {
   type MachineStateError,
 } from "./machine-state.errors.ts";
 import { MachineState } from "./machine-state.service.ts";
-import { windowsCredentialScript } from "./windows-credentials.ts";
+import { windowsCredentialScript, windowsCredentialTimeoutMilliseconds, windowsPowerShellExecutable } from "./windows-credentials.ts";
 import { relocateFileContent, writeFileContent } from "./file-content.ts";
 import { linuxMachineStateLayer } from "./linux.layer.ts";
+import { installDestinationDirectories } from "./install-destinations.ts";
+import {
+  guardEntryName,
+  removeTemporaryEntriesAt,
+  temporaryEntryName,
+} from "./temporary-entries.ts";
 import type {
   CredentialPolicy,
   CredentialStorageCapability,
@@ -46,10 +51,12 @@ import type {
   FileContent,
   MachinePath,
   NormalizePathInput,
+  PathLengthLimit,
   ProcessEnvironmentEntry,
   ProcessResult,
   RenderedSchedulerJob,
   RemoveEmptyDirectoryInput,
+  RemoveTemporaryEntriesInput,
   SchedulerBackend,
   SchedulerCalendar,
   SchedulerInspection,
@@ -101,6 +108,35 @@ const errorCode = (cause: unknown): string | undefined =>
   cause instanceof Error && "code" in cause
     ? String(cause.code)
     : undefined;
+
+export const windowsFileSystemKey = "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem";
+
+/**
+ * The path limit `reg query <FileSystem> /v LongPathsEnabled` reports. Any
+ * answer other than an enabled DWORD, including a missing value or a failed
+ * query, leaves MAX_PATH (260, terminating NUL included) in force. Enabled
+ * long paths lift Win32 file calls to the 32,767-character Unicode limit.
+ */
+export const windowsPathLimitFromRegistry = (output: string | undefined): PathLengthLimit =>
+  output !== undefined
+    && /^\s*LongPathsEnabled\s+REG_DWORD\s+0x0*[1-9a-f][0-9a-f]*\s*$/imu.test(output)
+    ? { maximum: 32_767, longPathsEnabled: true }
+    : { maximum: 260, longPathsEnabled: false };
+
+export const windowsSymlinkPrerequisite =
+  "Windows refused to create a symbolic link (EPERM). Creating symbolic links requires Developer Mode "
+  + "(Settings > System > For developers) or the SeCreateSymbolicLinkPrivilege user right "
+  + "(\"Create symbolic links\"); enable one for this account, sign in again, then retry";
+
+/** Node names the failed syscall in the message: `EPERM: ..., symlink 'a' -> 'b'`. */
+const withSymlinkPrerequisite = (error: MachineStateError): MachineStateError =>
+  error._tag === "MachineFilesystemError" && /\bEPERM\b.*\bsymlink\b/u.test(error.message)
+    ? new MachineFilesystemError({
+      operation: error.operation,
+      path: error.path,
+      message: `${error.message}. ${windowsSymlinkPrerequisite}`,
+    })
+    : error;
 
 const removeWindowsManagedLeaf = async (path: string): Promise<void> => {
   try {
@@ -209,19 +245,19 @@ const validateSingleLine = (
 const powershellLiteral = (value: string): string =>
   `'${value.replaceAll("'", "''")}'`;
 
-// Permission restore is the one PowerShell invocation that can compile C# at
-// run time: the first restore on a machine hands the helper source to csc.exe
-// (see restoreNativePermissions for the on-disk cache that makes it the only
-// one). Measured on an idle windows-latest runner, six samples each: bare
-// powershell.exe startup 184-227ms, a plain .NET call such as
-// snapshotPermissions 197-235ms, an Add-Type of a trivial class 395-891ms.
-// The compile both costs the most and swings the widest, and the swing is the
-// host's - csc.exe cold start and the antimalware scan of a fresh unsigned DLL
-// - not a function of the work canonfig asked for. The old 10s bound kept
-// firing on GitHub's runners. This bound is here to catch a hung process, so
-// it matches the 60s this layer already allows its scheduler PowerShell
-// scripts rather than tracking the operation's typical cost.
+// Native permission snapshots and restores start a fresh PowerShell process.
+// The first restore can also compile its helper with csc.exe. These bounds
+// catch hung processes rather than tracking normal startup time: antimalware
+// and guest I/O contention can make even a plain ACL read exceed 10 seconds.
+// Scheduler PowerShell scripts use the same 60-second bound.
 const nativePermissionTimeoutMilliseconds = 60_000;
+
+// Windows PowerShell uses the .NET Framework static ACL methods; PowerShell
+// Core exposes the same operations through FileSystemAclExtensions.
+const readWindowsAcl = (nativeType: "File" | "Directory"): ReadonlyArray<string> => [
+  `$item=[IO.${nativeType}Info]::new($path)`,
+  `$acl=if($PSVersionTable.PSEdition -eq 'Core'){[IO.FileSystemAclExtensions]::GetAccessControl($item,$sections)}else{[IO.${nativeType}]::GetAccessControl($path,$sections)}`,
+];
 
 // BackupWrite restores captured ACLs verbatim. SetAccessControl recalculates
 // inheritance from the temporary guard parent and propagates changes to children.
@@ -332,6 +368,10 @@ const taskCalendar = (
       + `-At ${powershellLiteral(calendar.localTime)}`);
 };
 
+// Task Scheduler defaults to BelowNormal. That can starve PowerShell startup
+// before the credential script runs; use the same Normal class as foreground sync.
+const windowsTaskPriority = 4;
+
 const renderTaskSchedulerJob = (
   job: SchedulerJob,
 ): Effect.Effect<RenderedSchedulerJob, MachineStateError> =>
@@ -368,6 +408,7 @@ const renderTaskSchedulerJob = (
           + `-Argument ${powershellLiteral(commandLine)}`,
         `$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive`,
         `$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)`,
+        `$Settings.Priority = ${windowsTaskPriority}`,
       ].join("\r\n"),
       schedule: [
         `$Trigger = ${trigger}`,
@@ -449,9 +490,46 @@ export const windowsRecurrenceIntervalMatches = (
 export const windowsTaskTriggerEnabled = (trigger: string): boolean =>
   xmlElement(trigger, "Enabled") !== "false";
 
+/** Task Scheduler's runtime answer: `State|LastTaskResult|LastRunTime|NextRunTime`. */
+export const parseWindowsTaskRuntime = (output: string) => {
+  const fields = /^(-?\d+)\|(-?\d+)\|([^|]*)\|([^|]*)$/u.exec(output.trim());
+  if (fields === null) return undefined;
+  const lastTaskResult = Number(fields[2]);
+  const lastStartedAt = fields[3] === "" || Number.isNaN(Date.parse(fields[3]!)) ? undefined : fields[3];
+  // 0x41303: the task has not run yet; 0x41301: it is running now.
+  const ran = lastTaskResult !== 0x41303 && lastTaskResult !== 0x41301 && lastStartedAt !== undefined;
+  return {
+    state: Number(fields[1]),
+    nextRun: fields[4] === "" || Number.isNaN(Date.parse(fields[4]!)) ? undefined : fields[4],
+    lastStartedAt: lastTaskResult === 0x41303 ? undefined : lastStartedAt,
+    lastResult: ran
+      ? {
+        succeeded: lastTaskResult === 0,
+        detail: `Task Scheduler last result 0x${(lastTaskResult >>> 0).toString(16)}`,
+        at: lastStartedAt,
+      }
+      : undefined,
+  };
+};
+
+/**
+ * What the exported task XML says about when the task was registered and
+ * whether its principal can run without a logged-on user. Tasks registered by
+ * earlier releases carry no registration date.
+ */
+export const windowsTaskRegistration = (xml: string) => {
+  const date = xmlElement(xmlElement(xml, "RegistrationInfo") ?? "", "Date");
+  const logonType = xmlElement(xmlElement(xml, "Principal") ?? "", "LogonType");
+  return {
+    registeredAt: date === undefined || Number.isNaN(Date.parse(date)) ? undefined : date,
+    runsOnlyWhileLoggedOn: logonType === undefined ? undefined : logonType === "InteractiveToken",
+  };
+};
+
 const windowsTaskXml = (
   definition: WindowsTaskDefinition,
   principal: string,
+  registeredAt: string,
 ): string => {
   const schedule = definition.weekdays === undefined
     ? "<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>"
@@ -461,7 +539,7 @@ const windowsTaskXml = (
   return [
     '<?xml version="1.0" encoding="UTF-16"?>',
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
-    `<RegistrationInfo><Description>${escapeXml(definition.description)}</Description></RegistrationInfo>`,
+    `<RegistrationInfo><Date>${registeredAt}</Date><Description>${escapeXml(definition.description)}</Description></RegistrationInfo>`,
     `<Triggers><CalendarTrigger><StartBoundary>2000-01-01T${definition.localTime}:00</StartBoundary>`,
     `<Enabled>true</Enabled>${schedule}</CalendarTrigger></Triggers>`,
     `<Principals><Principal id="Author"><UserId>${escapeXml(principal)}</UserId>`,
@@ -469,7 +547,7 @@ const windowsTaskXml = (
     "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
     "<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>",
     "<StopIfGoingOnBatteries>true</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate>",
-    "<Enabled>true</Enabled><ExecutionTimeLimit>PT1H</ExecutionTimeLimit></Settings>",
+    `<Enabled>true</Enabled><ExecutionTimeLimit>PT1H</ExecutionTimeLimit><Priority>${windowsTaskPriority}</Priority></Settings>`,
     `<Actions Context="Author"><Exec><Command>${escapeXml(definition.executable)}</Command>`,
     `<Arguments>${escapeXml(definition.arguments)}</Arguments></Exec></Actions></Task>`,
   ].join("");
@@ -494,6 +572,16 @@ export const windowsTaskQueryReportsAbsence = (
   }`;
   return /0x80070002/iu.test(output);
 };
+
+/** Probe a Task Scheduler task without depending on localized schtasks output. */
+export const windowsTaskProbeScript = (taskName: string): string => [
+  "$ErrorActionPreference='Stop'",
+  `$TaskPath=${powershellLiteral(taskName)}`,
+  "$Separator=$TaskPath.LastIndexOf('\\')",
+  "$FolderPath=if($Separator -lt 0){'\\'}else{'\\'+$TaskPath.Substring(0,$Separator)}",
+  "$TaskName=if($Separator -lt 0){$TaskPath}else{$TaskPath.Substring($Separator+1)}",
+  "try{$Service=New-Object -ComObject 'Schedule.Service';$Service.Connect();$null=$Service.GetFolder($FolderPath).GetTask($TaskName);exit 0}catch{if($_.Exception.HResult -eq -2147024894){exit 3};exit 2}",
+].join(";");
 
 /** The native probe maps Task Scheduler's stable missing-object HRESULT to exit code 3. */
 export const windowsTaskProbeReportsAbsence = (
@@ -550,14 +638,11 @@ export const windowsMachineStateLayer = (
   const localCredentialRoot = policy.kind === "local-file"
     ? win32.resolve(policy.path)
     : undefined;
-  const powershell = environmentValue(environment, "CANONFIG_POWERSHELL")
-    ?? win32.join(
-      environmentValue(environment, "SystemRoot") ?? "C:\\Windows",
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    );
+  const powershell = windowsPowerShellExecutable({
+    CANONFIG_POWERSHELL: environmentValue(environment, "CANONFIG_POWERSHELL"),
+    ProgramFiles: environmentValue(environment, "ProgramFiles"),
+    SystemRoot: environmentValue(environment, "SystemRoot"),
+  });
   const icacls = environmentValue(environment, "CANONFIG_ICACLS")
     ?? win32.join(
       environmentValue(environment, "SystemRoot") ?? "C:\\Windows",
@@ -569,6 +654,12 @@ export const windowsMachineStateLayer = (
       environmentValue(environment, "SystemRoot") ?? "C:\\Windows",
       "System32",
       "schtasks.exe",
+    );
+  const reg = environmentValue(environment, "CANONFIG_REG")
+    ?? win32.join(
+      environmentValue(environment, "SystemRoot") ?? "C:\\Windows",
+      "System32",
+      "reg.exe",
     );
   const localAppData = environmentValue(environment, "LOCALAPPDATA")
     ?? win32.join(home, "AppData", "Local");
@@ -613,6 +704,23 @@ export const windowsMachineStateLayer = (
               }))
           ),
         );
+      // Read once per process: changing LongPathsEnabled needs a new process
+      // to take effect anyway. A failed query keeps MAX_PATH.
+      const pathLengthLimit = yield* Effect.cached(
+        machine.runProcess({
+          executable: { platform: "linux", absolute: reg },
+          arguments: ["query", windowsFileSystemKey, "/v", "LongPathsEnabled"],
+          timeoutMilliseconds: 10_000,
+          maximumOutputBytes: 64 * 1024,
+        }).pipe(
+          Effect.map((result) =>
+            windowsPathLimitFromRegistry(
+              result.exitCode === 0 ? Buffer.from(result.standardOutput).toString("utf8") : undefined,
+            )
+          ),
+          Effect.catch(() => Effect.succeed(windowsPathLimitFromRegistry(undefined))),
+        ),
+      );
       const writeSemanticMode = (
         path: string,
         mode: number,
@@ -697,7 +805,11 @@ export const windowsMachineStateLayer = (
         const ancestor = win32.dirname(parent);
         yield* ensureFileParent(ancestor);
         const staging = yield* Effect.tryPromise({
-          try: () => mkdtemp(win32.join(ancestor, ".canonfig-directory-")),
+          try: async () => {
+            const staging = win32.join(ancestor, temporaryEntryName());
+            await mkdir(staging);
+            return staging;
+          },
           catch: (cause) => filesystemFailure("stage Windows directory", parent, cause),
         });
         // A new parent becomes visible at its final path only after protection.
@@ -721,7 +833,11 @@ export const windowsMachineStateLayer = (
           // an empty staging directory before creating any content inside it.
           yield* ensureFileParent(parent);
           const staging = yield* Effect.tryPromise({
-            try: () => mkdtemp(win32.join(parent, ".canonfig-write-")),
+            try: async () => {
+              const staging = win32.join(parent, temporaryEntryName());
+              await mkdir(staging);
+              return staging;
+            },
             catch: (cause) => filesystemFailure("stage Windows file", path, cause),
           });
           const temporary = win32.join(staging, "content");
@@ -872,10 +988,7 @@ export const windowsMachineStateLayer = (
         return mutationStep(path, async () => {
           await prepareWindowsManagedLeafKind(guardedTarget, "non-directory");
           await mkdir(win32.dirname(guardedTarget), { recursive: true });
-          const temporary = win32.join(
-            win32.dirname(guardedTarget),
-            `.${win32.basename(guardedTarget)}.canonfig-${randomBytes(12).toString("hex")}`,
-          );
+          const temporary = win32.join(win32.dirname(guardedTarget), temporaryEntryName());
           try {
             await symlink(mutation.target, temporary);
             await rename(temporary, guardedTarget);
@@ -932,10 +1045,7 @@ export const windowsMachineStateLayer = (
 
           const relativePath = win32.relative(root, path);
           const [topName, ...tail] = relativePath.split(/[\\/]/u);
-          const guard = win32.join(
-            root,
-            `.canonfig-guard-${randomBytes(12).toString("hex")}`,
-          );
+          const guard = win32.join(root, guardEntryName());
           const visibleTop = win32.join(root, topName!);
           const heldTop = win32.join(guard, topName!);
           // True while the top-level entry lives under the guard. The mutation
@@ -1004,7 +1114,7 @@ export const windowsMachineStateLayer = (
                 : Effect.promise(() => rm(guard, { recursive: true, force: true }).catch(() => undefined))
             )),
           );
-        }).pipe(Effect.uninterruptible);
+        }).pipe(Effect.uninterruptible, Effect.mapError(withSymlinkPrerequisite));
       const secureStoreAvailable = Effect.promise(() =>
         options.credentialStoreAccess !== "unavailable"
           && process.platform === "win32"
@@ -1043,7 +1153,7 @@ export const windowsMachineStateLayer = (
         script: string,
         additions: ReadonlyArray<ProcessEnvironmentEntry>,
         standardInput?: Uint8Array | undefined,
-      ) => runPowerShell(script, 5_000, additions, standardInput);
+      ) => runPowerShell(script, windowsCredentialTimeoutMilliseconds, additions, standardInput);
       const permissionSections = "[Security.AccessControl.AccessControlSections]'Access,Owner,Group'";
       // The executor restores one path per MachineState call, so each restore
       // is its own powershell.exe. Compiling the helper in every one of them
@@ -1089,7 +1199,8 @@ export const windowsMachineStateLayer = (
             "$binary=New-Object byte[] $security.BinaryLength",
             "$security.GetBinaryForm($binary,0)",
             "[CanonfigPermissionRestore]::Restore($path,$binary)",
-            `$actual=[IO.${nativeType}]::GetAccessControl($path,$sections).GetSecurityDescriptorSddlForm($sections)`,
+            ...readWindowsAcl(nativeType),
+            "$actual=$acl.GetSecurityDescriptorSddlForm($sections)",
             "if($actual -cne $expected){throw 'Restored owner, group or access rules differ from the permission snapshot'}",
           ].join(";"), nativePermissionTimeoutMilliseconds);
           if (restored.exitCode !== 0) {
@@ -1121,15 +1232,7 @@ export const windowsMachineStateLayer = (
         action: string,
       ): Effect.Effect<boolean, MachineStateError> => {
         if (windowsTaskQueryReportsAbsence(query)) return Effect.succeed(true);
-        const script = [
-          "$ErrorActionPreference='Stop'",
-          `$TaskPath=${powershellLiteral(taskName)}`,
-          "$Separator=$TaskPath.LastIndexOf('\\')",
-          "$FolderPath=if($Separator -lt 0){'\\'}else{'\\'+$TaskPath.Substring(0,$Separator)}",
-          "$TaskName=if($Separator -lt 0){$TaskPath}else{$TaskPath.Substring($Separator+1)}",
-          "try{$Service=New-Object -ComObject 'Schedule.Service';$Service.Connect();$null=$Service.GetFolder($FolderPath).GetTask($TaskName);exit 0}catch{if($_.Exception.HResult -eq -2147024894){exit 3};exit 2}",
-        ].join(";");
-        return runPowerShell(script, schedulerTimeoutMilliseconds).pipe(
+        return runPowerShell(windowsTaskProbeScript(taskName), schedulerTimeoutMilliseconds).pipe(
           Effect.flatMap((probe) =>
             windowsTaskProbeReportsAbsence(probe)
               ? Effect.succeed(true)
@@ -1197,6 +1300,32 @@ export const windowsMachineStateLayer = (
               )
           ),
         );
+      /**
+       * The task's runtime state from the Task Scheduler COM API: `State`,
+       * `LastTaskResult`, and the run times. The exported XML only carries the
+       * definition. Undefined when the API cannot answer: the XML already
+       * decided presence and enablement, so this only adds detail.
+       */
+      const taskRuntimeState = (taskName: string) =>
+        runPowerShell([
+          "$ErrorActionPreference='Stop'",
+          `$TaskPath=${powershellLiteral(taskName)}`,
+          "$Separator=$TaskPath.LastIndexOf('\\')",
+          "$FolderPath=if($Separator -lt 0){'\\'}else{'\\'+$TaskPath.Substring(0,$Separator)}",
+          "$TaskName=if($Separator -lt 0){$TaskPath}else{$TaskPath.Substring($Separator+1)}",
+          "$Service=New-Object -ComObject 'Schedule.Service';$Service.Connect()",
+          "$Task=$Service.GetFolder($FolderPath).GetTask($TaskName)",
+          "$Last=if($Task.LastRunTime.Year -lt 2000){''}else{$Task.LastRunTime.ToUniversalTime().ToString('o')}",
+          "$Next=if($Task.NextRunTime.Year -lt 2000){''}else{$Task.NextRunTime.ToUniversalTime().ToString('o')}",
+          "[Console]::Out.Write(('{0}|{1}|{2}|{3}' -f [int]$Task.State,[int]$Task.LastTaskResult,$Last,$Next))",
+        ].join(";"), schedulerTimeoutMilliseconds).pipe(
+          Effect.map((probe) =>
+            probe.exitCode === 0
+              ? parseWindowsTaskRuntime(Buffer.from(probe.standardOutput).toString("utf8"))
+              : undefined
+          ),
+          Effect.catch(() => Effect.succeed(undefined)),
+        );
       const nativeScheduler: SchedulerBackend = {
         inspect: (expected) => {
           const desired = parseWindowsTaskDefinition(expected);
@@ -1235,20 +1364,33 @@ export const windowsMachineStateLayer = (
                   schedule,
                   desired.weekdays === undefined ? "daily" : "weekly",
                 );
-              return Effect.succeed({
-                installed: true,
-                enabled: xmlElement(settings, "Enabled") !== "false",
-                matches: xmlElement(xml, "Description") === desired.description
-                  && command === desired.executable
-                  && xmlElement(xml, "Arguments") === desired.arguments
-                  && xmlElement(xml, "StartBoundary")?.includes(
-                    `T${desired.localTime}:00`,
-                  ) === true
-                  && schedule !== undefined
-                  && intervalMatches
-                  && windowsTaskTriggerEnabled(trigger)
-                  && weekdaysMatch,
-              });
+              const calendarMatches = xmlElement(xml, "StartBoundary")?.includes(
+                `T${desired.localTime}:00`,
+              ) === true
+                && schedule !== undefined
+                && intervalMatches
+                && weekdaysMatch;
+              const registration = windowsTaskRegistration(xml);
+              return taskRuntimeState(expected.serviceName).pipe(
+                Effect.map((runtime): SchedulerInspection => ({
+                  installed: true,
+                  enabled: xmlElement(settings, "Enabled") !== "false",
+                  matches: xmlElement(xml, "Description") === desired.description
+                    && command === desired.executable
+                    && xmlElement(xml, "Arguments") === desired.arguments
+                    && xmlElement(settings, "Priority") === String(windowsTaskPriority)
+                    && calendarMatches,
+                  calendarMatches,
+                  // A disabled trigger or task never fires even when its
+                  // definition matches; Task Scheduler state 1 is Disabled.
+                  active: windowsTaskTriggerEnabled(trigger) && runtime?.state !== 1,
+                  nextElapse: runtime?.nextRun,
+                  lastResult: runtime?.lastResult,
+                  lastStartedAt: runtime?.lastStartedAt,
+                  registeredAt: registration.registeredAt,
+                  runsOnlyWhileLoggedOn: registration.runsOnlyWhileLoggedOn,
+                })),
+              );
             }),
           );
         },
@@ -1298,7 +1440,9 @@ export const windowsMachineStateLayer = (
             }))
             : createScheduledTask(
               definition.serviceName,
-              windowsTaskXml(desired, currentUser),
+              // The registration time lets `schedule status` tell a run
+              // skipped while logged off from one before the task existed.
+              windowsTaskXml(desired, currentUser, new Date().toISOString().replace(/\.\d{3}Z$/u, "Z")),
             );
         },
         remove: (definition) =>
@@ -1339,6 +1483,7 @@ export const windowsMachineStateLayer = (
           data: windowsPath(localAppData),
           cache: windowsPath(localAppData),
         }),
+        pathLengthLimit: () => pathLengthLimit,
         ensureDirectory: (input) =>
           requireWindowsPath(input.path).pipe(
             Effect.flatMap((path) =>
@@ -1367,6 +1512,16 @@ export const windowsMachineStateLayer = (
           requireWindowsPath(input.path).pipe(
             Effect.flatMap((path) => machine.removeEmptyDirectory({ ...input, path })),
           ),
+        removeTemporaryEntries: (input: RemoveTemporaryEntriesInput) =>
+          requireWindowsPath(input.directory).pipe(
+            Effect.flatMap((directory) =>
+              Effect.tryPromise({
+                try: () => removeTemporaryEntriesAt(directory.absolute, input.recursive, win32),
+                catch: (cause) =>
+                  filesystemFailure("remove temporary entries", directory.absolute, cause),
+              })
+            ),
+          ),
         validatePathWithinRoot: (input) =>
           Effect.all({
             root: requireWindowsPath(input.root),
@@ -1380,6 +1535,7 @@ export const windowsMachineStateLayer = (
         replaceSymlink: (input) =>
           requireWindowsPath(input.path).pipe(
             Effect.flatMap((path) => machine.replaceSymlink({ ...input, path })),
+            Effect.mapError(withSymlinkPrerequisite),
           ),
         readSymlink: (path) =>
           requireWindowsPath(path).pipe(
@@ -1444,8 +1600,10 @@ export const windowsMachineStateLayer = (
           const captured = yield* runPowerShell([
             "$ErrorActionPreference='Stop'",
             `$sections=${permissionSections}`,
-            `[IO.${metadata.isDirectory() ? "Directory" : "File"}]::GetAccessControl(${powershellLiteral(nativePath.absolute)},$sections).GetSecurityDescriptorSddlForm($sections)`,
-          ].join(";"), 10_000);
+            `$path=${powershellLiteral(nativePath.absolute)}`,
+            ...readWindowsAcl(metadata.isDirectory() ? "Directory" : "File"),
+            "$acl.GetSecurityDescriptorSddlForm($sections)",
+          ].join(";"), nativePermissionTimeoutMilliseconds);
           const securityDescriptor = new TextDecoder().decode(captured.standardOutput).trim();
           if (captured.exitCode !== 0 || securityDescriptor.length === 0) {
             return yield* filesystemFailure(
@@ -1460,18 +1618,26 @@ export const windowsMachineStateLayer = (
             query.name.length === 0
             || /[\\/\0]/u.test(query.name)
           ) {
-            return Effect.fail(new ExecutableNotFoundError({ name: query.name }));
+            return Effect.fail(new ExecutableNotFoundError({ executable: query.name, searched: [] }));
           }
           const names = win32.extname(query.name).length > 0
             ? [query.name]
             : (environmentValue(environment, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
               .split(";")
               .map((extension) => `${query.name}${extension.toLowerCase()}`);
-          const directories = query.searchPath
-            ?? (environmentValue(environment, "PATH") ?? "")
-              .split(";")
-              .filter((entry) => entry.length > 0)
-              .map(windowsPath);
+          const directories = [
+            ...installDestinationDirectories({
+              platform: "windows",
+              home,
+              environment: (name) => environmentValue(environment, name),
+              methods: query.installMethods ?? [],
+            }).map(windowsPath),
+            ...(query.searchPath
+              ?? (environmentValue(environment, "PATH") ?? "")
+                .split(";")
+                .filter((entry) => entry.length > 0)
+                .map(windowsPath)),
+          ];
           return Effect.gen(function*() {
             for (const directory of directories) {
               yield* requireWindowsPath(directory);
@@ -1485,7 +1651,10 @@ export const windowsMachineStateLayer = (
                 }
               }
             }
-            return yield* new ExecutableNotFoundError({ name: query.name });
+            return yield* new ExecutableNotFoundError({
+              executable: query.name,
+              searched: [...new Set(directories.map((directory) => directory.absolute))],
+            });
           });
         },
         runProcess: (invocation) =>
@@ -1598,7 +1767,7 @@ export const windowsMachineStateLayer = (
                 catch: (cause) =>
                   filesystemFailure("read local credential", path, cause),
               });
-              return Redacted.make(new TextDecoder().decode(content));
+              return Redacted.make(new TextDecoder("utf-8", { ignoreBOM: true }).decode(content));
             });
           }
           return Effect.gen(function*() {

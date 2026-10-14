@@ -7,6 +7,8 @@ import {
   executeSynchronizationPlan,
   executionFollower,
   executionRevision,
+  preflightDisk,
+  preflightPathLengths,
 } from "./executor.ts";
 import { recoverSynchronizationPlan } from "./recovery.ts";
 import { RollbackCleanupError } from "./synchronization.errors.ts";
@@ -26,8 +28,18 @@ const makeSynchronization = Effect.gen(function*() {
         const revision = yield* executionRevision(input);
         const startedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
 
+        // A run that cannot fit, or that names a path this machine cannot
+        // take, is refused before it exists. Measuring after startRun left an
+        // open run the operator never knowingly started, and every later
+        // apply demanded `canonfig recover` for it.
+        yield* preflightPathLengths(input.plan.actions, input.revision.desired).pipe(
+          Effect.provideService(MachineState, machine),
+        );
+        yield* preflightDisk(input).pipe(Effect.provideService(MachineState, machine));
+
         // startRun atomically persists the full plan and all pending actions.
-        // No MachineState operation is reachable before this succeeds.
+        // The preflight above only measures; no MachineState mutation is
+        // reachable before this succeeds.
         yield* repository.startRun({
           id: input.id,
           follower,

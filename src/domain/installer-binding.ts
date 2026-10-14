@@ -43,8 +43,17 @@ export const normalizeInstallerMethod = (method: string): InstallerMethod => {
   return normalized;
 };
 
+/** C0 controls (U+0000 to U+001F) and DEL (U+007F). */
+const containsControlCharacter = (value: string): boolean => {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+};
+
 export const isLocalInstallerPath = (value: string, platform: InstallerPlatform): boolean =>
-  value.length > 0 && value.length <= 4096 && !/[\u0000-\u001f\u007f]/u.test(value)
+  value.length > 0 && value.length <= 4096 && !containsControlCharacter(value)
   && (platform === "windows"
     ? /^(?:[A-Za-z]:[\\/]|\\\\\?\\[A-Za-z]:\\)/u.test(value)
     : posix.isAbsolute(value) && !value.startsWith("//"));

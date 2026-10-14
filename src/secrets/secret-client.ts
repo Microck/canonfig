@@ -10,6 +10,10 @@ import {
   type CredentialReference,
 } from "../domain/brand.ts";
 import { canonicalLoopbackHostname } from "../enrollment/source-server.ts";
+import { canonfigVersionHeader } from "../enrollment/version-handshake.ts";
+import { checkSourceServerIdentity } from "../enrollment/tls-identity.ts";
+import { buildIdentity } from "../runtime/build-identity.ts";
+import { credentialFailureDetail } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import {
@@ -149,6 +153,7 @@ const requestSecrets = (
         const headers: OutgoingHttpHeaders = {
           accept: "application/json",
           authorization: `Bearer ${Redacted.value(credential)}`,
+          [canonfigVersionHeader]: buildIdentity.packageVersion,
         };
         const request = httpsRequest({
           protocol: "https:",
@@ -158,6 +163,7 @@ const requestSecrets = (
           method: "GET",
           ca: certificate.pem,
           rejectUnauthorized: true,
+          checkServerIdentity: checkSourceServerIdentity,
           minVersion: "TLSv1.2",
           headers,
         }, (response) => {
@@ -217,14 +223,16 @@ export const fetchSharedSecrets = (
         "the secret source TLS fingerprint does not match the pinned fingerprint",
       );
     }
+    // A load failure is local (no session bus, a locked keyring or Keychain),
+    // not a Source rejection: report the native cause and next step.
     const credential = yield* machine.loadCredential({
       reference: input.credentialReference,
     }).pipe(
-      Effect.mapError(() =>
+      Effect.mapError((error) =>
         failure(
-          "authentication",
-          "authenticate secret transfer",
-          "the follower credential is unavailable",
+          "storage",
+          "load follower credential",
+          `the follower credential could not be loaded from secure credential storage: ${credentialFailureDetail(error)}`,
         )
       ),
     );

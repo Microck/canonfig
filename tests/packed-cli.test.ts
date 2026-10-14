@@ -420,7 +420,7 @@ esac
           "kind": "directory",
           "files": [{ "path": "nested.txt", "content": "nested\\n" }]
         },
-        "verify": { "method": "digest", "digest": "${"b".repeat(64)}" }
+        "verify": { "method": "digest" }
       },
       {
         "id": "authored-config",
@@ -431,7 +431,7 @@ esac
           "format": "json",
           "keys": [{ "path": "authored.value", "value": true }]
         },
-        "verify": { "method": "digest", "digest": "${"c".repeat(64)}" }
+        "verify": { "method": "digest" }
       },
       {
         "id": "authored-credential",
@@ -452,7 +452,7 @@ esac
           "name": "authored",
           "files": [{ "path": "SKILL.md", "content": "# Authored\\n" }]
         },
-        "verify": { "method": "digest", "digest": "${"d".repeat(64)}" }
+        "verify": { "method": "digest" }
       },
       {
         "id": "authored-tool",
@@ -503,9 +503,22 @@ describe("packed Canonfig executable", () => {
   it("runs shipped help and version entrypoints", () => {
     const help = invoke(sourceHome, ["--help"]);
     const version = invoke(followerHome, ["--version"]);
+    const versionJson = invoke(followerHome, ["--version", "--json"]);
+    const sourceStatus = invoke(sourceHome, ["status", "--json"]);
     expect(help).toMatchObject({ status: 0, stderr: "" });
     expect(help.stdout).toContain("Usage: canonfig");
-    expect(version).toEqual({ status: 0, stdout: "3.2.1\n", stderr: "" });
+    expect(version).toEqual({ status: 0, stdout: "4.0.0\n", stderr: "" });
+    expect(versionJson).toMatchObject({ status: 0, stderr: "" });
+    expect(JSON.parse(versionJson.stdout)).toMatchObject({
+      packageVersion: "4.0.0",
+      sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(sourceStatus).toMatchObject({ status: 0, stderr: "" });
+    expect(JSON.parse(sourceStatus.stdout).data.machineRole).toMatchObject({
+      role: "source",
+      sourceFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      tlsFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
   });
 
   it("runs representative safe routes with stable JSON", () => {
@@ -769,7 +782,10 @@ describe("packed Canonfig executable", () => {
         CANONFIG_SOURCE_CREDENTIAL_REFERENCE: secret,
       },
     );
-    const doctorExitCodes = process.platform === "win32" ? [5, 7] : [5];
+    // The injected reference is not one this machine's local-file store owns,
+    // so the source probe fails locally (CF-37: Human Action Required) and
+    // makes no Source request, instead of reporting an authentication failure.
+    const doctorExitCodes = process.platform === "win32" ? [3, 7] : [3];
     expect(doctorExitCodes).toContain(result.status);
     expect(result.stdout).toBe("");
     expect(result.stderr).not.toContain(secret);
@@ -786,6 +802,11 @@ describe("packed Canonfig executable", () => {
       },
     });
     expect(envelope.data.probes).toHaveLength(7);
+    expect(envelope.data.probes).toContainEqual(expect.objectContaining({
+      name: "source",
+      status: "fail",
+      category: "human-action-required",
+    }));
   });
 
   it("keeps unavailable scheduled apply quiet on stdout and truthful on stderr", () => {
@@ -799,8 +820,9 @@ describe("packed Canonfig executable", () => {
     );
     expect(first.status).toBe(2);
     expect(first.stdout).toBe("");
+    // Human output ends a failure with its exit code and category.
     expect(first.stderr).toBe(
-      "follower synchronization configuration is not enrolled\n",
+      "follower synchronization configuration is not enrolled\nexit 2: usage or configuration\n",
     );
     expect(second).toEqual(first);
     expect(first.stderr).not.toContain("completed");
@@ -899,6 +921,10 @@ describe("packed Canonfig executable", () => {
     expect(status.status, status.stderr).toBe(0);
     const statusData = JSON.parse(status.stdout).data;
     expect(statusData.follower.id).toBe(follower);
+    expect(statusData.machineRole).toMatchObject({
+      role: "follower",
+      follower,
+    });
     expect(statusData.completionReceipt.revision).toMatch(
       new RegExp(`^${packedRevision}:view:[a-f0-9]{64}$`, "u"),
     );
@@ -1505,21 +1531,10 @@ operation="\${2:-}"
 marker="$HOME/.canonfig-packed-systemd-enabled"
 case "$operation" in
   daemon-reload) exit 0 ;;
-  is-enabled)
-    if test -f "$marker"; then
-      printf 'enabled\n'
-      exit 0
-    fi
-    printf 'disabled\n'
-    exit 1
-    ;;
-  is-active)
-    if test -f "$marker"; then
-      printf 'active\n'
-      exit 0
-    fi
-    printf 'inactive\n'
-    exit 3
+  show)
+    state=inactive; unit=disabled
+    if test -f "$marker"; then state=active; unit=enabled; fi
+    printf 'Id=canonfig-sync.timer\\nLoadState=loaded\\nActiveState=%s\\nUnitFileState=%s\\nDropInPaths=\\n\\nId=canonfig-sync.service\\nLoadState=loaded\\nActiveState=inactive\\n' "$state" "$unit"
     ;;
   enable) touch "$marker" ;;
   disable) rm -f "$marker" ;;
@@ -1745,10 +1760,13 @@ esac
     expect(restrictedApply.data.outcome).toMatchObject({
       outcome: "Converged",
     });
+    // The restricted follower never ran `schedule set`: the profile default
+    // is offered, never installed (CF-47).
+    expect(restrictedApply.data.schedule).toMatchObject({ action: "available" });
     expect(requireSuccess(
       invoke(restrictedHome, ["schedule", "status", "--json"]),
-      "verify restricted follower schedule remains active",
-    ).data.state).toBe("current");
+      "verify the restricted follower's profile default was not installed",
+    ).data).toMatchObject({ state: "not-selected" });
     expect(() => statSync(resolve(
       restrictedHome,
       ".canonfig-packed-multi",
@@ -1782,19 +1800,20 @@ esac
       invoke(rotatedHome, ["status", "--json"]),
       "capture post-reenrollment follower status",
     );
+    // Rotation stores the new credential as a new item and retires the old
+    // one, so the superseded credential no longer exists on the follower.
+    // SAFETY: Re-enrollment status includes the newly issued credential
+    // reference under the same follower identity.
+    const newRotatedReference = (newRotatedStatus.data.follower as {
+      readonly credentialReference: string;
+    }).credentialReference;
+    expect(newRotatedReference).not.toBe(oldRotatedFollower.credentialReference);
     expect(
-      // SAFETY: Re-enrollment status includes the newly issued credential
-      // reference under the same follower identity.
-      (newRotatedStatus.data.follower as {
-        readonly credentialReference: string;
-      }).credentialReference,
-    ).toBe(oldRotatedFollower.credentialReference);
-    expect(
-      readFileSync(
-        oldRotatedFollower.credentialReference.replace(/^local-file:/u, ""),
-        "utf8",
-      ),
+      readFileSync(newRotatedReference.replace(/^local-file:/u, ""), "utf8"),
     ).not.toBe(oldRotatedCredential);
+    expect(() => statSync(
+      oldRotatedFollower.credentialReference.replace(/^local-file:/u, ""),
+    )).toThrow();
     expect(newRotatedStatus.data.sourceIdentity).toMatchObject({
       publicKeyFingerprint:
         // SAFETY: The workstation status assertion above verifies source

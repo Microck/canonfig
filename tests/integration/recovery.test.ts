@@ -1,5 +1,7 @@
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -35,16 +37,21 @@ import {
   sha256BytesHex,
   sha256Hex,
 } from "../../src/profile/profile-codec.ts";
-import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts";
-import {
-  SyncScheduleSchema,
-  type SyncSchedule,
-} from "../../src/schedule/schedule-manager.types.ts";
+import { describeRuntimeError } from "../../src/cli/failure-taxonomy.ts";
 import { RepositoryDecodeError } from "../../src/state/state-repository.errors.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import type { JournalActionInput } from "../../src/state/state-repository.types.ts";
 import { planSynchronization } from "../../src/synchronization/planner.ts";
+import {
+  abandonFollowerRun,
+  recoverFollower,
+} from "../../src/synchronization/follower-orchestration.ts";
+import { runLockPath, withRunLock } from "../../src/synchronization/run-lock.ts";
+import {
+  followerConvergence,
+  openRunReport,
+} from "../../src/synchronization/run-status.ts";
 import { RecoveryIntegrityError } from "../../src/synchronization/synchronization.errors.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 import { Synchronization } from "../../src/synchronization/synchronization.service.ts";
@@ -206,71 +213,6 @@ const applicationLayer = (
     Layer.provideMerge(machine),
   );
 
-const inMemoryScheduleManager = (initial?: SyncSchedule) => {
-  let current: SyncSchedule | undefined = initial;
-  const selectedSchedule = (input?: { readonly schedule?: SyncSchedule }) =>
-    input?.schedule ?? { kind: "daily" as const, localTime: "00:00" };
-  const status = (schedule: SyncSchedule) => ({
-    state: current === undefined
-      ? "not-installed" as const
-      : JSON.stringify(current) === JSON.stringify(schedule)
-        ? "current" as const
-        : "drifted" as const,
-    platform: "linux" as const,
-    schedule,
-    definition: {
-      platform: "linux" as const,
-      mechanism: "systemd-user-timer" as const,
-      serviceName: "recovery-test",
-      service: "",
-      schedule: "",
-    },
-  });
-  const update = (input?: { readonly schedule?: SyncSchedule }) => {
-    const schedule = selectedSchedule(input);
-    current = schedule;
-    return Effect.succeed({
-      change: "updated" as const,
-      status: status(schedule),
-    });
-  };
-  const manager = ScheduleManager.of({
-    install: update,
-    update,
-    inspect: (input) => Effect.succeed(status(selectedSchedule(input))),
-    status: (input) => Effect.succeed(status(selectedSchedule(input))),
-    snapshot: () => Effect.succeed(current === undefined
-      ? {
-        state: "absent" as const,
-        platform: "linux" as const,
-        mechanism: "systemd-user-timer" as const,
-        serviceName: "recovery-test",
-      }
-      : {
-        state: "present" as const,
-        platform: "linux" as const,
-        mechanism: "systemd-user-timer" as const,
-        serviceName: "recovery-test",
-        enabled: true,
-        servicePresent: true,
-        schedulePresent: true,
-        schedule: JSON.stringify(current),
-      }),
-    restore: (_input, snapshot) => Effect.sync(() => {
-      current = snapshot.state === "absent"
-        ? undefined
-        : Schema.decodeUnknownSync(SyncScheduleSchema)(
-          JSON.parse(snapshot.schedule ?? "{}"),
-        );
-    }),
-    remove: () => Effect.sync(() => {
-      current = undefined;
-      return { change: "removed" as const };
-    }),
-  });
-  return { manager, current: () => current };
-};
-
 const persistedPlan = (value: Fixture) => {
   const desired = value.revision.desired[0]!.desired;
   const planned = Effect.runSync(planSynchronization({
@@ -399,49 +341,15 @@ const writeRollbackPayload = (
   return path;
 };
 
-const writeScheduleRollbackPayload = (
-  value: Fixture,
-  action: string,
-  schedule: SyncSchedule,
-): string => {
-  const path = join(
-    value.root,
-    "home",
-    ".cache",
-    "canonfig",
-    "rollback",
-    "run-recovery",
-    `${sha256Hex(action)}.schedule.json`,
-  );
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({
-    state: "present",
-    platform: "linux",
-    mechanism: "systemd-user-timer",
-    serviceName: "recovery-test",
-    enabled: true,
-    servicePresent: true,
-    schedulePresent: true,
-    schedule: JSON.stringify(schedule),
-  }));
-  return path;
-};
-
 const recover = (
   value: Fixture,
   machine = machineLayer(value.root),
-  scheduleManager?: ScheduleManager["Service"],
 ) =>
   Effect.runPromise(
     Effect.gen(function*() {
       const synchronization = yield* Synchronization;
       return yield* synchronization.recover(value.recovery);
-    }).pipe(
-      scheduleManager === undefined
-        ? (effect) => effect
-        : Effect.provideService(ScheduleManager, scheduleManager),
-      Effect.provide(applicationLayer(value, machine)),
-    ),
+    }).pipe(Effect.provide(applicationLayer(value, machine))),
   );
 
 const runRows = (value: Fixture) => {
@@ -457,24 +365,32 @@ const runRows = (value: Fixture) => {
 
 describe("synchronization crash recovery", () => {
   it.each([
-    ["before mutation", "pending", false],
-    ["during write/replace", "running", true],
-    ["after mutation before journal completion", "running", true],
-    ["after completion before run finalization", "succeeded", true],
+    ["before mutation", "pending", "original"],
+    // The replacement is still being written to its temporary sibling.
+    ["during write/replace", "running", "original"],
+    ["after mutation before journal completion", "running", "canonical content"],
+    ["after completion before run finalization", "succeeded", "canonical content"],
   ] as const)(
     "recovers an interruption %s",
-    async (_label, state, mutated) => {
+    async (label, state, onDisk) => {
       const value = fixture(temporaryDirectory());
       const plan = persistedPlan(value);
       await seed(value, plan);
       const action = plan.actions[0]!;
       mkdirSync(dirname(value.target), { recursive: true });
-      writeFileSync(value.target, mutated ? "partial content" : "original");
+      writeFileSync(value.target, onDisk);
+      // A killed write leaves its partial temporary sibling behind.
+      const orphan = join(dirname(value.target), ".cf-0123456789ab.tmp");
+      if (label === "during write/replace") writeFileSync(orphan, "canonical con");
+      let rollbackOrphan: string | undefined;
       if (state !== "pending") {
         const reference = rollbackReference(value, action.id, "original");
+        if (label === "during write/replace") {
+          rollbackOrphan = join(dirname(reference), ".cf-abcdef012345.tmp");
+          writeFileSync(rollbackOrphan, "partial snapshot manifest");
+        }
         await journal(value, action.id, "running", reference);
         if (state === "succeeded") {
-          writeFileSync(value.target, value.artifact.content);
           await journal(value, action.id, "succeeded", reference);
         }
       }
@@ -491,7 +407,12 @@ describe("synchronization crash recovery", () => {
 
       expect(outcome.outcome, JSON.stringify(outcome)).toBe("Converged");
       expect(await readFile(value.target, "utf8")).toBe("canonical content");
-      expect(targetWrites).toBe(state === "succeeded" ? 0 : mutated ? 2 : 1);
+      expect(targetWrites).toBe(state === "succeeded" ? 0 : state === "running" ? 2 : 1);
+      expect(existsSync(orphan)).toBe(false);
+      if (rollbackOrphan !== undefined) {
+        expect(existsSync(rollbackOrphan)).toBe(false);
+        expect(existsSync(dirname(rollbackOrphan))).toBe(false);
+      }
     },
   );
 
@@ -832,7 +753,8 @@ describe("synchronization crash recovery", () => {
       appliedResource: currentApplied,
       removedResourceRecord: previousApplied,
     });
-    writeFileSync(value.target, "drifted after the recorded success");
+    // The target is back at its pre-run bytes, a state recovery may replay.
+    writeFileSync(value.target, "previous");
 
     let targetWrites = 0;
     const machine = decorateMachine(value.root, (service) => ({
@@ -863,6 +785,62 @@ describe("synchronization crash recovery", () => {
     );
     expect(applied).toEqual([previousApplied]);
   });
+
+  it.each(["running", "succeeded"] as const)(
+    "stops without writing when a %s action's target was edited after the interruption",
+    async (state) => {
+      // The run was killed right after replacing the file, then the operator
+      // appended to it. Recovery used to rewrite it and then roll it back to the
+      // pre-run bytes, deleting the snapshot: the edit was lost without a copy.
+      const value = fixture(temporaryDirectory());
+      const plan = persistedPlan(value);
+      const action = plan.actions[0]!;
+      await seed(value, plan);
+      mkdirSync(dirname(value.target), { recursive: true });
+      const reference = rollbackReference(value, action.id, "previous");
+      await journal(value, action.id, "running", reference);
+      if (state === "succeeded") await journal(value, action.id, "succeeded", reference);
+      const edited = "canonical content\nLOCAL EDIT after the interruption\n";
+      writeFileSync(value.target, edited);
+
+      let targetMutations = 0;
+      const machine = decorateMachine(value.root, (service) => ({
+        ...service,
+        atomicWrite: (input) => {
+          if (input.path.absolute === value.target) targetMutations += 1;
+          return service.atomicWrite(input);
+        },
+        removeFile: (input) => {
+          if (input.path.absolute === value.target) targetMutations += 1;
+          return service.removeFile(input);
+        },
+      }));
+
+      const error = await Effect.runPromise(Effect.flip(
+        Effect.flatMap(Synchronization, (synchronization) =>
+          synchronization.recover(value.recovery)
+        ).pipe(Effect.provide(applicationLayer(value, machine))),
+      ));
+
+      expect(error).toMatchObject({
+        _tag: "RecoveryLocalEditError",
+        paths: [value.target],
+        snapshot: reference,
+      });
+      expect(describeRuntimeError(error).category)
+        .toBe("human-action-required");
+      expect(targetMutations).toBe(0);
+      expect(await readFile(value.target, "utf8")).toBe(edited);
+      expect(existsSync(reference)).toBe(true);
+      expect(readFileSync(`${reference}.${sha256Hex(value.target)}.bin`, "utf8"))
+        .toBe("previous");
+      const open = await Effect.runPromise(
+        Effect.flatMap(StateRepository, (repository) => repository.loadRecovery(follower.id))
+          .pipe(Effect.provide(stateRepositoryLayer(value.database))),
+      );
+      expect(open?.run.id).toBe("run-recovery");
+    },
+  );
 
   it("accepts a completed rollback after an earlier action succeeded", async () => {
     const value = fixture(temporaryDirectory());
@@ -1094,7 +1072,8 @@ describe("synchronization crash recovery", () => {
     const plan = persistedPlan(value);
     await seed(value, plan);
     mkdirSync(dirname(value.target), { recursive: true });
-    writeFileSync(value.target, "corrupt partial write");
+    // Killed after the replacement landed but before it was journaled.
+    writeFileSync(value.target, value.artifact.content);
     const reference = rollbackReference(value, plan.actions[0]!.id, "previous");
     await journal(value, plan.actions[0]!.id, "running", reference);
     await interruptRun(value);
@@ -1464,7 +1443,8 @@ describe("synchronization crash recovery", () => {
       const plan = persistedPlan(value);
       await seed(value, plan);
       mkdirSync(dirname(value.target), { recursive: true });
-      writeFileSync(value.target, "corrupt partial write");
+      // Killed after the replacement landed but before it was journaled.
+      writeFileSync(value.target, value.artifact.content);
       const reference = writeRollbackPayload(value, plan.actions[0]!.id, payload(value));
       await journal(value, plan.actions[0]!.id, "running", reference);
       const operations: Array<string> = [];
@@ -1531,5 +1511,145 @@ describe("synchronization crash recovery", () => {
     ).get("run-recovery");
     database.close();
     expect(row?.status).toBe("Interrupted");
+  });
+});
+
+describe("open run ownership and status", () => {
+  it("refuses recover and abandon while a live process holds the run lock", async () => {
+    // A paused `sync --apply` still owned its run, yet `recover` executed it,
+    // recorded Converged, and the resumed owner then renamed its temporary
+    // file over the result.
+    const value = fixture(temporaryDirectory());
+    await seed(value);
+    let release: (() => void) | undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let acquired: (() => void) | undefined;
+    const holding = new Promise<void>((resolve) => {
+      acquired = resolve;
+    });
+    const owner = Effect.runPromise(withRunLock(
+      value.database,
+      "sync --apply",
+      Effect.promise(async () => {
+        acquired?.();
+        await released;
+      }),
+    ));
+    await holding;
+
+    const layer = applicationLayer(value);
+    const refusals = await Promise.all([
+      Effect.runPromise(Effect.flip(recoverFollower(value.database).pipe(Effect.provide(layer)))),
+      Effect.runPromise(Effect.flip(abandonFollowerRun(value.database).pipe(Effect.provide(layer)))),
+    ]);
+    for (const refusal of refusals) {
+      expect(refusal).toMatchObject({
+        _tag: "RunLockHeldError",
+        pid: process.pid,
+        operation: "sync --apply",
+      });
+      const described = describeRuntimeError(refusal);
+      expect(described.category).toBe("conflict-or-drift");
+      expect(described.message).toContain(`PID ${String(process.pid)}`);
+    }
+    const open = await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) => repository.loadRecovery(follower.id))
+        .pipe(Effect.provide(stateRepositoryLayer(value.database))),
+    );
+    expect(runRows(value).every((row) => row.state === "pending")).toBe(true);
+    expect(open?.run.id).toBe("run-recovery");
+
+    release?.();
+    await owner;
+    expect(existsSync(runLockPath(value.database))).toBe(false);
+  });
+
+  it("takes over a run lock whose process no longer exists", async () => {
+    const value = fixture(temporaryDirectory());
+    const exited = spawnSync(process.execPath, ["-e", ""]).pid;
+    writeFileSync(runLockPath(value.database), JSON.stringify({
+      pid: exited,
+      operation: "sync --apply",
+      since: "2026-08-15T00:00:00Z",
+      token: "left-by-a-killed-process",
+    }));
+
+    const holder = await Effect.runPromise(withRunLock(
+      value.database,
+      "recover",
+      Effect.sync(() => Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({
+        pid: Schema.Number,
+        operation: Schema.String,
+      })))(readFileSync(runLockPath(value.database), "utf8"))),
+    ));
+
+    expect(holder).toMatchObject({ pid: process.pid, operation: "recover" });
+    expect(existsSync(runLockPath(value.database))).toBe(false);
+  });
+
+  it("reports an open or drifted run as not converged, with journaled progress", async () => {
+    const value = fixture(temporaryDirectory());
+    const base = persistedPlan(value);
+    const first = base.actions[0]!;
+    const second = {
+      ...first,
+      id: decode(ActionId)("action:settings:second:write-file"),
+      before: [first.id],
+    };
+    const body = {
+      revision: base.revision,
+      follower: base.follower,
+      requiredBlobs: base.requiredBlobs,
+      actions: [first, second],
+      agentTasks: base.agentTasks,
+    };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(body));
+    await seed(value, { ...base, actions: [first, second], encoded, digest: sha256Hex(encoded) });
+    await journal(value, first.id, "running");
+    await journal(value, first.id, "succeeded");
+    const reported = { reached: true, detail: `applied revision ${value.revision.id}` };
+    const load = Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      return {
+        state: yield* repository.loadState(follower.id),
+        receipt: yield* repository.latestDeploymentReceipt(follower.id),
+      };
+    }).pipe(Effect.provide(stateRepositoryLayer(value.database)));
+
+    const interrupted = await Effect.runPromise(load);
+    const report = openRunReport(interrupted.state.activeRecovery!, undefined);
+    expect(report.actions.map((action) => [action.action, action.state, action.attempt]))
+      .toEqual([[first.id, "succeeded", 1], [second.id, "pending", 0]]);
+    expect(report.finishedActions).toBe(1);
+    expect(followerConvergence(reported, report, interrupted.receipt?.outcome))
+      .toMatchObject({ reached: false, detail: expect.stringContaining("1 of 2 actions finished") });
+
+    await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.completeRun({
+          run: decode(RunId)("run-recovery"),
+          completedAt: "2026-08-15T00:04:00Z",
+          outcome: {
+            outcome: "FollowerDrift",
+            run: decode(RunId)("run-recovery"),
+            conflicts: [{
+              resource: value.revision.resources[0]!.id,
+              target: value.target,
+              desiredDigest: decode(ContentDigest)(value.artifact.digest),
+              observedDigest: decode(ContentDigest)(sha256Hex("local")),
+              lastAppliedDigest: decode(ContentDigest)(value.artifact.digest),
+            }],
+          },
+          appliedResources: [],
+        })
+      ).pipe(Effect.provide(stateRepositoryLayer(value.database))),
+    );
+    const drifted = await Effect.runPromise(load);
+    expect(drifted.state.activeRecovery).toBeUndefined();
+    expect(followerConvergence(reported, undefined, drifted.receipt?.outcome))
+      .toMatchObject({ reached: false, detail: expect.stringContaining("FollowerDrift") });
+    expect(followerConvergence(reported, undefined, "Converged")).toEqual(reported);
   });
 });

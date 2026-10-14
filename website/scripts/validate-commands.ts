@@ -4,7 +4,8 @@ import { pathToFileURL } from "node:url";
 
 import { evaluateCli } from "../../src/cli/cli.ts";
 import { parseHarnessArguments } from "../../src/harness-configuration/cli-arguments.ts";
-import { installerArguments, parseInstallerArguments } from "../../src/runtime/installer-cli.ts";
+import { installerArguments } from "../../src/runtime/command-routing.ts";
+import { parseInstallerArguments } from "../../src/runtime/installer-cli.ts";
 import {
   isPrivateEnrollmentCommand,
   privateEnrollmentArguments,

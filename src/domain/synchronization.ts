@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaIssue } from "effect";
 import { TaggedError } from "./tagged-error.ts";
 
 import {
@@ -14,10 +14,6 @@ import {
 } from "./brand.ts";
 import type { ResourceId } from "./brand.ts";
 import {
-  SyncScheduleSchema,
-  type SyncSchedule,
-} from "../schedule/schedule-manager.types.ts";
-import {
   AutomaticRecipeMethod,
   BuildPolicy as BuildPolicySchema,
   RecipeIndexPolicy,
@@ -28,7 +24,7 @@ import {
 import {
   isMissingAutomaticRecipeVersion,
   RecipeSourceMetadata,
-  recipeValidationError,
+  recipeValidationIssue,
 } from "./recipe-versions.ts";
 import {
   InstallerRecipeProvenance,
@@ -81,6 +77,8 @@ export type ActionDetail =
      * addition, so the operator is told explicitly.
      */
     readonly adoptionNotice?: string | undefined;
+    /** Exact unmanaged bytes retained locally; no text enters the public plan. */
+    readonly retainedLocalDigest?: string | undefined;
   }
   | {
     readonly kind: "write-config";
@@ -95,10 +93,18 @@ export type ActionDetail =
      * Canonfig wrote, so a local edit is never silently discarded.
      */
     readonly removes?: ReadonlyArray<string> | undefined;
+    /**
+     * Keys Canonfig owned that the revision no longer declares but that stay,
+     * because a Local Overlay key overlaps them. Canonfig stops managing them
+     * and leaves their current values, so the plan names them instead of
+     * reading as if nothing were left behind.
+     */
+    readonly retains?: ReadonlyArray<string> | undefined;
+    readonly retentionNotice?: string | undefined;
   }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
   | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }
-  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined; readonly provenance?: InstallerRecipeProvenanceType | undefined }
+  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; /** The different version the installer reported before this install. */ readonly replaces?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined; readonly provenance?: InstallerRecipeProvenanceType | undefined }
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
   | { readonly kind: "agent-task"; readonly taskId: AgentTaskId; readonly summary: string }
@@ -221,6 +227,11 @@ export type ObservedResourceState =
      */
     readonly objectKind?: ObservedObjectKind | undefined;
     readonly symlinkTo?: string | undefined;
+    /**
+     * Tools: the version the selected recipe's installer reports as
+     * installed, when it lists the package. Undefined when it cannot say.
+     */
+    readonly installedVersion?: string | undefined;
   }
   | {
     readonly state: "directory";
@@ -276,6 +287,7 @@ const InstallToolActionDetailSchema = Schema.Struct({
   method: AutomaticRecipeMethod,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
+  replaces: Schema.optional(Schema.NonEmptyString),
   indexPolicy: Schema.optional(RecipeIndexPolicy),
   source: Schema.optional(Schema.Union([
     Schema.NonEmptyString,
@@ -285,13 +297,16 @@ const InstallToolActionDetailSchema = Schema.Struct({
   provenance: Schema.optional(InstallerRecipeProvenance),
 }).check(
   Schema.makeFilter((detail) => {
-    const reason = recipeValidationError(detail);
-    return reason === undefined && !isMissingAutomaticRecipeVersion(detail)
-      ? undefined
-      : {
+    const issue = recipeValidationIssue(detail);
+    if (issue !== undefined) return issue;
+    return isMissingAutomaticRecipeVersion(detail)
+      ? {
         path: ["version"],
-        issue: reason ?? `automatic installer ${detail.method} requires an exact version`,
-      };
+        issue: new SchemaIssue.InvalidValue({
+          expected: `automatic installer ${detail.method} requires an exact version`,
+        }),
+      }
+      : undefined;
   }),
 );
 
@@ -313,12 +328,15 @@ export const ActionDetailSchema = Schema.Union([
     mode: Schema.optional(Schema.Int),
     previousSourceDigest: Schema.optional(ContentDigest),
     adoptionNotice: Schema.optional(Schema.NonEmptyString),
+    retainedLocalDigest: Schema.optional(ContentDigest),
   }),
   Schema.Struct({
     kind: Schema.Literal("write-config"),
     target: Schema.NonEmptyString,
     keys: Schema.Array(Schema.NonEmptyString),
     removes: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+    retains: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+    retentionNotice: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     kind: Schema.Literal("mirror-directory"),
@@ -464,6 +482,7 @@ export const ObservedResourceStateSchema = Schema.Union([
     mode: Schema.optional(Schema.Int),
     objectKind: Schema.optional(ObservedObjectKind),
     symlinkTo: Schema.optional(Schema.NonEmptyString),
+    installedVersion: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     state: Schema.Literal("directory"),

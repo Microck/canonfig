@@ -1,7 +1,20 @@
-import { generateKeyPairSync, sign, verify } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash, generateKeyPairSync, sign, verify } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,10 +27,15 @@ import type {
   ProfileResourceInput,
   ProfileRevision,
 } from "../src/domain/profile.ts";
-import { scanDiscovery } from "../src/profile/discovery.ts";
+import type { ConfigValue } from "../src/domain/resource.ts";
+import { describeRuntimeError } from "../src/cli/failure-taxonomy.ts";
+import { scanDiscovery, type DiscoveryScanResult } from "../src/profile/discovery.ts";
 import {
+  EmptyPublicationError,
+  InvalidPublicationInputError,
   InvalidPublicationResourcesError,
   PublicationReviewRequiredError,
+  PublicationSourceError,
   UnresolvedPublicationProposalError,
 } from "../src/profile/profile-catalog.errors.ts";
 import { profileCatalogLayer } from "../src/profile/profile-catalog.layer.ts";
@@ -35,7 +53,12 @@ import {
 } from "../src/state/state-repository.errors.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
-import { sha256BytesHex, sha256Hex } from "../src/profile/profile-codec.ts";
+import {
+  directoryVerificationDigest,
+  sha256BytesHex,
+  sha256Hex,
+} from "../src/profile/profile-codec.ts";
+import { renderConfigDocument } from "../src/synchronization/config-codec.ts";
 
 const temporaryDirectories: Array<string> = [];
 
@@ -121,6 +144,23 @@ const inputFor = (
   publishedAt: "2026-08-15T12:01:00Z",
 });
 
+const authoredInput = (
+  discovery: DiscoveryScanResult,
+  resources: ReadonlyArray<ProfileResourceInput>,
+  directory?: string,
+): PublishProfileInput => {
+  const input = inputFor(discovery);
+  return { ...input, profile: { ...input.profile, resources, directory } };
+};
+
+const authoredFile = (id: string, content: string): ProfileResourceInput => ({
+  id,
+  kind: "file",
+  target: `~/.canonfig/${id}.txt`,
+  spec: { kind: "file", content },
+  verify: { method: "digest" },
+});
+
 const runCatalog = <A, E>(
   database: string,
   signer: ProfileRevisionSigner,
@@ -131,7 +171,179 @@ const runCatalog = <A, E>(
     Effect.provide(stateRepositoryLayer(database)),
   ));
 
+const authoredConfig = (value: ConfigValue, path = "mcpServers.fixture"): ProfileResourceInput => ({
+  id: "client-config",
+  kind: "config",
+  target: "~/.canonfig/client.json",
+  spec: { kind: "config", format: "json", keys: [{ path, value }] },
+  verify: { method: "digest" },
+});
+
 describe("reviewed profile publication", () => {
+  it.each([
+    ["separate password argument", { args: ["--password", "publication-disposable-value"] }],
+    ["equals token argument", { args: ["--api-token=publication-disposable-value"] }],
+    ["URL user information", { url: "https://operator:publication-disposable-value@example.test/mcp" }],
+    ["URL secret query", { url: "https://example.test/mcp?api_key=publication-disposable-value&limit=10" }],
+    ["encoded URL secret query", { url: "https://example.test/mcp?api%5fkey=publication-disposable-value" }],
+    ["authorization header", { headers: { Authorization: "Bearer publication-disposable-value" } }],
+    ["literal environment entry", { env: { API_TOKEN: "publication-disposable-value" } }],
+    ["named environment entry", { environment: [{ name: "API_TOKEN", value: "publication-disposable-value" }] }],
+    ["nested credential field", { authentication: { clientSecret: "publication-disposable-value" } }],
+    ["reference with literal suffix", { args: ["--password=${API_TOKEN}publication-disposable-value"] }],
+  ] as const)("rejects %s before signing or persisting any publication data", async (_name, value) => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const signing = makeSigner();
+    const error = await runCatalog(
+      fixture.database,
+      signing.signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        return yield* Effect.flip(catalog.publish(authoredInput(discovery, [
+          authoredFile("not-persisted", "ordinary file bytes"),
+          authoredConfig(value),
+        ])));
+      }),
+    );
+    expect(error).toBeInstanceOf(InvalidPublicationInputError);
+    if (error instanceof InvalidPublicationInputError) {
+      expect(error.reason).toContain("client-config");
+      expect(error.reason).toContain("literal credential");
+      expect(error.reason).toContain("symbolic environment reference");
+      expect(error.reason).toContain("canonfig secrets set");
+      expect(error.reason).not.toContain("publication-disposable-value");
+    }
+    expect(signing.calls).toEqual({ signed: 0, verified: 0 });
+    const database = new DatabaseSync(fixture.database);
+    try {
+      expect(database.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM profile_revisions) AS revisions,
+          (SELECT COUNT(*) FROM resource_blobs) AS blobs,
+          (SELECT COUNT(*) FROM resource_blob_manifests) AS blobManifests,
+          (SELECT COUNT(*) FROM resource_blob_chunks) AS blobChunks,
+          (SELECT COUNT(*) FROM profile_revision_blobs) AS revisionBlobs,
+          (SELECT COUNT(*) FROM revision_approvals) AS approvals
+      `).get()).toEqual({
+        revisions: 0,
+        blobs: 0,
+        blobManifests: 0,
+        blobChunks: 0,
+        revisionBlobs: 0,
+        approvals: 0,
+      });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does not include unsafe recipe arguments in publication contract failures", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const signing = makeSigner();
+    const error = await runCatalog(fixture.database, signing.signer, Effect.gen(function*() {
+      const catalog = yield* ProfileCatalog;
+      return yield* Effect.flip(catalog.publish(authoredInput(discovery, [{
+        id: "unsafe-tool",
+        kind: "tool",
+        target: "~/.local/bin/unsafe-tool",
+        spec: {
+          kind: "tool",
+          toolId: "unsafe-tool",
+          recipes: [{
+            platform: "linux",
+            method: "npm",
+            package: "https://operator:publication-disposable-value@example.test/tool.tgz",
+            version: "1.2.3",
+          }],
+        },
+        verify: { method: "executable-present", executable: "unsafe-tool" },
+      }])));
+    }));
+    expect(error).toBeInstanceOf(InvalidPublicationResourcesError);
+    if (error instanceof InvalidPublicationResourcesError) {
+      const messages = error.errors.map((issue) => describeRuntimeError(issue).message).join("; ");
+      expect(messages).toContain("npm-family package must be an exact registry name");
+      expect(messages).not.toContain("publication-disposable-value");
+    }
+    expect(signing.calls).toEqual({ signed: 0, verified: 0 });
+  });
+
+  it("preserves ordinary query parameters in a reviewed Python index", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const signing = makeSigner();
+    const indexPolicy = {
+      url: "https://example.test/simple?mirror=regional",
+      reviewedBy: "reviewer",
+      reviewedAt: "2026-09-30T00:00:00Z",
+    };
+    const revision = await runCatalog(fixture.database, signing.signer, Effect.gen(function*() {
+      const catalog = yield* ProfileCatalog;
+      return yield* catalog.publish(authoredInput(discovery, [{
+        id: "reviewed-python",
+        kind: "tool",
+        target: "~/.local/bin/reviewed-python",
+        spec: {
+          kind: "tool",
+          toolId: "reviewed-python",
+          recipes: [{ platform: "linux", method: "uv", package: "reviewed-python", version: "1.2.3", indexPolicy }],
+        },
+        verify: { method: "executable-present", executable: "reviewed-python" },
+      }]));
+    }));
+    const resource = revision.resources.find((entry) => entry.id === "reviewed-python");
+    expect(resource?.spec).toMatchObject({ recipes: [{ indexPolicy }] });
+    expect(signing.calls).toEqual({ signed: 1, verified: 1 });
+  });
+
+  it("rejects literal credentials in a separately authored config key", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const signing = makeSigner();
+    const error = await runCatalog(fixture.database, signing.signer, Effect.gen(function*() {
+      const catalog = yield* ProfileCatalog;
+      return yield* Effect.flip(catalog.publish(authoredInput(discovery, [
+        authoredConfig("publication-disposable-value", "mcpServers.fixture.env.API_TOKEN"),
+      ])));
+    }));
+    expect(error).toBeInstanceOf(InvalidPublicationInputError);
+    if (error instanceof InvalidPublicationInputError) {
+      expect(error.reason).toContain("env.API_TOKEN");
+      expect(error.reason).not.toContain("publication-disposable-value");
+    }
+    expect(signing.calls).toEqual({ signed: 0, verified: 0 });
+  });
+
+  it("publishes symbolic secret bindings and ordinary arguments without changing their bytes", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const signing = makeSigner();
+    const config = authoredConfig({
+      command: "ordinary-server",
+      args: ["--password", "${API_TOKEN}", "--api-key={env:API_KEY}", "--port", "9000", "--token-budget", "1000", "--stdio"],
+      env: { API_TOKEN: "${API_TOKEN}", SERVICE_API_KEY: { fromEnv: "API_KEY" }, PATH: "/usr/bin" },
+      headers: { Authorization: "Bearer ${API_TOKEN}" },
+      url: "https://example.test/mcp?api_key=${API_KEY}&limit=10",
+      credentialReference: "local-api-token",
+      secretBindings: [{ name: "API_TOKEN", secret: "shared-api-token" }],
+    });
+    const revision = await runCatalog(fixture.database, signing.signer, Effect.gen(function*() {
+      const catalog = yield* ProfileCatalog;
+      return yield* catalog.publish(authoredInput(discovery, [config]));
+    }));
+    const published = revision.resources.find((resource) => resource.id === config.id);
+    expect(published?.spec).toEqual(config.spec);
+    expect(JSON.parse(revision.canonicalBytes)).toMatchObject({
+      resources: expect.arrayContaining([expect.objectContaining({ id: config.id, spec: config.spec })]),
+    });
+    const approval = await Effect.runPromise(Effect.flatMap(StateRepository, (repository) =>
+      repository.loadRevisionApproval(revision.id)
+    ).pipe(Effect.provide(stateRepositoryLayer(fixture.database))));
+    expect(approval?.revisionDigest).toBe(revision.digest);
+  });
+
   it("rejects unreviewed proposals without inferring acceptance", async () => {
     const fixture = workspace();
     const discovery = await proposal(fixture.directory);
@@ -487,7 +699,7 @@ describe("reviewed profile publication", () => {
           kind: "directory",
           files: [{ path: "nested.txt", content: "nested\n" }],
         },
-        verify: { method: "digest", digest: "b".repeat(64) },
+        verify: { method: "digest" },
       },
       {
         id: "authored-config",
@@ -498,7 +710,7 @@ describe("reviewed profile publication", () => {
           format: "json",
           keys: [{ path: "authored.value", value: true }],
         },
-        verify: { method: "digest", digest: "c".repeat(64) },
+        verify: { method: "digest" },
       },
       {
         id: "authored-skill",
@@ -509,7 +721,7 @@ describe("reviewed profile publication", () => {
           name: "authored-skill",
           files: [{ path: "SKILL.md", content: "# authored\n" }],
         },
-        verify: { method: "digest", digest: "d".repeat(64) },
+        verify: { method: "digest" },
       },
       {
         id: "authored-tool",
@@ -618,14 +830,14 @@ describe("reviewed profile publication", () => {
           { path: "fixture.zip", source: "fixture.zip" },
           { path: "image-link", source: "image-link" },
         ] },
-        verify: { method: "digest", digest: "a".repeat(64) },
+        verify: { method: "digest" },
       },
       {
         id: "native-skill", kind: "skill", target: "~/.bytes/skill",
         spec: { kind: "skill", name: "native", files: [
           { path: "bin/native", source: "native" },
         ] },
-        verify: { method: "digest", digest: "b".repeat(64) },
+        verify: { method: "digest" },
       },
     ];
     const result = await runCatalog(
@@ -677,7 +889,7 @@ describe("reviewed profile publication", () => {
       });
     expect(result.ranges.every((range) => range !== undefined)).toBe(true);
     expect(result.ranges.filter((range) => range?.totalBytes !== 0)
-      .every((range) => range?.content.byteLength === 3)).toBe(true);
+      .every((range) => range?.byteLength === 3)).toBe(true);
     expect(result.revision.canonicalBytes).not.toContain(png.toString("base64"));
     expect(result.revision.canonicalBytes).not.toContain("\"content\"");
   });
@@ -806,5 +1018,245 @@ describe("reviewed profile publication", () => {
 
     expect(result.immutable).toBeInstanceOf(RevisionImmutableError);
     expect(result.missing).toBeInstanceOf(RevisionNotFoundError);
+  });
+
+  it("publishes older content again as a new latest revision", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const signing = makeSigner();
+    const kept = authoredFile("kept", "kept\n");
+    const restorable = authoredFile("restorable", "restorable\n");
+    const at = (minute: number, resources: ReadonlyArray<ProfileResourceInput>) => ({
+      ...authoredInput(discovery, resources),
+      publishedAt: `2026-08-15T12:0${minute}:00Z`,
+    });
+    const result = await runCatalog(
+      fixture.database,
+      signing.signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        const repository = yield* StateRepository;
+        const first = yield* catalog.publish(at(1, [kept, restorable]));
+        const removal = yield* catalog.publish(at(2, [kept]));
+        const restored = yield* catalog.publish(at(3, [kept, restorable]));
+        const repeated = yield* catalog.publish(at(4, [kept, restorable]));
+        const latest = yield* repository.getLatestRevision(first.profileId);
+        return { first, removal, restored, repeated, latest };
+      }),
+    );
+
+    expect([result.first.sequence, result.removal.sequence, result.restored.sequence])
+      .toEqual([1, 2, 3]);
+    expect(result.restored.id).not.toBe(result.first.id);
+    expect(result.restored.canonicalBytes).toBe(result.first.canonicalBytes);
+    expect(result.restored.publishedAt).toBe("2026-08-15T12:03:00Z");
+    expect(result.latest).toEqual(result.restored);
+    // Publishing what is already latest stays idempotent.
+    expect(result.repeated).toEqual(result.restored);
+    expect(signing.calls).toEqual({ signed: 3, verified: 3 });
+  });
+
+  it("refuses to sign an empty revision unless the author allows it", async () => {
+    const fixture = workspace();
+    const scanned = join(fixture.directory, "CLAUDE.md");
+    const empty: DiscoveryScanResult = {
+      resources: [], tools: [], skills: [], evidence: [], agentTasks: [], scannedPaths: [scanned],
+    };
+    const signing = makeSigner();
+    const result = await runCatalog(
+      fixture.database,
+      signing.signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        const refused = yield* Effect.flip(catalog.publish(inputFor(empty)));
+        const signedBeforeAllowing = signing.calls.signed;
+        const allowed = yield* catalog.publish({ ...inputFor(empty), allowEmpty: true });
+        return { refused, signedBeforeAllowing, allowed };
+      }),
+    );
+
+    expect(result.refused).toBeInstanceOf(EmptyPublicationError);
+    expect(result.refused).toMatchObject({ scannedPaths: [scanned] });
+    expect(describeRuntimeError(result.refused)).toMatchObject({
+      category: "usage-or-configuration",
+      message: expect.stringContaining("--allow-empty"),
+    });
+    expect(result.signedBeforeAllowing).toBe(0);
+    expect(result.allowed.resources).toEqual([]);
+  });
+
+  it("reads resource sources only from inside the profile directory", async () => {
+    const fixture = workspace();
+    const profileDirectory = join(fixture.directory, "profile");
+    const elsewhere = join(fixture.directory, "elsewhere");
+    mkdirSync(profileDirectory);
+    mkdirSync(elsewhere);
+    const outside = join(fixture.directory, "outside.txt");
+    writeFileSync(outside, "outside the profile\n");
+    writeFileSync(join(elsewhere, "nested.txt"), "nested outside\n");
+    writeFileSync(join(profileDirectory, "inside.txt"), "inside\n");
+    symlinkSync(outside, join(profileDirectory, "escape-link"));
+    symlinkSync(elsewhere, join(profileDirectory, "escape-directory"));
+    const discovery = await proposal(fixture.directory);
+    const signing = makeSigner();
+    const escaping = ["../outside.txt", "sub/../../outside.txt", outside, "escape-link", "escape-directory/nested.txt"];
+    const sourced = (source: string): ProfileResourceInput => ({
+      id: "sourced", kind: "file", target: "~/.canonfig/sourced.txt",
+      spec: { kind: "file", source }, verify: { method: "digest" },
+    });
+    const result = await runCatalog(
+      fixture.database,
+      signing.signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        const refused = yield* Effect.forEach(escaping, (source) =>
+          Effect.flip(catalog.publish(authoredInput(discovery, [sourced(source)], profileDirectory)))
+        );
+        const inside = yield* catalog.publish(
+          authoredInput(discovery, [sourced("inside.txt")], profileDirectory),
+        );
+        return { refused, inside };
+      }),
+    );
+
+    expect(result.refused.map((error) => error instanceof PublicationSourceError ? error.path : error))
+      .toEqual(escaping);
+    expect(result.refused.map((error) => describeRuntimeError(error).category))
+      .toEqual(escaping.map(() => "usage-or-configuration"));
+    expect(result.inside.resources.find((resource) => resource.id === "sourced")?.blobs)
+      .toEqual([sha256Hex("inside\n")]);
+    expect(signing.calls).toEqual({ signed: 1, verified: 1 });
+  });
+
+  it("hashes, stores, and digests source files without memory that grows with their size", () => {
+    const fixture = workspace();
+    const profileDirectory = join(fixture.directory, "profile");
+    mkdirSync(profileDirectory);
+    const mebibyte = 1024 * 1024;
+    // A cheap deterministic pattern, distinct per mebibyte so every chunk differs.
+    const block = Buffer.alloc(mebibyte);
+    for (let index = 0; index < block.length; index += 1) block[index] = (index * 31) & 0xff;
+    const writePattern = (name: string, mebibytes: number) => {
+      const hash = createHash("sha256");
+      const descriptor = openSync(join(profileDirectory, name), "w");
+      for (let index = 0; index < mebibytes; index += 1) {
+        block.writeUInt32BE(index, 0);
+        block.write(name, 4);
+        hash.update(block);
+        writeSync(descriptor, block);
+      }
+      closeSync(descriptor);
+      return hash.digest("hex");
+    };
+    writePattern("warm.bin", 32);
+    writePattern("medium.bin", 32);
+    const largeDigest = writePattern("large.bin", 160);
+    const script = join(import.meta.dirname, "fixtures", "publication", "publish-large-source.mts");
+    const output = join(fixture.directory, "result.json");
+    const child = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--expose-gc", script, fixture.database, profileDirectory, output],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 120_000 },
+    );
+    expect(child.status, child.stderr).toBe(0);
+    // SAFETY: the child writes exactly this JSON shape.
+    const result = JSON.parse(readFileSync(output, "utf8")) as {
+      readonly mediumGrowthKiB: number;
+      readonly largeGrowthKiB: number;
+      readonly digest: string;
+      readonly blobBytes: number;
+      readonly rangeBytes: number;
+      readonly rangeChunks: number;
+    };
+    expect(result.digest).toBe(largeDigest);
+    expect(result.blobBytes).toBe(160 * mebibyte);
+    expect(result.rangeBytes).toBe(8 * mebibyte);
+    expect(result.rangeChunks).toBe(8);
+    // The large file is 128 MiB bigger than the medium one. Holding a file
+    // whole adds at least one copy of it, and the old base64 and single-row
+    // SQLite path added about six (~770 MiB here). Streaming adds a bounded
+    // amount of collectable garbage that does not track file size.
+    expect(result.largeGrowthKiB - result.mediumGrowthKiB).toBeLessThan(64 * 1024);
+  }, 180_000);
+
+  it("computes omitted digests as followers do and rejects a wrong one before signing", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const signing = makeSigner();
+    const configSpec = {
+      kind: "config" as const,
+      format: "json" as const,
+      keys: [{ path: "mcp.enabled", value: true }],
+    };
+    const config: ProfileResourceInput = {
+      id: "client-config", kind: "config", target: "~/.canonfig/client.json",
+      spec: configSpec, verify: { method: "digest" },
+    };
+    const skill: ProfileResourceInput = {
+      id: "review-skill", kind: "skill", target: "skills/review-skill",
+      spec: { kind: "skill", name: "review-skill", files: [{ path: "SKILL.md", content: "# review\n" }] },
+      verify: { method: "digest" },
+    };
+    const configDigest = sha256BytesHex(renderConfigDocument(configSpec));
+    const skillDigest = directoryVerificationDigest([
+      { path: "SKILL.md", digest: sha256Hex("# review\n"), executable: false },
+    ]);
+    const result = await runCatalog(
+      fixture.database,
+      signing.signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        const computed = yield* catalog.publish(authoredInput(discovery, [config, skill]));
+        const wrong = yield* Effect.flip(catalog.publish(authoredInput(discovery, [
+          { ...config, verify: { method: "digest", digest: "0".repeat(64) } },
+          { ...skill, verify: { method: "digest", digest: skillDigest } },
+        ])));
+        return { computed, wrong };
+      }),
+    );
+
+    // SAFETY: publication canonicalBytes is validated JSON with a resources array.
+    const canonical = JSON.parse(result.computed.canonicalBytes) as {
+      readonly resources: ReadonlyArray<{ readonly id: string; readonly verify: unknown }>;
+    };
+    expect(canonical.resources.find((resource) => resource.id === "client-config")?.verify)
+      .toEqual({ method: "digest", digest: configDigest });
+    expect(canonical.resources.find((resource) => resource.id === "review-skill")?.verify)
+      .toEqual({ method: "digest", digest: skillDigest });
+    expect(result.wrong).toBeInstanceOf(InvalidPublicationResourcesError);
+    expect(result.wrong instanceof InvalidPublicationResourcesError ? result.wrong.errors : [])
+      .toEqual([expect.objectContaining({
+        _tag: "VerificationDigestMismatchError",
+        id: "client-config",
+        declaredDigest: "0".repeat(64),
+        computedDigest: configDigest,
+      })]);
+    expect(signing.calls).toEqual({ signed: 1, verified: 1 });
+  });
+
+  it("rejects an unpinned automatic installer recipe before signing", async () => {
+    const fixture = workspace();
+    const discovery = await proposal(fixture.directory);
+    const signing = makeSigner();
+    const error = await runCatalog(
+      fixture.database,
+      signing.signer,
+      Effect.gen(function*() {
+        const catalog = yield* ProfileCatalog;
+        return yield* Effect.flip(catalog.publish(authoredInput(discovery, [{
+          id: "ruff", kind: "tool", target: "ruff",
+          spec: { kind: "tool", toolId: "ruff", recipes: [{ platform: "linux", method: "uv", package: "ruff" }] },
+          verify: { method: "command", command: ["ruff", "--version"] },
+        }])));
+      }),
+    );
+
+    expect(error instanceof InvalidPublicationResourcesError ? error.errors : error)
+      .toEqual([expect.objectContaining({
+        _tag: "InvalidRecipeError",
+        id: "ruff",
+        reason: expect.stringContaining("requires an exact \"version\""),
+      })]);
+    expect(signing.calls).toEqual({ signed: 0, verified: 0 });
   });
 });

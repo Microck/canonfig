@@ -12,7 +12,7 @@ import {
   readEnrollmentInput,
 } from "../../src/runtime/enrollment-input.ts";
 import { invitationEnvelopeEof } from
-  "../../src/enrollment/invitation-envelope.ts";
+  "../../src/enrollment/invitation-envelope-format.ts";
 
 const argv = ["follower", "enroll", "--stdin", "--name", "laptop", "--profile", "workstation"];
 
@@ -43,6 +43,16 @@ describe("public enrollment refusal", () => {
     expect(isPublicEnrollmentCommand(["follower", "enroll", "--help"])).toBe(false);
     expect(isPublicEnrollmentCommand(["source", "invite", "--stdin"])).toBe(false);
   });
+
+  it("accepts a phase timeout without treating its value as an exposed invitation", () => {
+    const timed = [...argv, "--timeout-ms", "300000"];
+    expect(isPublicEnrollmentCommand(timed)).toBe(false);
+    expect(privateEnrollmentArguments(timed)).toEqual([
+      "follower", "enroll", "--name", "laptop", "--profile", "workstation",
+      "--timeout-ms", "300000",
+    ]);
+    expect(isPublicEnrollmentCommand([...timed, "INVITE"])).toBe(true);
+  });
 });
 
   it("treats --json as a global option at any position", () => {
@@ -61,6 +71,8 @@ describe("public enrollment refusal", () => {
     [...argv, "literal-invitation"],
     [...argv, "--name", "another"],
     ["follower", "enroll", "--stdin", "--name", "--profile", "workstation"],
+    [...argv, "--timeout-ms"],
+    [...argv, "--timeout-ms", "300000", "--timeout-ms", "300000"],
   ].map((arguments_) => ({ arguments_ })))("rejects malformed non-secret options before reading stdin: $arguments_", ({ arguments_ }) => {
     expect(() => privateEnrollmentArguments(arguments_)).toThrow(EnrollmentInputError);
   });

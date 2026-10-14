@@ -13,6 +13,7 @@ import {
   createPlan,
 } from "../src/harness-configuration/core/planner.ts";
 import { parseMarkdownDocument } from "../src/harness-configuration/core/frontmatter.ts";
+import { isHarnessPlanBlocked } from "../src/harness-configuration/cli-output.ts";
 import { applyJsonArtifact } from "../src/harness-configuration/core/render-json.ts";
 import { unapplyPrevious } from "../src/harness-configuration/core/render-cleanup.ts";
 import { findTomlSection } from "../src/harness-configuration/core/render-utils.ts";
@@ -157,6 +158,10 @@ describe("harness configuration compiler", () => {
       .resolves.toContain("Canonical instructions");
     await expect(readFile(path.join(root, ".codex/config.toml"), "utf8"))
       .resolves.toContain("canonfig:begin");
+    const codexHooks = JSON.parse(await readFile(path.join(root, ".codex/hooks.json"), "utf8"));
+    expect(codexHooks).toEqual({
+      hooks: expect.objectContaining({ PreToolUse: expect.any(Array) }),
+    });
     await expect(readFile(path.join(root, ".claude/settings.json"), "utf8"))
       .resolves.toContain("PreToolUse");
     await expect(readFile(path.join(root, ".cursor/mcp.json"), "utf8"))
@@ -271,6 +276,29 @@ describe("harness configuration compiler", () => {
       code: "FEATURE_SHIM",
       level: "error",
     }));
+  });
+
+  it("rejects lossy MCP projections in strict mode and only warns otherwise", async () => {
+    const root = await fixture(["codex"]);
+    const configPath = path.join(root, ".canonfig", "harness.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.mcp.servers.local.timeoutMs = 1500;
+    config.mcp.servers.docs.transport = "sse";
+    await writeFile(configPath, `${JSON.stringify(config, undefined, 2)}\n`, "utf8");
+
+    const lenient = await new HarnessConfigurationCompiler().plan({ root });
+    expect(lenient.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ target: "codex", code: "MCP_OPTION_UNSUPPORTED", level: "warning" }),
+      expect.objectContaining({ target: "codex", code: "MCP_TRANSPORT_UNSUPPORTED", level: "warning" }),
+    ]));
+    expect(isHarnessPlanBlocked(lenient)).toBe(false);
+
+    const strict = await new HarnessConfigurationCompiler().plan({ root, strict: true });
+    expect(strict.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ target: "codex", code: "MCP_OPTION_UNSUPPORTED", level: "error" }),
+      expect.objectContaining({ target: "codex", code: "MCP_TRANSPORT_UNSUPPORTED", level: "error" }),
+    ]));
+    expect(isHarnessPlanBlocked(strict)).toBe(true);
   });
 
   it("registers the complete requested harness set", () => {

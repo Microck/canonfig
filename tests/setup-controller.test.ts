@@ -1,22 +1,25 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
-import { establishSetupScope, runSetupPreflight } from "../src/setup/setup.controller.ts";
+import { MachineState } from "../src/machine/machine-state.service.ts";
+import { establishSetupScope, probeTools, runSetupPreflight } from "../src/setup/setup.controller.ts";
 
 import {
   nextEligibleSetupStage,
   setupItemVerdicts,
   setupPlanDigest,
 } from "../src/setup/setup.plan.ts";
-import type {
-  SetupInventory,
-  SetupJournal,
-  SetupPlanItem,
+import {
+  maxSetupDiscoveryFileBytes,
+  type SetupInventory,
+  type SetupJournal,
+  type SetupPlanItem,
 } from "../src/setup/setup.types.ts";
 
 const inventory: SetupInventory = {
@@ -66,6 +69,7 @@ const digest = setupPlanDigest({
   intent: "prepare follower",
   exclusions: [],
   inventory,
+  discoveryInputs: [],
   items,
 });
 const journal = (overrides: Partial<SetupJournal> = {}): SetupJournal => ({
@@ -154,6 +158,129 @@ describe("setup controller decisions", () => {
     },
   );
 
+  // secret-tool as libsecret runs it: with no Secret Service provider on the
+  // bus every operation fails; with one, items persist in FAKE_SECRET_STORE.
+  const fakeSecretTool = `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const [operation, ...rest] = process.argv.slice(2);
+if (process.env.FAKE_SECRET_PROVIDER !== "running") {
+  process.stderr.write("secret-tool: The name org.freedesktop.secrets was not provided by any .service files\\n");
+  process.exit(1);
+}
+const attributes = operation === "store" ? rest.slice(1) : rest;
+const item = path.join(process.env.FAKE_SECRET_STORE, Buffer.from(attributes.join("=")).toString("hex"));
+if (operation === "store") { fs.writeFileSync(item, fs.readFileSync(0)); process.exit(0); }
+if (!fs.existsSync(item)) process.exit(1);
+if (operation === "lookup") { process.stdout.write(fs.readFileSync(item)); process.exit(0); }
+if (operation === "clear") { fs.rmSync(item); process.exit(0); }
+process.exit(2);
+`;
+
+  it.runIf(process.platform === "linux").each(["stopped", "running"] as const)(
+    "proves Source key storage with a disposable probe, not provider presence (provider %s)",
+    async (provider) => {
+      const root = mkdtempSync(join(tmpdir(), "canonfig-setup-secret-service-"));
+      const home = join(root, "home");
+      const bin = join(root, "bin");
+      const store = join(root, "store");
+      mkdirSync(home);
+      mkdirSync(bin);
+      mkdirSync(store);
+      writeFileSync(join(bin, "secret-tool"), fakeSecretTool, { mode: 0o755 });
+      const layer = linuxMachineStateLayer({
+        environment: [
+          { name: "HOME", value: home },
+          { name: "PATH", value: `${bin}:${dirname(process.execPath)}` },
+          // A reachable bus address and secret-tool on PATH: provider presence.
+          { name: "DBUS_SESSION_BUS_ADDRESS", value: "unix:path=/nonexistent/canonfig-test-bus" },
+          { name: "FAKE_SECRET_STORE", value: store },
+          { name: "FAKE_SECRET_PROVIDER", value: provider },
+        ],
+        credentialPolicy: { kind: "secure-store" },
+      });
+      try {
+        if (provider === "stopped") {
+          const error = await Effect.runPromise(Effect.flip(runSetupPreflight("source").pipe(Effect.provide(layer))));
+          expect(error).toMatchObject({ _tag: "SetupError", category: "prerequisite" });
+          expect(error.message).toContain("cannot be a Source");
+          expect(error.message).toContain("did not accept a disposable write");
+          expect(error.message).toContain("before initialization");
+          expect(error.recovery).toContain("Secret Service provider");
+          // Narrow scopes create no keys and do not need the probe.
+          const narrow = await Effect.runPromise(runSetupPreflight("source", "cli-only").pipe(Effect.provide(layer)));
+          expect(narrow.credentialStorage).toMatchObject({ verification: "provider-presence" });
+        } else {
+          const preflight = await Effect.runPromise(runSetupPreflight("source").pipe(Effect.provide(layer)));
+          expect(preflight.credentialStorage).toEqual({
+            kind: "secure-noninteractive",
+            provider: "secret-service",
+            verification: "session-probe",
+          });
+        }
+        // The probe item never outlives the preflight.
+        expect(readdirSync(store)).toEqual([]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux" && process.env["RUSTUP_HOME"] === undefined)(
+    "probes installers without letting corepack or rustup shims write state",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "canonfig-setup-probe-"));
+      const home = join(root, "home");
+      const bin = join(root, "bin");
+      mkdirSync(home);
+      mkdirSync(bin);
+      try {
+        // A rustup proxy writes its settings file on any invocation.
+        writeFileSync(join(bin, "rustup"), [
+          "#!/bin/sh",
+          "mkdir -p \"$RUSTUP_HOME\" && touch \"$RUSTUP_HOME/settings.toml\"",
+          "echo 'cargo 1.99.0'",
+          "",
+        ].join("\n"));
+        chmodSync(join(bin, "rustup"), 0o755);
+        symlinkSync("rustup", join(bin, "cargo"));
+        // A corepack shim downloads the package manager unless network is off.
+        writeFileSync(join(bin, "pnpm"), [
+          "#!/bin/sh",
+          "[ \"$COREPACK_ENABLE_NETWORK\" = 0 ] || mkdir -p \"$HOME/.cache/node/corepack\"",
+          "exit 1",
+          "",
+        ].join("\n"));
+        chmodSync(join(bin, "pnpm"), 0o755);
+        const probe = Effect.gen(function*() {
+          return yield* probeTools(yield* MachineState, "linux");
+        }).pipe(Effect.provide(linuxMachineStateLayer({
+          environment: [
+            { name: "HOME", value: home },
+            { name: "PATH", value: bin },
+          ],
+        })));
+
+        const fresh = await Effect.runPromise(probe);
+        expect(fresh.find((tool) => tool.method === "cargo")).toMatchObject({ verified: false });
+        expect(fresh.find((tool) => tool.method === "pnpm")).toMatchObject({ verified: false });
+        expect(existsSync(join(home, ".rustup"))).toBe(false);
+        expect(existsSync(join(home, ".cache"))).toBe(false);
+
+        // Once rustup is configured, running its proxy changes nothing new.
+        mkdirSync(join(home, ".rustup"));
+        writeFileSync(join(home, ".rustup", "settings.toml"), "version = \"12\"\n");
+        const configured = await Effect.runPromise(probe);
+        expect(configured.find((tool) => tool.method === "cargo")).toMatchObject({
+          verified: true,
+          version: "cargo 1.99.0",
+        });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("rejects unknown request scopes with the supported list", async () => {
     const error = await Effect.runPromise(Effect.flip(establishSetupScope("minimal")));
     expect(error).toMatchObject({ _tag: "SetupError", category: "usage" });
@@ -167,6 +294,7 @@ describe("setup controller decisions", () => {
       intent: "prepare follower",
       exclusions: [],
       inventory,
+      discoveryInputs: [],
       items,
     })).toBe(digest);
     expect(setupPlanDigest({
@@ -175,6 +303,7 @@ describe("setup controller decisions", () => {
       intent: "prepare follower",
       exclusions: [],
       inventory,
+      discoveryInputs: [],
       items,
     })).not.toBe(digest);
     expect(setupPlanDigest({
@@ -183,6 +312,7 @@ describe("setup controller decisions", () => {
       intent: "prepare source instead",
       exclusions: [],
       inventory,
+      discoveryInputs: [],
       items,
     })).not.toBe(digest);
     expect(setupPlanDigest({
@@ -191,24 +321,9 @@ describe("setup controller decisions", () => {
       intent: "prepare follower",
       exclusions: ["skip unavailable integration"],
       inventory,
+      discoveryInputs: [],
       items,
     })).not.toBe(digest);
-  });
-
-  it("reproduces pre-scope digests for upgrade comparison", () => {
-    const base = {
-      role: "follower",
-      intent: "prepare follower",
-      exclusions: [],
-      inventory,
-      items,
-    } as const;
-    const legacy = setupPlanDigest({ ...base });
-    // The scoped encoding binds the scope: identical inputs under an
-    // explicit scope never collide with a legacy approval.
-    expect(setupPlanDigest({ ...base, scope: "full" })).not.toBe(legacy);
-    expect(setupPlanDigest({ ...base, scope: "cli-only" })).not.toBe(legacy);
-    expect(setupPlanDigest({ ...base })).toBe(legacy);
   });
 
   it("resumes required work without blocking on an independent optional failure", () => {
@@ -243,3 +358,202 @@ describe("setup controller decisions", () => {
     }))).toBe("complete");
   });
 });
+
+describe("setup decision record", () => {
+  const projectRoot = resolve(import.meta.dirname, "..");
+  const runtimeEntrypoint = resolve(projectRoot, "src/runtime/main.ts");
+
+  it("records mode and discovery paths, and setup status shows them with the approver and stages", () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-setup-record-"));
+    const discoveryFile = join(home, "package.json");
+    writeFileSync(discoveryFile, "{\"name\":\"record\"}\n");
+    const setup = (arguments_: ReadonlyArray<string>) => {
+      const result = spawnSync(
+        process.execPath,
+        ["--import", "tsx", runtimeEntrypoint, "setup", ...arguments_, "--json"],
+        {
+          cwd: projectRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+            CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, ".canonfig-credentials"),
+            CANONFIG_LOG: "off",
+          },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      return JSON.parse(result.stdout).data;
+    };
+    const plan = (mode: ReadonlyArray<string>) => setup([
+      "plan", "--role", "follower", "--scope", "cli-only", ...mode,
+      "--file", discoveryFile, "--file", join(home, "missing.md"),
+    ]);
+    try {
+      const planned = plan(["--mode", "advanced"]);
+      expect(planned.mode).toBe("advanced");
+      // Only files discovery actually read are recorded; the missing one is an
+      // exclusion.
+      expect(planned.discoveryPaths).toHaveLength(1);
+      expect(planned.discoveryPaths[0]).toMatch(/package\.json$/u);
+      setup(["approve", "--approver", "operator"]);
+
+      // Switching modes is not a new plan: the approval survives.
+      const switched = plan(["--mode", "simple"]);
+      expect(switched.planDigest).toBe(planned.planDigest);
+      // A re-plan without --mode keeps the recorded choice.
+      plan([]);
+
+      const status = setup(["status"]);
+      expect(status).toMatchObject({
+        role: "follower",
+        scope: "cli-only",
+        mode: "simple",
+        discoveryPaths: planned.discoveryPaths,
+        planDigest: planned.planDigest,
+        approvals: [{ approver: "operator", digest: planned.planDigest }],
+      });
+      expect(status.stages.map((stage: { readonly stage: string }) => stage.stage))
+        .toEqual(["role", "preflight", "inventory", "plan", "approve"]);
+      expect(status.stages.every((stage: { readonly completedAt: string }) =>
+        !Number.isNaN(Date.parse(stage.completedAt)))).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+describe.runIf(process.platform === "linux" && existsSync(join(dirname(process.execPath), "npm")))(
+  "setup recipe approval boundaries",
+  () => {
+    const projectRoot = resolve(import.meta.dirname, "..");
+    const runtimeEntrypoint = resolve(projectRoot, "src/runtime/main.ts");
+    const fixture = () => {
+      const home = mkdtempSync(join(tmpdir(), "canonfig-setup-recipe-"));
+      const bin = join(home, "bin");
+      mkdirSync(bin);
+      symlinkSync(process.execPath, join(bin, "node"));
+      symlinkSync(join(dirname(process.execPath), "npm"), join(bin, "npm"));
+      const file = join(home, "package.json");
+      const writeRecipe = (version = "1.6.0", disabled = false) => writeFileSync(file, JSON.stringify({
+        canonfig: {
+          tools: [
+            { ecosystem: "npm", name: "cowsay", executable: "cowsay", version, disabled },
+            { ecosystem: "npm", name: "disabled-tool", version: "1.0.0", disabled: true },
+          ],
+        },
+      }));
+      writeRecipe();
+      const invoke = (arguments_: ReadonlyArray<string>) => spawnSync(
+        process.execPath,
+        ["--import", "tsx", runtimeEntrypoint, "setup", ...arguments_, "--json"],
+        {
+          cwd: projectRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+            PATH: bin,
+            NPM_CONFIG_PREFIX: join(home, "packages"),
+            CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, ".canonfig-credentials"),
+            CANONFIG_LOG: "off",
+          },
+        },
+      );
+      const setup = (arguments_: ReadonlyArray<string>) => {
+        const result = invoke(arguments_);
+        expect(result.status, result.stderr || result.stdout).toBe(0);
+        return JSON.parse(result.stdout).data;
+      };
+      const plan = (scope = "project-only") => setup([
+        "plan", "--role", "source", "--scope", scope, "--file", file,
+      ]);
+      return { home, bin, file, writeRecipe, invoke, setup, plan };
+    };
+
+    it("plans installation and its verifier for an accepted missing recipe, but not disabled or CLI-only tools", () => {
+      const test = fixture();
+      try {
+        const planned = test.plan();
+        const installation = planned.items.find((item: SetupPlanItem) => item.kind === "recipe-install");
+        expect(installation).toMatchObject({
+          id: "recipe-install:cowsay",
+          scope: "resource:tool:cowsay",
+          dependsOn: ["tool-verify:npm"],
+          detail: {
+            arguments: ["install", "--global", "cowsay@1.6.0", "--ignore-scripts"],
+            verifyExecutable: "cowsay",
+            verifyArguments: ["--version"],
+          },
+        });
+        expect(planned.items.find((item: SetupPlanItem) => item.id === "toolchain-verify").dependsOn)
+          .toContain(installation.id);
+        expect(planned.items.some((item: SetupPlanItem) => item.kind === "source-init")).toBe(false);
+        expect(planned.items.some((item: SetupPlanItem) => item.id.includes("disabled-tool"))).toBe(false);
+        expect(planned.exclusions).toEqual([]);
+
+        rmSync(join(test.home, ".canonfig", "setup.json"));
+        const cliOnly = test.plan("cli-only");
+        expect(cliOnly.items.some((item: SetupPlanItem) =>
+          item.kind === "recipe-install" || item.kind === "source-init")).toBe(false);
+      } finally {
+        rmSync(test.home, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it("preserves an executable already present instead of scheduling a reinstall", () => {
+      const test = fixture();
+      try {
+        symlinkSync(process.execPath, join(test.bin, "cowsay"));
+        const planned = test.plan();
+        expect(planned.items.some((item: SetupPlanItem) => item.kind === "recipe-install")).toBe(false);
+        expect(planned.catalog.some((entry: { readonly resource: string }) => entry.resource === "cowsay"))
+          .toBe(false);
+        expect(planned.evidence.some((entry: string) => entry.includes("installed and verified cowsay")))
+          .toBe(false);
+      } finally {
+        rmSync(test.home, { recursive: true, force: true });
+      }
+    }, 60_000);
+
+    it.each(["changed", "missing", "oversized", "legacy"] as const)(
+      "rejects %s authoring inputs before executing an approved recipe",
+      (change) => {
+        const test = fixture();
+        try {
+          const planned = test.plan();
+          test.setup(["approve", "--approver", "operator"]);
+          const before = test.setup(["status"]);
+          if (change === "changed") test.writeRecipe("1.5.0");
+          else if (change === "missing") rmSync(test.file);
+          else if (change === "oversized") writeFileSync(test.file, " ".repeat(maxSetupDiscoveryFileBytes + 1));
+          else {
+            const legacy = test.setup(["approve", "--approver", "operator"]);
+            delete legacy.discoveryInputs;
+            writeFileSync(join(test.home, ".canonfig", "setup.json"), JSON.stringify(legacy));
+          }
+          const rejected = test.invoke(["apply"]);
+          expect(rejected.status, rejected.stderr || rejected.stdout).toBe(3);
+          const status = test.setup(["status"]);
+          expect(status.approved).toBe(false);
+          expect(status.items).toEqual(before.items);
+          expect(existsSync(join(test.home, "packages"))).toBe(false);
+
+          test.writeRecipe("1.5.0");
+          const replanned = test.plan();
+          expect(replanned.planDigest).not.toBe(planned.planDigest);
+          const declined = test.invoke(["apply"]);
+          expect(declined.status, declined.stderr || declined.stdout).toBe(3);
+          expect(existsSync(join(test.home, "packages"))).toBe(false);
+          const approved = test.setup(["approve", "--approver", "operator"]);
+          expect(approved.approvals).toEqual([expect.objectContaining({ digest: replanned.planDigest })]);
+        } finally {
+          rmSync(test.home, { recursive: true, force: true });
+        }
+      },
+      60_000,
+    );
+  },
+);

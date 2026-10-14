@@ -14,6 +14,14 @@ export type SetupRole = typeof SetupRole.Type;
  */
 export const SetupRequestScope = Schema.Literals(["full", "cli-only", "project-only"]);
 export type SetupRequestScope = typeof SetupRequestScope.Type;
+
+/**
+ * The interview depth the operator chose (the setup skill's Simple or
+ * Advanced). It is a record of the decision only: it changes neither the plan
+ * nor its digest, so switching modes keeps approvals.
+ */
+export const SetupMode = Schema.Literals(["simple", "advanced"]);
+export type SetupMode = typeof SetupMode.Type;
 /** Ordered setup stages. `apply` resumes at the next eligible stage. */
 export const setupStages = [
   "role",
@@ -96,7 +104,8 @@ export const SetupRecipe = Schema.Struct({
   installerExecutable: Schema.String,
   arguments: Schema.Array(Schema.String),
   verifyExecutable: Schema.String,
-  verifyArguments: Schema.Array(Schema.String),
+  /** Absent: the verifier is checked for presence only and never run. */
+  verifyArguments: Schema.optional(Schema.Array(Schema.String)),
   version: Schema.String,
   source: Schema.String,
   upstream: Schema.optional(Schema.String),
@@ -173,6 +182,12 @@ export const SetupProvenance = Schema.Struct({
 });
 export type SetupProvenance = typeof SetupProvenance.Type;
 
+export const SetupDiscoveryInput = Schema.Struct({
+  path: Schema.String,
+  digest: Schema.String,
+});
+export type SetupDiscoveryInput = typeof SetupDiscoveryInput.Type;
+
 /**
  * The persisted setup journal. Intent, decisions, exclusions, evidence, and
  * approvals are all recorded against `planDigest`, so a re-plan invalidates
@@ -183,6 +198,14 @@ export const SetupJournal = Schema.Struct({
   role: SetupRole,
   // Absent on journals written before request scopes existed; read as full.
   scope: Schema.optional(SetupRequestScope),
+  // Recorded only once the operator chooses one.
+  mode: Schema.optional(SetupMode),
+  // The normalized `--file` paths discovery read. Absent on journals written
+  // before the decision record existed.
+  discoveryPaths: Schema.optional(Schema.Array(Schema.String)),
+  // Exact bounded authoring bytes, independent of installed-tool discovery.
+  // Older journals require a new plan before apply.
+  discoveryInputs: Schema.optional(Schema.Array(SetupDiscoveryInput)),
   planDigest: Schema.String,
   intent: Schema.String,
   inventory: SetupInventory,

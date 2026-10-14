@@ -1,5 +1,4 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import type { StatsFs } from "node:fs";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
@@ -19,10 +18,11 @@ import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 import { stateFormatVersion } from "../src/state/state-schema.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
 import { evaluateCli } from "../src/cli/cli.ts";
+import { describeRuntimeError } from "../src/cli/failure-taxonomy.ts";
 import { assertUpgradeGate } from "../src/synchronization/follower-orchestration.ts";
-import { preflightDisk } from "../src/synchronization/executor.ts";
-import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
-import { MachineState } from "../src/machine/machine-state.service.ts";
+import { nodeRuntimeIsSupported } from "../src/runtime/build-identity.ts";
+import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
+import { stateMigrations as v315StateMigrations } from "./fixtures/upgrade/v3.1.5-state-schema.ts";
 
 const decode = Schema.decodeUnknownSync;
 const asRunId = decode(RunId);
@@ -134,15 +134,22 @@ describe("build identity", () => {
       sourceDigest: string;
       commit: string | null;
     };
-    expect(identity.packageVersion).toBe("3.2.1");
+    expect(identity.packageVersion).toBe("4.0.0");
     expect(identity.sourceDigest).toBe("unbuilt");
     expect(identity.commit).toBeNull();
+  });
+
+  it("accepts Node 24 and newer but rejects older or malformed versions", () => {
+    expect(nodeRuntimeIsSupported("24.0.0")).toBe(true);
+    expect(nodeRuntimeIsSupported("25.1.2")).toBe(true);
+    expect(nodeRuntimeIsSupported("23.99.0")).toBe(false);
+    expect(nodeRuntimeIsSupported("not-a-version")).toBe(false);
   });
 
   it("keeps the plain --version output as the release version", () => {
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",
-      text: "3.2.1",
+      text: "4.0.0",
       exitCode: 0,
     });
   });
@@ -159,7 +166,7 @@ describe("upgrade gate", () => {
     }));
     expect(open).toEqual({
       run: "run-gate-1",
-      creatingVersion: "3.2.1",
+      creatingVersion: "4.0.0",
       creatingIdentity: "unbuilt",
       stateFormat: stateFormatVersion,
     });
@@ -207,6 +214,25 @@ describe("upgrade gate", () => {
       expect(failure.creatingIdentity).toBe("f".repeat(64));
       expect(failure.currentIdentity).toBe("unbuilt");
     }
+  });
+
+  it("names the state format, not the same build twice, for a format-only mismatch", async () => {
+    const failure = await gateFailureAfterMutation((database) => {
+      database.prepare(
+        "UPDATE synchronization_runs SET state_format = ?",
+      ).run(stateFormatVersion - 1);
+    });
+    expect(failure).toBeInstanceOf(UpgradeGateError);
+    if (!(failure instanceof UpgradeGateError)) return;
+    expect(failure.creatingStateFormat).toBe(stateFormatVersion - 1);
+    expect(failure.currentStateFormat).toBe(stateFormatVersion);
+    const described = describeRuntimeError(failure);
+    expect(described.category).toBe("conflict-or-drift");
+    expect(described.message).toContain(
+      `recorded in state format ${stateFormatVersion - 1}`,
+    );
+    expect(described.message).toContain(`uses state format ${stateFormatVersion}`);
+    expect(described.message).not.toContain("finish the run with the creating build");
   });
 
   it("accepts a foreign run when the operator explicitly migrates", async () => {
@@ -264,7 +290,7 @@ describe("deployment receipts", () => {
       };
       expect(receipt).toEqual({
         run_id: "run-gate-1",
-        package_version: "3.2.1",
+        package_version: "4.0.0",
         build_identity: "unbuilt",
         state_format: stateFormatVersion,
         outcome: "Converged",
@@ -273,61 +299,102 @@ describe("deployment receipts", () => {
       database.close();
     }
   });
-});
 
-describe("disk preflight", () => {
-  const fakeStatfs = (freeBlocks: bigint) =>
-    async (): Promise<StatsFs> =>
-      // SAFETY: only bsize and bavail feed the estimate; the remaining
-      // fields of the platform statfs result are irrelevant to the check.
-      ({ bsize: 4096, bavail: freeBlocks }) as StatsFs;
+  it("keeps an earlier release's receipt and lets its unfinished run be closed after the upgrade", async () => {
+    const path = join(temporaryDirectory("canonfig-gate-"), "state.sqlite");
+    await Effect.runPromise(
+      SqliteMigrator.run({ loader: v315StateMigrations }).pipe(
+        Effect.provide(SqliteClient.layer({ filename: path })),
+      ),
+    );
+    const legacy = new DatabaseSync(path);
+    try {
+      legacy.prepare(
+        `INSERT INTO followers (id, name, groups_json, revoked, credential_reference, enrolled_at)
+         VALUES (?, ?, '[]', 0, ?, ?)`,
+      ).run(follower.id, follower.name, follower.credentialReference, follower.enrolledAt);
+      legacy.prepare(
+        `INSERT INTO profile_revisions (
+          id, profile_id, sequence, canonical_bytes, digest, signature, published_at, revision_json
+        ) VALUES (?, ?, 1, ?, ?, ?, ?, ?)`,
+      ).run(
+        revision.id,
+        revision.profileId,
+        revision.canonicalBytes,
+        revision.digest,
+        revision.signature,
+        revision.publishedAt,
+        JSON.stringify(revision),
+      );
+      const insertRun = legacy.prepare(
+        `INSERT INTO synchronization_runs (
+          id, follower_id, revision_id, status, plan_json, started_at, completed_at, outcome_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insertRun.run(
+        "run-legacy-converged",
+        follower.id,
+        revision.id,
+        "Converged",
+        JSON.stringify(plan()),
+        "2026-06-01T09:00:00Z",
+        "2026-06-01T09:01:00Z",
+        JSON.stringify({ outcome: "Converged", run: "run-legacy-converged", completedActions: [] }),
+      );
+      insertRun.run(
+        "run-legacy-open",
+        follower.id,
+        revision.id,
+        "applying",
+        JSON.stringify(plan()),
+        "2026-06-02T09:00:00Z",
+        null,
+        null,
+      );
+    } finally {
+      legacy.close();
+    }
 
-  const machineLayer = (home: string) =>
-    linuxMachineStateLayer({
-      credentialPolicy: {
-        kind: "local-file",
-        path: join(home, "credentials"),
-      },
-      environment: [{ name: "HOME", value: home }],
+    const receipt = await runWithRepository(
+      path,
+      Effect.flatMap(StateRepository, (repository) =>
+        repository.latestDeploymentReceipt(follower.id)),
+    );
+    expect(receipt).toMatchObject({
+      run: "run-legacy-converged",
+      revision: revision.id,
+      outcome: "Converged",
+      packageVersion: "before 3.2.0",
+      buildIdentity: "unrecorded",
+      stateFormat: 1,
+      recordedAt: "2026-06-01T09:01:00Z",
     });
 
-  const runInput = {
-    id: asRunId("run-disk-1"),
-    plan: plan(),
-    revision,
-    appliedResources: [],
-    artifacts: [{ digest: digestA, content: new Uint8Array(100) }],
-    knownSecrets: [],
-  } as Parameters<typeof preflightDisk>[0];
-
-  it("fails with an estimate when the filesystem cannot fit the run", async () => {
-    const home = temporaryDirectory("canonfig-disk-home-");
-    const failure = await Effect.runPromise(
-      Effect.flip(
-        preflightDisk(runInput, fakeStatfs(0n)).pipe(
-          Effect.provide(machineLayer(home)),
-        ),
-      ),
-    );
-    expect(failure._tag).toBe("InsufficientDiskError");
-    if (failure._tag !== "InsufficientDiskError") return;
-    expect(failure.requiredBytes).toBe(BigInt(2 * 100 + 4 * 1024 * 1024));
-    expect(failure.availableBytes).toBe(0n);
-  });
-
-  it("passes when the filesystem holds the requirement", async () => {
-    const home = temporaryDirectory("canonfig-disk-home-");
-    await Effect.runPromise(
-      preflightDisk(runInput, fakeStatfs(1024n * 1024n)).pipe(
-        Effect.provide(machineLayer(home)),
-      ),
-    );
-  });
-
-  it("agrees with the real statfs of a temporary directory", async () => {
-    const home = temporaryDirectory("canonfig-disk-home-");
-    await Effect.runPromise(
-      preflightDisk(runInput).pipe(Effect.provide(machineLayer(home))),
-    );
+    // The run the earlier release left open is still recoverable state: the
+    // gate lets this build handle it, and abandoning it closes it with a
+    // receipt instead of stranding the follower.
+    const closed = await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      const open = yield* repository.loadRecovery(follower.id);
+      yield* assertUpgradeGate(follower.id);
+      yield* repository.completeRun({
+        run: asRunId("run-legacy-open"),
+        completedAt: "2026-06-03T09:00:00Z",
+        outcome: {
+          outcome: "Failed",
+          run: asRunId("run-legacy-open"),
+          reason: "the interrupted run was abandoned by the operator",
+        },
+        appliedResources: [],
+      });
+      return {
+        open: open?.run.id,
+        after: yield* repository.loadRecovery(follower.id),
+        receipt: yield* repository.latestDeploymentReceipt(follower.id),
+      };
+    }));
+    expect(closed.open).toBe("run-legacy-open");
+    expect(closed.after).toBeUndefined();
+    expect(closed.receipt).toMatchObject({ run: "run-legacy-open", outcome: "Failed" });
   });
 });

@@ -1,6 +1,6 @@
 ---
 title: Security and credentials
-description: Protect source authority, pinned transport, local credentials, and recorded evidence.
+description: Protect source authority, pinned transport, follower and Source credentials, shared secrets, and recorded evidence.
 ---
 
 Canonfig separates profile authority, transport trust, follower authentication,
@@ -15,6 +15,34 @@ Profile Revisions are immutable after publication.
 Protect source signing material and the Source Machine user account. A copied
 source state database or signing key can undermine installation-wide authority.
 
+## Source keys
+
+`canonfig source init` stores the Source signing key, TLS private key, and TLS
+certificate in the native credential store. The items are named per Canonfig
+state directory: each state directory records a random namespace id, so two
+Sources under the same OS account (for example with different `HOME` or state
+paths) cannot overwrite each other's keys.
+
+Running `source init` again never generates a new identity. It checks that the
+stored keys still match the fingerprints recorded in the state database. If
+they do not, Canonfig signs and serves nothing and fails with exit 4:
+
+> The native credential store no longer holds this Source's own credentials:
+> `<which>`. They were not used, so nothing was signed or served as another
+> Source. This Source's keys cannot be recovered from the store: move this
+> state directory aside, run `canonfig source init` to create a new Source
+> identity, then enroll its followers again with new invitations.
+
+Releases before 3.2.1 used account-global credential names. The 3.2.1 line
+added state-directory namespaces and a fingerprint-checked key copy for its
+own legacy state. This is historical behavior, not a supported migration to
+4.0.0. Do not point 4.0.0 at a 3.2.x state directory or copy old credential
+items into a new Source. See [the fresh-install guide](/how-to/upgrade).
+
+When `source serve` cannot load its keys from the native store, the message
+also points at `canonfig source service install` for unattended serving; see
+[Run Canonfig unattended](/how-to/run-unattended).
+
 ## Transport trust
 
 Enrollment pins the source HTTPS certificate fingerprint. Later transport
@@ -27,13 +55,22 @@ The shipped source server is loopback-only:
 canonfig source serve --host 127.0.0.1 --port 17342
 ```
 
-Do not weaken TLS verification or document an unsupported public bind as a
-shortcut.
+A follower on another host reaches it through the managed SSH tunnel
+(`canonfig tunnel`), which pins the SSH host key, the TLS certificate, and the
+Source signing key separately. Do not weaken TLS verification or document an
+unsupported public bind as a shortcut.
+
+Follower requests and Source responses carry the Canonfig version. Different
+`major.minor` releases refuse each other with a "source/follower version
+mismatch" instead of a tampering error. In particular, 4.0.0 cannot
+interoperate with 3.2.x. An in-place upgrade from 3.2.x is unsupported; see
+[the fresh-install guide](/how-to/upgrade).
 
 ## Follower credentials
 
-Each Follower Machine receives its own revocable credential. Followers never
-share one fleet token. Revocation is therefore scoped to one Follower Identity.
+Each Follower Machine receives its own revocable credential, stored as a fresh
+native credential item per enrollment. Followers never share one fleet token,
+so revocation is scoped to one Follower Identity.
 
 Credential Profile Resources use the `require-local` Apply Policy. They carry a
 reference, not the credential value. The platform seam uses:
@@ -49,9 +86,65 @@ machine that cannot keep a credential does not consume a single-use invitation
 discovering that.
 
 The policy a follower enrolled under is recorded in its own configuration and
-is what later runs read. A native scheduled job carries no environment, so a
-policy that only existed as an environment variable left a scheduled run with
-no credential at all.
+is what later runs read, because a native scheduled job carries no
+environment.
+
+### Credential lifecycle
+
+| Event | What happens to credentials |
+| --- | --- |
+| Enrollment fails or is cancelled | The Source-side credential it created is removed, and so is the follower's local item. A Source restart during a pending enrollment also removes it. |
+| Same-name re-enrollment with a new invitation | The credential rotates; the identity and local settings stay. The old credential works until the new one is finalized, then the Source deletes its copy and the follower deletes its old local item. |
+| `follower enroll --replace` under a different name | The new identity is enrolled first. The old identity is then revoked on its Source and its local credential deleted. The result lists every local setting that was reset. |
+| `source revoke <follower-id>` on the Source | The follower is revoked and the Source deletes its copy of that follower's credential. The follower's next request fails with exit 5. |
+| `follower unenroll` on the follower | The identity is revoked on the Source, then the local credential, the received shared secrets, and the enrollment record are deleted. |
+
+`follower unenroll` still removes the local credential when the Source is
+unreachable; the result then reports `sourceRevoked: false` and names the
+`canonfig source revoke <id>` command to run on the Source. It leaves applied
+files, the native schedule, and a recorded managed tunnel in place; run
+`canonfig schedule remove` and `canonfig tunnel stop --forget` to remove those.
+See the [CLI reference](/reference/cli#follower-enrollment).
+
+### Local credential-store failures
+
+A failure to read or write this machine's own store is local, not an
+authentication problem. It fails with exit 3, Human Action Required, and names
+the store and what to run. For example, a follower credential that cannot be
+read during `sync`, `status`, or `secrets sync` reports "the follower
+credential could not be read from this machine's credential store:" followed by
+the native recovery text.
+
+**Linux.** Canonfig reaches Secret Service through `DBUS_SESSION_BUS_ADDRESS`,
+or else the socket at `$XDG_RUNTIME_DIR/bus`, so a background shell with
+`XDG_RUNTIME_DIR` set works. When both are missing, the message says so; set
+`XDG_RUNTIME_DIR=/run/user/$(id -u)`. When that socket does not exist, no user
+manager runs for you: `sudo loginctl enable-linger <user>` starts one. The
+login keyring must also be unlocked, which a password login does. A private
+`dbus-run-session` bus is not a remedy, because it starts an empty keyring that
+waits for a graphical prompt. See [headless Linux credential
+storage](/how-to/run-unattended#headless-linux-credential-storage).
+
+**macOS.** Keychain refusals carry this guidance:
+
+> The login Keychain is locked in this SSH or background session. To continue
+> in this session, run `security unlock-keychain ~/Library/Keychains/login.keychain-db`
+> and retry; the unlock lasts only for this session and does not carry over to
+> new SSH sessions, the desktop session, or scheduled runs. Scheduled runs need
+> the logged-in desktop session (launchd domain gui/`<uid>`).
+
+The `security` exit status is translated, for example "security exited with
+code 36 (user interaction is not allowed: the login Keychain is locked in this
+session)".
+
+**Windows.** Credential Manager is used through a fixed PowerShell program;
+values travel on standard input, never in arguments or environment variables.
+Windows 10 ARM64 needs native PowerShell 7 in
+`%ProgramFiles%\PowerShell\7\pwsh.exe` (or an explicit
+`CANONFIG_POWERSHELL` path). Windows 11 keeps its existing Windows PowerShell
+vault. A public-key OpenSSH session can lack a Credential Manager logon
+session; run credential setup in the signed-in desktop session. Canonfig's
+scheduled task uses that interactive user's token.
 
 ## Opt-in shared secrets
 
@@ -60,8 +153,49 @@ follower is enrolled with the namespaced `canonfig:secrets` group. Set a source
 secret through stdin so it never appears in the process argument list:
 
 ```bash
-printf %s "$GITHUB_TOKEN" | canonfig secrets set github-token
+printf '%s' "$GITHUB_TOKEN" | canonfig secrets set github-token
 ```
+
+### Values and limits
+
+- A value is at most 16384 bytes of valid UTF-8, is not empty, and contains no
+  NUL byte.
+- Piped input is stored exactly as received. A trailing newline (LF or CRLF)
+  is part of the value, and a leading byte-order mark is kept. `printf '%s'`
+  writes no newline; `echo` does.
+- At a terminal, entry is hidden and only the Enter that ends it is dropped.
+- A pipe must reach end of input within 10 seconds.
+- Loading a value never strips a newline, so what a harness or follower receives
+  is the same bytes that were set.
+
+### Native storage
+
+Every store is read back and compared by SHA-256 before Canonfig reports
+success. If the store returned different bytes, Canonfig deletes the item and
+fails with exit 3: "the `<store>` returned `N` bytes for a `M`-byte credential,
+so the credential was removed instead of being kept corrupted; nothing was
+stored". A value is never reported as stored after truncation.
+
+On Linux, a value larger than 8000 bytes is stored as several Secret Service
+items labelled "Canonfig credential (part N of M)" and reassembled on load, so
+the full 16384-byte limit round-trips exactly.
+
+On macOS, shared credentials use a versioned `keychain-hex:` reference. The
+Keychain item stores the UTF-8 value as ASCII hex text, and the reader decodes
+that text once. Reads and writes call Security.framework through macOS's
+built-in JavaScript host, with input passed through stdin. This avoids
+SecurityTool's 4 KiB interactive line limit while preserving ordinary tokens,
+hex-looking values, Unicode, quotes, and line breaks up to the 16384-byte
+limit. Re-sync Source-owned credentials after upgrading from a release that
+predates this format to refresh their native items.
+
+On Windows 10 ARM64, PowerShell 7 calls Credential Manager's native API. It
+stores a versioned root and 2560-byte parts, verifies their SHA-256 digest on
+load, and removes the parts with the root. This preserves the 16384-byte
+shared-secret limit despite the native per-item blob limit. Windows 11
+continues to read credentials stored by the existing WinRT vault.
+
+### Transfer
 
 Authorized values travel over the existing authenticated, certificate-pinned
 HTTPS channel after a successful `sync --apply`, or through an explicit
@@ -70,23 +204,15 @@ storage. The JSON manifest contains only names, origins, and opaque credential
 references; the ordinary state database and profile revisions contain no shared
 secret values.
 
-On macOS, shared credentials use a versioned `keychain-hex:` reference. The
-Keychain item stores the UTF-8 value as ASCII hex text, and the reader decodes
-that text once. Reads and writes call Security.framework through macOS's built-in
-JavaScript host, with input passed through stdin. This avoids SecurityTool's
-4 KiB interactive line limit while preserving ordinary tokens, hex-looking
-values, Unicode, quotes, and line breaks up to the 16 KiB value limit. Re-sync
-Source-owned credentials after upgrading to refresh their native items.
-
 Followers do not re-share source-origin values. Source deletions retire
 source-owned follower credentials on the next apply. Unauthorized requests are
-indistinguishable from unknown routes, and each value is limited to 16 KiB of
-UTF-8 data.
+indistinguishable from unknown routes.
 
 ## Secrets in process evidence
 
 Canonfig redacts configured secrets from captured arguments, stdout, stderr, and
-CLI payload fields before persistence or rendering. Redaction is defense in
+CLI payload fields before persistence or rendering. Installer failure output is
+bounded to its last 20 lines and redacted the same way. Redaction is defense in
 depth; avoid placing a secret on a command line or in profile content in the
 first place.
 
@@ -111,9 +237,9 @@ secure the file. Logging failures never change command behavior. Set
 `CANONFIG_LOG=off` to disable logging or `CANONFIG_LOG_FILE` to select a
 different path.
 
-`SIGINT` and `SIGTERM` produce completion records before Canonfig re-sends
-the signal. `SIGKILL` cannot be observed and cannot produce a completion
-record.
+`SIGINT` and `SIGTERM` produce completion records, and the process exits with
+the status the record carries: 130 for `SIGINT`, 143 for `SIGTERM`. `SIGKILL`
+cannot be observed and cannot produce a completion record.
 
 ## Agent execution
 

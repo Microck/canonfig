@@ -99,6 +99,38 @@ export class TransportInterruptedError extends TaggedError<TransportInterruptedE
   { operation: Schema.String },
 ) {}
 
+/** The Source and this follower run canonfig releases that do not interoperate. */
+export class SourceVersionMismatchError extends TaggedError<SourceVersionMismatchError>()(
+  "SourceVersionMismatchError",
+  {
+    sourceVersion: Schema.NullOr(Schema.String),
+    followerVersion: Schema.NullOr(Schema.String),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A revision an earlier release published carries something this release
+ * cannot represent, so the Source refuses it instead of serving an altered
+ * copy. Publishing the profile again produces a revision in this format.
+ */
+export class LegacyRevisionFormatError extends TaggedError<LegacyRevisionFormatError>()(
+  "LegacyRevisionFormatError",
+  { message: Schema.String },
+) {}
+
+/**
+ * The Source's credential items in the native store do not belong to the
+ * identity its state records. Earlier releases kept them under
+ * account-global names, so another Canonfig state directory of the same OS
+ * account could overwrite them; using them would serve or sign as another
+ * Source.
+ */
+export class SourceCredentialMismatchError extends TaggedError<SourceCredentialMismatchError>()(
+  "SourceCredentialMismatchError",
+  { message: Schema.String },
+) {}
+
 export type EnrollmentError =
   | SourceNotInitializedError
   // Naming a follower the Source Machine never enrolled is an ordinary
@@ -123,4 +155,7 @@ export type EnrollmentError =
   | TransportMalformedResponseError
   | TransportIntegrityError
   | TransportSizeLimitError
-  | TransportInterruptedError;
+  | TransportInterruptedError
+  | SourceVersionMismatchError
+  | LegacyRevisionFormatError
+  | SourceCredentialMismatchError;

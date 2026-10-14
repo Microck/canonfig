@@ -3,14 +3,15 @@ import {
   sign,
 } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
-import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { renderCliResult } from "../../src/cli/render.ts";
 import { AgentResolutionLive } from "../../src/agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../../src/agent/agent-resolution.service.ts";
 import { DeniedAgentCapabilityError } from "../../src/agent/agent-resolution.errors.ts";
@@ -27,6 +28,7 @@ import {
 } from "../../src/domain/brand.ts";
 import type {
   MachineProfile,
+  ProfileResourceInput,
   ProfileRevision,
   VerificationInput,
 } from "../../src/domain/profile.ts";
@@ -54,7 +56,12 @@ import {
   sha256BytesHex,
   sha256Hex,
 } from "../../src/profile/profile-codec.ts";
-import { revisionSigningPayload } from "../../src/profile/publication.ts";
+import {
+  acceptPublicationProposal,
+  makePublication,
+  revisionSigningPayload,
+  type ProfileRevisionSigner,
+} from "../../src/profile/publication.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import {
@@ -67,6 +74,7 @@ import {
   type ConfigDocument,
 } from "../../src/synchronization/config-codec.ts";
 import {
+  abandonFollowerRun,
   authorizationViewIdentity,
   recoverFollower,
   resolveAgentTasks,
@@ -206,6 +214,121 @@ describe("production follower orchestration", () => {
     await expect(readFile(join(followerRoot, "missing.js"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.each([
+    { installerHonorsPin: true, outcome: "Converged" },
+    { installerHonorsPin: false, outcome: "Failed" },
+  ])("reinstalls a present uv tool at its new pin and checks the installed version (installer honors pin: $installerHonorsPin)", async ({ installerHonorsPin, outcome }) => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-tool-pin-"));
+    directories.push(root);
+    const followerRoot = join(root, "follower");
+    const followerDatabase = join(root, "follower.sqlite");
+    const bin = join(followerRoot, "bin");
+    const localBin = join(followerRoot, "home", ".local", "bin");
+    const state = join(root, "installed-version");
+    const calls = join(root, "uv-calls");
+    await mkdir(bin, { recursive: true });
+    await mkdir(localBin, { recursive: true });
+    // The tool installed by an earlier revision that pinned 6.0.1.
+    await writeFile(join(localBin, "isort"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await writeFile(state, "6.0.1");
+    // A uv that keeps the installed version in a file, as `uv tool list`
+    // reports it, and installs exactly the requested `isort==<version>`.
+    await writeFile(join(bin, "uv"), `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, args.join(" ") + "\\n");
+if (args[0] === "tool" && args[1] === "list") {
+  process.stdout.write("isort v" + fs.readFileSync(${JSON.stringify(state)}, "utf8") + "\\n- isort\\n");
+} else if (args[0] === "python" && args[1] === "find") {
+  process.stdout.write(process.execPath + "\\n");
+} else if (args[0] === "venv") {
+  fs.mkdirSync(args[1], { recursive: true });
+} else if (args[0] === "pip") {
+  if (args[1] === "freeze") process.stdout.write("isort==5.13.2\\n");
+} else if (args[0] === "tool" && args[1] === "install") {
+  const requested = args.find((arg) => arg.startsWith("isort=="));
+  if (${String(installerHonorsPin)}) fs.writeFileSync(${JSON.stringify(state)}, requested.slice("isort==".length));
+} else {
+  process.exit(42);
+}
+`, { mode: 0o755 });
+    const sourceLayer = EnrollmentLive.pipe(
+      Layer.provideMerge(stateRepositoryLayer(join(root, "source.sqlite"))),
+      Layer.provideMerge(machineLayer(join(root, "source"))),
+    );
+    const sourceRuntime = ManagedRuntime.make(sourceLayer);
+    runtimes.push(sourceRuntime);
+    const profileId = decode(ProfileId)("tool-pin");
+    await sourceRuntime.runPromise(Effect.gen(function*() {
+      const source = yield* (yield* Enrollment).initializeSource();
+      const privateKey = createPrivateKey(Redacted.value(yield* (yield* MachineState).loadCredential({ reference: source.signingKeyReference })));
+      const compiled = compileProfileCandidate({
+        id: profileId, version: 2, name: "Tool pin", groups: [],
+        resources: [{
+          id: "t-isort", target: "isort", kind: "tool", policy: "ensure", dependsOn: [],
+          verify: { method: "executable-present", executable: "isort" },
+          spec: {
+            kind: "tool", toolId: "isort",
+            recipes: [{ platform: "linux", method: "uv", package: "isort", version: "5.13.2" }],
+          },
+        }],
+      });
+      const unsigned = {
+        id: decode(ProfileRevisionId)(`${profileId}:${compiled.digest}`), profileId, sequence: 1,
+        canonicalBytes: compiled.canonicalBytes, digest: compiled.digest, publishedAt: "2026-10-13T00:00:00Z",
+        groups: [], signingKeyId: source.source.keyId, resources: compiled.resources,
+      };
+      yield* (yield* StateRepository).publishRevision({
+        revision: { ...unsigned, signature: decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(revisionSigningPayload(unsigned)), privateKey).toString("base64url")}`) },
+        blobs: compiled.blobs,
+      });
+    }));
+    const server = await sourceRuntime.runPromise(startSourceServer().pipe(Effect.provide(sourceLayer)));
+    servers.push(server);
+    const invitation = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.createInvitation({
+      endpoint: server.endpoint, expiresInMilliseconds: 60_000,
+    })));
+    const followerMachine = machineLayer(followerRoot);
+    const enrolled = await Effect.runPromise(enrollFollower({ invitation, followerName: "Pin follower" }).pipe(Effect.provide(followerMachine)));
+    const followerRepository = stateRepositoryLayer(followerDatabase);
+    await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.saveFollowerSynchronizationConfiguration({
+      sourceIdentity: enrolled.source,
+      configuration: {
+        schemaVersion: 1, follower: { ...enrolled.follower, credentialReference: enrolled.credentialReference },
+        selectedProfile: profileId,
+        source: { endpoint: server.endpoint, tlsFingerprint: enrolled.tlsFingerprint, signingFingerprint: enrolled.source.publicKeyFingerprint },
+        credentialReference: enrolled.credentialReference,
+        cacheDirectory: join(root, "cache"), stateLocation: followerDatabase,
+        agentPolicy: "deterministic-only", scheduledInvocation: defaultScheduledInvocation, updatedAt: "2026-10-13T00:00:00Z",
+      },
+    })).pipe(Effect.provide(followerRepository)));
+    const application = Layer.mergeAll(followerRepository, followerMachine, AgentResolutionLive,
+      SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, followerMachine))));
+
+    const planned = await Effect.runPromise(synchronizeFollower(followerDatabase, "plan").pipe(Effect.provide(application)));
+    expect(planned.plan.actions.filter((action) => action.resource === "t-isort")).toEqual([
+      expect.objectContaining({
+        kind: "install-tool",
+        detail: expect.objectContaining({ version: "5.13.2", replaces: "6.0.1" }),
+      }),
+    ]);
+    // Planning only listed the installed tools.
+    expect((await readFile(calls, "utf8")).trim().split("\n").every((call) => call.startsWith("tool list"))).toBe(true);
+
+    const applied = await Effect.runPromise(synchronizeFollower(followerDatabase, "apply").pipe(Effect.provide(application)));
+    expect(applied.outcome).toMatchObject({ outcome });
+    if (installerHonorsPin) {
+      expect(await readFile(state, "utf8")).toBe("5.13.2");
+      const replanned = await Effect.runPromise(synchronizeFollower(followerDatabase, "plan").pipe(Effect.provide(application)));
+      expect(replanned.plan.actions.filter((action) => action.resource === "t-isort").map((action) => action.kind))
+        .toEqual(["no-op"]);
+    } else {
+      expect(applied.outcome).toMatchObject({
+        reason: expect.stringContaining("reports isort 6.0.1 installed, not the pinned 5.13.2"),
+      });
+    }
+  });
+
   it("keeps follower text across adoption, local edits, Source replacement, and removal", async () => {
     const root = mkdtempSync(join(tmpdir(), "canonfig-text-orchestration-"));
     directories.push(root);
@@ -229,7 +352,7 @@ describe("production follower orchestration", () => {
     const publish = async (content?: string) => {
       sequence += 1;
       const profile: MachineProfile = {
-        id: profileId, version: 2, name: "Local instructions", groups: [],
+        id: profileId, version: 2, name: `Local instructions ${sequence}`, groups: [],
         resources: content === undefined ? [] : [{
           id: resourceId, kind: "file", policy: "append-local", target, dependsOn: [],
           spec: { kind: "file", content, executable: false, mode: 0o600 },
@@ -272,22 +395,109 @@ describe("production follower orchestration", () => {
     })).pipe(Effect.provide(followerRepository)));
     const application = Layer.mergeAll(followerRepository, followerMachine, AgentResolutionLive,
       SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, followerMachine))));
-    const sync = (mode: "plan" | "apply" = "apply") => Effect.runPromise(synchronizeFollower(followerDatabase, mode).pipe(Effect.provide(application)));
+    const sync = (mode: "plan" | "apply" = "apply", reviewLocal = false) => Effect.runPromise(
+      synchronizeFollower(followerDatabase, mode, undefined, false, reviewLocal).pipe(Effect.provide(application)),
+    );
     const text = async () => parseTextComposition(await readFile(target));
     await mkdir(join(followerRoot, "home"), { recursive: true });
-    const local = "Existing rules\r\n\uFEFF東京\n";
+    const secretMarker = "c6-private-local-fixture-opaque-value";
+    const local = `Source one\nExisting rules\r\n\uFEFF東京\n${"long local text ".repeat(40)}\n${secretMarker}\n`;
     await writeFile(target, local);
-    expect((await sync("plan")).plan.actions).toEqual(expect.arrayContaining([
+    const ordinaryPlan = await sync("plan");
+    expect(ordinaryPlan.plan.actions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: "write-file",
-        detail: expect.objectContaining({
-          adoptionNotice: expect.stringContaining("cannot tell an old shared rule"),
-        }),
+        detail: expect.objectContaining({ retainedLocalDigest: sha256Hex(local) }),
       }),
     ]));
+    expect(JSON.stringify(ordinaryPlan)).not.toContain(secretMarker);
+    expect(JSON.stringify(ordinaryPlan)).not.toContain("Existing rules");
+    expect(ordinaryPlan.adoptionReviews).toBeUndefined();
+    const reviewedPlan = await sync("plan", true);
+    const reviewPath = reviewedPlan.adoptionReviews![0]!.path;
+    const review = JSON.parse(await readFile(reviewPath, "utf8"));
+    expect(review).toMatchObject({
+      schema: "canonfig.adoption-review/v1",
+      planDigest: ordinaryPlan.plan.digest,
+      retainedLocalDigest: sha256Hex(local),
+      sourceDigest: sha256Hex("Source one\n"),
+      sourceAddition: "Source one\n",
+      retainedLocal: local,
+    });
+    expect(parseTextComposition(new TextEncoder().encode(review.proposedText))).toEqual({
+      kind: "managed", source: "Source one\n", local,
+    });
+    expect((await stat(reviewPath)).mode & 0o777).toBe(0o600);
+    expect((await stat(dirname(reviewPath))).mode & 0o777).toBe(0o700);
+    for (const format of ["human", "json"] as const) {
+      const rendered = renderCliResult({
+        command: "sync.plan", message: "sync.plan completed", exitCode: 0,
+        data: Schema.decodeUnknownSync(Schema.MutableJson)(JSON.parse(JSON.stringify(reviewedPlan))),
+      }, format);
+      expect(rendered).not.toContain(secretMarker);
+      expect(rendered).not.toContain("Existing rules");
+      expect(rendered).toContain(reviewPath);
+      expect(rendered).toContain("canonfig sync --plan --review-local");
+    }
+    await rm(dirname(reviewPath), { recursive: true });
+
+    // Change the actual target between observation and the private review read.
+    const machine = await Effect.runPromise(MachineState.pipe(Effect.provide(followerMachine)));
+    for (const change of ["content", "symlink", "removed"] as const) {
+      let targetReads = 0;
+      const changedMachine = {
+        ...machine,
+        readFile: (input: Parameters<typeof machine.readFile>[0]) => Effect.gen(function*() {
+          if (input.path.absolute === target && ++targetReads === 2) {
+            if (change === "content") {
+              yield* Effect.promise(() => writeFile(target, "Changed local text\n"));
+            } else if (change === "symlink") {
+              yield* Effect.promise(async () => {
+                await unlink(target);
+                await symlink(join(root, "missing-review-target"), target);
+              });
+            } else {
+              yield* Effect.promise(() => unlink(target));
+            }
+          }
+          return yield* machine.readFile(input);
+        }),
+      };
+      await expect(Effect.runPromise(
+        synchronizeFollower(followerDatabase, "plan", undefined, false, true).pipe(
+          Effect.provideService(MachineState, changedMachine), Effect.provide(application),
+        ),
+      )).rejects.toMatchObject(change === "content"
+        ? { _tag: "FollowerSynchronizationConfigurationError", reason: "stale" }
+        : { _tag: "MachineFilesystemError", operation: "read file" });
+      await rm(target, { force: true });
+      await writeFile(target, local);
+    }
+    // Applying the same plan must reject local changes made before rollback capture.
+    const changedBeforeCapture = {
+      ...machine,
+      digestFile: (input: Parameters<typeof machine.digestFile>[0]) => Effect.gen(function*() {
+        if (input.path.absolute === target) {
+          yield* Effect.promise(() => writeFile(target, "Changed before first adoption\n"));
+        }
+        return yield* machine.digestFile(input);
+      }),
+    };
+    const changedLayer = Layer.succeed(MachineState, changedBeforeCapture);
+    const changedApplication = Layer.mergeAll(followerRepository, changedLayer, AgentResolutionLive,
+      SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, changedLayer))));
+    const refused = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "apply").pipe(
+        Effect.provide(changedApplication),
+      ),
+    );
+    expect(refused.outcome).toMatchObject({ outcome: "Failed" });
+    expect(await readFile(target, "utf8")).toBe("Changed before first adoption\n");
+    await writeFile(target, local);
     expect(await readFile(target, "utf8")).toBe(local);
     expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
     expect(await text()).toEqual({ kind: "managed", source: "Source one\n", local });
+    expect(review.proposedText).toBe(await readFile(target, "utf8"));
     const adopted = await readFile(target, "utf8");
     const added = "New local rule\r\n";
     await writeFile(target, adopted + added);
@@ -322,11 +532,31 @@ describe("production follower orchestration", () => {
     expect(await readFile(target, "utf8")).toBe(local + added);
     expect((await sync("plan")).plan.actions).toEqual([]);
 
-    // A fresh adoption of identical text introduces ownership without a copy.
-    await writeFile(target, "Source three");
+    // Empty first-adoption text is retained exactly, without delimiter guessing.
+    await writeFile(target, "");
+    await publish("Source three\r\n");
+    const emptyPlan = await sync("plan", true);
+    const emptyReview = JSON.parse(await readFile(emptyPlan.adoptionReviews![0]!.path, "utf8"));
+    expect(emptyReview.retainedLocal).toBe("");
+    expect(parseTextComposition(new TextEncoder().encode(emptyReview.proposedText))).toEqual({
+      kind: "managed", source: "Source three\r\n", local: "",
+    });
+    await rm(dirname(emptyPlan.adoptionReviews![0]!.path), { recursive: true });
     await publish("Source three");
+    await writeFile(target, "Source three");
+    const refusedEqualAdoption = await Effect.runPromise(
+      synchronizeFollower(followerDatabase, "apply").pipe(Effect.provide(changedApplication)),
+    );
+    expect(refusedEqualAdoption.outcome).toMatchObject({ outcome: "Failed" });
+    expect(await readFile(target, "utf8")).toBe("Changed before first adoption\n");
+    await writeFile(target, "Source three");
     expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
-    expect(await text()).toEqual({ kind: "managed", source: "Source three", local: "" });
+    await publish("Source four");
+    expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
+    await publish();
+    expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(await readFile(target, "utf8")).toBe("Source three");
+    await publish("Source three");
     await unlink(target);
     expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
     expect(await text()).toEqual({ kind: "managed", source: "Source three", local: "" });
@@ -444,6 +674,120 @@ describe("production follower orchestration", () => {
     expect(configuration?.scheduleDefault).toEqual({ type: "daily", at: "04:30", timezone: "local" });
 
     expect((await apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(installs).toBe(2);
+  });
+
+  it("offers a profile default without installing it, and never recreates a job disabled or deleted outside Canonfig", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-schedule-consent-"));
+    directories.push(root);
+    const followerRoot = join(root, "follower");
+    const followerDatabase = join(root, "follower.sqlite");
+    const sourceLayer = EnrollmentLive.pipe(
+      Layer.provideMerge(stateRepositoryLayer(join(root, "source.sqlite"))),
+      Layer.provideMerge(machineLayer(join(root, "source"))),
+    );
+    const sourceRuntime = ManagedRuntime.make(sourceLayer);
+    runtimes.push(sourceRuntime);
+    const profileId = decode(ProfileId)("schedule-consent");
+    await sourceRuntime.runPromise(Effect.gen(function*() {
+      const source = yield* (yield* Enrollment).initializeSource();
+      const privateKey = createPrivateKey(Redacted.value(yield* (yield* MachineState).loadCredential({ reference: source.signingKeyReference })));
+      const profile: MachineProfile = {
+        id: profileId, version: 2, name: "Schedule consent", groups: [], resources: [],
+        scheduleDefault: { type: "daily", at: "04:30", timezone: "local" },
+      };
+      const compiled = compileProfileCandidate(profile);
+      const unsigned = {
+        id: decode(ProfileRevisionId)(`${profileId}:${compiled.digest}`), profileId, sequence: 1,
+        canonicalBytes: compiled.canonicalBytes, digest: compiled.digest, publishedAt: "2026-09-09T00:00:00Z",
+        groups: [], signingKeyId: source.source.keyId, resources: compiled.resources,
+      };
+      yield* (yield* StateRepository).publishRevision({
+        revision: { ...unsigned, signature: decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(revisionSigningPayload(unsigned)), privateKey).toString("base64url")}`) },
+        blobs: compiled.blobs,
+      });
+    }));
+    const server = await sourceRuntime.runPromise(startSourceServer().pipe(Effect.provide(sourceLayer)));
+    servers.push(server);
+    const invitation = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.createInvitation({
+      endpoint: server.endpoint, expiresInMilliseconds: 60_000,
+    })));
+    // An in-memory native scheduler whose job the test can delete or disable
+    // the way `rm` or `systemctl --user disable --now` would.
+    let installedJob: RenderedSchedulerJob | undefined;
+    let disabled = false;
+    let installs = 0;
+    const scheduler: SchedulerBackend = {
+      inspect: (expected) => Effect.sync(() => ({
+        installed: installedJob !== undefined, enabled: installedJob !== undefined && !disabled,
+        active: installedJob !== undefined && !disabled,
+        matches: installedJob?.service === expected.service && installedJob.schedule === expected.schedule,
+      })),
+      snapshot: () => Effect.die("unused"),
+      install: (definition) => Effect.sync(() => { installedJob = definition; disabled = false; installs += 1; }),
+      remove: () => Effect.sync(() => { installedJob = undefined; }),
+      restore: () => Effect.die("unused"),
+    };
+    const followerMachine = linuxMachineStateLayer({
+      environment: [{ name: "HOME", value: join(followerRoot, "home") }, { name: "PATH", value: join(followerRoot, "bin") }],
+      credentialPolicy: { kind: "local-file", path: join(followerRoot, "credentials") },
+      schedulerBackend: scheduler,
+    });
+    const schedules = scheduleManagerLayer.pipe(Layer.provide(followerMachine));
+    const enrolled = await Effect.runPromise(enrollFollower({ invitation, followerName: "Consent follower" }).pipe(Effect.provide(followerMachine)));
+    const followerRepository = stateRepositoryLayer(followerDatabase);
+    const saveOverride = (scheduleOverride: FollowerSynchronizationConfiguration["scheduleOverride"]) =>
+      Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity: enrolled.source,
+        configuration: {
+          schemaVersion: 1, follower: { ...enrolled.follower, credentialReference: enrolled.credentialReference },
+          selectedProfile: profileId,
+          source: { endpoint: server.endpoint, tlsFingerprint: enrolled.tlsFingerprint, signingFingerprint: enrolled.source.publicKeyFingerprint },
+          credentialReference: enrolled.credentialReference,
+          cacheDirectory: join(root, "cache"), stateLocation: followerDatabase,
+          agentPolicy: "deterministic-only", scheduledInvocation: defaultScheduledInvocation,
+          scheduleOverride,
+          updatedAt: "2026-09-09T00:00:00Z",
+        },
+      })).pipe(Effect.provide(followerRepository)));
+    const application = Layer.mergeAll(followerRepository, followerMachine, AgentResolutionLive, schedules,
+      SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, followerMachine))));
+    const sync = (mode: "plan" | "apply") =>
+      Effect.runPromise(synchronizeFollower(followerDatabase, mode).pipe(Effect.provide(application)));
+
+    // CF-47: the follower never ran `schedule set`, so the default is only offered.
+    await saveOverride(undefined);
+    expect((await sync("plan")).schedule).toMatchObject({ action: "available" });
+    const offered = await sync("apply");
+    expect(offered.outcome).toMatchObject({ outcome: "Converged" });
+    expect(offered.schedule?.detail).toContain("canonfig schedule set --default");
+    expect(installs).toBe(0);
+    expect(installedJob).toBeUndefined();
+
+    // Consent (`schedule set --default`) installs the inherited default.
+    await saveOverride({ kind: "inherit" });
+    await Effect.runPromise(Effect.flatMap(ScheduleManager, (manager) => manager.install({
+      schedule: { kind: "daily", localTime: "04:30" },
+    })).pipe(Effect.provide(schedules)));
+    expect((await sync("apply")).schedule).toMatchObject({ action: "unchanged", state: "current" });
+    expect(installs).toBe(1);
+
+    // CF-46: deleted outside Canonfig stays deleted, and is reported.
+    installedJob = undefined;
+    const afterDelete = await sync("apply");
+    expect(afterDelete.schedule).toMatchObject({ action: "left-as-is", state: "not-installed" });
+    expect(afterDelete.schedule?.detail).toContain("automation disabled outside Canonfig");
+    expect(installedJob).toBeUndefined();
+    expect(installs).toBe(1);
+
+    // CF-46: disabled outside Canonfig stays disabled.
+    await Effect.runPromise(Effect.flatMap(ScheduleManager, (manager) => manager.install({
+      schedule: { kind: "daily", localTime: "04:30" },
+    })).pipe(Effect.provide(schedules)));
+    disabled = true;
+    const afterDisable = await sync("apply");
+    expect(afterDisable.schedule).toMatchObject({ action: "left-as-is", state: "disabled" });
+    expect(disabled).toBe(true);
     expect(installs).toBe(2);
   });
 
@@ -888,6 +1232,7 @@ describe("production follower orchestration", () => {
     const profileScheduleManager = ScheduleManager.of({
       install: () => Effect.die("unused"),
       inspect: () => Effect.die("unused"),
+      reconcile: () => Effect.die("unused"),
       update: (input) => Effect.sync(() => {
         profileScheduleCalls.push(input?.schedule);
         const schedule = input?.schedule ?? {
@@ -908,6 +1253,9 @@ describe("production follower orchestration", () => {
               service: "",
               schedule: "",
             },
+            detail: "fixture",
+            timezone: "UTC",
+            warnings: [],
           },
         };
       }),
@@ -931,6 +1279,9 @@ describe("production follower orchestration", () => {
             service: "",
             schedule: "",
           },
+          detail: "fixture",
+          timezone: "UTC",
+          warnings: [],
         };
       }),
       snapshot: () => Effect.sync(() => profileSchedule === undefined
@@ -1259,13 +1610,11 @@ describe("production follower orchestration", () => {
       ),
     );
     expect(ownershipApplied).toMatchObject({ outcome: { outcome: "Converged" } });
-    // The inherited default is reconciled after the run, not as a planned
-    // action, so a scheduler failure cannot roll back configuration that
-    // applied correctly.
-    expect(profileScheduleCalls.at(-1)).toEqual({
-      kind: "daily",
-      localTime: "01:15",
-    });
+    // This follower never consented to scheduling (no `schedule set`), so
+    // the profile default is not installed (CF-47). The job that already
+    // exists without a decision is kept, never deleted (UF-D6).
+    expect(profileScheduleCalls).toEqual([]);
+    expect(ownershipApplied).toMatchObject({ schedule: { action: "kept-unmanaged" } });
     const updatedConfiguration = await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>
         repository.getFollowerSynchronizationConfiguration()
@@ -1398,6 +1747,44 @@ describe("production follower orchestration", () => {
     });
     expect(await readFile(target, "utf8")).toBe("local drift\n");
 
+    // A run whose revision the Source no longer serves, such as one an
+    // earlier release left open, can only be closed. recover must say so
+    // instead of sending the operator into a recover/apply loop.
+    const orphan = {
+      ...revision,
+      id: decode(ProfileRevisionId)(`${revision.profileId}:${"f".repeat(64)}`),
+      sequence: 99,
+    };
+    await Effect.runPromise(
+      Effect.flatMap(StateRepository, (repository) =>
+        Effect.andThen(
+          repository.publishRevision({ revision: orphan }),
+          repository.startRun({
+            id: decode(RunId)("orphaned-revision-run"),
+            follower: follower.id,
+            revision: orphan.id,
+            plan: { ...planned.plan, revision: orphan.id },
+            startedAt: "2026-08-16T00:04:00Z",
+          }),
+        )
+      ).pipe(Effect.provide(followerRepository)),
+    );
+    const unrecoverable = await Effect.runPromise(Effect.flip(
+      recoverFollower(followerDatabase).pipe(Effect.provide(restartedApplication)),
+    ));
+    expect(unrecoverable).toMatchObject({
+      _tag: "FollowerSynchronizationConfigurationError",
+      message: expect.stringContaining(
+        "run orphaned-revision-run cannot be recovered: recovery revision",
+      ),
+    });
+    expect(unrecoverable.message).toContain(
+      "run 'canonfig abandon' to close it without rollback, then 'canonfig sync --apply'",
+    );
+    await expect(Effect.runPromise(
+      abandonFollowerRun(followerDatabase).pipe(Effect.provide(restartedApplication)),
+    )).resolves.toMatchObject({ run: "orphaned-revision-run", abandoned: true });
+
     await sourceRuntime.runPromise(
       Effect.flatMap(Enrollment, (enrollment) =>
         enrollment.revokeFollower(follower.id)
@@ -1409,5 +1796,227 @@ describe("production follower orchestration", () => {
       ),
     ));
     expect(revoked._tag).toBe("RevokedFollowerCredentialError");
+  }, 120_000);
+
+  it("hands a follower older content re-published as the latest revision", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-republish-"));
+    directories.push(root);
+    const followerRoot = join(root, "follower");
+    const followerDatabase = join(root, "follower.sqlite");
+    const home = join(followerRoot, "home");
+    const sourceLayer = EnrollmentLive.pipe(
+      Layer.provideMerge(stateRepositoryLayer(join(root, "source.sqlite"))),
+      Layer.provideMerge(machineLayer(join(root, "source"))),
+    );
+    const sourceRuntime = ManagedRuntime.make(sourceLayer);
+    runtimes.push(sourceRuntime);
+    const source = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.initializeSource()));
+    const privateKey = await sourceRuntime.runPromise(Effect.gen(function*() {
+      const machine = yield* MachineState;
+      return createPrivateKey(Redacted.value(yield* machine.loadCredential({ reference: source.signingKeyReference })));
+    }));
+    const signer: ProfileRevisionSigner = {
+      keyId: source.source.keyId,
+      sign: (payload) => Effect.sync(() =>
+        decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(payload), privateKey).toString("base64url")}`)
+      ),
+      verify: () => Effect.succeed(true),
+    };
+    const profileId = decode(ProfileId)("restorable");
+    const extra = join(home, "extra.txt");
+    // Both digests are omitted: the follower converging proves publication
+    // computed the digests it verifies against.
+    const settings: ProfileResourceInput = {
+      id: "settings", kind: "config", target: join(home, ".client", "settings.json"),
+      spec: { kind: "config", format: "json", keys: [{ path: "mcp.enabled", value: true }] },
+      verify: { method: "digest" },
+    };
+    const extraFile: ProfileResourceInput = {
+      id: "extra", kind: "file", target: extra,
+      spec: { kind: "file", content: "extra\n" }, verify: { method: "digest" },
+    };
+    const proposal = { resources: [], tools: [], skills: [], evidence: [], agentTasks: [], scannedPaths: [] };
+    let minute = 0;
+    const publish = (resources: ReadonlyArray<ProfileResourceInput>) => {
+      minute += 1;
+      const at = `2026-09-07T00:0${minute}:00Z`;
+      return sourceRuntime.runPromise(Effect.flatMap(StateRepository, (repository) =>
+        makePublication(signer, repository).publish({
+          proposal,
+          profile: { id: profileId, name: "Restorable", resources },
+          review: acceptPublicationProposal(proposal, "reviewer@example.test", at),
+          publishedAt: at,
+        })
+      ));
+    };
+    const first = await publish([settings, extraFile]);
+    const server = await sourceRuntime.runPromise(startSourceServer().pipe(Effect.provide(sourceLayer)));
+    servers.push(server);
+    const invitation = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.createInvitation({
+      endpoint: server.endpoint, expiresInMilliseconds: 60_000,
+    })));
+    const followerMachine = machineLayer(followerRoot);
+    const enrolled = await Effect.runPromise(enrollFollower({ invitation, followerName: "Restoring follower" }).pipe(Effect.provide(followerMachine)));
+    const followerRepository = stateRepositoryLayer(followerDatabase);
+    await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.saveFollowerSynchronizationConfiguration({
+      sourceIdentity: enrolled.source,
+      configuration: {
+        schemaVersion: 1, follower: { ...enrolled.follower, credentialReference: enrolled.credentialReference },
+        selectedProfile: profileId,
+        source: { endpoint: server.endpoint, tlsFingerprint: enrolled.tlsFingerprint, signingFingerprint: enrolled.source.publicKeyFingerprint },
+        credentialReference: enrolled.credentialReference,
+        cacheDirectory: join(root, "cache"), stateLocation: followerDatabase,
+        agentPolicy: "deterministic-only", scheduledInvocation: defaultScheduledInvocation, updatedAt: "2026-09-07T00:00:00Z",
+      },
+    })).pipe(Effect.provide(followerRepository)));
+    const application = Layer.mergeAll(followerRepository, followerMachine, AgentResolutionLive,
+      SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, followerMachine))));
+    const sync = (mode: "plan" | "apply" = "apply") =>
+      Effect.runPromise(synchronizeFollower(followerDatabase, mode).pipe(Effect.provide(application)));
+
+    expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(await readFile(extra, "utf8")).toBe("extra\n");
+
+    await publish([settings]);
+    expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
+    await rm(extra, { force: true });
+
+    const restored = await publish([settings, extraFile]);
+    expect(restored.sequence).toBe(3);
+    expect(restored.canonicalBytes).toBe(first.canonicalBytes);
+    expect(restored.id).not.toBe(first.id);
+    expect((await sync("plan")).revision).toBe(restored.id);
+    expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(await readFile(extra, "utf8")).toBe("extra\n");
+  });
+
+  it("merges into a commented follower JSON file and blocks only the resource whose file does not parse", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-jsonc-follower-"));
+    directories.push(root);
+    const followerRoot = join(root, "follower");
+    const followerDatabase = join(root, "follower.sqlite");
+    const home = join(followerRoot, "home");
+    const sourceLayer = EnrollmentLive.pipe(
+      Layer.provideMerge(stateRepositoryLayer(join(root, "source.sqlite"))),
+      Layer.provideMerge(machineLayer(join(root, "source"))),
+    );
+    const sourceRuntime = ManagedRuntime.make(sourceLayer);
+    runtimes.push(sourceRuntime);
+    const source = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.initializeSource()));
+    const privateKey = await sourceRuntime.runPromise(Effect.gen(function*() {
+      const machine = yield* MachineState;
+      return createPrivateKey(Redacted.value(yield* machine.loadCredential({ reference: source.signingKeyReference })));
+    }));
+    const signer: ProfileRevisionSigner = {
+      keyId: source.source.keyId,
+      sign: (payload) => Effect.sync(() =>
+        decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(payload), privateKey).toString("base64url")}`)
+      ),
+      verify: () => Effect.succeed(true),
+    };
+    const profileId = decode(ProfileId)("jsonc-follower");
+    const settingsPath = join(home, ".gemini", "settings.json");
+    const extra = join(home, "extra.txt");
+    const codexPath = join(home, ".codex", "config.toml");
+    const hermesPath = join(home, ".hermes", "config.yaml");
+    const docsServer = { command: "npx", args: ["-y", "docs"], env: { MODE: "ro" }, startup_timeout_sec: 20, tool_timeout_sec: 45.5 };
+    const proposal = { resources: [], tools: [], skills: [], evidence: [], agentTasks: [], scannedPaths: [] };
+    await sourceRuntime.runPromise(Effect.flatMap(StateRepository, (repository) =>
+      makePublication(signer, repository).publish({
+        proposal,
+        profile: { id: profileId, name: "JSONC follower", resources: [
+          {
+            id: "settings", kind: "config", target: settingsPath,
+            spec: { kind: "config", format: "json", keys: [
+              { path: "mcpServers.docs", value: { command: "docs", args: ["--a"], env: { B: "2", A: "1" } } },
+              { path: "alpha", value: { z: 1, a: [2, 1] } },
+            ] },
+            verify: { method: "digest" },
+          },
+          {
+            id: "codex", kind: "config", target: codexPath,
+            spec: { kind: "config", format: "toml", keys: [
+              { path: "mcp_servers.docs", value: docsServer },
+              { path: "approval_policy", value: "on-request" },
+            ] },
+            verify: { method: "digest" },
+          },
+          {
+            id: "hermes", kind: "config", target: hermesPath,
+            spec: { kind: "config", format: "yaml", keys: [{ path: "hooks.flags", value: { yes: "yes", on: "on", n: 2 } }] },
+            verify: { method: "digest" },
+          },
+          { id: "extra", kind: "file", target: extra, spec: { kind: "file", content: "extra\n" }, verify: { method: "digest" } },
+        ] },
+        review: acceptPublicationProposal(proposal, "reviewer@example.test", "2026-09-07T00:01:00Z"),
+        publishedAt: "2026-09-07T00:01:00Z",
+      })
+    ));
+    const server = await sourceRuntime.runPromise(startSourceServer().pipe(Effect.provide(sourceLayer)));
+    servers.push(server);
+    const invitation = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.createInvitation({
+      endpoint: server.endpoint, expiresInMilliseconds: 60_000,
+    })));
+    const followerMachine = machineLayer(followerRoot);
+    const enrolled = await Effect.runPromise(enrollFollower({ invitation, followerName: "JSONC follower" }).pipe(Effect.provide(followerMachine)));
+    const followerRepository = stateRepositoryLayer(followerDatabase);
+    await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.saveFollowerSynchronizationConfiguration({
+      sourceIdentity: enrolled.source,
+      configuration: {
+        schemaVersion: 1, follower: { ...enrolled.follower, credentialReference: enrolled.credentialReference },
+        selectedProfile: profileId,
+        source: { endpoint: server.endpoint, tlsFingerprint: enrolled.tlsFingerprint, signingFingerprint: enrolled.source.publicKeyFingerprint },
+        credentialReference: enrolled.credentialReference,
+        cacheDirectory: join(root, "cache"), stateLocation: followerDatabase,
+        agentPolicy: "deterministic-only", scheduledInvocation: defaultScheduledInvocation, updatedAt: "2026-09-07T00:00:00Z",
+      },
+    })).pipe(Effect.provide(followerRepository)));
+    const application = Layer.mergeAll(followerRepository, followerMachine, AgentResolutionLive,
+      SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, followerMachine))));
+    const sync = (mode: "plan" | "apply" = "apply") =>
+      Effect.runPromise(synchronizeFollower(followerDatabase, mode).pipe(Effect.provide(application)));
+
+    await mkdir(join(home, ".gemini"), { recursive: true });
+    await writeFile(settingsPath, "{\n  // user comment: keep my theme\n  \"theme\": \"Dracula\",\n  \"mcpServers\": { \"docs\": { \"env\": { \"A\": \"1\", \"B\": \"2\" }, \"command\": \"docs\", \"args\": [\"--a\"] } },\n}\n");
+    await mkdir(join(home, ".codex"), { recursive: true });
+    await writeFile(codexPath, [
+      "# Local Codex settings - keep this comment",
+      "model = \"local\"",
+      "",
+      "[mcp_servers.docs]",
+      "tool_timeout_sec = 45.5",
+      "command = \"npx\"",
+      "args = [ \"-y\", \"docs\" ]",
+      "",
+      "[mcp_servers.docs.env]",
+      "MODE = \"ro\"",
+      "",
+    ].join("\n"));
+    await mkdir(join(home, ".hermes"), { recursive: true });
+    await writeFile(hermesPath, "# Hermes local config - keep this comment\nhooks:\n  flags:\n    n: 2\n    \"on\": \"on\"\n");
+    expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
+    const merged = await readFile(settingsPath, "utf8");
+    expect(merged).toContain("// user comment: keep my theme");
+    expect(await readFile(codexPath, "utf8")).toContain("# Local Codex settings - keep this comment");
+    expect(await readFile(hermesPath, "utf8")).toContain("# Hermes local config - keep this comment");
+    // Owned values already equal in another key order, and unmanaged siblings,
+    // keep the order and bytes their author wrote.
+    expect(merged).toMatch(/"theme": "Dracula",\n  "mcpServers": \{ "docs": \{ "env": \{ "A": "1", "B": "2" \}, "command": "docs", "args": \["--a"\] \} \},\n/u);
+    expect(await readFile(codexPath, "utf8")).toContain("[mcp_servers.docs]\ntool_timeout_sec = 45.5\ncommand = \"npx\"\n");
+    expect(await readFile(hermesPath, "utf8")).toContain("    n: 2\n    \"on\": \"on\"\n");
+    // An unchanged follow-up plans nothing for every format.
+    expect((await sync("plan")).plan.actions.map((action) => [action.resource, action.kind]).sort())
+      .toEqual([["codex", "no-op"], ["extra", "no-op"], ["hermes", "no-op"], ["settings", "no-op"]]);
+
+    const broken = "{\n  // user comment\n  \"theme\": \n}\n";
+    await writeFile(settingsPath, broken);
+    await rm(extra, { force: true });
+    const planned = await sync("plan");
+    expect(planned.plan.actions.find((action) => action.resource === "settings")).toMatchObject({
+      kind: "human-action",
+      detail: { reason: expect.stringContaining(`${settingsPath} is not valid JSON`) },
+    });
+    expect(planned.plan.actions.find((action) => action.resource === "extra")).toMatchObject({ kind: "write-file" });
+    expect(await readFile(settingsPath, "utf8")).toBe(broken);
   });
 });

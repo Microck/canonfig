@@ -9,9 +9,9 @@ import {
   verify,
   X509Certificate,
 } from "node:crypto";
+import type { KeyObject } from "node:crypto";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
-import { generate } from "selfsigned";
 
 import {
   CertificateFingerprint,
@@ -31,7 +31,10 @@ import {
   type PublishedResource,
 } from "../domain/profile.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import { CredentialStorageError } from "../machine/machine-state.errors.ts";
+import {
+  CredentialStorageError,
+  credentialFailureDetail,
+} from "../machine/machine-state.errors.ts";
 import {
   EnrollmentStateConflictError,
   FollowerNotFoundError,
@@ -49,7 +52,9 @@ import {
   InvitationReplayError,
   InvalidFollowerCredentialError,
   RevokedFollowerCredentialError,
+  SourceCredentialMismatchError,
   SourceNotInitializedError,
+  LegacyRevisionFormatError,
   TransportIntegrityError,
   TransportResourceNotFoundError,
   type EnrollmentError,
@@ -61,6 +66,7 @@ import type {
   EnrollFollowerRequest,
   EnrollmentInvitationGrant,
   RevisionMetadata,
+  SourceCredentials,
   SourceEnrollmentMaterial,
 } from "./enrollment.types.ts";
 import {
@@ -71,6 +77,13 @@ import {
   type JsonValue,
 } from "../profile/profile-codec.ts";
 import { revisionSigningPayload } from "../profile/publication.ts";
+import {
+  isLegacyRevision,
+  legacySignedResources,
+  legacyStoredResources,
+  LegacyRevisionFormatIssue,
+  projectLegacyProfile,
+} from "../profile/legacy-revision.ts";
 
 const decode = Schema.decodeUnknownSync;
 const maximumInvitationLifetimeMilliseconds = 24 * 60 * 60 * 1000;
@@ -86,30 +99,34 @@ const certificateFingerprint = (certificate: string) =>
 const asJson = <Value>(value: Value): JsonValue =>
   decode(Schema.MutableJson)(JSON.parse(JSON.stringify(value)));
 
+type AuthorizableResource = Pick<PublishedResource, "id" | "groups" | "dependsOn">;
+
 const resourceIsAuthorized = (
-  resource: PublishedResource,
+  resource: AuthorizableResource,
   groups: ReadonlySet<string>,
 ): boolean =>
   resource.groups === undefined
   || resource.groups.length === 0
   || resource.groups.some((group) => groups.has(group));
 
-const visibleResources = (
-  revision: ProfileRevision,
+const visibleResources = <Resource extends AuthorizableResource>(
+  resources: ReadonlyArray<Resource>,
   groups: ReadonlySet<string>,
-): ReadonlyArray<PublishedResource> => {
+): ReadonlyArray<Resource> => {
   const visibleIds = new Set(
-    revision.resources
+    resources
       .filter((resource) => resourceIsAuthorized(resource, groups))
       .map((resource) => resource.id),
   );
   // Authorization is a projection of the signed revision, not a dependency
   // rewrite. Remove every dependent whose complete dependency closure is not
-  // visible, including transitive dependents.
+  // visible, including transitive dependents. This deliberately fails closed
+  // instead of allowing a follower to plan against an incomplete resource
+  // graph.
   let changed = true;
   while (changed) {
     changed = false;
-    for (const resource of revision.resources) {
+    for (const resource of resources) {
       if (
         visibleIds.has(resource.id)
         && resource.dependsOn.some((dependency) => !visibleIds.has(dependency))
@@ -119,8 +136,19 @@ const visibleResources = (
       }
     }
   }
-  return revision.resources.filter((resource) => visibleIds.has(resource.id));
+  return resources.filter((resource) => visibleIds.has(resource.id));
 };
+
+/** The visible resources, with group references narrowed to the follower's. */
+const authorizedResources = <Resource extends AuthorizableResource>(
+  resources: ReadonlyArray<Resource>,
+  groups: ReadonlySet<string>,
+): ReadonlyArray<Resource> =>
+  visibleResources(resources, groups).map((resource) =>
+    resource.groups === undefined
+      ? resource
+      : { ...resource, groups: resource.groups.filter((group) => groups.has(group)) }
+  );
 
 const revisionPayload = (
   revision: ProfileRevision,
@@ -140,60 +168,157 @@ const revisionPayload = (
 
 type PublishedMachineProfile = Schema.Schema.Type<typeof PublishedMachineProfileSchema>;
 
-const validateRevision = (
+const verifyRevisionSignature = (
+  signature: string,
+  payload: string,
+  publicKey: KeyObject,
+): void => {
+  if (
+    !signature.startsWith("ed25519:")
+    || !verify(
+      null,
+      Buffer.from(payload),
+      publicKey,
+      Buffer.from(signature.slice("ed25519:".length), "base64url"),
+    )
+  ) {
+    throw new Error("source signature mismatch");
+  }
+};
+
+/**
+ * The payload a legacy revision was signed over. It has the shape of
+ * `revisionSigningPayload`, with the resource index taken from the signed
+ * profile, so the schedule items this release leaves out of the stored
+ * metadata still count toward the signature.
+ */
+const legacyRevisionPayload = (
   revision: ProfileRevision,
   signingKeyId: string,
-  publicKey: ReturnType<typeof createPublicKey>,
-): Effect.Effect<PublishedMachineProfile, TransportIntegrityError> =>
+): string => canonicalJson(asJson({
+  id: revision.id,
+  profileId: revision.profileId,
+  sequence: revision.sequence,
+  canonicalBytes: revision.canonicalBytes,
+  digest: revision.digest,
+  publishedAt: revision.publishedAt,
+  resources: legacySignedResources(revision.canonicalBytes),
+  groups: revision.groups,
+  signingKeyId,
+}));
+
+const verifyProfileMetadata = (
+  revision: ProfileRevision,
+  profile: PublishedMachineProfile,
+): void => {
+  if (profile.id !== revision.profileId) {
+    throw new Error("profile identity mismatch");
+  }
+  if (
+    revision.scheduleDefault !== undefined
+    && canonicalJson(asJson(revision.scheduleDefault))
+      !== canonicalJson(asJson(profile.scheduleDefault))
+  ) {
+    throw new Error("revision schedule default metadata mismatch");
+  }
+};
+
+const integrityFailure = (revision: ProfileRevision) => (cause: unknown) =>
+  new TransportIntegrityError({
+    artifact: revision.id,
+    message: cause instanceof Error
+      ? cause.message
+      : "revision validation failed",
+  });
+
+/**
+ * A revision an earlier release published is verified exactly as that release
+ * verified it, then projected into this release's transport shape. Anything
+ * the projection cannot represent is refused by name, not served altered.
+ */
+const validateLegacyRevision = (
+  revision: ProfileRevision,
+  signingKeyId: string,
+  publicKey: KeyObject,
+): Effect.Effect<PublishedMachineProfile, TransportIntegrityError | LegacyRevisionFormatError> =>
   Effect.try({
     try: () => {
       if (sha256Hex(revision.canonicalBytes) !== revision.digest) {
         throw new Error("canonical content digest mismatch");
       }
-      const profile = decode(PublishedMachineProfileSchema)(
-        JSON.parse(revision.canonicalBytes),
-      );
-      if (profile.id !== revision.profileId) {
-        throw new Error("profile identity mismatch");
-      }
       if (
-        revision.scheduleDefault !== undefined
-        && canonicalJson(asJson(revision.scheduleDefault))
-          !== canonicalJson(asJson(profile.scheduleDefault))
-      ) {
-        throw new Error("revision schedule default metadata mismatch");
-      }
-      const expectedResources = profile.resources.map(({ verify: _, ...resource }) =>
-        resource
-      );
-      if (
-        canonicalJson(asJson(expectedResources))
-        !== canonicalJson(asJson(revision.resources))
+        canonicalJson(legacyStoredResources(revision.canonicalBytes))
+          !== canonicalJson(asJson(revision.resources))
       ) {
         throw new Error("revision resource metadata mismatch");
       }
-      const encodedSignature = revision.signature.slice("ed25519:".length);
-      if (
-        !revision.signature.startsWith("ed25519:")
-        || !verify(
-          null,
-          Buffer.from(revisionPayload(revision, signingKeyId)),
-          publicKey,
-          Buffer.from(encodedSignature, "base64url"),
-        )
-      ) {
-        throw new Error("source signature mismatch");
-      }
-      return profile;
+      verifyRevisionSignature(
+        revision.signature,
+        legacyRevisionPayload(revision, signingKeyId),
+        publicKey,
+      );
     },
-    catch: (cause) =>
-      new TransportIntegrityError({
-        artifact: revision.id,
-        message: cause instanceof Error
-          ? cause.message
-          : "revision validation failed",
-      }),
-  });
+    catch: integrityFailure(revision),
+  }).pipe(
+    Effect.flatMap(() =>
+      Effect.try({
+        try: () => projectLegacyProfile(revision.canonicalBytes),
+        catch: (cause) =>
+          cause instanceof LegacyRevisionFormatIssue
+            ? new LegacyRevisionFormatError({
+              message:
+                `revision ${revision.id} was published by a canonfig release before 3.2.1 and this release cannot serve it: ${cause.message}. publish the profile again with 'canonfig source publish' on the Source Machine`,
+            })
+            : integrityFailure(revision)(cause),
+      })
+    ),
+    Effect.tap(({ notices }) =>
+      Effect.forEach(notices, (notice) =>
+        Effect.logWarning(`revision ${revision.id}: ${notice}`), { discard: true })
+    ),
+    Effect.map(({ profile }) => profile),
+    Effect.tap((profile) =>
+      Effect.try({
+        try: () => verifyProfileMetadata(revision, profile),
+        catch: integrityFailure(revision),
+      })
+    ),
+  );
+
+const validateRevision = (
+  revision: ProfileRevision,
+  signingKeyId: string,
+  publicKey: KeyObject,
+): Effect.Effect<PublishedMachineProfile, TransportIntegrityError | LegacyRevisionFormatError> =>
+  isLegacyRevision(revision)
+    ? validateLegacyRevision(revision, signingKeyId, publicKey)
+    : Effect.try({
+      try: () => {
+        if (sha256Hex(revision.canonicalBytes) !== revision.digest) {
+          throw new Error("canonical content digest mismatch");
+        }
+        const profile = decode(PublishedMachineProfileSchema)(
+          JSON.parse(revision.canonicalBytes),
+        );
+        verifyProfileMetadata(revision, profile);
+        const expectedResources = profile.resources.map(({ verify: _, ...resource }) =>
+          resource
+        );
+        if (
+          canonicalJson(asJson(expectedResources))
+          !== canonicalJson(asJson(revision.resources))
+        ) {
+          throw new Error("revision resource metadata mismatch");
+        }
+        verifyRevisionSignature(
+          revision.signature,
+          revisionPayload(revision, signingKeyId),
+          publicKey,
+        );
+        return profile;
+      },
+      catch: integrityFailure(revision),
+    });
 
 const sourceMaterial = (
   record: EnrollmentSourceRecord,
@@ -204,6 +329,46 @@ const sourceMaterial = (
   tlsCertificateReference: record.tlsCertificateReference,
   tlsFingerprint: record.tlsFingerprint,
 });
+
+interface SourceSecrets {
+  readonly signingPrivateKey: Redacted.Redacted<string>;
+  readonly tlsPrivateKey: Redacted.Redacted<string>;
+  readonly tlsCertificate: Redacted.Redacted<string>;
+}
+
+/**
+ * Why stored Source secrets do not belong to the recorded identity, or
+ * undefined when they do: the signing key must hash to the Source identity's
+ * fingerprint, the certificate to the recorded TLS fingerprint, and the TLS
+ * key must be the certificate's key.
+ */
+const sourceSecretsMismatch = (
+  material: SourceEnrollmentMaterial,
+  secrets: SourceSecrets,
+): string | undefined => {
+  try {
+    const signingFingerprint = sha256BytesHex(
+      createPublicKey(createPrivateKey(Redacted.value(secrets.signingPrivateKey))).export({
+        type: "spki",
+        format: "der",
+      }),
+    );
+    if (String(signingFingerprint) !== String(material.source.publicKeyFingerprint)) {
+      return `the stored signing key has fingerprint ${signingFingerprint}, but this Source's identity is ${material.source.publicKeyFingerprint}`;
+    }
+    const certificate = new X509Certificate(Redacted.value(secrets.tlsCertificate));
+    const tlsFingerprint = certificate.fingerprint256.replaceAll(":", "").toLowerCase();
+    if (tlsFingerprint !== String(material.tlsFingerprint)) {
+      return `the stored TLS certificate has fingerprint ${tlsFingerprint}, but this Source records ${material.tlsFingerprint}`;
+    }
+    if (!certificate.checkPrivateKey(createPrivateKey(Redacted.value(secrets.tlsPrivateKey)))) {
+      return "the stored TLS private key does not belong to this Source's certificate";
+    }
+    return undefined;
+  } catch {
+    return "the stored Source credentials are not a valid signing key, TLS key and certificate";
+  }
+};
 
 const repositoryError = (
   operation: string,
@@ -266,6 +431,18 @@ const validateEndpoint = (
 const makeEnrollment = Effect.gen(function*() {
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
+  // A pending enrollment has not issued an active follower credential. Any
+  // process restart makes its remote outcome ambiguous, so fail closed by
+  // discarding the pending marker; the invitation remains unconsumed and can
+  // be safely retried because no active follower identity was issued. The
+  // Source-side credential that enrollment stored goes with it.
+  yield* Effect.gen(function*() {
+    const abandoned = yield* repository.listPendingEnrollments();
+    for (const pending of abandoned) {
+      yield* repository.cancelPendingEnrollment({ credentialDigest: pending.credentialDigest });
+      yield* machine.removeCredential(pending.credentialReference).pipe(Effect.ignore);
+    }
+  }).pipe(Effect.ignore);
   const maximumRevisionValidationCacheEntries = 1024;
   const validatedRevisionCache = new Map<
     string,
@@ -331,6 +508,115 @@ const makeEnrollment = Effect.gen(function*() {
     return profile;
   });
 
+  /**
+   * Store the Source's three items under one state directory's credential
+   * namespace, so two Canonfig state directories of the same OS account never
+   * share, and so never overwrite, each other's Source identity. Items already
+   * written are removed when a later one fails.
+   */
+  const storeSourceSecrets = Effect.fn("Enrollment.storeSourceSecrets")(function*(
+    namespace: string,
+    secrets: SourceSecrets,
+  ) {
+    const written: Array<typeof CredentialReference.Type> = [];
+    const store = (name: string, label: string, value: Redacted.Redacted<string>) =>
+      machine.storeCredential({ name: `${name}:${namespace}`, value }).pipe(
+        Effect.tap((reference) => Effect.sync(() => written.push(reference))),
+        Effect.mapError((error) =>
+          new CredentialStorageError({
+            operation: "store credential",
+            reference: label,
+            message: `the ${label} could not be stored in this machine's credential store: ${credentialFailureDetail(error)}`,
+          })
+        ),
+      );
+    return yield* Effect.all({
+      signingKeyReference: store("canonfig-source-signing-key", "source signing key", secrets.signingPrivateKey),
+      tlsKeyReference: store("canonfig-source-tls-key", "source TLS key", secrets.tlsPrivateKey),
+      tlsCertificateReference: store(
+        "canonfig-source-tls-certificate",
+        "source TLS certificate",
+        secrets.tlsCertificate,
+      ),
+    }).pipe(
+      Effect.tapError(() =>
+        Effect.forEach(written, (reference) => machine.removeCredential(reference).pipe(Effect.ignore), {
+          discard: true,
+        })
+      ),
+    );
+  });
+
+  const removeSourceSecrets = (material: SourceEnrollmentMaterial) =>
+    Effect.forEach(
+      [material.signingKeyReference, material.tlsKeyReference, material.tlsCertificateReference],
+      (reference) => machine.removeCredential(reference).pipe(Effect.ignore),
+      { discard: true },
+    );
+
+  const sourceCredentials = Effect.fn("Enrollment.sourceCredentials")(function*(): Effect.fn.Return<
+    SourceCredentials,
+    EnrollmentError
+  > {
+    const record = yield* repository.getEnrollmentSource().pipe(
+      Effect.mapError(repositoryError("load source identity")),
+    );
+    if (record === undefined) {
+      return yield* new SourceNotInitializedError({ operation: "load source credentials" });
+    }
+    const material = sourceMaterial(record);
+    const load = (reference: typeof CredentialReference.Type, label: string) =>
+      machine.loadCredential({ reference }).pipe(
+        Effect.mapError((error) =>
+          new CredentialStorageError({
+            operation: "load credential",
+            reference: label,
+            message: `the ${label} could not be read from this machine's credential store: ${credentialFailureDetail(error)}`,
+          })
+        ),
+      );
+    const secrets = yield* Effect.all({
+      signingPrivateKey: load(material.signingKeyReference, "source signing key"),
+      tlsPrivateKey: load(material.tlsKeyReference, "source TLS key"),
+      tlsCertificate: load(material.tlsCertificateReference, "source TLS certificate"),
+    });
+    const mismatch = sourceSecretsMismatch(material, secrets);
+    if (mismatch !== undefined) {
+      const cause = record.credentialNamespace === undefined
+        ? "An earlier release kept Source credentials under account-global names, and another Canonfig state directory of this OS account has since replaced them"
+        : "The native credential store no longer holds this Source's own credentials";
+      return yield* new SourceCredentialMismatchError({
+        message: `${cause}: ${mismatch}. They were not used, so nothing was signed or served as another Source. This Source's keys cannot be recovered from the store: move this state directory aside, run \`canonfig source init\` to create a new Source identity, then enroll its followers again with new invitations.`,
+      });
+    }
+    if (record.credentialNamespace !== undefined) return { material, ...secrets };
+    // The legacy account-global items match this Source's fingerprints, so
+    // they are its own: copy them under this state directory's namespace and
+    // record the new references. The legacy items stay in place; another
+    // state directory restored from a copy of this one may still name them.
+    const namespace = randomBytes(16).toString("hex");
+    const references = yield* storeSourceSecrets(namespace, secrets);
+    const migrated: EnrollmentSourceRecord = {
+      ...record,
+      ...references,
+      credentialNamespace: namespace,
+    };
+    const current = yield* repository.getEnrollmentSource().pipe(
+      Effect.mapError(repositoryError("load source identity")),
+      Effect.tapError(() => removeSourceSecrets(sourceMaterial(migrated))),
+    );
+    if (current?.credentialNamespace !== undefined) {
+      // A concurrent process migrated first; keep its copy.
+      yield* removeSourceSecrets(sourceMaterial(migrated));
+      return { material: sourceMaterial(current), ...secrets };
+    }
+    yield* repository.saveEnrollmentSource(migrated).pipe(
+      Effect.mapError(repositoryError("migrate source credentials")),
+      Effect.tapError(() => removeSourceSecrets(sourceMaterial(migrated))),
+    );
+    return { material: sourceMaterial(migrated), ...secrets };
+  });
+
   const source = Effect.fn("Enrollment.source")(function*() {
     const stored = yield* repository.getEnrollmentSource().pipe(
       Effect.mapError(repositoryError("load source identity")),
@@ -345,7 +631,10 @@ const makeEnrollment = Effect.gen(function*() {
     const existing = yield* repository.getEnrollmentSource().pipe(
       Effect.mapError(repositoryError("load source identity")),
     );
-    if (existing !== undefined) return sourceMaterial(existing);
+    // An initialized Source is never replaced. Re-running init confirms that
+    // the native store still holds this Source's own credentials (moving
+    // legacy account-global items under this state directory's namespace).
+    if (existing !== undefined) return (yield* sourceCredentials()).material;
 
     const generated = yield* Effect.tryPromise({
       try: async () => {
@@ -358,6 +647,10 @@ const makeEnrollment = Effect.gen(function*() {
           type: "spki",
           format: "der",
         });
+        // Loaded here, not statically: selfsigned pulls ~200 X.509/ASN.1
+        // modules that every other command (status, sync) would compile at
+        // start for nothing; only `source init` generates a certificate.
+        const { generate } = await import("selfsigned");
         const certificate = await generate(
           [{ name: "commonName", value: "canonfig-loopback" }],
           {
@@ -393,55 +686,25 @@ const makeEnrollment = Effect.gen(function*() {
         }),
     });
 
-    const signingKeyReference = yield* machine.storeCredential({
-      name: "canonfig-source-signing-key",
-      value: Redacted.make(generated.signingPrivateKey),
-    }).pipe(
-      Effect.mapError(() =>
-        new CredentialStorageError({
-          operation: "store credential",
-          reference: "source signing key",
-          message: "secure credential storage is unavailable",
-        })
-      )
-    );
-    const tlsKeyReference = yield* machine.storeCredential({
-      name: "canonfig-source-tls-key",
-      value: Redacted.make(generated.tlsPrivateKey),
-    }).pipe(
-      Effect.mapError(() =>
-        new CredentialStorageError({
-          operation: "store credential",
-          reference: "source TLS key",
-          message: "secure credential storage is unavailable",
-        })
-      )
-    );
-    const tlsCertificateReference = yield* machine.storeCredential({
-      name: "canonfig-source-tls-certificate",
-      value: Redacted.make(generated.tlsCertificate),
-    }).pipe(
-      Effect.mapError(() =>
-        new CredentialStorageError({
-          operation: "store credential",
-          reference: "source TLS certificate",
-          message: "secure credential storage is unavailable",
-        })
-      )
-    );
+    const credentialNamespace = randomBytes(16).toString("hex");
+    const references = yield* storeSourceSecrets(credentialNamespace, {
+      signingPrivateKey: Redacted.make(generated.signingPrivateKey),
+      tlsPrivateKey: Redacted.make(generated.tlsPrivateKey),
+      tlsCertificate: Redacted.make(generated.tlsCertificate),
+    });
     const identity = decode(SourceIdentity)({
       keyId: `ed25519:${generated.signingFingerprint}`,
       publicKeyFingerprint: generated.signingFingerprint,
     });
     const record: EnrollmentSourceRecord = {
       identity,
-      signingKeyReference,
-      tlsKeyReference,
-      tlsCertificateReference,
+      ...references,
       tlsFingerprint: generated.tlsFingerprint,
+      credentialNamespace,
     };
     yield* repository.saveEnrollmentSource(record).pipe(
       Effect.mapError(repositoryError("save source identity")),
+      Effect.tapError(() => removeSourceSecrets(sourceMaterial(record))),
     );
     return sourceMaterial(record);
   });
@@ -545,20 +808,15 @@ const makeEnrollment = Effect.gen(function*() {
     const followerId = decode(FollowerId)(
       `follower-${sha256(`${material.source.publicKeyFingerprint}\0${normalizedName}`).slice(0, 32)}`,
     );
-    // Reject a duplicate identity before touching credential storage: the
-    // credential key is deterministic per follower identity, so storing first
-    // would overwrite and then delete an already enrolled follower's secret.
+    // Enrolling an already active name with a new invitation rotates that
+    // identity's credential: the previous credential stays valid until the
+    // follower finalizes, then finalizeFollower retires it.
     const existingCredential = yield* repository.getFollowerCredential(followerId).pipe(
       Effect.match({
         onFailure: (error) => ({ found: false as const, error }),
         onSuccess: (record) => ({ found: true as const, record }),
       }),
     );
-    if (existingCredential.found && !existingCredential.record.follower.revoked) {
-      return yield* new DuplicateFollowerIdentityError({
-        message: "the follower identity is already enrolled",
-      });
-    }
     if (
       !existingCredential.found
       && !(existingCredential.error instanceof FollowerNotFoundError)
@@ -569,18 +827,15 @@ const makeEnrollment = Effect.gen(function*() {
       });
     }
     const credential = randomBytes(32).toString("base64url");
-    const previousCredentialReference = existingCredential.found
-      ? existingCredential.record.credentialReference
-      : undefined;
     const credentialReference = yield* machine.storeCredential({
       name: `canonfig-source-follower-${followerId}-${randomUUID()}`,
       value: Redacted.make(credential),
     }).pipe(
-      Effect.mapError(() =>
+      Effect.mapError((error) =>
         new CredentialStorageError({
           operation: "store credential",
           reference: "follower credential",
-          message: "secure credential storage is unavailable",
+          message: `the Source could not store the new follower credential: ${credentialFailureDetail(error)}`,
         })
       )
     );
@@ -626,12 +881,9 @@ const makeEnrollment = Effect.gen(function*() {
       Effect.mapError(repositoryError("consume invitation")),
       Effect.tapError(() => machine.removeCredential(credentialReference).pipe(Effect.ignore)),
     );
-    if (
-      previousCredentialReference !== undefined
-      && previousCredentialReference !== credentialReference
-    ) {
-      yield* machine.removeCredential(previousCredentialReference).pipe(Effect.ignore);
-    }
+    // Everything after this point is a read: a failure below leaves the
+    // pending enrollment for the follower to finalize or cancel, and cancel
+    // removes the credential stored above.
     const authorizedProfiles = yield* repository.listRevisions().pipe(
       Effect.mapError(repositoryError("list authorized profiles")),
       Effect.map((revisions) => revisions.map((revision) => ({
@@ -672,28 +924,60 @@ const makeEnrollment = Effect.gen(function*() {
       }
       return;
     }
+    // Read the credential this finalization replaces before the rotation
+    // overwrites the record, so it can be retired afterwards.
+    const previous = yield* repository.getFollowerCredential(pendingEnrollment.follower).pipe(
+      Effect.map((record) => record.credentialReference),
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
     yield* repository.finalizeEnrollment({
       follower: pendingEnrollment.follower,
       credentialDigest,
       credentialReference: pendingEnrollment.credentialReference,
     }).pipe(Effect.mapError(repositoryError("finalize follower enrollment")));
+    if (previous !== undefined && previous !== pendingEnrollment.credentialReference) {
+      yield* machine.removeCredential(previous).pipe(Effect.ignore);
+    }
   });
 
+  /** A cancelled or abandoned enrollment removes the credential it stored. */
   const cancelPendingEnrollment = Effect.fn(
     "Enrollment.cancelPendingEnrollment",
   )(function*(credential: string) {
-    yield* repository.cancelPendingEnrollment({
-      credentialDigest: sha256(credential),
-    }).pipe(Effect.mapError(repositoryError("cancel pending enrollment")));
+    const credentialDigest = sha256(credential);
+    const pending = (yield* repository.listPendingEnrollments().pipe(
+      Effect.mapError(repositoryError("find pending enrollment")),
+    )).find((entry) => entry.credentialDigest === credentialDigest);
+    yield* repository.cancelPendingEnrollment({ credentialDigest }).pipe(
+      Effect.mapError(repositoryError("cancel pending enrollment")),
+    );
+    if (pending !== undefined) {
+      yield* machine.removeCredential(pending.credentialReference).pipe(Effect.ignore);
+    }
+  });
+
+  /**
+   * Revocation also retires the Source's stored copy of the follower
+   * credential: authentication uses only its digest, so nothing needs the
+   * plaintext once the identity is revoked.
+   */
+  const revokeAndRetire = Effect.fn("Enrollment.revokeAndRetire")(function*(
+    follower: typeof FollowerId.Type,
+  ) {
+    const stored = yield* repository.getFollowerCredential(follower).pipe(
+      Effect.mapError(repositoryError("revoke follower")),
+    );
+    yield* repository.revokeFollower(follower).pipe(
+      Effect.mapError(repositoryError("revoke follower")),
+    );
+    yield* machine.removeCredential(stored.credentialReference).pipe(Effect.ignore);
   });
 
   const revokeAuthenticatedFollower = Effect.fn(
     "Enrollment.revokeAuthenticatedFollower",
   )(function*(credential: string) {
     const authenticated = yield* authenticate(credential);
-    yield* repository.revokeFollower(authenticated.follower.id).pipe(
-      Effect.mapError(repositoryError("revoke follower")),
-    );
+    yield* revokeAndRetire(authenticated.follower.id);
   });
 
   const authenticate = Effect.fn("Enrollment.authenticate")(function*(
@@ -721,51 +1005,27 @@ const makeEnrollment = Effect.gen(function*() {
   });
 
   const signingKeys = Effect.fn("Enrollment.signingKeys")(function*() {
-    const material = yield* source();
-    const cacheKey = [
-      material.source.keyId,
-      material.source.publicKeyFingerprint,
-      material.signingKeyReference,
-    ].join("\0");
-    if (cachedSigningKeys?.cacheKey === cacheKey) {
+    const cacheKeyOf = (material: SourceEnrollmentMaterial) =>
+      [
+        material.source.keyId,
+        material.source.publicKeyFingerprint,
+        material.signingKeyReference,
+      ].join("\0");
+    const current = yield* source();
+    if (cachedSigningKeys?.cacheKey === cacheKeyOf(current)) {
       return cachedSigningKeys.value;
     }
-    const stored = yield* machine.loadCredential({
-      reference: material.signingKeyReference,
-    }).pipe(
-      Effect.mapError(() =>
-        new EnrollmentConfigurationError({
-          operation: "load source signing key",
-          message: "source signing credentials are unavailable",
-        })
-      ),
-    );
-    const privateKey = yield* Effect.try({
-      try: () => createPrivateKey(Redacted.value(stored)),
-      catch: () =>
-        new EnrollmentConfigurationError({
-          operation: "decode source signing key",
-          message: "source signing credentials are invalid",
-        }),
-    });
+    // sourceCredentials already proved the key hashes to the Source identity.
+    const credentials = yield* sourceCredentials();
+    const privateKey = createPrivateKey(Redacted.value(credentials.signingPrivateKey));
     const publicKey = createPublicKey(privateKey);
-    const fingerprint = sha256BytesHex(publicKey.export({
-      type: "spki",
-      format: "der",
-    }));
-    if (String(fingerprint) !== String(material.source.publicKeyFingerprint)) {
-      return yield* new TransportIntegrityError({
-        artifact: "source-signing-key",
-        message: "source signing key fingerprint mismatch",
-      });
-    }
     const value = {
-      material,
+      material: credentials.material,
       privateKey,
       publicKey,
       publicPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
     };
-    cachedSigningKeys = { cacheKey, value };
+    cachedSigningKeys = { cacheKey: cacheKeyOf(credentials.material), value };
     return value;
   });
 
@@ -775,60 +1035,19 @@ const makeEnrollment = Effect.gen(function*() {
       const revisions = yield* repository.listRevisions().pipe(
         Effect.mapError(repositoryError("list authorized revisions")),
       );
-      const groups = new Set<string>(authenticated.follower.groups);
-      return revisions
-        .map((revision) => {
-          const visibleIds = new Set(
-            revision.resources
-              .filter((resource) => resourceIsAuthorized(resource, groups))
-              .map((resource) => resource.id),
-          );
-          // Authorization is a projection of the signed revision, not a
-          // dependency rewrite. Remove every dependent whose complete
-          // dependency closure is not visible, including transitive
-          // dependents. This deliberately fails closed instead of allowing a
-          // follower to plan against an incomplete resource graph.
-          let changed = true;
-          while (changed) {
-            changed = false;
-            for (const resource of revision.resources) {
-              if (
-                visibleIds.has(resource.id)
-                && resource.dependsOn.some((dependency) =>
-                  !visibleIds.has(dependency)
-                )
-              ) {
-                visibleIds.delete(resource.id);
-                changed = true;
-              }
-            }
-          }
-          const resources = revision.resources
-            .filter((resource) => visibleIds.has(resource.id))
-            .map((resource) => {
-              const base = {
-                ...resource,
-                dependsOn: resource.dependsOn.filter((dependency) =>
-                  visibleIds.has(dependency)
-                ),
-              };
-              if (resource.groups === undefined) return base;
-              return {
-                ...base,
-                groups: resource.groups.filter((group) => groups.has(group)),
-              };
-            });
-          return { revision, resources };
-        });
+      return {
+        revisions,
+        groups: new Set<string>(authenticated.follower.groups),
+      };
     },
   );
 
   const listAuthorizedRevisions = Effect.fn(
     "Enrollment.listAuthorizedRevisions",
   )(function*(credential: string) {
-    const revisions = yield* authorizedRevisions(credential);
+    const { revisions } = yield* authorizedRevisions(credential);
     return {
-      revisions: revisions.map(({ revision }) => ({
+      revisions: revisions.map((revision) => ({
         id: revision.id,
         profileId: revision.profileId,
         sequence: revision.sequence,
@@ -841,47 +1060,37 @@ const makeEnrollment = Effect.gen(function*() {
   const getAuthorizedRevision = Effect.fn(
     "Enrollment.getAuthorizedRevision",
   )(function*(credential: string, revisionId: string) {
-    const revisions = yield* authorizedRevisions(credential);
-    const selected = revisions.find(({ revision }) => revision.id === revisionId);
-    if (selected === undefined) {
+    const { revisions, groups } = yield* authorizedRevisions(credential);
+    const revision = revisions.find((candidate) => candidate.id === revisionId);
+    if (revision === undefined) {
       return yield* new TransportResourceNotFoundError({
         resource: "revision",
       });
     }
     const keys = yield* signingKeys();
+    // The validated profile, not the stored index, is what followers apply:
+    // for a revision an earlier release published it is the projection into
+    // this release's transport shape.
     const profile = yield* cachedRevision(
-      selected.revision,
+      revision,
       keys.material.source.keyId,
       keys.material.source.publicKeyFingerprint,
       keys.publicKey,
     );
-    const authoredById = new Map(profile.resources.map((resource) => [
-      resource.id,
-      resource,
-    ]));
     const resources = decode(Schema.Array(TransportPublishedResourceSchema))(
-      selected.resources.map((resource) => {
-        const authored = authoredById.get(resource.id);
-        if (authored === undefined) {
-          throw new TransportIntegrityError({
-            artifact: resource.id,
-            message: "authorized resource has no canonical verification contract",
-          });
-        }
-        return { ...resource, verify: authored.verify };
-      }),
+      authorizedResources(profile.resources, groups),
     );
     const unsigned = {
-      id: selected.revision.id,
-      profileId: selected.revision.profileId,
-      sequence: selected.revision.sequence,
-      digest: decode(ContentDigest)(selected.revision.digest),
-      publishedAt: selected.revision.publishedAt,
+      id: revision.id,
+      profileId: revision.profileId,
+      sequence: revision.sequence,
+      digest: decode(ContentDigest)(revision.digest),
+      publishedAt: revision.publishedAt,
       resources,
       scheduleDefault: profile.scheduleDefault,
       signingKeyId: keys.material.source.keyId,
       signingPublicKey: keys.publicPem,
-      sourceSignature: selected.revision.signature,
+      sourceSignature: revision.signature,
     };
     const metadataDigest = digestOf(asJson(unsigned));
     const signature = `ed25519:${
@@ -913,12 +1122,7 @@ const makeEnrollment = Effect.gen(function*() {
         Effect.mapError(repositoryError("list authorized blob revisions")),
       );
       const revision = revisions.find((candidate) => candidate.id === revisionId);
-      const resource = revision === undefined
-        ? undefined
-        : visibleResources(revision, groups).find((candidate) =>
-          candidate.blobs.includes(input.blobId)
-        );
-      if (revision === undefined || resource === undefined) {
+      if (revision === undefined) {
         return yield* new TransportResourceNotFoundError({ resource: "blob" });
       }
       const keys = yield* signingKeys();
@@ -928,13 +1132,11 @@ const makeEnrollment = Effect.gen(function*() {
         keys.material.source.publicKeyFingerprint,
         keys.publicKey,
       );
-      if (!profile.resources.some((candidate) =>
-        candidate.id === resource.id && candidate.blobs.includes(input.blobId)
-      )) {
-        return yield* new TransportIntegrityError({
-          artifact: input.blobId,
-          message: "authorized blob has no canonical resource",
-        });
+      const authorized = visibleResources(profile.resources, groups).some((candidate) =>
+        candidate.blobs.includes(input.blobId)
+      );
+      if (!authorized) {
+        return yield* new TransportResourceNotFoundError({ resource: "blob" });
       }
       const range = yield* repository.readResourceBlobRange({
         blob: input.blobId,
@@ -951,9 +1153,7 @@ const makeEnrollment = Effect.gen(function*() {
   const revokeFollower = Effect.fn("Enrollment.revokeFollower")(function*(
     follower: typeof FollowerId.Type,
   ) {
-    yield* repository.revokeFollower(follower).pipe(
-      Effect.mapError(repositoryError("revoke follower")),
-    );
+    yield* revokeAndRetire(follower);
   });
 
   const updateFollowerGroups = Effect.fn("Enrollment.updateFollowerGroups")(function*(
@@ -985,6 +1185,7 @@ const makeEnrollment = Effect.gen(function*() {
   return Enrollment.of({
     initializeSource,
     source,
+    sourceCredentials,
     createInvitation,
     removeInvitation,
     enrollFollower,

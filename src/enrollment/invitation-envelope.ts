@@ -10,9 +10,7 @@ import {
   type EnrollmentError,
 } from "./enrollment.errors.ts";
 import type { EnrollmentInvitationGrant } from "./enrollment.types.ts";
-
-export const invitationEnvelopeEof = "CANONFIG-INVITE-EOF";
-export const maximumEnvelopeBytes = 16 * 1024;
+import { invitationEnvelopeEof, maximumEnvelopeBytes } from "./invitation-envelope-format.ts";
 
 const InvitationEnvelopeSchema = Schema.Struct({
   code: InvitationCode,

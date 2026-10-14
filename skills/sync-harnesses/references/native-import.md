@@ -95,10 +95,14 @@ non-routable documentation data and must be replaced with an approved endpoint.
 The integration tests project the prepared candidate; they do not implement or
 claim an automatic importer.
 
-Check [canonical fields](../../../src/harness-configuration/core/schema-types.ts),
-[Codex adapter](../../../src/harness-configuration/adapters/codex.ts),
-[Claude adapter](../../../src/harness-configuration/adapters/claude.ts), and
-[Antigravity adapter](../../../src/harness-configuration/adapters/antigravity.ts).
+The installed CLI is the first authority: `canonfig harness --help`, and
+`canonfig harness validate`/`plan` diagnostics on the candidate. For the field
+and adapter definitions, read the published source on GitHub:
+[canonical fields](https://github.com/Microck/canonfig/blob/main/src/harness-configuration/core/schema-types.ts),
+[Codex adapter](https://github.com/Microck/canonfig/blob/main/src/harness-configuration/adapters/codex.ts),
+[Claude adapter](https://github.com/Microck/canonfig/blob/main/src/harness-configuration/adapters/claude.ts), and
+[Antigravity adapter](https://github.com/Microck/canonfig/blob/main/src/harness-configuration/adapters/antigravity.ts).
+The `main` branch can be ahead of the installed release.
 For native semantics consult [Codex configuration](https://developers.openai.com/codex/config-reference),
 [Claude settings](https://code.claude.com/docs/en/settings), and
 [Antigravity documentation](https://antigravity.google/docs/mcp). Match the

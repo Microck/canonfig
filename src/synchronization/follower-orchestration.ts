@@ -23,11 +23,10 @@ import {
 import {
   type ProfileRevision,
   type PublishedResourceSpec,
-  type ResourceSpecInput,
   type VerificationInput,
 } from "../domain/profile.ts";
 import type { ObservedResourceState } from "../domain/synchronization.ts";
-import { parseTextComposition } from "../domain/text-composition.ts";
+import { composeTextFile, parseTextComposition } from "../domain/text-composition.ts";
 import type { AppliedResourceRecord } from "../domain/synchronization.ts";
 import {
   fetchRevision,
@@ -41,8 +40,10 @@ import { MachineState } from "../machine/machine-state.service.ts";
 import { MachineFilesystemError } from "../machine/machine-state.errors.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
-  defaultSyncSchedule,
   desiredScheduleInput,
+  scheduleAvailableDetail,
+  type ScheduleSyncReport,
+  unmanagedScheduleDetail,
 } from "../schedule/schedule-manager.types.ts";
 import {
   canonicalJson,
@@ -58,9 +59,7 @@ import { Synchronization } from "./synchronization.service.ts";
 import {
   getConfigPath,
   parseConfigDocument,
-  serializeConfigDocument,
-  setConfigPath,
-  type ConfigDocument,
+  renderConfigDocument,
 } from "./config-codec.ts";
 import {
   defaultLocalExecution,
@@ -69,7 +68,16 @@ import {
   type FollowerAgentHarnessConfiguration,
 } from "./follower-sync-config.ts";
 import { planSynchronization } from "./planner.ts";
-import { defaultSynchronizationExecutionLimits } from "./executor.ts";
+import {
+  defaultSynchronizationExecutionLimits,
+  preflightPathLengths,
+  removeRunTemporaryEntries,
+} from "./executor.ts";
+import { withRunLock } from "./run-lock.ts";
+import { installerRefusals, toolInstallMethods } from "./installer-bindings.ts";
+import { installedToolVersion } from "./installed-tool-version.ts";
+import { selectToolRecipe } from "./resource-plans.ts";
+import { clientReviewSteps, plannedFileChanges } from "./client-review.ts";
 import type {
   AvailableBlob,
   DesiredResource,
@@ -80,14 +88,14 @@ import type {
   SynchronizationAgentConfiguration,
 } from "./synchronization.types.ts";
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+/**
+ * A version query only reads installer state, so it gets a short bound; a
+ * query that does not finish leaves the version unknown and `ensure` keeps
+ * the present tool.
+ */
+const installedVersionTimeoutMilliseconds = 60_000;
 
-const compareText = (left: string, right: string): number => {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-};
+const decoder = new TextDecoder();
 
 const isNotFoundFilesystemError = (
   error: MachineFilesystemError,
@@ -130,8 +138,10 @@ export const assertUpgradeGate = Effect.fn(
     run: open.run,
     creatingVersion: open.creatingVersion,
     creatingIdentity: open.creatingIdentity,
+    creatingStateFormat: open.stateFormat,
     currentVersion: buildIdentity.packageVersion,
     currentIdentity: buildIdentity.sourceDigest,
+    currentStateFormat: stateFormatVersion,
   });
 });
 
@@ -298,18 +308,6 @@ const contentFor = (
   return bytes;
 };
 
-const configDocument = (
-  spec: Extract<ResourceSpecInput, { readonly kind: "config" }>,
-): Uint8Array => {
-  const document: ConfigDocument = {};
-  for (const entry of [...spec.keys].sort((left, right) =>
-    compareText(left.path, right.path)
-  )) {
-    setConfigPath(document, entry.path, entry.value);
-  }
-  return encoder.encode(serializeConfigDocument(spec.format, document));
-};
-
 interface HydratedDesiredResource {
   readonly desired: DesiredResource;
   readonly artifacts: ReadonlyArray<SynchronizationArtifact>;
@@ -386,7 +384,7 @@ const desiredFor = (
       };
     }
     case "config": {
-      const content = configDocument(spec);
+      const content = renderConfigDocument(spec);
       const digest = Schema.decodeUnknownSync(ContentDigest)(sha256BytesHex(content));
       return {
         desired: {
@@ -537,20 +535,38 @@ const observeConfig = (
       path,
       maximumBytes: 8 * 1024 * 1024,
     });
-    const current = parseConfigDocument(desired.format, decoder.decode(bytes));
-    const managed: ConfigDocument = {};
-    for (const key of desired.keys) {
-      const value = getConfigPath(current, key);
-      if (value !== undefined) setConfigPath(managed, key, value);
-    }
-    return {
-      state: "present",
-      digest: sha256BytesHex(
-        encoder.encode(serializeConfigDocument(desired.format, managed)),
+    // An unparseable follower file blocks only the resources that merge into
+    // it. Parsing used to throw inside this generator, which escaped as a
+    // defect and aborted the whole synchronization with a raw stack trace.
+    return yield* Effect.try({
+      try: (): ObservedResourceState => {
+        const current = parseConfigDocument(desired.format, decoder.decode(bytes));
+        // The owned values go through the exact rendering the desired digest
+        // used, key ordering included, so an unchanged file observes equal.
+        return {
+          state: "present",
+          digest: sha256BytesHex(renderConfigDocument({
+            format: desired.format,
+            keys: desired.keys.flatMap((key) => {
+              const value = getConfigPath(current, key);
+              return value === undefined ? [] : [{ path: key, value }];
+            }),
+          })),
+          executable: false,
+          objectKind: "regular",
+        };
+      },
+      catch: (error) => error,
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.succeed({
+          state: "unverifiable",
+          reason: `${decoded.resource.target} is not valid ${desired.format.toUpperCase()}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        } as const)
       ),
-      executable: false,
-      objectKind: "regular",
-    } as const;
+    );
   }).pipe(
     Effect.catch((error) =>
       Effect.succeed(
@@ -573,7 +589,6 @@ const observe = (
   desired: DesiredResource,
   verification: VerificationInput,
   applied?: AppliedResourceRecord,
-  scheduleManager?: ScheduleManager["Service"] | undefined,
 ): Effect.Effect<ObservedResourceState, never, MachineState> => {
   switch (desired.kind) {
     case "file":
@@ -726,21 +741,37 @@ const observe = (
           ?? (verification.method === "executable-present"
             ? verification.executable
             : decoded.resource.target);
-        if (executable.includes("/") || executable.includes("\\")) {
-          return yield* machine.normalizePath({ path: executable }).pipe(
+        const present = executable.includes("/") || executable.includes("\\")
+          ? yield* machine.normalizePath({ path: executable }).pipe(
             Effect.flatMap((path) => machine.permissions(path)),
-            Effect.as({
-              state: "present",
-              digest: sha256Hex(executable),
-              executable: true,
-            } as const),
-            Effect.catch(() => Effect.succeed({ state: "absent" } as const)),
+            Effect.as(true),
+            Effect.catch(() => Effect.succeed(false)),
+          )
+          : yield* machine.findExecutable({
+            name: executable,
+            installMethods: yield* toolInstallMethods(desired.recipes),
+          }).pipe(
+            Effect.as(true),
+            Effect.catch(() => Effect.succeed(false)),
           );
-        }
-        return yield* machine.findExecutable({ name: executable }).pipe(
-          Effect.as({ state: "present", digest: sha256Hex(executable), executable: true } as const),
-          Effect.catch(() => Effect.succeed({ state: "absent" } as const)),
-        );
+        if (!present) return { state: "absent" } as const;
+        // The executable says nothing about its version; ask the installer
+        // the plan would use, so a changed pin plans a reinstall.
+        const recipe = selectToolRecipe(desired, platform);
+        const installedVersion = recipe?.version === undefined
+          ? undefined
+          : yield* installedToolVersion({
+            method: recipe.method,
+            package: recipe.package,
+            timeoutMilliseconds: installedVersionTimeoutMilliseconds,
+            maximumOutputBytes: defaultSynchronizationExecutionLimits.maximumProcessOutputBytes,
+          });
+        return {
+          state: "present",
+          digest: sha256Hex(executable),
+          executable: true,
+          installedVersion,
+        } as const;
       }).pipe(
         Effect.catch((error) =>
           Effect.succeed({ state: "unverifiable", reason: String(error) } as const)
@@ -883,7 +914,6 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
   function*(
     fetched: FetchedRevision,
     appliedResources: ReadonlyArray<AppliedResourceRecord> = [],
-    scheduleManager?: ScheduleManager["Service"] | undefined,
   ): Effect.fn.Return<
     {
       readonly revision: PlanningProfileRevision;
@@ -921,7 +951,6 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
           hydration.desired,
           entry.resource.verify,
           appliedByResource.get(entry.resource.id),
-          scheduleManager,
         ),
       });
       artifacts.push(...hydration.artifacts);
@@ -960,7 +989,6 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
           removed.desired,
           removedVerification,
           applied,
-          scheduleManager,
         ),
       });
     }
@@ -1185,8 +1213,8 @@ const agentConfigurationFor = (
 });
 
 /**
- * Brings the native synchronization job in line with the follower's effective
- * schedule, after a converged run.
+ * Brings the native synchronization job in line with the follower's decision,
+ * after a converged run, and says what it did.
  *
  * Deliberately outside the resource transaction, and deliberately failure
  * tolerant. A scheduler that does not work is operational degradation on this
@@ -1194,13 +1222,13 @@ const agentConfigurationFor = (
  * schedule used to be a planned action, so a host without a working user
  * scheduler failed the whole run and rolled it back, and could never converge.
  *
- * A follower that set its own schedule keeps its cadence, but the rendered
- * binding (runtime, entrypoint, argv) is canonfig's and is converged like any
- * other drift. Skipping overrides here used to leave a job pointing at a stale
- * binding after a renderer change: `schedule status` reported it drifted and
- * nothing ever re-rendered it until the operator reran `schedule set`.
- * `desiredScheduleInput` is the single answer to "what job should exist", so
- * this and the CLI cannot disagree.
+ * Only an explicit decision installs a job (`schedule set`, or `schedule set
+ * --default` to follow the profile). An armed job whose rendered binding
+ * (runtime, entrypoint, argv) went stale is re-rendered with its cadence
+ * intact. A job deleted, disabled, stopped, or overridden outside Canonfig is
+ * left as is and reported; sync used to recreate and re-enable it silently.
+ * A job that exists without any decision (a v2.x `schedule set`, or a v3.x
+ * profile default installed without consent) is kept, never deleted.
  */
 const reconcileSchedule = Effect.fn(
   "FollowerOrchestration.reconcileSchedule",
@@ -1208,14 +1236,50 @@ const reconcileSchedule = Effect.fn(
   configuration: FollowerSynchronizationConfiguration,
   scheduleDefault: RevisionMetadata["scheduleDefault"],
   scheduleManager: ScheduleManager["Service"] | undefined,
-) {
-  if (scheduleManager === undefined) return;
-  const desired = desiredScheduleInput(configuration.scheduleOverride, scheduleDefault);
-  if (desired === undefined) {
-    yield* scheduleManager.remove().pipe(Effect.ignore);
-    return;
+): Effect.fn.Return<ScheduleSyncReport | undefined> {
+  const override = configuration.scheduleOverride;
+  // `schedule remove` already removed the job; anything there now is the user's.
+  if (scheduleManager === undefined || override?.kind === "disabled") return undefined;
+  const failed = (error: { readonly message: string }) =>
+    Effect.succeed<ScheduleSyncReport>({
+      action: "failed",
+      detail: `the native schedule could not be reconciled: ${error.message}`,
+    });
+  const desired = desiredScheduleInput(override, scheduleDefault);
+  if (desired !== undefined) {
+    return yield* scheduleManager.reconcile(desired).pipe(
+      Effect.map((result): ScheduleSyncReport => ({
+        action: result.action,
+        state: result.status.state,
+        detail: result.status.detail,
+      })),
+      Effect.catch(failed),
+    );
   }
-  yield* scheduleManager.update(desired).pipe(Effect.ignore);
+  if (override?.kind === "inherit") {
+    // The follower chose to follow the profile, and the profile withdrew it.
+    return yield* scheduleManager.remove().pipe(
+      Effect.map((result): ScheduleSyncReport | undefined =>
+        result.change === "removed"
+          ? {
+            action: "removed",
+            detail: "the profile no longer declares a schedule default, so the inherited native schedule was removed; run `canonfig schedule set <calendar>` to keep one",
+          }
+          : undefined
+      ),
+      Effect.catch(failed),
+    );
+  }
+  return yield* scheduleManager.status().pipe(
+    Effect.map((status): ScheduleSyncReport | undefined =>
+      status.state !== "not-installed"
+        ? { action: "kept-unmanaged", state: status.state, detail: unmanagedScheduleDetail }
+        : scheduleDefault === undefined
+        ? undefined
+        : { action: "available", detail: scheduleAvailableDetail(scheduleDefault) }
+    ),
+    Effect.catch(failed),
+  );
 });
 
 const persistProfileScheduleDefault = Effect.fn(
@@ -1361,6 +1425,82 @@ export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTa
   },
 );
 
+/**
+ * Exact adoption text stays in protected local files, outside the plan, journal,
+ * and CLI payload. Re-read and compare to the plan before creating a review.
+ */
+const writeAdoptionReviews = Effect.fn("FollowerOrchestration.writeAdoptionReviews")(
+  function*(plan: PlannedSynchronization, artifacts: ReadonlyArray<SynchronizationArtifact>) {
+    const machine = yield* MachineState;
+    const reviews: Array<{ resource: string; target: string; path: string }> = [];
+    const adoptions = plan.actions.filter((action) =>
+      action.detail.kind === "write-file" && action.detail.retainedLocalDigest !== undefined
+        && action.detail.adoptionNotice !== undefined
+    );
+    if (adoptions.length === 0) return reviews;
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    const encoder = new TextEncoder();
+    const directories = yield* machine.userDirectories();
+    const root = yield* machine.normalizePath({
+      path: `canonfig/adoption-review-${randomUUID()}`, base: directories.data,
+    });
+    yield* machine.ensureDirectory({ path: root, mode: 0o700 });
+    for (const action of adoptions) {
+      const detail = action.detail;
+      if (detail.kind !== "write-file") continue;
+      const target = yield* machine.normalizePath({ path: detail.target });
+      const kind = yield* machine.inspectPath(target);
+      if (kind.kind !== "regular") {
+        return yield* configurationError("stale", "An adoption review target is no longer a regular file. Replan synchronization.");
+      }
+      const bytes = yield* machine.readFile({
+        path: target, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes,
+      });
+      if (sha256BytesHex(bytes) !== detail.retainedLocalDigest) {
+        return yield* configurationError("stale", "An adoption review target changed after planning. Replan synchronization.");
+      }
+      const current = yield* Effect.try({
+        try: () => parseTextComposition(bytes),
+        catch: () => configurationError("stale", "An adoption review target is no longer valid unmanaged UTF-8 text. Replan synchronization."),
+      });
+      if (current.kind !== "unmanaged") {
+        return yield* configurationError("stale", "An adoption review target is already managed. Replan synchronization.");
+      }
+      const sourceBytes = artifacts.find((entry) => entry.digest === detail.digest)?.content;
+      if (sourceBytes === undefined || sha256BytesHex(sourceBytes) !== detail.digest) {
+        return yield* configurationError("stale", "The verified Source text for an adoption review is unavailable. Replan synchronization.");
+      }
+      const source = yield* Effect.try({
+        try: () => decoder.decode(sourceBytes),
+        catch: () => configurationError("invalid-profile", "The Source text for an adoption review is not valid UTF-8."),
+      });
+      const proposed = composeTextFile(source, current);
+      if (proposed.byteLength > defaultSynchronizationExecutionLimits.maximumFileBytes) {
+        return yield* configurationError("invalid-profile", "The composed adoption text exceeds the supported file size.");
+      }
+      const path = yield* machine.normalizePath({ path: `${reviews.length + 1}.json`, base: root });
+      const review = {
+        schema: "canonfig.adoption-review/v1",
+        revision: plan.revision,
+        planDigest: plan.digest,
+        resource: action.resource,
+        target: detail.target,
+        sourceDigest: detail.digest,
+        retainedLocalDigest: detail.retainedLocalDigest,
+        sourceAddition: source,
+        retainedLocal: current.local,
+        proposedText: decoder.decode(proposed),
+      };
+      yield* machine.atomicWrite({
+        path, mode: 0o600,
+        content: encoder.encode(`${JSON.stringify(review, undefined, 2)}\n`),
+      });
+      reviews.push({ resource: action.resource, target: detail.target, path: path.absolute });
+    }
+    return reviews;
+  },
+);
+
 export const synchronizeFollower = Effect.fn(
   "FollowerOrchestration.synchronize",
 )(function*(
@@ -1368,7 +1508,11 @@ export const synchronizeFollower = Effect.fn(
   mode: "plan" | "apply",
   signal?: AbortSignal,
   scheduled = false,
+  reviewLocal = false,
 ) {
+  if (reviewLocal && (mode !== "plan" || scheduled)) {
+    return yield* configurationError("invalid-profile", "Local adoption reviews require an interactive plan.");
+  }
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
   const synchronization = yield* Synchronization;
@@ -1399,7 +1543,6 @@ export const synchronizeFollower = Effect.fn(
   const hydrated = yield* hydrateRevision(
     fetched,
     appliedResources,
-    scheduleManager,
   ).pipe(
     Effect.provideService(MachineState, machine),
   );
@@ -1419,6 +1562,9 @@ export const synchronizeFollower = Effect.fn(
     localOverlay: configuration.localOverlay ?? [],
     appliedResources,
   });
+  // `sync --plan` must not accept a target this machine cannot write; the
+  // apply repeats the check before it records the run.
+  yield* preflightPathLengths(plan.actions, hydrated.revision.desired);
   const noAgentResolutions: ReadonlyArray<AgentResolutionOutcome> = [];
   // `agent-propose` records a proposal and stops, which is what the operator
   // documentation and the glossary describe. Apply used to skip resolution
@@ -1455,6 +1601,20 @@ export const synchronizeFollower = Effect.fn(
     })
     : undefined;
   if (mode === "plan") {
+    // Planning never touches the native scheduler: it only discloses a
+    // profile default the follower has not consented to.
+    const schedule: ScheduleSyncReport | undefined =
+      configuration.scheduleOverride === undefined && fetched.metadata.scheduleDefault !== undefined
+        ? { action: "available", detail: scheduleAvailableDetail(fetched.metadata.scheduleDefault) }
+        : undefined;
+    // An installer this machine refuses would stop the apply partway; the
+    // plan says so now, with the command that fixes it.
+    const warnings = yield* installerRefusals(planned.plan.actions.flatMap((action) =>
+      action.detail.kind === "install-tool" ? [action.detail.method] : []
+    ));
+    const adoptionReviews = reviewLocal
+      ? yield* writeAdoptionReviews(planned.plan, hydrated.artifacts)
+      : undefined;
     return {
       mode,
       revision: selected.id,
@@ -1462,6 +1622,9 @@ export const synchronizeFollower = Effect.fn(
       reusedBlobs: fetched.reusedBlobs,
       plan: planned.plan,
       agentResolutions: planned.agentResolutions,
+      schedule,
+      warnings: warnings.length === 0 ? undefined : warnings,
+      adoptionReviews,
     };
   }
   const outcome = yield* synchronization.run({
@@ -1478,17 +1641,21 @@ export const synchronizeFollower = Effect.fn(
       processTimeoutMilliseconds: localProcessTimeout(configuration),
     },
   });
-  if (outcome.outcome === "Converged") {
-    yield* persistProfileScheduleDefault(
+  const schedule = outcome.outcome === "Converged"
+    ? yield* persistProfileScheduleDefault(
       configuration,
       fetched.metadata.scheduleDefault,
-    );
-    yield* reconcileSchedule(
+    ).pipe(Effect.andThen(reconcileSchedule(
       configuration,
       fetched.metadata.scheduleDefault,
       scheduleManager,
-    );
-  }
+    )))
+    : undefined;
+  // Files a client reads only after its own trust or review step: say which
+  // step, since Canonfig cannot see it and `clientLoaded` stays not-verified.
+  const clientSteps = outcome.outcome === "Converged"
+    ? clientReviewSteps(plannedFileChanges(planned.plan.actions))
+    : [];
   return {
     mode,
     revision: selected.id,
@@ -1496,8 +1663,11 @@ export const synchronizeFollower = Effect.fn(
     reusedBlobs: fetched.reusedBlobs,
     agentResolutions: appliedAgentResolutions,
     outcome,
+    schedule,
+    clientSteps: clientSteps.length === 0 ? undefined : clientSteps,
   };
-});
+}, (effect, ...args) =>
+  args[1] === "plan" ? effect : withRunLock(args[0], "sync --apply", effect));
 
 /**
  * Closes an interrupted run without recovering it.
@@ -1527,6 +1697,10 @@ export const abandonFollowerRun = Effect.fn(
     );
   }
   yield* assertUpgradeGate(configuration.follower.id);
+  // Canonfig's own temporary files from the killed run go first, so the next
+  // run does not see them as foreign content. A failure here leaves the run
+  // open with its evidence.
+  yield* removeRunTemporaryEntries(recovery.run.plan.actions, recovery.run.id);
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
   );
@@ -1545,7 +1719,7 @@ export const abandonFollowerRun = Effect.fn(
     revision: recovery.run.revision,
     abandoned: true as const,
   };
-});
+}, (effect, ...args) => withRunLock(args[0], "abandon", effect));
 
 export const recoverFollower = Effect.fn(
   "FollowerOrchestration.recover",
@@ -1555,9 +1729,6 @@ export const recoverFollower = Effect.fn(
   const synchronization = yield* Synchronization;
   const agentResolution = Option.getOrUndefined(
     yield* Effect.serviceOption(AgentResolution),
-  );
-  const scheduleManager = Option.getOrUndefined(
-    yield* Effect.serviceOption(ScheduleManager),
   );
   const configuration = yield* loadFollowerSynchronizationConfiguration(
     stateLocation,
@@ -1574,10 +1745,21 @@ export const recoverFollower = Effect.fn(
     /:view:[a-f0-9]{64}$/u,
     "",
   );
+  // A run whose revision can no longer be obtained, such as one an earlier
+  // release left unfinished, can only be closed. Saying so ends the loop
+  // where recover failed and sync --apply sent the operator back to recover.
+  const unrecoverable = (cause: string) =>
+    Effect.fail(configurationError(
+      "stale",
+      `run ${recovery.run.id} cannot be recovered: ${cause}. run 'canonfig abandon' to close it without rollback, then 'canonfig sync --apply'`,
+    ));
   const selected = yield* selectedRevision(
     configuration,
     sourceRevision,
     signal,
+  ).pipe(
+    Effect.catchTag("FollowerSynchronizationConfigurationError", (error) =>
+      unrecoverable(error.message)),
   );
   const fetched = yield* fetchRevision({
     ...transportInput(configuration, signal),
@@ -1586,7 +1768,12 @@ export const recoverFollower = Effect.fn(
     maximumMetadataBytes:
       configuration.scheduledInvocation.maximumMetadataBytes,
     maximumBlobBytes: configuration.scheduledInvocation.maximumBlobBytes,
-  }).pipe(Effect.provideService(MachineState, machine));
+  }).pipe(
+    Effect.provideService(MachineState, machine),
+    Effect.catchTag("LegacyRevisionFormatError", (error) => unrecoverable(error.message)),
+    Effect.catchTag("TransportResourceNotFoundError", () =>
+      unrecoverable("the Source Machine no longer has this run's revision")),
+  );
   const appliedResources = [
     ...new Map([
       ...(yield* repository.loadAppliedResources(configuration.follower.id)),
@@ -1596,7 +1783,6 @@ export const recoverFollower = Effect.fn(
   const hydrated = yield* hydrateRevision(
     fetched,
     appliedResources,
-    scheduleManager,
   ).pipe(
     Effect.provideService(MachineState, machine),
   );
@@ -1624,4 +1810,4 @@ export const recoverFollower = Effect.fn(
     reusedBlobs: fetched.reusedBlobs,
     outcome,
   };
-});
+}, (effect, ...args) => withRunLock(args[0], "recover", effect));
