@@ -132,16 +132,18 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
-          for attempt in 1 2 3 4 5; do
+          # npm can take several minutes to serve a new version after
+          # accepting it (v4.0.0 took about 3), so wait up to 10 minutes.
+          for attempt in $(seq 1 40); do
             published="$(npm view "@microck/canonfig@${RELEASE_VERSION}" version 2>/dev/null || true)"
             if [ "${published}" = "${RELEASE_VERSION}" ]; then
               break
             fi
-            if [ "${attempt}" = 5 ]; then
-              echo "published package did not become visible" >&2
+            if [ "${attempt}" = 40 ]; then
+              echo "published package did not become visible within 10 minutes" >&2
               exit 1
             fi
-            sleep 5
+            sleep 15
           done
           root="$(mktemp -d)"
           npm install --prefix "${root}" --no-save "@microck/canonfig@${RELEASE_VERSION}"
