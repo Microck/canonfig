@@ -1,0 +1,80 @@
+/* Machine map: React Flow's base.css restyled to the Canonfig dark tokens. */
+.cf-map .react-flow {
+  --xy-background-color: transparent;
+  --xy-node-border-radius: 8px;
+  font: inherit;
+  color: inherit;
+}
+
+.cf-map .react-flow__pane {
+  cursor: default;
+}
+.cf-map .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+/* The wrapper is the focusable element, so its outline must follow the card's radius. */
+.cf-map .react-flow__node {
+  border-radius: 8px;
+}
+.cf-map .react-flow__node:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.cf-map .react-flow__node.dragging {
+  cursor: grabbing;
+}
+
+/* Handles only anchor edges; nothing is connectable. */
+.cf-map .react-flow__handle {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.cf-map .react-flow__edge {
+  cursor: default;
+}
+
+/* Edges aren't selectable (so React Flow marks them inactive), but they still explain themselves on hover. */
+.cf-map .react-flow__edge-interaction {
+  pointer-events: stroke;
+}
+
+/* React Flow is MIT and asks for its attribution; keep it, quietly. */
+.cf-map .react-flow__attribution {
+  margin: 10px 12px;
+  padding: 0;
+  background: transparent;
+  font-size: 10px;
+}
+.cf-map .react-flow__attribution a {
+  color: var(--faint);
+  opacity: 0.6;
+}
+.cf-map .react-flow__attribution a:hover {
+  opacity: 1;
+}
+/* A working machine's icon tile: the hatch marches one tile (4 cells of 1.5px) in four hard steps, about 7fps. */
+.cf-map-tile-run {
+  animation: cf-map-tile-run 600ms steps(4) infinite;
+}
+@keyframes cf-map-tile-run {
+  from {
+    -webkit-mask-position: 0 0;
+    mask-position: 0 0;
+  }
+  to {
+    -webkit-mask-position: 6px 0;
+    mask-position: 6px 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cf-map-tile-run {
+    animation: none;
+  }
+}

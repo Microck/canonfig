@@ -1,0 +1,365 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/*
+ * UI text: Open Runde 1.0.1 (Laurids Kern, OFL), a rounded variant of Inter,
+ * self-hosted from the official release in four static weights. Code text:
+ * Ioskeley Mono 2.2.0 (Ahmed Hatem, OFL), an Iosevka build. Licences sit next
+ * to the files in public/fonts.
+ *
+ * Open Runde ships no `tnum`, `cv01`, `ss03` or optical-size axis, so
+ * `tabular-nums` has no effect on it; numbers that must align use font-mono.
+ */
+@font-face {
+  font-family: "Open Runde";
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/OpenRunde-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Open Runde";
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/OpenRunde-Medium.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Open Runde";
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/OpenRunde-Semibold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Open Runde";
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/OpenRunde-Bold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IoskeleyMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IoskeleyMono-Italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/IoskeleyMono-Medium.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/IoskeleyMono-SemiBold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/IoskeleyMono-Bold.woff2") format("woff2");
+}
+
+/*
+ * Canonfig's Ender palette (website/app/ender-chest.css, dark)
+ * mapped onto shadcn tokens, tuned toward Linear's density: hairline borders
+ * at low alpha, 13px interface text, small radii. Dark only (ADR 0001).
+ */
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Open Runde", -apple-system, system-ui, sans-serif;
+  --font-mono: "Ioskeley Mono", ui-monospace, monospace;
+  /* Static faces exist only at 400/500/600/700. Linear's in-between weights
+     (510/590/680) would make the browser jump to the next heavier file. */
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --font-heading: var(--font-sans);
+
+  /*
+   * Interface text sizes. The root stays at the browser's 16px so rem spacing keeps
+   * Tailwind's scale (gap-2 is 8px, size-3.5 is 14px); body text is set to 13px below.
+   * Tailwind's text-xs/sm/base would be 12/14/16px, so these pin the steps the shadcn
+   * primitives use to the sizes the layouts already use.
+   */
+  --text-xs: 11px;
+  --text-xs--line-height: 1.45;
+  --text-sm: 12px;
+  --text-sm--line-height: 1.5;
+  --text-base: 13px;
+  --text-base--line-height: 1.55;
+
+  /*
+   * The one easing curve for motion that clarifies a change: ~150ms state
+   * changes, ~200ms popovers and tooltips, ~300ms overlays. Everything else
+   * is instant.
+   */
+  --ease-snap: cubic-bezier(0.175, 0.885, 0.32, 1.1);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-gold: var(--gold);
+  --color-gold-hover: var(--gold-hover);
+  --color-gold-foreground: var(--gold-foreground);
+  --color-portal: var(--portal);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-act: var(--act);
+  --color-bad: var(--bad);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --radius-2xl: 12px;
+
+  --color-dither-ink: var(--dither-ink);
+  --color-dither-paper: var(--dither-paper);
+  --color-dither-blue: var(--dither-color-blue);
+  --color-dither-purple: var(--dither-color-purple);
+  --color-dither-green: var(--dither-color-green);
+  --color-dither-pink: var(--dither-color-pink);
+  --color-dither-orange: var(--dither-color-orange);
+  --color-dither-red: var(--dither-color-red);
+  --color-dither-grey: var(--dither-color-grey);
+}
+
+:root {
+  /* Surfaces: canvas sits behind the inset panel, like Linear's app frame. */
+  --canvas: #080b0c;
+  --background: #0b0f10;
+  --panel: #0d1213;
+  --raised: #121a1b;
+  --card: #121e1f;
+  --card-foreground: #e5eee9;
+  --popover: #142122;
+  --popover-foreground: #e5eee9;
+
+  --foreground: #e5eee9;
+  /*
+   * Text tiers. Contrast fixes moved L only (oklch), keeping hue and chroma:
+   * muted-foreground was #9ab0aa (APCA Lc 56 on panel, under the 60 floor for
+   * secondary text); faint was #66807a (WCAG 4.43:1 on panel, 3.6:1 on muted).
+   */
+  --muted-foreground: oklch(0.78 0.026 177.3);
+  --faint: oklch(0.64 0.031 179.5);
+
+  --primary: #7aae7a;
+  --primary-foreground: #0b1510;
+  --secondary: #1f2e2f;
+  --secondary-foreground: #dce8df;
+  --muted: #182728;
+  --accent: #213a2e;
+  --accent-foreground: #a7dda0;
+
+  /* #334646 at reduced strength reads as Linear's hairlines. */
+  --border: color-mix(in oklab, #334646 62%, transparent);
+  --border-strong: #334646;
+  --input: color-mix(in oklab, #334646 80%, transparent);
+  /* Focus rings stay in the Ender portal violet (agreed theme), lightened so the
+     /50 and /60 alphas the primitives use still clear 3:1 on the panel (3.4:1, 4.4:1). */
+  --ring: #c4b5fd;
+
+  --gold: #f1c332;
+  --gold-hover: #f9e37a;
+  --gold-foreground: #201b08;
+  --portal: #8b5cf6;
+
+  /* Machine state colours. ok and bad were raised in L so 12px status labels read
+     (APCA Lc 51 and 45 before); ok is a lighter step of the primary green. */
+  --ok: oklch(0.74 0.093 144.5);
+  --warn: #f1c332;
+  --act: #f0975a;
+  --bad: oklch(0.72 0.164 22.3);
+  --destructive: var(--bad);
+
+  --sidebar: #080b0c;
+  --sidebar-foreground: #c9d6cf;
+  --sidebar-accent: #152021;
+  --sidebar-accent-foreground: #e5eee9;
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+
+  --radius: 0.5rem;
+
+  --dither-ink: var(--primary);
+  --dither-paper: var(--background);
+  --dither-cell: 2px;
+  --dither-bloom: 0.7;
+  --dither-color-blue: oklch(0.72 0.12 240);
+  --dither-color-purple: #a78bfa;
+  --dither-color-green: #7aae7a;
+  --dither-color-pink: oklch(0.74 0.15 354);
+  --dither-color-orange: #f0975a;
+  --dither-color-red: #ef6b6b;
+  --dither-color-grey: #4d6460;
+  --dither-color-gold: #f1c332;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    @apply font-sans;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+  /* Code text keeps the font's default features. */
+  .font-mono,
+  code,
+  pre,
+  kbd {
+    font-feature-settings: normal;
+  }
+  /* Interface text is 13px at normal tracking; the root keeps 16px for rem geometry. */
+  body {
+    @apply bg-canvas text-base text-foreground;
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  /* Keyboard focus for every control that doesn't draw its own ring. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 35%, transparent);
+  }
+}
+
+/* DitherProgress while running: a dotted highlight sweeps toward the leading
+   edge. Only mask-position moves; the dot grain stays put. */
+.dither-shimmer {
+  background: color-mix(in oklab, white 55%, transparent);
+  --shimmer-sweep: linear-gradient(90deg, transparent 35%, #000 50%, transparent 65%);
+  -webkit-mask-image: var(--shimmer-dots), var(--shimmer-sweep);
+  mask-image: var(--shimmer-dots), var(--shimmer-sweep);
+  -webkit-mask-size: var(--shimmer-tile), 250% 100%;
+  mask-size: var(--shimmer-tile), 250% 100%;
+  -webkit-mask-repeat: repeat, no-repeat;
+  mask-repeat: repeat, no-repeat;
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+  animation: dither-shimmer 1.4s linear infinite;
+}
+@keyframes dither-shimmer {
+  from {
+    -webkit-mask-position: 0 0, 100% 0;
+    mask-position: 0 0, 100% 0;
+  }
+  to {
+    -webkit-mask-position: 0 0, 0% 0;
+    mask-position: 0 0, 0% 0;
+  }
+}
+
+/* DitherBlock: revealed once on mount, growing away from its dense edge. */
+.dither-reveal {
+  -webkit-mask-image: var(--reveal-mask);
+  mask-image: var(--reveal-mask);
+  -webkit-mask-size: var(--reveal-size);
+  mask-size: var(--reveal-size);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  animation: dither-reveal 600ms var(--ease-snap) both;
+}
+.dither-reveal[data-edge="bottom"] {
+  --reveal-mask: linear-gradient(to top, #000 40%, transparent 60%);
+  --reveal-size: 100% 300%;
+  --reveal-from: 0 0%;
+  --reveal-to: 0 100%;
+}
+.dither-reveal[data-edge="top"] {
+  --reveal-mask: linear-gradient(to bottom, #000 40%, transparent 60%);
+  --reveal-size: 100% 300%;
+  --reveal-from: 0 100%;
+  --reveal-to: 0 0%;
+}
+.dither-reveal[data-edge="left"] {
+  --reveal-mask: linear-gradient(to right, #000 40%, transparent 60%);
+  --reveal-size: 300% 100%;
+  --reveal-from: 100% 0;
+  --reveal-to: 0% 0;
+}
+.dither-reveal[data-edge="right"] {
+  --reveal-mask: linear-gradient(to left, #000 40%, transparent 60%);
+  --reveal-size: 300% 100%;
+  --reveal-from: 0% 0;
+  --reveal-to: 100% 0;
+}
+@keyframes dither-reveal {
+  from {
+    -webkit-mask-position: var(--reveal-from);
+    mask-position: var(--reveal-from);
+  }
+  to {
+    -webkit-mask-position: var(--reveal-to);
+    mask-position: var(--reveal-to);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+  /* Finished-looking still frames: no sweep, the block fully shown. */
+  .dither-shimmer {
+    display: none;
+  }
+  .dither-reveal {
+    animation: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}

@@ -288,6 +288,12 @@ run `canonfig --help` for every command, and `canonfig <group> --help` (for exam
 | `6` | `transport` | connection or TLS transport failure, including a down managed tunnel |
 | `7` | `verification-or-apply-failure` | recipe verification or apply failure |
 
+## browser interface
+
+the frontend lives in [`ui/`](ui/README.md). from this checkout, run `npm --prefix ui ci` and `npm run ui:dev`, then open `http://localhost:5317/source/overview`. screens have separate routes, including `/source/profile`, `/source/machines`, `/follower/sync` and `/setup`.
+
+the frontend currently uses demo data and simulated operations. it is not yet connected to the CLI services or shipped as a `canonfig ui` command.
+
 ## documentation
 
 - [tutorial: sync Claude Code and Codex from machine A to machine B](https://github.com/Microck/canonfig/blob/main/website/content/docs/tutorials/first-sync.mdx)
