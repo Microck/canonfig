@@ -1446,7 +1446,11 @@ const prepareMirror = (
         );
         if (current?.kind === "directory") {
           const permissions = yield* activeMachine.permissions(path);
-          if (!desiredDirectories.has(relative) && !removedPaths.has(relative)) {
+          // Only surviving implicit directories keep their previous mode. A
+          // desired file or symlink at this path replaces the directory below;
+          // chmod after replacement would overwrite file intent or follow a link.
+          if (!desiredDirectories.has(relative) && !removedPaths.has(relative)
+            && !desiredByPath.has(relative)) {
             preservedAncestorModes.set(relative, permissions.mode);
           }
           const writableMode = permissions.mode | 0o700;

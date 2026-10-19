@@ -1515,6 +1515,51 @@ process.exit(1);
     expect(await readFile(child, "utf8")).toBe("previous child");
   });
 
+  it.each(["regular", "executable", "symlink"] as const)(
+    "does not restore an implicit directory mode onto its replacement %s",
+    async (kind) => {
+      const root = temporaryDirectory();
+      const managed = join(root, "managed");
+      const child = join(managed, "entry", "child.txt");
+      mkdirSync(dirname(child), { recursive: true });
+      writeFileSync(child, "previous child");
+      chmodSync(dirname(child), 0o755);
+      const outside = join(root, "outside-private-fixture");
+      writeFileSync(outside, "synthetic private content", { mode: 0o600 });
+      const base = mirrorContext(root, managed, "entry", "replacement leaf");
+      const file = base.desired.files[0]!;
+      const desiredFile = kind === "symlink"
+        ? { ...file, digest: decode(ContentDigest)(sha256BytesHex(
+          new TextEncoder().encode("../outside-private-fixture"),
+        )), symlinkTo: "../outside-private-fixture" }
+        : { ...file, executable: kind === "executable", mode: kind === "executable" ? 0o700 : 0o600 };
+      const context: ResourceExecutionContext = {
+        ...base,
+        desired: { ...base.desired, files: [desiredFile] },
+        action: { ...base.action, detail: {
+          kind: "mirror-directory", target: managed,
+          adds: ["entry"], removes: ["entry/child.txt"],
+        } },
+      };
+      const layer = machineLayer(root);
+      const prepared = await Effect.runPromise(prepareResourceAction(context).pipe(Effect.provide(layer)));
+      await Effect.runPromise(prepared.execute.pipe(Effect.provide(layer)));
+      expect(statSync(outside).mode & 0o7777).toBe(0o600);
+      expect(readFileSync(outside, "utf8")).toBe("synthetic private content");
+      if (kind === "symlink") {
+        expect(readlinkSync(join(managed, "entry"))).toBe("../outside-private-fixture");
+      } else {
+        expect(statSync(join(managed, "entry")).mode & 0o7777)
+          .toBe(kind === "executable" ? 0o700 : 0o600);
+        expect(readFileSync(join(managed, "entry"), "utf8")).toBe("replacement leaf");
+      }
+      await Effect.runPromise(prepared.rollback!.pipe(Effect.provide(layer)));
+      expect(readFileSync(child, "utf8")).toBe("previous child");
+      expect(statSync(dirname(child)).mode & 0o7777).toBe(0o755);
+      expect(statSync(outside).mode & 0o7777).toBe(0o600);
+    },
+  );
+
   it("preserves exact file, directory, empty-directory, and relative-symlink state", async () => {
     const root = temporaryDirectory();
     const managed = join(root, "managed");
