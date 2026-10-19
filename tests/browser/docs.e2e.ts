@@ -21,6 +21,7 @@ for (const page of pages()) {
     await app.open(page.route);
     await expect(screen.getByRole("heading", { name: page.title, exact: true })).toBeVisible();
     const canonical = await browser.evaluate(() => document.querySelector('link[rel="canonical"]')?.getAttribute("href"));
+    expect(new URL(canonical!).origin).toBe(new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000").origin);
     expect(new URL(canonical!).pathname).toBe(page.route);
   });
 }
