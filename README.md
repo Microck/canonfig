@@ -312,3 +312,13 @@ run `canonfig --help` for every command, and `canonfig <group> --help` (for exam
 ## license
 
 [MIT](https://github.com/Microck/canonfig/blob/main/LICENSE)
+
+### Deterministic documentation browser tests
+
+`npm run website:build`, `npx e2e-web install chromium`, then `npm run test:e2e`
+exercise the production documentation app using pinned tester-army/e2e packages.
+No AI provider, model calls or account credentials are used. The suite discovers
+all MDX pages, checks their headings/canonical links, checks legacy redirects,
+search API results, and mobile overflow. Existing Vitest packed-CLI and native
+acceptance suites remain separate; browser coverage does not verify machine
+synchronization, secret stores or scheduled jobs. Failure traces stay in `.e2e/`.
