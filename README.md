@@ -322,3 +322,5 @@ all MDX pages, checks their headings/canonical links, checks legacy redirects,
 search API results, and mobile overflow. Existing Vitest packed-CLI and native
 acceptance suites remain separate; browser coverage does not verify machine
 synchronization, secret stores or scheduled jobs. Failure traces stay in `.e2e/`.
+
+The browser E2E development runner requires Node >=24.8.0; `pretest:e2e` checks this before loading it. This does not change the CLI runtime floor.

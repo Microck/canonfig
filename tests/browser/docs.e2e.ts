@@ -20,7 +20,8 @@ for (const page of pages()) {
   test(`documentation route ${page.route}`, async ({ app, browser, screen }) => {
     await app.open(page.route);
     await expect(screen.getByRole("heading", { name: page.title, exact: true })).toBeVisible();
-    expect(await browser.evaluate(() => document.querySelector('link[rel="canonical"]')?.getAttribute("href"))).toContain(page.route);
+    const canonical = await browser.evaluate(() => document.querySelector('link[rel="canonical"]')?.getAttribute("href"));
+    expect(new URL(canonical!).pathname).toBe(page.route);
   });
 }
 
@@ -35,10 +36,12 @@ test("search finds the documented CLI and mobile home stays within the viewport"
   await app.open("/");
   await expect(screen.getByRole("heading", { name: "Canonfig", exact: true })).toBeVisible();
   const search = await browser.evaluate(async () => {
-    const response = await fetch("/api/search?query=schedule");
+    const response = await fetch("/api/search?query=CLI");
     return { status: response.status, results: await response.json() };
   });
   expect(search.status).toBe(200);
-  expect(Array.isArray(search.results) && search.results.length > 0).toBe(true);
+  expect(Array.isArray(search.results) && search.results.some((entry: {url:string}) =>
+    new URL(entry.url, "https://canonfig.micr.dev").pathname === "/reference/cli"
+  )).toBe(true);
   expect(await browser.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
 });
