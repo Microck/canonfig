@@ -8,3 +8,4 @@ website/.source/
 /build-receipt.json
 .DS_Store
 .vercel/
+.e2e/

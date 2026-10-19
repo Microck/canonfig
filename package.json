@@ -54,7 +54,9 @@
     "website:dev": "npm run dev --workspace @canonfig/website",
     "website:typecheck": "npm run typecheck --workspace @canonfig/website",
     "website:lint": "npm run lint --workspace @canonfig/website",
-    "website:build": "npm run build --workspace @canonfig/website"
+    "website:build": "npm run build --workspace @canonfig/website",
+    "test:e2e": "node e2e-runner.mjs",
+    "pretest:e2e": "node tests/browser/check-node.mjs"
   },
   "dependencies": {
     "@canonfig/effect-platform-node-shared": "npm:@effect/platform-node-shared@4.0.0-rc.112",
@@ -65,9 +67,11 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@e2e-dev/web": "0.15.2",
     "@effect/vitest": "4.0.0-rc.112",
     "@oxlint/plugins": "1.78.0",
     "@types/node": "24.10.1",
+    "e2e": "0.21.2",
     "esbuild": "0.25.12",
     "oxlint": "1.78.0",
     "tsx": "4.20.6",
