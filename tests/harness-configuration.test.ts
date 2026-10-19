@@ -13,6 +13,8 @@ import {
   createPlan,
 } from "../src/harness-configuration/core/planner.ts";
 import { parseMarkdownDocument } from "../src/harness-configuration/core/frontmatter.ts";
+import { runHarnessConfigurationCli } from "../src/harness-configuration/cli.ts";
+import { loadState } from "../src/harness-configuration/core/state.ts";
 import { isHarnessPlanBlocked } from "../src/harness-configuration/cli-output.ts";
 import { applyJsonArtifact } from "../src/harness-configuration/core/render-json.ts";
 import { unapplyPrevious } from "../src/harness-configuration/core/render-cleanup.ts";
@@ -144,6 +146,34 @@ afterEach(async () => {
 });
 
 describe("harness configuration compiler", () => {
+  it("cleans only selected target artifacts and retains shared files until the last target", async () => {
+    const root = await fixture(["codex", "claude-code"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const before = await loadState(root);
+    const retained = Object.entries(before.artifacts).filter(([, state]) => state.owner !== "codex");
+    const bytes = new Map(await Promise.all(retained.map(async ([file]) => [file, await readFile(path.join(root, file))] as const)));
+    const output: string[] = [];
+    let exitCode = -1;
+    const io = { writeStdout: (value: string) => output.push(value), writeStderr: (value: string) => output.push(value),
+      setExitCode: (value: number) => { exitCode = value; } };
+    await runHarnessConfigurationCli(["clean", "--root", root, "--target", "codex", "--dry-run"], io);
+    expect(exitCode, output.join("")).toBe(0);
+    expect((await loadState(root)).artifacts).toEqual(before.artifacts);
+    await runHarnessConfigurationCli(["clean", "--root", root, "--target", "codex"], io);
+    expect(exitCode, output.join("")).toBe(0);
+    for (const [file, content] of bytes) expect(await readFile(path.join(root, file))).toEqual(content);
+    const after = await loadState(root);
+    expect(Object.keys(after.artifacts).sort()).toEqual(retained.map(([file]) => file).sort());
+    for (const [file, state] of Object.entries(before.artifacts)) {
+      if (state.owner === "codex") await expect(readFile(path.join(root, file))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    await runHarnessConfigurationCli(["clean", "--root", root, "--target", "claude-code"], io);
+    expect(exitCode, output.join("")).toBe(0);
+    expect((await loadState(root)).artifacts).toEqual({});
+    await expect(readFile(path.join(root, "AGENTS.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("compiles every requested target and becomes idempotent", async () => {
     const root = await fixture();
     const compiler = new HarnessConfigurationCompiler();

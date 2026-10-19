@@ -24,7 +24,7 @@ import { renderArtifacts } from "./render.ts";
 import { sha256 } from "./hash.ts";
 import { CanonfigError } from "./errors.ts";
 
-export interface PlanOptions { force?: boolean; }
+export interface PlanOptions { force?: boolean; preserveSharedForUnselectedTargets?: boolean; }
 
 function bytesEqual(left: Uint8Array | undefined, right: string | Uint8Array | undefined): boolean {
   if (left === undefined || right === undefined) return left === undefined && right === undefined;
@@ -34,10 +34,6 @@ function bytesEqual(left: Uint8Array | undefined, right: string | Uint8Array | u
 
 function isTextArtifacts(artifacts: readonly DesiredArtifact[]): boolean {
   return artifacts.every((artifact) => artifact.kind !== "replace" || typeof artifact.content === "string");
-}
-
-function selectedOwner(owner: ArtifactOwner, targets: readonly TargetId[]): boolean {
-  return owner === "common" || targets.includes(owner);
 }
 
 function ownerFor(artifacts: readonly DesiredArtifact[], diagnostics: Diagnostic[], filePath: string): ArtifactOwner {
@@ -66,9 +62,16 @@ export async function createPlan(
   options: PlanOptions = {},
 ): Promise<Plan> {
   const previousState = await loadState(root);
+  // Shared instructions and skills are still needed by retained targets.
+  // Once the last recorded target is cleaned, shared artifacts can go too.
+  const retainShared = options.preserveSharedForUnselectedTargets === true
+    && Object.values(previousState.artifacts).some((state) =>
+      state.owner !== "common" && !targets.includes(state.owner));
+  const selectedOwner = (owner: ArtifactOwner): boolean =>
+    owner === "common" ? !retainShared : targets.includes(owner);
   const nextArtifacts: Record<string, ArtifactState> = {};
   for (const [filePath, state] of Object.entries(previousState.artifacts)) {
-    if (!selectedOwner(state.owner, targets)) nextArtifacts[filePath] = state;
+    if (!selectedOwner(state.owner)) nextArtifacts[filePath] = state;
   }
 
   const groups = new Map<string, DesiredArtifact[]>();
@@ -154,7 +157,7 @@ export async function createPlan(
 
   const desiredPaths = new Set(groups.keys());
   for (const [filePath, previous] of Object.entries(previousState.artifacts)) {
-    if (desiredPaths.has(filePath) || !selectedOwner(previous.owner, targets)) continue;
+    if (desiredPaths.has(filePath) || !selectedOwner(previous.owner)) continue;
     const absolute = resolveInside(root, filePath);
     await assertRealPathInside(root, absolute);
     const currentBytes = await readOptionalFile(absolute);
