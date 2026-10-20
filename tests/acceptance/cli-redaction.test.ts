@@ -100,6 +100,14 @@ describe("credential-safe CLI output", () => {
     expect(redactText(`arbitrary=${value}`, [value])).toBe("arbitrary=[REDACTED]");
   });
 
+  it.each([
+    ["ED]foo", "[REDACTED]foo"],
+    ["foo[RED", "foo[REDACTED]"],
+    ["]x[", "[REDACTED]x[REDACTED]"],
+  ])("scrubs credentials crossing marker boundaries: %s", (value, note) => {
+    expect(redactText(JSON.stringify({ password: value, note }))).toBe(JSON.stringify({ password: "[REDACTED]", note: "[REDACTED]" }));
+  });
+
   it("scrubs a known value regardless of the surrounding field name", () => {
     const marker = "marker-value-abc123SECRET";
     expect(redactText(`--tag ${marker} pulled`, [marker])).toBe("--tag [REDACTED] pulled");

@@ -28,26 +28,40 @@ export const redactKnownValues = (
   const ordered = [...new Set(secrets)]
     .filter((secret) => secret.length > 0 && secret !== replacement)
     .sort((left, right) => right.length - left.length);
-  // Match original text only. A whole credential takes precedence over marker
-  // text inside it; standalone markers remain intact, including for short secrets.
-  let cursor = 0;
-  let result = "";
-  while (cursor < text.length) {
-    let start = text.indexOf(replacement, cursor);
-    let length = replacement.length;
-    for (const secret of ordered) {
-      const index = text.indexOf(secret, cursor);
-      if (index !== -1 && (start === -1 || index < start
-        || (index === start && secret.length > length))) {
-        start = index;
-        length = secret.length;
+  // Compute ranges in the original text, never in inserted replacements.
+  // Preserve standalone markers, but merge any credential crossing their edges.
+  const markers: Array<{ start: number; end: number }> = [];
+  for (let start = text.indexOf(replacement); start !== -1;
+    start = text.indexOf(replacement, start + replacement.length)) {
+    markers.push({ start, end: start + replacement.length });
+  }
+  const ranges = [...markers];
+  for (const secret of ordered) {
+    for (let start = text.indexOf(secret); start !== -1;
+      start = text.indexOf(secret, start + 1)) {
+      const end = start + secret.length;
+      if (!markers.some((marker) => start >= marker.start && end <= marker.end)) {
+        ranges.push({ start, end });
       }
     }
-    if (start === -1) return result + text.slice(cursor);
-    result += text.slice(cursor, start) + replacement;
-    cursor = start + length;
   }
-  return result;
+  ranges.sort((left, right) => left.start - right.start || right.end - left.end);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of ranges) {
+    const previous = merged.at(-1);
+    if (previous !== undefined && range.start < previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  let cursor = 0;
+  let result = "";
+  for (const range of merged) {
+    result += text.slice(cursor, range.start) + replacement;
+    cursor = range.end;
+  }
+  return result + text.slice(cursor);
 };
 
 /** Preserve recognizable field/flag names, while scrubbing all value segments. */
