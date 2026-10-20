@@ -3,12 +3,27 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { WINDOWS_ACL_SCRIPT } from "../../src/logging/command-log.ts";
 import { programVersion } from "../../src/cli/help.ts";
 
 const invoke = (home: string, args: readonly string[]) => spawnSync(process.execPath,
   ["--import", "tsx", resolve(import.meta.dirname, "../../src/runtime/main.ts"), ...args],
   { encoding: "utf8", timeout: 20000, env: { ...process.env, HOME: home, USERPROFILE: home,
     CANONFIG_LOG_FILE: join(home, "command.log"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state") } });
+
+const logEntries = (home: string) => {
+  const path = join(home, "command.log");
+  const content = readFileSync(path, "utf8").trim();
+  if (content === "" && process.platform === "win32") {
+    const probe = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_ACL_SCRIPT], {
+      encoding: "utf8", timeout: 15000,
+      env: { ...process.env, HOME: home, USERPROFILE: home, CANONFIG_LOG_ACL_PATH: path },
+    });
+    throw new Error(`Secure command log was empty: ${JSON.stringify({ status: probe.status, error: probe.error?.message, stderr: probe.stderr })}`);
+  }
+  expect(content).not.toBe("");
+  return content.split("\n").map((line) => JSON.parse(line));
+};
 
 describe("global CLI flags", () => {
   it.each([
@@ -21,7 +36,7 @@ describe("global CLI flags", () => {
       expect(result.status, result.stdout + result.stderr).toBe(0);
       const command = args.includes("secrets") ? "secrets.list" : "harness.targets";
       expect(JSON.parse(result.stdout)).toMatchObject({ schema: "canonfig.cli/v1", command, exitCode: 0 });
-      const entries = readFileSync(join(home, "command.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      const entries = logEntries(home);
       expect(entries.every((entry) => entry.command === command)).toBe(true);
     } finally { rmSync(home, { recursive: true, force: true }); }
   }, 30000);
@@ -47,7 +62,7 @@ it.each([[], ["--stdin"]])("logs version-only enrollment calls as version: %j", 
     const result = invoke(home, ["follower", "enroll", ...options, "--version"]);
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe(programVersion);
-    const entries = readFileSync(join(home, "command.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const entries = logEntries(home);
     expect(entries.every((entry) => entry.command === "version")).toBe(true);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
@@ -63,7 +78,7 @@ it.each([
   try {
     const result = invoke(home, args);
     expect(result.status, result.stdout + result.stderr).toBe(exitCode);
-    const entries = readFileSync(join(home, "command.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const entries = logEntries(home);
     expect(entries.every((entry) => entry.command === command)).toBe(true);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
@@ -92,7 +107,7 @@ it.each(["secrets", "harness"])("preserves positional %s help over version", (gr
       expect(result.status, result.stdout + result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toMatchObject({ schema: "canonfig.cli/v1", command: `${group}.help`, exitCode: 0 });
     }
-    const entries = readFileSync(join(home, "command.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const entries = logEntries(home);
     expect(entries.every((entry) => entry.command === `${group}.help`)).toBe(true);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 30000);

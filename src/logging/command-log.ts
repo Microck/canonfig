@@ -43,7 +43,7 @@ const SINGLE_COMMANDS = new Set([
   "sync",
 ]);
 const HELP_OPTIONS = new Set(["--help", "-h", "--json"]);
-const WINDOWS_ACL_SCRIPT = [
+export const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$path = [Environment]::GetEnvironmentVariable('CANONFIG_LOG_ACL_PATH')",
   "$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",

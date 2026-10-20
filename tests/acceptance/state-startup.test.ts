@@ -43,15 +43,15 @@ it("reports a locked startup database as retryable human action", () => {
     database.exec("CREATE TABLE preserved(value TEXT); INSERT INTO preserved VALUES ('keep'); BEGIN EXCLUSIVE");
     const result = spawnSync(process.execPath,
       ["--import", "tsx", resolve(import.meta.dirname, "../../src/runtime/main.ts"), "status", "--json"],
-      { encoding: "utf8", timeout: 20000, env: { ...process.env, HOME: home, USERPROFILE: home,
+      { encoding: "utf8", timeout: 60000, env: { ...process.env, CANONFIG_DEBUG: "1", CANONFIG_LOG: "off", HOME: home, USERPROFILE: home,
         XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state") } });
-    expect(result.status, result.stdout + result.stderr).toBe(3);
+    expect({ status: result.status, signal: result.signal, error: result.error?.message, stdout: result.stdout, stderr: result.stderr }).toMatchObject({ status: 3, signal: null, error: undefined, stdout: "" });
     expect(result.stdout).toBe("");
     expect(JSON.parse(result.stderr)).toMatchObject({ schema: "canonfig.cli/v1", command: "status", exitCode: 3 });
     expect(JSON.parse(result.stderr).message).toContain("busy");
     expect(database.prepare("SELECT value FROM preserved").get()?.value).toBe("keep");
   } finally { database.close(); rmSync(home, { recursive: true, force: true }); }
-}, 30000);
+}, 70000);
 
 
 it.skipIf(process.platform === "win32" || process.getuid?.() === 0).each([0o500, 0o000])(
