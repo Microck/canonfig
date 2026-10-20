@@ -28,13 +28,26 @@ export const redactKnownValues = (
   const ordered = [...new Set(secrets)]
     .filter((secret) => secret.length > 0 && secret !== replacement)
     .sort((left, right) => right.length - left.length);
-  // Never compile credential material as a regexp or rescan inserted markers.
-  // Split only plain segments on each literal; marker boundaries stay intact.
-  let segments = text.split(replacement);
-  for (const secret of ordered) {
-    segments = segments.flatMap((segment) => segment.split(secret));
+  // Match original text only. A whole credential takes precedence over marker
+  // text inside it; standalone markers remain intact, including for short secrets.
+  let cursor = 0;
+  let result = "";
+  while (cursor < text.length) {
+    let start = text.indexOf(replacement, cursor);
+    let length = replacement.length;
+    for (const secret of ordered) {
+      const index = text.indexOf(secret, cursor);
+      if (index !== -1 && (start === -1 || index < start
+        || (index === start && secret.length > length))) {
+        start = index;
+        length = secret.length;
+      }
+    }
+    if (start === -1) return result + text.slice(cursor);
+    result += text.slice(cursor, start) + replacement;
+    cursor = start + length;
   }
-  return segments.join(replacement);
+  return result;
 };
 
 /** Preserve recognizable field/flag names, while scrubbing all value segments. */

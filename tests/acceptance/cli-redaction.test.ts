@@ -95,6 +95,11 @@ describe("credential-safe CLI output", () => {
     expect(output).toContain("[REDACTED]");
     expect(renderUsageFailure(message, format)).not.toContain("test-only-message");
   });
+  it.each(["foo[REDACTED]bar", "[REDACTED]suffix", "prefix[REDACTED]"])("scrubs credentials containing marker text: %s", (value) => {
+    expect(redactText(JSON.stringify({ token: value, arbitrary: value }))).toBe(JSON.stringify({ token: "[REDACTED]", arbitrary: "[REDACTED]" }));
+    expect(redactText(`arbitrary=${value}`, [value])).toBe("arbitrary=[REDACTED]");
+  });
+
   it("scrubs a known value regardless of the surrounding field name", () => {
     const marker = "marker-value-abc123SECRET";
     expect(redactText(`--tag ${marker} pulled`, [marker])).toBe("--tag [REDACTED] pulled");
