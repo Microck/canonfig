@@ -617,3 +617,24 @@ it.skipIf(process.platform === "win32").each(["file", "ancestor"])("does not mis
     expect((await loadState(root)).artifacts).toEqual(previous.artifacts);
   }
 });
+
+
+it.each(["codex", "grok-build"] as const)("resets provenance when recreating a deleted pre-existing %s config", async (target) => {
+  const root = await fixture([target]);
+  const relative = target === "codex" ? ".codex/config.toml" : ".grok/config.toml";
+  await write(root, relative, '# operator-owned original\nmodel = "fixture-model"\n');
+  const compiler = new HarnessConfigurationCompiler();
+  await applyPlan(await compiler.plan({ root }));
+  expect((await loadState(root)).artifacts[relative]?.existedBefore).toBe(true);
+  await rm(path.join(root, relative));
+  await applyPlan(await compiler.plan({ root }));
+  expect((await loadState(root)).artifacts[relative]?.existedBefore).toBe(false);
+  expect(await readFile(path.join(root, relative), "utf8")).not.toContain("fixture-model");
+  let exitCode = -1;
+  await runHarnessConfigurationCli(["clean", "--root", root, "--target", target], {
+    writeStdout: () => undefined, writeStderr: () => undefined,
+    setExitCode: (value) => { exitCode = value; },
+  });
+  expect(exitCode).toBe(0);
+  await expect(readFile(path.join(root, relative))).rejects.toMatchObject({ code: "ENOENT" });
+});

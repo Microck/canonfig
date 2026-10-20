@@ -156,7 +156,7 @@ export async function createPlan(
       nextState = {
         owner,
         hash: contentHash,
-        existedBefore: previous?.existedBefore ?? currentBytes !== undefined,
+        existedBefore: currentBytes === undefined ? false : previous?.existedBefore ?? true,
         cleanup: rendered.cleanup,
         ...(mode === undefined ? {} : { mode }),
       };
