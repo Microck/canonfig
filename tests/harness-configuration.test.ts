@@ -174,6 +174,25 @@ describe("harness configuration compiler", () => {
     await expect(readFile(path.join(root, "AGENTS.md"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("retains common-only Codex configuration when cleaning Claude", async () => {
+    const root = await temporaryRoot();
+    await write(root, ".canonfig/harness.json", JSON.stringify({ version: 1,
+      targets: { codex: { enabled: true }, "claude-code": { enabled: true } },
+      instructions: { root: "instructions/AGENTS.md" } }));
+    await write(root, ".canonfig/instructions/AGENTS.md", "# Shared instructions\n");
+    await applyPlan(await new HarnessConfigurationCompiler().plan({ root }));
+    const before = await readFile(path.join(root, "AGENTS.md"));
+    let exitCode = -1;
+    const io = { writeStdout: (_value: string) => {}, writeStderr: (_value: string) => {},
+      setExitCode: (value: number) => { exitCode = value; } };
+    await runHarnessConfigurationCli(["clean", "--root", root, "--target", "claude-code"], io);
+    expect(exitCode).toBe(0);
+    expect(await readFile(path.join(root, "AGENTS.md"))).toEqual(before);
+    await runHarnessConfigurationCli(["clean", "--root", root, "--target", "codex"], io);
+    expect(exitCode).toBe(0);
+    await expect(readFile(path.join(root, "AGENTS.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("compiles every requested target and becomes idempotent", async () => {
     const root = await fixture();
     const compiler = new HarnessConfigurationCompiler();

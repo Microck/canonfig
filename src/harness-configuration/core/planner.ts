@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { TARGET_IDS } from "./types.ts";
 import path from "node:path";
 import { Buffer } from "node:buffer";
 import type {
@@ -64,9 +65,13 @@ export async function createPlan(
   const previousState = await loadState(root);
   // Shared instructions and skills are still needed by retained targets.
   // Once the last recorded target is cleaned, shared artifacts can go too.
-  const retainShared = options.preserveSharedForUnselectedTargets === true
-    && Object.values(previousState.artifacts).some((state) =>
-      state.owner !== "common" && !targets.includes(state.owner));
+  // Old receipts did not record artifact-free targets. Keep shared data on
+  // partial cleanup of such receipts; an unfiltered clean can remove it.
+  const previousTargets = previousState.appliedTargets
+    ?? (Object.keys(previousState.artifacts).length === 0 ? [] : [...TARGET_IDS]);
+  const remainingTargets = previousTargets.filter((target) => !targets.includes(target));
+  const cleaning = options.preserveSharedForUnselectedTargets === true;
+  const retainShared = cleaning && remainingTargets.length > 0;
   const selectedOwner = (owner: ArtifactOwner): boolean =>
     owner === "common" ? !retainShared : targets.includes(owner);
   const nextArtifacts: Record<string, ArtifactState> = {};
@@ -198,6 +203,7 @@ export async function createPlan(
     version: 1,
     generatedAt: new Date().toISOString(),
     canonfigVersion: HARNESS_CONFIGURATION_VERSION,
+    appliedTargets: [...new Set(cleaning ? remainingTargets : [...previousTargets, ...targets])].sort(),
     artifacts: Object.fromEntries(Object.entries(nextArtifacts).sort(([left], [right]) => left.localeCompare(right))),
   };
   return { root, targets, entries: entries.sort((a, b) => a.path.localeCompare(b.path)), diagnostics, nextState };
