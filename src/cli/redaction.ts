@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 /** Redact recognizable credential syntax before text crosses a CLI output boundary. */
 
 import {
@@ -107,10 +109,20 @@ export const redactText = (
       ranges.push({ start: start + (quotedJson ? 1 : 0), end: end - (quotedJson ? 1 : 0) });
     }
   }
-  return renderRanges(text, [
-    ...ranges,
-    ...literalRanges(text, [...collectLiteralCredentialValues(text), ...secrets]),
-  ]);
+  const known = [...new Set([...collectLiteralCredentialValues(text), ...secrets])]
+    .filter((value) => value.length > 0 && value !== replacement);
+  // Native JSON may spell the same value with different Unicode/slash escapes.
+  // Compare decoded string values, then mask the whole original string body;
+  // do not recursively decode literal backslash sequences or rewrite the input.
+  for (const match of text.matchAll(/"(?:\\.|[^"\\])*"/gu)) {
+    try {
+      const decoded = Schema.decodeUnknownSync(Schema.String)(JSON.parse(match[0]));
+      if (known.some((value) => decoded.includes(value))) {
+        ranges.push({ start: match.index + 1, end: match.index + match[0].length - 1 });
+      }
+    } catch { /* Not a valid JSON string: raw literal matching still applies. */ }
+  }
+  return renderRanges(text, [...ranges, ...literalRanges(text, known)]);
 };
 
 /** Preserve argv structure while recognizing both --name=value and --name value. */

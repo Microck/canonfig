@@ -144,6 +144,16 @@ describe("credential-safe CLI output", () => {
     expect(output).not.toContain("=a");
   });
 
+  it.each([
+    '{"password":"secret","note":"se\\u0063ret"}',
+    '{"password":"se\\u0063ret","note":"secret"}',
+    '{"password":"secret","note":"prefix se\\u0063ret suffix"}',
+  ])("redacts equivalent JSON string spellings: %s", (input) => {
+    const output = JSON.parse(redactText(input));
+    expect(output.password).toBe("[REDACTED]");
+    expect(output.note).toBe("[REDACTED]");
+  });
+
   it("scrubs a known value regardless of the surrounding field name", () => {
     const marker = "marker-value-abc123SECRET";
     expect(redactText(`--tag ${marker} pulled`, [marker])).toBe("--tag [REDACTED] pulled");
@@ -286,7 +296,7 @@ it("scrubs repeated credentials from hostless URL userinfo", () => {
 });
 
 it("redacts large private keys without compiling an unbounded regex", () => {
-  const key = `-----BEGIN PRIVATE KEY-----\n${"aB3d".repeat(12000)}\n-----END PRIVATE KEY-----`;
+  const key = `${keyBlockMarker("BEGIN")}\n${"aB3d".repeat(12000)}\n${keyBlockMarker("END")}`;
   expect(redactText(key)).toBe("[REDACTED]");
   expect(redactText(`key-copy: ${key}`, [key])).toBe("key-copy: [REDACTED]");
 });
