@@ -229,6 +229,15 @@ export const startSourceServer = (
   Enrollment | MachineState
 > =>
   Effect.gen(function*() {
+    const maximumMetadataBytes = input.maximumMetadataBytes ?? defaultMaximumMetadataBytes;
+    // Publication admits against the protocol default. A smaller Source limit
+    // would strand otherwise valid stored revisions after successful publication.
+    if (!Number.isSafeInteger(maximumMetadataBytes) || maximumMetadataBytes < defaultMaximumMetadataBytes) {
+      return yield* new EnrollmentConfigurationError({
+        operation: "start enrollment server",
+        message: `maximumMetadataBytes must be a safe integer of at least ${defaultMaximumMetadataBytes} bytes, matching publication admission.`,
+      });
+    }
     const enrollment = yield* Enrollment;
     const machine = yield* MachineState;
     // The TLS key and certificate are checked against the recorded
@@ -262,8 +271,6 @@ export const startSourceServer = (
         message: "the source server host must be an unambiguous loopback address",
       });
     }
-    const maximumMetadataBytes = input.maximumMetadataBytes
-      ?? defaultMaximumMetadataBytes;
     const maximumBlobBytes = input.maximumBlobBytes ?? defaultMaximumBlobBytes;
     let blobRequests = 0;
     const server = createServer(

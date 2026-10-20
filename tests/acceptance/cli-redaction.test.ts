@@ -324,3 +324,16 @@ it.each(["${X}", "${env:X}", "{env:X}"])("redacts unquoted symbolic-prefix crede
   }
   expect(redactText(`API_KEY=${reference}`)).toBe(`API_KEY=${reference}`);
 });
+
+
+it.each(["true", "false", "null", "0", "1", "1234"])("does not promote JSON scalar %s into an output-wide secret", (scalar) => {
+  const output = redactText(`{"api_key":${scalar},"ordinary":${scalar},"path":"/opt/${scalar}view"}`);
+  expect(output).toContain('"api_key":[REDACTED]');
+  expect(output).toContain(`"ordinary":${scalar}`);
+  expect(output).toContain(`"path":"/opt/${scalar}view"`);
+});
+
+it("still masks quoted numeric credentials and unquoted PIN-like values everywhere", () => {
+  expect(redactText('{"api_key":"1234","echo":"1234"}')).not.toContain("1234");
+  expect(redactText("PASSWORD=1234 echo 1234")).not.toContain("1234");
+});

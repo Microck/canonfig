@@ -45,6 +45,9 @@ const SINGLE_COMMANDS = new Set([
 const HELP_OPTIONS = new Set(["--help", "-h", "--json"]);
 export const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
+  // Node can inherit PowerShell 7 module paths before launching Windows PowerShell.
+  // This subprocess needs only its own bundled modules, never user modules.
+  '$env:PSModulePath = "$PSHOME\\Modules"',
   "$path = [Environment]::GetEnvironmentVariable('CANONFIG_LOG_ACL_PATH')",
   "$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
   "$acl = New-Object System.Security.AccessControl.FileSecurity",

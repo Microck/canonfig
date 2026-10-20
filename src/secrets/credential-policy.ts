@@ -85,7 +85,13 @@ export const collectLiteralCredentialValues = (text: string): Array<string> => {
     if (authorization?.[1] !== undefined) values.add(authorization[1]);
   };
   for (const [pattern, valueGroup] of credentialAssignments) {
-    for (const match of text.matchAll(pattern)) collect(match[valueGroup]!);
+    for (const match of text.matchAll(pattern)) {
+      const encoded = match[valueGroup]!;
+      // JSON non-string scalars are masked at their assignment position, not
+      // treated as credential strings that poison unrelated output-wide text.
+      if (pattern === quotedCredentialKey && !encoded.startsWith('"')) continue;
+      collect(encoded);
+    }
   }
   // JSON allows escapes in property names too. Decode key/value pairs before
   // collecting; raw credential-name patterns cannot recognize those spellings.
@@ -93,7 +99,7 @@ export const collectLiteralCredentialValues = (text: string): Array<string> => {
   for (const match of text.matchAll(/("(?:\\.|[^"\\])*")\s*:\s*("(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/gu)) {
     try {
       const key: unknown = JSON.parse(match[1]!);
-      if (isString(key) && isSecretField(key)) collect(match[2]!);
+      if (isString(key) && isSecretField(key) && match[2]!.startsWith('"')) collect(match[2]!);
     } catch { /* Invalid JSON retains the ordinary text safeguards. */ }
   }
   for (const match of text.matchAll(privateKeyBlock)) collect(match[0]);

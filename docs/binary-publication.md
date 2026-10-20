@@ -145,3 +145,14 @@ suggestions to expose all metadata, redesign revision envelopes, and replace the
 whole executor with a streaming cache are not blanket authorization for those
 changes. Preserve current security guarantees and change only the boundaries
 required for a coherent byte pipeline.
+
+
+## Publication metadata admission
+
+Publication checks the full revision metadata against the 1 MiB protocol budget
+before storing a revision. Source servers reject a configured metadata limit below
+that budget at startup, rather than accepting publications that they cannot serve.
+The Source limit may be increased for collection responses; publication remains
+bounded by the default so ordinary followers can fetch an individual revision.
+Followers may still deliberately choose a smaller receive limit and reject a
+response locally. File blob bytes are budgeted separately from revision metadata.
