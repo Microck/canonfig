@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { expect, it } from "vitest";
-import { waitForPublishedVersion } from "../../tools/release/verify-published.mjs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { expect, it, vi } from "vitest";
+import { publicNpmContext, verifyPublishedRelease, waitForPublishedVersion } from "../../tools/release/verify-published.mjs";
 
 it("waits through registry processing instead of republishing", async () => {
   let time = 0, calls = 0;
@@ -38,4 +40,48 @@ it("keeps publication out of the independently rerunnable verification job", () 
   expect(verification).not.toContain("npm publish");
   expect(verification).not.toContain("gh release create");
   expect(verification).not.toContain("id-token: write");
+});
+
+it("isolates inherited scoped registries and global configuration", () => {
+  const root = mkdtempSync(join(tmpdir(), "canonfig-public-registry-test-"));
+  try {
+    const poison = join(root, "inherited.npmrc");
+    writeFileSync(poison, "@microck:registry=https://not-the-public-registry.invalid\n");
+    const context = publicNpmContext(root, {
+      ...process.env, NPM_CONFIG_GLOBALCONFIG: poison, npm_config_userconfig: poison,
+      "NPM_CONFIG_@MICROCK:REGISTRY": "https://also-not-public.invalid",
+      npm_config_registry: "https://not-public.invalid", NPM_TOKEN: "not-a-real-token",
+      NODE_AUTH_TOKEN: "not-a-real-token", npm_config_global: "true",
+    });
+    expect(context.env.NPM_CONFIG_GLOBALCONFIG).toBeUndefined();
+    expect(context.env["NPM_CONFIG_@MICROCK:REGISTRY"]).toBeUndefined();
+    expect(context.env.npm_config_registry).toBeUndefined();
+    expect(context.env.NPM_TOKEN).toBeUndefined();
+    expect(context.env.NODE_AUTH_TOKEN).toBeUndefined();
+    expect(readFileSync(context.env.npm_config_globalconfig, "utf8")).toBe("");
+    expect(readFileSync(context.env.npm_config_userconfig, "utf8")).toBe("");
+    const actual = spawnSync("npm", ["config", "get", "@microck:registry"], { ...context, encoding: "utf8" });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout.trim()).toBe("undefined");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("uses the same isolated public-registry context for polling and installation", async () => {
+  const calls: Array<{ args: string[]; options: ReturnType<typeof publicNpmContext> & { timeout: number } }> = [];
+  const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  try {
+    await verifyPublishedRelease("4.0.1", { run: (_command: string, args: string[], options: ReturnType<typeof publicNpmContext> & { timeout: number }) => {
+      calls.push({ args, options });
+      return { status: 0, stdout: args[0] === "view" ? '"4.0.1"' : args.includes("--version") ? "4.0.1\n" : "", stderr: "" };
+    } });
+    expect(calls).toHaveLength(3);
+    for (const call of calls.slice(0, 2)) {
+      expect(call.args).toContain("--registry=https://registry.npmjs.org");
+      expect(call.args).toContain("--@microck:registry=https://registry.npmjs.org");
+      expect(call.options.cwd).toBe(calls[0]!.options.cwd);
+      expect(call.options.env).toBe(calls[0]!.options.env);
+      expect(call.options.env.npm_config_globalconfig).toBeTruthy();
+      expect(call.options.env.npm_config_userconfig).toBeTruthy();
+    }
+  } finally { stdout.mockRestore(); }
 });
