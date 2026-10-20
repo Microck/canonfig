@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -52,3 +52,27 @@ it("reports a locked startup database as retryable human action", () => {
     expect(database.prepare("SELECT value FROM preserved").get()?.value).toBe("keep");
   } finally { database.close(); rmSync(home, { recursive: true, force: true }); }
 }, 30000);
+
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0).each([0o500, 0o000])(
+  "reports an inaccessible state directory (mode %i) without creating a database", (mode) => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-inaccessible-state-"));
+    const root = join(home, ".canonfig");
+    mkdirSync(root);
+    chmodSync(root, mode);
+    try {
+      for (const json of [false, true]) {
+        const result = spawnSync(process.execPath,
+          ["--import", "tsx", resolve(import.meta.dirname, "../../src/runtime/main.ts"), "status", ...(json ? ["--json"] : [])],
+          { encoding: "utf8", timeout: 20000, env: { ...process.env, HOME: home, XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state") } });
+        expect(result.status, result.stdout + result.stderr).toBe(3);
+        expect(result.stdout).toBe("");
+        if (json) expect(JSON.parse(result.stderr)).toMatchObject({ schema: "canonfig.cli/v1", command: "status", exitCode: 3 });
+        else expect(result.stderr).toContain("exit 3:");
+        expect(statSync(root).mode & 0o777).toBe(mode);
+      }
+      chmodSync(root, 0o700);
+      expect(existsSync(join(root, "state.sqlite"))).toBe(false);
+    } finally { chmodSync(root, 0o700); rmSync(home, { recursive: true, force: true }); }
+  }, 50000,
+);

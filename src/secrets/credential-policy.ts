@@ -29,7 +29,7 @@ const embeddedName = credentialName("(?![A-Za-z0-9_-])");
 const quotedValue = "\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'";
 export const assignedCredential = new RegExp(
   `(?<![A-Za-z0-9_-])(--)?(${embeddedName})(\\s*[=:]\\s*)`
-  + `(\\[REDACTED\\]|${quotedValue}|${embeddedEnvironmentReference}|[^\\s&,;\\]}]+)`,
+  + `(\\[REDACTED\\]|${quotedValue}|${embeddedEnvironmentReference}|(?:${environmentSymbol}|[^\\s&,;\\]}])+)`,
   "giu",
 );
 export const quotedCredentialKey = new RegExp(
@@ -43,7 +43,7 @@ export const spacedCredentialFlag = new RegExp(
 export const privateKeyBlock = /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----/gu;
 export const urlUserInformation = /\b([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/]*@/giu;
 export const authorizationCredential = new RegExp(
-  `(\\b(?:authorization|proxy-authorization)\\s*[:=]\\s*)((?:Bearer|Basic)\\s+(?:${environmentSymbol}(?=$|[\\s"',;}\\]])|[^\\s"',;}\\]]+))`,
+  `(\\b(?:authorization|proxy-authorization)\\s*[:=]\\s*)((?:Bearer|Basic)\\s+(?:${environmentSymbol}(?=$|[\\s"',;}\\]])|(?:${environmentSymbol}|[^\\s"',;}\\]])+))`,
   "giu",
 );
 export const credentialAssignments = [

@@ -99,22 +99,16 @@ const runMain = async (
     effect.Runtime.defaultTeardown(exit, (code) => onExit(observedSignalExitCode() ?? code));
   process.removeListener("SIGINT", exitBeforeRuntime);
   process.removeListener("SIGTERM", exitBeforeRuntime);
-  const [{ StateInitializationError }, { renderCliResult }] = await Promise.all([
-    import("./state-initialization.errors.ts"),
+  const [{ runtimeFailureResult }, { renderCliResult }] = await Promise.all([
+    import("./failure-output.ts"),
     import("../cli/render.ts"),
   ]);
   NodeRuntime.runMain(program(effect).pipe(effect.Effect.catchCause((cause) => {
     if (effect.Cause.hasInterruptsOnly(cause)) return effect.Effect.failCause(cause);
-    const error = effect.Cause.squash(cause);
-    const storageFailure = error instanceof StateInitializationError;
-    const exitCode = storageFailure ? CliExitCode.humanActionRequired : CliExitCode.internal;
+    const result = runtimeFailureResult(cause, command, process.env.CANONFIG_DEBUG === "1");
     return effect.Effect.sync(() => {
-      nodeCliIo.writeStderr(renderCliResult({
-        command,
-        message: storageFailure ? error.message : "Canonfig could not initialize or complete this command due to an internal error.",
-        exitCode,
-      }, format));
-      nodeCliIo.setExitCode(exitCode);
+      nodeCliIo.writeStderr(renderCliResult(result, format));
+      nodeCliIo.setExitCode(result.exitCode);
     });
   })), { teardown });
 };

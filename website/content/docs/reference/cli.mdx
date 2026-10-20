@@ -599,3 +599,12 @@ the Source rejected the credential or revoked the follower. A version mismatch
 between the Source and a follower is exit 2, never a signature or digest
 failure. The command log records the same status as the process exit, including
 143 for `SIGTERM`.
+
+### Opt-in runtime diagnostics
+
+Set `CANONFIG_DEBUG=1` when diagnosing an unexpected internal failure (exit 1).
+The normal error message remains fixed; the same result envelope includes a
+`data.diagnostic` cause/stack string, processed by the normal credential
+redactor. JSON mode still emits one document. Diagnostics are absent by default
+and are not added to expected state-storage failures. Review diagnostic text
+before sharing it: paths and other contextual information can remain sensitive.

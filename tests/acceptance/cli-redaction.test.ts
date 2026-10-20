@@ -314,3 +314,13 @@ it("preserves symbolic values and ordinary escaped JSON keys", () => {
   const text = '{"API_\\u004bEY":"${TEST_API_KEY}","na\\u006de":"ordinary-value"}' ;
   expect(redactText(text)).toBe(text);
 });
+
+it.each(["${X}", "${env:X}", "{env:X}"])("redacts unquoted symbolic-prefix credentials with literal suffixes: %s", (reference) => {
+  const value = `${reference}synthetic-literal-suffix`;
+  for (const text of [`API_KEY=${value}`, `Authorization: Bearer ${value}`, `password=${value} args: [${JSON.stringify(value)}]`]) {
+    const output = redactText(text);
+    expect(output).not.toContain("synthetic-literal-suffix");
+    expect(output).toContain("[REDACTED]");
+  }
+  expect(redactText(`API_KEY=${reference}`)).toBe(`API_KEY=${reference}`);
+});
