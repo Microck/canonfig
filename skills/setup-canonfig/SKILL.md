@@ -212,14 +212,14 @@ JSONC profile file that the operator reviews, checks with
 Read the selected branch and execute only approved stages. Node.js 24 or newer
 and npm are required.
 
-Preserve an existing installation. An in-place upgrade from 3.2.x to 4.0.0 is
+Preserve an existing installation. An in-place upgrade from 3.2.x to 4.0.1 is
 unsupported and unverified; establish a separate installation after backing up
 the old state (see [fresh-install guide](../../website/content/docs/how-to/upgrade.mdx)).
 Check installed help when it differs; do not downgrade silently. On a new
 installation, use:
 
 ```bash
-npm install --global @microck/canonfig@4.0.0
+npm install --global @microck/canonfig@4.0.1
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

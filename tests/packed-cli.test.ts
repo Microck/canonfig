@@ -507,10 +507,10 @@ describe("packed Canonfig executable", () => {
     const sourceStatus = invoke(sourceHome, ["status", "--json"]);
     expect(help).toMatchObject({ status: 0, stderr: "" });
     expect(help.stdout).toContain("Usage: canonfig");
-    expect(version).toEqual({ status: 0, stdout: "4.0.0\n", stderr: "" });
+    expect(version).toEqual({ status: 0, stdout: "4.0.1\n", stderr: "" });
     expect(versionJson).toMatchObject({ status: 0, stderr: "" });
     expect(JSON.parse(versionJson.stdout)).toMatchObject({
-      packageVersion: "4.0.0",
+      packageVersion: "4.0.1",
       sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(sourceStatus).toMatchObject({ status: 0, stderr: "" });

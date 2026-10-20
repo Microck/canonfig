@@ -39,10 +39,10 @@ Install only when necessary, then create the Source bootstrap plan. `--file`
 names approved tool-discovery inputs only; it never selects synced content.
 
 For an existing 3.2.x installation, do not replace its package or state.
-Set up 4.0.0 separately using the [fresh-install guide](../../../website/content/docs/how-to/upgrade.mdx).
+Set up 4.0.1 separately using the [fresh-install guide](../../../website/content/docs/how-to/upgrade.mdx).
 
 ```bash
-npm install --global @microck/canonfig@4.0.0
+npm install --global @microck/canonfig@4.0.1
 canonfig --version
 canonfig setup plan --role source --file AGENTS.md --intent "prepare source"
 canonfig setup approve --approver operator
