@@ -55,7 +55,10 @@ describe("credential-safe CLI output", () => {
 
   it("redacts quoted values and URL credentials in free text", () => {
     const text = 'failed --password "test-only two words" https://user:pass@example.test/?api_key=test-only-key&port=9000';
-    expect(redactText(text)).toBe('failed --password [REDACTED] https://[REDACTED]@example.test/?api_key=[REDACTED]&port=9000');
+    // The URL password is literally 'pass': do not exempt its occurrence in
+    // an apparent flag name from known-secret masking. Native argv is untouched.
+    expect(redactText(text)).toBe('failed --[REDACTED]word [REDACTED] https://[REDACTED]@example.test/?api_key=[REDACTED]&port=9000');
+    expect(redactText(text)).not.toContain('pass');
     expect(redactText('{"password":"test-only-json","port":9000}'))
       .toBe('{"password":"[REDACTED]","port":9000}');
   });
@@ -129,6 +132,16 @@ describe("credential-safe CLI output", () => {
     const output = redactText(JSON.stringify({ password: "a", note: "a".repeat(256 * 1024) }));
     expect(output.length).toBeLessThan(100);
     expect(output).toContain('"note":"[REDACTED]"');
+  });
+
+  it("redacts a literal even when it equals an assignment prefix", () => {
+    expect(redactText("token: password=\nnote: password=x")).not.toContain("password=");
+  });
+
+  it("handles many repeated assignments without expanding their values", () => {
+    const output = redactText("password=a\n".repeat(5000));
+    expect(output.length).toBeLessThan(200000);
+    expect(output).not.toContain("=a");
   });
 
   it("scrubs a known value regardless of the surrounding field name", () => {

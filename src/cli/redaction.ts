@@ -34,22 +34,23 @@ const renderRanges = (text: string, ranges: Array<RedactionRange>): string => {
 const literalRanges = (
   text: string,
   secrets: ReadonlyArray<string>,
-  prefixes: ReadonlyArray<RedactionRange> = [],
 ): Array<RedactionRange> => {
   const markers: Array<RedactionRange> = [];
   for (let start = text.indexOf(replacement); start !== -1;
     start = text.indexOf(replacement, start + replacement.length)) {
     markers.push({ start, end: start + replacement.length });
   }
-  const protectedRanges = [...markers, ...prefixes];
   const ranges = [...markers];
   for (const secret of new Set(secrets)) {
     if (secret.length === 0 || secret === replacement) continue;
     let pending: RedactionRange | undefined;
+    let markerIndex = 0;
     for (let start = text.indexOf(secret); start !== -1;
       start = text.indexOf(secret, start + 1)) {
       const end = start + secret.length;
-      if (protectedRanges.some((range) => start >= range.start && end <= range.end)) continue;
+      while (markerIndex < markers.length && markers[markerIndex]!.end <= start) markerIndex += 1;
+      const marker = markers[markerIndex];
+      if (marker !== undefined && start >= marker.start && end <= marker.end) continue;
       // Coalesce before allocating: a megabyte of repeated one-character
       // credentials must not allocate a million ranges or expand tenfold.
       if (pending !== undefined && start <= pending.end) pending.end = Math.max(pending.end, end);
@@ -86,7 +87,6 @@ export const redactText = (
   secrets: ReadonlyArray<string> = [],
 ): string => {
   const ranges: Array<RedactionRange> = [];
-  const prefixes: Array<RedactionRange> = [];
   for (const match of text.matchAll(privateKeyBlock)) {
     ranges.push({ start: match.index, end: match.index + match[0].length });
   }
@@ -100,7 +100,6 @@ export const redactText = (
       const value = match[valueGroup]!;
       const end = match.index + match[0].length;
       const start = end - value.length;
-      prefixes.push({ start: match.index, end: start });
       if (isEncodedEnvironmentReference(value)) continue;
       // Preserve JSON string delimiters; other assignment forms retain their
       // established unquoted redaction marker. All offsets refer to original text.
@@ -110,7 +109,7 @@ export const redactText = (
   }
   return renderRanges(text, [
     ...ranges,
-    ...literalRanges(text, [...collectLiteralCredentialValues(text), ...secrets], prefixes),
+    ...literalRanges(text, [...collectLiteralCredentialValues(text), ...secrets]),
   ]);
 };
 
