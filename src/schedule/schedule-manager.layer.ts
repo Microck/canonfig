@@ -1,3 +1,4 @@
+import { installedBindingProblem } from "../machine/installed-scheduler-command.ts";
 import { userInfo } from "node:os";
 import { dirname } from "node:path";
 import { Effect, Layer } from "effect";
@@ -184,10 +185,15 @@ const statusFrom = (
   schedule: NormalizedSyncSchedule,
   definition: RenderedSchedulerJob,
   inspection: SchedulerInspection,
-): ScheduleStatus => {
-  const state = stateOf(inspection);
+): Effect.Effect<ScheduleStatus> => Effect.gen(function*() {
+  const bindingChecked = inspection.installed && inspection.bindingInspected === true;
+  const bindingProblem = bindingChecked
+    ? yield* Effect.promise(() => installedBindingProblem(inspection.installedCommand)) : undefined;
+  const nativeState = stateOf(inspection);
+  const state = bindingProblem !== undefined && (nativeState === "current" || nativeState === "drifted")
+    ? "drifted" : nativeState;
   const drift = state === "drifted"
-    ? inspection.calendarMatches === true ? "binding" as const : "calendar" as const
+    ? bindingProblem !== undefined || inspection.calendarMatches === true ? "binding" as const : "calendar" as const
     : undefined;
   const nextRun = state === "current"
     ? nextScheduledRun(schedule) ?? inspection.nextElapse
@@ -207,7 +213,9 @@ const statusFrom = (
         return macosTimezoneRecovery;
       case "drifted":
         return drift === "binding"
-          ? "the native job keeps its calendar but was rendered by a different Canonfig build (runtime or entrypoint); the next `canonfig sync --apply` re-renders it"
+          ? `${bindingProblem ?? (bindingChecked
+            ? "the calendar is unchanged and the installed runtime/entrypoint files are available, but the binding differs from this Canonfig build"
+            : "the installed binding differs and its runtime/entrypoint availability is unverified")}. Manually run \`canonfig sync --apply\` or \`canonfig schedule set\` from the current installation to repair it; do not wait for the scheduled job to repair itself`
           : "the native job was changed outside Canonfig; the next `canonfig sync --apply` or `canonfig schedule set` restores the selected calendar";
       case "current":
         return nextRun === undefined
@@ -234,6 +242,7 @@ const statusFrom = (
   ];
   return {
     state,
+    bindingUsable: bindingChecked ? bindingProblem === undefined : undefined,
     platform: definition.platform,
     schedule,
     definition,
@@ -249,7 +258,7 @@ const statusFrom = (
     missedRun,
     warnings,
   };
-};
+});
 
 const snapshotsEqual = (
   left: ScheduleSnapshot,
@@ -331,7 +340,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
         > {
           const desired = yield* definition(input);
           const inspection = yield* machine.inspectSchedulerJob(desired.definition);
-          return statusFrom(desired.schedule, desired.definition, inspection);
+          return yield* statusFrom(desired.schedule, desired.definition, inspection);
         },
       );
 
@@ -384,7 +393,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           }
           const desired = yield* definition(input);
           const inspection = yield* machine.inspectSchedulerJob(desired.definition);
-          const before = statusFrom(desired.schedule, desired.definition, inspection);
+          const before = yield* statusFrom(desired.schedule, desired.definition, inspection);
           if (inspection.timezoneChangedSinceBoot) {
             return yield* new ScheduleHumanActionRequiredError({
               action: "arm the macOS schedule after a timezone change",
@@ -403,7 +412,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           // A stopped, disabled, or deleted job is restored here: an explicit
           // install is the user's decision, unlike the post-apply reconciler.
           yield* machine.installSchedulerJob(desired.definition);
-          const after = statusFrom(
+          const after = yield* statusFrom(
             desired.schedule,
             desired.definition,
             yield* machine.inspectSchedulerJob(desired.definition),
