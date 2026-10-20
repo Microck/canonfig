@@ -133,10 +133,13 @@ const commandName = (arguments_: ReadonlyArray<string>): string => {
   const positional = arguments_.filter((argument) => argument !== "--json");
   const first = positional[0];
   const second = positional[1];
-  if ((positional.includes("--version") || positional.includes("-V"))
-    && !isPublicEnrollmentCommand(arguments_)) return "version";
-  if (first === undefined || first === "--help" || first === "-h") return "help";
-  if (first === "--version" || first === "-V" || first === "-v") return "version";
+  const exposedInvitation = isPublicEnrollmentCommand(arguments_);
+  if (!exposedInvitation && (positional.includes("--help") || positional.includes("-h"))) {
+    return first !== undefined && COMMAND_ACTIONS.get(first)?.has("help") === true ? `${first}.help` : "help";
+  }
+  if ((positional.includes("--version") || positional.includes("-V")) && !exposedInvitation) return "version";
+  if (first === undefined) return arguments_.length === 0 ? "help" : "unknown";
+  if (first === "-v") return "version";
   if (SINGLE_COMMANDS.has(first)) return first;
   const actions = COMMAND_ACTIONS.get(first);
   if (second !== undefined && actions?.has(second) === true) {

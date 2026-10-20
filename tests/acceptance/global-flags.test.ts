@@ -51,3 +51,19 @@ it.each([[], ["--stdin"]])("logs version-only enrollment calls as version: %j", 
     expect(entries.every((entry) => entry.command === "version")).toBe(true);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+
+it.each([
+  [["secrets", "--help", "--version"], "secrets.help", 0],
+  [["status", "--help", "--version"], "help", 0],
+  [["--json"], "unknown", 2],
+  [["--json", "--json"], "unknown", 2],
+] as const)("logs option precedence for %j", (args, command, exitCode) => {
+  const home = mkdtempSync(join(tmpdir(), "canonfig-option-log-"));
+  try {
+    const result = invoke(home, args);
+    expect(result.status, result.stdout + result.stderr).toBe(exitCode);
+    const entries = readFileSync(join(home, "command.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(entries.every((entry) => entry.command === command)).toBe(true);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
