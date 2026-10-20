@@ -433,7 +433,9 @@ const evaluateTunnelCommand = (
   rest: ReadonlyArray<string>,
   format: CliOutputFormat,
 ): CliOutcome => {
-  if (action === "status" && rest.length === 0) {
+  if (action === "status") {
+    const options = parseOptions(rest, new Set(), new Set());
+    if (options.positionals.length > 0) return invalid("canonfig tunnel status accepts no arguments");
     return command({ _tag: "TunnelStatus" }, format);
   }
   if (action === "stop") {
@@ -559,7 +561,11 @@ const evaluateSourceCommand = (
   rest: ReadonlyArray<string>,
   format: CliOutputFormat,
 ): CliOutcome => {
-  if (action === "init" && rest.length === 0) return command({ _tag: "SourceInit" }, format);
+  if (action === "init") {
+    const options = parseOptions(rest, new Set(), new Set());
+    if (options.positionals.length > 0) return invalid("canonfig source init accepts no arguments");
+    return command({ _tag: "SourceInit" }, format);
+  }
   if (action === "scan") {
     const options = parseOptions(rest, new Set(["--file"]), new Set());
     if (options.positionals.length > 0) return invalid("source scan accepts only --file inputs");
@@ -681,10 +687,11 @@ const evaluateSourceCommand = (
     }, format);
   }
   if (action === "revoke") {
-    if (rest.length !== 1) return invalid("Usage: canonfig source revoke <follower-id>");
+    const options = parseOptions(rest, new Set(), new Set());
+    if (options.positionals.length !== 1) return invalid("Usage: canonfig source revoke <follower-id>");
     return command({
       _tag: "SourceRevoke",
-      follower: decodeOption(Schema.decodeUnknownOption(FollowerId), rest[0]!, "follower id"),
+      follower: decodeOption(Schema.decodeUnknownOption(FollowerId), options.positionals[0]!, "follower id"),
     }, format);
   }
   return invalid(`Unknown source command: ${action ?? ""}`);
@@ -695,19 +702,27 @@ const evaluateProfileCommand = (
   rest: ReadonlyArray<string>,
   format: CliOutputFormat,
 ): CliOutcome => {
-  if (action === "list" && rest.length === 0) return command({ _tag: "ProfileList" }, format);
-  if (action === "show" && rest.length === 1) {
+  if (action === "list") {
+    const options = parseOptions(rest, new Set(), new Set());
+    if (options.positionals.length > 0) return invalid("canonfig profile list accepts no arguments");
+    return command({ _tag: "ProfileList" }, format);
+  }
+  if (action === "show") {
+    const options = parseOptions(rest, new Set(), new Set());
+    if (options.positionals.length !== 1) return invalid("Usage: canonfig profile show <revision-id>");
     return command({
       _tag: "ProfileShow",
-      revision: decodeOption(Schema.decodeUnknownOption(ProfileRevisionId), rest[0]!, "profile revision id"),
+      revision: decodeOption(Schema.decodeUnknownOption(ProfileRevisionId), options.positionals[0]!, "profile revision id"),
     }, format);
   }
-  if (action === "select" && rest.length === 1) {
+  if (action === "select") {
+    const options = parseOptions(rest, new Set(), new Set());
+    if (options.positionals.length !== 1) return invalid("Usage: canonfig profile select <profile-id>");
     return command({
       _tag: "ProfileSelect",
       profile: decodeOption(
         Schema.decodeUnknownOption(ProfileId),
-        rest[0]!,
+        options.positionals[0]!,
         "profile id",
       ),
     }, format);
@@ -720,15 +735,19 @@ const evaluateOverlayCommand = (
   rest: ReadonlyArray<string>,
   format: CliOutputFormat,
 ): CliOutcome => {
-  if (action === "list" && rest.length === 0) {
+  if (action === "list") {
+    const options = parseOptions(rest, new Set(), new Set());
+    if (options.positionals.length > 0) return invalid("canonfig overlay list accepts no arguments");
     return command({ _tag: "OverlayList" }, format);
   }
-  if (action === "remove" && rest.length === 1) {
+  if (action === "remove") {
+    const options = parseOptions(rest, new Set(), new Set());
+    if (options.positionals.length !== 1) return invalid("Usage: canonfig overlay remove <resource-id>");
     return command({
       _tag: "OverlayRemove",
       resource: decodeOption(
         Schema.decodeUnknownOption(ResourceId),
-        rest[0]!,
+        options.positionals[0]!,
         "resource id",
       ),
     }, format);
@@ -854,6 +873,10 @@ const evaluateCommand = (
 ): CliOutcome => {
   const [area, action, ...rest] = arguments_;
   try {
+    const groups = new Set(["source", "follower", "profile", "overlay", "tunnel", "setup", "agent", "schedule"]);
+    if (area !== undefined && groups.has(area) && action === undefined) {
+      return invalid(`Missing ${area} command`);
+    }
     if (area === "source") return evaluateSourceCommand(action, rest, format);
     // The positional invitation below serves the private `--stdin`
     // redispatch built in main.ts from in-memory argv. Real process argv
@@ -982,6 +1005,7 @@ const evaluateCommand = (
     if (area === "schedule") {
       return evaluateScheduleCommand(action, rest, format);
     }
+    if (area === "agent" || area === "follower") return invalid(`Unknown ${area} command: ${action}`);
     return invalid(`Unknown argument: ${area ?? ""}`);
   } catch (error) {
     return invalid(error instanceof Error ? error.message : "Invalid command input");

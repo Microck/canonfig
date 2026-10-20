@@ -343,3 +343,31 @@ it("masks non-string JSON values under escaped credential keys without breaking 
   const output = redactText(String.raw`{"api_\u006bey":1234,"ordinary":1234,"enabled":true}`);
   expect(JSON.parse(output)).toEqual({ api_key: "[REDACTED]", ordinary: 1234, enabled: true });
 });
+
+
+it.each(["agent.harness.get", "agent.harness.set"])("preserves public binding names only in %s", (command) => {
+  const data = {
+    executable: "/usr/bin/npm", allowedPaths: ["/home/me/npm-cache"], allowedExecutables: ["npm"],
+    secretBindings: [{ name: "NPM_TOKEN", secret: "npm" }, { name: "MCP_TOKEN", secret: "shared-mcp-token" }],
+    nested: { secret: "test-only-sensitive-value" },
+  };
+  for (const format of ["human", "json"] as const) {
+    const output = renderCliResult({ command, message: "Configured npm", exitCode: 0, data }, format);
+    expect(output).toContain("/usr/bin/npm");
+    expect(output).toContain("/home/me/npm-cache");
+    expect(output).toContain("shared-mcp-token");
+    expect(output).not.toContain("test-only-sensitive-value");
+    if (format === "json") expect(JSON.parse(output).data.secretBindings).toEqual(data.secretBindings);
+    else expect(output).toContain("secret: npm");
+  }
+});
+
+it("does not exempt unrelated, nested, or explicitly known secrets", () => {
+  const data = { secretBindings: [{ name: "MCP_TOKEN", secret: "test-only-bound-name", nested: { secret: "test-only-nested" } }] };
+  const unrelated = renderCliResult({ command: "status", message: "status", exitCode: 0, data }, "json");
+  expect(unrelated).not.toContain("test-only-bound-name");
+  const harness = renderCliResult({ command: "agent.harness.get", message: "harness", exitCode: 0, data }, "json", ["test-only-bound-name"]);
+  expect(harness).not.toContain("test-only-bound-name");
+  expect(harness).not.toContain("test-only-nested");
+  expect(sanitizeCliData(data)).toMatchObject({ secretBindings: [{ secret: "[REDACTED]" }] });
+});
