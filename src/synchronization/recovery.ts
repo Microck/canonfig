@@ -473,7 +473,7 @@ export const recoverSynchronizationPlan = (
       if (state.action.detail.kind !== "remove-resource" || reference === undefined) continue;
       const entries = yield* rollbackPreimages(state.context, reference).pipe(Effect.mapError((error) =>
         integrityError(recovery, `cannot inspect ${state.action.id}: ${String(error)}`)));
-      for (const entry of entries) earlierRemovalPreimages.set(entry.path, entry);
+      for (const [key, entry] of entries) earlierRemovalPreimages.set(key, entry);
     }
     const laterPreimages: RollbackProjection = new Map();
     const removalsWithSuccessorWrites = new Set<ActionId>();

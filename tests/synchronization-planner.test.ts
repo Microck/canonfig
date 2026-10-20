@@ -1234,6 +1234,17 @@ describe("transfer and apply separation", () => {
     expect(error._tag).toBe(expectedTag);
   });
 
+  it("rejects authored traversal even when a resolved observation hides it", () => {
+    const subject = { ...resource("file", "file", "replace", [], [blobA]), target: "~/../escape" };
+    const base = plannerInput([subject]);
+    const input = { ...base, observedState: { ...base.observedState,
+      resources: base.observedState.resources.map((entry) => ({ ...entry, resolvedTarget: "/home/escape" })),
+    } };
+    const result = Effect.runSync(Effect.result(planSynchronization(input)));
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(result.failure._tag).toBe("PlannerInvalidResourcePathError");
+  });
+
   it("uses the follower platform case rules before planning a mirror", () => {
     const subject = resource("tree", "directory", "mirror-owned", [], [blobA]);
     const desired = {

@@ -342,16 +342,20 @@ const validateResourceInputs = (
     return {
       id: resource.id,
       kind: resource.kind,
-      target: indexed.resolvedTargets.get(resource.id) ?? resource.target,
+      target: resource.target,
       entries,
     };
   });
   // Active profile claims still must be mutually valid. Historical claims are
   // validated individually: their overlap is a lifecycle transition, not an
   // invalid Source profile, and is sequenced below.
+  const resolvedClaims = claims.map((claim) => ({ ...claim,
+    target: indexed.resolvedTargets.get(claim.id) ?? claim.target,
+  }));
   const pathErrors = [
-    ...validateResourcePathConflicts(claims.filter((claim) => !retired.has(claim.id)), platform),
-    ...claims.filter((claim) => retired.has(claim.id)).flatMap((claim) => validateResourcePathConflicts([claim], platform)),
+    // Resolve aliases for conflicts, never to erase invalid authored syntax.
+    ...claims.flatMap((claim) => validateResourcePathConflicts([claim], platform)),
+    ...validateResourcePathConflicts(resolvedClaims.filter((claim) => !retired.has(claim.id)), platform),
   ];
   const pathError = pathErrors[0];
   if (pathError?._tag === "InvalidTargetError") {

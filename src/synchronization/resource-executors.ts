@@ -359,7 +359,7 @@ const sameMachinePath = (
       : left.absolute === right.absolute
   );
 
-const machinePathKey = (path: MachinePath): string =>
+export const machinePathKey = (path: MachinePath): string =>
   `${path.platform}:${path.platform === "windows"
     ? path.absolute.toLowerCase()
     : path.absolute}`;
@@ -1043,8 +1043,12 @@ const intendedStates = (
  */
 export type RollbackProjection = Map<string, StoredFile>;
 
-export const rollbackPreimages = (context: ResourceExecutionContext, reference: string) =>
-  loadRollbackMaterial(context, reference).pipe(Effect.map(({ stored }) => stored));
+export const rollbackPreimages = (context: ResourceExecutionContext, reference: string) => Effect.gen(function*() {
+  const { stored } = yield* loadRollbackMaterial(context, reference);
+  const result: RollbackProjection = new Map();
+  for (const entry of stored) result.set(machinePathKey(yield* targetPath(entry.path)), entry);
+  return result;
+});
 
 export const inspectRollbackTargets = (
   context: ResourceExecutionContext,
@@ -1060,17 +1064,21 @@ export const inspectRollbackTargets = (
   const intended = yield* intendedStates(context, stored, root, reference);
   const edited: Array<string> = [];
   const unprojectedPreimages: Array<string> = [];
+  const preimages: RollbackProjection = new Map();
   let successorWrites = false;
   for (const entry of stored) {
-    const current = yield* captureStoredFile(yield* targetPath(entry.path));
+    const path = yield* targetPath(entry.path);
+    const key = machinePathKey(path);
+    preimages.set(key, entry);
+    const current = yield* captureStoredFile(path);
     const after = intended.get(entry.path);
     // Only retired removals can be followed by an overlapping active resource.
     // Validate successors first, then inspect the removal as if those writes
     // were undone. No disk mutation occurs during this all-or-nothing check.
     const projected = context.action.detail.kind === "remove-resource"
-      ? laterPreimages.get(entry.path) : undefined;
+      ? laterPreimages.get(key) : undefined;
     const observed = projected ?? current;
-    const restored = restoredPreimages?.get(entry.path);
+    const restored = restoredPreimages?.get(key);
     if (!sameContent(observed, entry) && (after === undefined || !sameContent(observed, after))
       && (restored === undefined || !sameContent(current, restored))) {
       edited.push(entry.path);
@@ -1082,7 +1090,7 @@ export const inspectRollbackTargets = (
   }
   // Never re-delete successor data to repair a separately restored old path.
   if (successorWrites) edited.push(...unprojectedPreimages);
-  if (edited.length === 0) for (const entry of stored) laterPreimages.set(entry.path, entry);
+  if (edited.length === 0) for (const [key, entry] of preimages) laterPreimages.set(key, entry);
   return { edited, successorWrites };
 });
 

@@ -1,3 +1,4 @@
+import { machinePathKey } from "../../src/synchronization/resource-executors.ts";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -362,6 +363,17 @@ const runRows = (value: Fixture) => {
   database.close();
   return rows;
 };
+
+describe("rollback projection path identity", () => {
+  it("folds Windows case aliases but preserves case on POSIX", () => {
+    const first = machinePathKey({ platform: "windows", absolute: String.raw`C:\Users\Follower\Settings.json` });
+    const successor = machinePathKey({ platform: "windows", absolute: String.raw`c:\users\follower\settings.JSON` });
+    const projection = new Map([[successor, "validated successor preimage"]]);
+    expect(projection.get(first)).toBe("validated successor preimage");
+    expect(machinePathKey({ platform: "linux", absolute: "/home/Settings.json" }))
+      .not.toBe(machinePathKey({ platform: "linux", absolute: "/home/settings.json" }));
+  });
+});
 
 describe("interrupted ownership handover", () => {
   it.each(["running", "succeeded", "rollback interruption", "rollback local edit", "local edit"] as const)("recovers successor state %s without deleting its writes", async (state) => {
