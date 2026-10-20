@@ -329,7 +329,7 @@ if (args[0] === "tool" && args[1] === "list") {
     }
   });
 
-  it.each(["rename", "same-content rename", "directory", "directory rename", "deleted file", "local edit"])("safely hands an existing target to a new resource: %s", async (change) => {
+  it.each(["rename", "same-content rename", "alias rename", "directory", "directory rename", "deleted file", "local edit"])("safely hands an existing target to a new resource: %s", async (change) => {
     const root = mkdtempSync(join(tmpdir(), "canonfig-handover-"));
     directories.push(root);
     const followerRoot = join(root, "follower");
@@ -369,7 +369,7 @@ if (args[0] === "tool" && args[1] === "list") {
       })));
     };
     const file = (id: string, content: string): ProfileResourceInput => ({
-      id, kind: "file", policy: "replace-if-unmodified", target, dependsOn: [],
+      id, kind: "file", policy: "replace-if-unmodified", target: change === "alias rename" && id === "old-name" ? "~/managed/AGENTS.md" : target, dependsOn: [],
       spec: { kind: "file", content, executable: false, mode: 0o600 },
       verify: { method: "digest", digest: sha256Hex(content) },
     });
@@ -407,7 +407,7 @@ if (args[0] === "tool" && args[1] === "list") {
     await writeFile(join(dirname(target), "local.txt"), "Unowned local data\n");
     if (change === "local edit") await writeFile(target, "Local edit\n");
     if (change === "deleted file") await unlink(target);
-    const nextContent = change === "same-content rename" ? "Source one\n" : "Source two\n";
+    const nextContent = change === "same-content rename" || change === "alias rename" ? "Source one\n" : "Source two\n";
     await publish([change === "directory" || change === "directory rename" ? directory("new-name", nextContent) : file("new-name", nextContent)]);
     const plan = await sync("plan");
     if (change === "deleted file") await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });

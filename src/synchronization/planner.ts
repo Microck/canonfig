@@ -72,6 +72,7 @@ interface IndexedPlannerInput {
   readonly desired: ReadonlyMap<string, DesiredResource>;
   readonly verification: ReadonlyMap<string, VerificationInput>;
   readonly observed: ReadonlyMap<string, ObservedResourceState>;
+  readonly resolvedTargets: ReadonlyMap<string, string>;
   readonly overlays: ReadonlyMap<string, ReadonlyArray<string>>;
   readonly applied: ReadonlyMap<string, AppliedResourceRecord>;
   readonly blobs: ReadonlyMap<string, AvailableBlob>;
@@ -165,7 +166,10 @@ const indexInput = (input: SynchronizationPlannerInput): IndexResult => {
   if (isDuplicateInputError(blobs)) return { ok: false, error: blobs };
   return {
     ok: true,
-    indexed: { resources, desired, verification, observed, overlays, applied, blobs },
+    indexed: { resources, desired, verification, observed, overlays, applied, blobs,
+      resolvedTargets: new Map(input.observedState.resources.flatMap((entry) =>
+        entry.resolvedTarget === undefined ? [] : [[entry.resource, entry.resolvedTarget] as const])),
+    },
   };
 };
 
@@ -338,7 +342,7 @@ const validateResourceInputs = (
     return {
       id: resource.id,
       kind: resource.kind,
-      target: resource.target,
+      target: indexed.resolvedTargets.get(resource.id) ?? resource.target,
       entries,
     };
   });
@@ -512,7 +516,7 @@ const buildPlan = (
     const observed = indexed.observed.get(resource.id);
     if (desired === undefined || observed === undefined) continue;
     const retired = removedResources.has(resource.id);
-    const target = normalize(resource.target);
+    const target = normalize(indexed.resolvedTargets.get(resource.id) ?? resource.target);
     const removed = (path: string): boolean => {
       const segments = path.split("/");
       while (segments.length > 0) {
@@ -526,7 +530,7 @@ const buildPlan = (
     const projected: ObservedResourceState = retired || !filesystem(resource) ? observed
       : removed(target) ? { state: "absent" }
       : observed.state === "directory" ? { ...observed,
-        files: observed.files.filter((file) => !removed(normalize(`${resource.target}/${file.path}`))),
+        files: observed.files.filter((file) => !removed(normalize(`${target}/${file.path}`))),
       } : observed;
     const context = {
       resource,
@@ -538,11 +542,11 @@ const buildPlan = (
     };
     let drafts = retired ? planRemoved(context) : planResource(context);
     const successors = retired && filesystem(resource) ? activeResources.filter((next) =>
-      filesystem(next) && overlaps(target, normalize(next.target))) : [];
+      filesystem(next) && overlaps(target, normalize(indexed.resolvedTargets.get(next.id) ?? next.target))) : [];
     if (successors.length > 0) {
       const retainsContent = resource.policy === "append-local" || resource.kind === "config" && resource.policy === "merge";
       const retainedDirectoryRoot = (resource.kind === "directory" || resource.kind === "skill")
-        && successors.some((next) => next.kind !== "directory" && next.kind !== "skill" && normalize(next.target) === target);
+        && successors.some((next) => next.kind !== "directory" && next.kind !== "skill" && normalize(indexed.resolvedTargets.get(next.id) ?? next.target) === target);
       if (drafts.length === 0 || observed.state !== "absent" && (retainsContent || retainedDirectoryRoot)) {
         drafts = [{ kind: "human-action", detail: {
           kind: "human-action",
@@ -582,7 +586,7 @@ const buildPlan = (
     if (retired) for (const draft of drafts) {
       if (draft.detail.kind !== "remove-resource") continue;
       if (resource.kind === "directory" || resource.kind === "skill") {
-        for (const path of draft.detail.paths) removedPaths.add(normalize(`${resource.target}/${path}`));
+        for (const path of draft.detail.paths) removedPaths.add(normalize(`${target}/${path}`));
       } else if (resource.policy !== "append-local" && !(resource.kind === "config" && resource.policy === "merge")) {
         removedPaths.add(target);
       }
