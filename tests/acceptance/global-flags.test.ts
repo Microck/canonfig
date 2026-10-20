@@ -39,3 +39,15 @@ describe("global CLI flags", () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   }, 30000);
 });
+
+
+it.each([[], ["--stdin"]])("logs version-only enrollment calls as version: %j", (...options) => {
+  const home = mkdtempSync(join(tmpdir(), "canonfig-enrollment-version-"));
+  try {
+    const result = invoke(home, ["follower", "enroll", ...options, "--version"]);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(programVersion);
+    const entries = readFileSync(join(home, "command.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(entries.every((entry) => entry.command === "version")).toBe(true);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

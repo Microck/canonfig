@@ -1,3 +1,4 @@
+import { isPublicEnrollmentCommand } from "../runtime/enrollment-input.ts";
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
@@ -133,7 +134,7 @@ const commandName = (arguments_: ReadonlyArray<string>): string => {
   const first = positional[0];
   const second = positional[1];
   if ((positional.includes("--version") || positional.includes("-V"))
-    && !(first === "follower" && second === "enroll")) return "version";
+    && !isPublicEnrollmentCommand(arguments_)) return "version";
   if (first === undefined || first === "--help" || first === "-h") return "help";
   if (first === "--version" || first === "-V" || first === "-v") return "version";
   if (SINGLE_COMMANDS.has(first)) return first;
