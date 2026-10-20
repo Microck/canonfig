@@ -33,7 +33,7 @@ export const assignedCredential = new RegExp(
   "giu",
 );
 export const quotedCredentialKey = new RegExp(
-  `("(?:${embeddedName})")(\\s*:\\s*)("(?:\\\\.|[^"\\\\])*"|true|false|null|-?\\d+(?:\\.\\d+)?)`,
+  `("(?:${embeddedName})")(\\s*:\\s*)("(?:\\\\.|[^"\\\\])*"|true|false|null|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)`,
   "giu",
 );
 export const spacedCredentialFlag = new RegExp(

@@ -14,20 +14,24 @@ import {
 
 const replacement = "[REDACTED]";
 
-interface RedactionRange { start: number; end: number }
+interface RedactionRange { start: number; end: number; quoted?: boolean }
 
 const renderRanges = (text: string, ranges: Array<RedactionRange>): string => {
   ranges.sort((left, right) => left.start - right.start || right.end - left.end);
   const merged: Array<RedactionRange> = [];
   for (const range of ranges) {
     const previous = merged.at(-1);
-    if (previous !== undefined && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
+    if (previous !== undefined && range.start <= previous.end) {
+      if (range.start === previous.start && range.end === previous.end) previous.quoted ||= range.quoted === true;
+      else if (range.end > previous.end) previous.quoted = false;
+      previous.end = Math.max(previous.end, range.end);
+    }
     else merged.push({ ...range });
   }
   let cursor = 0;
   let result = "";
   for (const range of merged) {
-    result += text.slice(cursor, range.start) + replacement;
+    result += text.slice(cursor, range.start) + (range.quoted ? JSON.stringify(replacement) : replacement);
     cursor = range.end;
   }
   return result + text.slice(cursor);
@@ -106,8 +110,21 @@ export const redactText = (
       // Preserve JSON string delimiters; other assignment forms retain their
       // established unquoted redaction marker. All offsets refer to original text.
       const quotedJson = pattern === quotedCredentialKey && value.startsWith('"') && value.endsWith('"');
-      ranges.push({ start: start + (quotedJson ? 1 : 0), end: end - (quotedJson ? 1 : 0) });
+      ranges.push({ start: start + (quotedJson ? 1 : 0), end: end - (quotedJson ? 1 : 0), quoted: pattern === quotedCredentialKey && !quotedJson });
     }
+  }
+  // Escaped JSON keys need decoding too. Non-string values are not collected
+  // as secret strings, so mask their own token without touching other scalars.
+  for (const match of text.matchAll(/("(?:\\.|[^"\\])*")\s*:\s*("(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/gu)) {
+    const encoded = match[2]!;
+    if (encoded.startsWith('"')) continue;
+    try {
+      const key = Schema.decodeUnknownSync(Schema.String)(JSON.parse(match[1]!));
+      if (isSecretField(key)) {
+        const end = match.index + match[0].length;
+        ranges.push({ start: end - encoded.length, end, quoted: true });
+      }
+    } catch { /* Ordinary text assignment safeguards remain active. */ }
   }
   const known = [...new Set([...collectLiteralCredentialValues(text), ...secrets])]
     .filter((value) => value.length > 0 && value !== replacement);
