@@ -252,7 +252,7 @@ describe("native MCP environment references", () => {
 
   it("writes each client's documented reference syntax without resolving secrets", async () => {
     const root = await referenceFixture();
-    const plan = await new HarnessConfigurationCompiler().plan({ root, strict: true });
+    const plan = await new HarnessConfigurationCompiler().plan({ root, targets: ["codex", "cursor", "opencode"], strict: true });
     expect(plan.diagnostics.filter((item) => item.level === "error")).toEqual([]);
     await applyPlan(plan);
     const codex = await readFile(path.join(root, ".codex/config.toml"), "utf8");
@@ -264,11 +264,30 @@ describe("native MCP environment references", () => {
     const cursor = JSON.parse(await readFile(path.join(root, ".cursor/mcp.json"), "utf8"));
     expect(cursor.mcpServers.local.env.API_KEY).toBe("${env:API_KEY}");
     expect(cursor.mcpServers.docs.headers.Authorization).toBe("${env:DOCS_MCP_TOKEN}");
-    for (const file of ["opencode.json", "kilo.json"]) {
+    for (const file of ["opencode.json"]) {
       const native = JSON.parse(await readFile(path.join(root, file), "utf8"));
       expect(native.mcp.local.environment.API_KEY).toBe("{env:API_KEY}");
       expect(native.mcp.docs.headers.Authorization).toBe("{env:DOCS_MCP_TOKEN}");
     }
+  });
+
+  it.each([false, true])("warns and rejects Kilo project references (literal syntax: %s)", async (literal) => {
+    const root = await referenceFixture();
+    if (literal) {
+      const source = JSON.parse(await readFile(path.join(root, ".canonfig/harness.json"), "utf8"));
+      source.mcp.servers.local.env.API_KEY = "{env:API_KEY}";
+      source.mcp.servers.docs.headers.Authorization = "{env:DOCS_MCP_TOKEN}";
+      await write(root, ".canonfig/harness.json", JSON.stringify(source));
+    }
+    const compiler = new HarnessConfigurationCompiler();
+    const ordinary = await compiler.plan({ root, targets: ["kilo"] });
+    expect(ordinary.diagnostics.filter((item) => item.code === "MCP_ENV_PROJECT_UNSUPPORTED"))
+      .toHaveLength(2);
+    const strict = await compiler.plan({ root, targets: ["kilo"], strict: true });
+    expect(strict.diagnostics.filter((item) => item.code === "MCP_ENV_PROJECT_UNSUPPORTED")
+      .every((item) => item.level === "error")).toBe(true);
+    await expect(applyPlan(strict)).rejects.toThrow();
+    await expect(readFile(path.join(root, "kilo.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects unsupported Codex environment renaming in strict mode", async () => {

@@ -15,6 +15,7 @@ import {
   enabledMcpServerEntries,
   hasEnabledMcpServers,
   mcpOptionDiagnostics,
+  kiloProjectMcpDiagnostics,
   openCodeMcpMap,
   skillArtifacts,
 } from "./shared.ts";
@@ -60,6 +61,7 @@ export function createOpenCodeFamilyAdapter(
       artifacts.push(...await skillArtifacts(context, `${root}/skills`, definition.id));
 
       if (hasEnabledMcpServers(context)) {
+        if (definition.id === "kilo") diagnostics.push(...kiloProjectMcpDiagnostics(context));
         diagnostics.push(...mcpOptionDiagnostics(
           context,
           definition.id,

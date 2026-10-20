@@ -1,3 +1,4 @@
+import { Predicate } from "effect";
 import type { McpServer, SecretValue } from "../core/schema.ts";
 import type { BuildContext, Diagnostic, JsonArtifact, TargetId } from "../core/types.ts";
 
@@ -184,6 +185,18 @@ export function antigravityMcpMap(context: BuildContext): Record<string, unknown
         }];
       }),
   );
+}
+
+/** Kilo intentionally refuses environment substitution in untrusted project config. */
+export function kiloProjectMcpDiagnostics(context: BuildContext): Diagnostic[] {
+  return enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] => {
+    const values = server.transport === "stdio" ? Object.values(server.env) : Object.values(server.headers);
+    if (!values.some((value) => !Predicate.isString(value) || /\{env:[A-Za-z_][A-Za-z0-9_]*\}/u.test(value))) return [];
+    return [{
+      level: "warning", code: "MCP_ENV_PROJECT_UNSUPPORTED", target: "kilo",
+      message: `Kilo does not resolve environment references for MCP server ${name} from project kilo.json. Configure these bindings in trusted Kilo user, explicit KILO_CONFIG, or organization configuration. The project mapping is not usable for authentication; strict mode refuses it.`,
+    }];
+  });
 }
 
 export function openCodeMcpMap(context: BuildContext): Record<string, unknown> {

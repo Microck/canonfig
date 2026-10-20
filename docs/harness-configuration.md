@@ -171,7 +171,7 @@ read the environment value into generated configuration.
   A binding such as `API_KEY: { fromEnv: OTHER_KEY }` is omitted with
   `MCP_ENV_RENAME_UNSUPPORTED`; `--strict` rejects the plan. Use the same name
   or an explicitly reviewed wrapper instead.
-- OpenCode and Kilo use `{env:NAME}` references.
+- OpenCode uses `{env:NAME}` references. Kilo uses that syntax only in trusted configuration; project-level references are diagnosed and blocked under `--strict` (see below).
 - Cursor uses `${env:NAME}` references.
 
 A `fromEnv` header supplies the entire header value. For example, the environment
@@ -184,3 +184,9 @@ Vendor references checked on 2026-10-20:
 [OpenCode config variables](https://docs.opencode.ai/docs/config/),
 [Kilo MCP](https://kilo.ai/docs/automate/mcp/using-in-kilo-code), and
 [Cursor config interpolation](https://cursor.com/docs/mcp#config-interpolation).
+
+### Kilo project trust limitation
+
+Kilo resolves `{env:NAME}` only in trusted global, explicitly selected, or organization-managed configuration, not a project `kilo.json`. Canonfig emits `MCP_ENV_PROJECT_UNSUPPORTED` for project MCP environment/header references, including explicit symbolic strings, and `--strict` blocks their application. Non-strict plans retain the mapping with a warning; they do not make it functional or expand project trust. Configure the binding yourself in trusted Kilo configuration.
+
+Source: https://kilo.ai/docs/code-with-ai/platforms/cli#environment-variables
