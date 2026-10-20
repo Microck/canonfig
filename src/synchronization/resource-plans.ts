@@ -620,6 +620,14 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
       },
     }];
   }
+  if (context.observed.state === "present" && context.observed.objectKind !== undefined
+    && context.observed.objectKind !== "regular") {
+    return [{ kind: "human-action", detail: {
+      kind: "human-action",
+      reason: `Cannot merge ${context.resource.id} into ${context.resource.target}: target is a ${context.observed.objectKind}, not a regular file`,
+      instructions: "Review and move or remove the conflicting object, then run synchronization again. Canonfig has not replaced it or followed its symlink target.",
+    } }];
+  }
   // A follower file that cannot be parsed blocks this resource only; the
   // executor would otherwise fail mid-run on the same file.
   if (context.observed.state === "unverifiable") {

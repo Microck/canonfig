@@ -323,6 +323,20 @@ describe("resource and Apply Policy coverage", () => {
     expect(plan.actions.map((action) => action.kind)).toEqual(["no-op"]);
   });
 
+  it.each(["symlink", "directory"] as const)("blocks merging into a %s without blocking unrelated files", (objectKind) => {
+    const plan = runPlan(plannerInput([
+      resource("before", "file", "replace"),
+      resource("settings", "config", "merge"),
+      resource("after", "file", "replace"),
+    ], { observed: [
+      { state: "absent" },
+      { state: "present", digest: digestB, executable: false, objectKind },
+      { state: "absent" },
+    ] }));
+    expect(plan.actions.filter((action) => action.resource === "settings").map((action) => action.kind)).toEqual(["human-action"]);
+    expect(plan.actions.filter((action) => action.kind === "write-file")).toHaveLength(2);
+  });
+
   it("preserves an unverifiable directory observation as drift", () => {
     const subject = resource("mixed-error", "directory", "mirror-owned");
     const plan = runPlan(plannerInput([subject], {
