@@ -121,3 +121,23 @@ If npm publication succeeded but the package is defective, deprecate the exact
 version with a recovery message and prepare a new patch release. If publication
 failed before npm accepted the version, fix the release pull request or trusted
 publisher configuration and retry the same unpublished version.
+
+
+## Registry processing delays
+
+npm can accept and attest a publication before its read endpoints expose the new
+version. Verification polls for up to ten minutes, then installs the public package
+in an isolated temporary directory and checks its reported version.
+
+Publication and verification are separate jobs. If publication and tag creation
+succeeded but verification failed, rerun only the failed verification job. Never
+rerun publication or reuse the version. Verification can also be run independently
+with Node.js 24 and npm on the release runner:
+
+```bash
+node tools/release/verify-published.mjs 4.0.1
+```
+
+The verification helper only reads from npm and installs into a disposable local
+directory; it never publishes or creates tags. A timeout is not evidence that npm
+rejected the publication. Inspect the original publish step before any recovery.
