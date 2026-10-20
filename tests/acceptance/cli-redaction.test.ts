@@ -119,6 +119,18 @@ describe("credential-safe CLI output", () => {
     expect(output).not.toContain(secret);
   });
 
+  it("redacts whole credentials before rewriting their embedded syntax", () => {
+    const value = "prefix password=x suffix";
+    const output = redactText(JSON.stringify({ token: value, note: value }));
+    expect(output).toBe(JSON.stringify({ token: "[REDACTED]", note: "[REDACTED]" }));
+  });
+
+  it("coalesces repeated short credentials without expanding output", () => {
+    const output = redactText(JSON.stringify({ password: "a", note: "a".repeat(256 * 1024) }));
+    expect(output.length).toBeLessThan(100);
+    expect(output).toContain('"note":"[REDACTED]"');
+  });
+
   it("scrubs a known value regardless of the surrounding field name", () => {
     const marker = "marker-value-abc123SECRET";
     expect(redactText(`--tag ${marker} pulled`, [marker])).toBe("--tag [REDACTED] pulled");

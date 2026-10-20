@@ -1,61 +1,26 @@
 /** Redact recognizable credential syntax before text crosses a CLI output boundary. */
 
 import {
-  assignedCredential,
   collectLiteralCredentialValues,
   credentialAssignments,
-  authorizationCredential,
   isSecretField,
   isEncodedEnvironmentReference,
   privateKeyBlock,
   quotedCredentialKey,
-  spacedCredentialFlag,
   urlUserInformation,
 } from "../secrets/credential-policy.ts";
 
 const replacement = "[REDACTED]";
 
-/**
- * Scrub caller-supplied secret values wherever they appear, regardless of
- * the surrounding field name. Longest first so overlapping values redact
- * once. Callers pass values already in scope (never a store dump); empty
- * values are skipped because they would match everywhere.
- */
-export const redactKnownValues = (
-  text: string,
-  secrets: ReadonlyArray<string>,
-  protectedPrefixes: ReadonlyArray<{ start: number; end: number }> = [],
-): string => {
-  const ordered = [...new Set(secrets)]
-    .filter((secret) => secret.length > 0 && secret !== replacement)
-    .sort((left, right) => right.length - left.length);
-  // Compute ranges in the original text, never in inserted replacements.
-  // Preserve standalone markers, but merge any credential crossing their edges.
-  const markers: Array<{ start: number; end: number }> = [];
-  for (let start = text.indexOf(replacement); start !== -1;
-    start = text.indexOf(replacement, start + replacement.length)) {
-    markers.push({ start, end: start + replacement.length });
-  }
-  const ranges = [...markers];
-  const protectedRanges = [...markers, ...protectedPrefixes];
-  for (const secret of ordered) {
-    for (let start = text.indexOf(secret); start !== -1;
-      start = text.indexOf(secret, start + 1)) {
-      const end = start + secret.length;
-      if (!protectedRanges.some((range) => start >= range.start && end <= range.end)) {
-        ranges.push({ start, end });
-      }
-    }
-  }
+interface RedactionRange { start: number; end: number }
+
+const renderRanges = (text: string, ranges: Array<RedactionRange>): string => {
   ranges.sort((left, right) => left.start - right.start || right.end - left.end);
-  const merged: Array<{ start: number; end: number }> = [];
+  const merged: Array<RedactionRange> = [];
   for (const range of ranges) {
     const previous = merged.at(-1);
-    if (previous !== undefined && range.start < previous.end) {
-      previous.end = Math.max(previous.end, range.end);
-    } else {
-      merged.push({ ...range });
-    }
+    if (previous !== undefined && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
+    else merged.push({ ...range });
   }
   let cursor = 0;
   let result = "";
@@ -66,17 +31,41 @@ export const redactKnownValues = (
   return result + text.slice(cursor);
 };
 
-/** Preserve recognizable field/flag names, while scrubbing all value segments. */
-const redactTextValues = (text: string, secrets: ReadonlyArray<string>): string => {
-  const ranges = credentialAssignments.flatMap(([pattern, valueGroup]) =>
-    [...text.matchAll(pattern)].map((match) => ({
-      start: match.index,
-      end: match.index + match[0].length - match[valueGroup]!.length,
-    }))
-  ).sort((left, right) => left.start - right.start || right.end - left.end);
-  return redactKnownValues(text, secrets, ranges);
+const literalRanges = (
+  text: string,
+  secrets: ReadonlyArray<string>,
+  prefixes: ReadonlyArray<RedactionRange> = [],
+): Array<RedactionRange> => {
+  const markers: Array<RedactionRange> = [];
+  for (let start = text.indexOf(replacement); start !== -1;
+    start = text.indexOf(replacement, start + replacement.length)) {
+    markers.push({ start, end: start + replacement.length });
+  }
+  const protectedRanges = [...markers, ...prefixes];
+  const ranges = [...markers];
+  for (const secret of new Set(secrets)) {
+    if (secret.length === 0 || secret === replacement) continue;
+    let pending: RedactionRange | undefined;
+    for (let start = text.indexOf(secret); start !== -1;
+      start = text.indexOf(secret, start + 1)) {
+      const end = start + secret.length;
+      if (protectedRanges.some((range) => start >= range.start && end <= range.end)) continue;
+      // Coalesce before allocating: a megabyte of repeated one-character
+      // credentials must not allocate a million ranges or expand tenfold.
+      if (pending !== undefined && start <= pending.end) pending.end = Math.max(pending.end, end);
+      else {
+        if (pending !== undefined) ranges.push(pending);
+        pending = { start, end };
+      }
+    }
+    if (pending !== undefined) ranges.push(pending);
+  }
+  return ranges;
 };
 
+/** Scrub in-scope literal values without interpreting them as regular expressions. */
+export const redactKnownValues = (text: string, secrets: ReadonlyArray<string>): string =>
+  renderRanges(text, literalRanges(text, secrets));
 
 const hasOnlySymbolicUrlCredentials = (prefix: string): boolean => {
   try {
@@ -95,20 +84,35 @@ const hasOnlySymbolicUrlCredentials = (prefix: string): boolean => {
 export const redactText = (
   text: string,
   secrets: ReadonlyArray<string> = [],
-): string =>
-  redactTextValues(text
-    .replace(privateKeyBlock, replacement)
-    .replace(urlUserInformation, (match, scheme: string) =>
-      hasOnlySymbolicUrlCredentials(match) ? match : `${scheme}[REDACTED]@`)
-    .replace(authorizationCredential, (match, prefix: string, value: string) =>
-      isEncodedEnvironmentReference(value) ? match : `${prefix}${replacement}`)
-    .replace(assignedCredential, (match, flag: string | undefined, name: string, separator: string, value: string) =>
-      isEncodedEnvironmentReference(value) ? match : `${flag ?? ""}${name}${separator}${replacement}`)
-    .replace(quotedCredentialKey, (match, name: string, separator: string, value: string) =>
-      isEncodedEnvironmentReference(value) ? match : `${name}${separator}"${replacement}"`)
-    .replace(spacedCredentialFlag, (match, flag: string, separator: string, value: string) =>
-      isEncodedEnvironmentReference(value) ? match : `${flag}${separator}${replacement}`),
-    [...collectLiteralCredentialValues(text), ...secrets]);
+): string => {
+  const ranges: Array<RedactionRange> = [];
+  const prefixes: Array<RedactionRange> = [];
+  for (const match of text.matchAll(privateKeyBlock)) {
+    ranges.push({ start: match.index, end: match.index + match[0].length });
+  }
+  for (const match of text.matchAll(urlUserInformation)) {
+    if (!hasOnlySymbolicUrlCredentials(match[0])) {
+      ranges.push({ start: match.index + match[1]!.length, end: match.index + match[0].length - 1 });
+    }
+  }
+  for (const [pattern, valueGroup] of credentialAssignments) {
+    for (const match of text.matchAll(pattern)) {
+      const value = match[valueGroup]!;
+      const end = match.index + match[0].length;
+      const start = end - value.length;
+      prefixes.push({ start: match.index, end: start });
+      if (isEncodedEnvironmentReference(value)) continue;
+      // Preserve JSON string delimiters; other assignment forms retain their
+      // established unquoted redaction marker. All offsets refer to original text.
+      const quotedJson = pattern === quotedCredentialKey && value.startsWith('"') && value.endsWith('"');
+      ranges.push({ start: start + (quotedJson ? 1 : 0), end: end - (quotedJson ? 1 : 0) });
+    }
+  }
+  return renderRanges(text, [
+    ...ranges,
+    ...literalRanges(text, [...collectLiteralCredentialValues(text), ...secrets], prefixes),
+  ]);
+};
 
 /** Preserve argv structure while recognizing both --name=value and --name value. */
 export const redactArguments = (
