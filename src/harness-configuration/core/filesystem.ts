@@ -117,11 +117,16 @@ export async function atomicWrite(
   let temporary: string | undefined;
   try {
     if (root !== undefined) await assertNoSymlinkPathComponents(root, path.dirname(filePath));
-    const opened = await openExclusiveTemporary(filePath, mode);
+    // A merge does not declare a new mode. Preserve the existing regular
+    // file's permissions rather than replacing them with process defaults.
+    // lstat intentionally does not take permissions from a symlink target.
+    const existing = mode === undefined ? await lstatOptional(filePath) : undefined;
+    const writeMode = mode ?? (existing?.isFile() ? Number(existing.mode) & 0o777 : undefined);
+    const opened = await openExclusiveTemporary(filePath, writeMode);
     temporary = opened.temporary;
     try {
       await opened.handle.writeFile(content);
-      if (mode !== undefined) await opened.handle.chmod(mode);
+      if (writeMode !== undefined) await opened.handle.chmod(writeMode);
     } finally {
       await opened.handle.close();
     }

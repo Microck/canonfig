@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, stat, lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -533,5 +533,24 @@ describe("harness configuration compiler", () => {
 
     await expect(scaffoldProject(root, { force: true })).rejects.toMatchObject({ code: "SYMLINK_ESCAPE" });
     await expect(readFile(outsideTarget, "utf8")).resolves.toBe("keep\n");
+  });
+});
+
+
+describe("native harness file permissions", () => {
+  it.skipIf(process.platform === "win32")("preserves existing private merge modes through apply and clean", async () => {
+    const root = await fixture(["claude-code"]);
+    await write(root, ".mcp.json", JSON.stringify({ mcpServers: { existing: { command: "existing-tool" } } }));
+    await write(root, "AGENTS.md", "# Local instructions\n");
+    await chmod(path.join(root, ".mcp.json"), 0o600);
+    await chmod(path.join(root, "AGENTS.md"), 0o640);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    expect((await stat(path.join(root, ".mcp.json"))).mode & 0o777).toBe(0o600);
+    expect((await stat(path.join(root, "AGENTS.md"))).mode & 0o777).toBe(0o640);
+    await applyPlan(await createPlan(root, [...TARGET_IDS], [], []));
+    expect((await stat(path.join(root, ".mcp.json"))).mode & 0o777).toBe(0o600);
+    expect((await stat(path.join(root, "AGENTS.md"))).mode & 0o777).toBe(0o640);
+    expect((await readFile(path.join(root, "AGENTS.md"), "utf8")).trim()).toBe("# Local instructions");
   });
 });
