@@ -166,7 +166,8 @@ const synchronizeSecretsAfterApply = ({ Effect }: typeof EffectModule) =>
 // Help and --version are answered here, before any command graph loads. The
 // groups with their own dispatchers answer their own help, and a positional
 // invitation is refused below even when --help accompanies it.
-const globalVersion = arguments_.includes("--version") || arguments_.includes("-V");
+const explicitHelp = arguments_.includes("--help") || arguments_.includes("-h");
+const globalVersion = !explicitHelp && (arguments_.includes("--version") || arguments_.includes("-V"));
 const separateDispatcher = isSecretsCommand(arguments_)
   || isHarnessConfigurationCommand(arguments_) || isInstallerCommand(arguments_);
 const early = isPublicEnrollmentCommand(arguments_) || (separateDispatcher && !globalVersion)

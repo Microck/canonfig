@@ -67,3 +67,18 @@ it.each([
     expect(entries.every((entry) => entry.command === command)).toBe(true);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+
+it.each(["secrets", "harness"])("retains %s JSON group help when version flags accompany it", (group) => {
+  const home = mkdtempSync(join(tmpdir(), "canonfig-mixed-help-"));
+  try {
+    for (const flags of [["--help", "--version"], ["--version", "--help"], ["-V", "-h"]]) {
+      const result = invoke(home, ["--json", group, ...flags]);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      const envelope = JSON.parse(result.stdout);
+      expect(envelope).toMatchObject({ schema: "canonfig.cli/v1", command: `${group}.help`, exitCode: 0 });
+      expect(envelope.data.commands).toContain(group === "secrets" ? "bootstrap" : "targets");
+    }
+    expect(existsSync(join(home, ".canonfig/state.sqlite"))).toBe(false);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 30000);
