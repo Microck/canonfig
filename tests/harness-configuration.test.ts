@@ -150,6 +150,7 @@ describe("harness configuration compiler", () => {
     const root = await fixture(["claude-code"]);
     const native = JSON.stringify({ mcpServers: { existing: {
       command: "existing-tool", env: { GITHUB_TOKEN: "test-only-native-token" },
+      args: ["test-only-native-token", "test-only-native-bearer"],
       headers: { Authorization: "Bearer test-only-native-bearer" },
     } } }, null, 2);
     await write(root, ".mcp.json", native);

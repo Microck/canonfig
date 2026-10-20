@@ -46,7 +46,7 @@ export const authorizationCredential = new RegExp(
   `(\\b(?:authorization|proxy-authorization)\\s*[:=]\\s*)((?:Bearer|Basic)\\s+(?:${environmentSymbol}(?=$|[\\s"',;}\\]])|[^\\s"',;}\\]]+))`,
   "giu",
 );
-const credentialAssignments = [
+export const credentialAssignments = [
   [assignedCredential, 4],
   [quotedCredentialKey, 3],
   [spacedCredentialFlag, 3],
@@ -69,6 +69,43 @@ const unquote = (value: string): string => {
 /** Recognize references in either plain or quoted credential values. */
 export const isEncodedEnvironmentReference = (value: string): boolean =>
   isEnvironmentReference(unquote(value));
+
+/** Collect only credential-shaped literals already present in this output. */
+export const collectLiteralCredentialValues = (text: string): Array<string> => {
+  const values = new Set<string>();
+  const collect = (encoded: string): void => {
+    const value = unquote(encoded);
+    if (value.length === 0 || value === "[REDACTED]" || isEnvironmentReference(value)) return;
+    values.add(value);
+    if ((encoded.startsWith('"') && encoded.endsWith('"'))
+      || (encoded.startsWith("'") && encoded.endsWith("'"))) {
+      values.add(encoded.slice(1, -1));
+    }
+    const authorization = /^(?:Bearer|Basic|Token)\s+(.+)$/u.exec(value);
+    if (authorization?.[1] !== undefined) values.add(authorization[1]);
+  };
+  for (const [pattern, valueGroup] of credentialAssignments) {
+    for (const match of text.matchAll(pattern)) collect(match[valueGroup]!);
+  }
+  for (const match of text.matchAll(privateKeyBlock)) collect(match[0]);
+  for (const match of text.matchAll(embeddedUrl)) {
+    try {
+      const url = new URL(match[0]);
+      for (const encoded of [url.username, url.password]) {
+        const decoded = decodeURIComponent(encoded);
+        if (decoded.length === 0 || isEnvironmentReference(decoded)) continue;
+        collect(decoded);
+        collect(encoded);
+      }
+      for (const [name, value] of url.searchParams) {
+        if (isSecretField(name)) collect(value);
+      }
+    } catch {
+      // Assignment and authorization patterns still cover malformed URL text.
+    }
+  }
+  return [...values];
+};
 
 /** Detect recognizable literal credentials without rewriting reviewed bytes. */
 export const containsLiteralCredential = (text: string): boolean => {

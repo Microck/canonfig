@@ -206,3 +206,27 @@ describe("symbolic credential references", () => {
     expect(redactText('"API_KEY": "${TEST_API_KEY}-literal-secret"')).not.toContain("literal-secret");
   });
 });
+
+
+describe("recognized literals across free-text output", () => {
+  it("scrubs a discovered credential from non-secret-shaped fields too", () => {
+    const text = JSON.stringify({ API_KEY: "synthetic-reused-value", args: ["synthetic-reused-value"], plain: "keep-me" });
+    const result = redactText(text);
+    expect(result).not.toContain("synthetic-reused-value");
+    expect(result).toContain("keep-me");
+  });
+  it("scrubs escaped and header-token repetitions", () => {
+    const value = 'synthetic-quote"slash\\value';
+    const text = JSON.stringify({ API_KEY: value, args: [value], Authorization: "Bearer synthetic-header-token", echo: "synthetic-header-token" });
+    const result = redactText(text);
+    expect(result).not.toContain(JSON.stringify(value).slice(1, -1));
+    expect(result).not.toContain("synthetic-header-token");
+  });
+});
+
+
+it("does not re-expand redaction markers for short recognized values", () => {
+  const once = redactText("password=R echo R");
+  expect(once).toBe("password=[REDACTED] echo [REDACTED]");
+  expect(redactText(once, ["R"])).toBe(once);
+});

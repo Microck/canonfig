@@ -2,6 +2,8 @@
 
 import {
   assignedCredential,
+  collectLiteralCredentialValues,
+  credentialAssignments,
   authorizationCredential,
   isSecretField,
   isEncodedEnvironmentReference,
@@ -23,12 +25,34 @@ export const redactKnownValues = (
   text: string,
   secrets: ReadonlyArray<string>,
 ): string => {
-  let redacted = text;
-  const ordered = [...new Set(secrets)]
+  const ordered = [...new Set([...secrets, replacement])]
     .filter((secret) => secret.length > 0)
     .sort((left, right) => right.length - left.length);
-  for (const secret of ordered) redacted = redacted.replaceAll(secret, replacement);
-  return redacted;
+  const pattern = new RegExp(ordered.map((secret) => secret.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|"), "gu");
+  return text.replace(pattern, replacement);
+};
+
+/** Preserve recognizable field/flag names, while scrubbing all value segments. */
+const redactTextValues = (text: string, secrets: ReadonlyArray<string>): string => {
+  const ranges = credentialAssignments.flatMap(([pattern, valueGroup]) =>
+    [...text.matchAll(pattern)].map((match) => ({
+      start: match.index,
+      end: match.index + match[0].length - match[valueGroup]!.length,
+    }))
+  ).sort((left, right) => left.start - right.start || right.end - left.end);
+  let result = "";
+  let cursor = 0;
+  for (const range of ranges) {
+    if (range.end <= cursor) continue;
+    if (range.start >= cursor) {
+      result += redactKnownValues(text.slice(cursor, range.start), secrets);
+      result += text.slice(range.start, range.end);
+    } else {
+      result += text.slice(cursor, range.end);
+    }
+    cursor = range.end;
+  }
+  return result + redactKnownValues(text.slice(cursor), secrets);
 };
 
 
@@ -50,7 +74,7 @@ export const redactText = (
   text: string,
   secrets: ReadonlyArray<string> = [],
 ): string =>
-  redactKnownValues(text
+  redactTextValues(text
     .replace(privateKeyBlock, replacement)
     .replace(urlUserInformation, (match, scheme: string) =>
       hasOnlySymbolicUrlCredentials(match) ? match : `${scheme}[REDACTED]@`)
@@ -61,7 +85,8 @@ export const redactText = (
     .replace(quotedCredentialKey, (match, name: string, separator: string, value: string) =>
       isEncodedEnvironmentReference(value) ? match : `${name}${separator}"${replacement}"`)
     .replace(spacedCredentialFlag, (match, flag: string, separator: string, value: string) =>
-      isEncodedEnvironmentReference(value) ? match : `${flag}${separator}${replacement}`), secrets);
+      isEncodedEnvironmentReference(value) ? match : `${flag}${separator}${replacement}`),
+    [...collectLiteralCredentialValues(text), ...secrets]);
 
 /** Preserve argv structure while recognizing both --name=value and --name value. */
 export const redactArguments = (
