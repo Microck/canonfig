@@ -13,6 +13,7 @@ import {
   createPlan,
 } from "../src/harness-configuration/core/planner.ts";
 import { parseMarkdownDocument } from "../src/harness-configuration/core/frontmatter.ts";
+import { runHarnessConfigurationCli } from "../src/harness-configuration/cli.ts";
 import { isHarnessPlanBlocked } from "../src/harness-configuration/cli-output.ts";
 import { applyJsonArtifact } from "../src/harness-configuration/core/render-json.ts";
 import { unapplyPrevious } from "../src/harness-configuration/core/render-cleanup.ts";
@@ -144,6 +145,31 @@ afterEach(async () => {
 });
 
 describe("harness configuration compiler", () => {
+  it.each([false, true])("redacts credentials in real harness diffs (json: %s) without changing files", async (json) => {
+    const root = await fixture(["claude-code"]);
+    const native = JSON.stringify({ mcpServers: { existing: {
+      command: "existing-tool", env: { GITHUB_TOKEN: "test-only-native-token" },
+      headers: { Authorization: "Bearer test-only-native-bearer" },
+    } } }, null, 2);
+    await write(root, ".mcp.json", native);
+    const output: string[] = [];
+    let exitCode = -1;
+    await runHarnessConfigurationCli(["diff", "--root", root, ...(json ? ["--json"] : [])], {
+      writeStdout: (value) => output.push(value), writeStderr: (value) => output.push(value),
+      setExitCode: (value) => { exitCode = value; },
+    });
+    expect(exitCode, output.join("")).toBe(0);
+    const rendered = output.join("");
+    expect(rendered).not.toContain("test-only-native-token");
+    expect(rendered).not.toContain("test-only-native-bearer");
+    if (!json) {
+      expect(rendered).toContain("[REDACTED]");
+      expect(rendered).toContain("existing-tool");
+      expect(rendered).toContain("+++ b/.mcp.json");
+    }
+    expect(await readFile(path.join(root, ".mcp.json"), "utf8")).toBe(native);
+  });
+
   it("compiles every requested target and becomes idempotent", async () => {
     const root = await fixture();
     const compiler = new HarnessConfigurationCompiler();

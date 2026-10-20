@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { CliExitCode, type CliExitCode as CliExitCodeValue } from "../cli/exit-codes.ts";
 import { renderCliResult } from "../cli/render.ts";
+import { redactText } from "../cli/redaction.ts";
 import type { CliPayload } from "../cli/source-commands.ts";
 import { CanonfigError } from "./core/errors.ts";
 import type { Diagnostic, Plan, PlanEntry } from "./core/types.ts";
@@ -91,12 +92,12 @@ export const renderHarnessResult = (
       data: input.data,
       exitCode: input.exitCode,
     }, "json")
-    : (input.human ?? renderCliResult({
+    : (input.human === undefined ? renderCliResult({
       command: input.command,
       message: input.message,
       data: input.data,
       exitCode: input.exitCode,
-    }, "human"));
+    }, "human") : redactText(input.human));
   if (input.exitCode === CliExitCode.success) io.writeStdout(rendered);
   else io.writeStderr(rendered);
   io.setExitCode(input.exitCode);
