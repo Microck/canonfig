@@ -834,3 +834,48 @@ describe("canonical secrets CLI envelopes", () => {
     else expect(output.stderr).toContain("exit 2:");
   });
 });
+
+
+it("refuses a local overwrite of a Source-owned name without blocking later transfers", async () => {
+  const setup = fixture();
+  await runFollower(setup, applyTransferredSecrets({ schemaVersion: 1, secrets: [
+    { name: "API_TOKEN", value: "source-first" }, { name: "multi.line", value: "other-first" },
+  ] }));
+  const before = await readSecretManifest(setup);
+  await expect(runFollower(setup, storeSecret("API_TOKEN", "local-override"))).rejects.toMatchObject({
+    category: "usage", operation: "store secret",
+    message: "Secret API_TOKEN is Source-owned. Update it on the Source, or use a different local name; it has not been changed.",
+  });
+  for (const format of ["human", "json"]) {
+    const { io, output } = recordingIo();
+    await runFollower(setup, runSecretsCli(["set", "API_TOKEN", ...(format === "json" ? ["--json"] : [])], io, pipedInput("local-override")));
+    expect(output.exitCode).toBe(2);
+    expect(output.stdout).toBe("");
+    expect(output.stderr).toContain("Source-owned");
+    expect(output.stderr).not.toContain("local-override");
+    if (format === "json") expect(JSON.parse(output.stderr)).toMatchObject({ command: "secrets.set", exitCode: 2 });
+  }
+  expect(await readSecretManifest(setup)).toEqual(before);
+  expect(await storedValue(setup, "API_TOKEN")).toBe("source-first");
+  await runFollower(setup, applyTransferredSecrets({ schemaVersion: 1, secrets: [
+    { name: "API_TOKEN", value: "source-next" }, { name: "multi.line", value: "other-next" },
+  ] }));
+  expect(await storedValue(setup, "API_TOKEN")).toBe("source-next");
+  expect(await storedValue(setup, "multi.line")).toBe("other-next");
+  await runFollower(setup, storeSecret("local-name", "first"));
+  await runFollower(setup, storeSecret("local-name", "second"));
+  expect(await storedValue(setup, "local-name")).toBe("second");
+});
+
+it("gives explicit recovery for an existing local/source name collision", async () => {
+  const setup = fixture();
+  await runFollower(setup, storeSecret("collision", "local-value"));
+  const transferred = { schemaVersion: 1 as const, secrets: [{ name: "collision", value: "source-value" }] };
+  await expect(runFollower(setup, applyTransferredSecrets(transferred))).rejects.toMatchObject({
+    category: "usage", message: expect.stringContaining("canonfig secrets remove <name>"),
+  });
+  expect(await storedValue(setup, "collision")).toBe("local-value");
+  await runFollower(setup, removeSecret("collision"));
+  await runFollower(setup, applyTransferredSecrets(transferred));
+  expect(await storedValue(setup, "collision")).toBe("source-value");
+});

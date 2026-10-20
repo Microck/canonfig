@@ -156,6 +156,18 @@ secret through stdin so it never appears in the process argument list:
 printf '%s' "$GITHUB_TOKEN" | canonfig secrets set github-token
 ```
 
+### Secret ownership
+
+On a follower, `secrets set` refuses to replace a Source-owned name with a local
+value. Update that value on the Source or choose a different local name. The
+refusal leaves the existing value and ownership intact, so later transfers can
+continue updating all shared secrets.
+
+If an older release already created a local/source name collision, deliberately
+remove the conflicting local entry with `canonfig secrets remove <name>` before
+retrying `canonfig secrets sync`. Removal discards that local value; do not use
+this recovery unless you intend to accept the Source's value instead.
+
 ### Values and limits
 
 - A value is at most 16384 bytes of valid UTF-8, is not empty, and contains no

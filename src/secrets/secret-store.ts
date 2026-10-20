@@ -466,6 +466,13 @@ export const storeSecret = (
     const validValue = yield* decodeValue(value);
     const current = yield* readManifest();
     const previous = current.secrets.find((secret) => secret.name === validName);
+    if (origin === "local" && previous?.origin === "source") {
+      return yield* secretError(
+        "usage",
+        "store secret",
+        `Secret ${validName} is Source-owned. Update it on the Source, or use a different local name; it has not been changed.`,
+      );
+    }
     if (origin === "local") {
       const retained = current.secrets.filter((secret) =>
         secret.origin === "local" && secret.name !== validName
@@ -596,7 +603,7 @@ export const applyTransferredSecrets = (
         "apply transferred secrets",
         `source-owned secrets conflict with locally owned names: ${
           conflicting.map((secret) => secret.name).sort().join(", ")
-        }`,
+        }. To accept the Source-owned values, deliberately remove each conflicting local entry with canonfig secrets remove <name>, then retry secrets sync.`,
       );
     }
     const preserved = current.secrets.filter((secret) => secret.origin === "local");
