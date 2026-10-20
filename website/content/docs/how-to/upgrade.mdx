@@ -14,15 +14,24 @@ using the build that created it, and back up the state and current installation.
 Do not use a different build to bypass an open-run upgrade gate.
 
 Install `@microck/canonfig@4.0.1` using the same prefix as the existing 4.0.0
-installation. Check `canonfig --version`, then run `canonfig doctor --no-input`
-and `canonfig sync --plan` before applying changes. A manual `sync --apply`
-refreshes managed scheduled-job bindings for the new build when applicable.
+installation. Check `canonfig --version` and run `canonfig doctor --no-input`.
+Then verify the role this machine already has:
+
+- On a **Source**, check `canonfig source service status` if serving is managed,
+  and verify the serving process is using the updated installation. If serving
+  manually, restart the foreground `source serve` process with its existing
+  host and port. Do not enroll the Source or run follower synchronization as
+  an upgrade check.
+- On an enrolled **follower**, run `canonfig sync --plan` before applying changes.
+  A manual `canonfig sync --apply` refreshes managed scheduled-job bindings for
+  the new build when applicable.
+
 Keep the old installation available until the new one has been verified.
 
 ## Migrating from 3.2.x
 
-For 3.2.x installations, Canonfig 4.0.1 requires a separate setup. An in-place upgrade of a 3.2.x
-Source or follower is unsupported and unverified. The signed revision wire
+For 3.2.x installations, Canonfig 4.0.1 requires a separate setup. An in-place
+upgrade of a 3.2.x Source or follower is unsupported and unverified. The signed revision wire
 format changed. Do not install 4.0.1 over an existing 3.2.x package, point it
 at an existing state directory, or expect existing revisions, enrollments,
 credentials, and schedules to carry over. No automatic migration from 3.2.x
