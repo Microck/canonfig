@@ -85,6 +85,7 @@ const format = arguments_.includes("--json") ? "json" : "human";
  */
 const runMain = async (
   program: (effect: typeof EffectModule) => EffectModule.Effect.Effect<unknown, unknown>,
+  command: string,
 ): Promise<void> => {
   const [effect, NodeRuntime] = await Promise.all([
     import("effect"),
@@ -109,7 +110,7 @@ const runMain = async (
     const exitCode = storageFailure ? CliExitCode.humanActionRequired : CliExitCode.internal;
     return effect.Effect.sync(() => {
       nodeCliIo.writeStderr(renderCliResult({
-        command: arguments_[0] ?? "runtime",
+        command,
         message: storageFailure ? error.message : "Canonfig could not initialize or complete this command due to an internal error.",
         exitCode,
       }, format));
@@ -215,13 +216,15 @@ if (early !== undefined) {
     await runMain((effect) =>
       secrets.runSecretsCli(arguments_.slice(1), nodeCliIo).pipe(
         effect.Effect.provide(secretRuntimeLayer()),
-      )
+      ),
+      `secrets.${arguments_.slice(1).filter((value) => value !== "--json")[0] ?? "help"}`,
     );
   }
 } else if (isHarnessConfigurationCommand(arguments_)) {
   const { runHarnessConfigurationCli } = await import("../harness-configuration/cli.ts");
   await runMain((effect) =>
-    effect.Effect.promise(() => runHarnessConfigurationCli(arguments_.slice(1), nodeCliIo))
+    effect.Effect.promise(() => runHarnessConfigurationCli(arguments_.slice(1), nodeCliIo)),
+    `harness.${arguments_.slice(1).filter((value) => value !== "--json")[0] ?? "help"}`,
   );
 } else if (isInstallerCommand(arguments_)) {
   const installer = await import("./installer-cli.ts");
@@ -235,7 +238,8 @@ if (early !== undefined) {
     await runMain((effect) =>
       installer.runInstallerCli(installerArgv, nodeCliIo).pipe(
         effect.Effect.provide(runtimeMachineLayer()),
-      )
+      ),
+      `installer.${installerArgv.filter((value) => value !== "--json")[0] ?? "help"}`,
     );
   }
 // Exposure refusal precedes private dispatch: a positional token is already
@@ -291,10 +295,11 @@ if (early !== undefined) {
           Effect.asVoid,
         );
       }),
-    )
+    ),
+    "follower.enroll",
   );
 } else {
-  const { evaluateCli, runCli } = await import("../cli/cli.ts");
+  const { evaluateCli, runCli, commandName } = await import("../cli/cli.ts");
   const outcome = evaluateCli(arguments_);
 
   if (outcome._tag === "Command") {
@@ -327,7 +332,8 @@ if (early !== undefined) {
             effect.Effect.provide(runtimeLayer()),
           )
         ),
-      )
+      ),
+      commandName(outcome.command),
     );
   } else if (outcome._tag === "InvalidInput") {
     // The same renderer as the in-layer path, so a usage failure caught
