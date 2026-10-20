@@ -94,7 +94,7 @@ environment.
 | Event | What happens to credentials |
 | --- | --- |
 | Enrollment fails or is cancelled | The Source-side credential it created is removed, and so is the follower's local item. A Source restart during a pending enrollment also removes it. |
-| Same-name re-enrollment with a new invitation | The credential rotates; the identity and local settings stay. The old credential works until the new one is finalized, then the Source deletes its copy and the follower deletes its old local item. |
+| Same-name re-enrollment with a new invitation | Active and pending identities are rejected without changing the existing credential or groups. An invitation alone cannot rotate another machine's credential. Explicitly revoke the identity on the Source before re-enrolling that name. |
 | `follower enroll --replace` under a different name | The new identity is enrolled first. The old identity is then revoked on its Source and its local credential deleted. The result lists every local setting that was reset. |
 | `source revoke <follower-id>` on the Source | The follower is revoked and the Source deletes its copy of that follower's credential. The follower's next request fails with exit 5. |
 | `follower unenroll` on the follower | The identity is revoked on the Source, then the local credential, the received shared secrets, and the enrollment record are deleted. |

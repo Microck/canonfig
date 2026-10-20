@@ -139,12 +139,12 @@ identity preserves the configured transport timeout unless a new value is given.
 
 One machine holds one enrollment:
 
-- **Same name, new invitation.** The credential rotates and the identity stays.
-  Agent policy, agent harness and secret bindings, schedule choice, local
-  overlays, and local execution settings are kept. The old credential keeps
-  working until the new one is finalized; then the Source retires it and the
-  follower deletes the old local item. The result reports `rotated: true` and an
-  empty `resets` list. `--profile` selects the profile you name.
+- **Same name, new invitation.** An active or pending name is rejected with
+  "the follower identity is already enrolled". An invitation alone is not proof
+  that the caller owns the existing identity. Its credential and groups remain
+  unchanged, and the rejected invitation can still enroll a different name.
+  To re-enroll an existing name, explicitly revoke that identity on the Source
+  first. Re-enrolling the revoked identity keeps this machine's local settings.
 - **Different name.** Without `--replace` enrollment fails with exit 4: "this
   machine is already enrolled as `<name>` (`<id>`); pass --replace to enroll it
   as `<new name>` instead". With `--replace` the new identity is enrolled first,

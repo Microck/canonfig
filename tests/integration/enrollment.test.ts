@@ -15,6 +15,7 @@ import {
   GroupName,
 } from "../../src/domain/brand.ts";
 import {
+  DuplicateFollowerIdentityError,
   EnrollmentConfigurationError,
   EnrollmentFingerprintMismatchError,
   EnrollmentSourceMismatchError,
@@ -31,6 +32,7 @@ import { Enrollment } from "../../src/enrollment/enrollment.service.ts";
 import {
   authenticateFollower,
   cancelFollowerEnrollment,
+  finalizeFollowerEnrollment,
   enrollFollower,
   reconstructEnrollmentWireError,
 } from "../../src/enrollment/follower-client.ts";
@@ -324,7 +326,7 @@ describe("loopback HTTPS enrollment", () => {
     expect(authenticated.follower.id).toBe(prepared.follower.id);
   });
 
-  it("rejects expired invitations, replay and nonce mismatch, and rotates a re-enrolled name", async () => {
+  it("rejects expired invitations, replay, nonce mismatch and active-name takeover", async () => {
     const setup = fixture();
     const server = await start(setup);
     const expired = await invitation(setup, server, 1);
@@ -336,7 +338,7 @@ describe("loopback HTTPS enrollment", () => {
     );
     expect(expiredError).toBeInstanceOf(InvitationExpiredError);
 
-    const first = await invitation(setup, server);
+    const first = await invitation(setup, server, 60_000, [decode(GroupName)("retained-group")]);
     const primary = await runFollower(
       setup,
       enrollFollower({ invitation: first, followerName: "Primary Host" }),
@@ -357,45 +359,42 @@ describe("loopback HTTPS enrollment", () => {
     );
     expect(nonceError).toBeInstanceOf(EnrollmentSourceMismatchError);
 
-    // A new invitation for an enrolled name rotates that identity's
-    // credential: the identity is kept and the previous credential stops
-    // authenticating once the rotation is finalized.
-    const primaryCredential = await runFollower(
-      setup,
-      Effect.flatMap(MachineState, (machine) =>
-        machine.loadCredential({
-          reference: primary.credentialReference,
-        })
-      ),
-    );
-    const rotationGrant = await invitation(setup, server);
-    const rotated = await runFollower(
-      setup,
-      enrollFollower({ invitation: rotationGrant, followerName: "Primary Host" }),
-    );
-    expect(rotated.follower.id).toBe(primary.follower.id);
-    expect(rotated.credentialReference).not.toBe(primary.credentialReference);
-    const rotatedCredential = await runFollower(
-      setup,
-      Effect.flatMap(MachineState, (machine) =>
-        machine.loadCredential({ reference: rotated.credentialReference })
-      ),
-    );
-    const authenticated = await runSource(
-      setup,
-      Effect.flatMap(Enrollment, (enrollment) =>
-        enrollment.authenticate(Redacted.value(rotatedCredential))),
-    );
-    expect(authenticated.follower.id).toBe(primary.follower.id);
-    const retired = await runSource(
-      setup,
-      Effect.flip(Effect.flatMap(Enrollment, (enrollment) =>
-        enrollment.authenticate(Redacted.value(primaryCredential)))),
-    );
-    expect(retired).toBeInstanceOf(InvalidFollowerCredentialError);
+    const primaryCredential = await runFollower(setup, Effect.flatMap(MachineState, (machine) =>
+      machine.loadCredential({ reference: primary.credentialReference })));
+    const duplicateGrant = await invitation(setup, server);
+    const duplicate = await failure(enrollFollower({
+      invitation: duplicateGrant, followerName: "Primary Host",
+    }).pipe(Effect.provide(setup.followerMachine)));
+    expect(duplicate).toBeInstanceOf(DuplicateFollowerIdentityError);
+    const authenticated = await runSource(setup, Effect.flatMap(Enrollment, (enrollment) =>
+      enrollment.authenticate(Redacted.value(primaryCredential))));
+    expect(authenticated.follower).toEqual(primary.follower);
+    // Rejection does not spend the invitation; a distinct name can use it.
+    const second = await runFollower(setup, enrollFollower({
+      invitation: duplicateGrant, followerName: "Distinct Host",
+    }));
+    expect(second.follower.id).not.toBe(primary.follower.id);
+
   });
 
-  it("removes the Source-side credential of cancelled, rotated and revoked enrollments", async () => {
+  it("reserves a pending name against a different invitation", async () => {
+    const setup = fixture();
+    const server = await start(setup);
+    const prepared = await runFollower(setup, enrollFollower({
+      invitation: await invitation(setup, server), followerName: "Pending Host", finalize: false,
+    }));
+    const other = await invitation(setup, server);
+    const duplicate = await failure(enrollFollower({ invitation: other, followerName: "Pending Host" })
+      .pipe(Effect.provide(setup.followerMachine)));
+    expect(duplicate).toBeInstanceOf(DuplicateFollowerIdentityError);
+    await runFollower(setup, finalizeFollowerEnrollment({ endpoint: server.endpoint,
+      tlsFingerprint: prepared.tlsFingerprint, credentialReference: prepared.credentialReference }));
+    const authenticated = await runFollower(setup, authenticateFollower({ endpoint: server.endpoint,
+      tlsFingerprint: prepared.tlsFingerprint, credentialReference: prepared.credentialReference }));
+    expect(authenticated.follower.id).toBe(prepared.follower.id);
+  });
+
+  it("does not leak Source credentials on duplicate, cancelled or revoked enrollments", async () => {
     const setup = fixture();
     const server = await start(setup);
     const sourceCredentials = join(setup.root, "source", "credentials");
@@ -408,10 +407,10 @@ describe("loopback HTTPS enrollment", () => {
     );
     expect(readdirSync(sourceCredentials)).toHaveLength(4);
 
-    await runFollower(
-      setup,
-      enrollFollower({ invitation: await invitation(setup, server), followerName: "Kept Host" }),
-    );
+    const duplicateGrant = await invitation(setup, server);
+    const duplicate = await failure(enrollFollower({ invitation: duplicateGrant, followerName: "Kept Host" })
+      .pipe(Effect.provide(setup.followerMachine)));
+    expect(duplicate).toBeInstanceOf(DuplicateFollowerIdentityError);
     expect(readdirSync(sourceCredentials)).toHaveLength(4);
 
     const prepared = await runFollower(
