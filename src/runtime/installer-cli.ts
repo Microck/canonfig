@@ -29,7 +29,12 @@ type Command = { readonly kind: "list" }
 export const parseInstallerArguments = (arguments_: ReadonlyArray<string>): Command => {
   if (arguments_.filter((value) => value === "--json").length > 1) throw new Error("--json may be specified only once");
   const [action, method, ...rest] = arguments_.filter((value) => value !== "--json");
-  if (action === "list" && method === undefined) return { kind: "list" };
+  if (action === undefined) throw new Error("Missing installer command");
+  if (!["list", "set", "remove", "check"].includes(action)) throw new Error(`Unknown installer command: ${action}`);
+  if (action === "list") {
+    if (method !== undefined) throw new Error("Installer list accepts no arguments");
+    return { kind: "list" };
+  }
   if (method === undefined) throw new Error("An installer method is required");
   const normalized = normalizeInstallerMethod(method);
   if ((action === "remove" || action === "check") && rest.length === 0) return { kind: action, method: normalized };

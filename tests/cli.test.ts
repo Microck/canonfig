@@ -1092,5 +1092,5 @@ it.each([
 });
 
 it.each(["source", "schedule", "setup", "overlay", "tunnel", "profile", "agent", "follower"])("names the missing action for %s", (group) => {
-  expect(evaluateCli([group])).toMatchObject({ _tag: "InvalidInput", message: `Missing ${group} command; run canonfig --help for available commands` });
+  expect(evaluateCli([group])).toMatchObject({ _tag: "InvalidInput", message: `Missing ${group} command` });
 });

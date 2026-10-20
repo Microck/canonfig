@@ -875,7 +875,7 @@ const evaluateCommand = (
   try {
     const groups = new Set(["source", "follower", "profile", "overlay", "tunnel", "setup", "agent", "schedule"]);
     if (area !== undefined && groups.has(area) && action === undefined) {
-      return invalid(`Missing ${area} command; run canonfig --help for available commands`);
+      return invalid(`Missing ${area} command`);
     }
     if (area === "source") return evaluateSourceCommand(action, rest, format);
     // The positional invitation below serves the private `--stdin`
