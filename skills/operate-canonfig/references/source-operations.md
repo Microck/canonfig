@@ -122,13 +122,13 @@ with a new invitation when access should return; do not reuse credentials or
 reset pins. A follower that runs `canonfig follower unenroll` revokes itself;
 revoke it here only when its reply says the Source was unreachable.
 
-## Moving from 3.2.x to 4.0.0
+## Moving from 3.2.x to 4.0.1
 
 An in-place upgrade is unsupported and unverified. The signed revision format
-changed; a 4.0.0 Source and a 3.2.x follower refuse each other even if they
+changed; a 4.0.1 Source and a 3.2.x follower refuse each other even if they
 were previously enrolled. Do not replace the package or state in the existing
 installation. Back up each machine's existing state separately, then establish
-a new 4.0.0 Source and enroll new followers in separate installations with new
+a new 4.0.1 Source and enroll new followers in separate installations with new
 invitations. Review and republish the profile, and plan before applying. Do not
 copy old enrollments, signing credentials, revisions, or schedules into new
 state. Follow the [fresh-install guide](../../../website/content/docs/how-to/upgrade.mdx).
