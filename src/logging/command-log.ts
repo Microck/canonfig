@@ -1,3 +1,4 @@
+import { groupHelpRequested } from "../runtime/command-routing.ts";
 import { isPublicEnrollmentCommand } from "../runtime/enrollment-input.ts";
 import { spawnSync } from "node:child_process";
 import {
@@ -134,7 +135,7 @@ const commandName = (arguments_: ReadonlyArray<string>): string => {
   const first = positional[0];
   const second = positional[1];
   const exposedInvitation = isPublicEnrollmentCommand(arguments_);
-  if (!exposedInvitation && (positional.includes("--help") || positional.includes("-h"))) {
+  if (!exposedInvitation && groupHelpRequested(arguments_)) {
     return first !== undefined && COMMAND_ACTIONS.get(first)?.has("help") === true ? `${first}.help` : "help";
   }
   if ((positional.includes("--version") || positional.includes("-V")) && !exposedInvitation) return "version";

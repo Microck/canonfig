@@ -36,3 +36,10 @@ export const harnessArguments = (arguments_: ReadonlyArray<string>): ReadonlyArr
   const head = arguments_.indexOf("harness");
   return arguments_.filter((_, index) => index !== head);
 };
+
+/** Help switches and supported positional group-help forms precede version. */
+export const groupHelpRequested = (arguments_: ReadonlyArray<string>): boolean => {
+  const positional = arguments_.filter((argument) => argument !== "--json");
+  return arguments_.includes("--help") || arguments_.includes("-h")
+    || ((positional[0] === "secrets" || positional[0] === "harness") && positional[1] === "help");
+};

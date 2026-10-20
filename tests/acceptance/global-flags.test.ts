@@ -82,3 +82,17 @@ it.each(["secrets", "harness"])("retains %s JSON group help when version flags a
     expect(existsSync(join(home, ".canonfig/state.sqlite"))).toBe(false);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 30000);
+
+
+it.each(["secrets", "harness"])("preserves positional %s help over version", (group) => {
+  const home = mkdtempSync(join(tmpdir(), "canonfig-positional-help-"));
+  try {
+    for (const version of ["--version", "-V"]) {
+      const result = invoke(home, ["--json", group, "help", version]);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ schema: "canonfig.cli/v1", command: `${group}.help`, exitCode: 0 });
+    }
+    const entries = readFileSync(join(home, "command.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(entries.every((entry) => entry.command === `${group}.help`)).toBe(true);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 30000);

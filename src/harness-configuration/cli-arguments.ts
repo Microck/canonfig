@@ -51,7 +51,8 @@ export const parseHarnessArguments = (
   arguments_: ReadonlyArray<string>,
 ): ParsedHarnessArguments => {
   // JSON is global and can precede either the group or its command.
-  const explicitHelp = arguments_.includes("--help") || arguments_.includes("-h");
+  const explicitHelp = arguments_.includes("--help") || arguments_.includes("-h")
+    || arguments_.filter((argument) => argument !== "--json")[0] === "help";
   const positional = arguments_.filter((argument) => argument !== "--json"
     && !(explicitHelp && (argument === "--version" || argument === "-V")));
   const leadsWithOption = positional[0]?.startsWith("-") ?? false;
