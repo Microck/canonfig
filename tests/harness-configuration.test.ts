@@ -593,14 +593,16 @@ describe("deleted native TOML configuration", () => {
   });
 });
 
-it.skipIf(process.platform === "win32")("does not mistake a dangling native symlink for a deleted file", async () => {
+it.skipIf(process.platform === "win32").each(["file", "ancestor"])("does not mistake a dangling native %s symlink for a deleted file", async (location) => {
   const root = await fixture(["codex"]);
   const compiler = new HarnessConfigurationCompiler();
   await applyPlan(await compiler.plan({ root }));
   const previous = await loadState(root);
   const file = path.join(root, ".codex/config.toml");
-  await rm(file);
-  await symlink("missing-config.toml", file);
+  const link = location === "file" ? file : path.dirname(file);
+  const target = location === "file" ? "missing-config.toml" : "missing-config-directory";
+  await rm(link, { recursive: location === "ancestor" });
+  await symlink(target, link);
   for (const force of [false, true]) {
     const plan = await compiler.plan({ root, force });
     expect(plan.entries.find((entry) => entry.path === ".codex/config.toml")?.action).toBe("conflict");
@@ -611,7 +613,7 @@ it.skipIf(process.platform === "win32")("does not mistake a dangling native syml
       setExitCode: (value) => { exitCode = value; },
     });
     expect(exitCode, output.join("")).toBe(4);
-    expect(await readlink(file)).toBe("missing-config.toml");
+    expect(await readlink(link)).toBe(target);
     expect((await loadState(root)).artifacts).toEqual(previous.artifacts);
   }
 });

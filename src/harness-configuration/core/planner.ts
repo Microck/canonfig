@@ -56,13 +56,20 @@ function modeFor(artifacts: readonly DesiredArtifact[]): number | undefined {
 }
 
 /** A failed read is not proof of absence: dangling symlinks still own a path. */
-async function unreadableExistingPath(absolute: string, bytes: Uint8Array | undefined): Promise<boolean> {
+async function unreadableExistingPath(root: string, absolute: string, bytes: Uint8Array | undefined): Promise<boolean> {
   if (bytes !== undefined) return false;
-  try { await fs.lstat(absolute); return true; }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
+  let current = path.resolve(root);
+  for (const component of path.relative(current, absolute).split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    try {
+      const entry = await fs.lstat(current);
+      if (entry.isSymbolicLink()) return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
   }
+  return true;
 }
 
 export async function createPlan(
@@ -102,7 +109,7 @@ export async function createPlan(
     const absolute = resolveInside(root, filePath);
     await assertRealPathInside(root, absolute);
     const currentBytes = await readOptionalFile(absolute);
-    if (await unreadableExistingPath(absolute, currentBytes)) {
+    if (await unreadableExistingPath(root, absolute, currentBytes)) {
       const previous = previousState.artifacts[filePath];
       entries.push({ path: filePath, owner: ownerFor(group, diagnostics, filePath), action: "conflict",
         reason: "Native path exists but cannot be read as a regular file. Resolve the dangling symlink before applying or cleaning." });
@@ -183,7 +190,7 @@ export async function createPlan(
     const absolute = resolveInside(root, filePath);
     await assertRealPathInside(root, absolute);
     const currentBytes = await readOptionalFile(absolute);
-    if (await unreadableExistingPath(absolute, currentBytes)) {
+    if (await unreadableExistingPath(root, absolute, currentBytes)) {
       entries.push({ path: filePath, owner: previous.owner, action: "conflict",
         reason: "Native path exists but cannot be read as a regular file. Resolve the dangling symlink before applying or cleaning." });
       nextArtifacts[filePath] = previous;
