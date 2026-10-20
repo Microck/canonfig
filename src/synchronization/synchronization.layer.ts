@@ -1,4 +1,6 @@
 import { Clock, Effect, Layer, Option } from "effect";
+import type { ActionId } from "../domain/brand.ts";
+import { sha256Hex } from "../profile/profile-codec.ts";
 import { AgentResolution } from "../agent/agent-resolution.service.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
@@ -37,6 +39,19 @@ const makeSynchronization = Effect.gen(function*() {
         );
         yield* preflightDisk(input).pipe(Effect.provideService(MachineState, machine));
 
+        // Persist cleanup locations before the first snapshot write. Pending
+        // references locate interrupted preparation; recovery must not restore
+        // them until a later running event confirms a completed snapshot.
+        const directories = yield* machine.userDirectories();
+        const pendingRollbackReferences = new Map<ActionId, string>();
+        for (const action of input.plan.actions) {
+          const location = yield* machine.normalizePath({
+            path: `canonfig/rollback/${input.id}/${sha256Hex(action.id)}.json`,
+            base: directories.cache,
+          });
+          pendingRollbackReferences.set(action.id, location.absolute);
+        }
+
         // startRun atomically persists the full plan and all pending actions.
         // The preflight above only measures; no MachineState mutation is
         // reachable before this succeeds.
@@ -46,6 +61,7 @@ const makeSynchronization = Effect.gen(function*() {
           revision,
           plan: input.plan,
           startedAt,
+          pendingRollbackReferences,
         });
 
         const result = yield* executeSynchronizationPlan({
@@ -78,6 +94,7 @@ const makeSynchronization = Effect.gen(function*() {
         if (result.outcome.outcome !== "Interrupted") {
           yield* cleanupRollbackSnapshots(
             input.id, input.plan.actions.map((action) => action.id), result.failedRollbacks,
+            [...pendingRollbackReferences.values()],
           ).pipe(
             Effect.provideService(MachineState, machine),
             Effect.mapError((error) => new RollbackCleanupError({
@@ -113,6 +130,7 @@ const makeSynchronization = Effect.gen(function*() {
             result.outcome.run,
             recovery?.run.plan.actions.map((action) => action.id) ?? [],
             result.failedRollbacks,
+            recovery?.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]) ?? [],
           ).pipe(
             Effect.provideService(MachineState, machine),
             Effect.mapError((error) => new RollbackCleanupError({

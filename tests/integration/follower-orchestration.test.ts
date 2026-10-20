@@ -1765,6 +1765,9 @@ if (args[0] === "tool" && args[1] === "list") {
             revision: orphan.id,
             plan: { ...planned.plan, revision: orphan.id },
             startedAt: "2026-08-16T00:04:00Z",
+            pendingRollbackReferences: new Map([[planned.plan.actions[0]!.id,
+              join(root, "old-cache", "canonfig", "rollback", "orphaned-revision-run",
+                `${sha256Hex(planned.plan.actions[0]!.id)}.json`)]]),
           }),
         )
       ).pipe(Effect.provide(followerRepository)),
@@ -1781,9 +1784,25 @@ if (args[0] === "tool" && args[1] === "list") {
     expect(unrecoverable.message).toContain(
       "run 'canonfig abandon' to close it without rollback, then 'canonfig sync --apply'",
     );
+    const rollbackDirectories = await Effect.runPromise(Effect.flatMap(MachineState, (machine) =>
+      machine.userDirectories()).pipe(Effect.provide(restartedApplication)));
+    const rollbackRoot = join(root, "old-cache", "canonfig", "rollback");
+    expect(rollbackRoot.startsWith(rollbackDirectories.cache.absolute)).toBe(false);
+    const abandonedSnapshots = join(rollbackRoot, "orphaned-revision-run");
+    const otherSnapshots = join(rollbackRoot, "another-run");
+    const actionHash = sha256Hex(planned.plan.actions[0]!.id);
+    await mkdir(abandonedSnapshots, { recursive: true });
+    await mkdir(otherSnapshots, { recursive: true });
+    await writeFile(join(abandonedSnapshots, `${actionHash}.json`), "{}", { mode: 0o600 });
+    await writeFile(join(abandonedSnapshots, `${actionHash}.json.${"b".repeat(64)}.bin`), "synthetic-private-preimage", { mode: 0o600 });
+    await writeFile(join(abandonedSnapshots, ".cf-123456789abc.tmp"), "partial", { mode: 0o600 });
+    await writeFile(join(otherSnapshots, "keep.bin"), "other run preimage", { mode: 0o600 });
+
     await expect(Effect.runPromise(
       abandonFollowerRun(followerDatabase).pipe(Effect.provide(restartedApplication)),
     )).resolves.toMatchObject({ run: "orphaned-revision-run", abandoned: true });
+    await expect(stat(abandonedSnapshots)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(otherSnapshots, "keep.bin"), "utf8")).toBe("other run preimage");
 
     await sourceRuntime.runPromise(
       Effect.flatMap(Enrollment, (enrollment) =>

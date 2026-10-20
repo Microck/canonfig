@@ -69,6 +69,7 @@ import {
 } from "./follower-sync-config.ts";
 import { planSynchronization } from "./planner.ts";
 import {
+  cleanupRollbackSnapshots,
   defaultSynchronizationExecutionLimits,
   preflightPathLengths,
   removeRunTemporaryEntries,
@@ -1701,6 +1702,14 @@ export const abandonFollowerRun = Effect.fn(
   // run does not see them as foreign content. A failure here leaves the run
   // open with its evidence.
   yield* removeRunTemporaryEntries(recovery.run.plan.actions, recovery.run.id);
+  // Abandon explicitly discards recovery, including credential-bearing
+  // preimages. Keep the run open if cleanup fails so abandon can be retried.
+  yield* cleanupRollbackSnapshots(
+    recovery.run.id,
+    recovery.run.plan.actions.map((action) => action.id),
+    [],
+    recovery.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]),
+  );
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
   );

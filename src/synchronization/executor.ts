@@ -21,6 +21,7 @@ import { requireFreeSpace, type DiskRequirement } from "../machine/disk-space.ts
 import {
   type InsufficientDiskError,
   type MachineStateError,
+  MachineFilesystemError,
   PathTooLongError,
 } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
@@ -135,33 +136,64 @@ export const cleanupRollbackSnapshots = (
   run: SynchronizationRunInput["id"],
   actions: ReadonlyArray<ActionId>,
   failedRollbacks: ReadonlyArray<ActionId>,
+  rollbackReferences: ReadonlyArray<string> = [],
 ): Effect.Effect<void, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const directories = yield* machine.userDirectories();
-    const directory = yield* machine.normalizePath({
+    const currentDirectory = yield* machine.normalizePath({
       path: `canonfig/rollback/${run}`,
       base: directories.cache,
     });
     const retained = new Set(failedRollbacks);
     const disposable = new Set<string>(actions.filter((action) => !retained.has(action)).map(sha256Hex));
-    const references = [...disposable].flatMap((action) => [
-      `${action}.json`,
-      `${action}.schedule.json`,
-    ]);
-    const entries = yield* machine.listDirectory(directory);
-    for (const entry of entries) {
-      const ownedBackup = /^([a-f0-9]{64})\.json\.[a-f0-9]{64}\.bin$/u.exec(entry.path);
-      if (ownedBackup?.[1] !== undefined && disposable.has(ownedBackup[1])) {
-        references.push(entry.path);
+    const paths = directories.cache.platform === "windows" ? win32 : posix;
+    const ownedNames = new Set(actions.flatMap((action) => [
+      `${sha256Hex(action)}.json`, `${sha256Hex(action)}.schedule.json`,
+    ]));
+    const roots = new Set([currentDirectory.absolute]);
+    for (const reference of rollbackReferences) {
+      const parent = paths.dirname(reference);
+      if (!paths.isAbsolute(reference) || !ownedNames.has(paths.basename(reference))
+        || paths.basename(parent) !== run
+        || paths.basename(paths.dirname(parent)) !== "rollback"
+        || paths.basename(paths.dirname(paths.dirname(parent))) !== "canonfig") {
+        return yield* new MachineFilesystemError({ operation: "clean rollback snapshots",
+          path: reference, message: "rollback reference is not owned by this run and action set" });
       }
+      roots.add(parent);
     }
-    for (const reference of references) {
-      const path = yield* machine.normalizePath({
-        path: reference,
-        base: directory,
-      });
-      yield* machine.removeFile({ path }).pipe(
+    for (const root of roots) {
+      const directory = yield* machine.normalizePath({ path: root });
+      const references = [...disposable].flatMap((action) => [
+        `${action}.json`,
+        `${action}.schedule.json`,
+      ]);
+      const entries = yield* machine.listDirectory(directory);
+      for (const entry of entries) {
+        const ownedBackup = /^([a-f0-9]{64})\.json\.[a-f0-9]{64}\.bin$/u.exec(entry.path);
+        if (ownedBackup?.[1] !== undefined && disposable.has(ownedBackup[1])) {
+          references.push(entry.path);
+        }
+      }
+      for (const reference of references) {
+        const path = yield* machine.normalizePath({
+          path: reference,
+          base: directory,
+        });
+        yield* machine.removeFile({ path }).pipe(
+          Effect.catchTag("MachineFilesystemError", (error) =>
+            /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
+              ? Effect.void
+              : Effect.fail(error)
+          ),
+        );
+      }
+      if (retained.size > 0) continue;
+      // An interrupted atomic write of a rollback manifest leaves a Canonfig
+      // temporary sibling here, outside every managed target cleaned by recover.
+      yield* machine.removeTemporaryEntries({ directory, recursive: false });
+      yield* machine.removeEmptyDirectory({ path: directory }).pipe(
         Effect.catchTag("MachineFilesystemError", (error) =>
           /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
             ? Effect.void
@@ -169,17 +201,6 @@ export const cleanupRollbackSnapshots = (
         ),
       );
     }
-    if (retained.size > 0) return;
-    // An interrupted atomic write of a rollback manifest leaves a Canonfig
-    // temporary sibling here, outside every managed target cleaned by recover.
-    yield* machine.removeTemporaryEntries({ directory, recursive: false });
-    yield* machine.removeEmptyDirectory({ path: directory }).pipe(
-      Effect.catchTag("MachineFilesystemError", (error) =>
-        /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
-          ? Effect.void
-          : Effect.fail(error)
-      ),
-    );
   });
 
 const validateLimits = (

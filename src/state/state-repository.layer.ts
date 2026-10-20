@@ -1864,14 +1864,16 @@ const makeRepository = Effect.gen(function*() {
               sequence,
               state,
               recorded_at,
-              attempt
+              attempt,
+              rollback_reference
             ) VALUES (
               ${input.id},
               ${action.id},
               ${ordinal},
               'pending',
               ${input.startedAt},
-              0
+              0,
+              ${input.pendingRollbackReferences?.get(action.id) ?? null}
             )
           `;
         }
