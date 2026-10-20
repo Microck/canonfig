@@ -230,3 +230,14 @@ it("does not re-expand redaction markers for short recognized values", () => {
   expect(once).toBe("password=[REDACTED] echo [REDACTED]");
   expect(redactText(once, ["R"])).toBe(once);
 });
+
+it("scrubs repeated credentials from hostless URL userinfo", () => {
+  expect(redactText('https://user:synthetic-url-secret@ args: ["synthetic-url-secret"]'))
+    .not.toContain("synthetic-url-secret");
+});
+
+it("redacts large private keys without compiling an unbounded regex", () => {
+  const key = `-----BEGIN PRIVATE KEY-----\n${"aB3d".repeat(12000)}\n-----END PRIVATE KEY-----`;
+  expect(redactText(key)).toBe("[REDACTED]");
+  expect(redactText(`key-copy: ${key}`, [key])).toBe("key-copy: [REDACTED]");
+});

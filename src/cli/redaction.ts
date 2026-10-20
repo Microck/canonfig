@@ -25,11 +25,16 @@ export const redactKnownValues = (
   text: string,
   secrets: ReadonlyArray<string>,
 ): string => {
-  const ordered = [...new Set([...secrets, replacement])]
-    .filter((secret) => secret.length > 0)
+  const ordered = [...new Set(secrets)]
+    .filter((secret) => secret.length > 0 && secret !== replacement)
     .sort((left, right) => right.length - left.length);
-  const pattern = new RegExp(ordered.map((secret) => secret.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|"), "gu");
-  return text.replace(pattern, replacement);
+  // Never compile credential material as a regexp or rescan inserted markers.
+  // Split only plain segments on each literal; marker boundaries stay intact.
+  let segments = text.split(replacement);
+  for (const secret of ordered) {
+    segments = segments.flatMap((segment) => segment.split(secret));
+  }
+  return segments.join(replacement);
 };
 
 /** Preserve recognizable field/flag names, while scrubbing all value segments. */

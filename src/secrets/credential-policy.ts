@@ -88,6 +88,22 @@ export const collectLiteralCredentialValues = (text: string): Array<string> => {
     for (const match of text.matchAll(pattern)) collect(match[valueGroup]!);
   }
   for (const match of text.matchAll(privateKeyBlock)) collect(match[0]);
+  // A recognizable userinfo prefix need not have a valid host. Parse just
+  // that prefix against a synthetic host so repeated values still get scrubbed.
+  for (const match of text.matchAll(urlUserInformation)) {
+    try {
+      const url = new URL(`${match[0]}redaction.invalid`);
+      for (const encoded of [url.username, url.password]) {
+        let decoded = encoded;
+        try { decoded = decodeURIComponent(encoded); } catch { /* Keep the encoded literal. */ }
+        if (isEnvironmentReference(decoded)) continue;
+        collect(encoded);
+        collect(decoded);
+      }
+    } catch {
+      // The URL itself is still removed by the presentation redactor.
+    }
+  }
   for (const match of text.matchAll(embeddedUrl)) {
     try {
       const url = new URL(match[0]);
