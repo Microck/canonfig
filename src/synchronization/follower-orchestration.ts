@@ -1708,6 +1708,7 @@ export const abandonFollowerRun = Effect.fn(
     recovery.run.id,
     recovery.run.plan.actions.map((action) => action.id),
     [],
+    recovery.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]),
   );
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
