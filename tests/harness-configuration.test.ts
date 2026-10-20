@@ -554,3 +554,41 @@ describe("native harness file permissions", () => {
     expect((await readFile(path.join(root, "AGENTS.md"), "utf8")).trim()).toBe("# Local instructions");
   });
 });
+
+describe("deleted native TOML configuration", () => {
+  it.each(["codex", "grok-build"] as const)("recreates a deleted %s config and cleans an absent config", async (target) => {
+    const root = await fixture([target]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const relative = target === "codex" ? ".codex/config.toml" : ".grok/config.toml";
+    const file = path.join(root, relative);
+    const expected = await readFile(file, "utf8");
+    await rm(file);
+    const plan = await compiler.plan({ root });
+    expect(plan.entries.filter((entry) => entry.action === "conflict")).toEqual([]);
+    await applyPlan(plan);
+    expect(await readFile(file, "utf8")).toBe(expected);
+    await rm(file);
+    const output: string[] = [];
+    let exitCode = -1;
+    await runHarnessConfigurationCli(["clean", "--root", root, "--target", target], {
+      writeStdout: (value) => output.push(value), writeStderr: (value) => output.push(value),
+      setExitCode: (value) => { exitCode = value; },
+    });
+    expect(exitCode, output.join("")).toBe(0);
+    expect((await loadState(root)).artifacts[relative]).toBeUndefined();
+    await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("still protects an existing TOML file whose managed markers were removed", async () => {
+    const root = await fixture(["codex"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const file = path.join(root, ".codex/config.toml");
+    const outsideEdit = '# user replaced the file\nmodel = "keep-me"\n';
+    await writeFile(file, outsideEdit);
+    const plan = await compiler.plan({ root });
+    expect(plan.entries.some((entry) => entry.action === "conflict")).toBe(true);
+    expect(await readFile(file, "utf8")).toBe(outsideEdit);
+  });
+});

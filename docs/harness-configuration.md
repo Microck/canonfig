@@ -157,3 +157,7 @@ The canonical model intentionally carries semantic features rather than raw
 native file shapes. When a harness changes, its adapter and fixtures can be
 updated without changing the loader, planner, ownership model, or other
 adapters.
+
+If a generated native file is deleted, the next apply recreates it and clean
+forgets its ownership record without recreating it. Removing managed markers
+inside a file that still exists remains a conflict, protecting outside edits.
