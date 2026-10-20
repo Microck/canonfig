@@ -643,7 +643,7 @@ export const failureTaxonomy = {
   ),
   DuplicateFollowerIdentityError: declared(
     "conflict-or-drift",
-    () => "this machine is already enrolled",
+    () => "the follower identity is already enrolled",
   ),
   EnrollmentStateConflictError: declared(
     "conflict-or-drift",
