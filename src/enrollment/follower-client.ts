@@ -1,3 +1,4 @@
+import { defaultMaximumMetadataBytes } from "../domain/transport-limits.ts";
 import {
   createHash,
   createPublicKey,
@@ -97,7 +98,7 @@ import {
 
 const decode = Schema.decodeUnknownSync;
 const maximumResponseBytes = 64 * 1024;
-const defaultMaximumMetadataBytes = 1024 * 1024;
+
 const defaultMaximumBlobBytes = 8 * 1024 * 1024;
 const defaultTimeoutMilliseconds = 10_000;
 

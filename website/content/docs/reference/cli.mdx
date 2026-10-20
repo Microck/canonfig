@@ -70,6 +70,15 @@ match, so you can use it to find the value to write. An unknown `--resource`
 fails with "profile `<id>` in `<file>` declares no resource `<r>`"; a `tool` or
 `credential` resource has no content digest.
 
+Both `source digest` and `source publish` reject expanded revision metadata that
+exceeds the default 1 MiB transport budget, reserving space for the signing
+envelope. This measures the full resource projection, not just the authored
+JSON file size; a directory with many small entries can exceed it. Publication
+also checks actual revision/signing fields before storing anything. The error
+is usage/configuration (exit 2), not a retryable follower transport failure.
+Split oversized resources across separate profiles. File content carried in
+separate blobs does not count toward this metadata budget.
+
 **`source publish`** signs a new immutable revision. Publishing content equal
 to the latest revision returns that revision unchanged. Any other content,
 including an earlier revision's, becomes the next sequence number, so

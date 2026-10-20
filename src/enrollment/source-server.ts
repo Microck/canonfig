@@ -1,3 +1,4 @@
+import { defaultMaximumMetadataBytes } from "../domain/transport-limits.ts";
 import type { ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import { isIP } from "node:net";
@@ -54,7 +55,7 @@ import {
 import { buildIdentity } from "../runtime/build-identity.ts";
 
 const maximumRequestBytes = 64 * 1024;
-const defaultMaximumMetadataBytes = 1024 * 1024;
+
 const defaultMaximumBlobBytes = 8 * 1024 * 1024;
 const AddressInfoSchema = Schema.Struct({
   address: Schema.String,

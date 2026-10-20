@@ -1,3 +1,4 @@
+import { ProfileMetadataBudgetError } from "../profile/metadata-budget.ts";
 import {
   createPrivateKey,
   createPublicKey,
@@ -582,6 +583,8 @@ const sourceCommandsLayer: Layer.Layer<
             catch: (cause) =>
               cause instanceof ProfileContractError
                 ? invalidResourcesFailure(cause.errors)
+                : cause instanceof ProfileMetadataBudgetError
+                ? new CliCommandFailure({ category: "usage-or-configuration", message: cause.message })
                 : new CliCommandFailure({
                   category: "internal",
                   message: `resource digests could not be computed: ${String(cause)}`,
