@@ -1,0 +1,41 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+import { programVersion } from "../../src/cli/help.ts";
+
+const invoke = (home: string, args: readonly string[]) => spawnSync(process.execPath,
+  ["--import", "tsx", resolve(import.meta.dirname, "../../src/runtime/main.ts"), ...args],
+  { encoding: "utf8", timeout: 20000, env: { ...process.env, HOME: home, USERPROFILE: home,
+    CANONFIG_LOG_FILE: join(home, "command.log"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state") } });
+
+describe("global CLI flags", () => {
+  it.each([
+    ["--json", "secrets", "list"], ["secrets", "--json", "list"],
+    ["--json", "harness", "targets"], ["harness", "--json", "targets"],
+  ])("routes %j and records its command", (...args) => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-global-flags-"));
+    try {
+      const result = invoke(home, args);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      const command = args.includes("secrets") ? "secrets.list" : "harness.targets";
+      expect(JSON.parse(result.stdout)).toMatchObject({ schema: "canonfig.cli/v1", command, exitCode: 0 });
+      const entries = readFileSync(join(home, "command.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(entries.every((entry) => entry.command === command)).toBe(true);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  }, 30000);
+
+  it.each(["secrets", "harness", "installer"])("answers %s --version without opening state", (group) => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-global-version-"));
+    try {
+      const result = invoke(home, [group, "--version"]);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(programVersion);
+      expect(existsSync(join(home, ".canonfig/state.sqlite"))).toBe(false);
+      const json = invoke(home, ["--json", group, "--version"]);
+      expect(json.status, json.stdout + json.stderr).toBe(0);
+      expect(JSON.parse(json.stdout).packageVersion).toBe(programVersion);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  }, 30000);
+});

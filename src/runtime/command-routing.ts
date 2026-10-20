@@ -7,10 +7,10 @@
  */
 
 export const isSecretsCommand = (arguments_: ReadonlyArray<string>): boolean =>
-  arguments_[0] === "secrets";
+  arguments_.filter((value) => value !== "--json")[0] === "secrets";
 
 export const isHarnessConfigurationCommand = (arguments_: ReadonlyArray<string>): boolean =>
-  arguments_[0] === "harness";
+  arguments_.filter((value) => value !== "--json")[0] === "harness";
 
 /**
  * `--json` is a global option that `evaluateCli` accepts at any position, so it
@@ -24,4 +24,15 @@ export const isInstallerCommand = (arguments_: ReadonlyArray<string>): boolean =
 export const installerArguments = (arguments_: ReadonlyArray<string>): ReadonlyArray<string> => {
   const head = arguments_.indexOf("installer");
   return arguments_.filter((value, index) => index !== head);
+};
+
+/** Drop only the selected dispatcher head, retaining global JSON flags. */
+export const secretsArguments = (arguments_: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const head = arguments_.indexOf("secrets");
+  return arguments_.filter((_, index) => index !== head);
+};
+
+export const harnessArguments = (arguments_: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const head = arguments_.indexOf("harness");
+  return arguments_.filter((_, index) => index !== head);
 };

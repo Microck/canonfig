@@ -9,6 +9,8 @@ import { installCommandLog, observedSignalExitCode } from "../logging/command-lo
 import { minimumSupportedNodeMajor, nodeRuntimeIsSupported } from "./build-identity.ts";
 import {
   installerArguments,
+  secretsArguments,
+  harnessArguments,
   isHarnessConfigurationCommand,
   isInstallerCommand,
   isSecretsCommand,
@@ -164,10 +166,10 @@ const synchronizeSecretsAfterApply = ({ Effect }: typeof EffectModule) =>
 // Help and --version are answered here, before any command graph loads. The
 // groups with their own dispatchers answer their own help, and a positional
 // invitation is refused below even when --help accompanies it.
-const early = isSecretsCommand(arguments_)
-    || isHarnessConfigurationCommand(arguments_)
-    || isInstallerCommand(arguments_)
-    || isPublicEnrollmentCommand(arguments_)
+const globalVersion = arguments_.includes("--version") || arguments_.includes("-V");
+const separateDispatcher = isSecretsCommand(arguments_)
+  || isHarnessConfigurationCommand(arguments_) || isInstallerCommand(arguments_);
+const early = isPublicEnrollmentCommand(arguments_) || (separateDispatcher && !globalVersion)
   ? undefined
   : helpOrVersion(arguments_);
 
@@ -193,26 +195,28 @@ if (early !== undefined) {
   }, format));
   nodeCliIo.setExitCode(CliExitCode.humanActionRequired);
 } else if (isSecretsCommand(arguments_)) {
+  const secretsArgv = secretsArguments(arguments_);
   const secrets = await import("../secrets/cli.ts");
-  if (secrets.secretsHelpRequested(arguments_.slice(1))) {
+  if (secrets.secretsHelpRequested(secretsArgv)) {
     // Help reads no state: answer it without opening state.sqlite.
-    secrets.writeSecretsHelp(arguments_.slice(1), nodeCliIo);
+    secrets.writeSecretsHelp(secretsArgv, nodeCliIo);
   } else {
     // The secret runtime layer is loaded late to keep sqlite out of the
     // static graph.
     const { secretRuntimeLayer } = await import("../secrets/runtime-layer.ts");
     await runMain((effect) =>
-      secrets.runSecretsCli(arguments_.slice(1), nodeCliIo).pipe(
+      secrets.runSecretsCli(secretsArgv, nodeCliIo).pipe(
         effect.Effect.provide(secretRuntimeLayer()),
       ),
-      `secrets.${arguments_.slice(1).filter((value) => value !== "--json")[0] ?? "help"}`,
+      `secrets.${secretsArgv.filter((value) => value !== "--json")[0] ?? "help"}`,
     );
   }
 } else if (isHarnessConfigurationCommand(arguments_)) {
+  const harnessArgv = harnessArguments(arguments_);
   const { runHarnessConfigurationCli } = await import("../harness-configuration/cli.ts");
   await runMain((effect) =>
-    effect.Effect.promise(() => runHarnessConfigurationCli(arguments_.slice(1), nodeCliIo)),
-    `harness.${arguments_.slice(1).filter((value) => value !== "--json")[0] ?? "help"}`,
+    effect.Effect.promise(() => runHarnessConfigurationCli(harnessArgv, nodeCliIo)),
+    `harness.${harnessArgv.filter((value) => value !== "--json")[0] ?? "help"}`,
   );
 } else if (isInstallerCommand(arguments_)) {
   const installer = await import("./installer-cli.ts");

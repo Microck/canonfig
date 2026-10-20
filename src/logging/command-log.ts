@@ -129,12 +129,15 @@ const nodeFileOperations: CommandLogFileOperations = {
 };
 
 const commandName = (arguments_: ReadonlyArray<string>): string => {
-  const first = arguments_[0];
+  const positional = arguments_.filter((argument) => argument !== "--json");
+  const first = positional[0];
+  const second = positional[1];
+  if ((positional.includes("--version") || positional.includes("-V"))
+    && !(first === "follower" && second === "enroll")) return "version";
   if (first === undefined || first === "--help" || first === "-h") return "help";
   if (first === "--version" || first === "-V" || first === "-v") return "version";
   if (SINGLE_COMMANDS.has(first)) return first;
   const actions = COMMAND_ACTIONS.get(first);
-  const second = arguments_[1];
   if (second !== undefined && actions?.has(second) === true) {
     return `${first}.${second}`;
   }
