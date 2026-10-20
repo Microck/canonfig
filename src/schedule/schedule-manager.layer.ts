@@ -180,11 +180,21 @@ const missedLoggedOnRun = (
   return Date.parse(due) > Math.max(...known) ? due : undefined;
 };
 
+const bindingRepair = (schedule: NormalizedSyncSchedule, customExecutable: boolean): string => {
+  if (!customExecutable) return "Manually run `canonfig sync --apply` from the current installation to repair it; do not wait for the scheduled job to repair itself";
+  if (schedule.kind === "custom") return "Manually choose a supported daily or weekly calendar with `canonfig schedule set <calendar>` and omit --executable to clear the stale custom binding; the CLI cannot recreate a custom calendar";
+  const calendar = schedule.kind === "daily" ? `daily@${schedule.localTime}`
+    : `weekly:${schedule.weekdays.join(",")}@${schedule.localTime}`;
+  const timezone = schedule.timezone === undefined ? "" : ` --timezone ${schedule.timezone}`;
+  return `Manually run \`canonfig schedule set ${calendar}${timezone}\` from the current installation, without --executable. This keeps the selected calendar and clears the stale custom executable; sync --apply alone would reuse it`;
+};
+
 /** The effective state of the native job with what it means for the user. */
 const statusFrom = (
   schedule: NormalizedSyncSchedule,
   definition: RenderedSchedulerJob,
   inspection: SchedulerInspection,
+  customExecutable = false,
 ): Effect.Effect<ScheduleStatus> => Effect.gen(function*() {
   const bindingChecked = inspection.installed && inspection.bindingInspected === true;
   const bindingProblem = bindingChecked
@@ -215,7 +225,7 @@ const statusFrom = (
         return drift === "binding"
           ? `${bindingProblem ?? (bindingChecked
             ? "the calendar is unchanged and the installed runtime/entrypoint files are available, but the binding differs from this Canonfig build"
-            : "the installed binding differs and its runtime/entrypoint availability is unverified")}. Manually run \`canonfig sync --apply\` or \`canonfig schedule set\` from the current installation to repair it; do not wait for the scheduled job to repair itself`
+            : "the installed binding differs and its runtime/entrypoint availability is unverified")}. ${bindingRepair(schedule, customExecutable)}`
           : "the native job was changed outside Canonfig; the next `canonfig sync --apply` or `canonfig schedule set` restores the selected calendar";
       case "current":
         return nextRun === undefined
@@ -340,7 +350,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
         > {
           const desired = yield* definition(input);
           const inspection = yield* machine.inspectSchedulerJob(desired.definition);
-          return yield* statusFrom(desired.schedule, desired.definition, inspection);
+          return yield* statusFrom(desired.schedule, desired.definition, inspection, input.executable !== undefined);
         },
       );
 
@@ -393,7 +403,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           }
           const desired = yield* definition(input);
           const inspection = yield* machine.inspectSchedulerJob(desired.definition);
-          const before = yield* statusFrom(desired.schedule, desired.definition, inspection);
+          const before = yield* statusFrom(desired.schedule, desired.definition, inspection, input.executable !== undefined);
           if (inspection.timezoneChangedSinceBoot) {
             return yield* new ScheduleHumanActionRequiredError({
               action: "arm the macOS schedule after a timezone change",
@@ -416,6 +426,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
             desired.schedule,
             desired.definition,
             yield* machine.inspectSchedulerJob(desired.definition),
+            input.executable !== undefined,
           );
           if (after.state !== "current") {
             return yield* new ScheduleVerificationError({

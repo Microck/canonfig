@@ -47,9 +47,12 @@ is locked, doctor says so and gives this recovery text.
 A requested but absent, disabled, or calendar-drifted native job is a verification
 failure, not a pass. Binding-only drift is advisory only when the installed
 runtime and entrypoint files remain available. A deleted runtime or unreadable
-entrypoint fails readiness even if the calendar still matches. Manually run
-`canonfig sync --apply` or `canonfig schedule set` from the current installation
-to repair it; an unlaunchable job cannot repair itself. A current job proves only its installed definition; the result marks
+entrypoint fails readiness even if the calendar still matches. For a normal binding, manually run `canonfig sync --apply` from the current
+installation. For a deleted custom executable, use the concrete
+`canonfig schedule set <calendar>` command shown by status, without
+`--executable`, to preserve the chosen calendar and clear the stale custom path.
+`sync --apply` alone reuses a persisted custom executable and cannot repair it.
+An unlaunchable job cannot repair itself. A current job proves only its installed definition; the result marks
 scheduled execution unverified. An intentionally unscheduled follower remains
 skipped. Run a separately approved native scheduled execution before claiming
 unattended setup complete.

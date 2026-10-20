@@ -1,3 +1,4 @@
+import { evaluateCli } from "../src/cli/cli.ts";
 import { installedSystemdCommand, installedLaunchdCommand, installedWindowsCommand, installedBindingProblem } from "../src/machine/installed-scheduler-command.ts";
 import { scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
@@ -368,6 +369,12 @@ exit 0
     expect(broken).toMatchObject({ state: "drifted", drift: "binding", bindingUsable: false });
     expect(broken.detail).toContain(missing === "runtime" ? "runtime is missing" : "entrypoint is missing");
     expect(broken.detail).toContain("Manually run");
+    expect(broken.detail).toContain("`canonfig schedule set daily@04:00`");
+    expect(broken.detail).toContain("clears the stale custom executable");
+    const suggested = /`canonfig ([^`]+)`/u.exec(broken.detail)?.[1];
+    const parsed = evaluateCli(suggested!.split(" "));
+    expect(parsed).toMatchObject({ _tag: "Command", command: { _tag: "ScheduleSet", schedule: { kind: "daily", localTime: "04:00" } } });
+    if (parsed._tag === "Command" && parsed.command._tag === "ScheduleSet") expect(parsed.command.executable).toBeUndefined();
     expect(broken.detail).not.toContain("keeps its calendar");
     expect(scheduledDefinitionReadiness(broken).status).toBe("fail");
     expect(await readFile(path, "utf8")).toBe(stored);
@@ -379,12 +386,16 @@ exit 0
     const runtime = join(host.state, "custom-canonfig");
     await writeFile(runtime, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     await chmod(runtime, 0o755);
-    const selected = { ...input, executable: runtime };
+    const selected = { executable: runtime, schedule: { kind: "weekly", weekdays: ["Mon", "Fri"], localTime: "03:00", timezone: "UTC" } } as const;
     expect((await host.run((manager) => manager.install(selected))).status.state).toBe("current");
     await unlink(runtime);
     const broken = await host.run((manager) => manager.status(selected));
     expect(broken).toMatchObject({ state: "drifted", drift: "binding", bindingUsable: false });
     expect(scheduledDefinitionReadiness(broken).status).toBe("fail");
+    const suggested = /`canonfig ([^`]+)`/u.exec(broken.detail)?.[1];
+    const parsed = evaluateCli(suggested!.split(" "));
+    expect(parsed).toMatchObject({ _tag: "Command", command: { _tag: "ScheduleSet", schedule: selected.schedule } });
+    if (parsed._tag === "Command" && parsed.command._tag === "ScheduleSet") expect(parsed.command.executable).toBeUndefined();
   });
 
   it("reports a timer stopped outside Canonfig as inactive and restarts it on set", async () => {
