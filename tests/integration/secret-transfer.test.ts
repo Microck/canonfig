@@ -1,8 +1,11 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { pathToFileURL } from "node:url";
 import { mkdtempSync, rmSync } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Redacted, Schema } from "effect";
@@ -878,4 +881,67 @@ it("gives explicit recovery for an existing local/source name collision", async 
   await runFollower(setup, removeSecret("collision"));
   await runFollower(setup, applyTransferredSecrets(transferred));
   expect(await storedValue(setup, "collision")).toBe("source-value");
+});
+
+
+it("excludes a concurrent local write while a Source transfer owns the manifest lock", async () => {
+  const setup = fixture();
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let paused = false;
+  const delayed = Layer.effect(MachineState, Effect.map(MachineState, (machine) => ({
+    ...machine,
+    storeCredential: (input: Parameters<typeof machine.storeCredential>[0]) => {
+      if (paused) return machine.storeCredential(input);
+      paused = true;
+      reached.resolve();
+      return Effect.promise(() => release.promise).pipe(Effect.flatMap(() => machine.storeCredential(input)));
+    },
+  }))).pipe(Layer.provide(setup.followerMachine));
+  const transfer = Effect.runPromise(applyTransferredSecrets({ schemaVersion: 1, secrets: [
+    { name: "race-name", value: "source-value" }, { name: "other-name", value: "other-value" },
+  ] }).pipe(Effect.provide(delayed)));
+  await reached.promise;
+  try {
+    await expect(runFollower(setup, storeSecret("race-name", "local-value"))).rejects.toMatchObject({
+      category: "storage", message: expect.stringContaining("Another secret operation is in progress"),
+    });
+    await expect(runFollower(setup, removeSecret("race-name"))).rejects.toMatchObject({ category: "storage" });
+  } finally { release.resolve(); await transfer; }
+  expect(await storedValue(setup, "race-name")).toBe("source-value");
+  expect(await storedValue(setup, "other-name")).toBe("other-value");
+  await expect(runFollower(setup, storeSecret("race-name", "local-value"))).rejects.toMatchObject({ category: "usage" });
+  await runFollower(setup, storeSecret("independent", "local-value"));
+  expect(await storedValue(setup, "independent")).toBe("local-value");
+});
+
+
+it("honors a manifest lock held by another Node process and permits retry after release", async () => {
+  const setup = fixture();
+  await runFollower(setup, storeSecret("existing", "preserved"));
+  const module = pathToFileURL(resolve(import.meta.dirname, "../../src/synchronization/run-lock.ts")).href;
+  const manifest = join(setup.followerHome, ".canonfig", "secrets.json");
+  const code = `import { Effect } from "effect"; import { withRunLock } from ${JSON.stringify(module)};
+    await Effect.runPromise(withRunLock(${JSON.stringify(manifest)}, "test holder", Effect.promise(() => new Promise(resolve => {
+      process.stdin.resume(); process.stdin.on("end", resolve); process.stdout.write("LOCKED\\n");
+    }))));`;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], {
+    cwd: resolve(import.meta.dirname, "../.."), stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stderr = ""; child.stderr.on("data", (data) => { stderr += data.toString(); });
+  const exited = once(child, "exit");
+  try {
+    await new Promise<void>((resolveReady, reject) => {
+      const timer = setTimeout(() => reject(new Error("Manifest lock fixture timed out")), 10000);
+      child.stdout.on("data", (data) => { if (data.toString().includes("LOCKED")) { clearTimeout(timer); resolveReady(); } });
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("exit", () => { clearTimeout(timer); reject(new Error(stderr || "Lock holder exited before readiness")); });
+    });
+    const before = await readSecretManifest(setup);
+    await expect(runFollower(setup, storeSecret("existing", "overwrite"))).rejects.toMatchObject({ category: "storage" });
+    expect(await readSecretManifest(setup)).toEqual(before);
+    expect(await storedValue(setup, "existing")).toBe("preserved");
+  } finally { child.stdin.end(); await exited; }
+  await runFollower(setup, storeSecret("existing", "retried"));
+  expect(await storedValue(setup, "existing")).toBe("retried");
 });

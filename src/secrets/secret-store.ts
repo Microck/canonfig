@@ -1,3 +1,5 @@
+import { withRunLock } from "../synchronization/run-lock.ts";
+import { RunLockHeldError } from "../synchronization/synchronization.errors.ts";
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 
@@ -455,12 +457,34 @@ export const findSecretReference = (
     ),
   );
 
+/** Cross-process exclusion covers ownership reads, credential writes, manifest
+ * replacement and retired-reference cleanup as one operation. Contention is a
+ * retryable storage failure, never permission to commit a stale manifest. */
+const withManifestLock = <A>(
+  operation: string,
+  effect: Effect.Effect<A, SecretTransferError, MachineState>,
+): Effect.Effect<A, SecretTransferError, MachineState> => Effect.gen(function*() {
+  const machine = yield* MachineState;
+  const paths = yield* secretPaths();
+  yield* machine.ensureDirectory({ path: paths.directory, mode: 0o700 }).pipe(
+    Effect.mapError(() => secretError("storage", operation, "the Canonfig data directory cannot be secured")),
+  );
+  return yield* withRunLock(paths.manifest.absolute, operation, effect).pipe(
+    Effect.mapError((error) => error instanceof SecretTransferError ? error : secretError(
+      "storage", operation,
+      error instanceof RunLockHeldError
+        ? "Another secret operation is in progress. Wait for it to finish, then retry; no secret changes were made by this attempt."
+        : "The secret manifest lock could not be acquired safely. Check the Canonfig data directory and retry.",
+    )),
+  );
+});
+
 export const storeSecret = (
   name: string,
   value: string,
   origin: SecretOrigin = "local",
 ): Effect.Effect<SharedSecretSummary, SecretTransferError, MachineState> =>
-  Effect.gen(function*() {
+  withManifestLock("store secret", Effect.gen(function*() {
     yield* requireSecureStorage("store secret");
     const validName = yield* decodeSecretName(name);
     const validValue = yield* decodeValue(value);
@@ -498,12 +522,12 @@ export const storeSecret = (
     );
     yield* removeRetiredReferences(next, retired, "replace secret");
     return { name: validName, origin };
-  });
+  }));
 
 export const removeSecret = (
   name: string,
 ): Effect.Effect<boolean, SecretTransferError, MachineState> =>
-  Effect.gen(function*() {
+  withManifestLock("remove secret", Effect.gen(function*() {
     const validName = yield* decodeSecretName(name);
     const current = yield* readManifest();
     const existing = current.secrets.find((secret) => secret.name === validName);
@@ -516,14 +540,14 @@ export const removeSecret = (
     yield* writeManifest(next, retired);
     yield* removeRetiredReferences(next, retired, "remove secret");
     return true;
-  });
+  }));
 
 export const clearTransferredSecrets = (): Effect.Effect<
   ReadonlyArray<string>,
   SecretTransferError,
   MachineState
 > =>
-  Effect.gen(function*() {
+  withManifestLock("clear transferred secrets", Effect.gen(function*() {
     const current = yield* readManifest();
     const local = current.secrets.filter((secret) => secret.origin === "local");
     const source = current.secrets.filter((secret) => secret.origin === "source");
@@ -539,14 +563,14 @@ export const clearTransferredSecrets = (): Effect.Effect<
       "clear transferred secrets",
     );
     return source.map((secret) => secret.name);
-  });
+  }));
 
 export const loadSharedSecrets = (): Effect.Effect<
   TransferredSecrets,
   SecretTransferError,
   MachineState
 > =>
-  Effect.gen(function*() {
+  withManifestLock("load shared secrets", Effect.gen(function*() {
     yield* requireSecureStorage("load shared secrets");
     const manifest = yield* readManifest();
     yield* removeRetiredReferences(
@@ -558,12 +582,12 @@ export const loadSharedSecrets = (): Effect.Effect<
     const secrets = yield* loadSecretValues(shared, "load shared secrets");
     yield* validatePayloadBudget(secrets, "storage", "load shared secrets");
     return { schemaVersion: 1, secrets };
-  });
+  }));
 
 export const applyTransferredSecrets = (
   payload: TransferredSecrets,
 ): Effect.Effect<ReadonlyArray<string>, SecretTransferError, MachineState> =>
-  Effect.gen(function*() {
+  withManifestLock("apply transferred secrets", Effect.gen(function*() {
     yield* requireSecureStorage("apply transferred secrets");
     const incoming = yield* Effect.forEach(payload.secrets, (secret) =>
       Effect.all({
@@ -630,4 +654,4 @@ export const applyTransferredSecrets = (
     );
     yield* removeRetiredReferences(next, retired, "replace shared secrets");
     return created.map((secret) => secret.name);
-  });
+  }));
