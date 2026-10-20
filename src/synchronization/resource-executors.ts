@@ -257,22 +257,22 @@ const restoreStoredFile = (
         if (root === undefined) {
           yield* machine.removeFile({ path });
         } else {
-          const currentKind = yield* machine.inspectPath(path).pipe(
-            Effect.catchTag("MachineFilesystemError", (error) =>
-              error.message.includes("ENOENT")
-                ? Effect.succeed(undefined)
-                : Effect.fail(error)
-            ),
-          );
-          if (currentKind?.kind === "directory") {
-            yield* machine.removeEmptyDirectory({ path });
-          } else {
-            yield* machine.mutateWithinRoot({
-              root,
-              path,
-              mutation: { kind: "remove" },
-            });
+          // An absent child behind a missing/non-directory ancestor already
+          // has no managed object to remove. Inspect ancestors from the root
+          // down, never following a symlink into an unmanaged tree.
+          for (const ancestor of ancestorsOf(path).filter((absolute) =>
+            pathWithinMachineRoot(root, { platform: path.platform, absolute })
+          ).reverse()) {
+            const kind = yield* machine.inspectPath({ platform: path.platform, absolute: ancestor }).pipe(
+              Effect.catchTag("MachineFilesystemError", (error) =>
+                /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
+                  ? Effect.succeed(undefined) : Effect.fail(error)),
+            );
+            if (kind?.kind !== "directory") return;
           }
+          // The guarded remove handles both files and empty directories and
+          // revalidates ancestry during mutation instead of following links.
+          yield* machine.mutateWithinRoot({ root, path, mutation: { kind: "remove" } });
         }
         return;
       case "directory": {

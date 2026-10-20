@@ -1214,12 +1214,38 @@ const planRemovedResource = (
   }
 };
 
+/** Never replace or traverse a user object where the tree needs a directory. */
+const directoryMemberConflict = (context: ResourcePlanningContext): ResourceActionDraft | undefined => {
+  if ((context.desired.kind !== "directory" && context.desired.kind !== "skill")
+    || context.observed.state !== "directory") return undefined;
+  const required = new Set([
+    ...relativePathAncestors(desiredDirectoryEntries(context.desired).map((entry) => entry.path)),
+    ...(context.desired.directories ?? []).map((entry) => entry.path),
+  ]);
+  const owned = new Map((context.applied?.ownedFiles ?? []).map((entry) => [entry.path, entry]));
+  const conflicts = sortedUnique(presentObservedFiles(context.observed.files)
+    .filter((entry) => required.has(entry.path) && entry.objectKind !== "directory")
+    .filter((entry) => {
+      const previous = owned.get(entry.path);
+      return previous === undefined || fileSignature(previous) !== fileSignature(entry);
+    })
+    .map((entry) => entry.path));
+  if (conflicts.length === 0) return undefined;
+  return { kind: "human-action", detail: {
+    kind: "human-action",
+    reason: `Non-directory local objects block required directories in ${context.resource.target}: ${conflicts.join(", ")}`,
+    instructions: "Review and move or remove the conflicting local objects, then replan synchronization. Canonfig has not replaced them or followed their symlink targets.",
+  } };
+};
+
 /** Exhaustive Apply Policy dispatch. Transfer planning is intentionally absent. */
 export const planResource = (
   context: ResourcePlanningContext,
 ): ReadonlyArray<ResourceActionDraft> => {
   const rootConflict = directoryRootConflict(context);
   if (rootConflict !== undefined) return [rootConflict];
+  const memberConflict = directoryMemberConflict(context);
+  if (memberConflict !== undefined) return [memberConflict];
   switch (context.resource.policy) {
     case "replace":
       return planReplace(context);
