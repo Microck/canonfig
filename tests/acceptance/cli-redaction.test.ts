@@ -188,3 +188,18 @@ describe("credential-safe CLI output", () => {
     expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
   });
 });
+
+
+describe("symbolic credential references", () => {
+  it.each([
+    '"API_KEY": "${TEST_API_KEY}"',
+    'Authorization: Bearer ${DOCS_TOKEN}',
+    "GITHUB_TOKEN='$GITHUB_TOKEN'",
+    '--api-key "{env:SERVICE_KEY}"',
+  ])("preserves a symbolic credential binding in human text: %s", (value) => {
+    expect(redactText(value)).toBe(value);
+  });
+  it("still redacts literal suffixes beside environment syntax", () => {
+    expect(redactText('"API_KEY": "${TEST_API_KEY}-literal-secret"')).not.toContain("literal-secret");
+  });
+});

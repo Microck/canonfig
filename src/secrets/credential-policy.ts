@@ -66,6 +66,10 @@ const unquote = (value: string): string => {
   return value.startsWith("'") && value.endsWith("'") ? value.slice(1, -1) : value;
 };
 
+/** Recognize references in either plain or quoted credential values. */
+export const isEncodedEnvironmentReference = (value: string): boolean =>
+  isEnvironmentReference(unquote(value));
+
 /** Detect recognizable literal credentials without rewriting reviewed bytes. */
 export const containsLiteralCredential = (text: string): boolean => {
   if (text.matchAll(privateKeyBlock).next().done === false) return true;

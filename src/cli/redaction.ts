@@ -4,6 +4,7 @@ import {
   assignedCredential,
   authorizationCredential,
   isSecretField,
+  isEncodedEnvironmentReference,
   privateKeyBlock,
   quotedCredentialKey,
   spacedCredentialFlag,
@@ -42,10 +43,14 @@ export const redactText = (
   redactKnownValues(text
     .replace(privateKeyBlock, replacement)
     .replace(urlUserInformation, "$1[REDACTED]@")
-    .replace(authorizationCredential, "$1[REDACTED]")
-    .replace(assignedCredential, `$1$2$3${replacement}`)
-    .replace(quotedCredentialKey, `$1$2"${replacement}"`)
-    .replace(spacedCredentialFlag, `$1$2${replacement}`), secrets);
+    .replace(authorizationCredential, (match, prefix: string, value: string) =>
+      isEncodedEnvironmentReference(value) ? match : `${prefix}${replacement}`)
+    .replace(assignedCredential, (match, flag: string | undefined, name: string, separator: string, value: string) =>
+      isEncodedEnvironmentReference(value) ? match : `${flag ?? ""}${name}${separator}${replacement}`)
+    .replace(quotedCredentialKey, (match, name: string, separator: string, value: string) =>
+      isEncodedEnvironmentReference(value) ? match : `${name}${separator}"${replacement}"`)
+    .replace(spacedCredentialFlag, (match, flag: string, separator: string, value: string) =>
+      isEncodedEnvironmentReference(value) ? match : `${flag}${separator}${replacement}`), secrets);
 
 /** Preserve argv structure while recognizing both --name=value and --name value. */
 export const redactArguments = (

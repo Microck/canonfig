@@ -165,6 +165,8 @@ describe("harness configuration compiler", () => {
     if (!json) {
       expect(rendered).toContain("[REDACTED]");
       expect(rendered).toContain("existing-tool");
+      expect(rendered).toContain("${TEST_API_KEY}");
+      expect(rendered).toContain("${DOCS_TOKEN}");
       expect(rendered).toContain("+++ b/.mcp.json");
     }
     expect(await readFile(path.join(root, ".mcp.json"), "utf8")).toBe(native);
