@@ -453,3 +453,17 @@ describe("Windows npm command shims", () => {
     );
   });
 });
+
+it.each(["human", "json"])("preserves the installer parser's actionable error in %s output", async (format) => {
+  const f = fixture();
+  let stdout = "", stderr = "", exitCode = -1;
+  await Effect.runPromise(runInstallerCli(["set", "npm", ...(format === "json" ? ["--json"] : [])], {
+    writeStdout: (text) => { stdout += text; },
+    writeStderr: (text) => { stderr += text; },
+    setExitCode: (code) => { exitCode = code; },
+  }).pipe(Effect.provide(f.layer)));
+  expect(exitCode).toBe(2);
+  expect(stdout).toBe("");
+  if (format === "json") expect(JSON.parse(stderr)).toMatchObject({ schema: "canonfig.cli/v1", exitCode: 2, message: "Installer set requires --executable" });
+  else expect(stderr).toContain("Installer set requires --executable");
+});

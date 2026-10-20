@@ -1072,3 +1072,25 @@ describe("automatic secret synchronization result", () => {
     expect(called).toBe(1);
   });
 });
+
+
+it.each([
+  [["source", "init", "extra"], "canonfig source init accepts no arguments"],
+  [["profile", "list", "extra"], "canonfig profile list accepts no arguments"],
+  [["profile", "show"], "Usage: canonfig profile show <revision-id>"],
+  [["profile", "select"], "Usage: canonfig profile select <profile-id>"],
+  [["overlay", "list", "--foo"], "Unknown option: --foo"],
+  [["tunnel", "status", "extra"], "canonfig tunnel status accepts no arguments"],
+  [["overlay", "remove", "--foo"], "Unknown option: --foo"],
+  [["source", "revoke", "--foo"], "Unknown option: --foo"],
+  [["agent", "bogus"], "Unknown agent command: bogus"],
+  [["follower", "bogus"], "Unknown follower command: bogus"],
+] as const)("identifies the actual usage mistake in %j", (args, message) => {
+  for (const flags of [[], ["--json"]]) {
+    expect(evaluateCli([...args, ...flags])).toMatchObject({ _tag: "InvalidInput", message });
+  }
+});
+
+it.each(["source", "schedule", "setup", "overlay", "tunnel", "profile", "agent", "follower"])("names the missing action for %s", (group) => {
+  expect(evaluateCli([group])).toMatchObject({ _tag: "InvalidInput", message: `Missing ${group} command; run canonfig --help for available commands` });
+});

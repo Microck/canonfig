@@ -56,14 +56,18 @@ export const runInstallerCli = (
     writeInstallerHelp(io);
     return;
   }
-  const parsed = yield* Effect.try({ try: () => parseInstallerArguments(arguments_), catch: (cause) => cause }).pipe(
-    Effect.match({ onFailure: () => undefined, onSuccess: (value) => value }),
+  const parsing = yield* Effect.try({ try: () => parseInstallerArguments(arguments_), catch: (cause) => cause }).pipe(
+    Effect.match({
+      onFailure: (cause) => ({ ok: false as const, message: cause instanceof Error ? cause.message : "Invalid installer command" }),
+      onSuccess: (value) => ({ ok: true as const, value }),
+    }),
   );
-  if (parsed === undefined) {
-    io.writeStderr(renderUsageFailure("Invalid installer command; run canonfig installer --help", format));
+  if (!parsing.ok) {
+    io.writeStderr(renderUsageFailure(parsing.message, format));
     io.setExitCode(CliExitCode.usageOrConfiguration);
     return;
   }
+  const parsed = parsing.value;
   const operation = Effect.gen(function*() {
     switch (parsed.kind) {
       case "list": {
