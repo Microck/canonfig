@@ -27,11 +27,16 @@ interface RenderEnvelope {
 /** An argv-shaped array: every entry is a string, so flag pairs stay recognizable. */
 const StringArray = Schema.Array(Schema.String);
 
-const redact = (value: CliPayload, secrets: ReadonlyArray<string> = []): CliPayload => {
+type PayloadPath = ReadonlyArray<string | number>;
+const isBindingReference = (path: PayloadPath, harnessBindings: boolean): boolean =>
+  harnessBindings && path.length === 3 && path[0] === "secretBindings"
+  && Schema.is(Schema.Number)(path[1]) && path[2] === "secret";
+
+const redact = (value: CliPayload, secrets: ReadonlyArray<string> = [], harnessBindings = false, path: PayloadPath = []): CliPayload => {
   if (Array.isArray(value)) {
     return Schema.is(StringArray)(value)
       ? redactArguments(value, secrets)
-      : value.map((entry) => redact(entry, secrets));
+      : value.map((entry, index) => redact(entry, secrets, harnessBindings, [...path, index]));
   }
   if (Schema.is(Schema.String)(value)) return redactText(value, secrets);
   if (
@@ -49,10 +54,11 @@ const redact = (value: CliPayload, secrets: ReadonlyArray<string> = []): CliPayl
       enumerable: true,
       configurable: true,
       writable: true,
-      value: (isSecretField(key) || (namedSecret && key === "value"))
+      value: !isBindingReference([...path, key], harnessBindings)
+          && (isSecretField(key) || (namedSecret && key === "value"))
           && !(Schema.is(Schema.String)(entry) && isEnvironmentReference(entry))
         ? "[REDACTED]"
-        : redact(entry, secrets),
+        : redact(entry, secrets, harnessBindings, [...path, key]),
     });
   }
   return result;
@@ -87,8 +93,8 @@ const ordered = (value: CliPayload): CliPayload => {
  * output, so a value that also appears under an arbitrary name, in a URL,
  * or in free text does not leak through a non-secret-shaped field.
  */
-const collectSecretValues = (value: CliPayload): Array<string> => {
-  if (Array.isArray(value)) return value.flatMap(collectSecretValues);
+const collectSecretValues = (value: CliPayload, harnessBindings = false, path: PayloadPath = []): Array<string> => {
+  if (Array.isArray(value)) return value.flatMap((entry, index) => collectSecretValues(entry, harnessBindings, [...path, index]));
   if (Schema.is(Schema.String)(value)) return [];
   if (value === null || Schema.is(Schema.Number)(value) || Schema.is(Schema.Boolean)(value)) return [];
   const found: Array<string> = [];
@@ -98,12 +104,13 @@ const collectSecretValues = (value: CliPayload): Array<string> => {
   for (const [key, entry] of Object.entries(value)) {
     if (entry === undefined) continue;
     if (
-      Schema.is(Schema.String)(entry)
+      !isBindingReference([...path, key], harnessBindings)
+      && Schema.is(Schema.String)(entry)
       && (isSecretField(key) || (namedSecret && key === "value"))
       && entry !== "[REDACTED]"
       && !isEnvironmentReference(entry)
     ) found.push(entry);
-    else found.push(...collectSecretValues(entry));
+    else found.push(...collectSecretValues(entry, harnessBindings, [...path, key]));
   }
   return found;
 };
@@ -111,17 +118,19 @@ const collectSecretValues = (value: CliPayload): Array<string> => {
 const knownSecretsFor = (
   data: CliPayload | undefined,
   secrets: ReadonlyArray<string>,
+  harnessBindings = false,
 ): Array<string> => [
-  ...(data === undefined ? [] : collectSecretValues(data)),
+  ...(data === undefined ? [] : collectSecretValues(data, harnessBindings)),
   ...secrets,
 ];
 
 export const sanitizeCliData = (
   value: CliPayload,
   secrets: ReadonlyArray<string> = [],
+  harnessBindings = false,
 ): CliPayload => {
-  const known = [...collectSecretValues(value), ...secrets];
-  return ordered(redact(value, known));
+  const known = [...collectSecretValues(value, harnessBindings), ...secrets];
+  return ordered(redact(value, known, harnessBindings));
 };
 
 /**
@@ -152,10 +161,13 @@ export const renderCliResult = (
   format: CliOutputFormat,
   secrets: ReadonlyArray<string> = [],
 ): string => {
-  const known = knownSecretsFor(result.data, secrets);
+  // Only this command's documented binding DTO carries symbolic names in a
+  // legacy field called `secret`. Do not relax arbitrary secret-shaped fields.
+  const harnessBindings = result.command === "agent.harness.get" || result.command === "agent.harness.set";
+  const known = knownSecretsFor(result.data, secrets, harnessBindings);
   const data = result.data === undefined
     ? undefined
-    : sanitizeCliData(result.data, secrets);
+    : sanitizeCliData(result.data, secrets, harnessBindings);
   const message = redactText(result.message, known);
   if (format === "json") {
     const envelope: RenderEnvelope = {
