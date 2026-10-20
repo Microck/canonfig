@@ -53,7 +53,9 @@ const linuxBinding = { schema: "canonfig.installer/v1", platform: "linux", metho
 describe("local installer binding contract", () => {
   it.skipIf(process.platform === "win32").each([true, false])("uses only verified Homebrew opt bindings (stable opt exists: %s)", async (stableOpt) => {
     const f = fixture();
-    const prefix = join(f.home, "brew");
+    // Canonicalize the temporary root (/var is /private/var on macOS),
+    // but retain the opt symlink itself in the expected stable binding.
+    const prefix = join(await realpath(f.home), "brew");
     const keg = (version: string) => {
       const root = join(prefix, "Cellar", "node", version);
       const node = join(root, "bin", "node");
