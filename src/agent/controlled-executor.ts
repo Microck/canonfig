@@ -688,6 +688,7 @@ export const executeControlledProcess = (
       let limitExceeded = false;
       let timedOut = false;
       let wasCancelled = false;
+      let inputError: NodeJS.ErrnoException | undefined;
       let termination: Promise<void> | undefined;
       const child = spawn(input.executable, [...input.arguments], {
         cwd: input.workingDirectory,
@@ -741,6 +742,13 @@ export const executeControlledProcess = (
         }
         target.push(chunk);
       };
+      child.stdin.on("error", (cause: NodeJS.ErrnoException) => {
+        inputError = cause;
+        // Early process exit commonly closes the pipe before the task is sent.
+        // Preserve that exit status and stderr; other write failures terminate
+        // the process and are reported after close so timers are cleaned up.
+        if (cause.code !== "EPIPE" && cause.code !== "ERR_STREAM_DESTROYED") terminate();
+      });
       child.stdout.on("data", capture(output));
       child.stderr.on("data", capture(errors));
       child.once("error", (cause) => {
@@ -780,6 +788,14 @@ export const executeControlledProcess = (
             finishWith(new AgentOutputLimitError({
               executable: input.executable,
               maximumBytes: input.maximumOutputBytes,
+            }));
+            return;
+          }
+          if (inputError !== undefined && (exitCode === 0 || inputError.code !== "EPIPE"
+            && inputError.code !== "ERR_STREAM_DESTROYED")) {
+            finishWith(new AgentProcessError({
+              executable: input.executable,
+              message: `standard input write failed: ${redactText(String(inputError), input.secrets)}`,
             }));
             return;
           }

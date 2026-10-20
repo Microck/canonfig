@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { basename, delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -616,7 +617,7 @@ describe("agent resolution", () => {
       })));
       await Promise.all([
         writeFile(systemctl, `#!/bin/sh\nprintf spawned > '${marker}'\n`),
-        writeFile(harnessExecutable, `#!/bin/sh\ncat >/dev/null\nprintf '%s' '${proposed}'\n`),
+        writeFile(harnessExecutable, `#!/bin/sh\nwhile IFS= read -r line; do :; done\nprintf '%s' '${proposed}'\n`),
       ]);
       await Promise.all([
         chmod(systemctl, 0o755),
@@ -2987,6 +2988,36 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       await expect(access(join(root, "pip-requirements-marker"))).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, 23])("survives an early stdin close from an exit-%s child", (exitCode) => {
+    const moduleUrl = new URL("../src/agent/controlled-executor.ts", import.meta.url).href;
+    const script = `
+      import { Effect } from "effect";
+      import { executeControlledProcess } from ${JSON.stringify(moduleUrl)};
+      const result = await Effect.runPromise(executeControlledProcess({
+        executable: process.execPath,
+        arguments: ["-e", ${JSON.stringify(`console.error("early exit"); process.exit(${exitCode});`)}],
+        standardInput: new Uint8Array(2 * 1024 * 1024),
+        maximumInputBytes: 3 * 1024 * 1024,
+        maximumOutputBytes: 1024,
+        timeoutMilliseconds: 5000,
+        secrets: [],
+      }).pipe(Effect.match({
+        onSuccess: value => ({ ok: true, ...value }),
+        onFailure: error => ({ ok: false, tag: error._tag, message: error.message }),
+      })));
+      console.log(JSON.stringify(result));
+    `;
+    const output = execFileSync(process.execPath,
+      ["--import", "tsx", "--input-type=module", "-e", script],
+      { encoding: "utf8", timeout: 15000 });
+    const result = JSON.parse(output);
+    if (exitCode === 0) {
+      expect(result).toMatchObject({ ok: false, tag: "AgentProcessError" });
+    } else {
+      expect(result).toMatchObject({ ok: true, exitCode, stderr: "early exit\n" });
     }
   });
 
