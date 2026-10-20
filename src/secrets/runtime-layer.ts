@@ -7,6 +7,7 @@ import { linuxMachineStateLayer } from "../machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../machine/macos.layer.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { windowsMachineStateLayer } from "../machine/windows.layer.ts";
+import { runtimeCredentialPolicy } from "../runtime/credential-policy.ts";
 import { runtimeStateLayer } from "../runtime/state-layer.ts";
 import { nativeSecretStoreLayer } from "./native-secret-store.ts";
 
@@ -14,14 +15,15 @@ export interface SecretRuntimeLayerOptions {
   readonly statePath?: string | undefined;
 }
 
-const machineLayer = (): Layer.Layer<MachineState> => {
+const machineLayer = (statePath: string): Layer.Layer<MachineState> => {
+  const credentialPolicy = runtimeCredentialPolicy(statePath);
   switch (process.platform) {
     case "darwin":
-      return macosMachineStateLayer();
+      return macosMachineStateLayer({ credentialPolicy });
     case "win32":
-      return windowsMachineStateLayer();
+      return windowsMachineStateLayer({ credentialPolicy });
     default:
-      return linuxMachineStateLayer();
+      return linuxMachineStateLayer({ credentialPolicy });
   }
 };
 
@@ -31,5 +33,5 @@ export const secretRuntimeLayer = (
   const statePath = options.statePath
     ?? join(homedir(), ".canonfig", "state.sqlite");
   const state = runtimeStateLayer(statePath);
-  return Layer.merge(state, nativeSecretStoreLayer(machineLayer()));
+  return Layer.merge(state, nativeSecretStoreLayer(machineLayer(statePath)));
 };

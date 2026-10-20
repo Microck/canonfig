@@ -190,3 +190,9 @@ Vendor references checked on 2026-10-20:
 Kilo resolves `{env:NAME}` only in trusted global, explicitly selected, or organization-managed configuration, not a project `kilo.json`. Canonfig emits `MCP_ENV_PROJECT_UNSUPPORTED` for project MCP environment/header references, including explicit symbolic strings, and `--strict` blocks their application. Non-strict plans retain the mapping with a warning; they do not make it functional or expand project trust. Configure the binding yourself in trusted Kilo configuration.
 
 Source: https://kilo.ai/docs/code-with-ai/platforms/cli#environment-variables
+
+## Deleted generated files
+
+If a generated native file is deleted, the next apply recreates it and clean
+forgets its ownership record without recreating it. Removing managed markers
+inside a file that still exists remains a conflict, protecting outside edits.

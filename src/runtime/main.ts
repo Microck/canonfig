@@ -9,6 +9,9 @@ import { installCommandLog, observedSignalExitCode } from "../logging/command-lo
 import { minimumSupportedNodeMajor, nodeRuntimeIsSupported } from "./build-identity.ts";
 import {
   installerArguments,
+  groupHelpRequested,
+  secretsArguments,
+  harnessArguments,
   isHarnessConfigurationCommand,
   isInstallerCommand,
   isSecretsCommand,
@@ -119,49 +122,37 @@ const writeUsageFailure = async (message: string): Promise<void> => {
   nodeCliIo.setExitCode(CliExitCode.usageOrConfiguration);
 };
 
-/** Shared-secret synchronization after a successful apply; a failure is reported on its own. */
+/** Shared-secret synchronization contributes to the single apply result. */
 const synchronizeSecretsAfterApply = ({ Effect }: typeof EffectModule) =>
   Effect.promise(() => Promise.all([
     import("../secrets/runtime-layer.ts"),
     import("../secrets/secret-client.ts"),
     import("../secrets/secret-store.ts"),
     import("../secrets/cli.ts"),
+    import("../cli/source-commands.ts"),
   ])).pipe(
     Effect.flatMap(([
       { secretRuntimeLayer },
       { synchronizeSharedSecrets },
       { SecretTransferError },
-      { secretExitCode },
+      { secretFailureCategory },
+      { CliCommandFailure },
     ]) =>
       synchronizeSharedSecrets().pipe(
         Effect.provide(secretRuntimeLayer()),
-        Effect.catch((cause) =>
-          Effect.sync(() => {
-            const error = cause instanceof SecretTransferError
-              ? cause
-              : new SecretTransferError({
-                category: "state",
-                operation: "synchronize shared secrets",
-                message: "the secret synchronization state is unavailable",
-              });
-            const exitCode = secretExitCode(error);
-            nodeCliIo.writeStderr(format === "json"
-              ? `${JSON.stringify({
-                schema: "canonfig.secrets/v1",
-                ok: false,
-                command: "secrets.sync",
-                automatic: true,
-                error: {
-                  category: error.category,
-                  operation: error.operation,
-                  message: error.message,
-                },
-                exitCode,
-              })}\n`
-              : `Secret synchronization failed: ${error.message}\n`);
-            nodeCliIo.setExitCode(exitCode);
-          })
-        ),
+        Effect.mapError((cause) => {
+          const error = cause instanceof SecretTransferError
+            ? cause
+            : new SecretTransferError({
+              category: "state",
+              operation: "synchronize shared secrets",
+              message: "the secret synchronization state is unavailable",
+            });
+          return new CliCommandFailure({
+            category: secretFailureCategory(error),
+            message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
+          });
+        }),
       )
     ),
     Effect.asVoid,
@@ -170,10 +161,11 @@ const synchronizeSecretsAfterApply = ({ Effect }: typeof EffectModule) =>
 // Help and --version are answered here, before any command graph loads. The
 // groups with their own dispatchers answer their own help, and a positional
 // invitation is refused below even when --help accompanies it.
-const early = isSecretsCommand(arguments_)
-    || isHarnessConfigurationCommand(arguments_)
-    || isInstallerCommand(arguments_)
-    || isPublicEnrollmentCommand(arguments_)
+const explicitHelp = groupHelpRequested(arguments_);
+const globalVersion = !explicitHelp && (arguments_.includes("--version") || arguments_.includes("-V"));
+const separateDispatcher = isSecretsCommand(arguments_)
+  || isHarnessConfigurationCommand(arguments_) || isInstallerCommand(arguments_);
+const early = isPublicEnrollmentCommand(arguments_) || (separateDispatcher && !globalVersion)
   ? undefined
   : helpOrVersion(arguments_);
 
@@ -199,26 +191,28 @@ if (early !== undefined) {
   }, format));
   nodeCliIo.setExitCode(CliExitCode.humanActionRequired);
 } else if (isSecretsCommand(arguments_)) {
+  const secretsArgv = secretsArguments(arguments_);
   const secrets = await import("../secrets/cli.ts");
-  if (secrets.secretsHelpRequested(arguments_.slice(1))) {
+  if (secrets.secretsHelpRequested(secretsArgv)) {
     // Help reads no state: answer it without opening state.sqlite.
-    secrets.writeSecretsHelp(arguments_.slice(1), nodeCliIo);
+    secrets.writeSecretsHelp(secretsArgv, nodeCliIo);
   } else {
     // The secret runtime layer is loaded late to keep sqlite out of the
     // static graph.
     const { secretRuntimeLayer } = await import("../secrets/runtime-layer.ts");
     await runMain((effect) =>
-      secrets.runSecretsCli(arguments_.slice(1), nodeCliIo).pipe(
+      secrets.runSecretsCli(secretsArgv, nodeCliIo).pipe(
         effect.Effect.provide(secretRuntimeLayer()),
       ),
-      `secrets.${arguments_.slice(1).filter((value) => value !== "--json")[0] ?? "help"}`,
+      `secrets.${secretsArgv.filter((value) => value !== "--json")[0] ?? "help"}`,
     );
   }
 } else if (isHarnessConfigurationCommand(arguments_)) {
+  const harnessArgv = harnessArguments(arguments_);
   const { runHarnessConfigurationCli } = await import("../harness-configuration/cli.ts");
   await runMain((effect) =>
-    effect.Effect.promise(() => runHarnessConfigurationCli(arguments_.slice(1), nodeCliIo)),
-    `harness.${arguments_.slice(1).filter((value) => value !== "--json")[0] ?? "help"}`,
+    effect.Effect.promise(() => runHarnessConfigurationCli(harnessArgv, nodeCliIo)),
+    `harness.${harnessArgv.filter((value) => value !== "--json")[0] ?? "help"}`,
   );
 } else if (isInstallerCommand(arguments_)) {
   const installer = await import("./installer-cli.ts");
@@ -297,21 +291,10 @@ if (early !== undefined) {
   const outcome = evaluateCli(arguments_);
 
   if (outcome._tag === "Command") {
-    const automaticSecretSync = outcome.command._tag === "Synchronize"
-      && outcome.command.mode === "apply";
     await runMain((effect) =>
       effect.Effect.promise(() => import("./layers.ts")).pipe(
         effect.Effect.flatMap(({ runtimeLayer }) =>
-          runCli(arguments_, nodeCliIo).pipe(
-            // Automatic shared-secret synchronization runs only after a
-            // successful command. It reads runCli's exit code directly now that
-            // there is one, rather than suspending to read the mutable
-            // process.exitCode that runCli had just set.
-            effect.Effect.tap((exitCode) =>
-              automaticSecretSync && exitCode === CliExitCode.success
-                ? synchronizeSecretsAfterApply(effect)
-                : effect.Effect.void
-            ),
+          runCli(arguments_, nodeCliIo, synchronizeSecretsAfterApply(effect)).pipe(
             // `source serve` is the one command that outlives its own effect:
             // it returns once the loopback server is listening and the process
             // must then stay up to serve. Waiting on the exit code rather than

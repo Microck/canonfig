@@ -86,8 +86,11 @@ export function unapplyPrevious(
    */
   rerenderedMarkers: ReadonlySet<string> = new Set(),
 ): string | Uint8Array | undefined {
-  if (previous === undefined) return current;
-  let output = current;
+  // An absent file has no owned material to remove. Do not interpret absence
+  // as an edited/missing block inside an existing file: apply can recreate it,
+  // and clean should only drop its state record without resurrecting content.
+  if (previous === undefined || current === undefined) return current;
+  let output: string | Uint8Array | undefined = current;
   const jsonCleanups = previous.cleanup.filter((cleanup) =>
     cleanup.kind.startsWith("json-")
   );

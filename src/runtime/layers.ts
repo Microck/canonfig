@@ -1,4 +1,6 @@
+import { runtimeCredentialPolicy } from "./credential-policy.ts";
 import { runtimeStateLayer } from "./state-layer.ts";
+import { ProfileMetadataBudgetError } from "../profile/metadata-budget.ts";
 import {
   createPrivateKey,
   createPublicKey,
@@ -7,7 +9,6 @@ import {
 } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -49,7 +50,6 @@ import {
   type MachineProfile,
 } from "../domain/profile.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import type { CredentialPolicy } from "../machine/machine-state.types.ts";
 import { linuxMachineStateLayer } from "../machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../machine/windows.layer.ts";
@@ -582,6 +582,8 @@ const sourceCommandsLayer: Layer.Layer<
             catch: (cause) =>
               cause instanceof ProfileContractError
                 ? invalidResourcesFailure(cause.errors)
+                : cause instanceof ProfileMetadataBudgetError
+                ? new CliCommandFailure({ category: "usage-or-configuration", message: cause.message })
                 : new CliCommandFailure({
                   category: "internal",
                   message: `resource digests could not be computed: ${String(cause)}`,
@@ -1995,67 +1997,9 @@ const followerCommandsLayer = (
   }),
 );
 
-const credentialPolicyFromEnvironment = (): CredentialPolicy | undefined => {
-  const root = process.env.CANONFIG_LOCAL_CREDENTIAL_ROOT;
-  return root === undefined
-    ? undefined
-    : { kind: "local-file", path: root };
-};
-
-/**
- * The credential policy this follower enrolled under, read from its own state.
- *
- * The policy used to be selected only by `CANONFIG_LOCAL_CREDENTIAL_ROOT` in
- * the environment, and a native scheduled job carries no environment, so a
- * follower enrolled under the local-file policy had no credential during a
- * scheduled run and every fire failed. The enrolled configuration is the
- * authority; the environment variable is enrollment input, not a runtime one.
- *
- * Read directly rather than through StateRepository because the machine layer
- * is built before that service exists, and this is one row of one table.
- */
-const enrolledCredentialPolicy = (
-  statePath: string,
-): CredentialPolicy | undefined => {
-  try {
-    const database = new DatabaseSync(statePath, { readOnly: true });
-    try {
-      const row = database
-        .prepare(
-          "SELECT configuration_json FROM follower_sync_configuration WHERE singleton = 1",
-        )
-        .get();
-      const parsedRow = Schema.decodeUnknownOption(
-        Schema.Struct({ configuration_json: Schema.String }),
-      )(row);
-      if (Option.isNone(parsedRow)) return undefined;
-      const decoded = Schema.decodeUnknownOption(
-        Schema.Struct({
-          credentialPolicy: Schema.optional(Schema.Union([
-            Schema.Struct({ kind: Schema.Literal("secure-store") }),
-            Schema.Struct({
-              kind: Schema.Literal("local-file"),
-              path: Schema.NonEmptyString,
-            }),
-          ])),
-        }),
-      )(JSON.parse(parsedRow.value.configuration_json));
-      return Option.isNone(decoded) ? undefined : decoded.value.credentialPolicy;
-    } finally {
-      database.close();
-    }
-  } catch {
-    // No state yet, an unreadable database, or a schema older than the field.
-    // Enrollment is what records the policy, so an unenrolled machine falls
-    // back to the environment below.
-    return undefined;
-  }
-};
-
 const machineLayer = (statePath: string): Layer.Layer<MachineState> => {
   // The enrolled policy wins: it is what a scheduled run has to rely on.
-  const credentialPolicy = enrolledCredentialPolicy(statePath)
-    ?? credentialPolicyFromEnvironment();
+  const credentialPolicy = runtimeCredentialPolicy(statePath);
   const base = (() => {
     switch (process.platform) {
       case "darwin":

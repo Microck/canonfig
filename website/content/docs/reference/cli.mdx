@@ -70,6 +70,15 @@ match, so you can use it to find the value to write. An unknown `--resource`
 fails with "profile `<id>` in `<file>` declares no resource `<r>`"; a `tool` or
 `credential` resource has no content digest.
 
+Both `source digest` and `source publish` reject expanded revision metadata that
+exceeds the default 1 MiB transport budget, reserving space for the signing
+envelope. This measures the full resource projection, not just the authored
+JSON file size; a directory with many small entries can exceed it. Publication
+also checks actual revision/signing fields before storing anything. The error
+is usage/configuration (exit 2), not a retryable follower transport failure.
+Split oversized resources across separate profiles. File content carried in
+separate blobs does not count toward this metadata budget.
+
 **`source publish`** signs a new immutable revision. Publishing content equal
 to the latest revision returns that revision unchanged. Any other content,
 including an earlier revision's, becomes the next sequence number, so
@@ -482,6 +491,13 @@ restart followed by the same command. The result reports local-file storage as
 unencrypted and does not claim that a provider collection is encrypted when the
 provider cannot attest it.
 
+The secrets runtime uses the same selected credential policy as the main CLI:
+an enrolled follower's saved policy takes precedence over the environment.
+Before enrollment, `CANONFIG_LOCAL_CREDENTIAL_ROOT` explicitly selects local-file
+storage. Bootstrap can verify that plaintext local-file policy, but this does not
+make it suitable for shared-secret storage: `secrets set` and shared-secret
+transfer still require secure noninteractive storage.
+
 ### Bind a secret to an agent harness
 
 ```bash
@@ -569,7 +585,12 @@ Secret-like fields are recursively redacted before human or JSON rendering.
 Structured failures are written to standard error; structured successes are
 written to standard output. Usage errors arrive in the requested format: with
 `--json`, a `canonfig.cli/v1` envelope with `status` `"error"` and `exitCode`
-`2`.
+`2`. The `secrets` group uses this same schema for successes and failures.
+
+`sync --apply` waits for automatic shared-secret synchronization before emitting
+its result. If files were applied successfully but secret synchronization fails,
+the one final `sync.apply` error explains that distinction and its `exitCode`
+matches the process. It does not first print a contradictory success envelope.
 
 An inaccessible state directory or an invalid state database is reported as human action required (exit `3`), including failures before the command runtime starts. JSON mode emits one error envelope on standard error, not a stack trace on standard output. Check directory permissions and preserve the existing state; restore a known-good database backup if it is corrupt. Canonfig does not delete or reset the database automatically.
 

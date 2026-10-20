@@ -1260,3 +1260,26 @@ describe("reviewed profile publication", () => {
     expect(signing.calls).toEqual({ signed: 0, verified: 0 });
   });
 });
+
+
+it("rejects unservable directory metadata before signing or persisting a revision", async () => {
+  const fixture = workspace();
+  const discovery = await proposal(fixture.directory);
+  const signing = makeSigner();
+  const error = await runCatalog(fixture.database, signing.signer, Effect.gen(function*() {
+    const catalog = yield* ProfileCatalog;
+    return yield* Effect.flip(catalog.publish(authoredInput(discovery, [{
+      id: "oversized-directory", kind: "directory", target: "~/notes", spec: { kind: "directory",
+        files: Array.from({ length: 12000 }, (_, index) => ({ path: `note-${index}.txt`, content: "fixture" })) },
+      verify: { method: "digest" },
+    }])));
+  }));
+  expect(error).toBeInstanceOf(InvalidPublicationInputError);
+  if (error instanceof InvalidPublicationInputError) expect(error.reason).toContain("transport limit");
+  expect(signing.calls.signed).toBe(0);
+  const database = new DatabaseSync(fixture.database);
+  try {
+    expect(database.prepare("SELECT COUNT(*) AS count FROM profile_revisions").get()?.count).toBe(0);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM resource_blobs").get()?.count).toBe(0);
+  } finally { database.close(); }
+});
