@@ -999,7 +999,7 @@ export const evaluateCli = (arguments_: ReadonlyArray<string>): CliOutcome => {
   return outcome._tag === "InvalidInput" ? { ...outcome, format } : outcome;
 };
 
-const commandName = (value: CliCommand): string => {
+export const commandName = (value: CliCommand): string => {
   switch (value._tag) {
     case "SourceInit": return "source.init";
     case "SourceScan": return "source.scan";

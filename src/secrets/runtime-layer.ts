@@ -1,14 +1,13 @@
-import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
-import { Effect, Layer } from "effect";
+import { Layer } from "effect";
 
 import { linuxMachineStateLayer } from "../machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../machine/macos.layer.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { windowsMachineStateLayer } from "../machine/windows.layer.ts";
-import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
+import { runtimeStateLayer } from "../runtime/state-layer.ts";
 import { nativeSecretStoreLayer } from "./native-secret-store.ts";
 
 export interface SecretRuntimeLayerOptions {
@@ -31,12 +30,6 @@ export const secretRuntimeLayer = (
 ) => {
   const statePath = options.statePath
     ?? join(homedir(), ".canonfig", "state.sqlite");
-  const state = Layer.unwrap(
-    Effect.promise(() =>
-      mkdir(dirname(statePath), { recursive: true, mode: 0o700 })
-    ).pipe(
-      Effect.as(stateRepositoryLayer(statePath)),
-    ),
-  );
+  const state = runtimeStateLayer(statePath);
   return Layer.merge(state, nativeSecretStoreLayer(machineLayer()));
 };

@@ -1,3 +1,4 @@
+import { parse as parseToml } from "smol-toml";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -226,5 +227,81 @@ describe("OpenCode hook execution", () => {
     expect(child.status).toBe(0);
     await expect(readFile(path.join(root, ".canonfig/hook-hit"), "utf8"))
       .resolves.toBe("hit\n");
+  });
+});
+
+
+describe("native MCP environment references", () => {
+  async function referenceFixture(alias = false) {
+    const targets: TargetId[] = ["codex", "cursor", "opencode", "kilo"];
+    const root = await fixture(targets);
+    await write(root, ".canonfig/harness.json", JSON.stringify({
+      version: 1, targets: Object.fromEntries(targets.map((id) => [id, { enabled: true }])),
+      instructions: { root: "instructions/AGENTS.md" },
+      mcp: { servers: {
+        local: { transport: "stdio", command: "fixture-tool", env: {
+          API_KEY: { fromEnv: alias ? "OTHER_API_KEY" : "API_KEY" }, PLAIN_SETTING: "safe-value",
+        } },
+        docs: { transport: "streamable-http", url: "https://example.invalid/mcp", headers: {
+          Authorization: { fromEnv: "DOCS_MCP_TOKEN" }, "X-Static": "safe-value",
+        } },
+      } },
+    }));
+    return root;
+  }
+
+  it("writes each client's documented reference syntax without resolving secrets", async () => {
+    const root = await referenceFixture();
+    const plan = await new HarnessConfigurationCompiler().plan({ root, targets: ["codex", "cursor", "opencode"], strict: true });
+    expect(plan.diagnostics.filter((item) => item.level === "error")).toEqual([]);
+    await applyPlan(plan);
+    const codex = await readFile(path.join(root, ".codex/config.toml"), "utf8");
+    expect(parseToml(codex)).toMatchObject({ mcp_servers: {
+      local: { env_vars: ["API_KEY"], env: { PLAIN_SETTING: "safe-value" } },
+      docs: { env_http_headers: { Authorization: "DOCS_MCP_TOKEN" }, http_headers: { "X-Static": "safe-value" } },
+    } });
+    expect(codex).not.toContain("${");
+    const cursor = JSON.parse(await readFile(path.join(root, ".cursor/mcp.json"), "utf8"));
+    expect(cursor.mcpServers.local.env.API_KEY).toBe("${env:API_KEY}");
+    expect(cursor.mcpServers.docs.headers.Authorization).toBe("${env:DOCS_MCP_TOKEN}");
+    for (const file of ["opencode.json"]) {
+      const native = JSON.parse(await readFile(path.join(root, file), "utf8"));
+      expect(native.mcp.local.environment.API_KEY).toBe("{env:API_KEY}");
+      expect(native.mcp.docs.headers.Authorization).toBe("{env:DOCS_MCP_TOKEN}");
+    }
+  });
+
+  it.each([false, true])("warns and rejects Kilo project references (literal syntax: %s)", async (literal) => {
+    const root = await referenceFixture();
+    if (literal) {
+      const source = JSON.parse(await readFile(path.join(root, ".canonfig/harness.json"), "utf8"));
+      source.mcp.servers.local.env.API_KEY = "{env:API_KEY}";
+      source.mcp.servers.docs.headers.Authorization = "{env:DOCS_MCP_TOKEN}";
+      await write(root, ".canonfig/harness.json", JSON.stringify(source));
+    }
+    const compiler = new HarnessConfigurationCompiler();
+    const ordinary = await compiler.plan({ root, targets: ["kilo"] });
+    expect(ordinary.diagnostics.filter((item) => item.code === "MCP_ENV_PROJECT_UNSUPPORTED"))
+      .toHaveLength(2);
+    const strict = await compiler.plan({ root, targets: ["kilo"], strict: true });
+    expect(strict.diagnostics.filter((item) => item.code === "MCP_ENV_PROJECT_UNSUPPORTED")
+      .every((item) => item.level === "error")).toBe(true);
+    await expect(applyPlan(strict)).rejects.toThrow();
+    await expect(readFile(path.join(root, "kilo.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects unsupported Codex environment renaming in strict mode", async () => {
+    const root = await referenceFixture(true);
+    const compiler = new HarnessConfigurationCompiler();
+    const ordinary = await compiler.plan({ root, targets: ["codex"] });
+    expect(ordinary.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "MCP_ENV_RENAME_UNSUPPORTED", target: "codex", level: "warning" }),
+    ]));
+    const strict = await compiler.plan({ root, targets: ["codex"], strict: true });
+    expect(strict.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "MCP_ENV_RENAME_UNSUPPORTED", target: "codex", level: "error" }),
+    ]));
+    await expect(applyPlan(strict)).rejects.toThrow();
+    await expect(readFile(path.join(root, ".codex/config.toml"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

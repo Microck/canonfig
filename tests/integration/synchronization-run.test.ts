@@ -1359,6 +1359,32 @@ process.exit(1);
     expect(await readFile(outsideFile, "utf8")).toBe("outside content");
   });
 
+  it("restores changed symlinks even when another absent child has a symlink ancestor", async () => {
+    const root = temporaryDirectory();
+    const managed = join(root, "managed");
+    mkdirSync(managed);
+    for (const name of ["d", "e"]) {
+      mkdirSync(join(root, `outside-${name}`));
+      symlinkSync(`../outside-${name}`, join(managed, name));
+    }
+    const base = mirrorContext(root, managed, "d/f", "synthetic");
+    if (base.desired.kind !== "directory" || base.action.detail.kind !== "mirror-directory") throw new Error("invalid mirror fixture");
+    const context = { ...base,
+      desired: { ...base.desired, directories: [{ path: "d", mode: 0o700 }],
+        files: [...base.desired.files, { ...base.desired.files[0]!, path: "e/g" }] },
+      action: { ...base.action, detail: { ...base.action.detail, adds: ["d", "d/f", "e/g"] } },
+    };
+    const layer = machineLayer(root);
+    const prepared = await Effect.runPromise(prepareResourceAction(context).pipe(Effect.provide(layer)));
+    await expect(Effect.runPromise(prepared.execute.pipe(Effect.provide(layer)))).rejects.toMatchObject({ _tag: "MachineFilesystemError" });
+    if (prepared.rollbackReference === undefined) throw new Error("missing rollback material");
+    await Effect.runPromise(restoreRollbackReference(context, prepared.rollbackReference).pipe(Effect.provide(layer)));
+    for (const name of ["d", "e"]) {
+      expect(readlinkSync(join(managed, name))).toBe(`../outside-${name}`);
+      expect(readdirSync(join(root, `outside-${name}`))).toEqual([]);
+    }
+  });
+
   it("restores a tree that was absent without needing the root to exist", async () => {
     // Interrupting a mirror-directory rolls the action back, which removes the
     // tree, and then `canonfig recover` restored the same material again.
@@ -3316,6 +3342,29 @@ process.exit(1);
     const outcome = await seedAndRun(fixture, machine);
     expect(outcome.outcome).toBe("Failed");
     expect(await readFile(fixture.target, "utf8")).toBe("original");
+  });
+
+  it("reports the original apply error and a failed rollback with its retained snapshot", async () => {
+    const fixture = fileFixture(temporaryDirectory(), "run-rollback-report");
+    mkdirSync(dirname(fixture.target), { recursive: true });
+    writeFileSync(fixture.target, "original");
+    let attempts = 0;
+    const machine = decorateMachine(fixture.root, (service) => ({
+      ...service,
+      atomicWrite: (input) => input.path.absolute !== fixture.target ? service.atomicWrite(input)
+        : Effect.fail(new MachineFilesystemError({ operation: "synthetic write", path: fixture.target,
+          message: ++attempts === 1 ? "original apply refusal" : "restore refusal" })),
+    }));
+    const outcome = await seedAndRun(fixture, machine);
+    expect(outcome.outcome).toBe("Failed");
+    if (outcome.outcome !== "Failed") throw new Error("expected failure");
+    expect(outcome.reason).toContain("original apply refusal");
+    expect(outcome.reason).toContain("rollback failed:");
+    expect(outcome.reason).toContain("restore refusal");
+    const reference = decode(Schema.String)(actionRows(fixture.database).find((row) => row.state === "failed")?.rollback_reference);
+    expect(outcome.reason).toContain(reference);
+    expect(existsSync(reference)).toBe(true);
+    expect(readFileSync(fixture.target, "utf8")).toBe("original");
   });
 
   /** The file fixture, retargeted at a path below parents that may not exist. */

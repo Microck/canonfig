@@ -146,6 +146,34 @@ afterEach(async () => {
 });
 
 describe("harness configuration compiler", () => {
+  it.each([false, true])("redacts credentials in real harness diffs (json: %s) without changing files", async (json) => {
+    const root = await fixture(["claude-code"]);
+    const native = JSON.stringify({ mcpServers: { existing: {
+      command: "existing-tool", env: { GITHUB_TOKEN: "test-only-native-token" },
+      args: ["test-only-native-token", "test-only-native-bearer"],
+      headers: { Authorization: "Bearer test-only-native-bearer" },
+    } } }, null, 2);
+    await write(root, ".mcp.json", native);
+    const output: string[] = [];
+    let exitCode = -1;
+    await runHarnessConfigurationCli(["diff", "--root", root, ...(json ? ["--json"] : [])], {
+      writeStdout: (value) => output.push(value), writeStderr: (value) => output.push(value),
+      setExitCode: (value) => { exitCode = value; },
+    });
+    expect(exitCode, output.join("")).toBe(0);
+    const rendered = output.join("");
+    expect(rendered).not.toContain("test-only-native-token");
+    expect(rendered).not.toContain("test-only-native-bearer");
+    if (!json) {
+      expect(rendered).toContain("[REDACTED]");
+      expect(rendered).toContain("existing-tool");
+      expect(rendered).toContain("${TEST_API_KEY}");
+      expect(rendered).toContain("${DOCS_TOKEN}");
+      expect(rendered).toContain("+++ b/.mcp.json");
+    }
+    expect(await readFile(path.join(root, ".mcp.json"), "utf8")).toBe(native);
+  });
+
   it("cleans only selected target artifacts and retains shared files until the last target", async () => {
     const root = await fixture(["codex", "claude-code"]);
     const compiler = new HarnessConfigurationCompiler();

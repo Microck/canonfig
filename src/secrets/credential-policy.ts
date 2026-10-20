@@ -16,7 +16,7 @@ const secretName = new RegExp(`^(?:${credentialName("$")})$`, "iu");
 export const isSecretField = (name: string): boolean => secretName.test(name);
 
 const environmentName = "[A-Za-z_][A-Za-z0-9_]*";
-const environmentSymbol = `(?:\\$\\{${environmentName}\\}|\\$${environmentName}|\\{env:${environmentName}\\})`;
+const environmentSymbol = `(?:\\$\\{(?:env:)?${environmentName}\\}|\\$${environmentName}|\\{env:${environmentName}\\})`;
 const environmentReference = new RegExp(
   `^(?:(?:Bearer|Basic|Token)\\s+)?${environmentSymbol}$`,
   "u",
@@ -46,7 +46,7 @@ export const authorizationCredential = new RegExp(
   `(\\b(?:authorization|proxy-authorization)\\s*[:=]\\s*)((?:Bearer|Basic)\\s+(?:${environmentSymbol}(?=$|[\\s"',;}\\]])|[^\\s"',;}\\]]+))`,
   "giu",
 );
-const credentialAssignments = [
+export const credentialAssignments = [
   [assignedCredential, 4],
   [quotedCredentialKey, 3],
   [spacedCredentialFlag, 3],
@@ -64,6 +64,83 @@ const unquote = (value: string): string => {
     }
   }
   return value.startsWith("'") && value.endsWith("'") ? value.slice(1, -1) : value;
+};
+
+/** Recognize references in either plain or quoted credential values. */
+export const isEncodedEnvironmentReference = (value: string): boolean =>
+  isEnvironmentReference(unquote(value));
+
+/** Collect only credential-shaped literals already present in this output. */
+export const collectLiteralCredentialValues = (text: string): Array<string> => {
+  const values = new Set<string>();
+  const collect = (encoded: string): void => {
+    const value = unquote(encoded);
+    if (value.length === 0 || value === "[REDACTED]" || isEnvironmentReference(value)) return;
+    values.add(value);
+    if ((encoded.startsWith('"') && encoded.endsWith('"'))
+      || (encoded.startsWith("'") && encoded.endsWith("'"))) {
+      values.add(encoded.slice(1, -1));
+    }
+    const authorization = /^(?:Bearer|Basic|Token)\s+(.+)$/u.exec(value);
+    if (authorization?.[1] !== undefined) values.add(authorization[1]);
+  };
+  for (const [pattern, valueGroup] of credentialAssignments) {
+    for (const match of text.matchAll(pattern)) collect(match[valueGroup]!);
+  }
+  // JSON allows escapes in property names too. Decode key/value pairs before
+  // collecting; raw credential-name patterns cannot recognize those spellings.
+  // Match complete quoted tokens so colons inside strings are not assignments.
+  for (const match of text.matchAll(/("(?:\\.|[^"\\])*")\s*:\s*("(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/gu)) {
+    try {
+      const key: unknown = JSON.parse(match[1]!);
+      if (isString(key) && isSecretField(key)) collect(match[2]!);
+    } catch { /* Invalid JSON retains the ordinary text safeguards. */ }
+  }
+  for (const match of text.matchAll(privateKeyBlock)) collect(match[0]);
+  // A recognizable userinfo prefix need not have a valid host. Parse just
+  // that prefix against a synthetic host so repeated values still get scrubbed.
+  for (const match of text.matchAll(urlUserInformation)) {
+    try {
+      const url = new URL(`${match[0]}redaction.invalid`);
+      for (const encoded of [url.username, url.password]) {
+        let decoded = encoded;
+        try { decoded = decodeURIComponent(encoded); } catch { /* Keep the encoded literal. */ }
+        if (isEnvironmentReference(decoded)) continue;
+        collect(encoded);
+        collect(decoded);
+      }
+    } catch {
+      // A malformed host or backslash must not hide recognizable userinfo
+      // from repeated-value redaction. Retain both encoded and decoded forms.
+      const userinfo = match[0].slice(match[1]!.length, -1);
+      const colon = userinfo.indexOf(":");
+      const parts = colon === -1 ? [userinfo] : [userinfo.slice(0, colon), userinfo.slice(colon + 1)];
+      for (const encoded of parts) {
+        let decoded = encoded;
+        try { decoded = decodeURIComponent(encoded); } catch { /* Keep the literal. */ }
+        if (isEnvironmentReference(decoded)) continue;
+        collect(encoded);
+        collect(decoded);
+      }
+    }
+  }
+  for (const match of text.matchAll(embeddedUrl)) {
+    try {
+      const url = new URL(match[0]);
+      for (const encoded of [url.username, url.password]) {
+        const decoded = decodeURIComponent(encoded);
+        if (decoded.length === 0 || isEnvironmentReference(decoded)) continue;
+        collect(decoded);
+        collect(encoded);
+      }
+      for (const [name, value] of url.searchParams) {
+        if (isSecretField(name)) collect(value);
+      }
+    } catch {
+      // Assignment and authorization patterns still cover malformed URL text.
+    }
+  }
+  return [...values];
 };
 
 /** Detect recognizable literal credentials without rewriting reviewed bytes. */
