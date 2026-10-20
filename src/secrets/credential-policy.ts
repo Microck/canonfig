@@ -101,7 +101,18 @@ export const collectLiteralCredentialValues = (text: string): Array<string> => {
         collect(decoded);
       }
     } catch {
-      // The URL itself is still removed by the presentation redactor.
+      // A malformed host or backslash must not hide recognizable userinfo
+      // from repeated-value redaction. Retain both encoded and decoded forms.
+      const userinfo = match[0].slice(match[1]!.length, -1);
+      const colon = userinfo.indexOf(":");
+      const parts = colon === -1 ? [userinfo] : [userinfo.slice(0, colon), userinfo.slice(colon + 1)];
+      for (const encoded of parts) {
+        let decoded = encoded;
+        try { decoded = decodeURIComponent(encoded); } catch { /* Keep the literal. */ }
+        if (isEnvironmentReference(decoded)) continue;
+        collect(encoded);
+        collect(decoded);
+      }
     }
   }
   for (const match of text.matchAll(embeddedUrl)) {

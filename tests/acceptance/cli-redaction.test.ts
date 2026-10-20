@@ -108,6 +108,17 @@ describe("credential-safe CLI output", () => {
     expect(redactText(JSON.stringify({ password: value, note }))).toBe(JSON.stringify({ password: "[REDACTED]", note: "[REDACTED]" }));
   });
 
+  it("scrubs a known credential crossing an assignment prefix", () => {
+    const output = redactText(JSON.stringify({ password: "foo password", note: "foo password=x" }));
+    expect(output).not.toContain("foo password");
+  });
+
+  it("collects repeated credentials from malformed URL userinfo", () => {
+    const secret = "sec\\ret";
+    const output = redactText(`https://user:${secret}@host args: ["${secret}"]`);
+    expect(output).not.toContain(secret);
+  });
+
   it("scrubs a known value regardless of the surrounding field name", () => {
     const marker = "marker-value-abc123SECRET";
     expect(redactText(`--tag ${marker} pulled`, [marker])).toBe("--tag [REDACTED] pulled");
