@@ -300,3 +300,15 @@ it("redacts large private keys without compiling an unbounded regex", () => {
   expect(redactText(key)).toBe("[REDACTED]");
   expect(redactText(`key-copy: ${key}`, [key])).toBe("key-copy: [REDACTED]");
 });
+
+it("collects escaped JSON credential keys before masking repeated values", () => {
+  const text = String.raw`{"pass\u0077ord":"synthetic-escaped-key","note":"synthetic-escaped-key","other":"synthetic-escaped-\u006bey"}`;
+  const output = redactText(text);
+  expect(output).not.toContain("synthetic-escaped");
+  expect(JSON.parse(output).note).toBe("[REDACTED]");
+});
+
+it("preserves symbolic values and ordinary escaped JSON keys", () => {
+  const text = '{"API_\\u004bEY":"${TEST_API_KEY}","na\\u006de":"ordinary-value"}' ;
+  expect(redactText(text)).toBe(text);
+});

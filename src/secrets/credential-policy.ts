@@ -87,6 +87,15 @@ export const collectLiteralCredentialValues = (text: string): Array<string> => {
   for (const [pattern, valueGroup] of credentialAssignments) {
     for (const match of text.matchAll(pattern)) collect(match[valueGroup]!);
   }
+  // JSON allows escapes in property names too. Decode key/value pairs before
+  // collecting; raw credential-name patterns cannot recognize those spellings.
+  // Match complete quoted tokens so colons inside strings are not assignments.
+  for (const match of text.matchAll(/("(?:\\.|[^"\\])*")\s*:\s*("(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/gu)) {
+    try {
+      const key: unknown = JSON.parse(match[1]!);
+      if (isString(key) && isSecretField(key)) collect(match[2]!);
+    } catch { /* Invalid JSON retains the ordinary text safeguards. */ }
+  }
   for (const match of text.matchAll(privateKeyBlock)) collect(match[0]);
   // A recognizable userinfo prefix need not have a valid host. Parse just
   // that prefix against a synthetic host so repeated values still get scrubbed.
