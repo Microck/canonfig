@@ -369,29 +369,31 @@ exit 0
     expect(broken).toMatchObject({ state: "drifted", drift: "binding", bindingUsable: false });
     expect(broken.detail).toContain(missing === "runtime" ? "runtime is missing" : "entrypoint is missing");
     expect(broken.detail).toContain("Manually run");
-    expect(broken.detail).toContain("`canonfig schedule set daily@04:00`");
-    expect(broken.detail).toContain("clears the stale custom executable");
-    const suggested = /`canonfig ([^`]+)`/u.exec(broken.detail)?.[1];
-    const parsed = evaluateCli(suggested!.split(" "));
-    expect(parsed).toMatchObject({ _tag: "Command", command: { _tag: "ScheduleSet", schedule: { kind: "daily", localTime: "04:00" } } });
-    if (parsed._tag === "Command" && parsed.command._tag === "ScheduleSet") expect(parsed.command.executable).toBeUndefined();
+    // The desired custom executable is still valid. Repair the installed job,
+    // not the user's selection, even though the installed runtime is missing.
+    expect(broken.detail).toContain("`canonfig sync --apply`");
+    expect(broken.detail).not.toContain("clears the stale custom executable");
     expect(broken.detail).not.toContain("keeps its calendar");
     expect(scheduledDefinitionReadiness(broken).status).toBe("fail");
     expect(await readFile(path, "utf8")).toBe(stored);
     expect((await host.run((manager) => manager.install(input))).status).toMatchObject({ state: "current", bindingUsable: true });
   });
 
-  it("fails a missing executable even when the installed definition still matches", async () => {
+  it.each([
+    { kind: "daily", localTime: "04:00" },
+    { kind: "weekly", weekdays: ["Mon", "Fri"], localTime: "03:00", timezone: "UTC" },
+  ] as const)("provides a valid $kind repair when the selected executable is deleted", async (schedule) => {
     const host = await simulatedHost();
     const runtime = join(host.state, "custom-canonfig");
     await writeFile(runtime, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     await chmod(runtime, 0o755);
-    const selected = { executable: runtime, schedule: { kind: "weekly", weekdays: ["Mon", "Fri"], localTime: "03:00", timezone: "UTC" } } as const;
+    const selected = { executable: runtime, schedule };
     expect((await host.run((manager) => manager.install(selected))).status.state).toBe("current");
     await unlink(runtime);
     const broken = await host.run((manager) => manager.status(selected));
     expect(broken).toMatchObject({ state: "drifted", drift: "binding", bindingUsable: false });
     expect(scheduledDefinitionReadiness(broken).status).toBe("fail");
+    expect(broken.detail).toContain("clears the stale custom executable");
     const suggested = /`canonfig ([^`]+)`/u.exec(broken.detail)?.[1];
     const parsed = evaluateCli(suggested!.split(" "));
     expect(parsed).toMatchObject({ _tag: "Command", command: { _tag: "ScheduleSet", schedule: selected.schedule } });
