@@ -55,6 +55,23 @@ function modeFor(artifacts: readonly DesiredArtifact[]): number | undefined {
   return modes[0];
 }
 
+/** A failed read is not proof of absence: dangling symlinks still own a path. */
+async function unreadableExistingPath(root: string, absolute: string, bytes: Uint8Array | undefined): Promise<boolean> {
+  if (bytes !== undefined) return false;
+  let current = path.resolve(root);
+  for (const component of path.relative(current, absolute).split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    try {
+      const entry = await fs.lstat(current);
+      if (entry.isSymbolicLink()) return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+  return true;
+}
+
 export async function createPlan(
   root: string,
   targets: TargetId[],
@@ -92,6 +109,13 @@ export async function createPlan(
     const absolute = resolveInside(root, filePath);
     await assertRealPathInside(root, absolute);
     const currentBytes = await readOptionalFile(absolute);
+    if (await unreadableExistingPath(root, absolute, currentBytes)) {
+      const previous = previousState.artifacts[filePath];
+      entries.push({ path: filePath, owner: ownerFor(group, diagnostics, filePath), action: "conflict",
+        reason: "Native path exists but cannot be read as a regular file. Resolve the dangling symlink before applying or cleaning." });
+      if (previous !== undefined) nextArtifacts[filePath] = previous;
+      continue;
+    }
     const current = isTextArtifacts(group) && currentBytes !== undefined ? Buffer.from(currentBytes).toString("utf8") : currentBytes;
     const previous = previousState.artifacts[filePath];
     const rendered = renderArtifacts(group, current, previous, options.force ?? false);
@@ -132,7 +156,7 @@ export async function createPlan(
       nextState = {
         owner,
         hash: contentHash,
-        existedBefore: previous?.existedBefore ?? currentBytes !== undefined,
+        existedBefore: currentBytes === undefined ? false : previous?.existedBefore ?? true,
         cleanup: rendered.cleanup,
         ...(mode === undefined ? {} : { mode }),
       };
@@ -166,6 +190,12 @@ export async function createPlan(
     const absolute = resolveInside(root, filePath);
     await assertRealPathInside(root, absolute);
     const currentBytes = await readOptionalFile(absolute);
+    if (await unreadableExistingPath(root, absolute, currentBytes)) {
+      entries.push({ path: filePath, owner: previous.owner, action: "conflict",
+        reason: "Native path exists but cannot be read as a regular file. Resolve the dangling symlink before applying or cleaning." });
+      nextArtifacts[filePath] = previous;
+      continue;
+    }
     const current = currentBytes === undefined ? undefined : Buffer.from(currentBytes).toString("utf8");
     const rendered = renderArtifacts([], current, previous, options.force ?? false);
     if (rendered.conflicts.length > 0) {

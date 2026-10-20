@@ -803,7 +803,7 @@ export const executeSynchronizationAction = (
               kind: "failed", reason: actionFailureReason(state, error, input.knownSecrets ?? []),
             }),
             onFailure: (rollbackError): ActionResult => ({
-              kind: "failed", reason: actionFailureReason(state, rollbackError, input.knownSecrets ?? []),
+              kind: "failed", reason: `${actionFailureReason(state, error, input.knownSecrets ?? [])}; rollback failed: ${redact(rollbackError, input.knownSecrets ?? [])}${prepared?.rollbackReference === undefined ? "" : `; rollback snapshot retained at ${prepared.rollbackReference}`}`,
               rollbackFailed: true, rollbackReference: prepared?.rollbackReference,
             }),
           }),

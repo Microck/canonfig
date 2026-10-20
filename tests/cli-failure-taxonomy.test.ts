@@ -140,6 +140,14 @@ describe("CLI failure taxonomy", () => {
     expect(exitCodeForFailure(described.category)).toBe(1);
   });
 
+  it("describes a duplicate follower identity without blaming the enrolling machine", () => {
+    const described = describeRuntimeError(Object.assign(new Error("the follower identity is already enrolled"), {
+      _tag: "DuplicateFollowerIdentityError",
+    }));
+    expect(described.message).toBe("the follower identity is already enrolled");
+    expect(described.category).toBe("conflict-or-drift");
+  });
+
   it("reserves exit 1 for defects, so deliberate refusals classify elsewhere", () => {
     // Each of these was previously misfiled as an internal error because the
     // type name matched none of the categorizer's words.

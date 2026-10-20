@@ -819,6 +819,22 @@ const makeRepository = Effect.gen(function*() {
           message: "the invitation nonce is invalid",
         });
       }
+      // Enforce identity exclusivity in the transaction as well as at the
+      // service boundary, including concurrent invitations for the same name.
+      const activeIdentityCount = yield* statusCount(sql, sql`
+        SELECT count(*) AS count FROM followers
+        WHERE id = ${input.follower.id} AND revoked = 0
+      `, "active follower identity", input.follower.id);
+      const pendingIdentityCount = yield* statusCount(sql, sql`
+        SELECT count(*) AS count FROM pending_enrollments
+        WHERE follower_id = ${input.follower.id}
+      `, "pending follower identity", input.follower.id);
+      if (activeIdentityCount > 0 || pendingIdentityCount > 0) {
+        return yield* new EnrollmentStateConflictError({
+          reason: "follower-identity-conflict",
+          message: "the follower identity is already enrolled or pending enrollment",
+        });
+      }
       const pendingRows = yield* sql`
         SELECT count(*) AS count
         FROM pending_enrollments
@@ -967,8 +983,12 @@ const makeRepository = Effect.gen(function*() {
           "follower identity",
           input.follower,
         );
-        // An active identity is rotated: its credential digest and reference
-        // are replaced below, which retires the previous credential.
+        if (identities[0]?.revoked === 0) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "follower-identity-conflict",
+            message: "the follower identity is already enrolled",
+          });
+        }
         const invitationRows = yield* sql`
           SELECT used_at, expires_at
           FROM enrollment_invitations

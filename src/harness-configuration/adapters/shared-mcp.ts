@@ -1,8 +1,14 @@
+import { Predicate } from "effect";
 import type { McpServer, SecretValue } from "../core/schema.ts";
 import type { BuildContext, Diagnostic, JsonArtifact, TargetId } from "../core/types.ts";
 
-export function secretValue(value: SecretValue): string {
-  return typeof value === "string" ? value : `\${${value.fromEnv}}`;
+type EnvironmentSyntax = "shell" | "cursor" | "opencode";
+
+export function secretValue(value: SecretValue, syntax: EnvironmentSyntax = "shell"): string {
+  if (typeof value === "string") return value;
+  if (syntax === "cursor") return `\${env:${value.fromEnv}}`;
+  if (syntax === "opencode") return `{env:${value.fromEnv}}`;
+  return `\${${value.fromEnv}}`;
 }
 
 export function enabledMcpServerEntries(context: BuildContext): Array<[string, McpServer]> {
@@ -70,6 +76,13 @@ export function codexMcpDiagnostics(context: BuildContext): Diagnostic[] {
   return [
     ...mcpOptionDiagnostics(context, "codex", ["timeoutMs"], "project config.toml"),
     ...enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] =>
+      server.transport !== "stdio" ? [] : Object.entries(server.env).flatMap(([key, value]): Diagnostic[] =>
+        typeof value !== "string" && key !== value.fromEnv ? [{
+          level: "warning", code: "MCP_ENV_RENAME_UNSUPPORTED", target: "codex",
+          message: `Codex cannot forward ${value.fromEnv} under a different environment name ${key} for MCP server ${name}; use the same name or an explicit wrapper. The binding was omitted.`,
+        }] : [])
+    ),
+    ...enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] =>
       server.transport === "sse"
         ? [{
           level: "warning",
@@ -98,14 +111,14 @@ export function grokMcpDiagnostics(context: BuildContext): Diagnostic[] {
   ];
 }
 
-export function standardMcpServer(server: McpServer, includeType = true): Record<string, unknown> {
+export function standardMcpServer(server: McpServer, includeType = true, syntax: EnvironmentSyntax = "shell"): Record<string, unknown> {
   if (server.transport === "stdio") {
     return {
       ...(includeType ? { type: "stdio" } : {}),
       command: server.command,
       args: server.args,
       ...(Object.keys(server.env).length > 0
-        ? { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, secretValue(value)])) }
+        ? { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, secretValue(value, syntax)])) }
         : {}),
       ...(server.cwd ? { cwd: server.cwd } : {}),
     };
@@ -114,15 +127,15 @@ export function standardMcpServer(server: McpServer, includeType = true): Record
     ...(includeType ? { type: server.transport === "sse" ? "sse" : "http" } : {}),
     url: server.url,
     ...(Object.keys(server.headers).length > 0
-      ? { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, secretValue(value)])) }
+      ? { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, secretValue(value, syntax)])) }
       : {}),
   };
 }
 
-export function standardMcpMap(context: BuildContext, includeType = true): Record<string, unknown> {
+export function standardMcpMap(context: BuildContext, includeType = true, syntax: EnvironmentSyntax = "shell"): Record<string, unknown> {
   return Object.fromEntries(
     enabledMcpServerEntries(context)
-      .map(([name, server]) => [name, standardMcpServer(server, includeType)]),
+      .map(([name, server]) => [name, standardMcpServer(server, includeType, syntax)]),
   );
 }
 
@@ -174,6 +187,18 @@ export function antigravityMcpMap(context: BuildContext): Record<string, unknown
   );
 }
 
+/** Kilo intentionally refuses environment substitution in untrusted project config. */
+export function kiloProjectMcpDiagnostics(context: BuildContext): Diagnostic[] {
+  return enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] => {
+    const values = server.transport === "stdio" ? Object.values(server.env) : Object.values(server.headers);
+    if (!values.some((value) => !Predicate.isString(value) || /\{env:[A-Za-z_][A-Za-z0-9_]*\}/u.test(value))) return [];
+    return [{
+      level: "warning", code: "MCP_ENV_PROJECT_UNSUPPORTED", target: "kilo",
+      message: `Kilo does not resolve environment references for MCP server ${name} from project kilo.json. Configure these bindings in trusted Kilo user, explicit KILO_CONFIG, or organization configuration. The project mapping is not usable for authentication; strict mode refuses it.`,
+    }];
+  });
+}
+
 export function openCodeMcpMap(context: BuildContext): Record<string, unknown> {
   // Disabled servers carry no profile material. Their env and header values
   // must not reach generated files even though this target models an
@@ -185,7 +210,7 @@ export function openCodeMcpMap(context: BuildContext): Record<string, unknown> {
         command: [server.command, ...server.args],
         enabled: server.enabled,
         ...(Object.keys(server.env).length
-          ? { environment: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, secretValue(value)])) }
+          ? { environment: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, secretValue(value, "opencode")])) }
           : {}),
         ...(server.timeoutMs ? { timeout: server.timeoutMs } : {}),
       }];
@@ -195,7 +220,7 @@ export function openCodeMcpMap(context: BuildContext): Record<string, unknown> {
       url: server.url,
       enabled: server.enabled,
       ...(Object.keys(server.headers).length
-        ? { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, secretValue(value)])) }
+        ? { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, secretValue(value, "opencode")])) }
         : {}),
       ...(server.timeoutMs ? { timeout: server.timeoutMs } : {}),
     }];
@@ -226,18 +251,24 @@ export function mcpToml(
       lines.push(`command = ${tomlString(server.command)}`);
       if (server.args.length) lines.push(`args = ${tomlArray(server.args)}`);
       if (server.cwd) lines.push(`cwd = ${tomlString(server.cwd)}`);
-      if (Object.keys(server.env).length) {
-        lines.push(`env = ${tomlInlineTable(Object.fromEntries(
-          Object.entries(server.env).map(([key, value]) => [key, secretValue(value)]),
-        ))}`);
+      const literalEnv: Record<string, string> = {};
+      const forwardedEnv: string[] = [];
+      for (const [key, value] of Object.entries(server.env)) {
+        if (typeof value === "string") literalEnv[key] = value;
+        else if (key === value.fromEnv) forwardedEnv.push(key);
       }
+      if (Object.keys(literalEnv).length) lines.push(`env = ${tomlInlineTable(literalEnv)}`);
+      if (forwardedEnv.length) lines.push(`env_vars = ${tomlArray(forwardedEnv)}`);
     } else {
       lines.push(`url = ${tomlString(server.url)}`);
-      if (Object.keys(server.headers).length) {
-        lines.push(`${remoteHeadersKey} = ${tomlInlineTable(Object.fromEntries(
-          Object.entries(server.headers).map(([key, value]) => [key, secretValue(value)]),
-        ))}`);
+      const literalHeaders: Record<string, string> = {};
+      const environmentHeaders: Record<string, string> = {};
+      for (const [key, value] of Object.entries(server.headers)) {
+        if (typeof value === "string") literalHeaders[key] = value;
+        else environmentHeaders[key] = value.fromEnv;
       }
+      if (Object.keys(literalHeaders).length) lines.push(`${remoteHeadersKey} = ${tomlInlineTable(literalHeaders)}`);
+      if (Object.keys(environmentHeaders).length) lines.push(`env_http_headers = ${tomlInlineTable(environmentHeaders)}`);
     }
     if (server.enabledTools?.length) lines.push(`enabled_tools = ${tomlArray(server.enabledTools)}`);
     if (server.disabledTools?.length) lines.push(`disabled_tools = ${tomlArray(server.disabledTools)}`);
@@ -260,7 +291,7 @@ export function jsonMcpArtifact(
     operations: [{
       kind: "managed-map",
       path: pathSegments,
-      entries: standardMcpMap(context, includeType),
+      entries: standardMcpMap(context, includeType, owner === "cursor" ? "cursor" : "shell"),
       collision: "error",
     }],
   };

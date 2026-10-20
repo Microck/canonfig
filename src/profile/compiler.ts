@@ -1,3 +1,4 @@
+import { assertProfileMetadataBudget } from "./metadata-budget.ts";
 import { Schema } from "effect";
 
 import { BlobId, ContentDigest, ResourceId } from "../domain/brand.ts";
@@ -277,7 +278,14 @@ export const profileContentDigests = (
   sources?: ResolvedSourceFiles | undefined,
 ): ReadonlyArray<ResourceContentDigest> => {
   const profile = decodeInput(input);
-  return contentDigestsFor(profile, materializeResources(profile, sources));
+  const materialized = materializeResources(profile, sources);
+  const digests = contentDigestsFor(profile, materialized);
+  const byId = new Map(digests.map((entry) => [entry.id, entry.computedDigest]));
+  assertProfileMetadataBudget({ profileId: profile.id, scheduleDefault: profile.scheduleDefault,
+    resources: materialized.resources.map((resource, index) => profile.resources[index]!.verify.method === "digest"
+      ? { ...resource, verify: { method: "digest", digest: byId.get(resource.id)! } }
+      : { ...resource, verify: profile.resources[index]!.verify }) });
+  return digests;
 };
 
 /**
@@ -319,13 +327,11 @@ export const compileProfileCandidate = (
   const decoded = decodeInput(input);
   const materialized = materializeResources(decoded, sources);
   const profile = completeVerification(decoded, materialized);
-  const canonicalBytes = canonicalJson(asJson({
-    ...profile,
-    resources: materialized.resources.map((resource, index) => ({
-      ...resource,
-      verify: profile.resources[index]!.verify,
-    })),
+  const transportResources = materialized.resources.map((resource, index) => ({
+    ...resource, verify: profile.resources[index]!.verify,
   }));
+  assertProfileMetadataBudget({ profileId: profile.id, resources: transportResources, scheduleDefault: profile.scheduleDefault });
+  const canonicalBytes = canonicalJson(asJson({ ...profile, resources: transportResources }));
   return {
     profile,
     resources: materialized.resources,

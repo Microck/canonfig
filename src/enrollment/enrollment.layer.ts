@@ -808,9 +808,8 @@ const makeEnrollment = Effect.gen(function*() {
     const followerId = decode(FollowerId)(
       `follower-${sha256(`${material.source.publicKeyFingerprint}\0${normalizedName}`).slice(0, 32)}`,
     );
-    // Enrolling an already active name with a new invitation rotates that
-    // identity's credential: the previous credential stays valid until the
-    // follower finalizes, then finalizeFollower retires it.
+    // A fresh invitation proves enrollment authority, not possession of an
+    // existing follower credential. Only revoked names can be re-enrolled.
     const existingCredential = yield* repository.getFollowerCredential(followerId).pipe(
       Effect.match({
         onFailure: (error) => ({ found: false as const, error }),
@@ -824,6 +823,11 @@ const makeEnrollment = Effect.gen(function*() {
       return yield* new EnrollmentConfigurationError({
         operation: "enroll follower",
         message: "durable enrollment state is unavailable",
+      });
+    }
+    if (existingCredential.found && !existingCredential.record.follower.revoked) {
+      return yield* new DuplicateFollowerIdentityError({
+        message: "the follower identity is already enrolled",
       });
     }
     const credential = randomBytes(32).toString("base64url");

@@ -120,6 +120,7 @@ const execute = async (
   arguments_: ReadonlyArray<string>,
   failure?: CliFailureCategory,
   synchronize?: FollowerCommandsService["synchronize"],
+  afterSuccessfulApply?: Effect.Effect<void, CliCommandFailure>,
 ) => {
   const stdout: Array<string> = [];
   const stderr: Array<string> = [];
@@ -131,7 +132,7 @@ const execute = async (
     setExitCode: (code) => exitCodes.push(code),
   };
   await Effect.runPromise(
-    runCli(arguments_, io).pipe(
+    runCli(arguments_, io, afterSuccessfulApply).pipe(
       Effect.provide(recordingLayers(invocations, failure, synchronize)),
     ),
   );
@@ -1042,4 +1043,54 @@ describe("authored profile validation detail", () => {
       expect(failure.message).not.toMatch(/recipes[^\n]*version/u);
     }
   });
+});
+
+
+describe("automatic secret synchronization result", () => {
+  it.each(["json", "human"])("renders only the final apply failure in %s", async (format) => {
+    const result = await execute(["sync", "--apply", ...(format === "json" ? ["--json"] : [])], undefined, undefined,
+      Effect.fail(new CliCommandFailure({ category: "human-action-required", message: "File synchronization completed, but shared-secret storage is unavailable" })));
+    expect(result.stdout).toBe("");
+    expect(result.exitCode).toBe(3);
+    if (format === "json") {
+      const envelope = JSON.parse(result.stderr);
+      expect(envelope).toMatchObject({ schema: "canonfig.cli/v1", command: "sync.apply", exitCode: 3 });
+      expect(envelope.status).not.toBe("success");
+    } else expect(result.stderr).toContain("exit 3:");
+  });
+
+  it("runs the post-apply stage before emitting success and skips it for other commands or failed apply", async () => {
+    let called = 0;
+    const followup = Effect.sync(() => { called += 1; });
+    const success = await execute(["sync", "--apply", "--json"], undefined, undefined, followup);
+    expect(called).toBe(1);
+    expect(JSON.parse(success.stdout)).toMatchObject({ command: "sync.apply", exitCode: 0 });
+    expect(success.stderr).toBe("");
+    await execute(["sync", "--plan", "--json"], undefined, undefined, followup);
+    await execute(["status", "--json"], undefined, undefined, followup);
+    await execute(["sync", "--apply", "--json"], "human-action-required", undefined, followup);
+    expect(called).toBe(1);
+  });
+});
+
+
+it.each([
+  [["source", "init", "extra"], "canonfig source init accepts no arguments"],
+  [["profile", "list", "extra"], "canonfig profile list accepts no arguments"],
+  [["profile", "show"], "Usage: canonfig profile show <revision-id>"],
+  [["profile", "select"], "Usage: canonfig profile select <profile-id>"],
+  [["overlay", "list", "--foo"], "Unknown option: --foo"],
+  [["tunnel", "status", "extra"], "canonfig tunnel status accepts no arguments"],
+  [["overlay", "remove", "--foo"], "Unknown option: --foo"],
+  [["source", "revoke", "--foo"], "Unknown option: --foo"],
+  [["agent", "bogus"], "Unknown agent command: bogus"],
+  [["follower", "bogus"], "Unknown follower command: bogus"],
+] as const)("identifies the actual usage mistake in %j", (args, message) => {
+  for (const flags of [[], ["--json"]]) {
+    expect(evaluateCli([...args, ...flags])).toMatchObject({ _tag: "InvalidInput", message });
+  }
+});
+
+it.each(["source", "schedule", "setup", "overlay", "tunnel", "profile", "agent", "follower"])("names the missing action for %s", (group) => {
+  expect(evaluateCli([group])).toMatchObject({ _tag: "InvalidInput", message: `Missing ${group} command` });
 });

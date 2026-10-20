@@ -1,3 +1,4 @@
+import { defaultMaximumMetadataBytes } from "../domain/transport-limits.ts";
 import type { ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import { isIP } from "node:net";
@@ -54,7 +55,7 @@ import {
 import { buildIdentity } from "../runtime/build-identity.ts";
 
 const maximumRequestBytes = 64 * 1024;
-const defaultMaximumMetadataBytes = 1024 * 1024;
+
 const defaultMaximumBlobBytes = 8 * 1024 * 1024;
 const AddressInfoSchema = Schema.Struct({
   address: Schema.String,
@@ -228,6 +229,15 @@ export const startSourceServer = (
   Enrollment | MachineState
 > =>
   Effect.gen(function*() {
+    const maximumMetadataBytes = input.maximumMetadataBytes ?? defaultMaximumMetadataBytes;
+    // Publication admits against the protocol default. A smaller Source limit
+    // would strand otherwise valid stored revisions after successful publication.
+    if (!Number.isSafeInteger(maximumMetadataBytes) || maximumMetadataBytes < defaultMaximumMetadataBytes) {
+      return yield* new EnrollmentConfigurationError({
+        operation: "start enrollment server",
+        message: `maximumMetadataBytes must be a safe integer of at least ${defaultMaximumMetadataBytes} bytes, matching publication admission.`,
+      });
+    }
     const enrollment = yield* Enrollment;
     const machine = yield* MachineState;
     // The TLS key and certificate are checked against the recorded
@@ -261,8 +271,6 @@ export const startSourceServer = (
         message: "the source server host must be an unambiguous loopback address",
       });
     }
-    const maximumMetadataBytes = input.maximumMetadataBytes
-      ?? defaultMaximumMetadataBytes;
     const maximumBlobBytes = input.maximumBlobBytes ?? defaultMaximumBlobBytes;
     let blobRequests = 0;
     const server = createServer(

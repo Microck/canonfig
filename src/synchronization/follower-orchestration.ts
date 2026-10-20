@@ -77,7 +77,7 @@ import {
 import { withRunLock } from "./run-lock.ts";
 import { installerRefusals, toolInstallMethods } from "./installer-bindings.ts";
 import { installedToolVersion } from "./installed-tool-version.ts";
-import { selectToolRecipe } from "./resource-plans.ts";
+import { relativePathAncestors, selectToolRecipe } from "./resource-plans.ts";
 import { clientReviewSteps, plannedFileChanges } from "./client-review.ts";
 import type {
   AvailableBlob,
@@ -642,7 +642,13 @@ const observe = (
             ),
           )
           : [];
+        const ancestors = [...relativePathAncestors([
+          ...desired.files.map((entry) => entry.path),
+          ...desired.directories.map((entry) => entry.path),
+          ...(applied?.ownedFiles ?? []).map((entry) => entry.path),
+        ])].sort((left, right) => left.split("/").length - right.split("/").length);
         const candidates = [...new Map([
+          ...ancestors.map((path) => ({ path })),
           ...foreign,
           ...(applied?.ownedFiles ?? []).map((file) => ({
             ...file,
@@ -657,8 +663,12 @@ const observe = (
             objectKind: "directory" as const,
           })),
         ].map((file) => [file.path, file])).values()];
+        const blockedAncestors = new Set<string>();
         const files = yield* Effect.forEach(candidates, (file) =>
           Effect.gen(function*() {
+            if ([...relativePathAncestors([file.path])].some((ancestor) => blockedAncestors.has(ancestor))) {
+              return { path: file.path, state: "absent" } as const;
+            }
             const path = yield* machine.normalizePath({ path: file.path, base: root });
             const kind = yield* machine.inspectPath(path).pipe(
               Effect.catchTag("MachineFilesystemError", (error) =>
@@ -668,8 +678,10 @@ const observe = (
               ),
             );
             if (kind === undefined) {
+              blockedAncestors.add(file.path);
               return { path: file.path, state: "absent" } as const;
             }
+            if (kind.kind !== "directory") blockedAncestors.add(file.path);
             if (kind.kind === "directory") {
               const permissions = yield* machine.permissions(path);
               return {

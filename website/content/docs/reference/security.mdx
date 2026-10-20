@@ -94,7 +94,7 @@ environment.
 | Event | What happens to credentials |
 | --- | --- |
 | Enrollment fails or is cancelled | The Source-side credential it created is removed, and so is the follower's local item. A Source restart during a pending enrollment also removes it. |
-| Same-name re-enrollment with a new invitation | The credential rotates; the identity and local settings stay. The old credential works until the new one is finalized, then the Source deletes its copy and the follower deletes its old local item. |
+| Same-name re-enrollment with a new invitation | Active and pending identities are rejected without changing the existing credential or groups. An invitation alone cannot rotate another machine's credential. Explicitly revoke the identity on the Source before re-enrolling that name. |
 | `follower enroll --replace` under a different name | The new identity is enrolled first. The old identity is then revoked on its Source and its local credential deleted. The result lists every local setting that was reset. |
 | `source revoke <follower-id>` on the Source | The follower is revoked and the Source deletes its copy of that follower's credential. The follower's next request fails with exit 5. |
 | `follower unenroll` on the follower | The identity is revoked on the Source, then the local credential, the received shared secrets, and the enrollment record are deleted. |
@@ -155,6 +155,24 @@ secret through stdin so it never appears in the process argument list:
 ```bash
 printf '%s' "$GITHUB_TOKEN" | canonfig secrets set github-token
 ```
+
+### Secret ownership
+
+On a follower, `secrets set` refuses to replace a Source-owned name with a local
+value. Update that value on the Source or choose a different local name. The
+refusal leaves the existing value and ownership intact, so later transfers can
+continue updating all shared secrets.
+
+Secret manifest changes and retired-credential cleanup hold one cross-process
+lock. A contending local operation fails with exit 3 before changing secrets.
+If a follower fetch reaches a busy Source, the current transport reports that
+failed fetch with exit 6 instead. In either case, wait for the active operation
+to finish and retry. Do not delete its lock while the process is running.
+
+If an older release already created a local/source name collision, deliberately
+remove the conflicting local entry with `canonfig secrets remove <name>` before
+retrying `canonfig secrets sync`. Removal discards that local value; do not use
+this recovery unless you intend to accept the Source's value instead.
 
 ### Values and limits
 

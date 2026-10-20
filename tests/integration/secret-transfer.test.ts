@@ -1,8 +1,11 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { pathToFileURL } from "node:url";
 import { mkdtempSync, rmSync } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Redacted, Schema } from "effect";
@@ -812,4 +815,133 @@ describe("local credential-store failures", () => {
       message: `secure credential storage is unavailable: ${detail}`,
     });
   });
+});
+
+describe("canonical secrets CLI envelopes", () => {
+  it("uses the documented success schema without exposing secret values", async () => {
+    const setup = fixture();
+    const { io, output } = recordingIo();
+    await setup.runtime.runPromise(runSecretsCli(["list", "--json"], io));
+    expect(output.exitCode).toBe(0);
+    expect(output.stderr).toBe("");
+    expect(JSON.parse(output.stdout)).toMatchObject({ schema: "canonfig.cli/v1", command: "secrets.list", status: "success", exitCode: 0 });
+  });
+
+  it.each(["json", "human"])("renders usage failures consistently in %s", async (format) => {
+    const setup = fixture();
+    const { io, output } = recordingIo();
+    await setup.runtime.runPromise(runSecretsCli(["bogus", ...(format === "json" ? ["--json"] : [])], io));
+    expect(output.exitCode).toBe(2);
+    expect(output.stdout).toBe("");
+    if (format === "json") expect(JSON.parse(output.stderr)).toMatchObject({ schema: "canonfig.cli/v1", command: "secrets.bogus", status: "error", exitCode: 2 });
+    else expect(output.stderr).toContain("exit 2:");
+  });
+});
+
+
+it("refuses a local overwrite of a Source-owned name without blocking later transfers", async () => {
+  const setup = fixture();
+  await runFollower(setup, applyTransferredSecrets({ schemaVersion: 1, secrets: [
+    { name: "API_TOKEN", value: "source-first" }, { name: "multi.line", value: "other-first" },
+  ] }));
+  const before = await readSecretManifest(setup);
+  await expect(runFollower(setup, storeSecret("API_TOKEN", "local-override"))).rejects.toMatchObject({
+    category: "usage", operation: "store secret",
+    message: "Secret API_TOKEN is Source-owned. Update it on the Source, or use a different local name; it has not been changed.",
+  });
+  for (const format of ["human", "json"]) {
+    const { io, output } = recordingIo();
+    await runFollower(setup, runSecretsCli(["set", "API_TOKEN", ...(format === "json" ? ["--json"] : [])], io, pipedInput("local-override")));
+    expect(output.exitCode).toBe(2);
+    expect(output.stdout).toBe("");
+    expect(output.stderr).toContain("Source-owned");
+    expect(output.stderr).not.toContain("local-override");
+    if (format === "json") expect(JSON.parse(output.stderr)).toMatchObject({ command: "secrets.set", exitCode: 2 });
+  }
+  expect(await readSecretManifest(setup)).toEqual(before);
+  expect(await storedValue(setup, "API_TOKEN")).toBe("source-first");
+  await runFollower(setup, applyTransferredSecrets({ schemaVersion: 1, secrets: [
+    { name: "API_TOKEN", value: "source-next" }, { name: "multi.line", value: "other-next" },
+  ] }));
+  expect(await storedValue(setup, "API_TOKEN")).toBe("source-next");
+  expect(await storedValue(setup, "multi.line")).toBe("other-next");
+  await runFollower(setup, storeSecret("local-name", "first"));
+  await runFollower(setup, storeSecret("local-name", "second"));
+  expect(await storedValue(setup, "local-name")).toBe("second");
+});
+
+it("gives explicit recovery for an existing local/source name collision", async () => {
+  const setup = fixture();
+  await runFollower(setup, storeSecret("collision", "local-value"));
+  const transferred = { schemaVersion: 1 as const, secrets: [{ name: "collision", value: "source-value" }] };
+  await expect(runFollower(setup, applyTransferredSecrets(transferred))).rejects.toMatchObject({
+    category: "usage", message: expect.stringContaining("canonfig secrets remove <name>"),
+  });
+  expect(await storedValue(setup, "collision")).toBe("local-value");
+  await runFollower(setup, removeSecret("collision"));
+  await runFollower(setup, applyTransferredSecrets(transferred));
+  expect(await storedValue(setup, "collision")).toBe("source-value");
+});
+
+
+it("excludes a concurrent local write while a Source transfer owns the manifest lock", async () => {
+  const setup = fixture();
+  const reached = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let paused = false;
+  const delayed = Layer.effect(MachineState, Effect.map(MachineState, (machine) => ({
+    ...machine,
+    storeCredential: (input: Parameters<typeof machine.storeCredential>[0]) => {
+      if (paused) return machine.storeCredential(input);
+      paused = true;
+      reached.resolve();
+      return Effect.promise(() => release.promise).pipe(Effect.flatMap(() => machine.storeCredential(input)));
+    },
+  }))).pipe(Layer.provide(setup.followerMachine));
+  const transfer = Effect.runPromise(applyTransferredSecrets({ schemaVersion: 1, secrets: [
+    { name: "race-name", value: "source-value" }, { name: "other-name", value: "other-value" },
+  ] }).pipe(Effect.provide(delayed)));
+  await reached.promise;
+  try {
+    await expect(runFollower(setup, storeSecret("race-name", "local-value"))).rejects.toMatchObject({
+      category: "storage", message: expect.stringContaining("Another secret operation is in progress"),
+    });
+    await expect(runFollower(setup, removeSecret("race-name"))).rejects.toMatchObject({ category: "storage" });
+  } finally { release.resolve(); await transfer; }
+  expect(await storedValue(setup, "race-name")).toBe("source-value");
+  expect(await storedValue(setup, "other-name")).toBe("other-value");
+  await expect(runFollower(setup, storeSecret("race-name", "local-value"))).rejects.toMatchObject({ category: "usage" });
+  await runFollower(setup, storeSecret("independent", "local-value"));
+  expect(await storedValue(setup, "independent")).toBe("local-value");
+});
+
+
+it("honors a manifest lock held by another Node process and permits retry after release", async () => {
+  const setup = fixture();
+  await runFollower(setup, storeSecret("existing", "preserved"));
+  const module = pathToFileURL(resolve(import.meta.dirname, "../../src/synchronization/run-lock.ts")).href;
+  const manifest = join(setup.followerHome, ".canonfig", "secrets.json");
+  const code = `import { Effect } from "effect"; import { withRunLock } from ${JSON.stringify(module)};
+    await Effect.runPromise(withRunLock(${JSON.stringify(manifest)}, "test holder", Effect.promise(() => new Promise(resolve => {
+      process.stdin.resume(); process.stdin.on("end", resolve); process.stdout.write("LOCKED\\n");
+    }))));`;
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], {
+    cwd: resolve(import.meta.dirname, "../.."), stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stderr = ""; child.stderr.on("data", (data) => { stderr += data.toString(); });
+  const exited = once(child, "exit");
+  try {
+    await new Promise<void>((resolveReady, reject) => {
+      const timer = setTimeout(() => reject(new Error("Manifest lock fixture timed out")), 10000);
+      child.stdout.on("data", (data) => { if (data.toString().includes("LOCKED")) { clearTimeout(timer); resolveReady(); } });
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("exit", () => { clearTimeout(timer); reject(new Error(stderr || "Lock holder exited before readiness")); });
+    });
+    const before = await readSecretManifest(setup);
+    await expect(runFollower(setup, storeSecret("existing", "overwrite"))).rejects.toMatchObject({ category: "storage" });
+    expect(await readSecretManifest(setup)).toEqual(before);
+    expect(await storedValue(setup, "existing")).toBe("preserved");
+  } finally { child.stdin.end(); await exited; }
+  await runFollower(setup, storeSecret("existing", "retried"));
+  expect(await storedValue(setup, "existing")).toBe("retried");
 });

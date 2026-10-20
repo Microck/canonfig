@@ -146,6 +146,34 @@ afterEach(async () => {
 });
 
 describe("harness configuration compiler", () => {
+  it.each([false, true])("redacts credentials in real harness diffs (json: %s) without changing files", async (json) => {
+    const root = await fixture(["claude-code"]);
+    const native = JSON.stringify({ mcpServers: { existing: {
+      command: "existing-tool", env: { GITHUB_TOKEN: "test-only-native-token" },
+      args: ["test-only-native-token", "test-only-native-bearer"],
+      headers: { Authorization: "Bearer test-only-native-bearer" },
+    } } }, null, 2);
+    await write(root, ".mcp.json", native);
+    const output: string[] = [];
+    let exitCode = -1;
+    await runHarnessConfigurationCli(["diff", "--root", root, ...(json ? ["--json"] : [])], {
+      writeStdout: (value) => output.push(value), writeStderr: (value) => output.push(value),
+      setExitCode: (value) => { exitCode = value; },
+    });
+    expect(exitCode, output.join("")).toBe(0);
+    const rendered = output.join("");
+    expect(rendered).not.toContain("test-only-native-token");
+    expect(rendered).not.toContain("test-only-native-bearer");
+    if (!json) {
+      expect(rendered).toContain("[REDACTED]");
+      expect(rendered).toContain("existing-tool");
+      expect(rendered).toContain("${TEST_API_KEY}");
+      expect(rendered).toContain("${DOCS_TOKEN}");
+      expect(rendered).toContain("+++ b/.mcp.json");
+    }
+    expect(await readFile(path.join(root, ".mcp.json"), "utf8")).toBe(native);
+  });
+
   it("cleans only selected target artifacts and retains shared files until the last target", async () => {
     const root = await fixture(["codex", "claude-code"]);
     const compiler = new HarnessConfigurationCompiler();
@@ -553,4 +581,88 @@ describe("native harness file permissions", () => {
     expect((await stat(path.join(root, "AGENTS.md"))).mode & 0o777).toBe(0o640);
     expect((await readFile(path.join(root, "AGENTS.md"), "utf8")).trim()).toBe("# Local instructions");
   });
+});
+
+describe("deleted native TOML configuration", () => {
+  it.each(["codex", "grok-build"] as const)("recreates a deleted %s config and cleans an absent config", async (target) => {
+    const root = await fixture([target]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const relative = target === "codex" ? ".codex/config.toml" : ".grok/config.toml";
+    const file = path.join(root, relative);
+    const expected = await readFile(file, "utf8");
+    await rm(file);
+    const plan = await compiler.plan({ root });
+    expect(plan.entries.filter((entry) => entry.action === "conflict")).toEqual([]);
+    await applyPlan(plan);
+    expect(await readFile(file, "utf8")).toBe(expected);
+    await rm(file);
+    const output: string[] = [];
+    let exitCode = -1;
+    await runHarnessConfigurationCli(["clean", "--root", root, "--target", target], {
+      writeStdout: (value) => output.push(value), writeStderr: (value) => output.push(value),
+      setExitCode: (value) => { exitCode = value; },
+    });
+    expect(exitCode, output.join("")).toBe(0);
+    expect((await loadState(root)).artifacts[relative]).toBeUndefined();
+    await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("still protects an existing TOML file whose managed markers were removed", async () => {
+    const root = await fixture(["codex"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const file = path.join(root, ".codex/config.toml");
+    const outsideEdit = '# user replaced the file\nmodel = "keep-me"\n';
+    await writeFile(file, outsideEdit);
+    const plan = await compiler.plan({ root });
+    expect(plan.entries.some((entry) => entry.action === "conflict")).toBe(true);
+    expect(await readFile(file, "utf8")).toBe(outsideEdit);
+  });
+});
+
+it.skipIf(process.platform === "win32").each(["file", "ancestor"])("does not mistake a dangling native %s symlink for a deleted file", async (location) => {
+  const root = await fixture(["codex"]);
+  const compiler = new HarnessConfigurationCompiler();
+  await applyPlan(await compiler.plan({ root }));
+  const previous = await loadState(root);
+  const file = path.join(root, ".codex/config.toml");
+  const link = location === "file" ? file : path.dirname(file);
+  const target = location === "file" ? "missing-config.toml" : "missing-config-directory";
+  await rm(link, { recursive: location === "ancestor" });
+  await symlink(target, link);
+  for (const force of [false, true]) {
+    const plan = await compiler.plan({ root, force });
+    expect(plan.entries.find((entry) => entry.path === ".codex/config.toml")?.action).toBe("conflict");
+    const output: string[] = [];
+    let exitCode = -1;
+    await runHarnessConfigurationCli(["clean", "--root", root, "--target", "codex", ...(force ? ["--force"] : [])], {
+      writeStdout: (value) => output.push(value), writeStderr: (value) => output.push(value),
+      setExitCode: (value) => { exitCode = value; },
+    });
+    expect(exitCode, output.join("")).toBe(4);
+    expect(await readlink(link)).toBe(target);
+    expect((await loadState(root)).artifacts).toEqual(previous.artifacts);
+  }
+});
+
+
+it.each(["codex", "grok-build"] as const)("resets provenance when recreating a deleted pre-existing %s config", async (target) => {
+  const root = await fixture([target]);
+  const relative = target === "codex" ? ".codex/config.toml" : ".grok/config.toml";
+  await write(root, relative, '# operator-owned original\nmodel = "fixture-model"\n');
+  const compiler = new HarnessConfigurationCompiler();
+  await applyPlan(await compiler.plan({ root }));
+  expect((await loadState(root)).artifacts[relative]?.existedBefore).toBe(true);
+  await rm(path.join(root, relative));
+  await applyPlan(await compiler.plan({ root }));
+  expect((await loadState(root)).artifacts[relative]?.existedBefore).toBe(false);
+  expect(await readFile(path.join(root, relative), "utf8")).not.toContain("fixture-model");
+  let exitCode = -1;
+  await runHarnessConfigurationCli(["clean", "--root", root, "--target", target], {
+    writeStdout: () => undefined, writeStderr: () => undefined,
+    setExitCode: (value) => { exitCode = value; },
+  });
+  expect(exitCode).toBe(0);
+  await expect(readFile(path.join(root, relative))).rejects.toMatchObject({ code: "ENOENT" });
 });

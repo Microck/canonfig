@@ -6,6 +6,8 @@ import { connect as tlsConnect } from "node:tls";
 
 import { Effect, Option, Redacted, Ref, Schema } from "effect";
 
+import { installerMethods } from "../domain/installer-binding.ts";
+import { resolveInstallerInvocation } from "../synchronization/installer-bindings.ts";
 import { programVersion } from "../cli/help.ts";
 import {
   buildIdentity,
@@ -453,12 +455,13 @@ const schedulerProbe = (
   );
 };
 
-const packageManagerProbe = Effect.fn("Doctor.packageManagers")(function*(
+export const packageManagerProbe = Effect.fn("Doctor.packageManagers")(function*(
   machine: MachineState["Service"],
 ): Effect.fn.Return<DoctorProbe> {
   const available: Array<string> = [];
-  for (const name of ["npm", "pnpm", "yarn"] as const) {
-    const found = yield* machine.findExecutable({ name }).pipe(
+  for (const name of installerMethods) {
+    const found = yield* resolveInstallerInvocation(name).pipe(
+      Effect.provideService(MachineState, machine),
       Effect.as(true),
       Effect.catch(() => Effect.succeed(false)),
     );
@@ -470,7 +473,7 @@ const packageManagerProbe = Effect.fn("Doctor.packageManagers")(function*(
       "usage-or-configuration",
       "no supported package manager is available",
     )
-    : pass("package-managers", "package manager capability is available", {
+    : pass("package-managers", "installer invocation is available", {
       available: available.join(","),
     });
 });

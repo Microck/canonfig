@@ -323,6 +323,20 @@ describe("resource and Apply Policy coverage", () => {
     expect(plan.actions.map((action) => action.kind)).toEqual(["no-op"]);
   });
 
+  it.each(["symlink", "directory"] as const)("blocks merging into a %s without blocking unrelated files", (objectKind) => {
+    const plan = runPlan(plannerInput([
+      resource("before", "file", "replace"),
+      resource("settings", "config", "merge"),
+      resource("after", "file", "replace"),
+    ], { observed: [
+      { state: "absent" },
+      { state: "present", digest: digestB, executable: false, objectKind },
+      { state: "absent" },
+    ] }));
+    expect(plan.actions.filter((action) => action.resource === "settings").map((action) => action.kind)).toEqual(["human-action"]);
+    expect(plan.actions.filter((action) => action.kind === "write-file")).toHaveLength(2);
+  });
+
   it("preserves an unverifiable directory observation as drift", () => {
     const subject = resource("mixed-error", "directory", "mirror-owned");
     const plan = runPlan(plannerInput([subject], {
@@ -334,6 +348,25 @@ describe("resource and Apply Policy coverage", () => {
 
     expect(plan.actions.map((action) => action.kind)).toEqual(["drift-conflict"]);
   });
+
+  it.each(["replace", "mirror-owned", "replace-if-unmodified"] as const)(
+    "blocks non-directory ancestors and declared directories under %s", (policy) => {
+      const kind = policy === "replace-if-unmodified" ? "skill" : "directory";
+      const plan = runPlan(plannerInput([resource("tree", kind, policy)], {
+        desired: [{ kind, mode: 0o700,
+          directories: [{ path: "d", mode: 0o700 }],
+          files: [{ path: "d/f", digest: digestA }, { path: "e/g", digest: digestA }] }],
+        observed: [{ state: "directory", files: [
+          { path: "d", digest: digestB, objectKind: "symlink", symlinkTo: "../outside-d" },
+          { path: "e", digest: digestB, objectKind: "regular" },
+        ] }],
+      }));
+      expect(plan.actions.map((action) => action.kind)).toEqual(["human-action"]);
+      expect(plan.actions[0]?.detail).toMatchObject({
+        reason: expect.stringContaining("d, e"),
+      });
+    },
+  );
 
   it("plans a non-directory root as drift instead of applying a mirror", () => {
     const desired: DesiredResource = {
