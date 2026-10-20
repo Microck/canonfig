@@ -1765,6 +1765,9 @@ if (args[0] === "tool" && args[1] === "list") {
             revision: orphan.id,
             plan: { ...planned.plan, revision: orphan.id },
             startedAt: "2026-08-16T00:04:00Z",
+            pendingRollbackReferences: new Map([[planned.plan.actions[0]!.id,
+              join(root, "old-cache", "canonfig", "rollback", "orphaned-revision-run",
+                `${sha256Hex(planned.plan.actions[0]!.id)}.json`)]]),
           }),
         )
       ).pipe(Effect.provide(followerRepository)),
@@ -1794,11 +1797,7 @@ if (args[0] === "tool" && args[1] === "list") {
     await writeFile(join(abandonedSnapshots, `${actionHash}.json.${"b".repeat(64)}.bin`), "synthetic-private-preimage", { mode: 0o600 });
     await writeFile(join(abandonedSnapshots, ".cf-123456789abc.tmp"), "partial", { mode: 0o600 });
     await writeFile(join(otherSnapshots, "keep.bin"), "other run preimage", { mode: 0o600 });
-    await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.journalAction({
-      run: decode(RunId)("orphaned-revision-run"), action: planned.plan.actions[0]!.id,
-      state: "running", attempt: 1, recordedAt: "2026-08-16T00:04:01Z",
-      rollbackReference: join(abandonedSnapshots, `${actionHash}.json`),
-    })).pipe(Effect.provide(followerRepository)));
+
     await expect(Effect.runPromise(
       abandonFollowerRun(followerDatabase).pipe(Effect.provide(restartedApplication)),
     )).resolves.toMatchObject({ run: "orphaned-revision-run", abandoned: true });

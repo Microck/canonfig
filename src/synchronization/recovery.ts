@@ -291,7 +291,7 @@ const latestRollbackReference = (
 ): string | undefined => {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]!;
-    if (event.action === action && event.rollbackReference !== undefined) {
+    if (event.action === action && event.state !== "pending" && event.rollbackReference !== undefined) {
       return event.rollbackReference;
     }
   }

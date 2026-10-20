@@ -3732,7 +3732,7 @@ process.exit(1);
       expect(await readFile(failing.target, "utf8")).toBe('{"local":true}');
       await expect(access(normal.target)).rejects.toMatchObject({ code: "ENOENT" });
       const references = [...new Set(actionRows(base.database).flatMap((row) =>
-        row.rollback_reference === null ? [] : [decode(Schema.String)(row.rollback_reference)]
+        row.state === "pending" || row.rollback_reference === null ? [] : [decode(Schema.String)(row.rollback_reference)]
       ))];
       expect(references.length).toBe(textState === "no-op" ? 2 : 3);
       const textAction = plan.actions.find((action) => action.resource === text.resource.id);
