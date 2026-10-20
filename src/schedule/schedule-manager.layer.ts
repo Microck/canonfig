@@ -342,7 +342,9 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
             arguments: command.arguments,
             calendar,
           });
-          return { schedule, definition: rendered, command: { ...command, executable: executable.absolute } };
+          return { schedule, definition: rendered, command: { ...command, executable: executable.absolute,
+            searchPath: [dirname(executable.absolute), "/usr/local/bin", "/usr/bin", "/bin"],
+          } };
         },
       );
 

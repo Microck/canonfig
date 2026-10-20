@@ -459,6 +459,7 @@ describe("installed scheduler command decoding", () => {
     expect(installedSystemdCommand('ExecStart="/tmp/node %%$" "/tmp/main %%$$.js" "sync"')).toEqual({
       executable: "/tmp/node %$", arguments: ["/tmp/main %$.js", "sync"],
     });
+    expect(installedSystemdCommand('Environment="PATH=/tmp/bin:/usr/bin"\nExecStart="/tmp/wrapper" "sync"')?.searchPath).toEqual(["/tmp/bin", "/usr/bin"]);
     expect(installedSystemdCommand('ExecStart="/tmp/node" "$HOME/main.js"')).toBeUndefined();
     expect(installedSystemdCommand('ExecStart=/tmp/node main.js')).toBeUndefined();
     expect(installedSystemdCommand('ExecStart="/tmp/node"\nExecStart="/tmp/other"')).toBeUndefined();
@@ -467,6 +468,7 @@ describe("installed scheduler command decoding", () => {
     expect(installedLaunchdCommand('<key>ProgramArguments</key><array><string>/tmp/node &amp; tools</string><string>/tmp/&quot;main&quot;.js</string><string>sync</string></array>')).toEqual({
       executable: "/tmp/node & tools", arguments: ['/tmp/"main".js', "sync"],
     });
+    expect(installedLaunchdCommand('<key>ProgramArguments</key><array><string>/tmp/wrapper</string><string>sync</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>/tmp/bin:/usr/bin</string></dict>')?.searchPath).toEqual(["/tmp/bin", "/usr/bin"]);
     expect(installedLaunchdCommand('<key>ProgramArguments</key><array><data>unknown</data></array>')).toBeUndefined();
   });
   it("decodes Windows quoted paths without treating ordinary backslashes as escapes", () => {
@@ -475,6 +477,23 @@ describe("installed scheduler command decoding", () => {
     });
     expect(installedWindowsCommand("node.exe", '"unterminated')).toBeUndefined();
   });
+  it.each(["", "-S "])("detects a deleted PATH interpreter behind an env %s wrapper without executing it", async (split) => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-wrapper-readiness-"));
+    try {
+      const wrapper = join(root, "canonfig");
+      const interpreter = join(root, "canonfig-test-node");
+      await writeFile(wrapper, `#!/usr/bin/env ${split}canonfig-test-node\nthrow new Error('must not run');\n`, { mode: 0o755 });
+      await chmod(wrapper, 0o755);
+      await writeFile(interpreter, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      await chmod(interpreter, 0o755);
+      const command = { executable: wrapper, arguments: ["sync"], searchPath: [root] };
+      expect(await installedBindingProblem(command)).toBeUndefined();
+      expect(await installedBindingProblem({ executable: wrapper, arguments: ["sync"] })).toContain("cannot be verified");
+      await unlink(interpreter);
+      expect(await installedBindingProblem(command)).toContain("interpreter");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("does not claim unknown commands are available", async () => {
     expect(await installedBindingProblem(undefined)).toContain("cannot be verified");
     expect(await installedBindingProblem({ executable: "node", arguments: [] })).toContain("cannot be verified");
