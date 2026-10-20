@@ -17,11 +17,17 @@ Install `@microck/canonfig@4.0.1` using the same prefix as the existing 4.0.0
 installation. Check `canonfig --version` and run `canonfig doctor --no-input`.
 Then verify the role this machine already has:
 
-- On a **Source**, check `canonfig source service status` if serving is managed,
-  and verify the serving process is using the updated installation. If serving
-  manually, restart the foreground `source serve` process with its existing
-  host and port. Do not enroll the Source or run follower synchronization as
-  an upgrade check.
+- On a **Source**, restart the serving process after replacing the package;
+  an already-running Node process keeps the old build. For a managed Source,
+  restart the existing systemd user service `canonfig-source.service` on Linux,
+  LaunchAgent `dev.canonfig.source` in the logged-in macOS session, or stop and
+  start the existing Task Scheduler task `Canonfig\canonfig-source` on Windows.
+  Preserve the service's existing host, port and environment. Then check
+  `canonfig source service status` reports `running` and `serving: true`.
+  Status alone does not prove a restart, and `source service install` can return
+  unchanged for an already-running service. If serving manually, restart the
+  foreground `source serve` process with its existing host and port. Do not
+  enroll the Source or run follower synchronization as an upgrade check.
 - On an enrolled **follower**, run `canonfig sync --plan` before applying changes.
   A manual `canonfig sync --apply` refreshes managed scheduled-job bindings for
   the new build when applicable.
