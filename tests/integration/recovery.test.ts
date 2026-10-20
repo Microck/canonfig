@@ -47,7 +47,7 @@ import {
   abandonFollowerRun,
   recoverFollower,
 } from "../../src/synchronization/follower-orchestration.ts";
-import { runLockPath, withRunLock } from "../../src/synchronization/run-lock.ts";
+import { acquireRunLockScoped, runLockPath, withRunLock } from "../../src/synchronization/run-lock.ts";
 import {
   followerConvergence,
   openRunReport,
@@ -1563,6 +1563,23 @@ describe("open run ownership and status", () => {
 
     release?.();
     await owner;
+    expect(existsSync(runLockPath(value.database))).toBe(false);
+  });
+
+  it("reclaims a scoped lease whose PID was recycled, but records this process birth identity", async () => {
+    const value = fixture(temporaryDirectory());
+    writeFileSync(runLockPath(value.database), JSON.stringify({
+      pid: process.pid, operation: "serve source", since: "2000-01-01T00:00:00Z",
+      token: "previous-process", processIdentity: "previous-boot-and-process-start",
+    }));
+    const holder = await Effect.runPromise(Effect.gen(function*() {
+      yield* acquireRunLockScoped(value.database, "serve source");
+      return Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({
+        pid: Schema.Number, processIdentity: Schema.NonEmptyString,
+      })))(readFileSync(runLockPath(value.database), "utf8"));
+    }).pipe(Effect.scoped));
+    expect(holder.pid).toBe(process.pid);
+    expect(holder.processIdentity).not.toBe("previous-boot-and-process-start");
     expect(existsSync(runLockPath(value.database))).toBe(false);
   });
 

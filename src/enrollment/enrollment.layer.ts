@@ -1,3 +1,4 @@
+import { RunLockHeldError } from "../synchronization/synchronization.errors.ts";
 import { acquireRunLockScoped } from "../synchronization/run-lock.ts";
 import {
   createHash,
@@ -437,9 +438,11 @@ const makeEnrollment = Effect.gen(function*() {
   const startServerSession = Effect.fn("Enrollment.startServerSession")(function*() {
     const database = yield* repository.databaseFile().pipe(Effect.mapError(repositoryError("start source session")));
     yield* acquireRunLockScoped(`${database}.source-server`, "serve source").pipe(
-      Effect.mapError(() => new EnrollmentConfigurationError({
+      Effect.mapError((error) => new EnrollmentConfigurationError({
         operation: "start source session",
-        message: "The Source server session could not be acquired. Another server may already be running for this state database; stop it before starting a replacement.",
+        message: error instanceof RunLockHeldError
+          ? "Another Source server is already running for this state database; stop it before starting a replacement."
+          : "The Source server lease could not be acquired safely. Check state-directory permissions and access to operating-system process information, then retry.",
       })),
     );
     const abandoned = yield* repository.listPendingEnrollments().pipe(Effect.mapError(repositoryError("recover pending enrollment")));

@@ -1,3 +1,4 @@
+import { processIdentity } from "./process-identity.ts";
 import { randomUUID } from "node:crypto";
 import { link, open, readFile, rename, stat, unlink } from "node:fs/promises";
 
@@ -23,6 +24,7 @@ const LockRecord = Schema.Struct({
   operation: Schema.String,
   since: Schema.String,
   token: Schema.String,
+  processIdentity: Schema.optional(Schema.String),
 });
 type LockRecord = typeof LockRecord.Type;
 
@@ -77,7 +79,12 @@ const inspectHolder = async (path: string): Promise<Holder> => {
       ? { state: "live" }
       : { state: "stale", text };
   }
-  return processExists(record.pid) ? { state: "live", record } : { state: "stale", text };
+  if (!processExists(record.pid)) return { state: "stale", text };
+  if (record.processIdentity !== undefined) {
+    const actual = await processIdentity(record.pid);
+    if (actual !== undefined && actual !== record.processIdentity) return { state: "stale", text };
+  }
+  return { state: "live", record };
 };
 
 /**
@@ -103,13 +110,17 @@ const removeStaleLock = async (path: string, staleText: string): Promise<void> =
   }
 };
 
-const acquire = async (path: string, operation: string): Promise<LockRecord | RunLockHeldError> => {
+let ownProcessIdentity: Promise<string | undefined> | undefined;
+const acquire = async (path: string, operation: string, requireIdentity = false): Promise<LockRecord | RunLockHeldError> => {
+  const identity = await (ownProcessIdentity ??= processIdentity(process.pid));
+  if (requireIdentity && identity === undefined) throw new Error("The operating system could not verify this process start identity; the Source lease was not acquired");
   for (;;) {
     const record: LockRecord = {
       pid: process.pid,
       operation,
       since: new Date().toISOString(),
       token: randomUUID(),
+      processIdentity: identity,
     };
     try {
       const handle = await open(path, "wx", 0o600);
@@ -157,8 +168,8 @@ export const runLockHolder = (
     )
   );
 
-const acquireEffect = (path: string, operation: string) => Effect.tryPromise({
-  try: () => acquire(path, operation),
+const acquireEffect = (path: string, operation: string, requireIdentity = false) => Effect.tryPromise({
+  try: () => acquire(path, operation, requireIdentity),
   catch: (cause) => new MachineFilesystemError({
     operation: "acquire run lock", path,
     message: cause instanceof Error ? cause.message : String(cause),
@@ -171,7 +182,7 @@ export const acquireRunLockScoped = (
   stateLocation: string, operation: string,
 ): Effect.Effect<void, RunLockHeldError | MachineFilesystemError, Scope.Scope> => {
   const path = runLockPath(stateLocation);
-  return Effect.acquireRelease(acquireEffect(path, operation),
+  return Effect.acquireRelease(acquireEffect(path, operation, true),
     (record) => Effect.promise(() => release(path, record.token))).pipe(Effect.asVoid);
 };
 
