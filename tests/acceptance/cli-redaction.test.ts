@@ -196,6 +196,9 @@ describe("symbolic credential references", () => {
     'Authorization: Bearer ${DOCS_TOKEN}',
     "GITHUB_TOKEN='$GITHUB_TOKEN'",
     '--api-key "{env:SERVICE_KEY}"',
+    'https://${API_TOKEN}@example.test',
+    'https://${API_USER}:${API_TOKEN}@example.test',
+    'https://%24%7BAPI_TOKEN%7D@example.test',
   ])("preserves a symbolic credential binding in human text: %s", (value) => {
     expect(redactText(value)).toBe(value);
   });

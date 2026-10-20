@@ -32,6 +32,16 @@ export const redactKnownValues = (
 };
 
 
+const hasOnlySymbolicUrlCredentials = (prefix: string): boolean => {
+  try {
+    const url = new URL(`${prefix}redaction.invalid`);
+    return [url.username, url.password].every((value) =>
+      value === "" || isEncodedEnvironmentReference(decodeURIComponent(value)));
+  } catch {
+    return false;
+  }
+};
+
 /**
  * This is a presentation safeguard, not a parser for arbitrary shell programs.
  * Callers must still avoid collecting raw authentication files or process output.
@@ -42,7 +52,8 @@ export const redactText = (
 ): string =>
   redactKnownValues(text
     .replace(privateKeyBlock, replacement)
-    .replace(urlUserInformation, "$1[REDACTED]@")
+    .replace(urlUserInformation, (match, scheme: string) =>
+      hasOnlySymbolicUrlCredentials(match) ? match : `${scheme}[REDACTED]@`)
     .replace(authorizationCredential, (match, prefix: string, value: string) =>
       isEncodedEnvironmentReference(value) ? match : `${prefix}${replacement}`)
     .replace(assignedCredential, (match, flag: string | undefined, name: string, separator: string, value: string) =>
