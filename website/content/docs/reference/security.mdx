@@ -164,9 +164,10 @@ refusal leaves the existing value and ownership intact, so later transfers can
 continue updating all shared secrets.
 
 Secret manifest changes and retired-credential cleanup hold one cross-process
-lock. A concurrent operation fails with retryable exit 3 before changing secrets;
-wait for the active operation to finish and retry. Do not delete its lock while
-the process is running.
+lock. A contending local operation fails with exit 3 before changing secrets.
+If a follower fetch reaches a busy Source, the current transport reports that
+failed fetch with exit 6 instead. In either case, wait for the active operation
+to finish and retry. Do not delete its lock while the process is running.
 
 If an older release already created a local/source name collision, deliberately
 remove the conflicting local entry with `canonfig secrets remove <name>` before
