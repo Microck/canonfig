@@ -125,49 +125,37 @@ const writeUsageFailure = async (message: string): Promise<void> => {
   nodeCliIo.setExitCode(CliExitCode.usageOrConfiguration);
 };
 
-/** Shared-secret synchronization after a successful apply; a failure is reported on its own. */
+/** Shared-secret synchronization contributes to the single apply result. */
 const synchronizeSecretsAfterApply = ({ Effect }: typeof EffectModule) =>
   Effect.promise(() => Promise.all([
     import("../secrets/runtime-layer.ts"),
     import("../secrets/secret-client.ts"),
     import("../secrets/secret-store.ts"),
     import("../secrets/cli.ts"),
+    import("../cli/source-commands.ts"),
   ])).pipe(
     Effect.flatMap(([
       { secretRuntimeLayer },
       { synchronizeSharedSecrets },
       { SecretTransferError },
-      { secretExitCode },
+      { secretFailureCategory },
+      { CliCommandFailure },
     ]) =>
       synchronizeSharedSecrets().pipe(
         Effect.provide(secretRuntimeLayer()),
-        Effect.catch((cause) =>
-          Effect.sync(() => {
-            const error = cause instanceof SecretTransferError
-              ? cause
-              : new SecretTransferError({
-                category: "state",
-                operation: "synchronize shared secrets",
-                message: "the secret synchronization state is unavailable",
-              });
-            const exitCode = secretExitCode(error);
-            nodeCliIo.writeStderr(format === "json"
-              ? `${JSON.stringify({
-                schema: "canonfig.secrets/v1",
-                ok: false,
-                command: "secrets.sync",
-                automatic: true,
-                error: {
-                  category: error.category,
-                  operation: error.operation,
-                  message: error.message,
-                },
-                exitCode,
-              })}\n`
-              : `Secret synchronization failed: ${error.message}\n`);
-            nodeCliIo.setExitCode(exitCode);
-          })
-        ),
+        Effect.mapError((cause) => {
+          const error = cause instanceof SecretTransferError
+            ? cause
+            : new SecretTransferError({
+              category: "state",
+              operation: "synchronize shared secrets",
+              message: "the secret synchronization state is unavailable",
+            });
+          return new CliCommandFailure({
+            category: secretFailureCategory(error),
+            message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
+          });
+        }),
       )
     ),
     Effect.asVoid,
@@ -303,21 +291,10 @@ if (early !== undefined) {
   const outcome = evaluateCli(arguments_);
 
   if (outcome._tag === "Command") {
-    const automaticSecretSync = outcome.command._tag === "Synchronize"
-      && outcome.command.mode === "apply";
     await runMain((effect) =>
       effect.Effect.promise(() => import("./layers.ts")).pipe(
         effect.Effect.flatMap(({ runtimeLayer }) =>
-          runCli(arguments_, nodeCliIo).pipe(
-            // Automatic shared-secret synchronization runs only after a
-            // successful command. It reads runCli's exit code directly now that
-            // there is one, rather than suspending to read the mutable
-            // process.exitCode that runCli had just set.
-            effect.Effect.tap((exitCode) =>
-              automaticSecretSync && exitCode === CliExitCode.success
-                ? synchronizeSecretsAfterApply(effect)
-                : effect.Effect.void
-            ),
+          runCli(arguments_, nodeCliIo, synchronizeSecretsAfterApply(effect)).pipe(
             // `source serve` is the one command that outlives its own effect:
             // it returns once the loopback server is listening and the process
             // must then stay up to serve. Waiting on the exit code rather than

@@ -813,3 +813,24 @@ describe("local credential-store failures", () => {
     });
   });
 });
+
+describe("canonical secrets CLI envelopes", () => {
+  it("uses the documented success schema without exposing secret values", async () => {
+    const setup = fixture();
+    const { io, output } = recordingIo();
+    await setup.runtime.runPromise(runSecretsCli(["list", "--json"], io));
+    expect(output.exitCode).toBe(0);
+    expect(output.stderr).toBe("");
+    expect(JSON.parse(output.stdout)).toMatchObject({ schema: "canonfig.cli/v1", command: "secrets.list", status: "success", exitCode: 0 });
+  });
+
+  it.each(["json", "human"])("renders usage failures consistently in %s", async (format) => {
+    const setup = fixture();
+    const { io, output } = recordingIo();
+    await setup.runtime.runPromise(runSecretsCli(["bogus", ...(format === "json" ? ["--json"] : [])], io));
+    expect(output.exitCode).toBe(2);
+    expect(output.stdout).toBe("");
+    if (format === "json") expect(JSON.parse(output.stderr)).toMatchObject({ schema: "canonfig.cli/v1", command: "secrets.bogus", status: "error", exitCode: 2 });
+    else expect(output.stderr).toContain("exit 2:");
+  });
+});
