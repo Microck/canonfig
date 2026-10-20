@@ -128,10 +128,10 @@ export const runHarnessConfigurationCli = async (
     if (parsed.command === "clean") {
       const plan = await createPlan(
         root,
-        [...TARGET_IDS],
+        [...(parsed.targets ?? TARGET_IDS)],
         [],
         [],
-        { force: parsed.force },
+        { force: parsed.force, preserveSharedForUnselectedTargets: true },
       );
       const exitCode = isHarnessPlanBlocked(plan)
         ? CliExitCode.conflictOrDrift

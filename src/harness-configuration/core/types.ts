@@ -162,6 +162,7 @@ export interface CanonfigState {
   generatedAt: string;
   canonfigVersion: string;
   artifacts: Record<string, ArtifactState>;
+  appliedTargets?: TargetId[];
 }
 
 export type PlanAction = "create" | "update" | "delete" | "unchanged" | "conflict";
