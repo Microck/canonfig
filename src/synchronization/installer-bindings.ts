@@ -1,3 +1,4 @@
+import { stableRuntimeExecutable } from "../schedule/schedule-command.ts";
 import { realpath } from "node:fs/promises";
 import { win32 } from "node:path";
 import { Effect, Option, Schema } from "effect";
@@ -265,12 +266,14 @@ export const saveInstallerBinding = (
     || arguments_.some((argument) => !isLocalInstallerPath(argument, paths.platform))) {
     return yield* unavailable("Installer bindings require explicit local absolute paths.");
   }
-  // Resolve existing links once and retain their actual target. No path is
-  // inferred from an npm package name or copied from the Source Machine.
+  // Resolve links, except retain a verified Homebrew opt path for both the
+  // runtime and JS entrypoint. A versioned Cellar path disappears on upgrade.
+  // The shared scheduler helper uses opt only when it resolves to this exact
+  // file now; absent or unrelated opt links retain the canonical target.
   const resolved = yield* Effect.tryPromise({
     try: async () => ({
-      executable: await realpath(executable),
-      arguments: await Promise.all(arguments_.map((argument) => realpath(argument))),
+      executable: stableRuntimeExecutable(await realpath(executable)),
+      arguments: await Promise.all(arguments_.map(async (argument) => stableRuntimeExecutable(await realpath(argument)))),
     }),
     catch: () => unavailable("The selected installer executable or entrypoint cannot be resolved."),
   });

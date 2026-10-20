@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { constants, copyFileSync, unlinkSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 // The binding stores what fs/promises.realpath returns, which on Windows
 // expands 8.3 short names that fs.realpathSync leaves alone. Resolve the
 // expected paths the same way, or the two spellings of one file disagree.
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Effect, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
@@ -39,7 +39,7 @@ const fixture = () => {
     `else fs.writeFileSync(${JSON.stringify(output)}, JSON.stringify({argv:process.argv.slice(2),path:process.env.PATH??process.env.Path??''}));`,
   ].join("\n"));
   const environment = Object.entries({
-    ...process.env, HOME: home, USERPROFILE: home,
+    ...process.env, HOME: home, USERPROFILE: home, XDG_CACHE_HOME: join(home, ".cache"),
     APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"), PATH: "",
   }).flatMap(([name, value]) => value === undefined || (name.toLowerCase() === "path" && name !== "PATH") ? [] : [{ name, value }]);
   const options = { environment, credentialPolicy: { kind: "local-file" as const, path: join(home, "credentials") } };
@@ -51,6 +51,46 @@ const fixture = () => {
 const linuxBinding = { schema: "canonfig.installer/v1", platform: "linux", method: "npm", executable: "/runtime/node", arguments: ["/runtime/npm-cli.js"] };
 
 describe("local installer binding contract", () => {
+  it.skipIf(process.platform === "win32").each([true, false])("uses only verified Homebrew opt bindings (stable opt exists: %s)", async (stableOpt) => {
+    const f = fixture();
+    const prefix = join(f.home, "brew");
+    const keg = (version: string) => {
+      const root = join(prefix, "Cellar", "node", version);
+      const node = join(root, "bin", "node");
+      const entry = join(root, "lib", "node_modules", "npm", "bin", "npm-cli.js");
+      mkdirSync(dirname(node), { recursive: true });
+      mkdirSync(dirname(entry), { recursive: true });
+      copyFileSync(process.execPath, node, constants.COPYFILE_FICLONE);
+      chmodSync(node, 0o755);
+      copyFileSync(f.entry, entry);
+      return { root, node, entry };
+    };
+    const old = keg("24.0.0");
+    mkdirSync(join(prefix, "opt"), { recursive: true });
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    const opt = join(prefix, "opt", "node");
+    if (stableOpt) symlinkSync(old.root, opt);
+    symlinkSync(old.node, join(prefix, "bin", "node"));
+    symlinkSync(old.entry, join(prefix, "bin", "npm"));
+    const binding = await Effect.runPromise(saveInstallerBinding("npm", join(prefix, "bin", "node"), [join(prefix, "bin", "npm")]).pipe(Effect.provide(f.layer)));
+    if (!stableOpt) {
+      expect(binding.executable).toBe(await realpath(old.node));
+      expect(binding.arguments).toEqual([await realpath(old.entry)]);
+      expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
+      return;
+    }
+    expect(binding.executable).toBe(join(opt, "bin", "node"));
+    expect(binding.arguments).toEqual([join(opt, "lib", "node_modules", "npm", "bin", "npm-cli.js")]);
+    const next = keg("24.1.0");
+    unlinkSync(opt);
+    symlinkSync(next.root, opt);
+    rmSync(old.root, { recursive: true });
+    expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer))))
+      .toMatchObject({ verified: true });
+    expect(await Effect.runPromise(loadInstallerBinding("npm").pipe(Effect.provide(f.layer))))
+      .toEqual(binding);
+  });
+
   it("rejects shell launchers, command shims, relative paths, injected flags, and extra fields", () => {
     for (const value of [
       { ...linuxBinding, executable: "node" },

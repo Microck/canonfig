@@ -17,10 +17,17 @@ canonfig installer remove npm
 
 `set` resolves selected symlinks, verifies regular files and the bounded exact
 `--version` invocation, then writes user-local `.canonfig/installers/<method>.json`
-atomically. The invocation is shell-free, has a five-second timeout, and discards
+atomically. The invocation is shell-free, has a five-minute timeout, and discards
 version output from reports. Repeating the same set does not rewrite the file.
 Explicit set/remove can repair or delete malformed regular binding files. A
 symlinked/special binding file or an escaping ancestor is not silently replaced.
+
+For Homebrew files under a versioned `Cellar` keg, `set` retains the corresponding
+`opt/<formula>` path only when it resolves to that exact selected file. This
+applies to both a Node runtime and its npm/pnpm JavaScript entrypoint, so a later
+Homebrew upgrade can remove the old keg without stranding the binding. If no
+matching `opt` link exists, the resolved path is kept instead. This preserves a
+verified local location, not a pinned runtime version.
 
 All deterministic resource installers resolve through this data before launching.
 Arguments from the signed recipe follow the binding's fixed prefix unchanged.
@@ -48,6 +55,6 @@ reviewed uv flag correction is PR #92.
 These are operator-approved local executable paths, not a sandbox or executable
 signature attestation. Replacing the contents of a bound program changes what it
 runs; binding paths must be protected by the machine's existing access controls.
-A changed or missing entrypoint requires local repair, not an agent-generated
+A missing or unusable entrypoint requires local repair, not an agent-generated
 PATH workaround. Audit coverage: E03/E04/E05 and the executable-resolution
 portion of S09/S10. This does not claim the historical fleet is configured.
