@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { link, open, readFile, rename, stat, unlink } from "node:fs/promises";
 
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option, Schema, type Scope } from "effect";
 
 import { MachineFilesystemError } from "../machine/machine-state.errors.ts";
 import { RunLockHeldError } from "./synchronization.errors.ts";
@@ -157,6 +157,24 @@ export const runLockHolder = (
     )
   );
 
+const acquireEffect = (path: string, operation: string) => Effect.tryPromise({
+  try: () => acquire(path, operation),
+  catch: (cause) => new MachineFilesystemError({
+    operation: "acquire run lock", path,
+    message: cause instanceof Error ? cause.message : String(cause),
+  }),
+}).pipe(Effect.flatMap((result) => result instanceof RunLockHeldError
+  ? Effect.fail(result) : Effect.succeed(result)));
+
+/** Hold the same cross-process lease until its owning scope closes. */
+export const acquireRunLockScoped = (
+  stateLocation: string, operation: string,
+): Effect.Effect<void, RunLockHeldError | MachineFilesystemError, Scope.Scope> => {
+  const path = runLockPath(stateLocation);
+  return Effect.acquireRelease(acquireEffect(path, operation),
+    (record) => Effect.promise(() => release(path, record.token))).pipe(Effect.asVoid);
+};
+
 /**
  * Run `effect` while holding the follower's run lock. Fails with
  * `RunLockHeldError`, before `effect` starts, when a live process holds it.
@@ -168,19 +186,7 @@ export const withRunLock = <A, E, R>(
 ): Effect.Effect<A, E | RunLockHeldError | MachineFilesystemError, R> => {
   const path = runLockPath(stateLocation);
   return Effect.acquireUseRelease(
-    Effect.tryPromise({
-      try: () => acquire(path, operation),
-      catch: (cause) =>
-        new MachineFilesystemError({
-          operation: "acquire run lock",
-          path,
-          message: cause instanceof Error ? cause.message : String(cause),
-        }),
-    }).pipe(
-      Effect.flatMap((result) =>
-        result instanceof RunLockHeldError ? Effect.fail(result) : Effect.succeed(result)
-      ),
-    ),
+    acquireEffect(path, operation),
     () => effect,
     (record) => Effect.promise(() => release(path, record.token)),
   );
