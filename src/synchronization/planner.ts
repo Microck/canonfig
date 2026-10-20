@@ -8,6 +8,7 @@ import {
 } from "../domain/brand.ts";
 import {
   validateResourcePathConflicts,
+  normalizedTargetPath,
   type PublishedResource,
 } from "../domain/profile.ts";
 import type { VerificationInput } from "../domain/profile.ts";
@@ -249,6 +250,7 @@ const validateResourceInputs = (
   resources: ReadonlyArray<PublishedResource>,
   indexed: IndexedPlannerInput,
   platform: SynchronizationPlannerInput["observedState"]["platform"],
+  retired: ReadonlySet<string>,
 ): SynchronizationPlanningError | undefined => {
   for (const resource of resources) {
     if (!policyCompatibleWithKind(resource.kind, resource.policy)) {
@@ -323,26 +325,30 @@ const validateResourceInputs = (
       return new MissingObservedResourceError({ resource: resource.id });
     }
   }
-  const pathErrors = validateResourcePathConflicts(
-    resources.map((resource) => {
-      const desired = indexed.desired.get(resource.id);
-      const entries = desired?.kind === "directory" || desired?.kind === "skill"
-        ? desiredDirectoryEntries(desired).map((entry) => ({
-          path: entry.path,
-          kind: "objectKind" in entry && entry.objectKind === "directory"
-            ? "directory" as const
-            : "leaf" as const,
-        }))
-        : [];
-      return {
-        id: resource.id,
-        kind: resource.kind,
-        target: resource.target,
-        entries,
-      };
-    }),
-    platform,
-  );
+  const claims = resources.map((resource) => {
+    const desired = indexed.desired.get(resource.id);
+    const entries = desired?.kind === "directory" || desired?.kind === "skill"
+      ? desiredDirectoryEntries(desired).map((entry) => ({
+        path: entry.path,
+        kind: "objectKind" in entry && entry.objectKind === "directory"
+          ? "directory" as const
+          : "leaf" as const,
+      }))
+      : [];
+    return {
+      id: resource.id,
+      kind: resource.kind,
+      target: resource.target,
+      entries,
+    };
+  });
+  // Active profile claims still must be mutually valid. Historical claims are
+  // validated individually: their overlap is a lifecycle transition, not an
+  // invalid Source profile, and is sequenced below.
+  const pathErrors = [
+    ...validateResourcePathConflicts(claims.filter((claim) => !retired.has(claim.id)), platform),
+    ...claims.filter((claim) => retired.has(claim.id)).flatMap((claim) => validateResourcePathConflicts([claim], platform)),
+  ];
   const pathError = pathErrors[0];
   if (pathError?._tag === "InvalidTargetError") {
     return new PlannerInvalidResourcePathError({
@@ -494,22 +500,58 @@ const buildPlan = (
   const terminalByResource = new Map<string, ActionId>();
   const removedResources = new Set(input.revision.removedResources ?? []);
 
-  for (const resource of orderedResources) {
+  const normalize = (path: string) => normalizedTargetPath(path, input.observedState.platform);
+  const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+  const filesystem = (resource: PublishedResource) => resource.kind !== "tool" && resource.kind !== "credential";
+  const activeResources = orderedResources.filter((resource) => !removedResources.has(resource.id));
+  const retiredResources = orderedResources.filter((resource) => removedResources.has(resource.id));
+  const removedPaths = new Set<string>();
+  const retirementActions: Array<ActionId> = [];
+  for (const resource of [...retiredResources, ...activeResources]) {
     const desired = indexed.desired.get(resource.id);
     const observed = indexed.observed.get(resource.id);
     if (desired === undefined || observed === undefined) continue;
+    const retired = removedResources.has(resource.id);
+    const target = normalize(resource.target);
+    const removed = (path: string): boolean => {
+      const segments = path.split("/");
+      while (segments.length > 0) {
+        if (removedPaths.has(segments.join("/"))) return true;
+        segments.pop();
+      }
+      return false;
+    };
+    // Plan against the state produced by preceding owned removals. Otherwise a
+    // same-content rename becomes a no-op after deleting its previous owner.
+    const projected: ObservedResourceState = retired || !filesystem(resource) ? observed
+      : removed(target) ? { state: "absent" }
+      : observed.state === "directory" ? { ...observed,
+        files: observed.files.filter((file) => !removed(normalize(`${resource.target}/${file.path}`))),
+      } : observed;
     const context = {
       resource,
       desired,
-      observed,
+      observed: projected,
       overlayKeys: indexed.overlays.get(resource.id) ?? [],
       applied: indexed.applied.get(resource.id),
       platform: input.observedState.platform,
     };
-    const drafts = removedResources.has(resource.id)
-      ? planRemoved(context)
-      : planResource(context);
-    const resourcePrerequisites: Array<ActionId> = [];
+    let drafts = retired ? planRemoved(context) : planResource(context);
+    const successors = retired && filesystem(resource) ? activeResources.filter((next) =>
+      filesystem(next) && overlaps(target, normalize(next.target))) : [];
+    if (successors.length > 0) {
+      const retainsContent = resource.policy === "append-local" || resource.kind === "config" && resource.policy === "merge";
+      const retainedDirectoryRoot = (resource.kind === "directory" || resource.kind === "skill")
+        && successors.some((next) => next.kind !== "directory" && next.kind !== "skill" && normalize(next.target) === target);
+      if (drafts.length === 0 || observed.state !== "absent" && (retainsContent || retainedDirectoryRoot)) {
+        drafts = [{ kind: "human-action", detail: {
+          kind: "human-action",
+          reason: `Ownership transfer from ${resource.id} to ${successors.map((next) => next.id).join(", ")} needs review at ${resource.target}`,
+          instructions: "The previous resource has local changes or retained content that cannot be removed safely. Review and relocate that content or restore the previously applied state, then replan. Canonfig has not overwritten it.",
+        } }];
+      }
+    }
+    const resourcePrerequisites: Array<ActionId> = retired ? [] : [...retirementActions];
     for (const dependency of sortedUnique(resource.dependsOn)) {
       const terminal = terminalByResource.get(dependency);
       if (terminal !== undefined) resourcePrerequisites.push(terminal);
@@ -533,7 +575,18 @@ const buildPlan = (
       if (materialized.task !== undefined) tasks.push(materialized.task);
       previous = materialized.action.id;
     }
-    if (previous !== undefined) terminalByResource.set(resource.id, previous);
+    if (previous !== undefined) {
+      terminalByResource.set(resource.id, previous);
+      if (retired) retirementActions.push(previous);
+    }
+    if (retired) for (const draft of drafts) {
+      if (draft.detail.kind !== "remove-resource") continue;
+      if (resource.kind === "directory" || resource.kind === "skill") {
+        for (const path of draft.detail.paths) removedPaths.add(normalize(`${resource.target}/${path}`));
+      } else if (resource.policy !== "append-local" && !(resource.kind === "config" && resource.policy === "merge")) {
+        removedPaths.add(target);
+      }
+    }
   }
 
   const body: PlanBody = {
@@ -564,6 +617,7 @@ export const planSynchronization = (
       orderResult.resources,
       indexResult.indexed,
       input.observedState.platform,
+      new Set(input.revision.removedResources ?? []),
     );
     if (validationError !== undefined) return Effect.fail(validationError);
     const transferResult = planTransfers(
