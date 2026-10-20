@@ -1,3 +1,4 @@
+import { runtimeStateLayer } from "./state-layer.ts";
 import {
   createPrivateKey,
   createPublicKey,
@@ -83,7 +84,6 @@ import { describeUnattendedRuns } from "./readiness.ts";
 import { scheduleManagerLayer } from "../schedule/schedule-manager.layer.ts";
 import { setupCommandsLayer } from "../setup/setup.layer.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
-import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
 import { SynchronizationLive } from "../synchronization/synchronization.layer.ts";
 import { Synchronization } from "../synchronization/synchronization.service.ts";
 import { runLockHolder } from "../synchronization/run-lock.ts";
@@ -2087,11 +2087,7 @@ export const runtimeLayer = (
 ) => {
   const root = join(homedir(), ".canonfig");
   const statePath = options.statePath ?? join(root, "state.sqlite");
-  const state = Layer.unwrap(
-    Effect.promise(() => mkdir(dirname(statePath), { recursive: true, mode: 0o700 })).pipe(
-      Effect.as(stateRepositoryLayer(statePath)),
-    ),
-  );
+  const state = runtimeStateLayer(statePath);
   const machine = machineLayer(statePath);
   const enrollment = EnrollmentLive.pipe(Layer.provide(Layer.merge(state, machine)));
   const profiles = runtimeProfileCatalogLayer.pipe(

@@ -571,6 +571,8 @@ written to standard output. Usage errors arrive in the requested format: with
 `--json`, a `canonfig.cli/v1` envelope with `status` `"error"` and `exitCode`
 `2`.
 
+An inaccessible state directory or an invalid state database is reported as human action required (exit `3`), including failures before the command runtime starts. JSON mode emits one error envelope on standard error, not a stack trace on standard output. Check directory permissions and preserve the existing state; restore a known-good database backup if it is corrupt. Canonfig does not delete or reset the database automatically.
+
 ## Exit codes
 
 | Code | Meaning |
