@@ -16,7 +16,7 @@ const secretName = new RegExp(`^(?:${credentialName("$")})$`, "iu");
 export const isSecretField = (name: string): boolean => secretName.test(name);
 
 const environmentName = "[A-Za-z_][A-Za-z0-9_]*";
-const environmentSymbol = `(?:\\$\\{${environmentName}\\}|\\$${environmentName}|\\{env:${environmentName}\\})`;
+const environmentSymbol = `(?:\\$\\{(?:env:)?${environmentName}\\}|\\$${environmentName}|\\{env:${environmentName}\\})`;
 const environmentReference = new RegExp(
   `^(?:(?:Bearer|Basic|Token)\\s+)?${environmentSymbol}$`,
   "u",

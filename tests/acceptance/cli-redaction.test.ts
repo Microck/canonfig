@@ -30,6 +30,8 @@ describe("credential-safe CLI output", () => {
     expect(isSecretField("credentialReference")).toBe(false);
     expect(isSecretField("maximumSecretBytes")).toBe(false);
     expect(isSecretField("TOKEN_BUDGET")).toBe(false);
+    expect(sanitizeCliData({ env: { API_KEY: "${env:API_KEY}" } }))
+      .toEqual({ env: { API_KEY: "${env:API_KEY}" } });
     expect(sanitizeCliData({
       credentialReference: "keychain:reference-only",
       env: { SERVICE_API_KEY: "test-only-key", PATH: "/usr/bin" },

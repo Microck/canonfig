@@ -157,3 +157,30 @@ The canonical model intentionally carries semantic features rather than raw
 native file shapes. When a harness changes, its adapter and fixtures can be
 updated without changing the loader, planner, ownership model, or other
 adapters.
+
+
+## MCP environment references
+
+`fromEnv` remains symbolic when Canonfig writes native files; Canonfig does not
+read the environment value into generated configuration.
+
+- Codex forwards same-name stdio variables with `env_vars`. It uses
+  `env_http_headers` for environment-sourced HTTP header values, and keeps
+  literal values in `env` / `http_headers`.
+- Codex cannot rename a stdio environment variable through `env_vars`.
+  A binding such as `API_KEY: { fromEnv: OTHER_KEY }` is omitted with
+  `MCP_ENV_RENAME_UNSUPPORTED`; `--strict` rejects the plan. Use the same name
+  or an explicitly reviewed wrapper instead.
+- OpenCode and Kilo use `{env:NAME}` references.
+- Cursor uses `${env:NAME}` references.
+
+A `fromEnv` header supplies the entire header value. For example, the environment
+value for an Authorization header must include its required scheme; Canonfig
+does not infer or prepend `Bearer`. Native client trust and environment setup
+still apply. Applying a configuration does not verify a live MCP connection.
+
+Vendor references checked on 2026-10-20:
+[Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
+[OpenCode config variables](https://docs.opencode.ai/docs/config/),
+[Kilo MCP](https://kilo.ai/docs/automate/mcp/using-in-kilo-code), and
+[Cursor config interpolation](https://cursor.com/docs/mcp#config-interpolation).
