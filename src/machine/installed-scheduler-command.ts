@@ -98,10 +98,10 @@ const usableFile = async (path: string, mode: number): Promise<boolean> => {
 };
 
 const interpreterProblem = async (executable: string, searchPath: ReadonlyArray<string> | undefined,
-  seen = new Set<string>()): Promise<string | undefined> => {
-  if (seen.has(executable) || seen.size >= 8) return "the scheduler wrapper interpreter chain cannot be verified";
+  seen = new Set<string>()): Promise<{ message: string; retryPath?: boolean } | undefined> => {
+  if (seen.has(executable) || seen.size >= 8) return { message: "the scheduler wrapper interpreter chain cannot be verified" };
   seen.add(executable);
-  if (!await usableFile(executable, constants.X_OK)) return "the scheduler wrapper interpreter is missing or not executable";
+  if (!await usableFile(executable, constants.X_OK)) return { message: "the scheduler wrapper interpreter is missing or not executable", retryPath: true };
   let header: string;
   try {
     const file = await open(executable, "r");
@@ -110,29 +110,39 @@ const interpreterProblem = async (executable: string, searchPath: ReadonlyArray<
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
       header = buffer.subarray(0, bytesRead).toString("utf8");
     } finally { await file.close(); }
-  } catch { return "the scheduler wrapper interpreter cannot be inspected"; }
+  } catch { return { message: "the scheduler wrapper interpreter cannot be inspected" }; }
   if (!header.startsWith("#!")) return undefined;
   const newline = header.indexOf("\n");
-  if (newline < 0 || header.slice(0, newline).includes("\r")) return "the scheduler wrapper interpreter cannot be verified";
+  if (newline < 0 || header.slice(0, newline).includes("\r")) return { message: "the scheduler wrapper interpreter cannot be verified" };
   const words = header.slice(2, newline).trim().split(/\s+/u);
   const interpreter = words[0];
-  if (interpreter === undefined || !absolute(interpreter)) return "the scheduler wrapper interpreter cannot be verified";
+  if (interpreter === undefined || !absolute(interpreter)) return { message: "the scheduler wrapper interpreter cannot be verified" };
   if (basename(interpreter) !== "env") return interpreterProblem(interpreter, searchPath, seen);
-  if (!await usableFile(interpreter, constants.X_OK)) return "the scheduler wrapper env interpreter is missing or not executable";
+  if (!await usableFile(interpreter, constants.X_OK)) return { message: "the scheduler wrapper env interpreter is missing or not executable", retryPath: true };
   const split = words[1] === "-S";
   const name = words[split ? 2 : 1];
   // env without -S receives one kernel argument, not shell-split flags.
   // Accept simple -S syntax, but never guess complex quoting or assignments.
   if ((!split && words.length !== 2) || split && /['"\\]/u.test(words.slice(2).join(" "))
-    || name === undefined || name.startsWith("-") || name.includes("=")) return "the scheduler wrapper env interpreter cannot be verified";
-  if (absolute(name)) return interpreterProblem(name, searchPath, seen);
-  if (name.includes("/") || searchPath === undefined) return "the scheduler wrapper PATH interpreter cannot be verified";
+    || name === undefined || name.startsWith("-") || name.includes("=")) return { message: "the scheduler wrapper env interpreter cannot be verified" };
+  // Once env itself starts, a failure of its child is an exit status, not
+  // an exec failure that the outer PATH search may skip.
+  const childProblem = async (candidate: string) => {
+    const problem = await interpreterProblem(candidate, searchPath, new Set(seen));
+    return problem === undefined ? undefined : { message: problem.message };
+  };
+  if (absolute(name)) return childProblem(name);
+  if (name.includes("/") || searchPath === undefined) return { message: "the scheduler wrapper PATH interpreter cannot be verified" };
   for (const directory of searchPath) {
-    if (!absolute(directory)) return "the scheduler wrapper PATH interpreter cannot be verified";
+    if (!absolute(directory)) return { message: "the scheduler wrapper PATH interpreter cannot be verified" };
     const candidate = join(directory, name);
-    if (await usableFile(candidate, constants.X_OK)) return interpreterProblem(candidate, searchPath, seen);
+    if (await usableFile(candidate, constants.X_OK)) {
+      const problem = await interpreterProblem(candidate, searchPath, new Set(seen));
+      if (problem?.retryPath) continue;
+      return problem === undefined ? undefined : { message: problem.message };
+    }
   }
-  return "the scheduler wrapper PATH interpreter is missing or not executable";
+  return { message: "the scheduler wrapper PATH interpreter is missing or not executable" };
 };
 
 /** File readiness only. Does not execute either the installed runtime or the CLI. */
@@ -140,7 +150,7 @@ export const installedBindingProblem = async (command: InstalledSchedulerCommand
   if (command === undefined || !absolute(command.executable)) return "the installed scheduler command cannot be verified";
   if (!await usableFile(command.executable, constants.X_OK)) return "the installed scheduler runtime is missing or not executable";
   const interpreter = await interpreterProblem(command.executable, command.searchPath);
-  if (interpreter !== undefined) return interpreter;
+  if (interpreter !== undefined) return interpreter.message;
   const entrypoint = command.arguments[0];
   if (entrypoint !== undefined && absolute(entrypoint)) {
     if (!await usableFile(entrypoint, constants.R_OK)) return "the installed Canonfig entrypoint is missing or unreadable";

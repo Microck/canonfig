@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { evaluateCli } from "../src/cli/cli.ts";
 import { installedSystemdCommand, installedLaunchdCommand, installedWindowsCommand, installedBindingProblem } from "../src/machine/installed-scheduler-command.ts";
 import { scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
@@ -490,6 +491,39 @@ describe("installed scheduler command decoding", () => {
       expect(await installedBindingProblem(command)).toBeUndefined();
       expect(await installedBindingProblem({ executable: wrapper, arguments: ["sync"] })).toContain("cannot be verified");
       await unlink(interpreter);
+      expect(await installedBindingProblem(command)).toContain("interpreter");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32")("matches env PATH fallback without confusing child exits with exec failures", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-path-fallback-"));
+    try {
+      const first = join(root, "first"), second = join(root, "second");
+      await mkdir(first); await mkdir(second);
+      const wrapper = join(root, "wrapper");
+      const early = join(first, "fixture-runtime");
+      const late = join(second, "fixture-runtime");
+      const missing = join(root, "missing-interpreter");
+      for (const [path, content] of [
+        [wrapper, "#!/usr/bin/env fixture-runtime\n"],
+        [early, `#!${missing}\n`],
+        [late, "#!/bin/sh\nexit 0\n"],
+      ]) {
+        await writeFile(path!, content!, { mode: 0o755 });
+        await chmod(path!, 0o755);
+      }
+      const command = { executable: wrapper, arguments: [], searchPath: [first, second] };
+      const run = () => spawnSync(wrapper, [], { env: { PATH: [first, second].join(":") }, timeout: 5000 });
+      expect(run().status).toBe(0);
+      expect(await installedBindingProblem(command)).toBeUndefined();
+      // This candidate starts env successfully. Its missing child must not
+      // cause fallback to the later candidate, unlike a missing kernel interpreter.
+      await writeFile(early, `#!/usr/bin/env ${missing}\n`);
+      expect(run().status).not.toBe(0);
+      expect(await installedBindingProblem(command)).toContain("interpreter");
+      await writeFile(early, `#!${missing}\n`);
+      await unlink(late);
+      expect(run().status).not.toBe(0);
       expect(await installedBindingProblem(command)).toContain("interpreter");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
