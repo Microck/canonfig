@@ -25,7 +25,7 @@ import { renderArtifacts } from "./render.ts";
 import { sha256 } from "./hash.ts";
 import { CanonfigError } from "./errors.ts";
 
-export interface PlanOptions { force?: boolean; preserveSharedForUnselectedTargets?: boolean; }
+export interface PlanOptions { force?: boolean; preserveSharedForUnselectedTargets?: boolean; retiredTargets?: readonly TargetId[]; }
 
 function bytesEqual(left: Uint8Array | undefined, right: string | Uint8Array | undefined): boolean {
   if (left === undefined || right === undefined) return left === undefined && right === undefined;
@@ -86,11 +86,12 @@ export async function createPlan(
   // partial cleanup of such receipts; an unfiltered clean can remove it.
   const previousTargets = previousState.appliedTargets
     ?? (Object.keys(previousState.artifacts).length === 0 ? [] : [...TARGET_IDS]);
-  const remainingTargets = previousTargets.filter((target) => !targets.includes(target));
+  const retiredTargets = options.retiredTargets ?? [];
+  const remainingTargets = previousTargets.filter((target) => !targets.includes(target) && !retiredTargets.includes(target));
   const cleaning = options.preserveSharedForUnselectedTargets === true;
-  const retainShared = cleaning && remainingTargets.length > 0;
+  const retainShared = (cleaning || targets.length === 0) && remainingTargets.length > 0;
   const selectedOwner = (owner: ArtifactOwner): boolean =>
-    owner === "common" ? !retainShared : targets.includes(owner);
+    owner === "common" ? !retainShared : targets.includes(owner) || retiredTargets.includes(owner);
   const nextArtifacts: Record<string, ArtifactState> = {};
   for (const [filePath, state] of Object.entries(previousState.artifacts)) {
     if (!selectedOwner(state.owner)) nextArtifacts[filePath] = state;
@@ -233,7 +234,7 @@ export async function createPlan(
     version: 1,
     generatedAt: new Date().toISOString(),
     canonfigVersion: HARNESS_CONFIGURATION_VERSION,
-    appliedTargets: [...new Set(cleaning ? remainingTargets : [...previousTargets, ...targets])].sort(),
+    appliedTargets: [...new Set(cleaning ? remainingTargets : [...previousTargets.filter((target) => !retiredTargets.includes(target)), ...targets])].sort(),
     artifacts: Object.fromEntries(Object.entries(nextArtifacts).sort(([left], [right]) => left.localeCompare(right))),
   };
   return { root, targets, entries: entries.sort((a, b) => a.path.localeCompare(b.path)), diagnostics, nextState };

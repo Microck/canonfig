@@ -529,6 +529,12 @@ canonfig harness doctor
 canonfig harness --help
 ```
 
+An unfiltered harness apply retires owned output for targets explicitly set to
+`enabled: false`, preserving output still needed by enabled targets. Disabling
+the last applied target also retires shared generated output. Local edits still
+conflict rather than being erased. An explicit `--target` apply only updates its
+selected targets and does not retire other targets based on the project config.
+
 YAML is the default scaffold. `--format json` creates strict, pretty-printed
 `.canonfig/harness.json` and is valid only with `harness init`. YAML and JSON
 use the same schema and compiler. Canonfig rejects a project that contains more

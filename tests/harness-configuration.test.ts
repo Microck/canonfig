@@ -284,6 +284,49 @@ describe("harness configuration compiler", () => {
     });
   });
 
+  it("retires explicitly disabled targets on full apply, but not on a filtered apply", async () => {
+    const root = await fixture(["codex", "claude-code"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const file = path.join(root, ".canonfig/harness.json");
+    const config = JSON.parse(await readFile(file, "utf8"));
+    config.targets["claude-code"].enabled = false;
+    await writeFile(file, JSON.stringify(config));
+    await applyPlan(await compiler.plan({ root, targets: ["codex"] }));
+    expect((await loadState(root)).appliedTargets).toContain("claude-code");
+    expect(await readFile(path.join(root, "CLAUDE.md"), "utf8")).toContain("AGENTS.md");
+    const full = await compiler.plan({ root });
+    expect(full.entries.find((entry) => entry.path === "CLAUDE.md")?.action).toBe("delete");
+    await applyPlan(full);
+    expect((await loadState(root)).appliedTargets).toEqual(["codex"]);
+    await expect(readFile(path.join(root, "CLAUDE.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(path.join(root, "AGENTS.md"), "utf8")).toContain("Canonical instructions");
+    config.targets.codex.enabled = false;
+    await writeFile(file, JSON.stringify(config));
+    await rm(path.join(root, ".canonfig/instructions/AGENTS.md"));
+    const none = await compiler.plan({ root });
+    expect(none.entries.some((entry) => entry.action === "conflict")).toBe(false);
+    await applyPlan(none);
+    expect((await loadState(root)).artifacts).toEqual({});
+    await expect(readFile(path.join(root, "AGENTS.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not erase local edits when disabling a target", async () => {
+    const root = await fixture(["claude-code"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const output = path.join(root, ".claude/agents/reviewer.md");
+    await writeFile(output, "local edits\n");
+    const file = path.join(root, ".canonfig/harness.json");
+    const config = JSON.parse(await readFile(file, "utf8"));
+    config.targets["claude-code"].enabled = false;
+    await writeFile(file, JSON.stringify(config));
+    const plan = await compiler.plan({ root });
+    expect(plan.entries.find((entry) => entry.path === ".claude/agents/reviewer.md")?.action).toBe("conflict");
+    await expect(applyPlan(plan)).rejects.toThrow();
+    expect(await readFile(output, "utf8")).toBe("local edits\n");
+  });
+
   it("keeps operator text on both sides of a managed block", async () => {
     // The block was removed and re-appended, so with placement "end" it always
     // landed last and any text the operator had written after it was silently
