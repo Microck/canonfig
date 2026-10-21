@@ -95,3 +95,8 @@ back: resources applied before it stay applied, and later ones are skipped
 until you resolve the task and run `sync --apply` again. `sync --plan` reports
 the same refusal against the task it would have attempted, so the reason is
 visible before an apply rather than only after one.
+
+The Codex proposal harness explicitly permits a non-Git working directory, so
+manual and scheduled synchronization do not depend on the caller being inside
+a repository. It still runs with the read-only sandbox. Proposed actions remain
+subject to Canonfig's existing path, executable, origin, and capability checks.

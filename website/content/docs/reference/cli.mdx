@@ -1,6 +1,6 @@
 ---
 title: "Reference: complete CLI reference"
-description: Canonfig 4.0.1 commands, output formats, shared secrets, logging controls, and exit codes.
+description: Canonfig 4.0.2 commands, output formats, shared secrets, logging controls, and exit codes.
 ---
 
 Canonfig requires Node.js 24 or newer. This page follows the command groups in
@@ -381,6 +381,10 @@ Installing a tool does not change these authoring fingerprints.
 Apply runs only structured native argv recipes and journals evidence and
 qualified provenance. Re-running apply resumes the next eligible stage.
 An unavailable optional integration excludes only its dependent branch.
+Human `setup apply` and `setup status` include the stored reason beneath failed
+or skipped items. `setup status --json` exposes that reason as item `evidence`
+when it matches the current verdict; stale success evidence is not reused for a
+new dependency skip. Normal output redaction applies to these reasons.
 
 The journal (`~/.canonfig/setup.json`) is the setup decision record, and
 `setup status` shows it:
@@ -391,7 +395,9 @@ The journal (`~/.canonfig/setup.json`) is the setup decision record, and
   interview depth only: it is not part of the plan digest, so switching modes
   keeps approvals;
 - `discoveryPaths`: the normalized `--file` paths discovery read. A file that
-  is missing or too large is listed under `exclusions` instead;
+  is missing or too large is listed under `exclusions` instead. A directory,
+  invalid path, or unreadable discovery file is a usage/configuration error
+  (exit 2), not an internal journal defect;
 - `discoveryInputs`: the paths and SHA-256 fingerprints of discovery files.
   These bind approval to authoring bytes, not to whether installation has
   since made the tool available;
@@ -529,6 +535,36 @@ canonfig harness doctor
 canonfig harness --help
 ```
 
+Harness apply records ownership of existing generated files and managed blocks
+only when their content matches the current canonical output. This lets a fresh
+clone adopt checked-in output before later source edits. Different unowned text
+still conflicts. Git's LF/CRLF conversion alone is not a generated-text edit;
+other edits remain protected. Binary skill files keep exact-byte ownership checks
+during updates and cleanup, without UTF-8 decoding.
+
+An unfiltered harness apply retires owned output for targets explicitly set to
+`enabled: false`, preserving output still needed by enabled targets. Disabling
+the last applied target also retires shared generated output. Local edits still
+conflict rather than being erased. An explicit `--target` apply only updates its
+selected targets and does not retire other targets based on the project config.
+
+Skill-source symlinks may refer to files or directories inside the repository,
+including a vendored skill outside `.canonfig`. Generated output is a regular
+copy with executable intent preserved. Dangling links, directory cycles, and
+links outside the repository produce a blocking `SKILL_SOURCE_INVALID`
+diagnostic rather than silently dropping skills or reading external files.
+
+Merging native JSON/JSONC configuration changes only affected properties and
+array items. Unrelated comments, values, and formatting remain in place through
+apply, re-render, and cleanup. Canonfig still rejects invalid JSON/JSONC rather
+than rewriting it as a fresh document.
+
+An existing `CLAUDE.md` symlink resolving to the repository's `AGENTS.md`
+already supplies the instruction bridge. Apply preserves it without taking
+ownership, and cleanup leaves it intact. Other native-output symlinks are reported
+as conflicts rather than silently replaced, including with `--force`; resolve
+the link explicitly if you want Canonfig to own a regular file there.
+
 YAML is the default scaffold. `--format json` creates strict, pretty-printed
 `.canonfig/harness.json` and is valid only with `harness init`. YAML and JSON
 use the same schema and compiler. Canonfig rejects a project that contains more
@@ -536,7 +572,15 @@ than one supported harness configuration file.
 
 `--strict` turns every lossy, coerced, or unsupported MCP and hook mapping into
 an error (for example `MCP_OPTION_COERCED` or `HOOK_TIMEOUT_ROUNDED`). Without
-it those mappings are warnings.
+it those mappings are warnings. Claude Code and Factory Droid do not map
+`before_agent` or `after_agent`; Droid also does not map `after_compact` or
+`subagent_start`. These produce `HOOK_EVENT_UNSUPPORTED`, not inert native event
+names. Droid uses its own supported event set and an unwrapped event map in
+`.factory/hooks.json`, with project-relative scripts anchored to
+`FACTORY_PROJECT_DIR`.
+
+Event references: [Claude Code](https://code.claude.com/docs/en/hooks) and
+[Factory Droid](https://docs.factory.com/harness/hooks).
 
 ## Installer bindings
 
