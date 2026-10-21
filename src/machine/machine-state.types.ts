@@ -290,6 +290,9 @@ export interface SchedulerRunResult {
  * `active` and `overrides` instead of folding into `enabled`/`matches`.
  */
 export interface SchedulerInspection {
+  /** Identity and registration time of the installed native definition. */
+  readonly generation?: string | undefined;
+  readonly installedAt?: string | undefined;
   readonly installed: boolean;
   /** Enabled to run: systemd unit file state, launchd not disabled, Task Scheduler Enabled. */
   readonly enabled: boolean;

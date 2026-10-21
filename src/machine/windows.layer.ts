@@ -1,3 +1,4 @@
+import { registeredSchedulerIdentity } from "./scheduler-identity.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
   access,
@@ -1371,9 +1372,12 @@ export const windowsMachineStateLayer = (
                 && intervalMatches
                 && weekdaysMatch;
               const registration = windowsTaskRegistration(xml);
+              const identity = registeredSchedulerIdentity(xml, registration.registeredAt);
               return taskRuntimeState(expected.serviceName).pipe(
                 Effect.map((runtime): SchedulerInspection => ({
                   installed: true,
+                  generation: identity?.generation,
+                  installedAt: identity?.installedAt,
                   enabled: xmlElement(settings, "Enabled") !== "false",
                   matches: xmlElement(xml, "Description") === desired.description
                     && command === desired.executable

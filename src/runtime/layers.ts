@@ -80,7 +80,7 @@ import {
   syncScheduleFromDefault,
   unmanagedScheduleDetail,
 } from "../schedule/schedule-manager.types.ts";
-import { describeUnattendedRuns } from "./readiness.ts";
+import { describeUnattendedRuns, currentScheduleFires } from "./readiness.ts";
 import { scheduleManagerLayer } from "../schedule/schedule-manager.layer.ts";
 import { setupCommandsLayer } from "../setup/setup.layer.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
@@ -346,6 +346,8 @@ const mapFailure = <Success, Failure extends TaggedRuntimeError, Requirements>(
  * it, and the schedule commands still act on the native job directly.
  */
 export interface ScheduleFireRecord {
+  readonly generation?: string | undefined;
+  readonly startedAt?: string | undefined;
   readonly at: string;
   readonly outcome: string;
   /** For `failed`: the failure category, message, and run reason, bounded. */
@@ -392,6 +394,8 @@ const recordScheduleFire = (
   statePath: string,
   outcome: string,
   reason?: string,
+  generation?: string,
+  startedAt?: string,
 ): Effect.Effect<void, never> =>
   Effect.tryPromise({
     try: async () => {
@@ -401,6 +405,8 @@ const recordScheduleFire = (
         at: new Date().toISOString(),
         outcome,
         reason,
+        generation,
+        startedAt,
       }];
       await mkdir(dirname(path), { recursive: true });
       await writeFile(
@@ -1055,7 +1061,7 @@ const followerCommandsLayer = (
                 detail: error.message,
               }),
               onSuccess: (status) => {
-                const runs = describeUnattendedRuns(readScheduleFires(statePath));
+                const runs = describeUnattendedRuns(currentScheduleFires(status, readScheduleFires(statePath)));
                 const verified = status.state === "current" && runs.completed;
                 return {
                   status: verified ? "verified" as const : "pending" as const,
@@ -1462,8 +1468,11 @@ const followerCommandsLayer = (
         // Only the rendered native job passes --scheduled, so the fire
         // record is evidence the real scheduler started this process.
         const scheduled = input.scheduled === true;
-        const record = (outcome: string, reason?: string) =>
-          scheduled ? recordScheduleFire(statePath, outcome, reason) : Effect.void;
+        const startedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
+        const installedGeneration = scheduled ? schedules.status().pipe(
+          Effect.map((status) => status.generation),
+          Effect.catch(() => Effect.succeed(undefined)),
+        ) : Effect.succeed(undefined);
         const run: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(synchronizeFollower(
           statePath,
           input.mode,
@@ -1477,32 +1486,36 @@ const followerCommandsLayer = (
           Effect.provideService(AgentResolution, agentResolution),
           Effect.provideService(ScheduleManager, schedules),
         )).pipe(Effect.flatMap(outcomePayload));
-        return record("started").pipe(
-          // A scheduled run restarts a down managed tunnel once, and a
-          // transport failure while the tunnel is down reports the tunnel.
-          Effect.andThen(repository.getFollowerSynchronizationConfiguration().pipe(
-            Effect.catch(() => Effect.succeed(undefined)),
-            Effect.flatMap((configuration) =>
-              withManagedTunnel(
-                {
-                  stateDirectory: join(dirname(statePath), "tunnel"),
-                  sourceEndpoint: configuration?.source.endpoint,
-                  restart: scheduled,
-                },
-                (failure: CliCommandFailure) => failure.category === "transport",
-                run,
-              )
+        return installedGeneration.pipe(Effect.flatMap((generation) => {
+          const record = (outcome: string, reason?: string) => scheduled
+            ? recordScheduleFire(statePath, outcome, reason, generation, startedAt) : Effect.void;
+          return record("started").pipe(
+            // A scheduled run restarts a down managed tunnel once, and a
+            // transport failure while the tunnel is down reports the tunnel.
+            Effect.andThen(repository.getFollowerSynchronizationConfiguration().pipe(
+              Effect.catch(() => Effect.succeed(undefined)),
+              Effect.flatMap((configuration) =>
+                withManagedTunnel(
+                  {
+                    stateDirectory: join(dirname(statePath), "tunnel"),
+                    sourceEndpoint: configuration?.source.endpoint,
+                    restart: scheduled,
+                  },
+                  (failure: CliCommandFailure) => failure.category === "transport",
+                  run,
+                )
+              ),
+              Effect.provideService(Tunnel, tunnel),
+              Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
+            )),
+            Effect.flatMap((result) =>
+              record("completed").pipe(Effect.as(result))
             ),
-            Effect.provideService(Tunnel, tunnel),
-            Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
-          )),
-          Effect.flatMap((result) =>
-            record("completed").pipe(Effect.as(result))
-          ),
-          Effect.catch((error) =>
-            record("failed", fireFailureReason(error)).pipe(Effect.flatMap(() => Effect.fail(error)))
-          ),
-        );
+            Effect.catch((error) =>
+              record("failed", fireFailureReason(error)).pipe(Effect.flatMap(() => Effect.fail(error)))
+            ),
+          );
+        }));
       },
       abandon: () =>
         mapFailure(abandonFollowerRun(statePath).pipe(
@@ -1861,8 +1874,8 @@ const followerCommandsLayer = (
               Effect.map((status) =>
                 payload({
                   ...status,
-                  lastFire: fires.at(-1),
-                  unattendedRuns: describeUnattendedRuns(fires).text,
+                  lastFire: currentScheduleFires(status, fires).at(-1),
+                  unattendedRuns: describeUnattendedRuns(currentScheduleFires(status, fires)).text,
                 })
               ),
             );

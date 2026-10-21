@@ -1,3 +1,4 @@
+import { fileSchedulerIdentity } from "./scheduler-identity.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -1280,6 +1281,7 @@ const systemdBackend = (
         if (service === undefined || timer === undefined) {
           return { installed: false, enabled: false, matches: false };
         }
+        const identity = yield* Effect.promise(() => fileSchedulerIdentity([path.service, path.timer], [service.content, timer.content]));
         const units = yield* showUnits(
           path.timerName,
           expected.serviceName,
@@ -1292,6 +1294,8 @@ const systemdBackend = (
         const ran = exitedAt !== undefined && exitedAt !== "" && exitedAt !== "n/a";
         return {
           installed: true,
+          generation: identity?.generation,
+          installedAt: identity?.installedAt,
           enabled: timerEnabled(units.timer),
           matches: service.content === expected.service && timer.content === expected.schedule,
           calendarMatches: timer.content === expected.schedule,

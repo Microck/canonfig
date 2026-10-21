@@ -80,12 +80,26 @@ export const credentialReadiness = (
 };
 
 export interface ScheduleFireEvidence {
+  readonly generation?: string | undefined;
+  readonly startedAt?: string | undefined;
   readonly at: string;
   /** `started`, then `completed` or `failed`; a trailing `started` never finished. */
   readonly outcome: string;
   /** Why a `failed` run failed: its failure category and message. */
   readonly reason?: string | undefined;
 }
+
+/** Historical or unbound receipts cannot prove that this installation fired. */
+export const currentScheduleFires = (
+  status: Pick<ScheduleStatus, "generation" | "installedAt">,
+  fires: ReadonlyArray<ScheduleFireEvidence>,
+): ReadonlyArray<ScheduleFireEvidence> => {
+  if (status.generation === undefined || status.installedAt === undefined) return [];
+  const installedAt = Date.parse(status.installedAt);
+  if (!Number.isFinite(installedAt)) return [];
+  return fires.filter((fire) => fire.generation === status.generation && fire.startedAt !== undefined
+    && Date.parse(fire.startedAt) > installedAt);
+};
 
 /** The last unattended run in words, and whether it completed. */
 export interface UnattendedRunSummary {
@@ -138,7 +152,8 @@ export const scheduledDefinitionReadiness = (
   status: ScheduleStatus,
   fires: ReadonlyArray<ScheduleFireEvidence> = [],
 ): DoctorProbe => {
-  const lastFire = fires.at(-1);
+  const matchingFires = currentScheduleFires(status, fires);
+  const lastFire = matchingFires.at(-1);
   const nextRun: Record<string, string> = {};
   if (status.nextRun !== undefined) nextRun.nextRun = status.nextRun;
   const details = {
@@ -164,7 +179,7 @@ export const scheduledDefinitionReadiness = (
         details,
       };
   }
-  const runs = describeUnattendedRuns(fires);
+  const runs = describeUnattendedRuns(matchingFires);
   const problems = [...(runs.completed ? [] : [runs.text]), ...status.warnings];
   return problems.length === 0
     ? {

@@ -234,6 +234,8 @@ const statusFrom = (
   ];
   return {
     state,
+    generation: inspection.generation,
+    installedAt: inspection.installedAt,
     platform: definition.platform,
     schedule,
     definition,

@@ -373,6 +373,7 @@ describe("readiness evidence", () => {
     state: ScheduleStatus["state"],
     extra: Partial<ScheduleStatus> = {},
   ): ScheduleStatus => ({
+    generation: "fixture-generation", installedAt: "2026-09-01T00:00:00Z",
     state, platform: "linux", schedule: { kind: "daily", localTime: "04:00" },
     definition: {
       platform: "linux", mechanism: "systemd-user-timer",
@@ -402,11 +403,22 @@ describe("readiness evidence", () => {
     expect(result.status).toBe("warning");
   });
 
+  it.each(["previous-generation", "legacy", "started-before-reinstall"])("does not credit %s fire evidence to the current job", (kind) => {
+    const result = scheduledDefinitionReadiness(scheduleStatus("current"), [{
+      at: "2026-09-12T04:00:05Z", outcome: "completed",
+      generation: kind === "legacy" ? undefined : kind === "previous-generation" ? "old-generation" : "fixture-generation",
+      startedAt: kind === "started-before-reinstall" ? "2026-08-31T23:59:00Z" : "2026-09-12T03:59:00Z",
+    }]);
+    expect(result.status).toBe("warning");
+    expect(result.details?.scheduledExecutionVerified).toBe(false);
+    expect(result.details?.lastFiredAt).toBeUndefined();
+  });
+
   it("marks current schedules verified only by a completed unattended run", () => {
     const status = scheduleStatus("current");
     const fired = scheduledDefinitionReadiness(status, [
-      { at: "2026-09-12T04:00:00Z", outcome: "started" },
-      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
+      { generation: "fixture-generation", startedAt: "2026-09-12T03:59:00Z", at: "2026-09-12T04:00:00Z", outcome: "started" },
+      { generation: "fixture-generation", startedAt: "2026-09-12T03:59:00Z", at: "2026-09-12T04:00:05Z", outcome: "completed" },
     ]);
     expect(fired.status).toBe("pass");
     expect(fired.details).toMatchObject({
@@ -417,8 +429,8 @@ describe("readiness evidence", () => {
     // The scheduler fired the job, but the run failed: doctor says so, with
     // the reason and the last success, instead of passing (CF-48).
     const failedFire = scheduledDefinitionReadiness(status, [
-      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
-      { at: "2026-09-13T04:00:03Z", outcome: "failed", reason: "human-action-required: keychain locked" },
+      { generation: "fixture-generation", startedAt: "2026-09-12T03:59:00Z", at: "2026-09-12T04:00:05Z", outcome: "completed" },
+      { generation: "fixture-generation", startedAt: "2026-09-12T03:59:00Z", at: "2026-09-13T04:00:03Z", outcome: "failed", reason: "human-action-required: keychain locked" },
     ]);
     expect(failedFire.status).toBe("warning");
     expect(failedFire.details?.scheduledExecutionVerified).toBe(true);
@@ -429,7 +441,7 @@ describe("readiness evidence", () => {
   it("warns when the job cannot run while the user is logged out", () => {
     const status = scheduleStatus("current", { warnings: ["linger fixture"] });
     const result = scheduledDefinitionReadiness(status, [
-      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
+      { generation: "fixture-generation", startedAt: "2026-09-12T03:59:00Z", at: "2026-09-12T04:00:05Z", outcome: "completed" },
     ]);
     expect(result.status).toBe("warning");
     expect(result.message).toContain("linger fixture");

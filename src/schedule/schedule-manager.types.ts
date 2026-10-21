@@ -105,6 +105,9 @@ export type ScheduleState =
   | "overridden";
 
 export interface ScheduleStatus {
+  /** Identity and registration time of the installed native definition. */
+  readonly generation?: string | undefined;
+  readonly installedAt?: string | undefined;
   readonly state: ScheduleState;
   readonly platform: MachinePlatform;
   readonly schedule: SyncSchedule;

@@ -54,3 +54,11 @@ This diagnosis does not automatically unlock a keychain, weaken permissions,
 provision a headless secret service, or configure a GUI session. Those operations
 have distinct authorization and lifecycle requirements. No unknown state is
 converted into a success merely to make an installation appear complete.
+
+Scheduled-fire evidence is scoped to the observed native installation. POSIX
+backends fingerprint unit/plist file identity and content; Windows fingerprints
+the exported task including its registration date. The scheduled process records
+that identity once at start and retains it on completion/failure. Reinstallation
+(including identical POSIX content), definition changes, legacy unbound records,
+and processes started before registration do not prove the current job fired.
+Historical records remain stored but do not count as current readiness.
