@@ -990,8 +990,10 @@ const schedulerExpression = (
         message: "systemd calendar timezone must be a non-empty single-line name",
       }));
     }
+    let timezone: string;
     try {
-      new Intl.DateTimeFormat("en-US", { timeZone: calendar.timezone }).format();
+      timezone = new Intl.DateTimeFormat("en-US", { timeZone: calendar.timezone }).resolvedOptions().timeZone;
+      if (/^[+-]/u.test(timezone)) throw new RangeError("numeric offsets are not IANA timezone names");
     } catch {
       return Effect.fail(new InvalidSchedulerJobError({
         field: "calendar.timezone",
@@ -1012,7 +1014,7 @@ const schedulerExpression = (
         message: "custom systemd expressions with shortcuts or an existing timezone cannot add a named timezone",
       }));
     }
-    return Effect.succeed(` ${calendar.timezone}`);
+    return Effect.succeed(` ${timezone}`);
   };
   if (calendar.kind === "systemd-on-calendar") {
     if (

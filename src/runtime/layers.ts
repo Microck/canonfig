@@ -81,7 +81,7 @@ import {
   unmanagedScheduleDetail,
 } from "../schedule/schedule-manager.types.ts";
 import { describeUnattendedRuns } from "./readiness.ts";
-import { scheduleManagerLayer } from "../schedule/schedule-manager.layer.ts";
+import { scheduleManagerLayer, validateSchedule } from "../schedule/schedule-manager.layer.ts";
 import { setupCommandsLayer } from "../setup/setup.layer.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { SynchronizationLive } from "../synchronization/synchronization.layer.ts";
@@ -1823,21 +1823,21 @@ const followerCommandsLayer = (
                     ? "canonfig schedule set --default needs an enrolled follower; enroll, then apply the selected profile first"
                     : "the selected profile declares no scheduleDefault (or no revision has been applied yet); run `canonfig sync --apply`, or choose a calendar with `canonfig schedule set <calendar>`",
                 }))
-                : persistScheduleOverride(repository, { kind: "inherit" }).pipe(
-                  Effect.andThen(mapFailure(schedules.update({
-                    schedule: syncScheduleFromDefault(configuration.scheduleDefault),
-                  }))),
-                  Effect.map(payload),
+                : mapFailure(validateSchedule(syncScheduleFromDefault(configuration.scheduleDefault))).pipe(
+                  Effect.flatMap((schedule) => persistScheduleOverride(repository, { kind: "inherit" }).pipe(
+                    Effect.andThen(mapFailure(schedules.update({ schedule }))),
+                    Effect.map(payload),
+                  )),
                 )
             ),
           )
-          : persistScheduleOverride(repository, {
-            kind: "schedule",
-            schedule: input.schedule,
-            executable: input.executable,
-          }).pipe(
-            Effect.andThen(mapFailure(schedules.update(input))),
-            Effect.map(payload),
+          : mapFailure(validateSchedule(input.schedule)).pipe(
+            Effect.flatMap((schedule) => persistScheduleOverride(repository, {
+              kind: "schedule", schedule, executable: input.executable,
+            }).pipe(
+              Effect.andThen(mapFailure(schedules.update({ ...input, schedule }))),
+              Effect.map(payload),
+            )),
           ),
       scheduleStatus: () =>
         mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(

@@ -41,7 +41,7 @@ import { scheduleCommand } from "./schedule-command.ts";
 
 const validLocalTime = /^([01]\d|2[0-3]):[0-5]\d$/u;
 
-const validateSchedule = (
+export const validateSchedule = (
   schedule: SyncSchedule,
 ): Effect.Effect<NormalizedSyncSchedule, InvalidScheduleError> => {
   schedule = normalizeSyncSchedule(schedule);
@@ -68,14 +68,15 @@ const validateSchedule = (
       }));
     }
     try {
-      new Intl.DateTimeFormat("en-US", { timeZone: schedule.timezone }).format();
+      const timezone = new Intl.DateTimeFormat("en-US", { timeZone: schedule.timezone }).resolvedOptions().timeZone;
+      if (/^[+-]/u.test(timezone)) throw new RangeError("numeric offsets are not IANA timezone names");
+      return Effect.succeed({ ...schedule, timezone });
     } catch {
       return Effect.fail(new InvalidScheduleError({
         field: "timezone",
         message: `unsupported IANA timezone: ${schedule.timezone}`,
       }));
     }
-    return Effect.succeed(schedule);
   }
   if (!validLocalTime.test(schedule.localTime)) {
     return Effect.fail(new InvalidScheduleError({
@@ -101,14 +102,15 @@ const validateSchedule = (
     }));
   }
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone: schedule.timezone }).format();
+    const timezone = new Intl.DateTimeFormat("en-US", { timeZone: schedule.timezone }).resolvedOptions().timeZone;
+      if (/^[+-]/u.test(timezone)) throw new RangeError("numeric offsets are not IANA timezone names");
+      return Effect.succeed({ ...schedule, timezone });
   } catch {
     return Effect.fail(new InvalidScheduleError({
       field: "timezone",
       message: `unsupported IANA timezone: ${schedule.timezone}`,
     }));
   }
-  return Effect.succeed(schedule);
 };
 
 const calendarFor = (

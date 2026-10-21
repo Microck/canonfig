@@ -29,7 +29,9 @@ canonfig schedule set weekly:Mon@12:30 --timezone Europe/Paris
 canonfig schedule set weekly:Mon,Thu@12:30
 ```
 
-Only Linux supports `--timezone`. macOS and Windows reject an explicit named
+Only Linux supports `--timezone`. Named IANA zones are canonicalized (for example,
+`europe/berlin` becomes `Europe/Berlin`); numeric offsets such as `+05:30` are
+rejected before saving the schedule choice. macOS and Windows reject an explicit named
 zone because their native calendar jobs cannot preserve that binding.
 Use a daily or weekly schedule without `--timezone` on those platforms.
 It follows the machine's local time zone.

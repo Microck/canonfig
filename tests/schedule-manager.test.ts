@@ -11,7 +11,7 @@ import type { SchedulerBackend, SchedulerInspection } from "../src/machine/machi
 import { windowsMachineStateLayer } from "../src/machine/windows.layer.ts";
 import { scheduleManagerContract } from "./contract/schedule-manager.contract.ts";
 import { ScheduleHumanActionRequiredError } from "../src/schedule/schedule-manager.errors.ts";
-import { scheduleManagerLayer } from "../src/schedule/schedule-manager.layer.ts";
+import { scheduleManagerLayer, validateSchedule } from "../src/schedule/schedule-manager.layer.ts";
 import { ScheduleManager } from "../src/schedule/schedule-manager.service.ts";
 import {
   desiredScheduleInput,
@@ -397,5 +397,25 @@ exit 0
     const status = (await host.run((manager) => manager.install(input))).status;
     expect(status.lingering).toBe(false);
     expect(status.warnings.join("\n")).toContain("loginctl enable-linger");
+  });
+});
+
+
+describe("canonical named scheduler timezones", () => {
+  it.each(["europe/berlin", "EUROPE/BERLIN", "Europe/Berlin"])("canonicalizes %s before persistence and rendering", async (timezone) => {
+    for (const schedule of [
+      { kind: "daily" as const, localTime: "02:30", timezone },
+      { kind: "weekly" as const, weekdays: ["Mon" as const], localTime: "02:30", timezone },
+      { kind: "custom" as const, expression: "*-*-* 02:30:00", timezone },
+    ]) {
+      expect(await Effect.runPromise(validateSchedule(schedule))).toMatchObject({ timezone: "Europe/Berlin" });
+    }
+  });
+  it.each(["+05:30", "-08:00", "+0530", "Europe/Berlin\n", "no-such-zone"])("rejects unsupported zone %s", async (timezone) => {
+    await expect(Effect.runPromise(validateSchedule({ kind: "daily", localTime: "02:30", timezone }))).rejects.toThrow();
+  });
+  it.each(["Etc/GMT+5", "US/Pacific", "Europe/Kyiv", "UTC"])("retains supported named-zone semantics for %s", async (timezone) => {
+    const normalized = await Effect.runPromise(validateSchedule({ kind: "daily", localTime: "02:30", timezone }));
+    expect(normalized.timezone).toBe(new Intl.DateTimeFormat("en-US", { timeZone: timezone }).resolvedOptions().timeZone);
   });
 });
