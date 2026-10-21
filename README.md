@@ -324,3 +324,11 @@ acceptance suites remain separate; browser coverage does not verify machine
 synchronization, secret stores or scheduled jobs. Failure traces stay in `.e2e/`.
 
 The browser E2E development runner requires Node >=24.8.0; `pretest:e2e` checks this before loading it. This does not change the CLI runtime floor.
+
+### Portable harness archives
+
+Package Canonfig configuration, one harness, or multiple harnesses with
+`canonfig harness export`. Use `--source-only`, repeatable `--target`, and
+`--include-source` to select contents, and `--output setup.zip` or
+`--output setup.tar.gz` to choose the format. Preview with `--dry-run`.
+See [contents, limitations and examples](docs/harness-archives.md).

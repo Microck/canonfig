@@ -19,6 +19,7 @@ import {
   createDefaultRegistry,
 } from "./core/compiler.ts";
 import { findRepositoryRoot } from "./core/config.ts";
+import { exportHarness } from "./core/export.ts";
 import { formatPlanDiff } from "./core/diff.ts";
 import { doctorTargets } from "./core/doctor.ts";
 import { CanonfigError, errorMessage } from "./core/errors.ts";
@@ -46,6 +47,7 @@ const renderHelp = (
         "diff",
         "clean",
         "doctor",
+        "export",
       ],
     },
     exitCode: CliExitCode.success,
@@ -125,6 +127,13 @@ export const runHarnessConfigurationCli = async (
     }
 
     const root = await findRepositoryRoot(parsed.root);
+    if (parsed.command === "export") {
+      if (!parsed.output) throw new CanonfigError("ARCHIVE_OUTPUT_REQUIRED", "export requires --output <archive.zip|archive.tar.gz>");
+      if (parsed.force) throw new CanonfigError("ARCHIVE_FORCE_NOT_ALLOWED", "Export never overwrites existing files; choose a new output");
+      const result = await exportHarness({ root, output: parsed.output, targets: parsed.targets, includeSource: parsed.includeSource ?? false, sourceOnly: parsed.sourceOnly ?? false, strict: parsed.strict, dryRun: parsed.dryRun });
+      renderHarnessResult(io, { command: commandName, message: result.written ? "Harness archive written" : "Harness archive planned", data: toCliPayload(result), exitCode: CliExitCode.success, json: parsed.json, human: `${result.written ? "Wrote" : "Would write"} ${result.output} (${result.files.length} files)\n${result.files.map((file) => `  ${file.path}`).join("\n")}\nReview literal values before sharing; external services and user credentials are not collected.\n${result.diagnostics.map((item) => `${item.level}: ${item.code}: ${item.message}`).join("\n")}\n` });
+      return;
+    }
     if (parsed.command === "clean") {
       const plan = await createPlan(
         root,

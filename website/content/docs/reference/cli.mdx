@@ -673,3 +673,16 @@ The normal error message remains fixed; the same result envelope includes a
 redactor. JSON mode still emits one document. Diagnostics are absent by default
 and are not added to expected state-storage failures. Review diagnostic text
 before sharing it: paths and other contextual information can remain sensitive.
+
+## Harness archives
+
+`canonfig harness export --source-only --output source.zip` packages canonical
+configuration. Select one or multiple projected harnesses with repeatable
+`--target`, optionally adding `--include-source`. `.zip` and `.tar.gz` output
+are supported. `--dry-run` lists contents without writing; `--strict` rejects
+lossy projections. Existing archives are never overwritten.
+
+This exports declared project sources and fresh projections, not credentials,
+sessions, unowned native edits, or a full machine backup. Review literal values
+and executable scripts before sharing or using the archive. External services
+and dependencies must be installed separately.
