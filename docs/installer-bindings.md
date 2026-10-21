@@ -17,7 +17,7 @@ canonfig installer remove npm
 
 `set` resolves selected symlinks, verifies regular files and the bounded exact
 `--version` invocation, then writes user-local `.canonfig/installers/<method>.json`
-atomically. The invocation is shell-free, has a five-second timeout, and discards
+atomically. The invocation is shell-free, has a five-minute timeout, and discards
 version output from reports. Repeating the same set does not rewrite the file.
 Explicit set/remove can repair or delete malformed regular binding files. A
 symlinked/special binding file or an escaping ancestor is not silently replaced.
@@ -51,3 +51,5 @@ runs; binding paths must be protected by the machine's existing access controls.
 A changed or missing entrypoint requires local repair, not an agent-generated
 PATH workaround. Audit coverage: E03/E04/E05 and the executable-resolution
 portion of S09/S10. This does not claim the historical fleet is configured.
+
+If `installer list` encounters an unusable binding, it stops and identifies the installer method that needs repair. Other binding files are left unchanged; inspect a known-good method with `installer check <method>`.

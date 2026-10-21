@@ -578,7 +578,7 @@ const observeConfig = (
     ),
   );
 
-const observe = (
+export const observeFollowerResource = (
   decoded: {
     // `policy` is read so a `replace` directory can be listed in full; the
     // other policies observe only owned and desired paths.
@@ -747,9 +747,7 @@ const observe = (
         const platform = (yield* machine.userDirectories()).home.platform;
         const qualifiedEntrypoint = desired.qualification === undefined
           ? undefined
-          : desired.recipes.find((recipe) =>
-            recipe.platform === platform && recipe.architecture === process.arch
-          )?.entrypoint;
+          : selectToolRecipe(desired, platform)?.entrypoint;
         const executable = qualifiedEntrypoint
           ?? (verification.method === "executable-present"
             ? verification.executable
@@ -959,7 +957,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
       });
       observations.push({
         resource: entry.resource.id,
-        observed: yield* observe(
+        observed: yield* observeFollowerResource(
           entry,
           hydration.desired,
           entry.resource.verify,
@@ -997,7 +995,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
       });
       observations.push({
         resource: removed.resource.id,
-        observed: yield* observe(
+        observed: yield* observeFollowerResource(
           { resource: removed.resource },
           removed.desired,
           removedVerification,

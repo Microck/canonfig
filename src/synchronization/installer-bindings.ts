@@ -323,7 +323,11 @@ export const saveInstallerBinding = (
 export const listInstallerBindings = () => Effect.gen(function*() {
   const bindings: InstallerBinding[] = [];
   for (const method of installerMethods) {
-    const binding = yield* loadInstallerBinding(method);
+    const binding = yield* loadInstallerBinding(method).pipe(
+      Effect.catchTag("HumanActionRequiredError", (error) => Effect.fail(new HumanActionRequiredError({
+        action: error.action, recovery: `${method} installer binding: ${error.recovery}`,
+      }))),
+    );
     if (binding !== undefined) bindings.push(binding);
   }
   return bindings;

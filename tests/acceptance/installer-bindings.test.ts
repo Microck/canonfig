@@ -17,7 +17,7 @@ import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import { ExecutableNotFoundError, MachineFilesystemError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
-  checkInstallerBinding, installerRefusals, loadInstallerBinding, loadInstallerState, removeInstallerBinding,
+  checkInstallerBinding, listInstallerBindings, installerRefusals, loadInstallerBinding, loadInstallerState, removeInstallerBinding,
   resolveInstallerInvocation, saveInstallerBinding, unboundInstallerRecovery,
 } from "../../src/synchronization/installer-bindings.ts";
 import { prepareResourceAction, verifyResource, type ResourceExecutionContext } from "../../src/synchronization/resource-executors.ts";
@@ -51,6 +51,21 @@ const fixture = () => {
 const linuxBinding = { schema: "canonfig.installer/v1", platform: "linux", method: "npm", executable: "/runtime/node", arguments: ["/runtime/npm-cli.js"] };
 
 describe("local installer binding contract", () => {
+  it("identifies an unusable binding when listing otherwise valid bindings", async () => {
+    const f = fixture();
+    const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
+    const root = join(f.home, ".canonfig", "installers");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "npm.json"), JSON.stringify({ schema: "canonfig.installer/v1", method: "npm", platform,
+      executable: await realpath(process.execPath), arguments: [await realpath(f.entry)] }));
+    writeFileSync(join(root, "uv.json"), JSON.stringify({ schema: "canonfig.installer/v1", method: "uv",
+      platform: platform === "linux" ? "macos" : "linux", executable: "/tmp/uv", arguments: [] }));
+    const failure = await Effect.runPromise(Effect.flip(listInstallerBindings()).pipe(Effect.provide(f.layer)));
+    expect(failure._tag).toBe("HumanActionRequiredError");
+    if (failure._tag === "HumanActionRequiredError") expect(failure.recovery).toContain("uv installer binding");
+    expect(await Effect.runPromise(loadInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBeDefined();
+  });
+
   it("rejects shell launchers, command shims, relative paths, injected flags, and extra fields", () => {
     for (const value of [
       { ...linuxBinding, executable: "node" },
