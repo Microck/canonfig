@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -15,6 +15,23 @@ describe("installed scheduler command decoding", () => {
       expect(await installedBindingProblem({ executable, arguments: [] })).toMatchObject({ kind: "unverified" });
       await unlink(executable);
       expect(await installedBindingProblem({ executable, arguments: [] })).toMatchObject({ kind: "missing" });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32")("does not verify an overlong shebang even when its interpreter exists", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-long-shebang-"));
+    try {
+      const directory = join(root, "a".repeat(150), "b".repeat(150));
+      await mkdir(directory, { recursive: true });
+      const interpreter = join(directory, "sh");
+      await copyFile("/bin/sh", interpreter);
+      await chmod(interpreter, 0o755);
+      const wrapper = join(root, "wrapper");
+      await writeFile(wrapper, `#!${interpreter}\nexit 0\n`, { mode: 0o755 });
+      await chmod(wrapper, 0o755);
+      expect(await installedBindingProblem({ executable: wrapper, arguments: [] })).toMatchObject({ kind: "unverified" });
+      await writeFile(wrapper, "#!/bin/sh\nexit 0\n");
+      expect(await installedBindingProblem({ executable: wrapper, arguments: [] })).toBeUndefined();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

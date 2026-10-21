@@ -256,6 +256,11 @@ const interpreterProblem = async (executable: string, searchPath: ReadonlyArray<
   if (!header.startsWith("#!")) return nativeExecutableHeader(bytes, fileSize) ? undefined
     : { kind: "missing", message: "the scheduler executable format is not supported by the native loader" };
   if (process.platform === "win32") return { kind: "missing", message: "the Windows scheduler cannot directly execute a shebang wrapper" };
+  // Use a conservative 128-byte bound, also covering older Linux loaders.
+  // The native-image inspection buffer is not the kernel's shebang buffer.
+  if (bytes.subarray(0, 128).indexOf(10) < 0) return {
+    kind: "unverified", message: "the scheduler shebang exceeds the portable loader verification bound",
+  };
   const newline = header.indexOf("\n");
   if (newline < 0 || header.slice(0, newline).includes("\r")) return { kind: "unverified", message: "the scheduler wrapper interpreter cannot be verified" };
   const words = header.slice(2, newline).trim().split(/\s+/u);
