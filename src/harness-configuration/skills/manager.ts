@@ -112,9 +112,9 @@ async function prepare(location: SkillLocation, config: SkillConfig, names: read
     result.push({ skill, files: fetched.files, digest, check: {
       name: skill.name, path: skill.path, previousCommit: skill.commit, nextCommit: fetched.commit,
       status: fingerprint(local) !== skill.digest ? "local-edits" : digest === skill.digest ? "unchanged" : "update-available",
-      added: Object.keys(after).filter((key) => !(key in before)),
-      removed: Object.keys(before).filter((key) => !(key in after)),
-      changed: Object.keys(after).filter((key) => key in before && before[key] !== after[key]),
+      added: Object.keys(after).filter((key) => !Object.hasOwn(before, key)),
+      removed: Object.keys(before).filter((key) => !Object.hasOwn(after, key)),
+      changed: Object.keys(after).filter((key) => Object.hasOwn(before, key) && before[key] !== after[key]),
     } });
   }
   return result;

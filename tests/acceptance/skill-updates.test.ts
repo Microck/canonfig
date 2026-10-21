@@ -3,10 +3,10 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, cp, symlink, chmod } from "nod
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { checkSkills, listSkills, parseConfig, trackSkill, updateSkills, type SkillLocation } from "../src/harness-configuration/skills/manager.ts";
-import { fetchSkill, normalizeSource, safePath } from "../src/harness-configuration/skills/upstream.ts";
-import { runSkillsCli } from "../src/harness-configuration/skills/cli.ts";
-import { isSkillsCommand, skillsArguments } from "../src/runtime/command-routing.ts";
+import { checkSkills, listSkills, parseConfig, trackSkill, updateSkills, type SkillLocation } from "../../src/harness-configuration/skills/manager.ts";
+import { fetchSkill, normalizeSource, safePath } from "../../src/harness-configuration/skills/upstream.ts";
+import { runSkillsCli } from "../../src/harness-configuration/skills/cli.ts";
+import { isSkillsCommand, skillsArguments } from "../../src/runtime/command-routing.ts";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
