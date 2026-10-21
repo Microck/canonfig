@@ -7,7 +7,7 @@ import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Effect, Layer, Schema } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
 import { installerRecipeProvenance } from "../../src/domain/mcp-qualification.ts";
 import { isLocalInstallerPath, parseInstallerBinding } from "../../src/domain/installer-binding.ts";
@@ -25,7 +25,7 @@ import { runInstallerCli } from "../../src/runtime/installer-cli.ts";
 import { installerArguments, isInstallerCommand } from "../../src/runtime/command-routing.ts";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const fixture = () => {
   const home = mkdtempSync(join(tmpdir(), "canonfig-installer-binding-"));
   roots.push(home);
@@ -58,6 +58,13 @@ describe("local installer binding contract", () => {
     const compiled = spawnSync("cc", [source, "-o", rustup], { encoding: "utf8", timeout: 30_000 });
     expect(compiled.status, compiled.stderr).toBe(0);
     symlinkSync(rustup, cargo);
+    const rustupHome = join(f.home, ".rustup");
+    vi.stubEnv("RUSTUP_HOME", rustupHome);
+    await expect(Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer))))
+      .rejects.toThrow("no existing rustup settings");
+    expect(() => statSync(rustupHome)).toThrow();
+    mkdirSync(rustupHome);
+    writeFileSync(join(rustupHome, "settings.toml"), "version = '12'\n");
     const binding = await Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer)));
     expect(binding.executable).toBe(join(await realpath(f.home), "cargo"));
     expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
@@ -73,7 +80,12 @@ describe("local installer binding contract", () => {
     const f = fixture();
     const entry = join(f.home, "node_modules", "corepack", "dist", "pnpm.js");
     mkdirSync(dirname(entry), { recursive: true });
-    writeFileSync(entry, 'console.log("1.0.0-fixture");\n');
+    writeFileSync(entry, [
+      "for (const name of ['COREPACK_ENABLE_NETWORK', 'COREPACK_ENABLE_AUTO_PIN', 'COREPACK_ENABLE_DOWNLOAD_PROMPT', 'RUSTUP_AUTO_INSTALL']) {",
+      "if (process.env[name] !== '0') process.exit(19);",
+      "}",
+      'console.log("1.0.0-fixture");',
+    ].join("\n"));
     const selected = direct && process.platform !== "win32" ? join(f.home, "pnpm") : entry;
     if (direct && process.platform !== "win32") symlinkSync(entry, selected);
     const binding = await Effect.runPromise(saveInstallerBinding("pnpm", direct ? selected : process.execPath,

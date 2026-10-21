@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, win32 } from "node:path";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -238,10 +238,13 @@ export const loadInstallerBinding = (method: string): Effect.Effect<InstallerBin
 
 /** rustup dispatches by argv[0], so retain the selected cargo proxy spelling. */
 const rustupProxyTarget = async (method: string, executable: string, arguments_: ReadonlyArray<string>): Promise<string | undefined> => {
-  if (method !== "cargo" || arguments_.length !== 0 || !/^cargo(?:\.exe)?$/u.test(basename(executable))) return undefined;
+  if (method !== "cargo" || arguments_.length !== 0 || !/^cargo(?:\.exe)?$/iu.test(basename(executable))) return undefined;
   try {
     const target = await realpath(executable);
-    return /^rustup(?:\.exe)?$/u.test(basename(target)) ? target : undefined;
+    if (/^rustup(?:\.exe)?$/iu.test(basename(target))) return target;
+    const sibling = join(dirname(target), /\.exe$/iu.test(target) ? "rustup.exe" : "rustup");
+    const [self, proxy] = await Promise.all([stat(target), stat(sibling)]);
+    return self.dev === proxy.dev && self.ino === proxy.ino ? sibling : undefined;
   } catch { return undefined; }
 };
 
@@ -269,9 +272,24 @@ const inspectBindingFiles = (binding: InstallerBinding) => Effect.gen(function*(
 export const checkInstallerBinding = (binding: InstallerBinding) => Effect.gen(function*() {
   const machine = yield* MachineState;
   const executable = yield* inspectBindingFiles(binding);
+  const home = (yield* machine.userDirectories()).home;
+  const rustupHome = process.env["RUSTUP_HOME"] ?? join(home.absolute, ".rustup");
+  if (yield* Effect.promise(() => rustupProxyTarget(binding.method, binding.executable, binding.arguments))) {
+    const settings = yield* machine.normalizePath({ path: join(rustupHome, "settings.toml") });
+    if ((yield* inspectOptional(settings))?.kind !== "regular") return yield* unavailable(
+      "The cargo proxy has no existing rustup settings. Configure a toolchain yourself with `rustup default stable`, then retry; validation has not run the proxy or created its settings.",
+    );
+  }
   // Native npm startup under software-emulated Windows can take minutes.
   const result = yield* machine.runProcess({
     executable, arguments: [...binding.arguments, "--version"],
+    environment: [
+      { name: "COREPACK_ENABLE_NETWORK", value: "0" },
+      { name: "COREPACK_ENABLE_AUTO_PIN", value: "0" },
+      { name: "COREPACK_ENABLE_DOWNLOAD_PROMPT", value: "0" },
+      { name: "RUSTUP_AUTO_INSTALL", value: "0" },
+      { name: "RUSTUP_HOME", value: rustupHome },
+    ],
     timeoutMilliseconds: 300_000, maximumOutputBytes: 16 * 1024,
   });
   if (result.exitCode !== 0) return yield* unavailable("The exact bound installer failed its bounded --version check. Inspect it locally; no package was installed.");
