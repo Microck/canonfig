@@ -33,6 +33,23 @@ const withTemporaryDirectory = async <Value>(
 };
 
 describe("JSON harness configuration", () => {
+  it.each([
+    '{"mcpServers":{},"mcpServers":{"local":{"command":"keep"}}}',
+    '{"mcpServers":{"local":{"command":"first","command":"last"}}}',
+    '{"mcpServers":{},"\\u006dcpServers":{}}',
+  ])("refuses ambiguous duplicate properties without claiming an effective merge: %s", async (original) =>
+    withTemporaryDirectory(async (root) => {
+      await writeFile(path.join(root, ".mcp.json"), original);
+      const artifact: DesiredArtifact = { kind: "json", owner: "claude-code", path: ".mcp.json", operations: [
+        { kind: "managed-map", path: ["mcpServers"], entries: { generated: { command: "new-tool" } } },
+      ] };
+      const plan = await createPlan(root, ["claude-code"], [artifact]);
+      expect(plan.entries[0]?.action).toBe("conflict");
+      expect(plan.entries[0]?.reason).toContain("Duplicate JSON/JSONC");
+      await expect(applyPlan(plan)).rejects.toThrow();
+      expect(await readFile(path.join(root, ".mcp.json"), "utf8")).toBe(original);
+    }));
+
   it.each(["\n", "\r\n"])("preserves nested JSONC comments through apply, rerender and cleanup (%j)", async (eol) =>
     withTemporaryDirectory(async (root) => {
       const original = [

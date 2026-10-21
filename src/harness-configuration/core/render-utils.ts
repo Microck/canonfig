@@ -1,4 +1,4 @@
-import { applyEdits, modify } from "jsonc-parser";
+import { applyEdits, modify, parseTree, type Node } from "jsonc-parser";
 import type { JsonPath, ManagedTextArtifact } from "./types.ts";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -94,12 +94,29 @@ function removeTrailingCommas(text: string): string {
   return output;
 }
 
+const duplicateProperties = (node: Node | undefined): boolean => {
+  if (node === undefined) return false;
+  if (node.type === "object") {
+    const names = new Set<string>();
+    for (const property of node.children ?? []) {
+      const name = String(property.children?.[0]?.value);
+      if (names.has(name)) return true;
+      names.add(name);
+    }
+  }
+  return node.children?.some(duplicateProperties) ?? false;
+};
+
 export function parseJsonDocument(
   text: string,
   conflicts: string[],
 ): Record<string, unknown> {
   try {
     const parsed = JSON.parse(removeTrailingCommas(stripJsonComments(text))) as unknown;
+    if (duplicateProperties(parseTree(text, [], { allowTrailingComma: true }))) {
+      conflicts.push("Duplicate JSON/JSONC properties are ambiguous; resolve them before applying or cleaning.");
+      return {};
+    }
     if (!isRecord(parsed)) {
       conflicts.push("JSON/JSONC root must be an object.");
       return {};
