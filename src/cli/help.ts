@@ -221,6 +221,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     areas: ["harness"],
     usage: [
       "harness init [--format yaml|json]",
+      "harness export --output <archive.zip|archive.tar.gz> [--target <id>...] [--include-source|--source-only]",
       "harness validate|targets|plan|apply|status|diff|clean|doctor [--target <id>...] [--strict]",
     ],
   },
