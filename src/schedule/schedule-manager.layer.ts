@@ -253,10 +253,27 @@ const statusFrom = (
   };
 };
 
-const snapshotsEqual = (
+export const snapshotsEqual = (
   left: ScheduleSnapshot,
   right: ScheduleSnapshot,
-): boolean => JSON.stringify(left) === JSON.stringify(right);
+): boolean => {
+  const comparable = (snapshot: ScheduleSnapshot): ScheduleSnapshot => {
+    if (snapshot.platform !== "windows" || snapshot.state !== "present" || snapshot.native === undefined) return snapshot;
+    const xml = Buffer.from(snapshot.native, "base64").toString("utf8");
+    // Registration is intentionally renewed on restore. Ignore only its date
+    // and our public nonce; execution settings and operator metadata stay exact.
+    const native = xml.replace(/<RegistrationInfo(?:\s[^>]*)?>([\s\S]*?)<\/RegistrationInfo>/u, (registration: string, body: string) => {
+      const source = /<Source(?:\s[^>]*)?>([\s\S]*?)<\/Source>/u.exec(body)?.[1] ?? "Canonfig";
+      const stableSource = source.replace(/\s*\[canonfig-generation:[a-f0-9]+\]/gu, "").trim();
+      const stableBody = body.replace(/<(Date|Source)(?:\s[^>]*)?>[\s\S]*?<\/\1>/gu, "")
+        .replace(/<(?:Date|Source)\s*\/>/gu, "").replace(/>\s+</gu, "><").trim();
+      const opening = registration.slice(0, registration.indexOf(">") + 1);
+      return `${opening}${stableBody}<Source>${stableSource}</Source></RegistrationInfo>`;
+    });
+    return { ...snapshot, native };
+  };
+  return JSON.stringify(comparable(left)) === JSON.stringify(comparable(right));
+};
 
 export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineState> =
   Layer.effect(

@@ -1,3 +1,4 @@
+import { snapshotsEqual } from "../../src/schedule/schedule-manager.layer.ts";
 import { renewWindowsTaskRegistration, windowsTaskRegistration } from "../../src/machine/windows.layer.ts";
 import { mkdtemp, writeFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -51,4 +52,17 @@ it("renews Windows snapshot registration without changing execution or source me
   expect(restoredIdentity.generation).not.toBe(originalIdentity.generation);
   expect(currentScheduleFires(restoredIdentity, [{ generation: originalIdentity.generation,
     startedAt: "2026-09-02T00:00:01Z", at: "2026-09-03T00:00:00Z", outcome: "completed" }])).toEqual([]);
+});
+
+it("verifies Windows restoration while allowing only renewed registration identity", () => {
+  const xml = '<Task><RegistrationInfo><Date>2026-09-01T00:00:00Z</Date><Description>keep</Description></RegistrationInfo><Settings><Enabled>true</Enabled></Settings><Actions><Exec><Command>keep.exe</Command></Exec></Actions></Task>';
+  const native = (text: string) => Buffer.from(text).toString("base64");
+  const prior = { platform: "windows", mechanism: "task-scheduler", serviceName: "canonfig-sync", state: "present", enabled: true, active: true, servicePresent: false, schedulePresent: false, native: native(xml) } as const;
+  const restored = renewWindowsTaskRegistration(xml, "2026-09-02T00:00:00Z", "b".repeat(32));
+  expect(snapshotsEqual({ ...prior, native: native(restored) }, prior)).toBe(true);
+  for (const changed of [restored.replace("keep.exe", "evil.exe"), restored.replace("<Description>keep", "<Description>changed"), restored.replace("<Enabled>true", "<Enabled>false"), restored.replace("<Source>Canonfig", "<Source>Other")]) {
+    expect(snapshotsEqual({ ...prior, native: native(changed) }, prior)).toBe(false);
+  }
+  expect(snapshotsEqual({ ...prior, enabled: false, native: native(restored) }, prior)).toBe(false);
+  expect(snapshotsEqual({ ...prior, platform: "linux", native: native(restored) }, { ...prior, platform: "linux" })).toBe(false);
 });
