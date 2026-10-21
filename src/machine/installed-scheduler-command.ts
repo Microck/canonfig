@@ -100,13 +100,20 @@ const usableFile = async (path: string, mode: number): Promise<boolean> => {
 /** Conservative header check, not proof of launchability or scheduler firing. */
 const nativeExecutableHeader = (header: Buffer, size: number): boolean => {
   if (process.platform === "linux") {
-    if (header.length < 64 || header.subarray(0, 4).toString("hex") !== "7f454c46"
-      || header[4] !== 2 || header[5] !== 1 || header[6] !== 1) return false;
-    const kind = header.readUInt16LE(16);
-    const tableOffset = header.readBigUInt64LE(32);
-    const entrySize = header.readUInt16LE(54), count = header.readUInt16LE(56);
-    return (kind === 2 || kind === 3) && header.readUInt16LE(52) === 64
-      && entrySize === 56 && count > 0 && tableOffset >= 64n
+    if (header.length < 52 || header.subarray(0, 4).toString("hex") !== "7f454c46"
+      || ![1, 2].includes(header[4]!) || ![1, 2].includes(header[5]!) || header[6] !== 1) return false;
+    const wide = header[4] === 2, little = header[5] === 1;
+    const headerSize = wide ? 64 : 52;
+    if (header.length < headerSize) return false;
+    const u16 = (offset: number) => little ? header.readUInt16LE(offset) : header.readUInt16BE(offset);
+    const u32 = (offset: number) => little ? header.readUInt32LE(offset) : header.readUInt32BE(offset);
+    const kind = u16(16);
+    const tableOffset = wide
+      ? (little ? header.readBigUInt64LE(32) : header.readBigUInt64BE(32))
+      : BigInt(u32(28));
+    const entrySize = u16(wide ? 54 : 42), count = u16(wide ? 56 : 44);
+    return (kind === 2 || kind === 3) && u16(wide ? 52 : 40) === headerSize
+      && entrySize === (wide ? 56 : 32) && count > 0 && tableOffset >= BigInt(headerSize)
       && tableOffset + BigInt(entrySize * count) <= BigInt(size);
   }
   if (process.platform === "darwin") {

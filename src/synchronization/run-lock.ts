@@ -1,4 +1,4 @@
-import { processIdentity } from "./process-identity.ts";
+import { cacheSuccessfulProcessIdentity, processIdentity } from "./process-identity.ts";
 import { randomUUID } from "node:crypto";
 import { link, open, readFile, rename, stat, unlink } from "node:fs/promises";
 
@@ -110,9 +110,9 @@ const removeStaleLock = async (path: string, staleText: string): Promise<void> =
   }
 };
 
-let ownProcessIdentity: Promise<string | undefined> | undefined;
+const ownProcessIdentity = cacheSuccessfulProcessIdentity(() => processIdentity(process.pid));
 const acquire = async (path: string, operation: string, requireIdentity = false): Promise<LockRecord | RunLockHeldError> => {
-  const identity = await (ownProcessIdentity ??= processIdentity(process.pid));
+  const identity = await ownProcessIdentity();
   if (requireIdentity && identity === undefined) throw new Error("The operating system could not verify this process start identity; the Source lease was not acquired");
   for (;;) {
     const record: LockRecord = {

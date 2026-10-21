@@ -478,7 +478,7 @@ describe("installed scheduler command decoding", () => {
     });
     expect(installedWindowsCommand("node.exe", '"unterminated')).toBeUndefined();
   });
-  it.each(["", "-S "])("detects a deleted PATH interpreter behind an env %s wrapper without executing it", async (split) => {
+  it.skipIf(process.platform === "win32").each(["", "-S "])("detects a deleted PATH interpreter behind an env %s wrapper without executing it", async (split) => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-wrapper-readiness-"));
     try {
       const wrapper = join(root, "canonfig");
@@ -525,6 +525,31 @@ describe("installed scheduler command decoding", () => {
       await unlink(late);
       expect(run().status).not.toBe(0);
       expect(await installedBindingProblem(command)).toContain("interpreter");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== "linux").each([
+    [1, 1], [1, 2], [2, 1], [2, 2],
+  ])("recognizes ELF class %i byte order %i without executing it", async (elfClass, byteOrder) => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-elf-header-"));
+    try {
+      const wide = elfClass === 2, little = byteOrder === 1;
+      const headerSize = wide ? 64 : 52, entrySize = wide ? 56 : 32;
+      const contents = Buffer.alloc(headerSize + entrySize);
+      contents.set([0x7f, 0x45, 0x4c, 0x46, elfClass!, byteOrder!, 1]);
+      const u16 = (value: number, at: number) => little ? contents.writeUInt16LE(value, at) : contents.writeUInt16BE(value, at);
+      u16(2, 16);
+      if (wide) {
+        if (little) contents.writeBigUInt64LE(BigInt(headerSize), 32);
+        else contents.writeBigUInt64BE(BigInt(headerSize), 32);
+      } else if (little) contents.writeUInt32LE(headerSize, 28);
+      else contents.writeUInt32BE(headerSize, 28);
+      u16(headerSize, wide ? 52 : 40); u16(entrySize, wide ? 54 : 42); u16(1, wide ? 56 : 44);
+      const runtime = join(root, "runtime");
+      await writeFile(runtime, contents, { mode: 0o755 }); await chmod(runtime, 0o755);
+      expect(await installedBindingProblem({ executable: runtime, arguments: [] })).toBeUndefined();
+      await writeFile(runtime, contents.subarray(0, headerSize));
+      expect(await installedBindingProblem({ executable: runtime, arguments: [] })).toContain("format");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

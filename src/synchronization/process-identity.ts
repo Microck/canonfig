@@ -42,3 +42,9 @@ export const processIdentity = async (pid: number): Promise<string | undefined> 
   } catch { /* Unknown identity must never justify stealing a live lease. */ }
   return undefined;
 };
+
+/** Cache only a verified identity; transient lookup failures remain retryable. */
+export const cacheSuccessfulProcessIdentity = (lookup: () => Promise<string | undefined>): (() => Promise<string | undefined>) => {
+  let identity: string | undefined;
+  return async () => identity ??= await lookup();
+};
