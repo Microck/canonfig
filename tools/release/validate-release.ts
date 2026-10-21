@@ -175,6 +175,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
     "@canonfig/effect-platform-node-shared",
     "@canonfig/effect-sql-sqlite-node",
     "effect",
+    "jsonc-parser",
     "selfsigned",
     "smol-toml",
     "yaml",
