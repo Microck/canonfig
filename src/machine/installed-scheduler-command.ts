@@ -97,21 +97,71 @@ const usableFile = async (path: string, mode: number): Promise<boolean> => {
   catch { return false; }
 };
 
+/** Conservative header check, not proof of launchability or scheduler firing. */
+const nativeExecutableHeader = (header: Buffer, size: number): boolean => {
+  if (process.platform === "linux") {
+    if (header.length < 64 || header.subarray(0, 4).toString("hex") !== "7f454c46"
+      || header[4] !== 2 || header[5] !== 1 || header[6] !== 1) return false;
+    const kind = header.readUInt16LE(16);
+    const tableOffset = header.readBigUInt64LE(32);
+    const entrySize = header.readUInt16LE(54), count = header.readUInt16LE(56);
+    return (kind === 2 || kind === 3) && header.readUInt16LE(52) === 64
+      && entrySize === 56 && count > 0 && tableOffset >= 64n
+      && tableOffset + BigInt(entrySize * count) <= BigInt(size);
+  }
+  if (process.platform === "darwin") {
+    if (header.length < 32) return false;
+    const magic = header.readUInt32LE(0);
+    if (magic === 0xfeedfacf) return header.readUInt32LE(12) === 2
+      && header.readUInt32LE(16) > 0 && header.readUInt32LE(20) >= 8
+      && 32 + header.readUInt32LE(20) <= size;
+    // Universal binaries contain a bounded architecture table and file slices.
+    const fat = header.readUInt32BE(0);
+    if (fat !== 0xcafebabe && fat !== 0xcafebabf) return false;
+    const count = header.readUInt32BE(4), stride = fat === 0xcafebabe ? 20 : 32;
+    if (count === 0 || count > 32 || 8 + count * stride > header.length) return false;
+    for (let i = 0; i < count; i++) {
+      const at = 8 + i * stride;
+      const offset = stride === 20 ? BigInt(header.readUInt32BE(at + 8)) : header.readBigUInt64BE(at + 8);
+      const length = stride === 20 ? BigInt(header.readUInt32BE(at + 12)) : header.readBigUInt64BE(at + 16);
+      if (length < 32n || offset < BigInt(8 + count * stride) || offset + length > BigInt(size)) return false;
+    }
+    return true;
+  }
+  if (process.platform === "win32") {
+    if (header.length < 64 || header[0] !== 0x4d || header[1] !== 0x5a) return false;
+    const offset = header.readUInt32LE(60);
+    return offset >= 64 && offset + 26 <= header.length
+      && header.readUInt32LE(offset) === 0x00004550
+      && header.readUInt16LE(offset + 6) > 0
+      && (header.readUInt16LE(offset + 22) & 0x0002) !== 0
+      && (header.readUInt16LE(offset + 22) & 0x2000) === 0
+      && [0x10b, 0x20b].includes(header.readUInt16LE(offset + 24))
+      && offset + 24 + header.readUInt16LE(offset + 20) <= size;
+  }
+  return false;
+};
+
 const interpreterProblem = async (executable: string, searchPath: ReadonlyArray<string> | undefined,
   seen = new Set<string>()): Promise<{ message: string; retryPath?: boolean } | undefined> => {
   if (seen.has(executable) || seen.size >= 8) return { message: "the scheduler wrapper interpreter chain cannot be verified" };
   seen.add(executable);
   if (!await usableFile(executable, constants.X_OK)) return { message: "the scheduler wrapper interpreter is missing or not executable", retryPath: true };
   let header: string;
+  let bytes: Buffer;
+  let fileSize: number;
   try {
     const file = await open(executable, "r");
     try {
-      const buffer = Buffer.alloc(1024);
+      const buffer = Buffer.alloc(4096);
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-      header = buffer.subarray(0, bytesRead).toString("utf8");
+      bytes = buffer.subarray(0, bytesRead);
+      header = bytes.toString("utf8");
+      fileSize = (await file.stat()).size;
     } finally { await file.close(); }
   } catch { return { message: "the scheduler wrapper interpreter cannot be inspected" }; }
-  if (!header.startsWith("#!")) return undefined;
+  if (!header.startsWith("#!")) return nativeExecutableHeader(bytes, fileSize) ? undefined
+    : { message: "the scheduler executable format cannot be verified" };
   const newline = header.indexOf("\n");
   if (newline < 0 || header.slice(0, newline).includes("\r")) return { message: "the scheduler wrapper interpreter cannot be verified" };
   const words = header.slice(2, newline).trim().split(/\s+/u);

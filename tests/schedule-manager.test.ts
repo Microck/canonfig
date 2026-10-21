@@ -528,6 +528,19 @@ describe("installed scheduler command decoding", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it("rejects executable text and truncated native headers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-executable-format-"));
+    try {
+      const runtime = join(root, "runtime");
+      for (const contents of [Buffer.from("not a native executable\n"), Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.alloc(0)]) {
+        await writeFile(runtime, contents, { mode: 0o755 });
+        await chmod(runtime, 0o755);
+        expect(await installedBindingProblem({ executable: runtime, arguments: [] })).toContain("format");
+      }
+      expect(await installedBindingProblem({ executable: process.execPath, arguments: [import.meta.filename] })).toBeUndefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("does not claim unknown commands are available", async () => {
     expect(await installedBindingProblem(undefined)).toContain("cannot be verified");
     expect(await installedBindingProblem({ executable: "node", arguments: [] })).toContain("cannot be verified");
