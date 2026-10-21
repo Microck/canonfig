@@ -536,7 +536,15 @@ than one supported harness configuration file.
 
 `--strict` turns every lossy, coerced, or unsupported MCP and hook mapping into
 an error (for example `MCP_OPTION_COERCED` or `HOOK_TIMEOUT_ROUNDED`). Without
-it those mappings are warnings.
+it those mappings are warnings. Claude Code and Factory Droid do not map
+`before_agent` or `after_agent`; Droid also does not map `after_compact` or
+`subagent_start`. These produce `HOOK_EVENT_UNSUPPORTED`, not inert native event
+names. Droid uses its own supported event set and an unwrapped event map in
+`.factory/hooks.json`, with project-relative scripts anchored to
+`FACTORY_PROJECT_DIR`.
+
+Event references: [Claude Code](https://code.claude.com/docs/en/hooks) and
+[Factory Droid](https://docs.factory.com/harness/hooks).
 
 ## Installer bindings
 

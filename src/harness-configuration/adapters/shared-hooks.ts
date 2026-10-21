@@ -3,7 +3,9 @@ import type { BuildContext, Diagnostic, TargetId } from "../core/types.ts";
 
 export function hookCommand(target: TargetId, hook: Hook): string {
   // Antigravity executes project hooks from .agents, beside hooks.json.
-  const runner = target === "antigravity" ? "../.canonfig/.runtime/hook-runner.mjs" : ".canonfig/.runtime/hook-runner.mjs";
+  const runner = target === "antigravity" ? "../.canonfig/.runtime/hook-runner.mjs"
+    : target === "factory-droid" ? "$FACTORY_PROJECT_DIR/.canonfig/.runtime/hook-runner.mjs"
+    : ".canonfig/.runtime/hook-runner.mjs";
   return `node "${runner}" --hook ${hook.id} --target ${target} --event ${hook.event}`;
 }
 
@@ -29,14 +31,24 @@ export const CLAUDE_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
   session_start: "SessionStart",
   session_end: "SessionEnd",
   prompt_submit: "UserPromptSubmit",
-  before_agent: "PreInvocation",
-  after_agent: "PostInvocation",
   before_tool: "PreToolUse",
   after_tool: "PostToolUse",
   before_compact: "PreCompact",
   after_compact: "PostCompact",
   stop: "Stop",
   subagent_start: "SubagentStart",
+  subagent_stop: "SubagentStop",
+};
+
+/** Factory documents a smaller event set than Claude Code. */
+export const DROID_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
+  session_start: "SessionStart",
+  session_end: "SessionEnd",
+  prompt_submit: "UserPromptSubmit",
+  before_tool: "PreToolUse",
+  after_tool: "PostToolUse",
+  before_compact: "PreCompact",
+  stop: "Stop",
   subagent_stop: "SubagentStop",
 };
 
