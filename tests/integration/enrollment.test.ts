@@ -336,6 +336,50 @@ describe("loopback HTTPS enrollment", () => {
     } finally { socket.destroy(); }
   });
 
+  it("retains the Source lease until admitted enrollment effects settle after socket shutdown", async () => {
+    const setup = fixture();
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+    const started = new Promise<void>((resolveStarted) => { entered = resolveStarted; });
+    const server = await runSource(setup, Effect.gen(function*() {
+      const enrollment = yield* Enrollment;
+      yield* enrollment.initializeSource();
+      const delayed = { ...enrollment, enrollFollower: (input: Parameters<typeof enrollment.enrollFollower>[0]) => Effect.gen(function*() {
+        entered();
+        yield* Effect.promise(() => gate);
+        return yield* enrollment.enrollFollower(input);
+      }) };
+      return yield* startSourceServer().pipe(Effect.provideService(Enrollment, delayed));
+    }));
+    openServers.push(server);
+    const pending = runFollower(setup, enrollFollower({ invitation: await invitation(setup, server), followerName: "Slow credential store", finalize: false })).then(() => "completed" as const, () => "disconnected" as const);
+    let closed = false;
+    let closing: Promise<void> | undefined;
+    try {
+      await started;
+      closing = server.close().then(() => { closed = true; });
+      // The request fails when the bounded socket shutdown fires, but its
+      // already-admitted effect still owns the session until the gate opens.
+      expect(await pending).toBe("disconnected");
+      expect(closed).toBe(false);
+      const other = ManagedRuntime.make(sourceApplicationLayer(setup.sourceDatabase, setup.sourceMachine));
+      sourceRuntimes.push(other);
+      const attempted = await other.runPromise(Effect.result(startSourceServer()));
+      if (attempted._tag === "Success") openServers.push(attempted.success);
+      expect(attempted._tag).toBe("Failure");
+      release();
+      await closing;
+      openServers.splice(openServers.indexOf(server), 1);
+      const replacement = await start(setup);
+      expect(replacement.endpoint).toMatch(/^https:/u);
+    } finally {
+      release();
+      await closing;
+      await pending;
+    }
+  });
+
   it("releases a failed server start lease and makes close idempotent", async () => {
     const first = fixture();
     const occupied = await start(first);

@@ -187,14 +187,6 @@ const readBody = (
     request.on("error", rejectBody);
   });
 
-const runRequestEffect = async <Value>(
-  effect: Effect.Effect<Value, EnrollmentError>,
-): Promise<Value> => {
-  const result = await Effect.runPromise(Effect.result(effect));
-  if (result._tag === "Failure") throw result.failure;
-  return result.success;
-};
-
 export const asEnrollmentError = (error: Error): EnrollmentError => {
   if (
     error instanceof CredentialStorageError
@@ -280,6 +272,18 @@ const startSourceServerScoped = (
     const maximumBlobBytes = input.maximumBlobBytes ?? defaultMaximumBlobBytes;
     let blobRequests = 0;
     const connections = new Set<Duplex>();
+    let closing = false;
+    const requestEffects = new Set<Promise<unknown>>();
+    const runRequestEffect = async <Value>(effect: Effect.Effect<Value, EnrollmentError>): Promise<Value> => {
+      if (closing) throw new EnrollmentConfigurationError({ operation: "serve enrollment request", message: "the Source server is shutting down" });
+      const pending = Effect.runPromise(Effect.result(effect));
+      requestEffects.add(pending);
+      try {
+        const result = await pending;
+        if (result._tag === "Failure") throw result.failure;
+        return result.success;
+      } finally { requestEffects.delete(pending); }
+    };
     const server = createServer(
       {
         key: Redacted.value(key),
@@ -565,20 +569,29 @@ const startSourceServerScoped = (
           operation: "start enrollment server",
           message: "the loopback HTTPS server could not start",
         }),
-    }), () => Effect.promise(() => new Promise<void>((resolveClose, rejectClose) => {
-      const fallback = setTimeout(() => {
-        server.closeAllConnections();
-        // Also close peers that connected but never completed TLS/HTTP setup.
-        for (const socket of connections) socket.destroy();
-      }, 1_000);
-      fallback.unref();
-      server.close((cause) => {
-        clearTimeout(fallback);
-        if (cause === undefined) resolveClose();
-        else rejectClose(cause);
-      });
-      server.closeIdleConnections();
-    })));
+    }), () => Effect.promise(async () => {
+      closing = true;
+      try {
+        await new Promise<void>((resolveClose, rejectClose) => {
+          const fallback = setTimeout(() => {
+            server.closeAllConnections();
+            // Also close peers that connected but never completed TLS/HTTP setup.
+            for (const socket of connections) socket.destroy();
+          }, 1_000);
+          fallback.unref();
+          server.close((cause) => {
+            clearTimeout(fallback);
+            if (cause === undefined) resolveClose();
+            else rejectClose(cause);
+          });
+          server.closeIdleConnections();
+        });
+      } finally {
+        // Socket closure does not cancel detached effects or credential writes.
+        // Keep the exclusive Source lease until every admitted effect settles.
+        await Promise.allSettled(requestEffects);
+      }
+    }));
     const host = address.family === "IPv6"
       ? `[${address.address}]`
       : address.address;

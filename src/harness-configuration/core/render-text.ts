@@ -164,6 +164,17 @@ export function applyTomlArtifact(
       conflicts.push(`Managed or unowned TOML block ${managed.marker} differs from the recorded or desired content.`);
       continue;
     }
+    if (existing !== undefined) {
+      const following = text.slice(existing.end).split("\n");
+      const nextSection = following.findIndex((line) => /^\s*\[/u.test(line));
+      const trailingKeys = (nextSection < 0 ? following : following.slice(0, nextSection))
+        .some((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
+      const headers = (value: string) => value.split("\n").filter((line) => /^\s*\[/u.test(line)).map((line) => line.trim());
+      if (trailingKeys && JSON.stringify(headers(existing.block)) !== JSON.stringify(headers(block))) {
+        conflicts.push(`Managed TOML block ${managed.marker} has following operator keys whose table scope could change. Relocate them before updating table headers.`);
+        continue;
+      }
+    }
     const surrounding = existing === undefined ? text
       : `${text.slice(0, existing.start)}${text.slice(existing.end)}`;
     const sections = [...managed.content.matchAll(/^\s*\[([^\]]+)\]\s*$/gmu)]

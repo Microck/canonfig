@@ -343,6 +343,11 @@ describe("harness configuration compiler", () => {
     await applyPlan(await createPlan(root, ["codex"], [changed]));
     parsed = parseToml(await readFile(path.join(root, file), "utf8"));
     expect(parsed).toEqual({ mcp_servers: { local: { command: "new", enabled: false } } });
+    const expanded: DesiredArtifact = { ...artifact, blocks: [{ marker: "local", content: '[mcp_servers.local]\ncommand = "new"\n[mcp_servers.other]\ncommand = "other"' }] };
+    const update = await createPlan(root, ["codex"], [expanded]);
+    expect(update.entries[0]?.action).toBe("conflict");
+    await expect(applyPlan(update)).rejects.toThrow();
+    expect(parseToml(await readFile(path.join(root, file), "utf8"))).toEqual(parsed);
     const clean = await createPlan(root, ["codex"], []);
     expect(clean.entries[0]?.action).toBe("conflict");
     await expect(applyPlan(clean)).rejects.toThrow();
