@@ -1,3 +1,4 @@
+import { endianness } from "node:os";
 import { access, open, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, join, posix, win32 } from "node:path";
@@ -97,25 +98,47 @@ const usableFile = async (path: string, mode: number): Promise<boolean> => {
   catch { return false; }
 };
 
+/** Recognize a native ELF image, not an optional binfmt/emulation configuration. */
+export const linuxExecutableHeader = (header: Buffer, size: number, architecture: string,
+  byteOrder: "LE" | "BE"): boolean => {
+  const architectures = {
+    ia32: [3, 1], x64: [62, 2], arm: [40, 1], arm64: [183, 2],
+    ppc64: [21, 2], s390x: [22, 2], riscv64: [243, 2], loong64: [258, 2],
+    mips: [8, 1], mipsel: [8, 1], mips64el: [8, 2],
+  } as const;
+  const target = Object.entries(architectures).find(([name]) => name === architecture)?.[1];
+  if (target === undefined || header.length < 52 || header.subarray(0, 4).toString("hex") !== "7f454c46"
+    || header[4] !== target[1] || header[5] !== (byteOrder === "LE" ? 1 : 2) || header[6] !== 1) return false;
+  const wide = header[4] === 2, little = header[5] === 1;
+  const headerSize = wide ? 64 : 52;
+  if (header.length < headerSize) return false;
+  const u16 = (offset: number) => little ? header.readUInt16LE(offset) : header.readUInt16BE(offset);
+  const u32 = (offset: number) => little ? header.readUInt32LE(offset) : header.readUInt32BE(offset);
+  const word = (offset: number) => wide
+    ? (little ? header.readBigUInt64LE(offset) : header.readBigUInt64BE(offset)) : BigInt(u32(offset));
+  const kind = u16(16), entry = word(24), tableOffset = word(wide ? 32 : 28);
+  const entrySize = u16(wide ? 54 : 42), count = u16(wide ? 56 : 44);
+  const tableEnd = tableOffset + BigInt(entrySize * count);
+  if ((kind !== 2 && kind !== 3) || u16(18) !== target[0] || u32(20) !== 1 || entry === 0n
+    || u16(wide ? 52 : 40) !== headerSize || entrySize !== (wide ? 56 : 32) || count === 0
+    || tableOffset < BigInt(headerSize) || tableEnd > BigInt(size) || tableEnd > BigInt(header.length)) return false;
+  let executableEntry = false;
+  for (let i = 0; i < count; i++) {
+    const at = Number(tableOffset) + i * entrySize;
+    if (u32(at) !== 1) continue; // PT_LOAD
+    const offset = word(at + (wide ? 8 : 4));
+    const address = word(at + (wide ? 16 : 8));
+    const fileSize = word(at + (wide ? 32 : 16)), memorySize = word(at + (wide ? 40 : 20));
+    if (offset + fileSize > BigInt(size) || fileSize > memorySize) return false;
+    const flags = u32(at + (wide ? 4 : 24));
+    if ((flags & 1) !== 0 && entry >= address && entry < address + fileSize) executableEntry = true;
+  }
+  return executableEntry;
+};
+
 /** Conservative header check, not proof of launchability or scheduler firing. */
 const nativeExecutableHeader = (header: Buffer, size: number): boolean => {
-  if (process.platform === "linux") {
-    if (header.length < 52 || header.subarray(0, 4).toString("hex") !== "7f454c46"
-      || ![1, 2].includes(header[4]!) || ![1, 2].includes(header[5]!) || header[6] !== 1) return false;
-    const wide = header[4] === 2, little = header[5] === 1;
-    const headerSize = wide ? 64 : 52;
-    if (header.length < headerSize) return false;
-    const u16 = (offset: number) => little ? header.readUInt16LE(offset) : header.readUInt16BE(offset);
-    const u32 = (offset: number) => little ? header.readUInt32LE(offset) : header.readUInt32BE(offset);
-    const kind = u16(16);
-    const tableOffset = wide
-      ? (little ? header.readBigUInt64LE(32) : header.readBigUInt64BE(32))
-      : BigInt(u32(28));
-    const entrySize = u16(wide ? 54 : 42), count = u16(wide ? 56 : 44);
-    return (kind === 2 || kind === 3) && u16(wide ? 52 : 40) === headerSize
-      && entrySize === (wide ? 56 : 32) && count > 0 && tableOffset >= BigInt(headerSize)
-      && tableOffset + BigInt(entrySize * count) <= BigInt(size);
-  }
+  if (process.platform === "linux") return linuxExecutableHeader(header, size, process.arch, endianness());
   if (process.platform === "darwin") {
     if (header.length < 32) return false;
     const magic = header.readUInt32LE(0);
@@ -160,7 +183,7 @@ const interpreterProblem = async (executable: string, searchPath: ReadonlyArray<
   try {
     const file = await open(executable, "r");
     try {
-      const buffer = Buffer.alloc(4096);
+      const buffer = Buffer.alloc(64 * 1024);
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
       bytes = buffer.subarray(0, bytesRead);
       header = bytes.toString("utf8");

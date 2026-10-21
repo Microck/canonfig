@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { evaluateCli } from "../src/cli/cli.ts";
-import { installedSystemdCommand, installedLaunchdCommand, installedWindowsCommand, installedBindingProblem } from "../src/machine/installed-scheduler-command.ts";
+import { installedSystemdCommand, installedLaunchdCommand, installedWindowsCommand, installedBindingProblem, linuxExecutableHeader } from "../src/machine/installed-scheduler-command.ts";
 import { scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -528,29 +528,34 @@ describe("installed scheduler command decoding", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it.skipIf(process.platform !== "linux").each([
-    [1, 1], [1, 2], [2, 1], [2, 2],
-  ])("recognizes ELF class %i byte order %i without executing it", async (elfClass, byteOrder) => {
-    const root = await mkdtemp(join(tmpdir(), "canonfig-elf-header-"));
-    try {
-      const wide = elfClass === 2, little = byteOrder === 1;
-      const headerSize = wide ? 64 : 52, entrySize = wide ? 56 : 32;
-      const contents = Buffer.alloc(headerSize + entrySize);
-      contents.set([0x7f, 0x45, 0x4c, 0x46, elfClass!, byteOrder!, 1]);
-      const u16 = (value: number, at: number) => little ? contents.writeUInt16LE(value, at) : contents.writeUInt16BE(value, at);
-      u16(2, 16);
-      if (wide) {
-        if (little) contents.writeBigUInt64LE(BigInt(headerSize), 32);
-        else contents.writeBigUInt64BE(BigInt(headerSize), 32);
-      } else if (little) contents.writeUInt32LE(headerSize, 28);
-      else contents.writeUInt32BE(headerSize, 28);
-      u16(headerSize, wide ? 52 : 40); u16(entrySize, wide ? 54 : 42); u16(1, wide ? 56 : 44);
-      const runtime = join(root, "runtime");
-      await writeFile(runtime, contents, { mode: 0o755 }); await chmod(runtime, 0o755);
-      expect(await installedBindingProblem({ executable: runtime, arguments: [] })).toBeUndefined();
-      await writeFile(runtime, contents.subarray(0, headerSize));
-      expect(await installedBindingProblem({ executable: runtime, arguments: [] })).toContain("format");
-    } finally { await rm(root, { recursive: true, force: true }); }
+  it.each([
+    [1, 1, "ia32", 3], [1, 2, "mips", 8], [2, 1, "x64", 62], [2, 2, "ppc64", 21],
+  ] as const)("recognizes native ELF class %i byte order %i without executing it", (elfClass, byteOrder, architecture, machine) => {
+    const wide = elfClass === 2, little = byteOrder === 1;
+    const headerSize = wide ? 64 : 52, entrySize = wide ? 56 : 32;
+    const contents = Buffer.alloc(headerSize + entrySize);
+    contents.set([0x7f, 0x45, 0x4c, 0x46, elfClass, byteOrder, 1]);
+    const u16 = (value: number, at: number) => little ? contents.writeUInt16LE(value, at) : contents.writeUInt16BE(value, at);
+    const u32 = (value: number, at: number) => little ? contents.writeUInt32LE(value, at) : contents.writeUInt32BE(value, at);
+    const word = (value: number, at: number) => wide
+      ? (little ? contents.writeBigUInt64LE(BigInt(value), at) : contents.writeBigUInt64BE(BigInt(value), at)) : u32(value, at);
+    u16(2, 16); u16(machine, 18); u32(1, 20); word(0x1000, 24); word(headerSize, wide ? 32 : 28);
+    u16(headerSize, wide ? 52 : 40); u16(entrySize, wide ? 54 : 42); u16(1, wide ? 56 : 44);
+    u32(1, headerSize); // PT_LOAD
+    u32(5, headerSize + (wide ? 4 : 24)); // PF_R | PF_X
+    word(0, headerSize + (wide ? 8 : 4));
+    word(0x1000, headerSize + (wide ? 16 : 8));
+    word(contents.length, headerSize + (wide ? 32 : 16));
+    word(contents.length, headerSize + (wide ? 40 : 20));
+    const check = () => linuxExecutableHeader(contents, contents.length, architecture, little ? "LE" : "BE");
+    expect(check()).toBe(true);
+    expect(linuxExecutableHeader(contents.subarray(0, headerSize), contents.length, architecture, little ? "LE" : "BE")).toBe(false);
+    u16(machine + 1, 18); expect(check()).toBe(false); u16(machine, 18);
+    u16(3, 16); word(0, 24); expect(check()).toBe(false); // shared object without entry
+    word(0x1000, 24); expect(check()).toBe(true); // PIE
+    u32(4, headerSize + (wide ? 4 : 24)); expect(check()).toBe(false); // non-executable load
+    u32(5, headerSize + (wide ? 4 : 24));
+    word(contents.length + 1, headerSize + (wide ? 32 : 16)); expect(check()).toBe(false);
   });
 
   it("rejects executable text and truncated native headers", async () => {
