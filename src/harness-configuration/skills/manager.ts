@@ -16,7 +16,7 @@ function object(value: unknown): Record<string, unknown> {
 }
 export function parseConfig(input: unknown): SkillConfig {
   const value = object(input);
-  if (value.version !== 1 || !Array.isArray(value.skills)) throw new CanonfigError("SKILL_CONFIG_INVALID", "Expected version 1 and skills array");
+  if (value.version !== 1 || !Array.isArray(value.skills) || Object.keys(value).some((key) => key !== "version" && key !== "skills")) throw new CanonfigError("SKILL_CONFIG_INVALID", "Expected version 1 and skills array");
   const names = new Set<string>();
   const paths: string[] = [];
   const skills = value.skills.map((item): TrackedSkill => {
