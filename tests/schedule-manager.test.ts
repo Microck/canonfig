@@ -596,6 +596,15 @@ describe("installed scheduler command decoding", () => {
     expect(nativeExecutableHeader(pe, pe.length, "win32", architecture)).toBe(false);
   });
 
+  it.skipIf(process.platform !== "win32")("refuses shebang wrappers for direct Windows scheduler launches", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-windows-shebang-"));
+    try {
+      const wrapper = join(root, "wrapper");
+      await writeFile(wrapper, `#!${process.execPath}\nthrow new Error('must not run');\n`);
+      expect(await installedBindingProblem({ executable: wrapper, arguments: [] })).toContain("cannot directly execute a shebang");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("rejects executable text and truncated native headers", async () => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-executable-format-"));
     try {

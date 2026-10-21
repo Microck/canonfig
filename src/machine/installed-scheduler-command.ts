@@ -247,6 +247,7 @@ const interpreterProblem = async (executable: string, searchPath: ReadonlyArray<
   } catch { return { message: "the scheduler wrapper interpreter cannot be inspected" }; }
   if (!header.startsWith("#!")) return nativeExecutableHeader(bytes, fileSize) ? undefined
     : { message: "the scheduler executable format cannot be verified" };
+  if (process.platform === "win32") return { message: "the Windows scheduler cannot directly execute a shebang wrapper" };
   const newline = header.indexOf("\n");
   if (newline < 0 || header.slice(0, newline).includes("\r")) return { message: "the scheduler wrapper interpreter cannot be verified" };
   const words = header.slice(2, newline).trim().split(/\s+/u);
