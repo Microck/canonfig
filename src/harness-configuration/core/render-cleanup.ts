@@ -134,6 +134,6 @@ export function unapplyPrevious(
     }
   }
 
-  if (jsonDocument !== undefined && typeof output === "string") output = serializeJsonDocument(jsonDocument);
+  if (jsonDocument !== undefined && typeof output === "string") output = serializeJsonDocument(jsonDocument, output);
   return output;
 }

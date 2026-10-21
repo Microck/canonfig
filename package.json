@@ -62,6 +62,7 @@
     "@canonfig/effect-platform-node-shared": "npm:@effect/platform-node-shared@4.0.0-rc.112",
     "@canonfig/effect-sql-sqlite-node": "npm:@effect/sql-sqlite-node@4.0.0-rc.112",
     "effect": "4.0.0-rc.112",
+    "jsonc-parser": "3.3.1",
     "selfsigned": "^5.5.0",
     "smol-toml": "1.9.0",
     "yaml": "^2.9.0"

@@ -529,6 +529,11 @@ canonfig harness doctor
 canonfig harness --help
 ```
 
+Merging native JSON/JSONC configuration changes only affected properties and
+array items. Unrelated comments, values, and formatting remain in place through
+apply, re-render, and cleanup. Canonfig still rejects invalid JSON/JSONC rather
+than rewriting it as a fresh document.
+
 YAML is the default scaffold. `--format json` creates strict, pretty-printed
 `.canonfig/harness.json` and is valid only with `harness init`. YAML and JSON
 use the same schema and compiler. Canonfig rejects a project that contains more

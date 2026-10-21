@@ -16,6 +16,9 @@ import { runHarnessConfigurationCli } from "../src/harness-configuration/cli.ts"
 import { HarnessConfigurationCompiler } from "../src/harness-configuration/core/compiler.ts";
 import { loadConfig } from "../src/harness-configuration/core/config.ts";
 import { scaffoldProject } from "../src/harness-configuration/core/scaffold.ts";
+import { applyPlan, createPlan } from "../src/harness-configuration/core/planner.ts";
+import { parseJsonDocument } from "../src/harness-configuration/core/render-utils.ts";
+import type { DesiredArtifact } from "../src/harness-configuration/core/types.ts";
 import { ampPluginSource } from "../src/harness-configuration/templates/runtime.ts";
 
 const withTemporaryDirectory = async <Value>(
@@ -30,6 +33,32 @@ const withTemporaryDirectory = async <Value>(
 };
 
 describe("JSON harness configuration", () => {
+  it.each(["\n", "\r\n"])("preserves nested JSONC comments through apply, rerender and cleanup (%j)", async (eol) =>
+    withTemporaryDirectory(async (root) => {
+      const original = [
+        "// my servers", "{", '  "mcpServers": {',
+        "    /* existing server */", '    "local": { "command": "keep", "url": "https://example.invalid/a//b" },',
+        "  },", '  "flags": [', "    // keep this array comment", '    "user",', "  ],",
+        '  "label": "literal /* not a comment */",', "}", "// trailing note", "",
+      ].join(eol);
+      await writeFile(path.join(root, ".mcp.json"), original);
+      const artifact: DesiredArtifact = { kind: "json", owner: "claude-code", path: ".mcp.json", operations: [
+        { kind: "managed-map", path: ["mcpServers"], entries: { generated: { command: "new-tool" } } },
+        { kind: "managed-array", path: ["flags"], values: ["generated"] },
+      ] };
+      await applyPlan(await createPlan(root, ["claude-code"], [artifact]));
+      const applied = await readFile(path.join(root, ".mcp.json"), "utf8");
+      for (const comment of ["// my servers", "/* existing server */", "// keep this array comment", "// trailing note"]) expect(applied).toContain(comment);
+      expect(applied).toContain('"command": "keep", "url": "https://example.invalid/a//b"');
+      const repeated = await createPlan(root, ["claude-code"], [artifact]);
+      expect(repeated.entries[0]?.action).toBe("unchanged");
+      await applyPlan(await createPlan(root, ["claude-code"], []));
+      const cleaned = await readFile(path.join(root, ".mcp.json"), "utf8");
+      for (const comment of ["// my servers", "/* existing server */", "// keep this array comment", "// trailing note"]) expect(cleaned).toContain(comment);
+      expect(parseJsonDocument(cleaned, [])).toEqual(parseJsonDocument(original, []));
+      expect(cleaned.includes("\r\n")).toBe(eol === "\r\n");
+    }));
+
   it("parses JSON as an init format without changing JSON output mode", () => {
     expect(parseHarnessArguments(["init", "--format", "json", "--json"]))
       .toMatchObject({

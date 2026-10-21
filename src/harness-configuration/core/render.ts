@@ -1,3 +1,4 @@
+import { parseJsonDocument, serializeJsonDocument } from "./render-utils.ts";
 import { sha256 } from "./hash.ts";
 import { unapplyPrevious } from "./render-cleanup.ts";
 import { applyJsonArtifact } from "./render-json.ts";
@@ -91,6 +92,11 @@ export function renderArtifacts(
       text = result.text;
       cleanup.push(...result.cleanup);
     }
+  }
+  // Apply the net JSON change to the original document, not to the temporary
+  // cleanup/rebuild text. This avoids formatting churn on unchanged re-renders.
+  if (typeof current === "string" && artifacts.every((artifact) => artifact.kind === "json")) {
+    text = serializeJsonDocument(parseJsonDocument(text, conflicts), current);
   }
   return { content: text, cleanup, conflicts };
 }

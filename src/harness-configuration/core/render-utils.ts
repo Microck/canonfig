@@ -1,3 +1,4 @@
+import { applyEdits, modify } from "jsonc-parser";
 import type { JsonPath, ManagedTextArtifact } from "./types.ts";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -112,8 +113,27 @@ export function parseJsonDocument(
   }
 }
 
-export function serializeJsonDocument(document: Record<string, unknown>): string {
-  return `${JSON.stringify(document, undefined, 2)}\n`;
+export function serializeJsonDocument(document: Record<string, unknown>, previousText?: string): string {
+  if (previousText === undefined || previousText.trim() === "") return `${JSON.stringify(document, undefined, 2)}\n`;
+  const errors: string[] = [];
+  const previous = parseJsonDocument(previousText, errors);
+  if (errors.length > 0) return previousText;
+  let text = previousText;
+  const set = (path: (string | number)[], value: unknown) => {
+    text = applyEdits(text, modify(text, path, value, {}));
+  };
+  const update = (before: unknown, after: unknown, path: (string | number)[]): void => {
+    if (deepEqual(before, after)) return;
+    if (isRecord(before) && isRecord(after)) {
+      for (const key of Object.keys(before)) if (!Object.hasOwn(after, key)) set([...path, key], undefined);
+      for (const [key, value] of Object.entries(after)) update(before[key], value, [...path, key]);
+    } else if (Array.isArray(before) && Array.isArray(after)) {
+      for (let index = before.length - 1; index >= after.length; index--) set([...path, index], undefined);
+      for (let index = 0; index < after.length; index++) update(before[index], after[index], [...path, index]);
+    } else set(path, after);
+  };
+  update(previous, document, []);
+  return text;
 }
 
 export function getAtPath(root: unknown, path: JsonPath): unknown {
