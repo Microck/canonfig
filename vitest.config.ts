@@ -14,7 +14,6 @@ export default defineProject({
       "tests/harness-configuration-antigravity.test.ts",
       "tests/harness-configuration-providers.test.ts",
       "tests/harness-json-config.test.ts",
-      "tests/harness-export.test.ts",
       "tests/packed-cli.test.ts",
       "tests/packed-init-diagnostic.test.ts",
       "tests/profile-contract.test.ts",

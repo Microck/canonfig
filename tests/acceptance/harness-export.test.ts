@@ -3,10 +3,10 @@ import { mkdtemp, mkdir, readFile, rm, writeFile, symlink } from "node:fs/promis
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
-import { encodeArchive } from "../src/harness-configuration/core/archive.ts";
-import { exportHarness, type ExportOptions } from "../src/harness-configuration/core/export.ts";
-import { scaffoldProject } from "../src/harness-configuration/core/scaffold.ts";
-import { runHarnessConfigurationCli } from "../src/harness-configuration/cli.ts";
+import { encodeArchive } from "../../src/harness-configuration/core/archive.ts";
+import { exportHarness, type ExportOptions } from "../../src/harness-configuration/core/export.ts";
+import { scaffoldProject } from "../../src/harness-configuration/core/scaffold.ts";
+import { runHarnessConfigurationCli } from "../../src/harness-configuration/cli.ts";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -81,6 +81,12 @@ describe("portable harness archives", () => {
     await expect(exportHarness(options)).rejects.toThrow("Output already exists");
     expect(await readFile(options.output)).toEqual(first);
   });
+  it("publishes exactly one complete archive when writers race", async () => {
+    const options = await fixture();
+    const outcomes = await Promise.allSettled([exportHarness(options), exportHarness(options)]);
+    expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(1);
+    expect(unzip(await readFile(options.output)).has("canonfig-export.json")).toBe(true);
+  });
   it("dry-run lists paths without writing", async () => {
     const options = await fixture();
     const result = await exportHarness({ ...options, dryRun: true });
@@ -120,6 +126,20 @@ describe("portable harness archives", () => {
     const options = await fixture();
     await expect(exportHarness({ ...options, sourceOnly: true })).rejects.toThrow("--source-only");
     await expect(exportHarness({ ...options, output: "bad.tgz" })).rejects.toThrow(".zip or .tar.gz");
+  });
+  it("rejects missing required sources and output parents as configuration failures", async () => {
+    const options = await fixture();
+    await expect(exportHarness({ ...options, output: path.join(options.root, "missing", "out.zip"), dryRun: true })).rejects.toMatchObject({ code: "ARCHIVE_OUTPUT_PARENT_NOT_FOUND" });
+    await rm(path.join(options.root, ".canonfig/instructions/AGENTS.md"));
+    await expect(exportHarness({ ...options, sourceOnly: true, targets: undefined })).rejects.toMatchObject({ code: "SOURCE_NOT_FOUND" });
+  });
+  it("refuses missing output with a structured usage error", async () => {
+    const options = await fixture();
+    let stdout = ""; let stderr = ""; let exitCode = -1;
+    await runHarnessConfigurationCli(["export", "--root", options.root, "--json"], { writeStdout: (text) => { stdout += text; }, writeStderr: (text) => { stderr += text; }, setExitCode: (code) => { exitCode = code; } });
+    expect(stdout).toBe("");
+    expect(JSON.parse(stderr).data.code).toBe("ARCHIVE_OUTPUT_REQUIRED");
+    expect(exitCode).toBe(2);
   });
   it("routes CLI export and emits structured, content-free dry-run output", async () => {
     const options = await fixture();

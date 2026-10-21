@@ -63,7 +63,10 @@ async function authoredFiles(root: string, includeConfig: boolean): Promise<Arch
     let stat;
     try { stat = await fs.lstat(file); }
     catch (error) {
-      if (optional && (error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        if (optional) return;
+        throw new CanonfigError("SOURCE_NOT_FOUND", `Declared archive source is missing: ${archivePath}`);
+      }
       throw error;
     }
     if (stat.isDirectory()) {
@@ -130,19 +133,33 @@ export async function exportHarness(options: ExportOptions): Promise<{
       "Inspect executable hooks and scripts before using the archive."],
   }, null, 2) + "\n") });
   const bytes = encodeArchive(files, format);
+  let parent: string;
+  try {
+    parent = await fs.realpath(path.dirname(output));
+    if (!(await fs.stat(parent)).isDirectory()) throw new CanonfigError("ARCHIVE_OUTPUT_PARENT_NOT_FOUND", "Output parent must be an existing directory");
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw new CanonfigError("ARCHIVE_OUTPUT_PARENT_NOT_FOUND", "Output parent must be an existing directory");
+    throw error;
+  }
   if (!options.dryRun) {
     // Same-directory temporary + exclusive hard link publishes a complete file
     // without replacing existing output, including a concurrently created file.
-    const parent = await fs.realpath(path.dirname(output));
     const destination = path.join(parent, path.basename(output));
     const temporary = path.join(parent, `.canonfig-export-${randomUUID()}.tmp`);
+    let owned = false;
     try {
-      await fs.writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
-      await fs.link(temporary, destination);
+      const handle = await fs.open(temporary, "wx", 0o600);
+      owned = true;
+      try { await handle.writeFile(bytes); } finally { await handle.close(); }
+      try { await fs.link(temporary, destination); }
+      catch (error) {
+        if (["ENOSYS", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw new CanonfigError("ARCHIVE_FILESYSTEM_UNSUPPORTED", "Atomic archive publication requires hard-link support and permission. Choose a local filesystem that supports it; no partial-copy fallback was used");
+        throw error;
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new CanonfigError("ARCHIVE_OUTPUT_CONFLICT", "Output already exists; select a new archive filename");
       throw error;
-    } finally { await fs.rm(temporary, { force: true }); }
+    } finally { if (owned) await fs.rm(temporary, { force: true }); }
   }
   return { output, format, targets: built?.targets ?? [], source, files: inventory, diagnostics, written: !options.dryRun };
 }

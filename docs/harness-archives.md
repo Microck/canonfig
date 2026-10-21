@@ -20,6 +20,7 @@ configuration. `--source-only` cannot be combined with target selection.
 `--root` selects a project (or descendant); `--strict` retains the compiler's
 existing rejection of lossy mappings. Warnings are included in the result.
 The output extension selects the format, and its parent directory must exist.
+Dry-run validates the output parent too, but permits an existing output filename.
 Existing output is never overwritten, even with `--force`. Choose a new name.
 
 ## Contents and boundaries
@@ -56,6 +57,10 @@ Archives use deterministic ordering and timestamps and are bounded to 20,000
 files and 128 MiB of uncompressed content, including the inventory. ZIP uses
 stored entries; TAR uses PAX filenames and gzip. Output is private to the user
 where the platform supports POSIX modes and published with exclusive creation.
+Atomic publication requires filesystem hard-link support (for example, local
+NTFS, APFS or ext4). Filesystems or mounts that refuse hard links are reported
+as unsupported; use a supported output directory. There is no non-atomic copy
+fallback and no partially written destination.
 
 Extract into a fresh directory and inspect the contents before copying them
 into an existing project. Native configuration is not an installation of the

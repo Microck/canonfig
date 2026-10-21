@@ -105,6 +105,7 @@ export const renderHarnessResult = (
 
 export const harnessFailureExitCode = (error: unknown): CliExitCodeValue => {
   if (!(error instanceof CanonfigError)) return CliExitCode.internal;
+  if (error.code === "ARCHIVE_FILESYSTEM_UNSUPPORTED") return CliExitCode.humanActionRequired;
   if (/CONFLICT|COLLISION|EDITED|ESCAPE|STALE/u.test(error.code)) {
     return CliExitCode.conflictOrDrift;
   }
