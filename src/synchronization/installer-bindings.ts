@@ -1,10 +1,11 @@
 import { realpath } from "node:fs/promises";
-import { win32 } from "node:path";
+import { basename, dirname, join, win32 } from "node:path";
 import { Effect, Option, Schema } from "effect";
 import {
   installerBindingFor,
   installerMethods,
   isLocalInstallerPath,
+  isCorepackPnpmEntrypoint,
   normalizeInstallerMethod,
   parseInstallerBinding,
   type InstallerBinding,
@@ -75,15 +76,21 @@ const nodeBindingForShim = (
 ): Effect.Effect<WindowsNodeBinding | undefined, never, MachineState> => Effect.gen(function*() {
   const machine = yield* MachineState;
   if (!Schema.is(ShimMethod)(method) || !isWindowsShim(shim)) return undefined;
-  const entry = shimEntrypoints[method];
+  const entries = method === "pnpm"
+    ? [shimEntrypoints.pnpm, ["node_modules", "corepack", "dist", "pnpm.js"]]
+    : [shimEntrypoints.npm];
   const isRegularFile = (absolute: string) => machine.normalizePath({ path: absolute }).pipe(
     Effect.flatMap(machine.inspectPath),
     Effect.map((object) => object.kind === "regular"),
     Effect.orElseSucceed(() => false),
   );
   const directory = win32.dirname(shim);
-  const entrypoint = win32.join(directory, ...entry);
-  if (!(yield* isRegularFile(entrypoint))) return undefined;
+  let entrypoint: string | undefined;
+  for (const entry of entries) {
+    const candidate = win32.join(directory, ...entry);
+    if (yield* isRegularFile(candidate)) { entrypoint = candidate; break; }
+  }
+  if (entrypoint === undefined) return undefined;
   const besideShim = win32.join(directory, "node.exe");
   const executable = (yield* isRegularFile(besideShim))
     ? besideShim
@@ -229,16 +236,31 @@ export const loadInstallerBinding = (method: string): Effect.Effect<InstallerBin
   Effect.flatMap(loadInstallerState(method), (state) =>
     state.status === "bound" ? Effect.succeed(state.binding) : Effect.succeed(undefined));
 
+/** rustup dispatches by argv[0], so retain the selected cargo proxy spelling. */
+const rustupProxyTarget = async (method: string, executable: string, arguments_: ReadonlyArray<string>): Promise<string | undefined> => {
+  if (method !== "cargo" || arguments_.length !== 0 || !/^cargo(?:\.exe)?$/u.test(basename(executable))) return undefined;
+  try {
+    const target = await realpath(executable);
+    return /^rustup(?:\.exe)?$/u.test(basename(target)) ? target : undefined;
+  } catch { return undefined; }
+};
+
 const inspectBindingFiles = (binding: InstallerBinding) => Effect.gen(function*() {
   const machine = yield* MachineState;
   const executable = yield* machine.normalizePath({ path: binding.executable });
+  let permissionsPath = executable;
   for (const value of [binding.executable, ...binding.arguments]) {
     const path = yield* machine.normalizePath({ path: value });
     const kind = yield* inspectOptional(path);
-    if (kind?.kind !== "regular") return yield* unavailable("A bound executable or entrypoint is missing or no longer a regular file; configure the binding again.");
+    if (kind?.kind === "regular") continue;
+    const target = value === binding.executable && kind?.kind === "symlink"
+      ? yield* Effect.promise(() => rustupProxyTarget(binding.method, value, binding.arguments)) : undefined;
+    if (target === undefined) return yield* unavailable("A bound executable or entrypoint is missing or no longer a regular file; configure the binding again.");
+    permissionsPath = yield* machine.normalizePath({ path: target });
+    if ((yield* inspectOptional(permissionsPath))?.kind !== "regular") return yield* unavailable("The cargo proxy target is not a regular rustup executable.");
   }
   // Windows does not use Unix execute-permission bits to authorize a program.
-  if (executable.platform !== "windows" && !(yield* machine.permissions(executable)).executableByOwner) {
+  if (executable.platform !== "windows" && !(yield* machine.permissions(permissionsPath)).executableByOwner) {
     return yield* unavailable("The bound installer executable is not executable by the current user.");
   }
   return executable;
@@ -268,10 +290,17 @@ export const saveInstallerBinding = (
   // Resolve existing links once and retain their actual target. No path is
   // inferred from an npm package name or copied from the Source Machine.
   const resolved = yield* Effect.tryPromise({
-    try: async () => ({
-      executable: await realpath(executable),
-      arguments: await Promise.all(arguments_.map((argument) => realpath(argument))),
-    }),
+    try: async () => {
+      const target = await realpath(executable);
+      if (paths.method === "pnpm" && arguments_.length === 0 && isCorepackPnpmEntrypoint(target, paths.platform)) {
+        return { executable: await realpath(process.execPath), arguments: [target] };
+      }
+      const proxy = await rustupProxyTarget(paths.method, executable, arguments_);
+      return {
+        executable: proxy === undefined ? target : join(await realpath(dirname(executable)), basename(executable)),
+        arguments: await Promise.all(arguments_.map((argument) => realpath(argument))),
+      };
+    },
     catch: () => unavailable("The selected installer executable or entrypoint cannot be resolved."),
   });
   let binding: InstallerBinding | undefined;
@@ -287,7 +316,7 @@ export const saveInstallerBinding = (
         paths.method,
         yield* nodeBindingForShim(paths.method, resolved.executable),
       )
-      : "Use an absolute native installer path, or Node with an absolute npm-cli.js/pnpm.cjs entrypoint. Shell expressions and shims are not bindings.");
+      : "Use an absolute native installer path, or Node with an absolute npm-cli.js, pnpm.cjs, or Corepack dist/pnpm.js entrypoint. Shell expressions and shims are not bindings.");
   }
   yield* checkInstallerBinding(binding);
   const rootKind = yield* inspectOptional(paths.root);

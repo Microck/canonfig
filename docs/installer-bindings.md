@@ -51,3 +51,5 @@ runs; binding paths must be protected by the machine's existing access controls.
 A changed or missing entrypoint requires local repair, not an agent-generated
 PATH workaround. Audit coverage: E03/E04/E05 and the executable-resolution
 portion of S09/S10. This does not claim the historical fleet is configured.
+
+A selected `cargo` symlink whose resolved target is `rustup` keeps its cargo spelling because rustup dispatches on the invoked name. Every check revalidates that proxy target; a broken or retargeted proxy is refused. Corepack `corepack/dist/pnpm.js` can be bound explicitly with Node, or selected directly (including its pnpm symlink) to pin the current Node runtime plus the resolved entrypoint. Windows `.cmd` shims remain unsupported as executables; the recovery suggestion recognizes an existing Corepack pnpm entrypoint beside the shim.
