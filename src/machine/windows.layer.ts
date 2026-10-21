@@ -1,3 +1,4 @@
+import { installedWindowsCommand } from "./installed-scheduler-command.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
   access,
@@ -1381,6 +1382,8 @@ export const windowsMachineStateLayer = (
                     && xmlElement(settings, "Priority") === String(windowsTaskPriority)
                     && calendarMatches,
                   calendarMatches,
+                  bindingInspected: true,
+                  installedCommand: installedWindowsCommand(command, xmlElement(xml, "Arguments")),
                   // A disabled trigger or task never fires even when its
                   // definition matches; Task Scheduler state 1 is Disabled.
                   active: windowsTaskTriggerEnabled(trigger) && runtime?.state !== 1,

@@ -36,7 +36,7 @@ they do not, Canonfig signs and serves nothing and fails with exit 4:
 Releases before 3.2.1 used account-global credential names. The 3.2.1 line
 added state-directory namespaces and a fingerprint-checked key copy for its
 own legacy state. This is historical behavior, not a supported migration to
-4.0.1. Do not point 4.0.1 at a 3.2.x state directory or copy old credential
+4.0.1. Do not point 4.0.2 at a 3.2.x state directory or copy old credential
 items into a new Source. See [the fresh-install guide](/how-to/upgrade).
 
 When `source serve` cannot load its keys from the native store, the message
@@ -62,7 +62,7 @@ unsupported public bind as a shortcut.
 
 Follower requests and Source responses carry the Canonfig version. Different
 `major.minor` releases refuse each other with a "source/follower version
-mismatch" instead of a tampering error. In particular, 4.0.1 cannot
+mismatch" instead of a tampering error. In particular, 4.0.2 cannot
 interoperate with 3.2.x. An in-place upgrade from 3.2.x is unsupported; see
 [the fresh-install guide](/how-to/upgrade).
 

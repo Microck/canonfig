@@ -1,3 +1,4 @@
+import { installedBindingProblem, type InstalledSchedulerCommand } from "../machine/installed-scheduler-command.ts";
 import { userInfo } from "node:os";
 import { dirname } from "node:path";
 import { Effect, Layer } from "effect";
@@ -179,15 +180,32 @@ const missedLoggedOnRun = (
   return Date.parse(due) > Math.max(...known) ? due : undefined;
 };
 
+const bindingRepair = (schedule: NormalizedSyncSchedule, customExecutable: boolean): string => {
+  if (!customExecutable) return "Manually run `canonfig sync --apply` from the current installation to repair it; do not wait for the scheduled job to repair itself";
+  if (schedule.kind === "custom") return "Manually choose a supported daily or weekly calendar with `canonfig schedule set <calendar>` and omit --executable to clear the stale custom binding; the CLI cannot recreate a custom calendar";
+  const calendar = schedule.kind === "daily" ? `daily@${schedule.localTime}`
+    : `weekly:${schedule.weekdays.join(",")}@${schedule.localTime}`;
+  const timezone = schedule.timezone === undefined ? "" : ` --timezone ${schedule.timezone}`;
+  return `The selected custom executable is also unavailable. Restore it, or manually run \`canonfig schedule set ${calendar}${timezone}\` from the current installation, without --executable. This keeps the selected calendar and clears the stale custom executable; sync --apply alone would reuse it`;
+};
+
 /** The effective state of the native job with what it means for the user. */
 const statusFrom = (
   schedule: NormalizedSyncSchedule,
   definition: RenderedSchedulerJob,
   inspection: SchedulerInspection,
-): ScheduleStatus => {
-  const state = stateOf(inspection);
+  customCommand?: InstalledSchedulerCommand,
+): Effect.Effect<ScheduleStatus> => Effect.gen(function*() {
+  const bindingChecked = inspection.installed && inspection.bindingInspected === true;
+  const bindingProblem = bindingChecked
+    ? yield* Effect.promise(() => installedBindingProblem(inspection.installedCommand)) : undefined;
+  const customProblem = customCommand === undefined ? undefined
+    : yield* Effect.promise(() => installedBindingProblem(customCommand));
+  const nativeState = stateOf(inspection);
+  const state = bindingProblem !== undefined && (nativeState === "current" || nativeState === "drifted")
+    ? "drifted" : nativeState;
   const drift = state === "drifted"
-    ? inspection.calendarMatches === true ? "binding" as const : "calendar" as const
+    ? bindingProblem !== undefined || inspection.calendarMatches === true ? "binding" as const : "calendar" as const
     : undefined;
   const nextRun = state === "current"
     ? nextScheduledRun(schedule) ?? inspection.nextElapse
@@ -207,7 +225,9 @@ const statusFrom = (
         return macosTimezoneRecovery;
       case "drifted":
         return drift === "binding"
-          ? "the native job keeps its calendar but was rendered by a different Canonfig build (runtime or entrypoint); the next `canonfig sync --apply` re-renders it"
+          ? `${bindingProblem ?? (bindingChecked
+            ? "the calendar is unchanged and the installed runtime/entrypoint files are available, but the binding differs from this Canonfig build"
+            : "the installed binding differs and its runtime/entrypoint availability is unverified")}. ${bindingRepair(schedule, customProblem !== undefined)}`
           : "the native job was changed outside Canonfig; the next `canonfig sync --apply` or `canonfig schedule set` restores the selected calendar";
       case "current":
         return nextRun === undefined
@@ -234,6 +254,7 @@ const statusFrom = (
   ];
   return {
     state,
+    bindingUsable: bindingChecked ? bindingProblem === undefined : undefined,
     platform: definition.platform,
     schedule,
     definition,
@@ -249,7 +270,7 @@ const statusFrom = (
     missedRun,
     warnings,
   };
-};
+});
 
 const snapshotsEqual = (
   left: ScheduleSnapshot,
@@ -306,6 +327,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           {
             readonly schedule: NormalizedSyncSchedule;
             readonly definition: RenderedSchedulerJob;
+            readonly command: InstalledSchedulerCommand;
           },
           ScheduleManagerError
         > {
@@ -320,7 +342,9 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
             arguments: command.arguments,
             calendar,
           });
-          return { schedule, definition: rendered };
+          return { schedule, definition: rendered, command: { ...command, executable: executable.absolute,
+            searchPath: [dirname(executable.absolute), "/usr/local/bin", "/usr/bin", "/bin"],
+          } };
         },
       );
 
@@ -331,7 +355,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
         > {
           const desired = yield* definition(input);
           const inspection = yield* machine.inspectSchedulerJob(desired.definition);
-          return statusFrom(desired.schedule, desired.definition, inspection);
+          return yield* statusFrom(desired.schedule, desired.definition, inspection, input.executable === undefined ? undefined : desired.command);
         },
       );
 
@@ -384,7 +408,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           }
           const desired = yield* definition(input);
           const inspection = yield* machine.inspectSchedulerJob(desired.definition);
-          const before = statusFrom(desired.schedule, desired.definition, inspection);
+          const before = yield* statusFrom(desired.schedule, desired.definition, inspection, input.executable === undefined ? undefined : desired.command);
           if (inspection.timezoneChangedSinceBoot) {
             return yield* new ScheduleHumanActionRequiredError({
               action: "arm the macOS schedule after a timezone change",
@@ -403,10 +427,11 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           // A stopped, disabled, or deleted job is restored here: an explicit
           // install is the user's decision, unlike the post-apply reconciler.
           yield* machine.installSchedulerJob(desired.definition);
-          const after = statusFrom(
+          const after = yield* statusFrom(
             desired.schedule,
             desired.definition,
             yield* machine.inspectSchedulerJob(desired.definition),
+            input.executable === undefined ? undefined : desired.command,
           );
           if (after.state !== "current") {
             return yield* new ScheduleVerificationError({

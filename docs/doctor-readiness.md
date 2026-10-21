@@ -44,8 +44,18 @@ Keychain unlocked; with nobody logged in, the `gui/<uid>` domain does not exist
 and the job does not fire. When the probe fails because the session's Keychain
 is locked, doctor says so and gives this recovery text.
 
-A requested but absent, disabled, or drifted native job is a verification failure,
-not a pass. A current job proves only its installed definition; the result marks
+A requested but absent, disabled, or calendar-drifted native job is a verification
+failure, not a pass. Binding-only drift is advisory only when the installed
+runtime and entrypoint files remain available. A deleted runtime or unreadable
+entrypoint fails readiness even if the calendar still matches. For POSIX wrappers,
+readiness also inspects a bounded shebang interpreter chain; an `env` interpreter
+is resolved only in the installed native job's PATH, not the interactive shell's.
+Unknown interpreter syntax or missing native PATH evidence remains unverified. For a normal binding, manually run `canonfig sync --apply` from the current
+installation. For a deleted custom executable, use the concrete
+`canonfig schedule set <calendar>` command shown by status, without
+`--executable`, to preserve the chosen calendar and clear the stale custom path.
+`sync --apply` alone reuses a persisted custom executable and cannot repair it.
+An unlaunchable job cannot repair itself. A current job proves only its installed definition; the result marks
 scheduled execution unverified. An intentionally unscheduled follower remains
 skipped. Run a separately approved native scheduled execution before claiming
 unattended setup complete.

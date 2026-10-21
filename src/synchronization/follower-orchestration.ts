@@ -931,6 +931,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
     {
       readonly revision: PlanningProfileRevision;
       readonly observations: ReadonlyArray<{
+        readonly resolvedTarget?: string | undefined;
         readonly resource: typeof ResourceId.Type;
         readonly observed: ObservedResourceState;
       }>;
@@ -940,6 +941,13 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
     MachineState
   > {
     const decoded = yield* decodeSpecs(fetched);
+    const machine = yield* MachineState;
+    const resolveTarget = (resource: ProfileRevision["resources"][number]) =>
+      resource.kind === "tool" || resource.kind === "credential" ? Effect.succeed(undefined)
+        : machine.normalizePath({ path: resource.target }).pipe(
+          Effect.map((path) => path.absolute),
+          Effect.mapError(() => configurationError("invalid-profile", `Cannot resolve target for ${resource.id}`)),
+        );
     const desired: Array<DesiredResourceEntry> = [];
     const observations = [];
     const artifacts: Array<SynchronizationArtifact> = [];
@@ -958,6 +966,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
         verification: entry.resource.verify,
       });
       observations.push({
+        resolvedTarget: yield* resolveTarget(entry.resource),
         resource: entry.resource.id,
         observed: yield* observe(
           entry,
@@ -996,6 +1005,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
         verification: removedVerification,
       });
       observations.push({
+        resolvedTarget: yield* resolveTarget(removed.resource),
         resource: removed.resource.id,
         observed: yield* observe(
           { resource: removed.resource },

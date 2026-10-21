@@ -147,20 +147,23 @@ export const scheduledDefinitionReadiness = (
     mechanism: status.definition.mechanism,
     timezone: status.timezone,
     ...nextRun,
-    definitionVerified: status.state === "current",
-    scheduledExecutionVerified: status.state === "current" && lastFire !== undefined,
+    definitionVerified: status.state === "current" && status.bindingUsable !== false,
+    bindingUsable: status.bindingUsable ?? "unverified",
+    scheduledExecutionVerified: status.state === "current" && status.bindingUsable !== false && lastFire !== undefined,
     ...lastFireDetails(lastFire),
   };
-  if (status.state !== "current") {
-    // A job rendered by another Canonfig build (an upgrade) keeps firing on
-    // the same calendar until the next apply re-renders it: not a failure.
-    return status.state === "drifted" && status.drift === "binding"
+  if (status.state !== "current" || status.bindingUsable === false) {
+    // Binding-only drift is advisory only after checking the installed files.
+    // A deleted runtime cannot launch a scheduled run to repair itself.
+    return status.state === "drifted" && status.drift === "binding" && status.bindingUsable === true
       ? { name: "scheduler", status: "warning", message: status.detail, details }
       : {
         name: "scheduler",
         status: "fail",
         category: "verification-or-apply-failure",
-        message: `requested scheduler definition is ${status.state}: ${status.detail}`,
+        message: status.bindingUsable === false
+          ? `installed scheduler runtime or entrypoint is unavailable: ${status.detail}`
+          : `requested scheduler definition is ${status.state}: ${status.detail}`,
         details,
       };
   }

@@ -1,3 +1,4 @@
+import { installedLaunchdCommand } from "./installed-scheduler-command.ts";
 import { createHash } from "node:crypto";
 import { access, lstat, readFile } from "node:fs/promises";
 import { homedir, uptime } from "node:os";
@@ -426,6 +427,8 @@ export const macosMachineStateLayer = (
               installed: true,
               enabled: !disabled,
               matches: stored === expected.schedule,
+              bindingInspected: true,
+              installedCommand: installedLaunchdCommand(stored),
               calendarMatches: storedCalendar !== undefined
                 && storedCalendar === calendarLine.exec(expected.schedule)?.[0],
               // Booted out (or never bootstrapped) outside Canonfig: the plist

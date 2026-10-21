@@ -1,3 +1,4 @@
+import { installedSystemdCommand } from "./installed-scheduler-command.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -1294,6 +1295,8 @@ const systemdBackend = (
           installed: true,
           enabled: timerEnabled(units.timer),
           matches: service.content === expected.service && timer.content === expected.schedule,
+          bindingInspected: true,
+          installedCommand: installedSystemdCommand(service.content),
           calendarMatches: timer.content === expected.schedule,
           active: units.timer.ActiveState === "active",
           overrides,

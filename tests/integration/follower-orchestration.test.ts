@@ -329,6 +329,105 @@ if (args[0] === "tool" && args[1] === "list") {
     }
   });
 
+  it.each(["rename", "same-content rename", "alias rename", "directory", "directory rename", "deleted file", "local edit"])("safely hands an existing target to a new resource: %s", async (change) => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-handover-"));
+    directories.push(root);
+    const followerRoot = join(root, "follower");
+    const target = join(followerRoot, "home", "managed", "AGENTS.md");
+    const followerDatabase = join(root, "follower.sqlite");
+    const sourceLayer = EnrollmentLive.pipe(
+      Layer.provideMerge(stateRepositoryLayer(join(root, "source.sqlite"))),
+      Layer.provideMerge(machineLayer(join(root, "source"))),
+    );
+    const sourceRuntime = ManagedRuntime.make(sourceLayer);
+    runtimes.push(sourceRuntime);
+    const source = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.initializeSource()));
+    const privateKey = await sourceRuntime.runPromise(Effect.gen(function*() {
+      const machine = yield* MachineState;
+      return createPrivateKey(Redacted.value(yield* machine.loadCredential({ reference: source.signingKeyReference })));
+    }));
+    const profileId = decode(ProfileId)("local-instructions");
+    let sequence = 0;
+    const publish = async (resources: ReadonlyArray<ProfileResourceInput>) => {
+      sequence += 1;
+      const profile: MachineProfile = {
+        id: profileId, version: 2, name: `Local instructions ${sequence}`, groups: [],
+        resources,
+      };
+      const compiled = compileProfileCandidate(profile);
+      const canonicalBytes = compiled.canonicalBytes;
+      const digest = compiled.digest;
+      const unsigned = {
+        id: decode(ProfileRevisionId)(`${profileId}:${digest}`), profileId, sequence,
+        canonicalBytes, digest, publishedAt: `2026-09-07T00:00:${String(sequence).padStart(2, "0")}Z`,
+        groups: [], signingKeyId: source.source.keyId,
+        resources: compiled.resources,
+      };
+      await sourceRuntime.runPromise(Effect.flatMap(StateRepository, (repository) => repository.publishRevision({
+        revision: { ...unsigned, signature: decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(revisionSigningPayload(unsigned)), privateKey).toString("base64url")}`) },
+        blobs: compiled.blobs,
+      })));
+    };
+    const file = (id: string, content: string): ProfileResourceInput => ({
+      id, kind: "file", policy: "replace-if-unmodified", target: change === "alias rename" && id === "old-name" ? "~/managed/AGENTS.md" : target, dependsOn: [],
+      spec: { kind: "file", content, executable: false, mode: 0o600 },
+      verify: { method: "digest", digest: sha256Hex(content) },
+    });
+    const directory = (id: string, content: string): ProfileResourceInput => ({
+      id, kind: "directory", policy: "mirror-owned", target: dirname(target), dependsOn: [],
+      spec: { kind: "directory", mode: 0o700, files: [{ path: "AGENTS.md", content, executable: false, mode: 0o600 }] },
+      verify: { method: "digest", digest: directoryVerificationDigest([{ path: "AGENTS.md", digest: sha256Hex(content), executable: false }]) },
+    });
+    await publish([change === "directory rename" ? directory("old-name", "Source one\n") : file("old-name", "Source one\n")]);
+    const server = await sourceRuntime.runPromise(startSourceServer().pipe(Effect.provide(sourceLayer)));
+    servers.push(server);
+    const invitation = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.createInvitation({
+      endpoint: server.endpoint, expiresInMilliseconds: 60_000,
+    })));
+    const followerMachine = machineLayer(followerRoot);
+    const enrolled = await Effect.runPromise(enrollFollower({ invitation, followerName: "Text follower" }).pipe(Effect.provide(followerMachine)));
+    const followerRepository = stateRepositoryLayer(followerDatabase);
+    await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.saveFollowerSynchronizationConfiguration({
+      sourceIdentity: enrolled.source,
+      configuration: {
+        schemaVersion: 1, follower: { ...enrolled.follower, credentialReference: enrolled.credentialReference },
+        selectedProfile: profileId,
+        source: { endpoint: server.endpoint, tlsFingerprint: enrolled.tlsFingerprint, signingFingerprint: enrolled.source.publicKeyFingerprint },
+        credentialReference: enrolled.credentialReference,
+        cacheDirectory: join(root, "cache"), stateLocation: followerDatabase,
+        agentPolicy: "deterministic-only", scheduledInvocation: defaultScheduledInvocation, updatedAt: "2026-09-07T00:00:00Z",
+      },
+    })).pipe(Effect.provide(followerRepository)));
+    const application = Layer.mergeAll(followerRepository, followerMachine, AgentResolutionLive,
+      SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, followerMachine))));
+    const sync = (mode: "plan" | "apply" = "apply", reviewLocal = false) => Effect.runPromise(
+      synchronizeFollower(followerDatabase, mode, undefined, false, reviewLocal).pipe(Effect.provide(application)),
+    );
+    expect((await sync()).outcome).toMatchObject({ outcome: "Converged" });
+    await writeFile(join(dirname(target), "local.txt"), "Unowned local data\n");
+    if (change === "local edit") await writeFile(target, "Local edit\n");
+    if (change === "deleted file") await unlink(target);
+    const nextContent = change === "same-content rename" || change === "alias rename" ? "Source one\n" : "Source two\n";
+    await publish([change === "directory" || change === "directory rename" ? directory("new-name", nextContent) : file("new-name", nextContent)]);
+    const plan = await sync("plan");
+    if (change === "deleted file") await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });
+    else expect(await readFile(target, "utf8")).toBe(change === "local edit" ? "Local edit\n" : "Source one\n");
+    const applied = await sync();
+    if (change === "local edit") {
+      expect(applied.outcome?.outcome).not.toBe("Converged");
+      expect(await readFile(target, "utf8")).toBe("Local edit\n");
+    } else {
+      expect(plan.plan.actions.findIndex((action) => action.resource === "old-name"))
+        .toBeLessThan(plan.plan.actions.findIndex((action) => action.resource === "new-name"));
+      expect(applied.outcome).toMatchObject({ outcome: "Converged" });
+      expect(await readFile(target, "utf8")).toBe(nextContent);
+      const repeat = await sync("plan");
+      expect(repeat.plan.actions.filter((action) => action.resource === "new-name").map((action) => action.kind)).toEqual(["no-op"]);
+      expect(repeat.plan.actions.some((action) => action.resource === "old-name")).toBe(false);
+    }
+    expect(await readFile(join(dirname(target), "local.txt"), "utf8")).toBe("Unowned local data\n");
+  });
+
   it("keeps follower text across adoption, local edits, Source replacement, and removal", async () => {
     const root = mkdtempSync(join(tmpdir(), "canonfig-text-orchestration-"));
     directories.push(root);

@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { evaluateCli } from "../src/cli/cli.ts";
+import { installedSystemdCommand, installedLaunchdCommand, installedWindowsCommand, installedBindingProblem } from "../src/machine/installed-scheduler-command.ts";
+import { scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -344,7 +348,58 @@ exit 0
     ) => Effect.runPromise(Effect.flatMap(ScheduleManager, effect).pipe(Effect.provide(layer)));
     return { home, state, run };
   };
-  const input = { schedule: { kind: "daily", localTime: "04:00" } } as const;
+  const input = { executable: linuxFixture, schedule: { kind: "daily", localTime: "04:00" } } as const;
+
+  it.each(["runtime", "entrypoint"])("fails a deleted installed %s without waiting for scheduled self-repair", async (missing) => {
+    const host = await simulatedHost();
+    await host.run((manager) => manager.install(input));
+    const runtime = join(host.state, "old node");
+    const entrypoint = join(host.state, "old main.js");
+    await writeFile(runtime, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await chmod(runtime, 0o755);
+    await writeFile(entrypoint, "export {};\n");
+    const path = join(host.home, ".config", "systemd", "user", "canonfig-sync.service");
+    const stored = (await readFile(path, "utf8")).replace(/^ExecStart=.*$/mu,
+      `ExecStart=${JSON.stringify(runtime)} ${JSON.stringify(entrypoint)} "sync" "--apply" "--scheduled"`);
+    await writeFile(path, stored);
+    const available = await host.run((manager) => manager.status(input));
+    expect(available).toMatchObject({ state: "drifted", drift: "binding", bindingUsable: true });
+    expect(scheduledDefinitionReadiness(available).status).toBe("warning");
+    await unlink(missing === "runtime" ? runtime : entrypoint);
+    const broken = await host.run((manager) => manager.status(input));
+    expect(broken).toMatchObject({ state: "drifted", drift: "binding", bindingUsable: false });
+    expect(broken.detail).toContain(missing === "runtime" ? "runtime is missing" : "entrypoint is missing");
+    expect(broken.detail).toContain("Manually run");
+    // The desired custom executable is still valid. Repair the installed job,
+    // not the user's selection, even though the installed runtime is missing.
+    expect(broken.detail).toContain("`canonfig sync --apply`");
+    expect(broken.detail).not.toContain("clears the stale custom executable");
+    expect(broken.detail).not.toContain("keeps its calendar");
+    expect(scheduledDefinitionReadiness(broken).status).toBe("fail");
+    expect(await readFile(path, "utf8")).toBe(stored);
+    expect((await host.run((manager) => manager.install(input))).status).toMatchObject({ state: "current", bindingUsable: true });
+  });
+
+  it.each([
+    { kind: "daily", localTime: "04:00" },
+    { kind: "weekly", weekdays: ["Mon", "Fri"], localTime: "03:00", timezone: "UTC" },
+  ] as const)("provides a valid $kind repair when the selected executable is deleted", async (schedule) => {
+    const host = await simulatedHost();
+    const runtime = join(host.state, "custom-canonfig");
+    await writeFile(runtime, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await chmod(runtime, 0o755);
+    const selected = { executable: runtime, schedule };
+    expect((await host.run((manager) => manager.install(selected))).status.state).toBe("current");
+    await unlink(runtime);
+    const broken = await host.run((manager) => manager.status(selected));
+    expect(broken).toMatchObject({ state: "drifted", drift: "binding", bindingUsable: false });
+    expect(scheduledDefinitionReadiness(broken).status).toBe("fail");
+    expect(broken.detail).toContain("clears the stale custom executable");
+    const suggested = /`canonfig ([^`]+)`/u.exec(broken.detail)?.[1];
+    const parsed = evaluateCli(suggested!.split(" "));
+    expect(parsed).toMatchObject({ _tag: "Command", command: { _tag: "ScheduleSet", schedule: selected.schedule } });
+    if (parsed._tag === "Command" && parsed.command._tag === "ScheduleSet") expect(parsed.command.executable).toBeUndefined();
+  });
 
   it("reports a timer stopped outside Canonfig as inactive and restarts it on set", async () => {
     // CF-44: inspection queried only `is-enabled`, so a stopped timer that
@@ -397,5 +452,97 @@ exit 0
     const status = (await host.run((manager) => manager.install(input))).status;
     expect(status.lingering).toBe(false);
     expect(status.warnings.join("\n")).toContain("loginctl enable-linger");
+  });
+});
+
+describe("installed scheduler command decoding", () => {
+  it("decodes escaped systemd specifiers and variables without expanding them", () => {
+    expect(installedSystemdCommand('ExecStart="/tmp/node %%$" "/tmp/main %%$$.js" "sync"')).toEqual({
+      executable: "/tmp/node %$", arguments: ["/tmp/main %$.js", "sync"],
+    });
+    expect(installedSystemdCommand('Environment="PATH=/tmp/bin:/usr/bin"\nExecStart="/tmp/wrapper" "sync"')?.searchPath).toEqual(["/tmp/bin", "/usr/bin"]);
+    expect(installedSystemdCommand('ExecStart="/tmp/node" "$HOME/main.js"')).toBeUndefined();
+    expect(installedSystemdCommand('ExecStart=/tmp/node main.js')).toBeUndefined();
+    expect(installedSystemdCommand('ExecStart="/tmp/node"\nExecStart="/tmp/other"')).toBeUndefined();
+  });
+  it("decodes launchd arguments and XML entities", () => {
+    expect(installedLaunchdCommand('<key>ProgramArguments</key><array><string>/tmp/node &amp; tools</string><string>/tmp/&quot;main&quot;.js</string><string>sync</string></array>')).toEqual({
+      executable: "/tmp/node & tools", arguments: ['/tmp/"main".js', "sync"],
+    });
+    expect(installedLaunchdCommand('<key>ProgramArguments</key><array><string>/tmp/wrapper</string><string>sync</string></array><key>EnvironmentVariables</key><dict><key>PATH</key><string>/tmp/bin:/usr/bin</string></dict>')?.searchPath).toEqual(["/tmp/bin", "/usr/bin"]);
+    expect(installedLaunchdCommand('<key>ProgramArguments</key><array><data>unknown</data></array>')).toBeUndefined();
+  });
+  it("decodes Windows quoted paths without treating ordinary backslashes as escapes", () => {
+    expect(installedWindowsCommand(String.raw`C:\Program Files\node.exe`, String.raw`"C:\App Files\main.js" sync ""`)).toEqual({
+      executable: String.raw`C:\Program Files\node.exe`, arguments: [String.raw`C:\App Files\main.js`, "sync", ""],
+    });
+    expect(installedWindowsCommand("node.exe", '"unterminated')).toBeUndefined();
+  });
+  it.each(["", "-S "])("detects a deleted PATH interpreter behind an env %s wrapper without executing it", async (split) => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-wrapper-readiness-"));
+    try {
+      const wrapper = join(root, "canonfig");
+      const interpreter = join(root, "canonfig-test-node");
+      await writeFile(wrapper, `#!/usr/bin/env ${split}canonfig-test-node\nthrow new Error('must not run');\n`, { mode: 0o755 });
+      await chmod(wrapper, 0o755);
+      await writeFile(interpreter, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      await chmod(interpreter, 0o755);
+      const command = { executable: wrapper, arguments: ["sync"], searchPath: [root] };
+      expect(await installedBindingProblem(command)).toBeUndefined();
+      expect(await installedBindingProblem({ executable: wrapper, arguments: ["sync"] })).toContain("cannot be verified");
+      await unlink(interpreter);
+      expect(await installedBindingProblem(command)).toContain("interpreter");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32")("matches env PATH fallback without confusing child exits with exec failures", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-path-fallback-"));
+    try {
+      const first = join(root, "first"), second = join(root, "second");
+      await mkdir(first); await mkdir(second);
+      const wrapper = join(root, "wrapper");
+      const early = join(first, "fixture-runtime");
+      const late = join(second, "fixture-runtime");
+      const missing = join(root, "missing-interpreter");
+      for (const [path, content] of [
+        [wrapper, "#!/usr/bin/env fixture-runtime\n"],
+        [early, `#!${missing}\n`],
+        [late, "#!/bin/sh\nexit 0\n"],
+      ]) {
+        await writeFile(path!, content!, { mode: 0o755 });
+        await chmod(path!, 0o755);
+      }
+      const command = { executable: wrapper, arguments: [], searchPath: [first, second] };
+      const run = () => spawnSync(wrapper, [], { env: { PATH: [first, second].join(":") }, timeout: 5000 });
+      expect(run().status).toBe(0);
+      expect(await installedBindingProblem(command)).toBeUndefined();
+      // This candidate starts env successfully. Its missing child must not
+      // cause fallback to the later candidate, unlike a missing kernel interpreter.
+      await writeFile(early, `#!/usr/bin/env ${missing}\n`);
+      expect(run().status).not.toBe(0);
+      expect(await installedBindingProblem(command)).toContain("interpreter");
+      await writeFile(early, `#!${missing}\n`);
+      await unlink(late);
+      expect(run().status).not.toBe(0);
+      expect(await installedBindingProblem(command)).toContain("interpreter");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects executable text and truncated native headers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-executable-format-"));
+    try {
+      const runtime = join(root, "runtime");
+      for (const contents of [Buffer.from("not a native executable\n"), Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.alloc(0)]) {
+        await writeFile(runtime, contents, { mode: 0o755 });
+        await chmod(runtime, 0o755);
+        expect(await installedBindingProblem({ executable: runtime, arguments: [] })).toContain("format");
+      }
+      expect(await installedBindingProblem({ executable: process.execPath, arguments: [import.meta.filename] })).toBeUndefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("does not claim unknown commands are available", async () => {
+    expect(await installedBindingProblem(undefined)).toContain("cannot be verified");
+    expect(await installedBindingProblem({ executable: "node", arguments: [] })).toContain("cannot be verified");
   });
 });

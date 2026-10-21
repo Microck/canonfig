@@ -395,10 +395,15 @@ describe("readiness evidence", () => {
     },
   );
 
+  it.each(["current", "drifted"] as const)("fails %s readiness when the installed runtime or entrypoint is unavailable", (state) => {
+    const result = scheduledDefinitionReadiness(scheduleStatus(state, { drift: "binding", bindingUsable: false }));
+    expect(result.status).toBe("fail");
+    expect(result.category).toBe("verification-or-apply-failure");
+  });
+
   it("warns instead of failing when only another build's binding differs", () => {
-    // After an upgrade the old unit keeps firing on the same calendar until
-    // the next apply re-renders it (CF-59).
-    const result = scheduledDefinitionReadiness(scheduleStatus("drifted", { drift: "binding" }));
+    // Binding-only drift is advisory only when the installed files were checked.
+    const result = scheduledDefinitionReadiness(scheduleStatus("drifted", { drift: "binding", bindingUsable: true }));
     expect(result.status).toBe("warning");
   });
 
