@@ -48,9 +48,11 @@ describe("portable harness archives", () => {
   });
   it("packages source alone or source plus several harnesses", async () => {
     const options = await fixture();
+    await writeFile(path.join(options.root, ".canonfig", "skills-sources.json"), JSON.stringify({ version: 1, skills: [] }));
     await exportHarness({ ...options, sourceOnly: true, targets: undefined });
     let files = unzip(await readFile(options.output));
     expect(files.has(".canonfig/harness.json")).toBe(true);
+    expect(files.has(".canonfig/skills-sources.json")).toBe(true);
     expect(files.has("AGENTS.md")).toBe(false);
     const output = path.join(options.root, "combined.zip");
     await exportHarness({ ...options, output, targets: ["codex", "claude-code"], includeSource: true });

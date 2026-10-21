@@ -32,7 +32,9 @@ existing native setup. The project is not applied or otherwise changed.
 
 Archives retain project-relative paths. Shared instructions, skills and authored
 sources accompany native output so references remain usable. The source
-selection adds the canonical harness configuration itself. Declared instruction,
+selection adds the canonical harness configuration itself and the optional
+default `skills-sources.json` provenance configuration. Custom skill-source
+configuration outside `.canonfig` is not collected automatically. Declared instruction,
 rule, skill, agent and command sources are included; hooks that explicitly name
 `.canonfig/` paths include their containing support directory. Undeclared files
 are not swept into the export. External executables, MCP services, dependencies,

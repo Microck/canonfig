@@ -42,7 +42,11 @@ async function authoredFiles(root: string, includeConfig: boolean): Promise<Arch
       }
     }
   }
-  if (includeConfig) inputs.add(path.basename(loaded.path));
+  if (includeConfig) {
+    inputs.add(path.basename(loaded.path));
+    try { await fs.lstat(path.join(canonical, "skills-sources.json")); inputs.add("skills-sources.json"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
   const files = new Map<string, ArchiveFile>();
   let total = 0;
   async function collect(relative: string, optional: boolean): Promise<void> {
