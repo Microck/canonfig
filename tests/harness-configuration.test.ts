@@ -13,6 +13,7 @@ import {
   applyPlan,
   createPlan,
 } from "../src/harness-configuration/core/planner.ts";
+import { formatPlanDiff } from "../src/harness-configuration/core/diff.ts";
 import { parseMarkdownDocument } from "../src/harness-configuration/core/frontmatter.ts";
 import { runHarnessConfigurationCli } from "../src/harness-configuration/cli.ts";
 import { loadState } from "../src/harness-configuration/core/state.ts";
@@ -321,10 +322,21 @@ describe("harness configuration compiler", () => {
     if (edited) await writeFile(path.join(root, artifact.path), new Uint8Array([255, 254, 0, 2, 13, 10]));
     const clean = await createPlan(root, ["codex"], []);
     expect(clean.entries[0]?.action).toBe(edited ? "conflict" : "delete");
+    expect(formatPlanDiff(clean)).toContain(`Binary file ${edited ? "conflict" : "delete"}`);
     if (!edited) {
       await applyPlan(clean);
       await expect(readFile(path.join(root, artifact.path))).rejects.toMatchObject({ code: "ENOENT" });
     }
+  });
+
+  it.each([false, true])("shows the removed text in deletion and rename previews (rename=%s)", async (rename) => {
+    const root = await temporaryRoot();
+    const artifact: DesiredArtifact = { kind: "replace", owner: "codex", path: "old.md", content: "Review this removed text.\n" };
+    await applyPlan(await createPlan(root, ["codex"], [artifact]));
+    const plan = await createPlan(root, ["codex"], rename ? [{ ...artifact, path: "new.md" }] : []);
+    expect(plan.entries.find((entry) => entry.path === "old.md")?.before).toBe(artifact.content);
+    expect(formatPlanDiff(plan)).toContain("-Review this removed text.");
+    if (rename) expect(formatPlanDiff(plan)).toContain("+Review this removed text.");
   });
 
   it("retains exact-byte protection for a binary artifact that happens to contain UTF-8", async () => {

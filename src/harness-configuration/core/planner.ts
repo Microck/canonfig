@@ -33,6 +33,13 @@ function bytesEqual(left: Uint8Array | undefined, right: string | Uint8Array | u
   return Buffer.from(left).equals(rightBytes);
 }
 
+/** Preview decoding never participates in ownership verification. */
+function previewText(bytes: Uint8Array | undefined): string | undefined {
+  if (bytes === undefined || bytes.includes(0)) return undefined;
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { return undefined; }
+}
+
 function isTextArtifacts(artifacts: readonly DesiredArtifact[]): boolean {
   return artifacts.every((artifact) => artifact.kind !== "replace" || typeof artifact.content === "string");
 }
@@ -183,6 +190,8 @@ export async function createPlan(
     }
     const current = currentBytes === undefined ? undefined : previous.cleanup.every((entry) => entry.kind === "replace")
       ? currentBytes : Buffer.from(currentBytes).toString("utf8");
+    const before = previewText(currentBytes);
+    const binary = currentBytes !== undefined && before === undefined;
     const rendered = renderArtifacts([], current, previous, options.force ?? false);
     if (rendered.conflicts.length > 0) {
       entries.push({
@@ -190,7 +199,7 @@ export async function createPlan(
         owner: previous.owner,
         action: "conflict",
         reason: rendered.conflicts.join(" "),
-        before: typeof current === "string" ? current : undefined,
+        before, binary,
         after: typeof rendered.content === "string" ? rendered.content : undefined,
       });
       nextArtifacts[filePath] = previous;
@@ -199,14 +208,14 @@ export async function createPlan(
 
     const cleaned = previous.existedBefore ? rendered.content : undefined;
     if (cleaned === undefined) {
-      entries.push({ path: filePath, owner: previous.owner, action: currentBytes === undefined ? "unchanged" : "delete", before: typeof current === "string" ? current : undefined });
+      entries.push({ path: filePath, owner: previous.owner, action: currentBytes === undefined ? "unchanged" : "delete", before, binary });
     } else {
       const action = bytesEqual(currentBytes, cleaned) ? "unchanged" : currentBytes === undefined ? "create" : "update";
       entries.push({
         path: filePath,
         owner: previous.owner,
         action,
-        before: typeof current === "string" ? current : undefined,
+        before,
         after: typeof cleaned === "string" ? cleaned : undefined,
         content: cleaned,
         binary: cleaned instanceof Uint8Array,
