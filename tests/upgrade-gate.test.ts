@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
@@ -397,4 +397,14 @@ describe("deployment receipts", () => {
     expect(closed.after).toBeUndefined();
     expect(closed.receipt).toMatchObject({ run: "run-legacy-open", outcome: "Failed" });
   });
+});
+
+
+it("uses the current release in fresh-installation migration warnings", () => {
+  const version = evaluateCli(["--version"]);
+  if (!("text" in version)) throw new Error("expected text version result");
+  const security = readFileSync(new URL("../website/content/docs/reference/security.mdx", import.meta.url), "utf8").replace(/\s+/gu, " ");
+  const upgrade = readFileSync(new URL("../website/content/docs/how-to/upgrade.mdx", import.meta.url), "utf8").replace(/\s+/gu, " ");
+  expect(security).toContain(`not a supported migration to ${version.text}.`);
+  expect(upgrade).toContain(`while setting up ${version.text}.`);
 });
