@@ -529,6 +529,12 @@ canonfig harness doctor
 canonfig harness --help
 ```
 
+An existing `CLAUDE.md` symlink resolving to the repository's `AGENTS.md`
+already supplies the instruction bridge. Apply preserves it without taking
+ownership, and cleanup leaves it intact. Other native-output symlinks are reported
+as conflicts rather than silently replaced, including with `--force`; resolve
+the link explicitly if you want Canonfig to own a regular file there.
+
 YAML is the default scaffold. `--format json` creates strict, pretty-printed
 `.canonfig/harness.json` and is valid only with `harness init`. YAML and JSON
 use the same schema and compiler. Canonfig rejects a project that contains more

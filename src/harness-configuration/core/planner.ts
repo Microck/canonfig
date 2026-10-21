@@ -72,6 +72,20 @@ async function unreadableExistingPath(root: string, absolute: string, bytes: Uin
   return true;
 }
 
+async function leafSymlink(absolute: string): Promise<boolean> {
+  try { return (await fs.lstat(absolute)).isSymbolicLink(); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function existingClaudeBridge(root: string, filePath: string, absolute: string): Promise<boolean> {
+  if (filePath !== "CLAUDE.md") return false;
+  try { return await fs.realpath(absolute) === await fs.realpath(path.join(root, "AGENTS.md")); }
+  catch { return false; }
+}
+
 export async function createPlan(
   root: string,
   targets: TargetId[],
@@ -108,6 +122,18 @@ export async function createPlan(
   for (const [filePath, group] of [...groups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     const absolute = resolveInside(root, filePath);
     await assertRealPathInside(root, absolute);
+    if (await leafSymlink(absolute)) {
+      const previous = previousState.artifacts[filePath];
+      const bridge = group.length === 1 && group[0]?.kind === "managed-text"
+        && group[0].owner === "claude-code" && group[0].marker === "instructions-import"
+        && group[0].content.trim() === "@AGENTS.md"
+        && await existingClaudeBridge(root, filePath, absolute);
+      entries.push({ path: filePath, owner: ownerFor(group, diagnostics, filePath), action: bridge ? "unchanged" : "conflict",
+        reason: bridge ? "Existing CLAUDE.md symlink already imports AGENTS.md; it remains unowned and unchanged."
+          : "Native path is a symlink. Canonfig will not replace it with a regular file; explicitly relocate or remove the link before applying." });
+      if (!bridge && previous !== undefined) nextArtifacts[filePath] = previous;
+      continue;
+    }
     const currentBytes = await readOptionalFile(absolute);
     if (await unreadableExistingPath(root, absolute, currentBytes)) {
       const previous = previousState.artifacts[filePath];
@@ -189,6 +215,12 @@ export async function createPlan(
     if (desiredPaths.has(filePath) || !selectedOwner(previous.owner)) continue;
     const absolute = resolveInside(root, filePath);
     await assertRealPathInside(root, absolute);
+    if (await leafSymlink(absolute)) {
+      entries.push({ path: filePath, owner: previous.owner, action: "conflict",
+        reason: "Owned native path was replaced by a symlink. Canonfig will not remove or overwrite that link; resolve it explicitly before cleanup." });
+      nextArtifacts[filePath] = previous;
+      continue;
+    }
     const currentBytes = await readOptionalFile(absolute);
     if (await unreadableExistingPath(root, absolute, currentBytes)) {
       entries.push({ path: filePath, owner: previous.owner, action: "conflict",

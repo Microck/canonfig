@@ -284,6 +284,49 @@ describe("harness configuration compiler", () => {
     });
   });
 
+  it.skipIf(process.platform === "win32")("preserves a CLAUDE.md link to AGENTS.md through apply and cleanup", async () => {
+    const root = await fixture(["claude-code"]);
+    await write(root, "AGENTS.md", "# Team notes\nOriginal note.\n");
+    await symlink("AGENTS.md", path.join(root, "CLAUDE.md"));
+    const compiler = new HarnessConfigurationCompiler();
+    const plan = await compiler.plan({ root });
+    expect(plan.entries.find((entry) => entry.path === "CLAUDE.md")?.action).toBe("unchanged");
+    await applyPlan(plan);
+    expect(await readlink(path.join(root, "CLAUDE.md"))).toBe("AGENTS.md");
+    expect((await loadState(root)).artifacts["CLAUDE.md"]).toBeUndefined();
+    const notes = await readFile(path.join(root, "AGENTS.md"), "utf8");
+    await writeFile(path.join(root, "AGENTS.md"), notes.replace("Original note.", "Updated live note."));
+    expect(await readFile(path.join(root, "CLAUDE.md"), "utf8")).toContain("Updated live note.");
+    expect(await readFile(path.join(root, "CLAUDE.md"), "utf8")).not.toContain("@AGENTS.md");
+    await applyPlan(await createPlan(root, ["claude-code"], []));
+    expect(await readlink(path.join(root, "CLAUDE.md"))).toBe("AGENTS.md");
+    expect(await readFile(path.join(root, "CLAUDE.md"), "utf8")).toContain("Updated live note.");
+  });
+
+  it.skipIf(process.platform === "win32")("refuses other native symlinks even under force", async () => {
+    const root = await fixture(["claude-code"]);
+    await write(root, "other.md", "Keep this separate file.\n");
+    await symlink("other.md", path.join(root, "CLAUDE.md"));
+    const plan = await new HarnessConfigurationCompiler().plan({ root, force: true });
+    expect(plan.entries.find((entry) => entry.path === "CLAUDE.md")?.action).toBe("conflict");
+    await expect(applyPlan(plan)).rejects.toThrow();
+    expect(await readlink(path.join(root, "CLAUDE.md"))).toBe("other.md");
+    expect(await readFile(path.join(root, "other.md"), "utf8")).toBe("Keep this separate file.\n");
+  });
+
+  it.skipIf(process.platform === "win32")("does not delete a symlink substituted for an owned output", async () => {
+    const root = await fixture(["claude-code"]);
+    await applyPlan(await new HarnessConfigurationCompiler().plan({ root }));
+    const output = path.join(root, ".claude/agents/reviewer.md");
+    await rm(output);
+    await write(root, "other.md", "Keep me.\n");
+    await symlink("../../other.md", output);
+    const clean = await createPlan(root, ["claude-code"], [], [], { force: true });
+    expect(clean.entries.find((entry) => entry.path === ".claude/agents/reviewer.md")?.action).toBe("conflict");
+    await expect(applyPlan(clean)).rejects.toThrow();
+    expect((await lstat(output)).isSymbolicLink()).toBe(true);
+  });
+
   it("keeps operator text on both sides of a managed block", async () => {
     // The block was removed and re-appended, so with placement "end" it always
     // landed last and any text the operator had written after it was silently
