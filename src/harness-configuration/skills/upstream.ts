@@ -97,6 +97,10 @@ export async function fetchSkill(source: SkillSource): Promise<{ commit: string;
     const hooks = path.join(temporary, "hooks");
     await fs.writeFile(config, ""); await fs.mkdir(hooks);
     const env: NodeJS.ProcessEnv = { NODE_ENV: "production", PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
+      HTTPS_PROXY: process.env.HTTPS_PROXY, HTTP_PROXY: process.env.HTTP_PROXY,
+      ALL_PROXY: process.env.ALL_PROXY, NO_PROXY: process.env.NO_PROXY,
+      https_proxy: process.env.https_proxy, http_proxy: process.env.http_proxy,
+      all_proxy: process.env.all_proxy, no_proxy: process.env.no_proxy,
       HOME: temporary, USERPROFILE: temporary, TMPDIR: temporary, TMP: temporary, TEMP: temporary,
       GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: config, GIT_TERMINAL_PROMPT: "0",
       GIT_NO_REPLACE_OBJECTS: "1", GIT_LFS_SKIP_SMUDGE: "1" };

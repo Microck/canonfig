@@ -82,6 +82,6 @@ export async function runSkillsCli(args: readonly string[], io: HarnessConfigura
     renderHarnessResult(io, { command: `skills.${command}`, message: apply ? "Skill updates applied" : "Skill update preview", data: toCliPayload({ applied: apply, skills: checks }), exitCode: conflicts ? CliExitCode.conflictOrDrift : CliExitCode.success, json,
       human: checks.length ? checks.map((check) => `${check.name}: ${apply && check.status === "update-available" ? "updated" : check.status} (+${check.added.length} ~${check.changed.length} -${check.removed.length})`).join("\n") + (apply ? "\n" : "\nPreview only. Use update --apply to write; local edits will block the entire selected update.\n") : "No skills tracked. Nothing changed.\n" });
   } catch (error) {
-    renderHarnessResult(io, { command: `skills.${command}`, message: errorMessage(error), exitCode: harnessFailureExitCode(error), json });
+    renderHarnessResult(io, { command: `skills.${command}`, message: errorMessage(error), data: error instanceof CanonfigError ? { code: error.code } : undefined, exitCode: harnessFailureExitCode(error), json });
   }
 }

@@ -69,7 +69,9 @@ configuration fails closed and is never silently replaced with an empty lock.
 
 Only public HTTPS Git sources and local Git repositories are supported in this
 version. Credential helpers, ambient Git configuration and interactive login
-are disabled. Private/SSH sources, package registries, automatic migration of
+are disabled. Explicit HTTP(S)/ALL_PROXY and NO_PROXY environment settings
+are passed through for network routing; their values are never printed.
+Private/SSH sources, package registries, automatic migration of
 other managers' lockfiles, and three-way merging are not implemented. Git must
 be installed. Each Git subprocess has a 120-second timeout. Each selected skill
 is limited to 10,000 files and 64 MiB. Symlinks, submodules, path traversal and
