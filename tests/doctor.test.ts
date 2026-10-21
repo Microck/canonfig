@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { HumanActionRequiredError } from "../src/machine/machine-state.errors.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
-import { doctorProbeNames, runDoctorProbes } from "../src/runtime/doctor.ts";
+import { doctorProbeNames, runDoctorProbes, schedulerProbe } from "../src/runtime/doctor.ts";
 import { credentialReadiness, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { scheduleManagerLayer } from "../src/schedule/schedule-manager.layer.ts";
 import type { ScheduleStatus } from "../src/schedule/schedule-manager.types.ts";
@@ -380,6 +380,19 @@ describe("readiness evidence", () => {
     },
     detail: `fixture ${state}`, timezone: "UTC", warnings: [],
     ...extra,
+  });
+
+  it.each([
+    "no follower is enrolled; enroll and apply a profile before selecting a schedule",
+    "follower enrollment is pending; finish or resume enrollment before selecting a schedule",
+  ])("preserves enrollment recovery for an installed unmanaged job: %s", async (detail) => {
+    const result = await Effect.runPromise(schedulerProbe({
+      status: () => Effect.succeed(scheduleStatus("current")),
+    }, { unscheduledDetail: detail }));
+    expect(result.status).toBe("warning");
+    expect(result.message).toContain(detail);
+    expect(result.message).toContain("canonfig schedule remove");
+    expect(result.message).not.toContain("canonfig schedule set");
   });
 
   it.each(["current", "not-installed", "disabled", "inactive", "overridden", "drifted"] as const)(
