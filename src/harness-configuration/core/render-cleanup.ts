@@ -48,6 +48,16 @@ function removeTomlBlock(
     conflicts.push(`Managed TOML block ${cleanup.marker} was edited outside Canonfig.`);
     return text;
   }
+  // A table header also scopes keys after the marker. Removing that header
+  // would silently move operator-owned keys into another table or the root.
+  const following = text.slice(located.end).split(/\r?\n/u);
+  const nextSection = following.findIndex((line) => /^\s*\[/u.test(line));
+  const trailingKeys = (nextSection < 0 ? following : following.slice(0, nextSection))
+    .some((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
+  if (!force && /^\s*\[/mu.test(located.block) && trailingKeys) {
+    conflicts.push(`Managed TOML block ${cleanup.marker} has following operator keys whose table scope would change. Relocate them before cleanup.`);
+    return text;
+  }
   return `${text.slice(0, located.start)}${text.slice(located.end)}`;
 }
 
@@ -128,6 +138,7 @@ export function unapplyPrevious(
       if (rerenderedMarkers.has(cleanup.marker)) continue;
       output = removeManagedText(text, cleanup, force, conflicts);
     } else if (cleanup.kind === "toml-block") {
+      if (rerenderedMarkers.has(cleanup.marker)) continue;
       output = removeTomlBlock(text, cleanup, force, conflicts);
     } else {
       output = removeTomlKey(text, cleanup, conflicts);

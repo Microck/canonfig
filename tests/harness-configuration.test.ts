@@ -1,3 +1,4 @@
+import { parse as parseToml } from "smol-toml";
 import { spawnSync } from "node:child_process";
 import { chmod, stat, lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -327,6 +328,25 @@ describe("harness configuration compiler", () => {
       await applyPlan(clean);
       await expect(readFile(path.join(root, artifact.path))).rejects.toMatchObject({ code: "ENOENT" });
     }
+  });
+
+  it("adopts and updates TOML blocks in place without changing operator key scope", async () => {
+    const root = await temporaryRoot();
+    const file = "config.toml";
+    await write(root, file, '# canonfig:begin local\n[mcp_servers.local]\ncommand = "old"\n# canonfig:end local\nenabled = false\n');
+    const artifact: DesiredArtifact = { kind: "toml", owner: "codex", path: file,
+      blocks: [{ marker: "local", content: '[mcp_servers.local]\ncommand = "old"' }] };
+    await applyPlan(await createPlan(root, ["codex"], [artifact]));
+    let parsed = parseToml(await readFile(path.join(root, file), "utf8"));
+    expect(parsed).toEqual({ mcp_servers: { local: { command: "old", enabled: false } } });
+    const changed: DesiredArtifact = { ...artifact, blocks: [{ marker: "local", content: '[mcp_servers.local]\ncommand = "new"' }] };
+    await applyPlan(await createPlan(root, ["codex"], [changed]));
+    parsed = parseToml(await readFile(path.join(root, file), "utf8"));
+    expect(parsed).toEqual({ mcp_servers: { local: { command: "new", enabled: false } } });
+    const clean = await createPlan(root, ["codex"], []);
+    expect(clean.entries[0]?.action).toBe("conflict");
+    await expect(applyPlan(clean)).rejects.toThrow();
+    expect(parseToml(await readFile(path.join(root, file), "utf8"))).toEqual(parsed);
   });
 
   it.each([false, true])("shows the removed text in deletion and rename previews (rename=%s)", async (rename) => {

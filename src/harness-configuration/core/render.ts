@@ -25,13 +25,12 @@ export function renderArtifacts(
   // so they can be replaced where they stand, which keeps text on both sides of
   // a block where the operator put it.
   const rerenderedMarkers = new Set(
-    artifacts
-      .filter((artifact) => artifact.kind === "managed-text")
-      .map((artifact) => artifact.marker),
+    artifacts.flatMap((artifact) => artifact.kind === "managed-text" ? [artifact.marker]
+      : artifact.kind === "toml" ? (artifact.blocks ?? []).map((block) => block.marker) : []),
   );
   const ownedBlockHashes = new Map(
-    (previous?.cleanup ?? [])
-      .filter((cleanup) => cleanup.kind === "managed-text")
+    (current === undefined ? [] : previous?.cleanup ?? [])
+      .filter((cleanup) => cleanup.kind === "managed-text" || cleanup.kind === "toml-block")
       .map((cleanup) => [cleanup.marker, cleanup.blockHash] as const),
   );
   const output = unapplyPrevious(
@@ -88,7 +87,7 @@ export function renderArtifacts(
       text = result.text;
       cleanup.push(...result.cleanup);
     } else if (artifact.kind === "toml") {
-      const result = applyTomlArtifact(text, artifact, force, conflicts);
+      const result = applyTomlArtifact(text, artifact, force, conflicts, ownedBlockHashes);
       text = result.text;
       cleanup.push(...result.cleanup);
     }
