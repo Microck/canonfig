@@ -219,11 +219,16 @@ export const nativeExecutableHeader = (header: Buffer, size: number, platform = 
   return false;
 };
 
+export interface InstalledBindingProblem {
+  readonly kind: "missing" | "unverified";
+  readonly message: string;
+}
+
 const interpreterProblem = async (executable: string, searchPath: ReadonlyArray<string> | undefined,
-  seen = new Set<string>()): Promise<{ message: string; retryPath?: boolean } | undefined> => {
-  if (seen.has(executable) || seen.size >= 8) return { message: "the scheduler wrapper interpreter chain cannot be verified" };
+  seen = new Set<string>()): Promise<InstalledBindingProblem & { retryPath?: boolean } | undefined> => {
+  if (seen.has(executable) || seen.size >= 8) return { kind: "unverified", message: "the scheduler wrapper interpreter chain cannot be verified" };
   seen.add(executable);
-  if (!await usableFile(executable, constants.X_OK)) return { message: "the scheduler wrapper interpreter is missing or not executable", retryPath: true };
+  if (!await usableFile(executable, constants.X_OK)) return { kind: "missing", message: "the scheduler wrapper interpreter is missing or not executable", retryPath: true };
   let header: string;
   let bytes: Buffer;
   let fileSize: number;
@@ -244,54 +249,57 @@ const interpreterProblem = async (executable: string, searchPath: ReadonlyArray<
       }
       header = bytes.toString("utf8");
     } finally { await file.close(); }
-  } catch { return { message: "the scheduler wrapper interpreter cannot be inspected" }; }
+  } catch { return { kind: "unverified", message: "the scheduler wrapper interpreter cannot be inspected" }; }
+  if (process.platform === "win32" && /\.(?:cmd|bat)$/iu.test(executable)) {
+    return { kind: "unverified", message: "the Windows command-script binding cannot be verified without executing it" };
+  }
   if (!header.startsWith("#!")) return nativeExecutableHeader(bytes, fileSize) ? undefined
-    : { message: "the scheduler executable format cannot be verified" };
-  if (process.platform === "win32") return { message: "the Windows scheduler cannot directly execute a shebang wrapper" };
+    : { kind: "missing", message: "the scheduler executable format is not supported by the native loader" };
+  if (process.platform === "win32") return { kind: "missing", message: "the Windows scheduler cannot directly execute a shebang wrapper" };
   const newline = header.indexOf("\n");
-  if (newline < 0 || header.slice(0, newline).includes("\r")) return { message: "the scheduler wrapper interpreter cannot be verified" };
+  if (newline < 0 || header.slice(0, newline).includes("\r")) return { kind: "unverified", message: "the scheduler wrapper interpreter cannot be verified" };
   const words = header.slice(2, newline).trim().split(/\s+/u);
   const interpreter = words[0];
-  if (interpreter === undefined || !absolute(interpreter)) return { message: "the scheduler wrapper interpreter cannot be verified" };
+  if (interpreter === undefined || !absolute(interpreter)) return { kind: "unverified", message: "the scheduler wrapper interpreter cannot be verified" };
   if (basename(interpreter) !== "env") return interpreterProblem(interpreter, searchPath, seen);
-  if (!await usableFile(interpreter, constants.X_OK)) return { message: "the scheduler wrapper env interpreter is missing or not executable", retryPath: true };
+  if (!await usableFile(interpreter, constants.X_OK)) return { kind: "missing", message: "the scheduler wrapper env interpreter is missing or not executable", retryPath: true };
   const split = words[1] === "-S";
   const name = words[split ? 2 : 1];
   // env without -S receives one kernel argument, not shell-split flags.
   // Accept simple -S syntax, but never guess complex quoting or assignments.
   if ((!split && words.length !== 2) || split && /['"\\]/u.test(words.slice(2).join(" "))
-    || name === undefined || name.startsWith("-") || name.includes("=")) return { message: "the scheduler wrapper env interpreter cannot be verified" };
+    || name === undefined || name.startsWith("-") || name.includes("=")) return { kind: "unverified", message: "the scheduler wrapper env interpreter cannot be verified" };
   // Once env itself starts, a failure of its child is an exit status, not
   // an exec failure that the outer PATH search may skip.
   const childProblem = async (candidate: string) => {
     const problem = await interpreterProblem(candidate, searchPath, new Set(seen));
-    return problem === undefined ? undefined : { message: problem.message };
+    return problem === undefined ? undefined : { kind: problem.kind, message: problem.message };
   };
   if (absolute(name)) return childProblem(name);
-  if (name.includes("/") || searchPath === undefined) return { message: "the scheduler wrapper PATH interpreter cannot be verified" };
+  if (name.includes("/") || searchPath === undefined) return { kind: "unverified", message: "the scheduler wrapper PATH interpreter cannot be verified" };
   for (const directory of searchPath) {
-    if (!absolute(directory)) return { message: "the scheduler wrapper PATH interpreter cannot be verified" };
+    if (!absolute(directory)) return { kind: "unverified", message: "the scheduler wrapper PATH interpreter cannot be verified" };
     const candidate = join(directory, name);
     if (await usableFile(candidate, constants.X_OK)) {
       const problem = await interpreterProblem(candidate, searchPath, new Set(seen));
       if (problem?.retryPath) continue;
-      return problem === undefined ? undefined : { message: problem.message };
+      return problem === undefined ? undefined : { kind: problem.kind, message: problem.message };
     }
   }
-  return { message: "the scheduler wrapper PATH interpreter is missing or not executable" };
+  return { kind: "missing", message: "the scheduler wrapper PATH interpreter is missing or not executable" };
 };
 
 /** File readiness only. Does not execute either the installed runtime or the CLI. */
-export const installedBindingProblem = async (command: InstalledSchedulerCommand | undefined): Promise<string | undefined> => {
-  if (command === undefined || !absolute(command.executable)) return "the installed scheduler command cannot be verified";
-  if (!await usableFile(command.executable, constants.X_OK)) return "the installed scheduler runtime is missing or not executable";
+export const installedBindingProblem = async (command: InstalledSchedulerCommand | undefined): Promise<InstalledBindingProblem | undefined> => {
+  if (command === undefined || !absolute(command.executable)) return { kind: "unverified", message: "the installed scheduler command cannot be verified" };
+  if (!await usableFile(command.executable, constants.X_OK)) return { kind: "missing", message: "the installed scheduler runtime is missing or not executable" };
   const interpreter = await interpreterProblem(command.executable, command.searchPath);
-  if (interpreter !== undefined) return interpreter.message;
+  if (interpreter !== undefined) return interpreter;
   const entrypoint = command.arguments[0];
   if (entrypoint !== undefined && absolute(entrypoint)) {
-    if (!await usableFile(entrypoint, constants.R_OK)) return "the installed Canonfig entrypoint is missing or unreadable";
+    if (!await usableFile(entrypoint, constants.R_OK)) return { kind: "missing", message: "the installed Canonfig entrypoint is missing or unreadable" };
   } else if (/^node(?:\.exe)?$/iu.test(basename(command.executable))) {
-    return "the installed Node entrypoint cannot be verified";
+    return { kind: "unverified", message: "the installed Node entrypoint cannot be verified" };
   }
   return undefined;
 };

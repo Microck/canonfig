@@ -147,9 +147,9 @@ export const scheduledDefinitionReadiness = (
     mechanism: status.definition.mechanism,
     timezone: status.timezone,
     ...nextRun,
-    definitionVerified: status.state === "current" && status.bindingUsable !== false,
+    definitionVerified: status.state === "current" && status.bindingUsable === true,
     bindingUsable: status.bindingUsable ?? "unverified",
-    scheduledExecutionVerified: status.state === "current" && status.bindingUsable !== false && lastFire !== undefined,
+    scheduledExecutionVerified: status.state === "current" && status.bindingUsable === true && lastFire !== undefined,
     ...lastFireDetails(lastFire),
   };
   if (status.state !== "current" || status.bindingUsable === false) {
@@ -167,6 +167,11 @@ export const scheduledDefinitionReadiness = (
         details,
       };
   }
+  if (status.bindingUsable === undefined) return {
+    name: "scheduler", status: "warning",
+    message: `scheduler binding remains unverified: ${[status.detail, ...status.warnings].join("; ")}`,
+    details,
+  };
   const runs = describeUnattendedRuns(fires);
   const problems = [...(runs.completed ? [] : [runs.text]), ...status.warnings];
   return problems.length === 0

@@ -378,7 +378,7 @@ describe("readiness evidence", () => {
       platform: "linux", mechanism: "systemd-user-timer",
       serviceName: "canonfig", service: "fixture", schedule: "fixture",
     },
-    detail: `fixture ${state}`, timezone: "UTC", warnings: [],
+    bindingUsable: true, detail: `fixture ${state}`, timezone: "UTC", warnings: [],
     ...extra,
   });
 
@@ -429,6 +429,15 @@ describe("readiness evidence", () => {
     expect(failedFire.details?.scheduledExecutionVerified).toBe(true);
     expect(failedFire.message).toContain("keychain locked");
     expect(failedFire.message).toContain("2026-09-12T04:00:05Z");
+  });
+
+  it("does not promote unknown bindings to verified using old fire evidence", () => {
+    const result = scheduledDefinitionReadiness(scheduleStatus("current", { bindingUsable: undefined }), [
+      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
+    ]);
+    expect(result.status).toBe("warning");
+    expect(result.message).toContain("unverified");
+    expect(result.details).toMatchObject({ definitionVerified: false, scheduledExecutionVerified: false });
   });
 
   it("warns when the job cannot run while the user is logged out", () => {

@@ -551,7 +551,7 @@ const buildPlan = (
       const retainsContent = resource.policy === "append-local" || resource.kind === "config" && resource.policy === "merge";
       const retainedDirectoryRoot = (resource.kind === "directory" || resource.kind === "skill")
         && successors.some((next) => next.kind !== "directory" && next.kind !== "skill" && normalize(indexed.resolvedTargets.get(next.id) ?? next.target) === target);
-      if (drafts.length === 0 || observed.state !== "absent" && (retainsContent || retainedDirectoryRoot)) {
+      if (observed.state !== "absent" && (drafts.length === 0 || retainsContent || retainedDirectoryRoot)) {
         drafts = [{ kind: "human-action", detail: {
           kind: "human-action",
           reason: `Ownership transfer from ${resource.id} to ${successors.map((next) => next.id).join(", ")} needs review at ${resource.target}`,

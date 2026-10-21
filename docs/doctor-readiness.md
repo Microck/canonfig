@@ -50,7 +50,9 @@ runtime and entrypoint files remain available. A deleted runtime or unreadable
 entrypoint fails readiness even if the calendar still matches. For POSIX wrappers,
 readiness also inspects a bounded shebang interpreter chain; an `env` interpreter
 is resolved only in the installed native job's PATH, not the interactive shell's.
-Unknown interpreter syntax or missing native PATH evidence remains unverified. For a normal binding, manually run `canonfig sync --apply` from the current
+Unknown interpreter syntax, Windows command scripts, or missing native PATH evidence
+remain unverified and produce a warning, never a readiness pass. Definite missing
+files or incompatible native executable images fail readiness. For a normal binding, manually run `canonfig sync --apply` from the current
 installation. For a deleted custom executable, use the concrete
 `canonfig schedule set <calendar>` command shown by status, without
 `--executable`, to preserve the chosen calendar and clear the stale custom path.

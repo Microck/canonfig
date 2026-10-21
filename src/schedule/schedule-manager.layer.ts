@@ -202,10 +202,10 @@ const statusFrom = (
   const customProblem = customCommand === undefined ? undefined
     : yield* Effect.promise(() => installedBindingProblem(customCommand));
   const nativeState = stateOf(inspection);
-  const state = bindingProblem !== undefined && (nativeState === "current" || nativeState === "drifted")
+  const state = bindingProblem?.kind === "missing" && (nativeState === "current" || nativeState === "drifted")
     ? "drifted" : nativeState;
   const drift = state === "drifted"
-    ? bindingProblem !== undefined || inspection.calendarMatches === true ? "binding" as const : "calendar" as const
+    ? bindingProblem?.kind === "missing" || inspection.calendarMatches === true ? "binding" as const : "calendar" as const
     : undefined;
   const nextRun = state === "current"
     ? nextScheduledRun(schedule) ?? inspection.nextElapse
@@ -225,9 +225,9 @@ const statusFrom = (
         return macosTimezoneRecovery;
       case "drifted":
         return drift === "binding"
-          ? `${bindingProblem ?? (bindingChecked
+          ? `${bindingProblem?.message ?? (bindingChecked
             ? "the calendar is unchanged and the installed runtime/entrypoint files are available, but the binding differs from this Canonfig build"
-            : "the installed binding differs and its runtime/entrypoint availability is unverified")}. ${bindingRepair(schedule, customProblem !== undefined)}`
+            : "the installed binding differs and its runtime/entrypoint availability is unverified")}. ${bindingRepair(schedule, customProblem?.kind === "missing")}`
           : "the native job was changed outside Canonfig; the next `canonfig sync --apply` or `canonfig schedule set` restores the selected calendar";
       case "current":
         return nextRun === undefined
@@ -238,6 +238,7 @@ const statusFrom = (
   const gap = daylightSavingGapWarning(schedule, definition.platform);
   const missedRun = state === "current" ? missedLoggedOnRun(schedule, inspection) : undefined;
   const warnings = [
+    ...(bindingProblem?.kind === "unverified" ? [bindingProblem.message] : []),
     ...(gap === undefined ? [] : [gap]),
     ...(definition.platform === "linux" && inspection.lingering === false
       ? [`the systemd user manager stops when you log out (Linger=no), so the job only runs while you are logged in; run \`loginctl enable-linger ${lingerUser()}\` to run it while logged out`]
@@ -254,7 +255,7 @@ const statusFrom = (
   ];
   return {
     state,
-    bindingUsable: bindingChecked ? bindingProblem === undefined : undefined,
+    bindingUsable: !bindingChecked || bindingProblem?.kind === "unverified" ? undefined : bindingProblem === undefined,
     platform: definition.platform,
     schedule,
     definition,

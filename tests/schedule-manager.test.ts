@@ -348,6 +348,23 @@ exit 0
   };
   const input = { executable: linuxFixture, schedule: { kind: "daily", localTime: "04:00" } } as const;
 
+  it("keeps a matching complex wrapper installed but unverified", async () => {
+    const host = await simulatedHost();
+    const executable = join(host.state, "complex-wrapper");
+    await writeFile(executable, `#!/usr/bin/env -S '${process.execPath}'\n`, { mode: 0o755 });
+    await chmod(executable, 0o755);
+    const selected = { ...input, executable };
+    const installed = await host.run((manager) => manager.install(selected));
+    expect(installed.status.state).toBe("current");
+    expect(installed.status.bindingUsable).toBeUndefined();
+    const status = await host.run((manager) => manager.status(selected));
+    expect(status.state).toBe("current");
+    expect(status.bindingUsable).toBeUndefined();
+    expect(scheduledDefinitionReadiness(status).status).toBe("warning");
+    await unlink(executable);
+    expect(await host.run((manager) => manager.status(selected))).toMatchObject({ state: "drifted", bindingUsable: false });
+  });
+
   it.each(["runtime", "entrypoint"])("fails a deleted installed %s without waiting for scheduled self-repair", async (missing) => {
     const host = await simulatedHost();
     await host.run((manager) => manager.install(input));

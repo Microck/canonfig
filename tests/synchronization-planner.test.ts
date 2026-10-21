@@ -205,6 +205,23 @@ const plannerInput = (
 const runPlan = (input: SynchronizationPlannerInput) =>
   Effect.runSync(planSynchronization(input));
 
+describe("absent retired target handover", () => {
+  it.each(["directory", "skill"] as const)("does not block an absent retired %s", (kind) => {
+    const policy = kind === "skill" ? "replace-if-unmodified" : "mirror-owned";
+    const old = resource("old", kind, policy);
+    const next = { ...resource("next", "file", "replace"), target: old.target };
+    const input = plannerInput([old, next], { applied: [{
+      resource: old.id, revision: "previous", digest: digestA,
+      appliedAt: "2026-08-15T00:00:00Z", kind, policy, target: old.target,
+    }] });
+    const plan = runPlan({ ...input, revision: { ...input.revision, removedResources: [old.id] } });
+    expect(plan.actions.some((action) => action.kind === "human-action")).toBe(false);
+    expect(plan.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resource: next.id, kind: "write-file" }),
+    ]));
+  });
+});
+
 describe("resource and Apply Policy coverage", () => {
   const cases: ReadonlyArray<{
     readonly kind: ResourceKind;

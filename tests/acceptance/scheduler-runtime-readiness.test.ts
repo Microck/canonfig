@@ -7,6 +7,17 @@ import { installedSystemdCommand, installedLaunchdCommand, installedWindowsComma
   installedBindingProblem, linuxExecutableHeader, nativeExecutableHeader } from "../../src/machine/installed-scheduler-command.ts";
 
 describe("installed scheduler command decoding", () => {
+  it.skipIf(process.platform !== "win32").each(["cmd", "bat"])("keeps a present Windows %s binding unverified", async (extension) => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-command-script-"));
+    try {
+      const executable = join(root, `custom.${extension}`);
+      await writeFile(executable, "@echo off\r\nexit /b 0\r\n");
+      expect(await installedBindingProblem({ executable, arguments: [] })).toMatchObject({ kind: "unverified" });
+      await unlink(executable);
+      expect(await installedBindingProblem({ executable, arguments: [] })).toMatchObject({ kind: "missing" });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("decodes escaped systemd specifiers and variables without expanding them", () => {
     expect(installedSystemdCommand('ExecStart="/tmp/node %%$" "/tmp/main %%$$.js" "sync"')).toEqual({
       executable: "/tmp/node %$", arguments: ["/tmp/main %$.js", "sync"],
@@ -40,9 +51,9 @@ describe("installed scheduler command decoding", () => {
       await chmod(interpreter, 0o755);
       const command = { executable: wrapper, arguments: ["sync"], searchPath: [root] };
       expect(await installedBindingProblem(command)).toBeUndefined();
-      expect(await installedBindingProblem({ executable: wrapper, arguments: ["sync"] })).toContain("cannot be verified");
+      expect(await installedBindingProblem({ executable: wrapper, arguments: ["sync"] })).toMatchObject({ kind: "unverified" });
       await unlink(interpreter);
-      expect(await installedBindingProblem(command)).toContain("interpreter");
+      expect((await installedBindingProblem(command))?.message).toContain("interpreter");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -71,11 +82,11 @@ describe("installed scheduler command decoding", () => {
       // cause fallback to the later candidate, unlike a missing kernel interpreter.
       await writeFile(early, `#!/usr/bin/env ${missing}\n`);
       expect(run().status).not.toBe(0);
-      expect(await installedBindingProblem(command)).toContain("interpreter");
+      expect((await installedBindingProblem(command))?.message).toContain("interpreter");
       await writeFile(early, `#!${missing}\n`);
       await unlink(late);
       expect(run().status).not.toBe(0);
-      expect(await installedBindingProblem(command)).toContain("interpreter");
+      expect((await installedBindingProblem(command))?.message).toContain("interpreter");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -152,7 +163,7 @@ describe("installed scheduler command decoding", () => {
     try {
       const wrapper = join(root, "wrapper");
       await writeFile(wrapper, `#!${process.execPath}\nthrow new Error('must not run');\n`);
-      expect(await installedBindingProblem({ executable: wrapper, arguments: [] })).toContain("cannot directly execute a shebang");
+      expect((await installedBindingProblem({ executable: wrapper, arguments: [] }))?.message).toContain("cannot directly execute a shebang");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -163,14 +174,14 @@ describe("installed scheduler command decoding", () => {
       for (const contents of [Buffer.from("not a native executable\n"), Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.alloc(0)]) {
         await writeFile(runtime, contents, { mode: 0o755 });
         await chmod(runtime, 0o755);
-        expect(await installedBindingProblem({ executable: runtime, arguments: [] })).toContain("format");
+        expect((await installedBindingProblem({ executable: runtime, arguments: [] }))?.message).toContain("format");
       }
       expect(await installedBindingProblem({ executable: process.execPath, arguments: [import.meta.filename] })).toBeUndefined();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it("does not claim unknown commands are available", async () => {
-    expect(await installedBindingProblem(undefined)).toContain("cannot be verified");
-    expect(await installedBindingProblem({ executable: "node", arguments: [] })).toContain("cannot be verified");
+    expect((await installedBindingProblem(undefined))?.message).toContain("cannot be verified");
+    expect((await installedBindingProblem({ executable: "node", arguments: [] }))?.message).toContain("cannot be verified");
   });
 });
