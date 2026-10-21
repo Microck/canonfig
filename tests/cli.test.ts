@@ -616,6 +616,20 @@ describe("typed CLI command boundary", () => {
 });
 
 describe("CLI rendering and exit semantics", () => {
+  it.each(["setup.apply", "setup.status"])("shows redacted failure evidence in %s", (command) => {
+    const item = { id: "tool-verify:pnpm", status: "failed", evidence: "pnpm failed: token=fixture-secret; configure the installer binding" };
+    const data = command === "setup.apply" ? { items: [{ id: item.id, optional: true }], records: [item] }
+      : { items: [item] };
+    const result = { command, message: "setup completed", exitCode: CliExitCode.success, data };
+    for (const format of ["human", "json"] as const) {
+      const rendered = renderCliResult(result, format, ["fixture-secret"]);
+      expect(rendered).toContain("pnpm failed");
+      expect(rendered).toContain("configure the installer binding");
+      expect(rendered).not.toContain("fixture-secret");
+      expect(rendered).toContain("[REDACTED]");
+    }
+  });
+
   it("renders human summaries and stable JSON envelopes", async () => {
     const human = await execute(["profile", "list"]);
     expect(human.stdout).toBe("profile.list completed\nroute: profile.list\n");

@@ -381,6 +381,10 @@ Installing a tool does not change these authoring fingerprints.
 Apply runs only structured native argv recipes and journals evidence and
 qualified provenance. Re-running apply resumes the next eligible stage.
 An unavailable optional integration excludes only its dependent branch.
+Human `setup apply` and `setup status` include the stored reason beneath failed
+or skipped items. `setup status --json` exposes that reason as item `evidence`
+when it matches the current verdict; stale success evidence is not reused for a
+new dependency skip. Normal output redaction applies to these reasons.
 
 The journal (`~/.canonfig/setup.json`) is the setup decision record, and
 `setup status` shows it:
@@ -391,7 +395,9 @@ The journal (`~/.canonfig/setup.json`) is the setup decision record, and
   interview depth only: it is not part of the plan digest, so switching modes
   keeps approvals;
 - `discoveryPaths`: the normalized `--file` paths discovery read. A file that
-  is missing or too large is listed under `exclusions` instead;
+  is missing or too large is listed under `exclusions` instead. A directory,
+  invalid path, or unreadable discovery file is a usage/configuration error
+  (exit 2), not an internal journal defect;
 - `discoveryInputs`: the paths and SHA-256 fingerprints of discovery files.
   These bind approval to authoring bytes, not to whether installation has
   since made the tool available;
