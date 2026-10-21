@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { constants, copyFileSync, unlinkSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { constants, linkSync, copyFileSync, unlinkSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 // The binding stores what fs/promises.realpath returns, which on Windows
 // expands 8.3 short names that fs.realpathSync leaves alone. Resolve the
 // expected paths the same way, or the two spellings of one file disagree.
@@ -108,13 +108,14 @@ describe("local installer binding contract", () => {
     expect(await Effect.runPromise(loadInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBeDefined();
   });
 
-  it.skipIf(process.platform === "win32")("retains cargo proxy argv[0] while checking its rustup target", async () => {
+  it.skipIf(process.platform === "win32").each(["symlink", "hard link"])("retains cargo proxy argv[0] while checking its rustup target (%s)", async (kind) => {
     const f = fixture();
     const source = join(f.home, "proxy.c"), rustup = join(f.home, "rustup"), cargo = join(f.home, "cargo");
     writeFileSync(source, '#include <stdio.h>\n#include <string.h>\nint main(int argc,char **argv){const char *p=strrchr(argv[0],47);p=p?p+1:argv[0];if(strcmp(p,"cargo"))return 17;puts("cargo 1.0.0-fixture");return 0;}\n');
     const compiled = spawnSync("cc", [source, "-o", rustup], { encoding: "utf8", timeout: 30_000 });
     expect(compiled.status, compiled.stderr).toBe(0);
-    symlinkSync(rustup, cargo);
+    if (kind === "hard link") linkSync(rustup, cargo);
+    else symlinkSync(rustup, cargo);
     const rustupHome = join(f.home, ".rustup");
     vi.stubEnv("RUSTUP_HOME", rustupHome);
     await expect(Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer))))
@@ -128,7 +129,8 @@ describe("local installer binding contract", () => {
     const invocation = await Effect.runPromise(resolveInstallerInvocation("cargo").pipe(Effect.provide(f.layer)));
     expect(invocation.executable.absolute).toBe(binding.executable);
     rmSync(rustup);
-    await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).rejects.toThrow();
+    if (kind === "symlink") await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).rejects.toThrow();
+    else expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
     rmSync(cargo); symlinkSync(process.execPath, cargo);
     await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).rejects.toThrow();
   });

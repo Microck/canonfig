@@ -17,7 +17,12 @@ security or human-action boundary.
    - macOS: [references/macos.md](references/macos.md)
    - Windows: [references/windows.md](references/windows.md)
 3. Confirm Node.js 24 or newer and npm are available.
-4. Install the exact `@microck/canonfig@4.0.2` package version in a new
+4. For an existing 4.0.0 or 4.0.1 installation, first follow the
+   [patch-upgrade guide](../../website/content/docs/how-to/upgrade.mdx): finish
+   or recover unfinished runs with the original build, back up state, use the
+   same installation prefix, and restart the existing Source service afterward.
+   Verify the existing role rather than initializing or enrolling it again.
+   Otherwise, install the exact `@microck/canonfig@4.0.2` package version in a new
    installation. The installed executable remains `canonfig`. Do not install
    over a 3.2.x installation: an in-place upgrade is unsupported and unverified.
    Preserve its state and use the [fresh-install guide](../../website/content/docs/how-to/upgrade.mdx).

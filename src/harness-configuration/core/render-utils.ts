@@ -137,6 +137,9 @@ export function serializeJsonDocument(document: Record<string, unknown>, previou
   if (errors.length > 0) return previousText;
   let text = previousText;
   const set = (path: (string | number)[], value: unknown) => {
+    // Formatting options reformat whole affected lines, including unrelated
+    // compact properties. Preserve operator formatting; fresh documents above
+    // already use two-space indentation.
     text = applyEdits(text, modify(text, path, value, {}));
   };
   const update = (before: unknown, after: unknown, path: (string | number)[]): void => {

@@ -244,7 +244,7 @@ const rustupProxyTarget = async (method: string, executable: string, arguments_:
     const target = await realpath(executable);
     if (/^rustup(?:\.exe)?$/iu.test(basename(target))) return target;
     const sibling = join(dirname(target), /\.exe$/iu.test(target) ? "rustup.exe" : "rustup");
-    const [self, proxy] = await Promise.all([stat(target), stat(sibling)]);
+    const [self, proxy] = await Promise.all([stat(target, { bigint: true }), stat(sibling, { bigint: true })]);
     return self.dev === proxy.dev && self.ino === proxy.ino ? sibling : undefined;
   } catch { return undefined; }
 };

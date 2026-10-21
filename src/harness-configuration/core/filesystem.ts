@@ -101,7 +101,9 @@ export async function walkFiles(root: string, boundary = root): Promise<string[]
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const absolute = path.join(directory, entry.name);
       await assertRealPathInside(boundary, absolute);
-      const kind = entry.isSymbolicLink() ? await fs.stat(absolute) : entry;
+      const kind = entry.isSymbolicLink() ? await fs.stat(absolute).catch(() => {
+        throw new CanonfigError("SKILL_SOURCE_INVALID", `Skill source link cannot be read: ${absolute}`);
+      }) : entry;
       if (kind.isDirectory()) await visit(absolute, chain);
       else if (kind.isFile()) result.push(path.relative(root, absolute));
       else throw new CanonfigError("SKILL_SOURCE_INVALID", `Skill source is not a regular file or directory: ${absolute}`);

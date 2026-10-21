@@ -1,3 +1,5 @@
+import { walkFiles } from "../src/harness-configuration/core/filesystem.ts";
+import { serializeJsonDocument } from "../src/harness-configuration/core/render-utils.ts";
 import { parse as parseToml } from "smol-toml";
 import { spawnSync } from "node:child_process";
 import { chmod, stat, lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
@@ -467,6 +469,20 @@ describe("harness configuration compiler", () => {
       expect.objectContaining({ code: "SKILL_SOURCE_INVALID", level: "error" }),
     ]));
     await expect(applyPlan(plan)).rejects.toThrow();
+  });
+
+  it.skipIf(process.platform === "win32")("classifies a dangling nested skill link at the filesystem boundary", async () => {
+    const root = await temporaryRoot();
+    const dangling = path.join(root, "missing-link");
+    await symlink("missing", dangling);
+    await expect(walkFiles(root)).rejects.toMatchObject({ code: "SKILL_SOURCE_INVALID", message: expect.stringContaining(dangling) });
+  });
+
+  it("does not reformat unrelated compact JSON properties when inserting a key", () => {
+    const original = '{ "keep": { "x" : 1, "y":2 }, "servers": {} }\n';
+    const result = serializeJsonDocument({ keep: { x: 1, y: 2 }, servers: { new: { command: "x" } } }, original);
+    expect(result).toContain('"keep": { "x" : 1, "y":2 }');
+    expect(JSON.parse(result)).toEqual({ keep: { x: 1, y: 2 }, servers: { new: { command: "x" } } });
   });
 
   it.skipIf(process.platform === "win32")("preserves a CLAUDE.md link to AGENTS.md through apply and cleanup", async () => {

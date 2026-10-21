@@ -12,7 +12,12 @@
 
 Install the exact public package version for the current Node installation.
 
-Use a new installation only. For an existing 3.2.x account, follow the
+For an existing 4.0.0 or 4.0.1 installation, follow the
+[patch-upgrade guide](../../../website/content/docs/how-to/upgrade.mdx): finish
+or recover unfinished runs with the original build, back up state, install with
+the same prefix, restart the existing Source service, and verify the existing
+role without reinitializing or reenrolling it. For other setups use a new
+installation. For an existing 3.2.x account, follow the
 [fresh-install guide](../../../website/content/docs/how-to/upgrade.mdx)
 instead of replacing its package or state.
 

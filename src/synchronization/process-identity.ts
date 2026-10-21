@@ -9,6 +9,19 @@ const command = async (file: string, args: string[]): Promise<string> =>
     windowsHide: true, env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
   })).stdout.trim();
 
+/** A boot-session UUID is stable across wall-clock corrections on macOS. */
+export const darwinProcessIdentity = async (
+  pid: number,
+  run: (file: string, args: string[]) => Promise<string> = command,
+): Promise<string | undefined> => {
+  const [boot, started] = await Promise.all([
+    run("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"]),
+    run("/bin/ps", ["-p", String(pid), "-o", "lstart="]),
+  ]);
+  return /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(boot) && started.length > 0
+    ? `darwin:${boot.toLowerCase()}:${started}` : undefined;
+};
+
 /** OS process birth identity, not just a PID that can be recycled after exit. */
 export const processIdentity = async (pid: number): Promise<string | undefined> => {
   if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
@@ -23,13 +36,7 @@ export const processIdentity = async (pid: number): Promise<string | undefined> 
       if (start === undefined || !/^\d+$/u.test(start) || boot.trim().length === 0) return undefined;
       return `linux:${boot.trim()}:${start}`;
     }
-    if (process.platform === "darwin") {
-      const [boot, started] = await Promise.all([
-        command("/usr/sbin/sysctl", ["-n", "kern.boottime"]),
-        command("/bin/ps", ["-p", String(pid), "-o", "lstart="]),
-      ]);
-      return boot.length > 0 && started.length > 0 ? `darwin:${boot}:${started}` : undefined;
-    }
+    if (process.platform === "darwin") return await darwinProcessIdentity(pid);
     if (process.platform === "win32") {
       const root = process.env.SystemRoot ?? process.env.SYSTEMROOT;
       if (root === undefined) return undefined;

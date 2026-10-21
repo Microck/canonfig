@@ -20,6 +20,8 @@ const stateDir = join(homedir(), ".canonfig");
 const markerPath = join(stateDir, "schedule-fires.json");
 const jobName = "canonfig-sync";
 const platform = process.platform;
+const followerCredentials = mkdtempSync(join(tmpdir(), "canonfig-fire-credentials-"));
+process.once("exit", () => rmSync(followerCredentials, { recursive: true, force: true }));
 
 const run = (command, arguments_, options = {}) => {
   const result = spawnSync(command, arguments_, {
@@ -83,7 +85,10 @@ const prepareFollower = async () => {
         const newline = output.indexOf("\n");
         if (newline < 0) return;
         clearTimeout(timer);
-        try { resolve(JSON.parse(output.slice(0, newline)).data.endpoint); } catch (error) { reject(error); }
+        child.stdout.removeAllListeners("data");
+        child.stdout.resume();
+        try { resolve(JSON.parse(output.slice(0, newline)).data.endpoint); }
+        catch (error) { reject(new Error(`fixture Source startup output invalid: ${error instanceof Error ? error.message : String(error)}; ${errors}`)); }
       });
     });
     const invitation = join(sourceHome, "invitation.txt");
@@ -92,7 +97,7 @@ const prepareFollower = async () => {
     requireSuccess(run(process.execPath, [main, "follower", "enroll", "--stdin", "--name", "scheduler-fire-fixture",
       "--profile", "scheduler-fire-fixture", "--json"], {
       input: readFileSync(invitation, "utf8"),
-      env: { ...process.env, CANONFIG_LOCAL_CREDENTIAL_ROOT: join(stateDir, "fire-fixture-credentials"), NODE_NO_WARNINGS: "1" },
+      env: { ...process.env, CANONFIG_LOCAL_CREDENTIAL_ROOT: followerCredentials, NODE_NO_WARNINGS: "1" },
     }), "fixture follower enrollment");
   } finally {
     if (child !== undefined && child.pid !== undefined && child.exitCode === null) {
