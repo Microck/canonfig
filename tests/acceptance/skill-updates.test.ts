@@ -117,6 +117,16 @@ describe("tracked upstream skill updates", () => {
     for (const name of ["../bad", "/tmp/bad", "C:/bad", "a\\b", "a/CON", "a/../b"]) expect(() => safePath(name)).toThrow();
     for (const source of ["https://user:token@example.invalid/repo", "https://example.invalid/repo?token=x", "ext::danger", "ssh://example.invalid/repo"]) expect(() => normalizeSource(source, "/tmp")).toThrow();
   });
+  it("classifies fetch failures without printing remote diagnostics", async () => {
+    const { location, input } = await fixture();
+    let stdout = ""; let stderr = ""; let code = -1;
+    await runSkillsCli(["track", "--root", location.root, "--name", input.name, "--path", input.path, "--source", input.source, "--ref", "missing-branch", "--subdir", input.subdir, "--json"], {
+      writeStdout: (value) => { stdout += value; }, writeStderr: (value) => { stderr += value; }, setExitCode: (value) => { code = value; },
+    });
+    expect(stdout).toBe(""); expect(code).toBe(6);
+    expect(JSON.parse(stderr).data.code).toBe("SKILL_FETCH_FAILED");
+    expect(stderr).not.toContain("fatal:");
+  });
   it("CLI is preview-first, rejects force and routes global JSON correctly", async () => {
     const { location, input, upstream } = await fixture(); await trackSkill(location, input); await advance(upstream);
     let stdout = ""; let stderr = ""; let code = -1;
