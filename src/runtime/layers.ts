@@ -415,7 +415,9 @@ const recordScheduleFire = (
 const unscheduledDetail = (
   configuration: FollowerSynchronizationConfiguration | undefined,
 ): string => {
-  if (configuration?.scheduleOverride?.kind === "disabled") {
+  if (configuration === undefined) return "no follower is enrolled; enroll and apply a profile before selecting a schedule";
+  if (configuration.enrollmentPending === true) return "follower enrollment is pending; finish or resume enrollment before selecting a schedule";
+  if (configuration.scheduleOverride?.kind === "disabled") {
     return "scheduled synchronization is off on this follower (`canonfig schedule remove`); run `canonfig schedule set` to turn it on";
   }
   return configuration?.scheduleDefault === undefined
@@ -1863,7 +1865,9 @@ const followerCommandsLayer = (
                 Effect.map((native) =>
                   payload(native.state === "not-installed"
                     ? { state: "not-selected", detail: unscheduledDetail(configuration) }
-                    : { state: "unmanaged", detail: unmanagedScheduleDetail, nativeState: native.state })
+                    : { state: "unmanaged", detail: configuration === undefined || configuration.enrollmentPending === true
+                      ? `${unscheduledDetail(configuration)}. A native job remains installed; remove it with \`canonfig schedule remove\` if it is no longer wanted`
+                      : unmanagedScheduleDetail, nativeState: native.state })
                 ),
               );
             }
@@ -1972,9 +1976,7 @@ const followerCommandsLayer = (
               agentPolicy: configuration?.agentPolicy,
               schedule,
               fires: readScheduleFires(statePath),
-              unscheduledDetail: configuration === undefined
-                ? undefined
-                : unscheduledDetail(configuration),
+              unscheduledDetail: unscheduledDetail(configuration),
               source,
               tunnel: tunnelReport !== undefined
                   && tunnelCarriesSource(tunnelReport, source?.endpoint)

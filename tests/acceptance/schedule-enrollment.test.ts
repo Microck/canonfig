@@ -53,6 +53,9 @@ it.each(["fresh", "source-only", "pending"])("refuses schedule selection without
       expect(result.status, result.stderr || result.stdout).toBe(2);
       expect(result.stdout + result.stderr).toContain(mode === "pending" ? "enrollment is pending" : "needs an enrolled follower");
     }
+    const status = run(["schedule", "status"]);
+    expect(status.status, status.stderr || status.stdout).toBe(0);
+    expect(status.stdout).toContain(mode === "pending" ? "enrollment is pending" : "no follower is enrolled");
     expect(existsSync(join(home, "config", "systemd", "user", "canonfig-sync.timer"))).toBe(false);
     expect(existsSync(join(home, "Library", "LaunchAgents", "canonfig-sync.plist"))).toBe(false);
   } finally { rmSync(home, { recursive: true, force: true }); }
