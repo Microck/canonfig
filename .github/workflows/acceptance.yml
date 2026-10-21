@@ -57,7 +57,7 @@ jobs:
         run: npm pack --ignore-scripts
 
       - name: Run native platform contract
-        run: npx vitest run ${{ matrix.native_test }} tests/schedule-manager.test.ts
+        run: npx vitest run ${{ matrix.native_test }} tests/acceptance/scheduler-runtime-readiness.test.ts
 
       - name: Run native secret-store contract
         run: npx vitest run tests/integration/secret-cleanup-retry.test.ts
