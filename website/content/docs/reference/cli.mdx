@@ -529,6 +529,13 @@ canonfig harness doctor
 canonfig harness --help
 ```
 
+Harness apply records ownership of existing generated files and managed blocks
+only when their content matches the current canonical output. This lets a fresh
+clone adopt checked-in output before later source edits. Different unowned text
+still conflicts. Git's LF/CRLF conversion alone is not a generated-text edit;
+other edits remain protected. Binary skill files keep exact-byte ownership checks
+during updates and cleanup, without UTF-8 decoding.
+
 YAML is the default scaffold. `--format json` creates strict, pretty-printed
 `.canonfig/harness.json` and is valid only with `harness init`. YAML and JSON
 use the same schema and compiler. Canonfig rejects a project that contains more

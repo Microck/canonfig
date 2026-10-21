@@ -22,7 +22,7 @@ import {
 } from "./filesystem.ts";
 import { loadState, writeState, HARNESS_CONFIGURATION_VERSION } from "./state.ts";
 import { renderArtifacts } from "./render.ts";
-import { sha256 } from "./hash.ts";
+import { sha256, textHash } from "./hash.ts";
 import { CanonfigError } from "./errors.ts";
 
 export interface PlanOptions { force?: boolean; preserveSharedForUnselectedTargets?: boolean; }
@@ -143,32 +143,17 @@ export async function createPlan(
       continue;
     }
 
-    const contentHash = sha256(rendered.content);
-    const unmanagedIdenticalReplace =
-      previous === undefined &&
-      currentBytes !== undefined &&
-      group.length === 1 &&
-      group[0]?.kind === "replace" &&
-      contentHash === sha256(currentBytes);
-
-    let nextState: ArtifactState | undefined;
-    if (!unmanagedIdenticalReplace) {
-      nextState = {
-        owner,
-        hash: contentHash,
-        existedBefore: currentBytes === undefined ? false : previous?.existedBefore ?? true,
-        cleanup: rendered.cleanup,
-        ...(mode === undefined ? {} : { mode }),
-      };
-      nextArtifacts[filePath] = nextState;
-    } else {
-      diagnostics.push({
-        level: "info",
-        code: "UNMANAGED_IDENTICAL",
-        message: `${filePath} already matches generated output; Canonfig left ownership unchanged.`,
-        path: filePath,
-      });
-    }
+    if (typeof current === "string" && typeof rendered.content === "string"
+      && textHash(current) === textHash(rendered.content)) rendered.content = current;
+    const nextState: ArtifactState = {
+      owner,
+      hash: sha256(rendered.content),
+      ...(typeof rendered.content === "string" ? { textHash: textHash(rendered.content) } : {}),
+      existedBefore: currentBytes === undefined ? false : previous?.existedBefore ?? true,
+      cleanup: rendered.cleanup,
+      ...(mode === undefined ? {} : { mode }),
+    };
+    nextArtifacts[filePath] = nextState;
 
     const action = currentBytes === undefined ? "create" : bytesEqual(currentBytes, rendered.content) ? "unchanged" : "update";
     entries.push({
@@ -180,7 +165,7 @@ export async function createPlan(
       content: rendered.content,
       binary: rendered.content instanceof Uint8Array,
       ...(mode === undefined ? {} : { mode }),
-      ...(nextState === undefined ? {} : { nextState }),
+      nextState,
     });
   }
 
@@ -196,7 +181,8 @@ export async function createPlan(
       nextArtifacts[filePath] = previous;
       continue;
     }
-    const current = currentBytes === undefined ? undefined : Buffer.from(currentBytes).toString("utf8");
+    const current = currentBytes === undefined ? undefined : previous.cleanup.every((entry) => entry.kind === "replace")
+      ? currentBytes : Buffer.from(currentBytes).toString("utf8");
     const rendered = renderArtifacts([], current, previous, options.force ?? false);
     if (rendered.conflicts.length > 0) {
       entries.push({
@@ -204,7 +190,7 @@ export async function createPlan(
         owner: previous.owner,
         action: "conflict",
         reason: rendered.conflicts.join(" "),
-        before: current,
+        before: typeof current === "string" ? current : undefined,
         after: typeof rendered.content === "string" ? rendered.content : undefined,
       });
       nextArtifacts[filePath] = previous;
@@ -213,14 +199,14 @@ export async function createPlan(
 
     const cleaned = previous.existedBefore ? rendered.content : undefined;
     if (cleaned === undefined) {
-      entries.push({ path: filePath, owner: previous.owner, action: currentBytes === undefined ? "unchanged" : "delete", before: current });
+      entries.push({ path: filePath, owner: previous.owner, action: currentBytes === undefined ? "unchanged" : "delete", before: typeof current === "string" ? current : undefined });
     } else {
       const action = bytesEqual(currentBytes, cleaned) ? "unchanged" : currentBytes === undefined ? "create" : "update";
       entries.push({
         path: filePath,
         owner: previous.owner,
         action,
-        before: current,
+        before: typeof current === "string" ? current : undefined,
         after: typeof cleaned === "string" ? cleaned : undefined,
         content: cleaned,
         binary: cleaned instanceof Uint8Array,

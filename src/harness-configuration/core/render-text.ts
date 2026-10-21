@@ -1,4 +1,4 @@
-import { sha256 } from "./hash.ts";
+import { sha256, textHash } from "./hash.ts";
 import {
   commentMarkers,
   findTomlSection,
@@ -31,16 +31,16 @@ export function appendManagedText(
     kind: "managed-text",
     marker: artifact.marker,
     comments: artifact.comments,
-    blockHash: sha256(block),
+    blockHash: textHash(block),
   };
 
   if (existing !== undefined) {
     const owned = ownedBlockHash !== undefined
-      && sha256(existing.block) === ownedBlockHash;
+      && (sha256(existing.block) === ownedBlockHash || textHash(existing.block) === ownedBlockHash);
     // Canonfig's own block is replaced where it stands. Removing it and
     // re-appending moved it to the end of the file, which silently relocated
     // anything the operator had written after it to before it.
-    if (owned || force) {
+    if (owned || ownedBlockHash === undefined && textHash(existing.block) === textHash(block) || force) {
       return {
         text: `${text.slice(0, existing.start)}${block}${text.slice(existing.end)}`,
         cleanup,
@@ -153,7 +153,8 @@ export function applyTomlArtifact(
     const markers = tomlBlockMarkers(managed.marker);
     const existing = locateBlock(text, markers.begin, markers.end);
     if (existing !== undefined) {
-      if (!force) {
+      const desiredBlock = `${markers.begin}\n${managed.content.trim()}\n${markers.end}\n`;
+      if (!force && textHash(existing.block) !== textHash(desiredBlock)) {
         conflicts.push(
           `An unmanaged TOML block already uses marker ${managed.marker}.`,
         );
@@ -182,7 +183,7 @@ export function applyTomlArtifact(
     cleanup.push({
       kind: "toml-block",
       marker: managed.marker,
-      blockHash: sha256(block),
+      blockHash: textHash(block),
     });
   }
   return {

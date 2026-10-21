@@ -1,4 +1,4 @@
-import { sha256 } from "./hash.ts";
+import { sha256, textHash, matchesArtifactHash } from "./hash.ts";
 import { restoreJsonCleanup } from "./render-json.ts";
 import {
   commentMarkers,
@@ -24,7 +24,7 @@ function removeManagedText(
     conflicts.push(`Managed block ${cleanup.marker} is missing.`);
     return text;
   }
-  if (sha256(located.block) !== cleanup.blockHash && !force) {
+  if (sha256(located.block) !== cleanup.blockHash && textHash(located.block) !== cleanup.blockHash && !force) {
     conflicts.push(`Managed block ${cleanup.marker} was edited outside Canonfig.`);
     return text;
   }
@@ -44,7 +44,7 @@ function removeTomlBlock(
     conflicts.push(`Managed TOML block ${cleanup.marker} is missing.`);
     return text;
   }
-  if (sha256(located.block) !== cleanup.blockHash && !force) {
+  if (sha256(located.block) !== cleanup.blockHash && textHash(located.block) !== cleanup.blockHash && !force) {
     conflicts.push(`Managed TOML block ${cleanup.marker} was edited outside Canonfig.`);
     return text;
   }
@@ -102,7 +102,7 @@ export function unapplyPrevious(
   for (const cleanup of previous.cleanup) {
     if (cleanup.kind === "replace") {
       if (output === undefined) continue;
-      if (sha256(output) !== previous.hash && !force) {
+      if (!matchesArtifactHash(output, previous.hash, previous.textHash) && !force) {
         conflicts.push("Generated file was edited outside Canonfig.");
         continue;
       }

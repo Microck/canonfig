@@ -1,4 +1,4 @@
-import { sha256 } from "./hash.ts";
+import { sha256, textHash } from "./hash.ts";
 import { unapplyPrevious } from "./render-cleanup.ts";
 import { applyJsonArtifact } from "./render-json.ts";
 import { appendManagedText, applyTomlArtifact } from "./render-text.ts";
@@ -54,7 +54,8 @@ export function renderArtifacts(
     if (
       previous === undefined
       && current !== undefined
-      && sha256(current) !== sha256(replacement.content)
+      && !(typeof current === "string" && typeof replacement.content === "string"
+        ? textHash(current) === textHash(replacement.content) : sha256(current) === sha256(replacement.content))
       && !force
     ) {
       conflicts.push("File already exists and is not owned by Canonfig.");

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { chmod, stat, lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,6 +24,7 @@ import { scaffoldProject } from "../src/harness-configuration/core/scaffold.ts";
 import {
   TARGET_IDS,
   type ArtifactState,
+  type DesiredArtifact,
   type Plan,
   type TargetId,
 } from "../src/harness-configuration/core/types.ts";
@@ -282,6 +284,77 @@ describe("harness configuration compiler", () => {
       theme: "dark",
       hooks: { Existing: [{ command: "echo keep" }] },
     });
+  });
+
+  it.each([false, true])("adopts generated files in a real clone (autocrlf=%s), then accepts source edits", async (autocrlf) => {
+    const root = await fixture(["codex", "claude-code", "hermes"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const git = (cwd: string, args: string[]) => {
+      const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30_000 });
+      expect(result.status, result.stderr).toBe(0);
+    };
+    git(root, ["init", "--quiet"]);
+    git(root, ["-c", "core.autocrlf=false", "add", "."]);
+    git(root, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Generated fixture"]);
+    const clone = path.join(await temporaryRoot(), "clone");
+    git(root, ["-c", `core.autocrlf=${autocrlf}`, "clone", "--quiet", root, clone]);
+    expect((await loadState(clone)).artifacts).toEqual({});
+    const before = await readFile(path.join(clone, "AGENTS.md"), "utf8");
+    expect(before.includes("\r\n")).toBe(autocrlf);
+    const adoption = await compiler.plan({ root: clone });
+    expect(adoption.entries.filter((entry) => entry.action === "conflict")).toEqual([]);
+    await applyPlan(adoption);
+    expect(await readFile(path.join(clone, "AGENTS.md"), "utf8")).toBe(before);
+    expect((await loadState(clone)).artifacts[".claude/agents/reviewer.md"]).toBeDefined();
+    await write(clone, ".canonfig/agents/reviewer.md", "Review the changed canonical source.\n");
+    const changed = await compiler.plan({ root: clone });
+    expect(changed.entries.filter((entry) => entry.action === "conflict")).toEqual([]);
+    await applyPlan(changed);
+    expect(await readFile(path.join(clone, ".claude/agents/reviewer.md"), "utf8")).toContain("changed canonical source");
+  });
+
+  it.each([false, true])("cleans raw binary receipts without decoding bytes (edited=%s)", async (edited) => {
+    const root = await temporaryRoot();
+    const artifact: DesiredArtifact = { kind: "replace", owner: "codex", path: "skill/logo.bin", content: new Uint8Array([255, 254, 0, 1, 13, 10]) };
+    await applyPlan(await createPlan(root, ["codex"], [artifact]));
+    if (edited) await writeFile(path.join(root, artifact.path), new Uint8Array([255, 254, 0, 2, 13, 10]));
+    const clean = await createPlan(root, ["codex"], []);
+    expect(clean.entries[0]?.action).toBe(edited ? "conflict" : "delete");
+    if (!edited) {
+      await applyPlan(clean);
+      await expect(readFile(path.join(root, artifact.path))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("retains exact-byte protection for a binary artifact that happens to contain UTF-8", async () => {
+    const root = await temporaryRoot();
+    const artifact: DesiredArtifact = { kind: "replace", owner: "codex", path: "skill/data.bin", content: new Uint8Array([65, 13, 10]) };
+    await applyPlan(await createPlan(root, ["codex"], [artifact]));
+    await writeFile(path.join(root, artifact.path), new Uint8Array([65, 10]));
+    expect((await createPlan(root, ["codex"], [])).entries[0]?.action).toBe("conflict");
+  });
+
+  it("recognizes an owned CRLF block but still rejects edits inside it", async () => {
+    const root = await fixture(["codex"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const file = path.join(root, "AGENTS.md");
+    const converted = (await readFile(file, "utf8")).replace(/\n/gu, "\r\n");
+    await writeFile(file, converted);
+    expect((await compiler.plan({ root })).entries.find((entry) => entry.path === "AGENTS.md")?.action).toBe("unchanged");
+    await writeFile(file, converted.replace("Run tests before finishing.", "Local edit."));
+    expect((await compiler.plan({ root })).entries.find((entry) => entry.path === "AGENTS.md")?.action).toBe("conflict");
+  });
+
+  it("accepts checkout-only CRLF changes during cleanup but preserves real edits", async () => {
+    const root = await temporaryRoot();
+    const artifact: DesiredArtifact = { kind: "replace", owner: "codex", path: "generated.md", content: "one\ntwo\n" };
+    await applyPlan(await createPlan(root, ["codex"], [artifact]));
+    await write(root, artifact.path, "one\r\ntwo\r\n");
+    expect((await createPlan(root, ["codex"], [])).entries[0]?.action).toBe("delete");
+    await write(root, artifact.path, "one\r\nlocal change\r\n");
+    expect((await createPlan(root, ["codex"], [])).entries[0]?.action).toBe("conflict");
   });
 
   it("keeps operator text on both sides of a managed block", async () => {
