@@ -156,7 +156,7 @@ including drop-ins), not only the files Canonfig wrote. It reports the
 | `timezone-changed` | macOS changed zones since boot; launchd may keep the previous zone | reboot, sign in to the desktop session, then check `schedule status` |
 | `overridden` | A native override (such as a systemd drop-in) changes the job | remove the override and run `systemctl --user daemon-reload`, or `schedule remove` and manage the job yourself |
 | `disabled`, `inactive`, `not-installed` | The job was disabled, stopped, or deleted outside Canonfig | see below |
-| `unmanaged` | A job installed by an earlier release without a follower decision | `schedule set --default`, `schedule set <calendar>`, or `schedule remove` |
+| `unmanaged` | A native job remains without an active follower decision, including after unenrollment | If unenrolled, enroll and apply a profile first, or use `schedule remove`. An enrolled follower can use `schedule set --default` or `schedule set <calendar>` |
 
 `doctor` fails the scheduler probe for every state that means the job will not
 run as chosen, and reports the last unattended run: "the last unattended run
