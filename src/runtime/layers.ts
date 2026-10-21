@@ -342,8 +342,8 @@ const mapFailure = <Success, Failure extends TaggedRuntimeError, Requirements>(
  * The follower's own decision about the native synchronization job, written to
  * its configuration so it outlives a run.
  *
- * A no-op on a machine that is not enrolled: there is nowhere durable to record
- * it, and the schedule commands still act on the native job directly.
+ * A selected job requires a finalized follower configuration. Disabling an
+ * existing native job remains possible when no follower is configured.
  */
 export interface ScheduleFireRecord {
   readonly at: string;
@@ -435,6 +435,12 @@ const persistScheduleOverride = (
           message: "canonfig schedule set needs an enrolled follower; enroll, then apply the selected profile first",
         }));
       if (configuration === undefined) return unavailable();
+      if (configuration.enrollmentPending === true && scheduleOverride?.kind !== "disabled") {
+        return Effect.fail(new CliCommandFailure({
+          category: "usage-or-configuration",
+          message: "follower enrollment is pending; finish or resume enrollment before selecting a schedule",
+        }));
+      }
       return mapFailure(repository.loadState(configuration.follower.id)).pipe(
         Effect.flatMap((state) =>
           state.sourceIdentity === undefined ? unavailable() : mapFailure(

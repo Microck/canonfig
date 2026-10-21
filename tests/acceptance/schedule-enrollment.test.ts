@@ -1,10 +1,13 @@
+import { DatabaseSync } from "node:sqlite";
+import { Schema } from "effect";
+import { FollowerSynchronizationConfiguration, defaultScheduledInvocation } from "../../src/synchronization/follower-sync-config.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
 
-it.each([false, true])("refuses schedule selection without a follower (Source initialized: %s)", (source) => {
+it.each(["fresh", "source-only", "pending"])("refuses schedule selection without finalized enrollment (%s)", (mode) => {
   const home = mkdtempSync(join(tmpdir(), "canonfig-unenrolled-schedule-"));
   const project = resolve(import.meta.dirname, "../..");
   const environment = {
@@ -18,14 +21,37 @@ it.each([false, true])("refuses schedule selection without a follower (Source in
     ["--import", "tsx", "src/runtime/main.ts", ...args, "--json"],
     { cwd: project, env: environment, encoding: "utf8", timeout: 30_000 });
   try {
-    if (source) {
+    if (mode !== "fresh") {
       const initialized = run(["source", "init"]);
       expect(initialized.status, initialized.stderr).toBe(0);
+    }
+    if (mode === "pending") {
+      const at = "2026-10-21T00:00:00Z";
+      const follower = { id: "pending-follower", name: "Pending", groups: [], revoked: false,
+        credentialReference: "pending-credential", enrolledAt: at };
+      const state = join(home, ".canonfig", "state.sqlite");
+      const configuration = Schema.decodeUnknownSync(FollowerSynchronizationConfiguration)({
+        schemaVersion: 1, follower, selectedProfile: "fixture-profile",
+        source: { endpoint: "https://127.0.0.1:1", tlsFingerprint: "fixture-tls", signingFingerprint: "fixture-signing" },
+        credentialReference: follower.credentialReference, cacheDirectory: join(home, "cache"),
+        stateLocation: state, agentPolicy: "deterministic-only", enrollmentPending: true,
+        scheduleDefault: { type: "daily", at: "04:30", timezone: "local" },
+        scheduledInvocation: defaultScheduledInvocation, updatedAt: at,
+      });
+      // Faithful persisted state at the prepare/finalize boundary. Source init
+      // above already stored a real Source identity in this isolated database.
+      const database = new DatabaseSync(state);
+      try {
+        database.prepare("INSERT INTO followers VALUES (?, ?, ?, ?, ?, ?)")
+          .run(follower.id, follower.name, "[]", 0, follower.credentialReference, at);
+        database.prepare("INSERT INTO follower_sync_configuration VALUES (1, ?, ?, ?)")
+          .run(follower.id, JSON.stringify(configuration), at);
+      } finally { database.close(); }
     }
     for (const calendar of ["daily@02:30", "weekly:Mon@02:30", "--default"]) {
       const result = run(["schedule", "set", calendar]);
       expect(result.status, result.stderr || result.stdout).toBe(2);
-      expect(result.stdout + result.stderr).toContain("needs an enrolled follower");
+      expect(result.stdout + result.stderr).toContain(mode === "pending" ? "enrollment is pending" : "needs an enrolled follower");
     }
     expect(existsSync(join(home, "config", "systemd", "user", "canonfig-sync.timer"))).toBe(false);
     expect(existsSync(join(home, "Library", "LaunchAgents", "canonfig-sync.plist"))).toBe(false);
