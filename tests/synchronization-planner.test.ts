@@ -205,6 +205,23 @@ const plannerInput = (
 const runPlan = (input: SynchronizationPlannerInput) =>
   Effect.runSync(planSynchronization(input));
 
+describe("absent retired target handover", () => {
+  it.each(["directory", "skill"] as const)("does not block an absent retired %s", (kind) => {
+    const policy = kind === "skill" ? "replace-if-unmodified" : "mirror-owned";
+    const old = resource("old", kind, policy);
+    const next = { ...resource("next", "file", "replace"), target: old.target };
+    const input = plannerInput([old, next], { applied: [{
+      resource: old.id, revision: "previous", digest: digestA,
+      appliedAt: "2026-08-15T00:00:00Z", kind, policy, target: old.target,
+    }] });
+    const plan = runPlan({ ...input, revision: { ...input.revision, removedResources: [old.id] } });
+    expect(plan.actions.some((action) => action.kind === "human-action")).toBe(false);
+    expect(plan.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resource: next.id, kind: "write-file" }),
+    ]));
+  });
+});
+
 describe("resource and Apply Policy coverage", () => {
   const cases: ReadonlyArray<{
     readonly kind: ResourceKind;
@@ -1232,6 +1249,17 @@ describe("transfer and apply separation", () => {
     });
     const error = Effect.runSync(Effect.flip(planSynchronization(base)));
     expect(error._tag).toBe(expectedTag);
+  });
+
+  it("rejects authored traversal even when a resolved observation hides it", () => {
+    const subject = { ...resource("file", "file", "replace", [], [blobA]), target: "~/../escape" };
+    const base = plannerInput([subject]);
+    const input = { ...base, observedState: { ...base.observedState,
+      resources: base.observedState.resources.map((entry) => ({ ...entry, resolvedTarget: "/home/escape" })),
+    } };
+    const result = Effect.runSync(Effect.result(planSynchronization(input)));
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(result.failure._tag).toBe("PlannerInvalidResourcePathError");
   });
 
   it("uses the follower platform case rules before planning a mirror", () => {

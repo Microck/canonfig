@@ -1,4 +1,5 @@
-import { sha256 } from "./hash.ts";
+import { parseJsonDocument, serializeJsonDocument } from "./render-utils.ts";
+import { sha256, textHash } from "./hash.ts";
 import { unapplyPrevious } from "./render-cleanup.ts";
 import { applyJsonArtifact } from "./render-json.ts";
 import { appendManagedText, applyTomlArtifact } from "./render-text.ts";
@@ -25,13 +26,12 @@ export function renderArtifacts(
   // so they can be replaced where they stand, which keeps text on both sides of
   // a block where the operator put it.
   const rerenderedMarkers = new Set(
-    artifacts
-      .filter((artifact) => artifact.kind === "managed-text")
-      .map((artifact) => artifact.marker),
+    artifacts.flatMap((artifact) => artifact.kind === "managed-text" ? [artifact.marker]
+      : artifact.kind === "toml" ? (artifact.blocks ?? []).map((block) => block.marker) : []),
   );
   const ownedBlockHashes = new Map(
-    (previous?.cleanup ?? [])
-      .filter((cleanup) => cleanup.kind === "managed-text")
+    (current === undefined ? [] : previous?.cleanup ?? [])
+      .filter((cleanup) => cleanup.kind === "managed-text" || cleanup.kind === "toml-block")
       .map((cleanup) => [cleanup.marker, cleanup.blockHash] as const),
   );
   const output = unapplyPrevious(
@@ -54,7 +54,8 @@ export function renderArtifacts(
     if (
       previous === undefined
       && current !== undefined
-      && sha256(current) !== sha256(replacement.content)
+      && !(typeof current === "string" && typeof replacement.content === "string"
+        ? textHash(current) === textHash(replacement.content) : sha256(current) === sha256(replacement.content))
       && !force
     ) {
       conflicts.push("File already exists and is not owned by Canonfig.");
@@ -87,10 +88,15 @@ export function renderArtifacts(
       text = result.text;
       cleanup.push(...result.cleanup);
     } else if (artifact.kind === "toml") {
-      const result = applyTomlArtifact(text, artifact, force, conflicts);
+      const result = applyTomlArtifact(text, artifact, force, conflicts, ownedBlockHashes);
       text = result.text;
       cleanup.push(...result.cleanup);
     }
+  }
+  // Apply the net JSON change to the original document, not to the temporary
+  // cleanup/rebuild text. This avoids formatting churn on unchanged re-renders.
+  if (typeof current === "string" && artifacts.every((artifact) => artifact.kind === "json")) {
+    text = serializeJsonDocument(parseJsonDocument(text, conflicts), current);
   }
   return { content: text, cleanup, conflicts };
 }

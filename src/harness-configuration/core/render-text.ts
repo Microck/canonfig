@@ -1,4 +1,4 @@
-import { sha256 } from "./hash.ts";
+import { sha256, textHash } from "./hash.ts";
 import {
   commentMarkers,
   findTomlSection,
@@ -31,16 +31,16 @@ export function appendManagedText(
     kind: "managed-text",
     marker: artifact.marker,
     comments: artifact.comments,
-    blockHash: sha256(block),
+    blockHash: textHash(block),
   };
 
   if (existing !== undefined) {
     const owned = ownedBlockHash !== undefined
-      && sha256(existing.block) === ownedBlockHash;
+      && (sha256(existing.block) === ownedBlockHash || textHash(existing.block) === ownedBlockHash);
     // Canonfig's own block is replaced where it stands. Removing it and
     // re-appending moved it to the end of the file, which silently relocated
     // anything the operator had written after it to before it.
-    if (owned || force) {
+    if (owned || ownedBlockHash === undefined && textHash(existing.block) === textHash(block) || force) {
       return {
         text: `${text.slice(0, existing.start)}${block}${text.slice(existing.end)}`,
         cleanup,
@@ -141,6 +141,7 @@ export function applyTomlArtifact(
   artifact: Extract<DesiredArtifact, { kind: "toml" }>,
   force: boolean,
   conflicts: string[],
+  ownedBlockHashes: ReadonlyMap<string, string> = new Map(),
 ): { text: string; cleanup: CleanupInstruction[] } {
   let text = input.replace(/\r\n/gu, "\n");
   const cleanup: CleanupInstruction[] = [];
@@ -152,25 +153,40 @@ export function applyTomlArtifact(
   for (const managed of artifact.blocks ?? []) {
     const markers = tomlBlockMarkers(managed.marker);
     const existing = locateBlock(text, markers.begin, markers.end);
-    if (existing !== undefined) {
-      if (!force) {
-        conflicts.push(
-          `An unmanaged TOML block already uses marker ${managed.marker}.`,
-        );
-      }
-      text = `${text.slice(0, existing.start)}${text.slice(existing.end)}`;
+    const block = `${markers.begin}\n${managed.content.trim()}\n${markers.end}\n`;
+    const ownedHash = ownedBlockHashes.get(managed.marker);
+    if (existing === undefined && ownedHash !== undefined && !force) {
+      conflicts.push(`Managed TOML block ${managed.marker} is missing.`);
+      continue;
     }
+    if (existing !== undefined && !force && textHash(existing.block) !== textHash(block)
+      && (ownedHash === undefined || sha256(existing.block) !== ownedHash && textHash(existing.block) !== ownedHash)) {
+      conflicts.push(`Managed or unowned TOML block ${managed.marker} differs from the recorded or desired content.`);
+      continue;
+    }
+    if (existing !== undefined) {
+      const following = text.slice(existing.end).split("\n");
+      const nextSection = following.findIndex((line) => /^\s*\[/u.test(line));
+      const trailingKeys = (nextSection < 0 ? following : following.slice(0, nextSection))
+        .some((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
+      const headers = (value: string) => value.split("\n").filter((line) => /^\s*\[/u.test(line)).map((line) => line.trim());
+      if (trailingKeys && JSON.stringify(headers(existing.block)) !== JSON.stringify(headers(block))) {
+        conflicts.push(`Managed TOML block ${managed.marker} has following operator keys whose table scope could change. Relocate them before updating table headers.`);
+        continue;
+      }
+    }
+    const surrounding = existing === undefined ? text
+      : `${text.slice(0, existing.start)}${text.slice(existing.end)}`;
     const sections = [...managed.content.matchAll(/^\s*\[([^\]]+)\]\s*$/gmu)]
       .map((match) => match[1])
       .filter((section): section is string => section !== undefined);
     for (const section of sections) {
-      if (findTomlSection(text.split("\n"), section) !== undefined) {
+      if (findTomlSection(surrounding.split("\n"), section) !== undefined) {
         conflicts.push(
           `TOML section [${section}] already exists outside Canonfig's managed block.`,
         );
       }
     }
-    const block = `${markers.begin}\n${managed.content.trim()}\n${markers.end}\n`;
     const separator = text.trim() === ""
       ? ""
       : text.endsWith("\n\n")
@@ -178,11 +194,12 @@ export function applyTomlArtifact(
       : text.endsWith("\n")
       ? "\n"
       : "\n\n";
-    text = `${text}${separator}${block}`;
+    text = existing === undefined ? `${text}${separator}${block}`
+      : `${text.slice(0, existing.start)}${block}${text.slice(existing.end)}`;
     cleanup.push({
       kind: "toml-block",
       marker: managed.marker,
-      blockHash: sha256(block),
+      blockHash: textHash(block),
     });
   }
   return {

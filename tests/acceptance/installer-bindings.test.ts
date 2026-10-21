@@ -1,13 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { constants, linkSync, copyFileSync, unlinkSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 // The binding stores what fs/promises.realpath returns, which on Windows
 // expands 8.3 short names that fs.realpathSync leaves alone. Resolve the
 // expected paths the same way, or the two spellings of one file disagree.
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Effect, Layer, Schema } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
 import { installerRecipeProvenance } from "../../src/domain/mcp-qualification.ts";
 import { isLocalInstallerPath, parseInstallerBinding } from "../../src/domain/installer-binding.ts";
@@ -17,7 +17,7 @@ import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
 import { ExecutableNotFoundError, MachineFilesystemError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
-  checkInstallerBinding, installerRefusals, loadInstallerBinding, loadInstallerState, removeInstallerBinding,
+  checkInstallerBinding, listInstallerBindings, installerRefusals, loadInstallerBinding, loadInstallerState, removeInstallerBinding,
   resolveInstallerInvocation, saveInstallerBinding, unboundInstallerRecovery,
 } from "../../src/synchronization/installer-bindings.ts";
 import { prepareResourceAction, verifyResource, type ResourceExecutionContext } from "../../src/synchronization/resource-executors.ts";
@@ -25,7 +25,7 @@ import { runInstallerCli } from "../../src/runtime/installer-cli.ts";
 import { installerArguments, isInstallerCommand } from "../../src/runtime/command-routing.ts";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const fixture = () => {
   const home = mkdtempSync(join(tmpdir(), "canonfig-installer-binding-"));
   roots.push(home);
@@ -39,7 +39,7 @@ const fixture = () => {
     `else fs.writeFileSync(${JSON.stringify(output)}, JSON.stringify({argv:process.argv.slice(2),path:process.env.PATH??process.env.Path??''}));`,
   ].join("\n"));
   const environment = Object.entries({
-    ...process.env, HOME: home, USERPROFILE: home,
+    ...process.env, HOME: home, USERPROFILE: home, XDG_CACHE_HOME: join(home, ".cache"),
     APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"), PATH: "",
   }).flatMap(([name, value]) => value === undefined || (name.toLowerCase() === "path" && name !== "PATH") ? [] : [{ name, value }]);
   const options = { environment, credentialPolicy: { kind: "local-file" as const, path: join(home, "credentials") } };
@@ -51,6 +51,111 @@ const fixture = () => {
 const linuxBinding = { schema: "canonfig.installer/v1", platform: "linux", method: "npm", executable: "/runtime/node", arguments: ["/runtime/npm-cli.js"] };
 
 describe("local installer binding contract", () => {
+  it.skipIf(process.platform === "win32").each([true, false])("uses only verified Homebrew opt bindings (stable opt exists: %s)", async (stableOpt) => {
+    const f = fixture();
+    // Canonicalize the temporary root (/var is /private/var on macOS),
+    // but retain the opt symlink itself in the expected stable binding.
+    const prefix = join(await realpath(f.home), "brew");
+    const keg = (version: string) => {
+      const root = join(prefix, "Cellar", "node", version);
+      const node = join(root, "bin", "node");
+      const entry = join(root, "lib", "node_modules", "npm", "bin", "npm-cli.js");
+      mkdirSync(dirname(node), { recursive: true });
+      mkdirSync(dirname(entry), { recursive: true });
+      copyFileSync(process.execPath, node, constants.COPYFILE_FICLONE);
+      chmodSync(node, 0o755);
+      copyFileSync(f.entry, entry);
+      return { root, node, entry };
+    };
+    const old = keg("24.0.0");
+    mkdirSync(join(prefix, "opt"), { recursive: true });
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    const opt = join(prefix, "opt", "node");
+    if (stableOpt) symlinkSync(old.root, opt);
+    symlinkSync(old.node, join(prefix, "bin", "node"));
+    symlinkSync(old.entry, join(prefix, "bin", "npm"));
+    const binding = await Effect.runPromise(saveInstallerBinding("npm", join(prefix, "bin", "node"), [join(prefix, "bin", "npm")]).pipe(Effect.provide(f.layer)));
+    if (!stableOpt) {
+      expect(binding.executable).toBe(await realpath(old.node));
+      expect(binding.arguments).toEqual([await realpath(old.entry)]);
+      expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
+      return;
+    }
+    expect(binding.executable).toBe(join(opt, "bin", "node"));
+    expect(binding.arguments).toEqual([join(opt, "lib", "node_modules", "npm", "bin", "npm-cli.js")]);
+    const next = keg("24.1.0");
+    unlinkSync(opt);
+    symlinkSync(next.root, opt);
+    rmSync(old.root, { recursive: true });
+    expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer))))
+      .toMatchObject({ verified: true });
+    expect(await Effect.runPromise(loadInstallerBinding("npm").pipe(Effect.provide(f.layer))))
+      .toEqual(binding);
+  });
+
+  it("identifies an unusable binding when listing otherwise valid bindings", async () => {
+    const f = fixture();
+    const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux";
+    const root = join(f.home, ".canonfig", "installers");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "npm.json"), JSON.stringify({ schema: "canonfig.installer/v1", method: "npm", platform,
+      executable: await realpath(process.execPath), arguments: [await realpath(f.entry)] }));
+    writeFileSync(join(root, "uv.json"), JSON.stringify({ schema: "canonfig.installer/v1", method: "uv",
+      platform: platform === "linux" ? "macos" : "linux", executable: "/tmp/uv", arguments: [] }));
+    const failure = await Effect.runPromise(Effect.flip(listInstallerBindings()).pipe(Effect.provide(f.layer)));
+    expect(failure._tag).toBe("HumanActionRequiredError");
+    if (failure._tag === "HumanActionRequiredError") expect(failure.recovery).toContain("uv installer binding");
+    expect(await Effect.runPromise(loadInstallerBinding("npm").pipe(Effect.provide(f.layer)))).toBeDefined();
+  });
+
+  it.skipIf(process.platform === "win32").each(["symlink", "hard link"])("retains cargo proxy argv[0] while checking its rustup target (%s)", async (kind) => {
+    const f = fixture();
+    const source = join(f.home, "proxy.c"), rustup = join(f.home, "rustup"), cargo = join(f.home, "cargo");
+    writeFileSync(source, '#include <stdio.h>\n#include <string.h>\nint main(int argc,char **argv){const char *p=strrchr(argv[0],47);p=p?p+1:argv[0];if(strcmp(p,"cargo"))return 17;puts("cargo 1.0.0-fixture");return 0;}\n');
+    const compiled = spawnSync("cc", [source, "-o", rustup], { encoding: "utf8", timeout: 30_000 });
+    expect(compiled.status, compiled.stderr).toBe(0);
+    if (kind === "hard link") linkSync(rustup, cargo);
+    else symlinkSync(rustup, cargo);
+    const rustupHome = join(f.home, ".rustup");
+    vi.stubEnv("RUSTUP_HOME", rustupHome);
+    await expect(Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer))))
+      .rejects.toThrow("no existing rustup settings");
+    expect(() => statSync(rustupHome)).toThrow();
+    mkdirSync(rustupHome);
+    writeFileSync(join(rustupHome, "settings.toml"), "version = '12'\n");
+    const binding = await Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer)));
+    expect(binding.executable).toBe(join(await realpath(f.home), "cargo"));
+    expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
+    const invocation = await Effect.runPromise(resolveInstallerInvocation("cargo").pipe(Effect.provide(f.layer)));
+    expect(invocation.executable.absolute).toBe(binding.executable);
+    rmSync(rustup);
+    if (kind === "symlink") await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).rejects.toThrow();
+    else expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
+    rmSync(cargo); symlinkSync(process.execPath, cargo);
+    await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).rejects.toThrow();
+  });
+
+  it.each([false, true])("binds Corepack pnpm through a pinned Node entrypoint (direct script: %s)", async (direct) => {
+    const f = fixture();
+    const entry = join(f.home, "node_modules", "corepack", "dist", "pnpm.js");
+    mkdirSync(dirname(entry), { recursive: true });
+    writeFileSync(entry, [
+      "for (const name of ['COREPACK_ENABLE_NETWORK', 'COREPACK_ENABLE_AUTO_PIN', 'COREPACK_ENABLE_DOWNLOAD_PROMPT', 'RUSTUP_AUTO_INSTALL']) {",
+      "if (process.env[name] !== '0') process.exit(19);",
+      "}",
+      'console.log("1.0.0-fixture");',
+    ].join("\n"));
+    const selected = direct && process.platform !== "win32" ? join(f.home, "pnpm") : entry;
+    if (direct && process.platform !== "win32") symlinkSync(entry, selected);
+    const binding = await Effect.runPromise(saveInstallerBinding("pnpm", direct ? selected : process.execPath,
+      direct ? [] : [entry]).pipe(Effect.provide(f.layer)));
+    expect(binding.executable).toBe(await realpath(process.execPath));
+    expect(binding.arguments).toEqual([await realpath(entry)]);
+    expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
+    const malformed = { ...binding, arguments: [join(f.home, "pnpm.js")] };
+    expect(() => parseInstallerBinding(JSON.stringify(malformed))).toThrow();
+  });
+
   it("rejects shell launchers, command shims, relative paths, injected flags, and extra fields", () => {
     for (const value of [
       { ...linuxBinding, executable: "node" },
@@ -416,6 +521,14 @@ describe("Windows npm command shims", () => {
       bindings: [],
       suggestions: [{ method: "npm", shim: `${nodejs}\\npm.cmd`, command: bindingCommand }],
     });
+  });
+
+  it("suggests Node plus the existing Corepack pnpm entrypoint for a Windows shim", async () => {
+    const entrypoint = `${nodejs}\\node_modules\\corepack\\dist\\pnpm.js`;
+    const layer = windowsFollower({ executables: { pnpm: `${nodejs}\\pnpm.cmd`, node }, files: [node, entrypoint] });
+    expect(await runWindows(layer, unboundInstallerRecovery("pnpm"))).toContain(`--arg "${entrypoint}"`);
+    expect(parseInstallerBinding(JSON.stringify({ schema: "canonfig.installer/v1", method: "pnpm", platform: "windows",
+      executable: node, arguments: [entrypoint] })).arguments).toEqual([entrypoint]);
   });
 
   it("takes npm-cli.js beside an npm.cmd upgraded into %APPDATA% and node.exe from PATH", async () => {

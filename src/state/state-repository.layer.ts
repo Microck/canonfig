@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { open } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, Schema } from "effect";
@@ -336,6 +336,19 @@ const makeRepository = Effect.gen(function*() {
       })
     ),
   );
+
+  const databaseFile = Effect.fn("StateRepository.databaseFile")(function*() {
+    const rows = yield* sql`PRAGMA database_list`.pipe(Effect.mapError(sqlError("resolve state database")));
+    const decoded = yield* decodeRows(Schema.Struct({ name: Schema.String, file: Schema.String }), rows, "database", "main");
+    const file = decoded.find((row) => row.name === "main")?.file;
+    if (file === undefined || file.length === 0) {
+      return yield* new RepositorySqlError({ operation: "resolve state database", message: "Source serving requires a file-backed state database" });
+    }
+    return yield* Effect.tryPromise({
+      try: () => realpath(file),
+      catch: () => new RepositorySqlError({ operation: "resolve state database", message: "The state database path could not be resolved safely" }),
+    });
+  });
 
   const saveSourceIdentity = Effect.fn("StateRepository.saveSourceIdentity")(
     function*(identity: SourceIdentity): Effect.fn.Return<void, StateRepositoryError> {
@@ -2731,6 +2744,7 @@ const makeRepository = Effect.gen(function*() {
   );
 
   return StateRepository.of({
+    databaseFile,
     saveSourceIdentity,
     registerFollower,
     saveFollowerSynchronizationConfiguration,

@@ -359,7 +359,7 @@ const sameMachinePath = (
       : left.absolute === right.absolute
   );
 
-const machinePathKey = (path: MachinePath): string =>
+export const machinePathKey = (path: MachinePath): string =>
   `${path.platform}:${path.platform === "windows"
     ? path.absolute.toLowerCase()
     : path.absolute}`;
@@ -1041,28 +1041,58 @@ const intendedStates = (
  * the interruption; restoring the snapshot or re-running the action would
  * destroy that change, so recovery must stop instead.
  */
-export const locallyEditedRollbackTargets = (
+export type RollbackProjection = Map<string, StoredFile>;
+
+export const rollbackPreimages = (context: ResourceExecutionContext, reference: string) => Effect.gen(function*() {
+  const { stored } = yield* loadRollbackMaterial(context, reference);
+  const result: RollbackProjection = new Map();
+  for (const entry of stored) result.set(machinePathKey(yield* targetPath(entry.path)), entry);
+  return result;
+});
+
+export const inspectRollbackTargets = (
   context: ResourceExecutionContext,
   reference: string,
+  laterPreimages: RollbackProjection,
+  restoredPreimages?: ReadonlyMap<string, StoredFile>,
 ): Effect.Effect<
-  ReadonlyArray<string>,
+  { readonly edited: ReadonlyArray<string>; readonly successorWrites: boolean },
   SynchronizationExecutionInputError | MachineStateError,
   MachineState
-> =>
-  Effect.gen(function*() {
-    const { stored, root } = yield* loadRollbackMaterial(context, reference);
-    const intended = yield* intendedStates(context, stored, root, reference);
-    const edited: Array<string> = [];
-    for (const entry of stored) {
-      const path = yield* targetPath(entry.path);
-      const current = yield* captureStoredFile(path);
-      const after = intended.get(entry.path);
-      if (!sameContent(current, entry) && (after === undefined || !sameContent(current, after))) {
-        edited.push(entry.path);
-      }
+> => Effect.gen(function*() {
+  const { stored, root } = yield* loadRollbackMaterial(context, reference);
+  const intended = yield* intendedStates(context, stored, root, reference);
+  const edited: Array<string> = [];
+  const unprojectedPreimages: Array<string> = [];
+  const preimages: RollbackProjection = new Map();
+  let successorWrites = false;
+  for (const entry of stored) {
+    const path = yield* targetPath(entry.path);
+    const key = machinePathKey(path);
+    preimages.set(key, entry);
+    const current = yield* captureStoredFile(path);
+    const after = intended.get(entry.path);
+    // Only retired removals can be followed by an overlapping active resource.
+    // Validate successors first, then inspect the removal as if those writes
+    // were undone. No disk mutation occurs during this all-or-nothing check.
+    const projected = context.action.detail.kind === "remove-resource"
+      ? laterPreimages.get(key) : undefined;
+    const observed = projected ?? current;
+    const restored = restoredPreimages?.get(key);
+    if (!sameContent(observed, entry) && (after === undefined || !sameContent(observed, after))
+      && (restored === undefined || !sameContent(current, restored))) {
+      edited.push(entry.path);
     }
-    return edited;
-  });
+    if (context.action.detail.kind === "remove-resource" && after !== undefined && !sameContent(current, after)) {
+      if (projected !== undefined) successorWrites = true;
+      else unprojectedPreimages.push(entry.path);
+    }
+  }
+  // Never re-delete successor data to repair a separately restored old path.
+  if (successorWrites) edited.push(...unprojectedPreimages);
+  if (edited.length === 0) for (const [key, entry] of preimages) laterPreimages.set(key, entry);
+  return { edited, successorWrites };
+});
 
 const targetPath = (
   target: string,

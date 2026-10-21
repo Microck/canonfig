@@ -1,3 +1,5 @@
+import { installedSystemdCommand } from "./installed-scheduler-command.ts";
+import { fileSchedulerIdentity } from "./scheduler-identity.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -990,8 +992,10 @@ const schedulerExpression = (
         message: "systemd calendar timezone must be a non-empty single-line name",
       }));
     }
+    let timezone: string;
     try {
-      new Intl.DateTimeFormat("en-US", { timeZone: calendar.timezone }).format();
+      timezone = new Intl.DateTimeFormat("en-US", { timeZone: calendar.timezone }).resolvedOptions().timeZone;
+      if (/^[+-]/u.test(timezone)) throw new RangeError("numeric offsets are not IANA timezone names");
     } catch {
       return Effect.fail(new InvalidSchedulerJobError({
         field: "calendar.timezone",
@@ -1012,7 +1016,7 @@ const schedulerExpression = (
         message: "custom systemd expressions with shortcuts or an existing timezone cannot add a named timezone",
       }));
     }
-    return Effect.succeed(` ${calendar.timezone}`);
+    return Effect.succeed(` ${timezone}`);
   };
   if (calendar.kind === "systemd-on-calendar") {
     if (
@@ -1280,6 +1284,7 @@ const systemdBackend = (
         if (service === undefined || timer === undefined) {
           return { installed: false, enabled: false, matches: false };
         }
+        const identity = yield* Effect.promise(() => fileSchedulerIdentity([path.service, path.timer], [service.content, timer.content]));
         const units = yield* showUnits(
           path.timerName,
           expected.serviceName,
@@ -1292,8 +1297,12 @@ const systemdBackend = (
         const ran = exitedAt !== undefined && exitedAt !== "" && exitedAt !== "n/a";
         return {
           installed: true,
+          generation: identity?.generation,
+          installedAt: identity?.installedAt,
           enabled: timerEnabled(units.timer),
           matches: service.content === expected.service && timer.content === expected.schedule,
+          bindingInspected: true,
+          installedCommand: installedSystemdCommand(service.content),
           calendarMatches: timer.content === expected.schedule,
           active: units.timer.ActiveState === "active",
           overrides,

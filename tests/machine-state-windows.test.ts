@@ -29,6 +29,7 @@ import {
   windowsTaskProbeReportsAbsence,
   windowsTaskRegistration,
   windowsTaskTriggerEnabled,
+  windowsTaskBatteryPolicyMatches,
   windowsWeekdaysMatch,
   windowsPathLimitFromRegistry,
 } from "../src/machine/windows.layer.ts";
@@ -386,8 +387,12 @@ describe("Windows ACL command rendering", () => {
   });
 });
 
-describe.skipIf(process.platform !== "win32")("Windows scheduled task priority repair", () => {
-  it("replaces a starvable existing task with foreground-equivalent priority", async () => {
+describe.skipIf(process.platform !== "win32")("Windows scheduled task policy repair", () => {
+  it.each([
+    ["priority", "$task.Settings.Priority=7;"],
+    ["battery start", "$task.Settings.DisallowStartIfOnBatteries=$true;"],
+    ["battery stop", "$task.Settings.StopIfGoingOnBatteries=$true;"],
+  ])("repairs drifted %s settings", async (_setting, change) => {
     await Effect.runPromise(Effect.gen(function*() {
       const machine = yield* MachineState;
       const name = `canonfig-priority-${randomUUID()}`;
@@ -410,7 +415,7 @@ describe.skipIf(process.platform !== "win32")("Windows scheduled task priority r
             "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
             "$ErrorActionPreference='Stop';"
               + "$task=Get-ScheduledTask -TaskPath '\\Canonfig\\' -TaskName $env:CANONFIG_TEST_TASK;"
-              + "$task.Settings.Priority=7;$task|Set-ScheduledTask|Out-Null",
+              + change + "$task|Set-ScheduledTask|Out-Null",
           ],
           environment: [{ name: "CANONFIG_TEST_TASK", value: name }],
           timeoutMilliseconds: 60_000,
@@ -431,6 +436,14 @@ describe.skipIf(process.platform !== "win32")("Windows scheduled task priority r
 });
 
 describe("Windows Task Scheduler inspection", () => {
+  it("requires both explicit battery-safe settings, including on existing jobs", () => {
+    expect(windowsTaskBatteryPolicyMatches("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>")).toBe(true);
+    for (const start of ["true", "false", undefined]) for (const stop of ["true", "false", undefined]) {
+      const xml = (start === undefined ? "" : `<DisallowStartIfOnBatteries>${start}</DisallowStartIfOnBatteries>`)
+        + (stop === undefined ? "" : `<StopIfGoingOnBatteries>${stop}</StopIfGoingOnBatteries>`);
+      expect(windowsTaskBatteryPolicyMatches(xml)).toBe(start === "false" && stop === "false");
+    }
+  });
   it("decodes UTF-16LE task exports with a byte-order mark", () => {
     const xml = "<?xml version=\"1.0\"?><Task><Enabled>true</Enabled></Task>";
     const encoded = Buffer.from(`\ufeff${xml}`, "utf16le");
@@ -550,6 +563,7 @@ machineStateContract("Windows", {
     }),
   schedulerAssertions: (rendered) => {
     expect(rendered.service).toContain("New-ScheduledTaskAction");
+    expect(rendered.service).toContain("-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries");
     expect(rendered.service).toContain("\"a value\"");
     expect(rendered.schedule).toContain("New-ScheduledTaskTrigger -Daily -At '00:00'");
     expect(rendered.schedule).toContain("Register-ScheduledTask");

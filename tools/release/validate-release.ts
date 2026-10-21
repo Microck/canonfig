@@ -160,7 +160,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const metadata = Schema.decodeUnknownSync(PackageMetadata)(
     JSON.parse(readFileSync(metadataPath, "utf8")),
   );
-  if (metadata.name !== "@microck/canonfig" || metadata.version !== "4.0.1") {
+  if (metadata.name !== "@microck/canonfig" || metadata.version !== "4.0.2") {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
@@ -175,6 +175,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
     "@canonfig/effect-platform-node-shared",
     "@canonfig/effect-sql-sqlite-node",
     "effect",
+    "jsonc-parser",
     "selfsigned",
     "smol-toml",
     "yaml",
@@ -193,14 +194,13 @@ const validatePackageMetadata = (metadataPath: string): void => {
 const validatePackageContents = (
   artifact: typeof PackedArtifact.Type,
 ): void => {
-  if (artifact.name !== "@microck/canonfig" || artifact.version !== "4.0.1") {
+  if (artifact.name !== "@microck/canonfig" || artifact.version !== "4.0.2") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
-  // The 4.0.1 safety and CLI fixes add runtime modules to the public compiler's
-  // transitive declaration graph. The locally built candidate measured 454,973
-  // packed / 2,120,871 unpacked bytes. Allow a small compressed-build margin
-  // for the embedded commit identity while still rejecting unintended assets.
-  if (artifact.size > 460_000 || artifact.unpackedSize > 2_150_000) {
+  // The 4.0.2 concurrency, handover and readiness fixes add runtime modules.
+  // The candidate measured 461,458 packed / 2,144,997 unpacked bytes.
+  // Keep a small build-identity margin while rejecting unintended assets.
+  if (artifact.size > 465_000 || artifact.unpackedSize > 2_150_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -254,7 +254,7 @@ const validateBinary = (executable: string): void => {
 
   const version = invokeExecutable(executable, ["--version"]);
   requireSuccess("packed executable version", version);
-  if (version.stdout !== "4.0.1\n" || version.stderr !== "") {
+  if (version.stdout !== "4.0.2\n" || version.stderr !== "") {
     fail("packed executable version output is invalid");
   }
 

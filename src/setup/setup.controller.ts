@@ -467,18 +467,18 @@ const checkDiscoverySizes = (
     for (const file of files.slice(0, maxSetupDiscoveryFiles)) {
       const path = yield* machine.normalizePath({ path: file }).pipe(
         Effect.mapError((cause) =>
-          fail("setup discovery", `discovery file ${file} is invalid: ${cause.message}`, "state")),
+          fail("setup discovery", `discovery file ${file} is invalid: ${cause.message}`, "usage")),
       );
       const bytes = yield* machine.readFile({ path, maximumBytes: maxSetupDiscoveryFileBytes }).pipe(
         Effect.catchTag("FileSizeLimitError", () => Effect.succeed("oversized" as const)),
         Effect.catchTag("MachineFilesystemError", (cause) =>
           /\b(?:ENOENT|ENOTDIR)\b/u.test(cause.message)
             ? Effect.succeed(undefined)
-            : Effect.fail(fail("setup discovery", `discovery file ${file} could not be read: ${cause.message}`, "state"))),
+            : Effect.fail(fail("setup discovery", `discovery file ${file} could not be read: ${cause.message}`, "usage"))),
         Effect.mapError((cause) =>
           cause instanceof SetupError
             ? cause
-            : fail("setup discovery", `discovery file ${file} could not be read: ${cause.message}`, "state")),
+            : fail("setup discovery", `discovery file ${file} could not be read: ${cause.message}`, "usage")),
       );
       if (bytes === undefined) exclusions.push(`${file}: file not found`);
       else if (bytes === "oversized") {
@@ -1290,7 +1290,7 @@ export interface SetupStatus {
   /** Approvals of the current plan digest only. */
   readonly approvals: ReadonlyArray<SetupApproval>;
   readonly stages: ReadonlyArray<SetupStageRecord>;
-  readonly items: ReadonlyArray<{ readonly id: string; readonly status: string }>;
+  readonly items: ReadonlyArray<{ readonly id: string; readonly status: string; readonly evidence?: string | undefined }>;
   readonly catalog: ReadonlyArray<SetupProvenance>;
 }
 
@@ -1324,10 +1324,11 @@ export const setupStatus = (
       approved: isSetupApproved(journal),
       approvals: journal.approvals.filter((approval) => approval.digest === journal.planDigest),
       stages: [...journal.stages],
-      items: journal.items.map((item) => ({
-        id: item.id,
-        status: verdicts.get(item.id) ?? "pending",
-      })),
+      items: journal.items.map((item) => {
+        const status = verdicts.get(item.id) ?? "pending";
+        const record = journal.records.find((entry) => entry.id === item.id);
+        return { id: item.id, status, evidence: record?.status === status ? record.evidence : undefined };
+      }),
       catalog: [...journal.catalog],
     };
   });

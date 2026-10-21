@@ -1,7 +1,7 @@
 import path from "node:path";
 import { BUILTIN_ADAPTERS } from "../adapters/index.ts";
 import { commonArtifacts, enabledMcpServerEntries } from "../adapters/shared.ts";
-import { configuredTargets, findRepositoryRoot, loadConfig, targetOptions } from "./config.ts";
+import { configuredTargets, disabledTargets, findRepositoryRoot, loadConfig, targetOptions } from "./config.ts";
 import { CanonfigError } from "./errors.ts";
 import { sha256 } from "./hash.ts";
 import { createPlan } from "./planner.ts";
@@ -31,6 +31,7 @@ export interface BuildProjectResult {
   root: string;
   configPath: string;
   targets: TargetId[];
+  retiredTargets: TargetId[];
   artifacts: DesiredArtifact[];
   diagnostics: Diagnostic[];
 }
@@ -181,9 +182,10 @@ export class HarnessConfigurationCompiler {
       : await findRepositoryRoot(options.cwd ?? process.cwd());
     const loaded = await loadConfig(root);
     const targets = [...new Set(options.targets ?? configuredTargets(loaded.config))];
-    if (targets.length === 0) throw new CanonfigError("TARGET_EMPTY", "No enabled targets were selected.");
+    const retiredTargets = options.targets === undefined ? disabledTargets(loaded.config) : [];
+    if (targets.length === 0 && retiredTargets.length === 0) throw new CanonfigError("TARGET_EMPTY", "No enabled targets were selected.");
 
-    const diagnostics = await validateProject(root, loaded.config);
+    const diagnostics = targets.length === 0 ? [] : await validateProject(root, loaded.config);
     // Stop before building anything when validation already failed. Building
     // reads the canonical sources, so a `harness.yaml` naming a source that
     // does not exist produced a raw `ENOENT ... open '...'` and exit 1,
@@ -196,6 +198,7 @@ export class HarnessConfigurationCompiler {
         root,
         configPath: loaded.path,
         targets,
+        retiredTargets,
         artifacts: [],
         diagnostics,
       };
@@ -208,7 +211,7 @@ export class HarnessConfigurationCompiler {
       target: targets[0]!,
       targetOptions: {},
     };
-    if (options.includeCommon !== false) {
+    if (targets.length > 0 && options.includeCommon !== false) {
       artifacts.push(...await commonArtifacts(commonContext));
       diagnostics.push(...commonMcpProjectionDiagnostics(commonContext));
     }
@@ -233,6 +236,7 @@ export class HarnessConfigurationCompiler {
       root,
       configPath: loaded.path,
       targets,
+      retiredTargets,
       artifacts: deduplicateExactReplaceArtifacts(artifacts),
       diagnostics: options.strict === true
         ? diagnostics.map((diagnostic) =>
@@ -251,7 +255,7 @@ export class HarnessConfigurationCompiler {
       built.targets,
       built.artifacts,
       built.diagnostics,
-      { force: options.force ?? false },
+      { force: options.force ?? false, retiredTargets: built.retiredTargets },
     );
   }
 }

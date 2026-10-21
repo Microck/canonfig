@@ -1,3 +1,7 @@
+import { walkFiles } from "../src/harness-configuration/core/filesystem.ts";
+import { serializeJsonDocument } from "../src/harness-configuration/core/render-utils.ts";
+import { parse as parseToml } from "smol-toml";
+import { spawnSync } from "node:child_process";
 import { chmod, stat, lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,6 +16,7 @@ import {
   applyPlan,
   createPlan,
 } from "../src/harness-configuration/core/planner.ts";
+import { formatPlanDiff } from "../src/harness-configuration/core/diff.ts";
 import { parseMarkdownDocument } from "../src/harness-configuration/core/frontmatter.ts";
 import { runHarnessConfigurationCli } from "../src/harness-configuration/cli.ts";
 import { loadState } from "../src/harness-configuration/core/state.ts";
@@ -23,6 +28,7 @@ import { scaffoldProject } from "../src/harness-configuration/core/scaffold.ts";
 import {
   TARGET_IDS,
   type ArtifactState,
+  type DesiredArtifact,
   type Plan,
   type TargetId,
 } from "../src/harness-configuration/core/types.ts";
@@ -282,6 +288,244 @@ describe("harness configuration compiler", () => {
       theme: "dark",
       hooks: { Existing: [{ command: "echo keep" }] },
     });
+  });
+
+  it.each([false, true])("adopts generated files in a real clone (autocrlf=%s), then accepts source edits", async (autocrlf) => {
+    const root = await fixture(["codex", "claude-code", "hermes"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const git = (cwd: string, args: string[]) => {
+      const result = spawnSync("git", args, { cwd, encoding: "utf8", timeout: 30_000 });
+      expect(result.status, result.stderr).toBe(0);
+    };
+    git(root, ["init", "--quiet"]);
+    git(root, ["-c", "core.autocrlf=false", "add", "."]);
+    git(root, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Generated fixture"]);
+    const clone = path.join(await temporaryRoot(), "clone");
+    git(root, ["-c", `core.autocrlf=${autocrlf}`, "clone", "--quiet", root, clone]);
+    expect((await loadState(clone)).artifacts).toEqual({});
+    const before = await readFile(path.join(clone, "AGENTS.md"), "utf8");
+    expect(before.includes("\r\n")).toBe(autocrlf);
+    const adoption = await compiler.plan({ root: clone });
+    expect(adoption.entries.filter((entry) => entry.action === "conflict")).toEqual([]);
+    await applyPlan(adoption);
+    expect(await readFile(path.join(clone, "AGENTS.md"), "utf8")).toBe(before);
+    expect((await loadState(clone)).artifacts[".claude/agents/reviewer.md"]).toBeDefined();
+    await write(clone, ".canonfig/agents/reviewer.md", "Review the changed canonical source.\n");
+    const changed = await compiler.plan({ root: clone });
+    expect(changed.entries.filter((entry) => entry.action === "conflict")).toEqual([]);
+    await applyPlan(changed);
+    expect(await readFile(path.join(clone, ".claude/agents/reviewer.md"), "utf8")).toContain("changed canonical source");
+  });
+
+  it.each([false, true])("cleans raw binary receipts without decoding bytes (edited=%s)", async (edited) => {
+    const root = await temporaryRoot();
+    const artifact: DesiredArtifact = { kind: "replace", owner: "codex", path: "skill/logo.bin", content: new Uint8Array([255, 254, 0, 1, 13, 10]) };
+    await applyPlan(await createPlan(root, ["codex"], [artifact]));
+    if (edited) await writeFile(path.join(root, artifact.path), new Uint8Array([255, 254, 0, 2, 13, 10]));
+    const clean = await createPlan(root, ["codex"], []);
+    expect(clean.entries[0]?.action).toBe(edited ? "conflict" : "delete");
+    expect(formatPlanDiff(clean)).toContain(`Binary file ${edited ? "conflict" : "delete"}`);
+    if (!edited) {
+      await applyPlan(clean);
+      await expect(readFile(path.join(root, artifact.path))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("adopts and updates TOML blocks in place without changing operator key scope", async () => {
+    const root = await temporaryRoot();
+    const file = "config.toml";
+    await write(root, file, '# canonfig:begin local\n[mcp_servers.local]\ncommand = "old"\n# canonfig:end local\nenabled = false\n');
+    const artifact: DesiredArtifact = { kind: "toml", owner: "codex", path: file,
+      blocks: [{ marker: "local", content: '[mcp_servers.local]\ncommand = "old"' }] };
+    await applyPlan(await createPlan(root, ["codex"], [artifact]));
+    let parsed = parseToml(await readFile(path.join(root, file), "utf8"));
+    expect(parsed).toEqual({ mcp_servers: { local: { command: "old", enabled: false } } });
+    const changed: DesiredArtifact = { ...artifact, blocks: [{ marker: "local", content: '[mcp_servers.local]\ncommand = "new"' }] };
+    await applyPlan(await createPlan(root, ["codex"], [changed]));
+    parsed = parseToml(await readFile(path.join(root, file), "utf8"));
+    expect(parsed).toEqual({ mcp_servers: { local: { command: "new", enabled: false } } });
+    const expanded: DesiredArtifact = { ...artifact, blocks: [{ marker: "local", content: '[mcp_servers.local]\ncommand = "new"\n[mcp_servers.other]\ncommand = "other"' }] };
+    const update = await createPlan(root, ["codex"], [expanded]);
+    expect(update.entries[0]?.action).toBe("conflict");
+    await expect(applyPlan(update)).rejects.toThrow();
+    expect(parseToml(await readFile(path.join(root, file), "utf8"))).toEqual(parsed);
+    const clean = await createPlan(root, ["codex"], []);
+    expect(clean.entries[0]?.action).toBe("conflict");
+    await expect(applyPlan(clean)).rejects.toThrow();
+    expect(parseToml(await readFile(path.join(root, file), "utf8"))).toEqual(parsed);
+  });
+
+  it.each([false, true])("shows the removed text in deletion and rename previews (rename=%s)", async (rename) => {
+    const root = await temporaryRoot();
+    const artifact: DesiredArtifact = { kind: "replace", owner: "codex", path: "old.md", content: "Review this removed text.\n" };
+    await applyPlan(await createPlan(root, ["codex"], [artifact]));
+    const plan = await createPlan(root, ["codex"], rename ? [{ ...artifact, path: "new.md" }] : []);
+    expect(plan.entries.find((entry) => entry.path === "old.md")?.before).toBe(artifact.content);
+    expect(formatPlanDiff(plan)).toContain("-Review this removed text.");
+    if (rename) expect(formatPlanDiff(plan)).toContain("+Review this removed text.");
+  });
+
+  it("retains exact-byte protection for a binary artifact that happens to contain UTF-8", async () => {
+    const root = await temporaryRoot();
+    const artifact: DesiredArtifact = { kind: "replace", owner: "codex", path: "skill/data.bin", content: new Uint8Array([65, 13, 10]) };
+    await applyPlan(await createPlan(root, ["codex"], [artifact]));
+    await writeFile(path.join(root, artifact.path), new Uint8Array([65, 10]));
+    expect((await createPlan(root, ["codex"], [])).entries[0]?.action).toBe("conflict");
+  });
+
+  it("recognizes an owned CRLF block but still rejects edits inside it", async () => {
+    const root = await fixture(["codex"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const file = path.join(root, "AGENTS.md");
+    const converted = (await readFile(file, "utf8")).replace(/\n/gu, "\r\n");
+    await writeFile(file, converted);
+    expect((await compiler.plan({ root })).entries.find((entry) => entry.path === "AGENTS.md")?.action).toBe("unchanged");
+    await writeFile(file, converted.replace("Run tests before finishing.", "Local edit."));
+    expect((await compiler.plan({ root })).entries.find((entry) => entry.path === "AGENTS.md")?.action).toBe("conflict");
+  });
+
+  it("accepts checkout-only CRLF changes during cleanup but preserves real edits", async () => {
+    const root = await temporaryRoot();
+    const artifact: DesiredArtifact = { kind: "replace", owner: "codex", path: "generated.md", content: "one\ntwo\n" };
+    await applyPlan(await createPlan(root, ["codex"], [artifact]));
+    await write(root, artifact.path, "one\r\ntwo\r\n");
+    expect((await createPlan(root, ["codex"], [])).entries[0]?.action).toBe("delete");
+    await write(root, artifact.path, "one\r\nlocal change\r\n");
+    expect((await createPlan(root, ["codex"], [])).entries[0]?.action).toBe("conflict");
+  });
+
+  it("retires explicitly disabled targets on full apply, but not on a filtered apply", async () => {
+    const root = await fixture(["codex", "claude-code"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const file = path.join(root, ".canonfig/harness.json");
+    const config = JSON.parse(await readFile(file, "utf8"));
+    config.targets["claude-code"].enabled = false;
+    await writeFile(file, JSON.stringify(config));
+    await applyPlan(await compiler.plan({ root, targets: ["codex"] }));
+    expect((await loadState(root)).appliedTargets).toContain("claude-code");
+    expect(await readFile(path.join(root, "CLAUDE.md"), "utf8")).toContain("AGENTS.md");
+    const full = await compiler.plan({ root });
+    expect(full.entries.find((entry) => entry.path === "CLAUDE.md")?.action).toBe("delete");
+    await applyPlan(full);
+    expect((await loadState(root)).appliedTargets).toEqual(["codex"]);
+    await expect(readFile(path.join(root, "CLAUDE.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(path.join(root, "AGENTS.md"), "utf8")).toContain("Canonical instructions");
+    config.targets.codex.enabled = false;
+    await writeFile(file, JSON.stringify(config));
+    await rm(path.join(root, ".canonfig/instructions/AGENTS.md"));
+    const none = await compiler.plan({ root });
+    expect(none.entries.some((entry) => entry.action === "conflict")).toBe(false);
+    await applyPlan(none);
+    expect((await loadState(root)).artifacts).toEqual({});
+    await expect(readFile(path.join(root, "AGENTS.md"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not erase local edits when disabling a target", async () => {
+    const root = await fixture(["claude-code"]);
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const output = path.join(root, ".claude/agents/reviewer.md");
+    await writeFile(output, "local edits\n");
+    const file = path.join(root, ".canonfig/harness.json");
+    const config = JSON.parse(await readFile(file, "utf8"));
+    config.targets["claude-code"].enabled = false;
+    await writeFile(file, JSON.stringify(config));
+    const plan = await compiler.plan({ root });
+    expect(plan.entries.find((entry) => entry.path === ".claude/agents/reviewer.md")?.action).toBe("conflict");
+    await expect(applyPlan(plan)).rejects.toThrow();
+    expect(await readFile(output, "utf8")).toBe("local edits\n");
+  });
+
+  it.skipIf(process.platform === "win32")("copies repository-contained linked skills and nested linked files", async () => {
+    const root = await fixture(["claude-code"]);
+    await write(root, "vendor/skills/lint/SKILL.md", "---\nname: lint\ndescription: Run lint.\n---\nRun lint.\n");
+    await symlink("../../vendor/skills/lint", path.join(root, ".canonfig/skills/lint"), "dir");
+    await write(root, ".canonfig/shared/run.sh", "#!/bin/sh\nexit 0\n");
+    await chmod(path.join(root, ".canonfig/shared/run.sh"), 0o755);
+    await mkdir(path.join(root, ".canonfig/skills/repository-checks/scripts"));
+    await symlink("../../../shared/run.sh", path.join(root, ".canonfig/skills/repository-checks/scripts/run.sh"));
+    const compiler = new HarnessConfigurationCompiler();
+    const plan = await compiler.plan({ root });
+    expect(plan.diagnostics.filter((entry) => entry.level === "error")).toEqual([]);
+    await applyPlan(plan);
+    expect(await readFile(path.join(root, ".claude/skills/lint/SKILL.md"), "utf8")).toContain("Run lint.");
+    const copied = path.join(root, ".claude/skills/repository-checks/scripts/run.sh");
+    expect((await lstat(copied)).isSymbolicLink()).toBe(false);
+    expect((await stat(copied)).mode & 0o111).not.toBe(0);
+    expect(await readFile(copied, "utf8")).toContain("exit 0");
+  });
+
+  it.skipIf(process.platform === "win32").each(["escape", "cycle", "dangling"])("reports a %s skill symlink instead of silently omitting it", async (kind) => {
+    const root = await fixture(["claude-code"]);
+    const destination = path.join(root, ".canonfig/skills/repository-checks/link");
+    const outside = await temporaryRoot();
+    const target = kind === "escape" ? outside : kind === "cycle" ? "." : "missing";
+    await symlink(target, destination, "dir");
+    const plan = await new HarnessConfigurationCompiler().plan({ root });
+    expect(plan.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "SKILL_SOURCE_INVALID", level: "error" }),
+    ]));
+    await expect(applyPlan(plan)).rejects.toThrow();
+  });
+
+  it.skipIf(process.platform === "win32")("classifies a dangling nested skill link at the filesystem boundary", async () => {
+    const root = await temporaryRoot();
+    const dangling = path.join(root, "missing-link");
+    await symlink("missing", dangling);
+    await expect(walkFiles(root)).rejects.toMatchObject({ code: "SKILL_SOURCE_INVALID", message: expect.stringContaining(dangling) });
+  });
+
+  it("does not reformat unrelated compact JSON properties when inserting a key", () => {
+    const original = '{ "keep": { "x" : 1, "y":2 }, "servers": {} }\n';
+    const result = serializeJsonDocument({ keep: { x: 1, y: 2 }, servers: { new: { command: "x" } } }, original);
+    expect(result).toContain('"keep": { "x" : 1, "y":2 }');
+    expect(JSON.parse(result)).toEqual({ keep: { x: 1, y: 2 }, servers: { new: { command: "x" } } });
+  });
+
+  it.skipIf(process.platform === "win32")("preserves a CLAUDE.md link to AGENTS.md through apply and cleanup", async () => {
+    const root = await fixture(["claude-code"]);
+    await write(root, "AGENTS.md", "# Team notes\nOriginal note.\n");
+    await symlink("AGENTS.md", path.join(root, "CLAUDE.md"));
+    const compiler = new HarnessConfigurationCompiler();
+    const plan = await compiler.plan({ root });
+    expect(plan.entries.find((entry) => entry.path === "CLAUDE.md")?.action).toBe("unchanged");
+    await applyPlan(plan);
+    expect(await readlink(path.join(root, "CLAUDE.md"))).toBe("AGENTS.md");
+    expect((await loadState(root)).artifacts["CLAUDE.md"]).toBeUndefined();
+    const notes = await readFile(path.join(root, "AGENTS.md"), "utf8");
+    await writeFile(path.join(root, "AGENTS.md"), notes.replace("Original note.", "Updated live note."));
+    expect(await readFile(path.join(root, "CLAUDE.md"), "utf8")).toContain("Updated live note.");
+    expect(await readFile(path.join(root, "CLAUDE.md"), "utf8")).not.toContain("@AGENTS.md");
+    await applyPlan(await createPlan(root, ["claude-code"], []));
+    expect(await readlink(path.join(root, "CLAUDE.md"))).toBe("AGENTS.md");
+    expect(await readFile(path.join(root, "CLAUDE.md"), "utf8")).toContain("Updated live note.");
+  });
+
+  it.skipIf(process.platform === "win32")("refuses other native symlinks even under force", async () => {
+    const root = await fixture(["claude-code"]);
+    await write(root, "other.md", "Keep this separate file.\n");
+    await symlink("other.md", path.join(root, "CLAUDE.md"));
+    const plan = await new HarnessConfigurationCompiler().plan({ root, force: true });
+    expect(plan.entries.find((entry) => entry.path === "CLAUDE.md")?.action).toBe("conflict");
+    await expect(applyPlan(plan)).rejects.toThrow();
+    expect(await readlink(path.join(root, "CLAUDE.md"))).toBe("other.md");
+    expect(await readFile(path.join(root, "other.md"), "utf8")).toBe("Keep this separate file.\n");
+  });
+
+  it.skipIf(process.platform === "win32")("does not delete a symlink substituted for an owned output", async () => {
+    const root = await fixture(["claude-code"]);
+    await applyPlan(await new HarnessConfigurationCompiler().plan({ root }));
+    const output = path.join(root, ".claude/agents/reviewer.md");
+    await rm(output);
+    await write(root, "other.md", "Keep me.\n");
+    await symlink("../../other.md", output);
+    const clean = await createPlan(root, ["claude-code"], [], [], { force: true });
+    expect(clean.entries.find((entry) => entry.path === ".claude/agents/reviewer.md")?.action).toBe("conflict");
+    await expect(applyPlan(clean)).rejects.toThrow();
+    expect((await lstat(output)).isSymbolicLink()).toBe(true);
   });
 
   it("keeps operator text on both sides of a managed block", async () => {

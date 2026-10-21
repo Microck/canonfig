@@ -58,6 +58,14 @@ export const isLocalInstallerPath = (value: string, platform: InstallerPlatform)
     ? /^(?:[A-Za-z]:[\\/]|\\\\\?\\[A-Za-z]:\\)/u.test(value)
     : posix.isAbsolute(value) && !value.startsWith("//"));
 
+/** The known Corepack pnpm JS entrypoint, not an arbitrary same-named script. */
+export const isCorepackPnpmEntrypoint = (path: string, platform: InstallerPlatform): boolean => {
+  const paths = platform === "windows" ? win32 : posix;
+  const name = (value: string) => platform === "windows" ? paths.basename(value).toLowerCase() : paths.basename(value);
+  return name(path) === "pnpm.js" && name(paths.dirname(path)) === "dist"
+    && name(paths.dirname(paths.dirname(path))) === "corepack";
+};
+
 /** No environment, shell expressions, package arguments, or lifecycle flags. */
 const bindingFromDocument = (document: InstallerBindingDocument): InstallerBinding => {
   const method = normalizeInstallerMethod(document.method);
@@ -73,9 +81,10 @@ const bindingFromDocument = (document: InstallerBindingDocument): InstallerBindi
     return platform === "windows" ? name.replace(/\.exe$/u, "") : name;
   };
   const executableName = basename(executable);
-  const javascriptEntry = method === "npm" ? "npm-cli.js" : method === "pnpm" ? "pnpm.cjs" : undefined;
-  const nodeEntry = executableName === "node" && javascriptEntry !== undefined
-    && arguments_.length === 1 && basename(arguments_[0]!) === javascriptEntry;
+  const nodeEntry = executableName === "node" && arguments_.length === 1
+    && (method === "npm" && basename(arguments_[0]!) === "npm-cli.js"
+      || method === "pnpm" && (basename(arguments_[0]!) === "pnpm.cjs"
+        || isCorepackPnpmEntrypoint(arguments_[0]!, platform)));
   const nativeName = method === "apt" ? "apt-get" : method;
   const direct = arguments_.length === 0 && executableName === nativeName;
   if (!nodeEntry && !direct) {

@@ -51,6 +51,7 @@ import {
   executeControlledProcess,
 } from "../src/agent/controlled-executor.ts";
 import {
+  adaptHarnessInvocation,
   encodeAgentTask,
   extractHarnessResponse,
 } from "../src/agent/harness-adapters.ts";
@@ -652,6 +653,26 @@ describe("agent resolution", () => {
       task: { id: "agent:test" },
       responseContract: { selfReportIsProof: false },
     });
+  });
+
+  it("allows the Codex proposal invocation outside Git without relaxing its sandbox", async () => {
+    const invocation = adaptHarnessInvocation(harness(directory), task(directory));
+    expect(invocation.arguments).toEqual(["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-"]);
+    const recorder = join(directory, "codex-argv-fixture.cjs");
+    await writeFile(recorder, [
+      "const fs = require('node:fs');",
+      "if (fs.existsSync('.git')) process.exit(21);",
+      "const args = process.argv.slice(2);",
+      "if (!args.includes('--skip-git-repo-check')) process.exit(22);",
+      "if (args[args.indexOf('--sandbox') + 1] !== 'read-only') process.exit(23);",
+      "const input = JSON.parse(fs.readFileSync(0, 'utf8'));",
+      "if (input.schema !== 'canonfig.agent-task/v1') process.exit(24);",
+      "console.log('proposal-only contract accepted outside Git');",
+    ].join("\n"));
+    const result = execFileSync(process.execPath, [recorder, ...invocation.arguments], {
+      cwd: directory, input: invocation.input, encoding: "utf8", timeout: 5_000,
+    });
+    expect(result).toContain("accepted outside Git");
   });
 
   it("extracts machine-readable responses from every supported harness", () => {

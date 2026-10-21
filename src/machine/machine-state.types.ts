@@ -1,3 +1,4 @@
+import type { InstalledSchedulerCommand } from "./installed-scheduler-command.ts";
 import { type Effect, type Redacted, Schema } from "effect";
 
 import type {
@@ -290,6 +291,12 @@ export interface SchedulerRunResult {
  * `active` and `overrides` instead of folding into `enabled`/`matches`.
  */
 export interface SchedulerInspection {
+  /** Native backend attempted to decode the installed command, not the desired one. */
+  readonly bindingInspected?: boolean | undefined;
+  readonly installedCommand?: InstalledSchedulerCommand | undefined;
+  /** Identity and registration time of the installed native definition. */
+  readonly generation?: string | undefined;
+  readonly installedAt?: string | undefined;
   readonly installed: boolean;
   /** Enabled to run: systemd unit file state, launchd not disabled, Task Scheduler Enabled. */
   readonly enabled: boolean;
