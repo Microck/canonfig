@@ -159,6 +159,27 @@ describe("schedule calendar semantics", () => {
       .toBe("2026-09-02T05:30:00.000Z");
   });
 
+  it.each([
+    ["Europe/Berlin", "02:30", "2026-10-24T12:00:00Z", "2026-10-25T00:30:00.000Z"],
+    ["Australia/Lord_Howe", "01:45", "2027-04-03T00:00:00Z", "2027-04-03T14:45:00.000Z"],
+    ["America/New_York", "01:30", "2026-10-31T12:00:00Z", "2026-11-01T05:30:00.000Z"],
+  ])("selects the first repeated wall-clock occurrence in %s", (timezone, localTime, before, first) => {
+    const schedule = { kind: "daily" as const, localTime, timezone };
+    expect(nextScheduledRun(schedule, Date.parse(before!))).toBe(first);
+    expect(previousScheduledRun(schedule, Date.parse(first!))).toBe(first);
+    expect(previousScheduledRun(schedule, Date.parse(first!) + 15 * 60_000)).toBe(first);
+  });
+
+  it("does not schedule the second occurrence after the first has elapsed", () => {
+    const schedule = { kind: "daily" as const, localTime: "02:30", timezone: "Europe/Berlin" };
+    expect(nextScheduledRun(schedule, Date.parse("2026-10-25T00:45:00Z")))
+      .toBe("2026-10-26T01:30:00.000Z");
+    expect(nextScheduledRun({ ...schedule, kind: "weekly", weekdays: ["Sun"] }, Date.parse("2026-10-25T00:45:00Z")))
+      .toBe("2026-11-01T01:30:00.000Z");
+    expect(nextScheduledRun(schedule, Date.parse("2027-03-27T12:00:00Z")))
+      .toBe("2027-03-29T00:30:00.000Z");
+  });
+
   it("finds the most recent start already due, across weekly gaps", () => {
     expect(previousScheduledRun({ kind: "daily", localTime: "11:30", timezone: "UTC" }, now))
       .toBe("2026-09-01T11:30:00.000Z");
