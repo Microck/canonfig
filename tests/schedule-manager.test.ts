@@ -559,16 +559,26 @@ describe("installed scheduler command decoding", () => {
   });
 
   it("requires a native Mach-O CPU or compatible universal slice", () => {
-    const thin = Buffer.alloc(64);
+    const thin = Buffer.alloc(256);
     thin.writeUInt32LE(0xfeedfacf, 0); thin.writeUInt32LE(0x0100000c, 4);
-    thin.writeUInt32LE(2, 12); thin.writeUInt32LE(1, 16); thin.writeUInt32LE(8, 20);
+    thin.writeUInt32LE(2, 12); thin.writeUInt32LE(2, 16); thin.writeUInt32LE(96, 20);
+    thin.writeUInt32LE(0x19, 32); thin.writeUInt32LE(72, 36);
+    thin.writeBigUInt64LE(256n, 64); thin.writeBigUInt64LE(256n, 80); thin.writeUInt32LE(5, 92);
+    thin.writeUInt32LE(0x80000028, 104); thin.writeUInt32LE(24, 108); thin.writeBigUInt64LE(128n, 112);
     expect(nativeExecutableHeader(thin, thin.length, "darwin", "arm64")).toBe(true);
     expect(nativeExecutableHeader(thin, thin.length, "darwin", "x64")).toBe(false);
-    const fat = Buffer.alloc(128);
+    const fat = Buffer.alloc(512);
     fat.writeUInt32BE(0xcafebabe, 0); fat.writeUInt32BE(1, 4);
-    fat.writeUInt32BE(0x0100000c, 8); fat.writeUInt32BE(64, 16); fat.writeUInt32BE(64, 20);
+    fat.writeUInt32BE(0x0100000c, 8); fat.writeUInt32BE(256, 16); fat.writeUInt32BE(256, 20);
+    thin.copy(fat, 256);
     expect(nativeExecutableHeader(fat, fat.length, "darwin", "arm64")).toBe(true);
     expect(nativeExecutableHeader(fat, fat.length, "darwin", "x64")).toBe(false);
+    fat.writeUInt32LE(6, 256 + 12); // a dylib is not an executable slice
+    expect(nativeExecutableHeader(fat, fat.length, "darwin", "arm64")).toBe(false);
+    fat.writeUInt32LE(2, 256 + 12); fat.writeUInt32LE(0, 256 + 36);
+    expect(nativeExecutableHeader(fat, fat.length, "darwin", "arm64")).toBe(false);
+    fat.fill(0, 256);
+    expect(nativeExecutableHeader(fat, fat.length, "darwin", "arm64")).toBe(false);
   });
 
   it.each([["ia32", 0x14c, 0x10b], ["x64", 0x8664, 0x20b], ["arm64", 0xaa64, 0x20b]] as const)("requires matching PE machine and optional-header class for %s", (architecture, machine, magic) => {
@@ -576,6 +586,10 @@ describe("installed scheduler command decoding", () => {
     pe.set([0x4d, 0x5a]); pe.writeUInt32LE(offset, 60); pe.writeUInt32LE(0x4550, offset);
     pe.writeUInt16LE(machine, offset + 4); pe.writeUInt16LE(1, offset + 6);
     pe.writeUInt16LE(112, offset + 20); pe.writeUInt16LE(2, offset + 22); pe.writeUInt16LE(magic, offset + 24);
+    pe.writeUInt32LE(0x1000, offset + 40); pe.writeUInt32LE(0x2000, offset + 80);
+    const section = offset + 24 + 112;
+    pe.writeUInt32LE(128, section + 8); pe.writeUInt32LE(0x1000, section + 12);
+    pe.writeUInt32LE(128, section + 16); pe.writeUInt32LE(384, section + 20); pe.writeUInt32LE(0x60000020, section + 36);
     expect(nativeExecutableHeader(pe, pe.length, "win32", architecture)).toBe(true);
     expect(nativeExecutableHeader(pe, pe.length, "win32", architecture === "arm64" ? "x64" : "arm64")).toBe(false);
     pe.writeUInt16LE(magic === 0x10b ? 0x20b : 0x10b, offset + 24);

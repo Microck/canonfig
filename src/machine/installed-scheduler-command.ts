@@ -136,45 +136,85 @@ export const linuxExecutableHeader = (header: Buffer, size: number, architecture
   return executableEntry;
 };
 
+const machoCpu = (architecture: string): number | undefined =>
+  architecture === "x64" ? 0x01000007 : architecture === "arm64" ? 0x0100000c : undefined;
+
+const machoUniversalSlice = (header: Buffer, size: number, architecture: string): { offset: number; size: number } | undefined => {
+  if (header.length < 8) return undefined;
+  const cpu = machoCpu(architecture), magic = header.readUInt32BE(0);
+  if (cpu === undefined || (magic !== 0xcafebabe && magic !== 0xcafebabf)) return undefined;
+  const count = header.readUInt32BE(4), stride = magic === 0xcafebabe ? 20 : 32;
+  if (count === 0 || count > 32 || 8 + count * stride > header.length) return undefined;
+  let selected: { offset: number; size: number } | undefined;
+  for (let i = 0; i < count; i++) {
+    const at = 8 + i * stride;
+    const offset = stride === 20 ? BigInt(header.readUInt32BE(at + 8)) : header.readBigUInt64BE(at + 8);
+    const length = stride === 20 ? BigInt(header.readUInt32BE(at + 12)) : header.readBigUInt64BE(at + 16);
+    if (length < 32n || offset < BigInt(8 + count * stride) || offset + length > BigInt(size)) return undefined;
+    if (header.readUInt32BE(at) === cpu && selected === undefined) selected = { offset: Number(offset), size: Number(length) };
+  }
+  return selected;
+};
+
+const machoThinExecutableHeader = (header: Buffer, size: number, architecture: string): boolean => {
+  const cpu = machoCpu(architecture);
+  if (cpu === undefined || header.length < 32 || header.readUInt32LE(0) !== 0xfeedfacf
+    || header.readUInt32LE(4) !== cpu || header.readUInt32LE(12) !== 2) return false;
+  const count = header.readUInt32LE(16), end = 32 + header.readUInt32LE(20);
+  if (count === 0 || count > (end - 32) / 8 || end > header.length || end > size) return false;
+  let at = 32, entry: bigint | undefined;
+  const executableRanges: Array<{ offset: bigint; size: bigint }> = [];
+  for (let i = 0; i < count; i++) {
+    if (at + 8 > end) return false;
+    const command = header.readUInt32LE(at), length = header.readUInt32LE(at + 4);
+    if (length < 8 || length % 8 !== 0 || at + length > end) return false;
+    if (command === 0x80000028) { // LC_MAIN
+      if (length !== 24 || entry !== undefined) return false;
+      entry = header.readBigUInt64LE(at + 8);
+    }
+    if (command === 0x19) { // LC_SEGMENT_64
+      if (length < 72 || 72 + header.readUInt32LE(at + 64) * 80 > length) return false;
+      const offset = header.readBigUInt64LE(at + 40), lengthOnDisk = header.readBigUInt64LE(at + 48);
+      if (offset + lengthOnDisk > BigInt(size) || lengthOnDisk > header.readBigUInt64LE(at + 32)) return false;
+      if ((header.readUInt32LE(at + 60) & 4) !== 0) executableRanges.push({ offset, size: lengthOnDisk });
+    }
+    at += length;
+  }
+  return at === end && entry !== undefined && entry >= BigInt(end)
+    && executableRanges.some((range) => entry! >= range.offset && entry! < range.offset + range.size);
+};
+
 /** Conservative header check, not proof of launchability or scheduler firing. */
 export const nativeExecutableHeader = (header: Buffer, size: number, platform = process.platform, architecture = process.arch): boolean => {
   if (platform === "linux") return linuxExecutableHeader(header, size, architecture, endianness());
   if (platform === "darwin") {
-    const cpu = architecture === "x64" ? 0x01000007 : architecture === "arm64" ? 0x0100000c : undefined;
-    if (cpu === undefined) return false;
-    if (header.length < 32) return false;
-    const magic = header.readUInt32LE(0);
-    if (magic === 0xfeedfacf) return header.readUInt32LE(4) === cpu && header.readUInt32LE(12) === 2
-      && header.readUInt32LE(16) > 0 && header.readUInt32LE(20) >= 8
-      && 32 + header.readUInt32LE(20) <= size;
-    // Universal binaries contain a bounded architecture table and file slices.
-    const fat = header.readUInt32BE(0);
-    if (fat !== 0xcafebabe && fat !== 0xcafebabf) return false;
-    const count = header.readUInt32BE(4), stride = fat === 0xcafebabe ? 20 : 32;
-    if (count === 0 || count > 32 || 8 + count * stride > header.length) return false;
-    let compatible = false;
-    for (let i = 0; i < count; i++) {
-      const at = 8 + i * stride;
-      compatible ||= header.readUInt32BE(at) === cpu;
-      const offset = stride === 20 ? BigInt(header.readUInt32BE(at + 8)) : header.readBigUInt64BE(at + 8);
-      const length = stride === 20 ? BigInt(header.readUInt32BE(at + 12)) : header.readBigUInt64BE(at + 16);
-      if (length < 32n || offset < BigInt(8 + count * stride) || offset + length > BigInt(size)) return false;
-    }
-    return compatible;
+    const slice = machoUniversalSlice(header, size, architecture);
+    return slice === undefined ? machoThinExecutableHeader(header, size, architecture)
+      : machoThinExecutableHeader(header.subarray(slice.offset, slice.offset + slice.size), slice.size, architecture);
   }
   if (platform === "win32") {
     const machine = architecture === "x64" ? 0x8664 : architecture === "arm64" ? 0xaa64 : architecture === "ia32" ? 0x14c : undefined;
     if (machine === undefined) return false;
     if (header.length < 64 || header[0] !== 0x4d || header[1] !== 0x5a) return false;
     const offset = header.readUInt32LE(60);
-    return offset >= 64 && offset + 26 <= header.length
-      && header.readUInt32LE(offset) === 0x00004550
-      && header.readUInt16LE(offset + 4) === machine
-      && header.readUInt16LE(offset + 6) > 0
-      && (header.readUInt16LE(offset + 22) & 0x0002) !== 0
-      && (header.readUInt16LE(offset + 22) & 0x2000) === 0
-      && header.readUInt16LE(offset + 24) === (architecture === "ia32" ? 0x10b : 0x20b)
-      && offset + 24 + header.readUInt16LE(offset + 20) <= size;
+    if (offset < 64 || offset + 26 > header.length || header.readUInt32LE(offset) !== 0x00004550
+      || header.readUInt16LE(offset + 4) !== machine || (header.readUInt16LE(offset + 22) & 0x0002) === 0
+      || (header.readUInt16LE(offset + 22) & 0x2000) !== 0
+      || header.readUInt16LE(offset + 24) !== (architecture === "ia32" ? 0x10b : 0x20b)) return false;
+    const optionalSize = header.readUInt16LE(offset + 20), count = header.readUInt16LE(offset + 6);
+    const table = offset + 24 + optionalSize, end = table + count * 40;
+    if (optionalSize < (architecture === "ia32" ? 96 : 112) || count === 0 || end > size || end > header.length) return false;
+    const entry = header.readUInt32LE(offset + 40), imageSize = header.readUInt32LE(offset + 80);
+    if (entry === 0 || entry >= imageSize) return false;
+    let executableEntry = false;
+    for (let i = 0; i < count; i++) {
+      const at = table + i * 40, virtualSize = header.readUInt32LE(at + 8), address = header.readUInt32LE(at + 12);
+      const rawSize = header.readUInt32LE(at + 16), rawOffset = header.readUInt32LE(at + 20);
+      if (rawOffset + rawSize > size) return false;
+      if ((header.readUInt32LE(at + 36) & 0x20000000) !== 0 && entry >= address
+        && entry < address + Math.min(rawSize, virtualSize || rawSize)) executableEntry = true;
+    }
+    return executableEntry;
   }
   return false;
 };
@@ -193,8 +233,16 @@ const interpreterProblem = async (executable: string, searchPath: ReadonlyArray<
       const buffer = Buffer.alloc(64 * 1024);
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
       bytes = buffer.subarray(0, bytesRead);
-      header = bytes.toString("utf8");
       fileSize = (await file.stat()).size;
+      const slice = process.platform === "darwin" ? machoUniversalSlice(bytes, fileSize, process.arch) : undefined;
+      if (slice !== undefined) {
+        // A compatible universal slice may be far beyond the initial header.
+        // Read only its bounded header, never allocate or read the whole image.
+        const sliceBuffer = Buffer.alloc(Math.min(slice.size, 64 * 1024));
+        const read = await file.read(sliceBuffer, 0, sliceBuffer.length, slice.offset);
+        bytes = sliceBuffer.subarray(0, read.bytesRead); fileSize = slice.size;
+      }
+      header = bytes.toString("utf8");
     } finally { await file.close(); }
   } catch { return { message: "the scheduler wrapper interpreter cannot be inspected" }; }
   if (!header.startsWith("#!")) return nativeExecutableHeader(bytes, fileSize) ? undefined

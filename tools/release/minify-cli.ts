@@ -28,4 +28,19 @@ await build({
   target: "node24",
 });
 
+// The bounded native-header decoder is internal runtime code. Compress its
+// local identifiers too, retaining exported names and Function.name values,
+// so the additional checks fit the unchanged package-size budget.
+await build({
+  entryPoints: ["dist/machine/installed-scheduler-command.js"],
+  outfile: "dist/machine/installed-scheduler-command.js",
+  allowOverwrite: true,
+  bundle: false,
+  format: "esm",
+  minify: true,
+  keepNames: true,
+  platform: "node",
+  target: "node24",
+});
+
 writeBuildReceipt(process.cwd());
