@@ -137,12 +137,14 @@ export const linuxExecutableHeader = (header: Buffer, size: number, architecture
 };
 
 /** Conservative header check, not proof of launchability or scheduler firing. */
-const nativeExecutableHeader = (header: Buffer, size: number): boolean => {
-  if (process.platform === "linux") return linuxExecutableHeader(header, size, process.arch, endianness());
-  if (process.platform === "darwin") {
+export const nativeExecutableHeader = (header: Buffer, size: number, platform = process.platform, architecture = process.arch): boolean => {
+  if (platform === "linux") return linuxExecutableHeader(header, size, architecture, endianness());
+  if (platform === "darwin") {
+    const cpu = architecture === "x64" ? 0x01000007 : architecture === "arm64" ? 0x0100000c : undefined;
+    if (cpu === undefined) return false;
     if (header.length < 32) return false;
     const magic = header.readUInt32LE(0);
-    if (magic === 0xfeedfacf) return header.readUInt32LE(12) === 2
+    if (magic === 0xfeedfacf) return header.readUInt32LE(4) === cpu && header.readUInt32LE(12) === 2
       && header.readUInt32LE(16) > 0 && header.readUInt32LE(20) >= 8
       && 32 + header.readUInt32LE(20) <= size;
     // Universal binaries contain a bounded architecture table and file slices.
@@ -150,23 +152,28 @@ const nativeExecutableHeader = (header: Buffer, size: number): boolean => {
     if (fat !== 0xcafebabe && fat !== 0xcafebabf) return false;
     const count = header.readUInt32BE(4), stride = fat === 0xcafebabe ? 20 : 32;
     if (count === 0 || count > 32 || 8 + count * stride > header.length) return false;
+    let compatible = false;
     for (let i = 0; i < count; i++) {
       const at = 8 + i * stride;
+      compatible ||= header.readUInt32BE(at) === cpu;
       const offset = stride === 20 ? BigInt(header.readUInt32BE(at + 8)) : header.readBigUInt64BE(at + 8);
       const length = stride === 20 ? BigInt(header.readUInt32BE(at + 12)) : header.readBigUInt64BE(at + 16);
       if (length < 32n || offset < BigInt(8 + count * stride) || offset + length > BigInt(size)) return false;
     }
-    return true;
+    return compatible;
   }
-  if (process.platform === "win32") {
+  if (platform === "win32") {
+    const machine = architecture === "x64" ? 0x8664 : architecture === "arm64" ? 0xaa64 : architecture === "ia32" ? 0x14c : undefined;
+    if (machine === undefined) return false;
     if (header.length < 64 || header[0] !== 0x4d || header[1] !== 0x5a) return false;
     const offset = header.readUInt32LE(60);
     return offset >= 64 && offset + 26 <= header.length
       && header.readUInt32LE(offset) === 0x00004550
+      && header.readUInt16LE(offset + 4) === machine
       && header.readUInt16LE(offset + 6) > 0
       && (header.readUInt16LE(offset + 22) & 0x0002) !== 0
       && (header.readUInt16LE(offset + 22) & 0x2000) === 0
-      && [0x10b, 0x20b].includes(header.readUInt16LE(offset + 24))
+      && header.readUInt16LE(offset + 24) === (architecture === "ia32" ? 0x10b : 0x20b)
       && offset + 24 + header.readUInt16LE(offset + 20) <= size;
   }
   return false;

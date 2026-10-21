@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { evaluateCli } from "../src/cli/cli.ts";
-import { installedSystemdCommand, installedLaunchdCommand, installedWindowsCommand, installedBindingProblem, linuxExecutableHeader } from "../src/machine/installed-scheduler-command.ts";
+import { installedSystemdCommand, installedLaunchdCommand, installedWindowsCommand, installedBindingProblem, linuxExecutableHeader, nativeExecutableHeader } from "../src/machine/installed-scheduler-command.ts";
 import { scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -556,6 +556,30 @@ describe("installed scheduler command decoding", () => {
     u32(4, headerSize + (wide ? 4 : 24)); expect(check()).toBe(false); // non-executable load
     u32(5, headerSize + (wide ? 4 : 24));
     word(contents.length + 1, headerSize + (wide ? 32 : 16)); expect(check()).toBe(false);
+  });
+
+  it("requires a native Mach-O CPU or compatible universal slice", () => {
+    const thin = Buffer.alloc(64);
+    thin.writeUInt32LE(0xfeedfacf, 0); thin.writeUInt32LE(0x0100000c, 4);
+    thin.writeUInt32LE(2, 12); thin.writeUInt32LE(1, 16); thin.writeUInt32LE(8, 20);
+    expect(nativeExecutableHeader(thin, thin.length, "darwin", "arm64")).toBe(true);
+    expect(nativeExecutableHeader(thin, thin.length, "darwin", "x64")).toBe(false);
+    const fat = Buffer.alloc(128);
+    fat.writeUInt32BE(0xcafebabe, 0); fat.writeUInt32BE(1, 4);
+    fat.writeUInt32BE(0x0100000c, 8); fat.writeUInt32BE(64, 16); fat.writeUInt32BE(64, 20);
+    expect(nativeExecutableHeader(fat, fat.length, "darwin", "arm64")).toBe(true);
+    expect(nativeExecutableHeader(fat, fat.length, "darwin", "x64")).toBe(false);
+  });
+
+  it.each([["ia32", 0x14c, 0x10b], ["x64", 0x8664, 0x20b], ["arm64", 0xaa64, 0x20b]] as const)("requires matching PE machine and optional-header class for %s", (architecture, machine, magic) => {
+    const pe = Buffer.alloc(512), offset = 128;
+    pe.set([0x4d, 0x5a]); pe.writeUInt32LE(offset, 60); pe.writeUInt32LE(0x4550, offset);
+    pe.writeUInt16LE(machine, offset + 4); pe.writeUInt16LE(1, offset + 6);
+    pe.writeUInt16LE(112, offset + 20); pe.writeUInt16LE(2, offset + 22); pe.writeUInt16LE(magic, offset + 24);
+    expect(nativeExecutableHeader(pe, pe.length, "win32", architecture)).toBe(true);
+    expect(nativeExecutableHeader(pe, pe.length, "win32", architecture === "arm64" ? "x64" : "arm64")).toBe(false);
+    pe.writeUInt16LE(magic === 0x10b ? 0x20b : 0x10b, offset + 24);
+    expect(nativeExecutableHeader(pe, pe.length, "win32", architecture)).toBe(false);
   });
 
   it("rejects executable text and truncated native headers", async () => {
