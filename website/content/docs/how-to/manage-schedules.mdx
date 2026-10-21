@@ -29,6 +29,10 @@ canonfig schedule set weekly:Mon@12:30 --timezone Europe/Paris
 canonfig schedule set weekly:Mon,Thu@12:30
 ```
 
+Selecting a calendar requires an enrolled follower, including an explicit daily
+or weekly calendar. A fresh machine or Source-only installation is refused
+before any native job is installed.
+
 Only Linux supports `--timezone`. macOS and Windows reject an explicit named
 zone because their native calendar jobs cannot preserve that binding.
 Use a daily or weekly schedule without `--timezone` on those platforms.

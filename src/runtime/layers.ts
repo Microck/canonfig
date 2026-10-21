@@ -429,10 +429,15 @@ const persistScheduleOverride = (
 ): Effect.Effect<void, CliCommandFailure> =>
   mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
     Effect.flatMap((configuration) => {
-      if (configuration === undefined) return Effect.void;
+      const unavailable = () => scheduleOverride?.kind === "disabled" ? Effect.void
+        : Effect.fail(new CliCommandFailure({
+          category: "usage-or-configuration",
+          message: "canonfig schedule set needs an enrolled follower; enroll, then apply the selected profile first",
+        }));
+      if (configuration === undefined) return unavailable();
       return mapFailure(repository.loadState(configuration.follower.id)).pipe(
         Effect.flatMap((state) =>
-          state.sourceIdentity === undefined ? Effect.void : mapFailure(
+          state.sourceIdentity === undefined ? unavailable() : mapFailure(
             repository.saveFollowerSynchronizationConfiguration({
               sourceIdentity: state.sourceIdentity,
               configuration: {
