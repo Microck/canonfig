@@ -22,15 +22,22 @@ import {
 } from "./filesystem.ts";
 import { loadState, writeState, HARNESS_CONFIGURATION_VERSION } from "./state.ts";
 import { renderArtifacts } from "./render.ts";
-import { sha256 } from "./hash.ts";
+import { sha256, textHash } from "./hash.ts";
 import { CanonfigError } from "./errors.ts";
 
-export interface PlanOptions { force?: boolean; preserveSharedForUnselectedTargets?: boolean; }
+export interface PlanOptions { force?: boolean; preserveSharedForUnselectedTargets?: boolean; retiredTargets?: readonly TargetId[]; }
 
 function bytesEqual(left: Uint8Array | undefined, right: string | Uint8Array | undefined): boolean {
   if (left === undefined || right === undefined) return left === undefined && right === undefined;
   const rightBytes = typeof right === "string" ? Buffer.from(right) : Buffer.from(right);
   return Buffer.from(left).equals(rightBytes);
+}
+
+/** Preview decoding never participates in ownership verification. */
+function previewText(bytes: Uint8Array | undefined): string | undefined {
+  if (bytes === undefined || bytes.includes(0)) return undefined;
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { return undefined; }
 }
 
 function isTextArtifacts(artifacts: readonly DesiredArtifact[]): boolean {
@@ -72,6 +79,20 @@ async function unreadableExistingPath(root: string, absolute: string, bytes: Uin
   return true;
 }
 
+async function leafSymlink(absolute: string): Promise<boolean> {
+  try { return (await fs.lstat(absolute)).isSymbolicLink(); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function existingClaudeBridge(root: string, filePath: string, absolute: string): Promise<boolean> {
+  if (filePath !== "CLAUDE.md") return false;
+  try { return await fs.realpath(absolute) === await fs.realpath(path.join(root, "AGENTS.md")); }
+  catch { return false; }
+}
+
 export async function createPlan(
   root: string,
   targets: TargetId[],
@@ -86,11 +107,12 @@ export async function createPlan(
   // partial cleanup of such receipts; an unfiltered clean can remove it.
   const previousTargets = previousState.appliedTargets
     ?? (Object.keys(previousState.artifacts).length === 0 ? [] : [...TARGET_IDS]);
-  const remainingTargets = previousTargets.filter((target) => !targets.includes(target));
+  const retiredTargets = options.retiredTargets ?? [];
+  const remainingTargets = previousTargets.filter((target) => !targets.includes(target) && !retiredTargets.includes(target));
   const cleaning = options.preserveSharedForUnselectedTargets === true;
-  const retainShared = cleaning && remainingTargets.length > 0;
+  const retainShared = (cleaning || targets.length === 0) && remainingTargets.length > 0;
   const selectedOwner = (owner: ArtifactOwner): boolean =>
-    owner === "common" ? !retainShared : targets.includes(owner);
+    owner === "common" ? !retainShared : targets.includes(owner) || retiredTargets.includes(owner);
   const nextArtifacts: Record<string, ArtifactState> = {};
   for (const [filePath, state] of Object.entries(previousState.artifacts)) {
     if (!selectedOwner(state.owner)) nextArtifacts[filePath] = state;
@@ -108,6 +130,18 @@ export async function createPlan(
   for (const [filePath, group] of [...groups.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     const absolute = resolveInside(root, filePath);
     await assertRealPathInside(root, absolute);
+    if (await leafSymlink(absolute)) {
+      const previous = previousState.artifacts[filePath];
+      const bridge = group.length === 1 && group[0]?.kind === "managed-text"
+        && group[0].owner === "claude-code" && group[0].marker === "instructions-import"
+        && group[0].content.trim() === "@AGENTS.md"
+        && await existingClaudeBridge(root, filePath, absolute);
+      entries.push({ path: filePath, owner: ownerFor(group, diagnostics, filePath), action: bridge ? "unchanged" : "conflict",
+        reason: bridge ? "Existing CLAUDE.md symlink already imports AGENTS.md; it remains unowned and unchanged."
+          : "Native path is a symlink. Canonfig will not replace it with a regular file; explicitly relocate or remove the link before applying." });
+      if (!bridge && previous !== undefined) nextArtifacts[filePath] = previous;
+      continue;
+    }
     const currentBytes = await readOptionalFile(absolute);
     if (await unreadableExistingPath(root, absolute, currentBytes)) {
       const previous = previousState.artifacts[filePath];
@@ -143,32 +177,17 @@ export async function createPlan(
       continue;
     }
 
-    const contentHash = sha256(rendered.content);
-    const unmanagedIdenticalReplace =
-      previous === undefined &&
-      currentBytes !== undefined &&
-      group.length === 1 &&
-      group[0]?.kind === "replace" &&
-      contentHash === sha256(currentBytes);
-
-    let nextState: ArtifactState | undefined;
-    if (!unmanagedIdenticalReplace) {
-      nextState = {
-        owner,
-        hash: contentHash,
-        existedBefore: currentBytes === undefined ? false : previous?.existedBefore ?? true,
-        cleanup: rendered.cleanup,
-        ...(mode === undefined ? {} : { mode }),
-      };
-      nextArtifacts[filePath] = nextState;
-    } else {
-      diagnostics.push({
-        level: "info",
-        code: "UNMANAGED_IDENTICAL",
-        message: `${filePath} already matches generated output; Canonfig left ownership unchanged.`,
-        path: filePath,
-      });
-    }
+    if (typeof current === "string" && typeof rendered.content === "string"
+      && textHash(current) === textHash(rendered.content)) rendered.content = current;
+    const nextState: ArtifactState = {
+      owner,
+      hash: sha256(rendered.content),
+      ...(typeof rendered.content === "string" ? { textHash: textHash(rendered.content) } : {}),
+      existedBefore: currentBytes === undefined ? false : previous?.existedBefore ?? true,
+      cleanup: rendered.cleanup,
+      ...(mode === undefined ? {} : { mode }),
+    };
+    nextArtifacts[filePath] = nextState;
 
     const action = currentBytes === undefined ? "create" : bytesEqual(currentBytes, rendered.content) ? "unchanged" : "update";
     entries.push({
@@ -180,7 +199,7 @@ export async function createPlan(
       content: rendered.content,
       binary: rendered.content instanceof Uint8Array,
       ...(mode === undefined ? {} : { mode }),
-      ...(nextState === undefined ? {} : { nextState }),
+      nextState,
     });
   }
 
@@ -189,6 +208,12 @@ export async function createPlan(
     if (desiredPaths.has(filePath) || !selectedOwner(previous.owner)) continue;
     const absolute = resolveInside(root, filePath);
     await assertRealPathInside(root, absolute);
+    if (await leafSymlink(absolute)) {
+      entries.push({ path: filePath, owner: previous.owner, action: "conflict",
+        reason: "Owned native path was replaced by a symlink. Canonfig will not remove or overwrite that link; resolve it explicitly before cleanup." });
+      nextArtifacts[filePath] = previous;
+      continue;
+    }
     const currentBytes = await readOptionalFile(absolute);
     if (await unreadableExistingPath(root, absolute, currentBytes)) {
       entries.push({ path: filePath, owner: previous.owner, action: "conflict",
@@ -196,7 +221,10 @@ export async function createPlan(
       nextArtifacts[filePath] = previous;
       continue;
     }
-    const current = currentBytes === undefined ? undefined : Buffer.from(currentBytes).toString("utf8");
+    const current = currentBytes === undefined ? undefined : previous.cleanup.every((entry) => entry.kind === "replace")
+      ? currentBytes : Buffer.from(currentBytes).toString("utf8");
+    const before = previewText(currentBytes);
+    const binary = currentBytes !== undefined && before === undefined;
     const rendered = renderArtifacts([], current, previous, options.force ?? false);
     if (rendered.conflicts.length > 0) {
       entries.push({
@@ -204,7 +232,7 @@ export async function createPlan(
         owner: previous.owner,
         action: "conflict",
         reason: rendered.conflicts.join(" "),
-        before: current,
+        before, binary,
         after: typeof rendered.content === "string" ? rendered.content : undefined,
       });
       nextArtifacts[filePath] = previous;
@@ -213,14 +241,14 @@ export async function createPlan(
 
     const cleaned = previous.existedBefore ? rendered.content : undefined;
     if (cleaned === undefined) {
-      entries.push({ path: filePath, owner: previous.owner, action: currentBytes === undefined ? "unchanged" : "delete", before: current });
+      entries.push({ path: filePath, owner: previous.owner, action: currentBytes === undefined ? "unchanged" : "delete", before, binary });
     } else {
       const action = bytesEqual(currentBytes, cleaned) ? "unchanged" : currentBytes === undefined ? "create" : "update";
       entries.push({
         path: filePath,
         owner: previous.owner,
         action,
-        before: current,
+        before,
         after: typeof cleaned === "string" ? cleaned : undefined,
         content: cleaned,
         binary: cleaned instanceof Uint8Array,
@@ -233,7 +261,7 @@ export async function createPlan(
     version: 1,
     generatedAt: new Date().toISOString(),
     canonfigVersion: HARNESS_CONFIGURATION_VERSION,
-    appliedTargets: [...new Set(cleaning ? remainingTargets : [...previousTargets, ...targets])].sort(),
+    appliedTargets: [...new Set(cleaning ? remainingTargets : [...previousTargets.filter((target) => !retiredTargets.includes(target)), ...targets])].sort(),
     artifacts: Object.fromEntries(Object.entries(nextArtifacts).sort(([left], [right]) => left.localeCompare(right))),
   };
   return { root, targets, entries: entries.sort((a, b) => a.path.localeCompare(b.path)), diagnostics, nextState };

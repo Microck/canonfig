@@ -3,8 +3,9 @@ import type { ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import { isIP } from "node:net";
 import type { AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
 
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Exit, Redacted, Schema, Scope } from "effect";
 
 import { MachineState } from "../machine/machine-state.service.ts";
 import { CredentialStorageError } from "../machine/machine-state.errors.ts";
@@ -221,12 +222,13 @@ export const asEnrollmentError = (error: Error): EnrollmentError => {
   });
 };
 
-export const startSourceServer = (
-  input: StartSourceServerInput = {},
+const startSourceServerScoped = (
+  input: StartSourceServerInput,
+  scope: Scope.Closeable,
 ): Effect.Effect<
   SourceServerHandle,
   EnrollmentConfigurationError | CredentialStorageError | SourceCredentialMismatchError,
-  Enrollment | MachineState
+  Enrollment | MachineState | Scope.Scope
 > =>
   Effect.gen(function*() {
     const maximumMetadataBytes = input.maximumMetadataBytes ?? defaultMaximumMetadataBytes;
@@ -271,8 +273,13 @@ export const startSourceServer = (
         message: "the source server host must be an unambiguous loopback address",
       });
     }
+    yield* enrollment.startServerSession().pipe(Effect.mapError((error) =>
+      error instanceof EnrollmentConfigurationError ? error : new EnrollmentConfigurationError({
+        operation: "start source session", message: "Pending enrollment recovery failed; the Source server was not started.",
+      })));
     const maximumBlobBytes = input.maximumBlobBytes ?? defaultMaximumBlobBytes;
     let blobRequests = 0;
+    const connections = new Set<Duplex>();
     const server = createServer(
       {
         key: Redacted.value(key),
@@ -532,11 +539,15 @@ export const startSourceServer = (
         });
       },
     );
+    server.on("connection", (socket) => {
+      connections.add(socket);
+      socket.once("close", () => connections.delete(socket));
+    });
     server.requestTimeout = 10_000;
     server.headersTimeout = 10_000;
     server.keepAliveTimeout = 1_000;
 
-    const address = yield* Effect.tryPromise({
+    const address = yield* Effect.acquireRelease(Effect.tryPromise({
       try: () =>
         new Promise<AddressInfo>((resolveAddress, rejectAddress) => {
           const onError = (cause: Error): void => rejectAddress(cause);
@@ -554,7 +565,20 @@ export const startSourceServer = (
           operation: "start enrollment server",
           message: "the loopback HTTPS server could not start",
         }),
-    });
+    }), () => Effect.promise(() => new Promise<void>((resolveClose, rejectClose) => {
+      const fallback = setTimeout(() => {
+        server.closeAllConnections();
+        // Also close peers that connected but never completed TLS/HTTP setup.
+        for (const socket of connections) socket.destroy();
+      }, 1_000);
+      fallback.unref();
+      server.close((cause) => {
+        clearTimeout(fallback);
+        if (cause === undefined) resolveClose();
+        else rejectClose(cause);
+      });
+      server.closeIdleConnections();
+    })));
     const host = address.family === "IPv6"
       ? `[${address.address}]`
       : address.address;
@@ -562,12 +586,18 @@ export const startSourceServer = (
       endpoint: `https://${host}:${address.port}`,
       fingerprint: source.tlsFingerprint,
       blobRequests: () => blobRequests,
-      close: () =>
-        new Promise<void>((resolveClose, rejectClose) => {
-          server.close((cause) => {
-            if (cause === undefined) resolveClose();
-            else rejectClose(cause);
-          });
-        }),
+      close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
     };
   });
+
+export const startSourceServer = (
+  input: StartSourceServerInput = {},
+): Effect.Effect<SourceServerHandle,
+  EnrollmentConfigurationError | CredentialStorageError | SourceCredentialMismatchError,
+  Enrollment | MachineState> => Effect.gen(function*() {
+  const scope = yield* Scope.make();
+  return yield* startSourceServerScoped(input, scope).pipe(
+    Scope.provide(scope),
+    Effect.onExit((exit) => Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void),
+  );
+});

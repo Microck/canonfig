@@ -1,64 +1,58 @@
-# Canonfig v4.0.1
+# Canonfig v4.0.2
 
-4.0.1 fixes safety, enrollment, CLI output and diagnostic issues reported after
-4.0.0. Node.js 24 or newer is required. The state schema and signed-revision
-format are unchanged; Sources and followers remain on the 4.0.x compatibility
-line. Finish or recover unfinished runs with their original build before
-updating, and keep a backup of the installation and state. Migration from 3.2.x
-still requires a separate setup, not an in-place upgrade.
+This corrective patch addresses the remaining 22 findings in the #181 backlog.
+Node.js 24 or newer is required. The Source/follower protocol and state schema
+remain compatible on the 4.0.x line. Finish or recover an unfinished run with its
+original build before upgrading, and retain a backup until verification passes.
 
-## Filesystem safety and native configuration
+## Source concurrency and ownership handovers
 
-- Preserve directory permissions and file modes through synchronization,
-  rollback and native configuration updates. Failed writes no longer leave
-  parent directories or obsolete rollback data behind.
-- Treat symlinked managed-directory ancestors and non-regular merge targets as
-  actionable conflicts instead of traversing or replacing them. Unrelated
-  safe resources can still proceed.
-- Limit native harness cleanup to owned files. Deleted Codex/Grok TOML can be
-  recreated or cleaned safely; dangling links and locally edited files retain
-  their protections.
+Pending enrollment survives unrelated Source commands. An exclusive serving
+lease prevents competing servers from invalidating enrollment, and bounded
+shutdown releases that lease even with stalled clients (#148).
 
-## Enrollment, publication and shared secrets
+Owned resource retirement precedes successor writes, with explicit dependency
+sequencing and recovery-safe handovers. Local edits remain protected (#150).
+Installed scheduler commands are inspected independently of desired bindings;
+missing runtimes fail readiness, while verifier limitations remain unverified
+rather than producing false passes (#155). Verified Homebrew opt paths survive
+keg upgrades for both scheduler and installer bindings (#157).
 
-- Reject duplicate enrollment identities without consuming the reusable
-  invitation or taking over an active follower.
-- Reject revision metadata that cannot fit the transport budget before storing
-  it. Source servers refuse a configured metadata ceiling below that admission
-  budget. File blob bytes remain separate from metadata.
-- Refuse local writes over Source-owned secret names. Manifest ownership checks,
-  writes and retired-credential cleanup now share a cross-process lock, avoiding
-  stale concurrent overwrites. Existing name collisions include recovery steps.
-- Use the same credential-policy selection for regular and secret commands.
-  Local-file bootstrap is described accurately without permitting shared-secret
-  storage through an insecure backend.
+## Native schedules and installation evidence
 
-## CLI and diagnostics
+- Canonicalize named time zones and reject unsupported numeric offsets before persistence (#156).
+- Choose the first occurrence of repeated local times during fall-back, including half-hour DST changes (#158).
+- Allow Windows synchronization on battery power without stopping an active apply when unplugged; avoid asserting an unproven reason for a missed run (#159).
+- Require finalized follower enrollment before selecting a schedule. Keep pending/unenrolled recovery guidance accurate, including leftover native jobs (#160).
+- Scope unattended-fire evidence to the installed native job. Old, unbound and pre-install process records remain historical, not proof of the current installation (#162).
 
-- Report inaccessible, corrupt or busy state as actionable errors, without
-  deleting the existing state. Optional debug diagnostics remain redacted and
-  inside a single result envelope.
-- Emit one final apply result after automatic secret synchronization, with a
-  matching exit status. Secrets commands use the canonical JSON schema.
-- Handle JSON, version and help flags consistently across command groups and
-  command logs. Usage errors identify missing arguments and unknown options;
-  installer errors retain their specific explanation.
-- Redact recognized credentials throughout human output, including repeated
-  values, symbolic-prefix literals, URL userinfo and escaped JSON. Redacted
-  scalar JSON stays parseable. Public harness binding names remain readable
-  without masking unrelated executable paths.
-- Handle child stdin closing early without crashing or losing exit diagnostics.
-- Keep Windows command logging private when Node inherits PowerShell 7 module
-  paths before launching Windows PowerShell.
-- Make doctor honor actual installer bindings, removals and supported methods,
-  including uv; yarn is no longer treated as a supported installer.
-- Emit native MCP environment-reference syntax and reject unsupported mappings
-  in strict mode, including unsupported Kilo project references.
+## Installer and observation consistency
+
+- Support rustup cargo proxies and Corepack pnpm entrypoints while preserving verified Homebrew opt paths. Validation disables automatic downloads/pinning and will not initialize absent rustup settings (#161).
+- Select the same qualified tool recipe during observation, planning and installation (#163).
+
+## Harness configuration safety
+
+- Adopt identical generated files and managed blocks in fresh clones; accept LF/CRLF-only text conversions without weakening exact-byte binary protection (#166, #179).
+- Keep adopted and updated TOML blocks in place. Refuse cleanup that would change the scope of following operator keys.
+- Emit supported Claude/Droid hook events; reject unsupported mappings under strict mode. Use Droid's documented standalone event layout and project-root script paths (#167).
+- Permit read-only Codex proposals from non-Git working directories without changing Canonfig action authorization (#168).
+- Preserve existing CLAUDE.md instruction symlinks and refuse silent replacement/deletion of other native-output symlinks (#171).
+- Clean retired binary skill files using original bytes, with accurate text/binary removal previews (#172).
+- Retire explicitly disabled targets on unfiltered apply while retaining shared output still needed by enabled targets (#175).
+- Copy repository-contained linked skill sources and report escapes, dangling links and cycles rather than silently dropping them (#176).
+- Preserve unrelated JSONC comments and formatting using targeted edits, including during re-render and cleanup (#177).
+
+## Setup diagnostics
+
+Invalid or unreadable discovery inputs are operator usage errors rather than
+internal journal defects. Failed/skipped item evidence is shown in human output
+and status JSON under normal redaction rules; stale evidence is not attached to
+a changed verdict (#178, #180).
 
 ## Verification
 
-The integration candidate passed 1,147 selected tests, with 22 platform-specific
-skips, plus real CLI checks. Linux, macOS, Windows x64 and Windows ARM64 CI passed
-on the exact merged integration tree. The release candidate is validated again
-by the release workflow before publication. These results do not claim live
-model/provider authentication or completion of the remaining issue backlog.
+Release requires clean integration tests, native Linux/macOS/Windows x64/ARM64
+checks, Codex and CodeRabbit reviews, the unchanged package-size budgets, and a
+fresh public-registry install after publication. Draft preparation is not a
+release or a claim that these final gates have completed.

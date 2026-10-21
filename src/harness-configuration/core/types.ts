@@ -152,6 +152,7 @@ export type CleanupInstruction =
 export interface ArtifactState {
   owner: ArtifactOwner;
   hash: string;
+  textHash?: string;
   existedBefore: boolean;
   mode?: number;
   cleanup: CleanupInstruction[];

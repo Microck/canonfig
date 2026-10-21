@@ -44,8 +44,20 @@ Keychain unlocked; with nobody logged in, the `gui/<uid>` domain does not exist
 and the job does not fire. When the probe fails because the session's Keychain
 is locked, doctor says so and gives this recovery text.
 
-A requested but absent, disabled, or drifted native job is a verification failure,
-not a pass. A current job proves only its installed definition; the result marks
+A requested but absent, disabled, or calendar-drifted native job is a verification
+failure, not a pass. Binding-only drift is advisory only when the installed
+runtime and entrypoint files remain available. A deleted runtime or unreadable
+entrypoint fails readiness even if the calendar still matches. For POSIX wrappers,
+readiness also inspects a bounded shebang interpreter chain; an `env` interpreter
+is resolved only in the installed native job's PATH, not the interactive shell's.
+Unknown interpreter syntax, Windows command scripts, or missing native PATH evidence
+remain unverified and produce a warning, never a readiness pass. Definite missing
+files or incompatible native executable images fail readiness. For a normal binding, manually run `canonfig sync --apply` from the current
+installation. For a deleted custom executable, use the concrete
+`canonfig schedule set <calendar>` command shown by status, without
+`--executable`, to preserve the chosen calendar and clear the stale custom path.
+`sync --apply` alone reuses a persisted custom executable and cannot repair it.
+An unlaunchable job cannot repair itself. A current job proves only its installed definition; the result marks
 scheduled execution unverified. An intentionally unscheduled follower remains
 skipped. Run a separately approved native scheduled execution before claiming
 unattended setup complete.
@@ -54,3 +66,11 @@ This diagnosis does not automatically unlock a keychain, weaken permissions,
 provision a headless secret service, or configure a GUI session. Those operations
 have distinct authorization and lifecycle requirements. No unknown state is
 converted into a success merely to make an installation appear complete.
+
+Scheduled-fire evidence is scoped to the observed native installation. POSIX
+backends fingerprint unit/plist file identity and content; Windows fingerprints
+the exported task including its registration date. The scheduled process records
+that identity once at start and retains it on completion/failure. Reinstallation
+(including identical POSIX content), definition changes, legacy unbound records,
+and processes started before registration do not prove the current job fired.
+Historical records remain stored but do not count as current readiness.

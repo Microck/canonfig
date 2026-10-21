@@ -1,4 +1,4 @@
-import { sha256 } from "./hash.ts";
+import { sha256, textHash, matchesArtifactHash } from "./hash.ts";
 import { restoreJsonCleanup } from "./render-json.ts";
 import {
   commentMarkers,
@@ -24,7 +24,7 @@ function removeManagedText(
     conflicts.push(`Managed block ${cleanup.marker} is missing.`);
     return text;
   }
-  if (sha256(located.block) !== cleanup.blockHash && !force) {
+  if (sha256(located.block) !== cleanup.blockHash && textHash(located.block) !== cleanup.blockHash && !force) {
     conflicts.push(`Managed block ${cleanup.marker} was edited outside Canonfig.`);
     return text;
   }
@@ -44,8 +44,18 @@ function removeTomlBlock(
     conflicts.push(`Managed TOML block ${cleanup.marker} is missing.`);
     return text;
   }
-  if (sha256(located.block) !== cleanup.blockHash && !force) {
+  if (sha256(located.block) !== cleanup.blockHash && textHash(located.block) !== cleanup.blockHash && !force) {
     conflicts.push(`Managed TOML block ${cleanup.marker} was edited outside Canonfig.`);
+    return text;
+  }
+  // A table header also scopes keys after the marker. Removing that header
+  // would silently move operator-owned keys into another table or the root.
+  const following = text.slice(located.end).split(/\r?\n/u);
+  const nextSection = following.findIndex((line) => /^\s*\[/u.test(line));
+  const trailingKeys = (nextSection < 0 ? following : following.slice(0, nextSection))
+    .some((line) => line.trim() !== "" && !line.trimStart().startsWith("#"));
+  if (!force && /^\s*\[/mu.test(located.block) && trailingKeys) {
+    conflicts.push(`Managed TOML block ${cleanup.marker} has following operator keys whose table scope would change. Relocate them before cleanup.`);
     return text;
   }
   return `${text.slice(0, located.start)}${text.slice(located.end)}`;
@@ -102,7 +112,7 @@ export function unapplyPrevious(
   for (const cleanup of previous.cleanup) {
     if (cleanup.kind === "replace") {
       if (output === undefined) continue;
-      if (sha256(output) !== previous.hash && !force) {
+      if (!matchesArtifactHash(output, previous.hash, previous.textHash) && !force) {
         conflicts.push("Generated file was edited outside Canonfig.");
         continue;
       }
@@ -128,12 +138,13 @@ export function unapplyPrevious(
       if (rerenderedMarkers.has(cleanup.marker)) continue;
       output = removeManagedText(text, cleanup, force, conflicts);
     } else if (cleanup.kind === "toml-block") {
+      if (rerenderedMarkers.has(cleanup.marker)) continue;
       output = removeTomlBlock(text, cleanup, force, conflicts);
     } else {
       output = removeTomlKey(text, cleanup, conflicts);
     }
   }
 
-  if (jsonDocument !== undefined && typeof output === "string") output = serializeJsonDocument(jsonDocument);
+  if (jsonDocument !== undefined && typeof output === "string") output = serializeJsonDocument(jsonDocument, output);
   return output;
 }

@@ -1,8 +1,11 @@
+import { connect as tcpConnect } from "node:net";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { X509Certificate } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { connect as tlsConnect } from "node:tls";
 
@@ -265,6 +268,89 @@ describe("loopback HTTPS enrollment", () => {
     expect(authenticated.follower).toEqual(enrolled.follower);
   });
 
+  it.each(["inspect", "separate process", "second server"])("preserves pending enrollment during a concurrent Source %s", async (operation) => {
+    const setup = fixture();
+    const server = await start(setup);
+    const prepared = await runFollower(setup, enrollFollower({
+      invitation: await invitation(setup, server), followerName: "Live Pending Host", finalize: false,
+    }));
+    const otherRuntime = ManagedRuntime.make(sourceApplicationLayer(setup.sourceDatabase, setup.sourceMachine));
+    sourceRuntimes.push(otherRuntime);
+    if (operation === "inspect") {
+      await otherRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.source()));
+    } else if (operation === "separate process") {
+      const moduleUrl = (file: string) => JSON.stringify(pathToFileURL(resolve(import.meta.dirname, "../../src", file)).href);
+      const code = `import { Effect, Layer, ManagedRuntime } from "effect";
+        import { EnrollmentLive } from ${moduleUrl("enrollment/enrollment.layer.ts")};
+        import { Enrollment } from ${moduleUrl("enrollment/enrollment.service.ts")};
+        import { stateRepositoryLayer } from ${moduleUrl("state/state-repository.layer.ts")};
+        import { linuxMachineStateLayer } from ${moduleUrl("machine/linux.layer.ts")};
+        const machine = linuxMachineStateLayer({ environment: [
+          {name:"HOME",value:${JSON.stringify(join(setup.root, "source", "home"))}},
+          {name:"PATH",value:${JSON.stringify(join(setup.root, "source", "bin"))}}
+        ], credentialPolicy:{kind:"local-file",path:${JSON.stringify(join(setup.root, "source", "credentials"))}} });
+        const runtime = ManagedRuntime.make(EnrollmentLive.pipe(
+          Layer.provideMerge(stateRepositoryLayer(${JSON.stringify(setup.sourceDatabase)})), Layer.provideMerge(machine)));
+        try { await runtime.runPromise(Effect.flatMap(Enrollment, service => service.source())); }
+        finally { await runtime.dispose(); }`;
+      const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", code], {
+        cwd: resolve(import.meta.dirname, "../.."), encoding: "utf8", timeout: 30000,
+      });
+      expect(child.status, child.stderr).toBe(0);
+    } else {
+      const result = await otherRuntime.runPromise(Effect.result(startSourceServer()));
+      if (result._tag === "Success") openServers.push(result.success);
+      expect(result._tag).toBe("Failure");
+    }
+    await runFollower(setup, finalizeFollowerEnrollment({
+      endpoint: server.endpoint, tlsFingerprint: prepared.tlsFingerprint,
+      credentialReference: prepared.credentialReference,
+    }));
+    const authenticated = await runFollower(setup, authenticateFollower({
+      endpoint: server.endpoint, tlsFingerprint: prepared.tlsFingerprint,
+      credentialReference: prepared.credentialReference,
+    }));
+    expect(authenticated.follower.id).toBe(prepared.follower.id);
+  });
+
+  it.each(["partial request", "unfinished TLS"])("bounds shutdown and releases its lease with an open %s", async (kind) => {
+    const setup = fixture();
+    const server = await start(setup);
+    const address = new URL(server.endpoint);
+    const socket = kind === "unfinished TLS"
+      ? tcpConnect({ host: address.hostname, port: Number(address.port) })
+      : tlsConnect({ host: address.hostname, port: Number(address.port), rejectUnauthorized: false });
+    socket.on("error", () => {});
+    try {
+      await new Promise<void>((ready, failed) => {
+        socket.once(kind === "unfinished TLS" ? "connect" : "secureConnect", ready);
+        socket.once("error", failed);
+      });
+      if (kind === "partial request") socket.write("POST /enroll/prepare HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10000\r\nConnection: keep-alive\r\n\r\n{");
+      const began = Date.now();
+      await server.close();
+      expect(Date.now() - began).toBeLessThan(4_000);
+      openServers.splice(openServers.indexOf(server), 1);
+      const restarted = await start(setup);
+      expect(restarted.endpoint).toMatch(/^https:/u);
+    } finally { socket.destroy(); }
+  });
+
+  it("releases a failed server start lease and makes close idempotent", async () => {
+    const first = fixture();
+    const occupied = await start(first);
+    const setup = fixture();
+    await runSource(setup, Effect.flatMap(Enrollment, (enrollment) => enrollment.initializeSource()));
+    const failed = await runSource(setup, Effect.result(startSourceServer({ port: Number(new URL(occupied.endpoint).port) })));
+    expect(failed._tag).toBe("Failure");
+    const server = await start(setup);
+    await server.close();
+    await server.close();
+    openServers.splice(openServers.indexOf(server), 1);
+    const restarted = await start(setup);
+    expect(restarted.endpoint).toMatch(/^https:/u);
+  });
+
   it("fails closed across a source restart after prepare and permits a safe retry", async () => {
     const setup = fixture();
     const server = await start(setup);
@@ -310,6 +396,11 @@ describe("loopback HTTPS enrollment", () => {
       }),
     );
     openServers.push(restartedServer);
+
+    await expect(runFollower(setup, finalizeFollowerEnrollment({
+      endpoint: restartedServer.endpoint, tlsFingerprint: prepared.tlsFingerprint,
+      credentialReference: prepared.credentialReference,
+    }))).rejects.toBeInstanceOf(InvalidFollowerCredentialError);
 
     const retried = await runFollower(
       setup,

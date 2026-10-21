@@ -105,6 +105,11 @@ export type ScheduleState =
   | "overridden";
 
 export interface ScheduleStatus {
+  /** Installed runtime/entrypoint files are available, not proof the job fired. */
+  readonly bindingUsable?: boolean | undefined;
+  /** Identity and registration time of the installed native definition. */
+  readonly generation?: string | undefined;
+  readonly installedAt?: string | undefined;
   readonly state: ScheduleState;
   readonly platform: MachinePlatform;
   readonly schedule: SyncSchedule;

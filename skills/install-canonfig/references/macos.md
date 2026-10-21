@@ -15,7 +15,7 @@ Use a new installation only. For an existing 3.2.x account, follow the
 instead of replacing its package or state.
 
 ```bash
-npm install --global @microck/canonfig@4.0.1
+npm install --global @microck/canonfig@4.0.2
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

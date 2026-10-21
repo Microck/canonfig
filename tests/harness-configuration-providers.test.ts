@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { HarnessConfigurationCompiler } from "../src/harness-configuration/core/compiler.ts";
-import { applyPlan } from "../src/harness-configuration/core/planner.ts";
+import { applyPlan, createPlan } from "../src/harness-configuration/core/planner.ts";
 import type { TargetId } from "../src/harness-configuration/core/types.ts";
 
 const roots: string[] = [];
@@ -119,6 +119,46 @@ afterEach(async () => {
     recursive: true,
     force: true,
   })));
+});
+
+describe("native Claude and Droid hook events", () => {
+  it.each([
+    ["claude-code", "before_agent"], ["claude-code", "after_agent"],
+    ["factory-droid", "before_agent"], ["factory-droid", "after_agent"],
+    ["factory-droid", "after_compact"], ["factory-droid", "subagent_start"],
+  ] as const)("rejects unsupported %s event %s in strict mode", async (target, event) => {
+    const root = await fixture([target], false);
+    const configPath = path.join(root, ".canonfig/harness.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.hooks = [{ ...config.hooks[0], event }];
+    await writeFile(configPath, JSON.stringify(config));
+    const compiler = new HarnessConfigurationCompiler();
+    const plan = await compiler.plan({ root });
+    expect(plan.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "HOOK_EVENT_UNSUPPORTED", target, level: "warning" }),
+    ]));
+    expect(plan.entries.find((entry) => entry.path === (target === "claude-code" ? ".claude/settings.json" : ".factory/hooks.json"))).toBeUndefined();
+    const strict = await compiler.plan({ root, strict: true });
+    expect(strict.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "HOOK_EVENT_UNSUPPORTED", target, level: "error" }),
+    ]));
+    await expect(applyPlan(strict)).rejects.toThrow();
+  });
+
+  it("writes Droid hooks at the documented root and preserves user hooks during cleanup", async () => {
+    const root = await fixture(["factory-droid"], false);
+    const native = { Notification: [{ matcher: ".*", hooks: [{ type: "command", command: "echo user" }] }] };
+    await write(root, ".factory/hooks.json", JSON.stringify(native));
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const generated = JSON.parse(await readFile(path.join(root, ".factory/hooks.json"), "utf8"));
+    expect(generated.hooks).toBeUndefined();
+    expect(generated.Notification).toEqual(native.Notification);
+    expect(generated.PreToolUse[0].hooks[0].command).toContain('$FACTORY_PROJECT_DIR/.canonfig/.runtime/hook-runner.mjs');
+    expect((await compiler.plan({ root })).entries.filter((entry) => entry.action !== "unchanged")).toEqual([]);
+    await applyPlan(await createPlan(root, ["factory-droid"], []));
+    expect(JSON.parse(await readFile(path.join(root, ".factory/hooks.json"), "utf8"))).toEqual(native);
+  });
 });
 
 describe("Kimi, Kilo, Hermes, and Qwen harness adapters", () => {

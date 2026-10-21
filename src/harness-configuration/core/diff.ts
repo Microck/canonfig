@@ -45,13 +45,13 @@ function lineDiff(before: string, after: string): DiffLine[] {
 
 function diffEntry(entry: PlanEntry): string {
   const header = [`--- a/${entry.path}`, `+++ b/${entry.path}`];
+  if (entry.binary) return [...header, `Binary file ${entry.action}`].join("\n");
   if (entry.action === "create") {
     return [...header, ...(entry.after ?? "").split("\n").map((line) => `+${line}`)].join("\n");
   }
   if (entry.action === "delete") {
     return [...header, ...(entry.before ?? "").split("\n").map((line) => `-${line}`)].join("\n");
   }
-  if (entry.binary) return [...header, `Binary file ${entry.action}`].join("\n");
   return [...header, ...lineDiff(entry.before ?? "", entry.after ?? "").map((line) => `${line.prefix}${line.text}`)].join("\n");
 }
 

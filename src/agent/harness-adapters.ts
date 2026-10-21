@@ -54,7 +54,9 @@ const harnessArguments = (
 ): ReadonlyArray<string> => {
   switch (harness) {
     case "codex":
-      return ["exec", "--json", "--sandbox", "read-only", "-"];
+      // Synchronization tasks target machine paths, not a Git working tree.
+      // Keep Codex read-only; Canonfig separately authorizes proposed actions.
+      return ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-"];
     case "claude":
       return ["--print", "--permission-mode", "plan", "--output-format", "json"];
     case "gemini":

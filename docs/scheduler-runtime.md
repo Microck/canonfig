@@ -38,8 +38,7 @@ of grace) with the task's `LastRunTime` and the registration `Date` Canonfig
 writes into the task XML. When that start came after both, the job stays
 `current` (it is still armed for the next run) and a second warning names the
 missed time: "the scheduled run at `<time>` did not start (last start
-`<time>`): Task Scheduler skipped it because no user was logged on or the
-machine was off". A task registered by an earlier release has no registration
+`<time>`): the cause is not established from task history". A task registered by an earlier release has no registration
 date; until it has run once, a missed run cannot be told from a time that passed
 before registration and is not reported.
 
@@ -50,3 +49,5 @@ or demonstrate a scheduled apply. A current job definition is not evidence of
 Source availability, usable unattended credentials, or successful scheduled
 Convergence. Those outcomes must be verified separately; `status` and `doctor`
 report the last unattended run's outcome and failure reason.
+
+Windows sync tasks explicitly allow starting on battery and do not stop an active sync when AC power is disconnected. Existing tasks with either battery restriction, or missing settings that imply restrictive defaults, are definition drift and need repair from a manual `canonfig sync --apply` or a valid `canonfig schedule set` command. This does not override Windows sleep, shutdown, or user-logon requirements. Missed-run diagnostics name possible causes rather than infer a specific one from a missing start.

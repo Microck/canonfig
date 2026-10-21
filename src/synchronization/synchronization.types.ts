@@ -120,6 +120,8 @@ export interface DesiredResourceEntry {
 }
 
 export interface ObservedResourceEntry {
+  /** MachineState-resolved filesystem target used for cross-resource ownership. */
+  readonly resolvedTarget?: string | undefined;
   readonly resource: ResourceId;
   readonly observed: ObservedResourceState;
 }

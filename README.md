@@ -33,13 +33,13 @@ managing agent setups across multiple machines usually breaks because machines d
 
 ## install
 
-4.0.1 is for new installations. if you have a 3.2.x installation, do not replace
+4.0.2 supports new installations and patch upgrades from 4.0.x. if you have a 3.2.x installation, do not replace
 its package or state in place; follow the [fresh-install guide](https://github.com/Microck/canonfig/blob/main/website/content/docs/how-to/upgrade.mdx).
 
 requires Node.js 24+ and npm. install the same release on the source machine and on every follower:
 
 ```bash
-npm install --global @microck/canonfig@4.0.1
+npm install --global @microck/canonfig@4.0.2
 canonfig --version
 canonfig doctor --no-input
 ```
@@ -178,7 +178,7 @@ on linux, a tunnel recovered by a systemd job runs in its own transient user ser
 
 edit the source files or the profile on A, then run the same `source digest` and `source publish` commands; followers apply the new sequence at their next run. see [publish profile changes](https://github.com/Microck/canonfig/blob/main/website/content/docs/how-to/publish-profile-changes.mdx).
 
-the source and every follower in a new 4.0.1 installation must run the same major.minor release; otherwise requests fail with "source/follower version mismatch". 4.0.1 refuses 3.2.x peers. An in-place upgrade from 3.2.x is unsupported and unverified: keep the old state intact and follow the [fresh-install procedure](https://github.com/Microck/canonfig/blob/main/website/content/docs/how-to/upgrade.mdx) to back it up and set up a separate Source and followers.
+the source and every follower in a new 4.0.2 installation must run the same major.minor release; otherwise requests fail with "source/follower version mismatch". 4.0.2 refuses 3.2.x peers. An in-place upgrade from 3.2.x is unsupported and unverified: keep the old state intact and follow the [fresh-install procedure](https://github.com/Microck/canonfig/blob/main/website/content/docs/how-to/upgrade.mdx) to back it up and set up a separate Source and followers.
 
 ### shared secrets (optional)
 

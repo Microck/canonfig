@@ -430,8 +430,8 @@ const withTunnelEvidence = (
   );
 };
 
-const schedulerProbe = (
-  schedules: ScheduleManager["Service"],
+export const schedulerProbe = (
+  schedules: Pick<ScheduleManager["Service"], "status">,
   input: Pick<DoctorInput, "schedule" | "unscheduledDetail" | "fires">,
 ): Effect.Effect<DoctorProbe, object> => {
   if (input.schedule === undefined) {
@@ -445,7 +445,10 @@ const schedulerProbe = (
       Effect.map((status): DoctorProbe =>
         status.state === "not-installed"
           ? unscheduled
-          : { name: "scheduler", status: "warning", message: unmanagedScheduleDetail }
+          : { name: "scheduler", status: "warning", message: input.unscheduledDetail === undefined
+            ? unmanagedScheduleDetail
+            : `${input.unscheduledDetail}. A native job remains installed; remove it with `
+              + "`canonfig schedule remove` if it is no longer wanted" }
       ),
       Effect.catch(() => Effect.succeed(unscheduled)),
     );

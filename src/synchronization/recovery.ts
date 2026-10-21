@@ -40,7 +40,9 @@ import {
 } from "./executor.ts";
 import { desiredResourceDigest } from "./resource-plans.ts";
 import {
-  locallyEditedRollbackTargets,
+  inspectRollbackTargets,
+  rollbackPreimages,
+  type RollbackProjection,
   restoreRollbackReference,
   verifyResource,
   type ResourceExecutionContext,
@@ -456,21 +458,41 @@ export const recoverSynchronizationPlan = (
     // them. Anything else is a later local edit: restoring the snapshot or
     // re-running the action would destroy it, so recovery stops and keeps the
     // run open, the edited file and the snapshot.
+    // A completed successor rollback may already have been followed by an
+    // older removal's inverse when recovery was killed. Only its recorded
+    // predecessor preimages are additionally admissible, never arbitrary bytes.
+    const earlierRemovalPreimages: RollbackProjection = new Map();
+    const restoredPreimagesByAction = new Map<ActionId, RollbackProjection>();
     for (const state of states) {
+      const last = latest.get(state.action.id)!;
+      if (last.state === "pending" || last.state === "skipped") continue;
+      if (last.state === "failed" && last.verification?.method === "run-rolled-back") {
+        restoredPreimagesByAction.set(state.action.id, new Map(earlierRemovalPreimages));
+      }
+      const reference = latestRollbackReference(recovery.actions, state.action.id);
+      if (state.action.detail.kind !== "remove-resource" || reference === undefined) continue;
+      const entries = yield* rollbackPreimages(state.context, reference).pipe(Effect.mapError((error) =>
+        integrityError(recovery, `cannot inspect ${state.action.id}: ${String(error)}`)));
+      for (const [key, entry] of entries) earlierRemovalPreimages.set(key, entry);
+    }
+    const laterPreimages: RollbackProjection = new Map();
+    const removalsWithSuccessorWrites = new Set<ActionId>();
+    for (const state of [...states].reverse()) {
       const last = latest.get(state.action.id)!;
       if (last.state === "pending" || last.state === "skipped") continue;
       const reference = latestRollbackReference(recovery.actions, state.action.id);
       if (reference === undefined) continue;
-      const edited = yield* locallyEditedRollbackTargets(state.context, reference).pipe(
+      const inspection = yield* inspectRollbackTargets(state.context, reference, laterPreimages, restoredPreimagesByAction.get(state.action.id)).pipe(
         Effect.mapError((error) =>
           integrityError(recovery, `cannot inspect ${state.action.id}: ${String(error)}`)
         ),
       );
-      if (edited.length > 0) {
+      if (inspection.successorWrites) removalsWithSuccessorWrites.add(state.action.id);
+      if (inspection.edited.length > 0) {
         return yield* new RecoveryLocalEditError({
           run: recovery.run.id,
           resource: state.action.resource,
-          paths: edited,
+          paths: inspection.edited,
           snapshot: reference,
         });
       }
@@ -532,19 +554,24 @@ export const recoverSynchronizationPlan = (
             `completed removal ${state.action.id} lacks rollback material`,
           );
         }
-        yield* restoreResourceRollbackReference(
-          state.context,
-          last.rollbackReference,
-        ).pipe(
-          Effect.mapError((error) =>
-            integrityError(recovery, `cannot restore ${state.action.id}: ${String(error)}`)
-          ),
-        );
-        rollbackOwnership = {
-          resource: state.action.resource,
-          previousApplied: last.removedResource,
-        };
-        result = yield* executeSynchronizationAction(input, state, attempt);
+        rollbackOwnership = { resource: state.action.resource, previousApplied: last.removedResource };
+        if (removalsWithSuccessorWrites.has(state.action.id)) {
+          // Its removal already happened. Replaying it now would erase the
+          // validated successor; retain its inverse for whole-run rollback.
+          result = { kind: "verified", resource: state.action.resource,
+            rollback: restoreResourceRollbackReference(state.context, last.rollbackReference),
+            rollbackReference: last.rollbackReference };
+        } else {
+          yield* restoreResourceRollbackReference(
+            state.context,
+            last.rollbackReference,
+          ).pipe(
+            Effect.mapError((error) =>
+              integrityError(recovery, `cannot restore ${state.action.id}: ${String(error)}`)
+            ),
+          );
+          result = yield* executeSynchronizationAction(input, state, attempt);
+        }
       } else if (last.state === "succeeded") {
         const verification = yield* verifyResource(state.context).pipe(
           Effect.mapError((error) =>

@@ -1,3 +1,5 @@
+import { RunLockHeldError } from "../synchronization/synchronization.errors.ts";
+import { acquireRunLockScoped } from "../synchronization/run-lock.ts";
 import {
   createHash,
   createPrivateKey,
@@ -431,18 +433,24 @@ const validateEndpoint = (
 const makeEnrollment = Effect.gen(function*() {
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
-  // A pending enrollment has not issued an active follower credential. Any
-  // process restart makes its remote outcome ambiguous, so fail closed by
-  // discarding the pending marker; the invitation remains unconsumed and can
-  // be safely retried because no active follower identity was issued. The
-  // Source-side credential that enrollment stored goes with it.
-  yield* Effect.gen(function*() {
-    const abandoned = yield* repository.listPendingEnrollments();
+  // Only the exclusive server owner may recover interrupted enrollment. Merely
+  // constructing this layer (status, invite, inspection) must never cancel work.
+  const startServerSession = Effect.fn("Enrollment.startServerSession")(function*() {
+    const database = yield* repository.databaseFile().pipe(Effect.mapError(repositoryError("start source session")));
+    yield* acquireRunLockScoped(`${database}.source-server`, "serve source").pipe(
+      Effect.mapError((error) => new EnrollmentConfigurationError({
+        operation: "start source session",
+        message: error instanceof RunLockHeldError
+          ? "Another Source server is already running for this state database; stop it before starting a replacement."
+          : "The Source server lease could not be acquired safely. Check state-directory permissions and access to operating-system process information, then retry.",
+      })),
+    );
+    const abandoned = yield* repository.listPendingEnrollments().pipe(Effect.mapError(repositoryError("recover pending enrollment")));
     for (const pending of abandoned) {
-      yield* repository.cancelPendingEnrollment({ credentialDigest: pending.credentialDigest });
+      yield* repository.cancelPendingEnrollment({ credentialDigest: pending.credentialDigest }).pipe(Effect.mapError(repositoryError("recover pending enrollment")));
       yield* machine.removeCredential(pending.credentialReference).pipe(Effect.ignore);
     }
-  }).pipe(Effect.ignore);
+  });
   const maximumRevisionValidationCacheEntries = 1024;
   const validatedRevisionCache = new Map<
     string,
@@ -1187,6 +1195,7 @@ const makeEnrollment = Effect.gen(function*() {
   });
 
   return Enrollment.of({
+    startServerSession,
     initializeSource,
     source,
     sourceCredentials,

@@ -47,6 +47,8 @@ import type { LocalOverlayEntry } from
   "../synchronization/synchronization.types.ts";
 
 export class StateRepository extends Context.Service<StateRepository, {
+  /** Canonical SQLite filename, for cross-process lifecycle exclusion. */
+  readonly databaseFile: () => Effect.Effect<string, StateRepositoryError>;
   readonly saveSourceIdentity: (
     identity: SourceIdentity,
   ) => Effect.Effect<void, StateRepositoryError>;
