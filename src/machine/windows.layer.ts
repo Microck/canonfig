@@ -483,6 +483,20 @@ const xmlElement = (xml: string, name: string): string | undefined => {
   return match === null ? undefined : decodeXml(match[1]!.trim());
 };
 
+/** Every registration, including snapshot restore, gets a fresh public identity. */
+export const renewWindowsTaskRegistration = (xml: string, at: string, nonce: string): string => {
+  const registration = /<RegistrationInfo(?:\s[^>]*)?>([\s\S]*?)<\/RegistrationInfo>/u.exec(xml);
+  const current = registration?.[1] ?? "";
+  const source = (xmlElement(current, "Source") ?? "Canonfig")
+    .replace(/\s*\[canonfig-generation:[a-f0-9]+\]/gu, "").trim();
+  const metadata = current.replace(/<(?:Date|Source)(?:\s[^>]*)?>[\s\S]*?<\/(?:Date|Source)>/gu, "")
+    .replace(/<(?:Date|Source)\s*\/>/gu, "")
+    + `<Date>${escapeXml(at)}</Date><Source>${escapeXml(`${source} [canonfig-generation:${nonce}]`)}</Source>`;
+  const replacement = `<RegistrationInfo>${metadata}</RegistrationInfo>`;
+  return registration === null ? xml.replace(/<Task\b[^>]*>/u, (root) => `${root}${replacement}`)
+    : xml.replace(registration[0], replacement);
+};
+
 export const windowsRecurrenceIntervalMatches = (
   schedule: string,
   recurrence: "daily" | "weekly",
@@ -1255,7 +1269,7 @@ export const windowsMachineStateLayer = (
       ): Effect.Effect<void, MachineStateError> => {
         const path = taskXmlPath();
         return Effect.tryPromise({
-          try: () => writeFile(path, Buffer.from(`\ufeff${xml}`, "utf16le")),
+          try: () => writeFile(path, Buffer.from(`\ufeff${renewWindowsTaskRegistration(xml, new Date().toISOString(), randomBytes(16).toString("hex"))}`, "utf16le")),
           catch: (cause) => filesystemFailure("write Task Scheduler XML", path, cause),
         }).pipe(
           Effect.andThen(runSchedulerCommand([

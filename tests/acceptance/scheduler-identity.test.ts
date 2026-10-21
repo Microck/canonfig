@@ -1,3 +1,4 @@
+import { renewWindowsTaskRegistration, windowsTaskRegistration } from "../../src/machine/windows.layer.ts";
 import { mkdtemp, writeFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,4 +35,20 @@ it("requires observable native registration evidence on Windows", () => {
   const first = registeredSchedulerIdentity("<Date>2026-09-01T00:00:00Z</Date>", "2026-09-01T00:00:00Z");
   const next = registeredSchedulerIdentity("<Date>2026-09-02T00:00:00Z</Date>", "2026-09-02T00:00:00Z");
   expect(next?.generation).not.toBe(first?.generation);
+});
+
+it("renews Windows snapshot registration without changing execution or source metadata", () => {
+  const xml = '<Task><RegistrationInfo><Date>2026-09-01T00:00:00Z</Date><Source>Operator &amp; Canonfig</Source><Description>keep</Description></RegistrationInfo><Actions><Exec><Command>keep.exe</Command></Exec></Actions></Task>';
+  const first = renewWindowsTaskRegistration(xml, "2026-09-02T00:00:00.000Z", "a".repeat(32));
+  const restored = renewWindowsTaskRegistration(first, "2026-09-02T00:00:00.000Z", "b".repeat(32));
+  expect(restored).toContain("Operator &amp; Canonfig");
+  expect(restored).toContain("<Description>keep</Description>");
+  expect(restored).toContain("<Command>keep.exe</Command>");
+  expect(restored.match(/canonfig-generation:/gu)).toHaveLength(1);
+  expect(restored).not.toContain("a".repeat(32));
+  const originalIdentity = registeredSchedulerIdentity(first, windowsTaskRegistration(first).registeredAt)!;
+  const restoredIdentity = registeredSchedulerIdentity(restored, windowsTaskRegistration(restored).registeredAt)!;
+  expect(restoredIdentity.generation).not.toBe(originalIdentity.generation);
+  expect(currentScheduleFires(restoredIdentity, [{ generation: originalIdentity.generation,
+    startedAt: "2026-09-02T00:00:01Z", at: "2026-09-03T00:00:00Z", outcome: "completed" }])).toEqual([]);
 });
