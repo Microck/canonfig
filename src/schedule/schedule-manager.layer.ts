@@ -227,7 +227,7 @@ const statusFrom = (
       : []),
     ...(missedRun === undefined
       ? []
-      : [`the scheduled run at ${missedRun} did not start (last start ${inspection.lastStartedAt ?? "never"}): Task Scheduler skipped it because no user was logged on or the machine was off, and it does not catch up skipped runs. Run \`canonfig sync --apply\` now, and stay logged on at the scheduled time`]),
+      : [`the scheduled run at ${missedRun} did not start (last start ${inspection.lastStartedAt ?? "never"}): the cause is not established from task history. It may have been skipped because no user was logged on, the machine was off, or native task conditions prevented it; skipped runs are not caught up. Run \`canonfig sync --apply\` now, and stay logged on at the scheduled time`]),
     ...(inspection.timezoneChangedSinceBoot && state !== "timezone-changed"
       ? [macosTimezoneRecovery]
       : []),

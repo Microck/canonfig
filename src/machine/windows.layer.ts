@@ -407,7 +407,7 @@ const renderTaskSchedulerJob = (
         `$Action = New-ScheduledTaskAction -Execute ${powershellLiteral(executable.absolute)} `
           + `-Argument ${powershellLiteral(commandLine)}`,
         `$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive`,
-        `$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)`,
+        `$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 1)`,
         `$Settings.Priority = ${windowsTaskPriority}`,
       ].join("\r\n"),
       schedule: [
@@ -487,6 +487,11 @@ export const windowsRecurrenceIntervalMatches = (
   recurrence: "daily" | "weekly",
 ): boolean => xmlElement(schedule, recurrence === "daily" ? "DaysInterval" : "WeeksInterval") === "1";
 
+/** Missing settings use Task Scheduler's battery-restrictive defaults. */
+export const windowsTaskBatteryPolicyMatches = (settings: string): boolean =>
+  xmlElement(settings, "DisallowStartIfOnBatteries") === "false"
+  && xmlElement(settings, "StopIfGoingOnBatteries") === "false";
+
 export const windowsTaskTriggerEnabled = (trigger: string): boolean =>
   xmlElement(trigger, "Enabled") !== "false";
 
@@ -545,8 +550,8 @@ const windowsTaskXml = (
     `<Principals><Principal id="Author"><UserId>${escapeXml(principal)}</UserId>`,
     "<LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>",
     "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
-    "<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>",
-    "<StopIfGoingOnBatteries>true</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate>",
+    "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+    "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate>",
     `<Enabled>true</Enabled><ExecutionTimeLimit>PT1H</ExecutionTimeLimit><Priority>${windowsTaskPriority}</Priority></Settings>`,
     `<Actions Context="Author"><Exec><Command>${escapeXml(definition.executable)}</Command>`,
     `<Arguments>${escapeXml(definition.arguments)}</Arguments></Exec></Actions></Task>`,
@@ -1379,6 +1384,7 @@ export const windowsMachineStateLayer = (
                     && command === desired.executable
                     && xmlElement(xml, "Arguments") === desired.arguments
                     && xmlElement(settings, "Priority") === String(windowsTaskPriority)
+                    && windowsTaskBatteryPolicyMatches(settings)
                     && calendarMatches,
                   calendarMatches,
                   // A disabled trigger or task never fires even when its

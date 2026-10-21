@@ -228,6 +228,7 @@ describe("Windows logged-on-only task status", () => {
     expect(status.warnings[0]).toContain("only runs while you are logged on");
     expect(status.warnings[1]).toContain(`the scheduled run at ${due} did not start`);
     expect(status.warnings[1]).toContain("no user was logged on");
+    expect(status.warnings[1]).toContain("cause is not established");
   });
 
   it("only states the logged-on limitation when the last due run started", async () => {
