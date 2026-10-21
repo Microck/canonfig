@@ -31,7 +31,9 @@ canonfig schedule set weekly:Mon,Thu@12:30
 
 Selecting a calendar requires an enrolled follower, including an explicit daily
 or weekly calendar. A fresh machine or Source-only installation is refused
-before any native job is installed.
+before any native job is installed. Pending enrollment, including credential
+rotation that retained an older calendar, must be finalized first; status reports
+`enrollment-pending` and doctor does not treat that calendar as ready.
 
 Only Linux supports `--timezone`. macOS and Windows reject an explicit named
 zone because their native calendar jobs cannot preserve that binding.

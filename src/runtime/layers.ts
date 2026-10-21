@@ -466,16 +466,15 @@ const persistScheduleOverride = (
  * post-apply reconciler share it, so none of them compares the installed job
  * against a built-in constant or against a different notion of drift.
  */
+const finalizedScheduleInput = (configuration: FollowerSynchronizationConfiguration | undefined): ResolvedScheduleInput | undefined =>
+  configuration?.enrollmentPending === true ? undefined
+    : desiredScheduleInput(configuration?.scheduleOverride, configuration?.scheduleDefault);
+
 const effectiveScheduleInput = (
   repository: StateRepository["Service"],
 ): Effect.Effect<ResolvedScheduleInput | undefined, CliCommandFailure> =>
   mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-    Effect.map((configuration) =>
-      desiredScheduleInput(
-        configuration?.scheduleOverride,
-        configuration?.scheduleDefault,
-      )
-    ),
+    Effect.map(finalizedScheduleInput),
   );
 
 /** How the Source can run unattended; appended where its keys are unreachable. */
@@ -1055,10 +1054,7 @@ const followerCommandsLayer = (
             .filter((method) => method.startsWith("client-load:")) ?? []),
           ...qualifiedClientMethods,
         ];
-        const scheduleInput = desiredScheduleInput(
-          configuration.scheduleOverride,
-          configuration.scheduleDefault,
-        );
+        const scheduleInput = finalizedScheduleInput(configuration);
         const scheduled = scheduleInput === undefined
           ? { status: "not-selected" as const, detail: unscheduledDetail(configuration) }
           : yield* schedules.status(scheduleInput).pipe(
@@ -1829,7 +1825,10 @@ const followerCommandsLayer = (
         "profileDefault" in input
           ? mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
             Effect.flatMap((configuration) =>
-              configuration?.scheduleDefault === undefined
+              configuration?.enrollmentPending === true
+                ? Effect.fail(new CliCommandFailure({ category: "usage-or-configuration",
+                  message: "follower enrollment is pending; finish or resume enrollment before selecting a schedule" }))
+                : configuration?.scheduleDefault === undefined
                 ? Effect.fail(new CliCommandFailure({
                   category: "usage-or-configuration",
                   message: configuration === undefined
@@ -1855,10 +1854,11 @@ const followerCommandsLayer = (
       scheduleStatus: () =>
         mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
           Effect.flatMap((configuration) => {
-            const input = desiredScheduleInput(
-              configuration?.scheduleOverride,
-              configuration?.scheduleDefault,
-            );
+            if (configuration?.enrollmentPending === true) return Effect.succeed(payload({
+              state: "enrollment-pending",
+              detail: `${unscheduledDetail(configuration)}. A native job may remain installed; remove it with \`canonfig schedule remove\` if it is no longer wanted`,
+            }));
+            const input = finalizedScheduleInput(configuration);
             if (input === undefined) {
               // No decision; a job an earlier release installed may still run.
               return mapFailure(schedules.status()).pipe(
