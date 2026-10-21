@@ -529,6 +529,12 @@ canonfig harness doctor
 canonfig harness --help
 ```
 
+Skill-source symlinks may refer to files or directories inside the repository,
+including a vendored skill outside `.canonfig`. Generated output is a regular
+copy with executable intent preserved. Dangling links, directory cycles, and
+links outside the repository produce a blocking `SKILL_SOURCE_INVALID`
+diagnostic rather than silently dropping skills or reading external files.
+
 YAML is the default scaffold. `--format json` creates strict, pretty-printed
 `.canonfig/harness.json` and is valid only with `harness init`. YAML and JSON
 use the same schema and compiler. Canonfig rejects a project that contains more

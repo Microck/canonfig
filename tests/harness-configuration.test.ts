@@ -284,6 +284,38 @@ describe("harness configuration compiler", () => {
     });
   });
 
+  it.skipIf(process.platform === "win32")("copies repository-contained linked skills and nested linked files", async () => {
+    const root = await fixture(["claude-code"]);
+    await write(root, "vendor/skills/lint/SKILL.md", "---\nname: lint\ndescription: Run lint.\n---\nRun lint.\n");
+    await symlink("../../vendor/skills/lint", path.join(root, ".canonfig/skills/lint"), "dir");
+    await write(root, ".canonfig/shared/run.sh", "#!/bin/sh\nexit 0\n");
+    await chmod(path.join(root, ".canonfig/shared/run.sh"), 0o755);
+    await mkdir(path.join(root, ".canonfig/skills/repository-checks/scripts"));
+    await symlink("../../../shared/run.sh", path.join(root, ".canonfig/skills/repository-checks/scripts/run.sh"));
+    const compiler = new HarnessConfigurationCompiler();
+    const plan = await compiler.plan({ root });
+    expect(plan.diagnostics.filter((entry) => entry.level === "error")).toEqual([]);
+    await applyPlan(plan);
+    expect(await readFile(path.join(root, ".claude/skills/lint/SKILL.md"), "utf8")).toContain("Run lint.");
+    const copied = path.join(root, ".claude/skills/repository-checks/scripts/run.sh");
+    expect((await lstat(copied)).isSymbolicLink()).toBe(false);
+    expect((await stat(copied)).mode & 0o111).not.toBe(0);
+    expect(await readFile(copied, "utf8")).toContain("exit 0");
+  });
+
+  it.skipIf(process.platform === "win32").each(["escape", "cycle", "dangling"])("reports a %s skill symlink instead of silently omitting it", async (kind) => {
+    const root = await fixture(["claude-code"]);
+    const destination = path.join(root, ".canonfig/skills/repository-checks/link");
+    const outside = await temporaryRoot();
+    const target = kind === "escape" ? outside : kind === "cycle" ? "." : "missing";
+    await symlink(target, destination, "dir");
+    const plan = await new HarnessConfigurationCompiler().plan({ root });
+    expect(plan.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "SKILL_SOURCE_INVALID", level: "error" }),
+    ]));
+    await expect(applyPlan(plan)).rejects.toThrow();
+  });
+
   it("keeps operator text on both sides of a managed block", async () => {
     // The block was removed and re-appended, so with placement "end" it always
     // landed last and any text the operator had written after it was silently
