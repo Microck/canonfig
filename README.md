@@ -324,3 +324,11 @@ acceptance suites remain separate; browser coverage does not verify machine
 synchronization, secret stores or scheduled jobs. Failure traces stay in `.e2e/`.
 
 The browser E2E development runner requires Node >=24.8.0; `pretest:e2e` checks this before loading it. This does not change the CLI runtime floor.
+
+### Upstream skill updates
+
+Use `canonfig skills track` to register an existing skill's Git source, ref and
+subdirectory, then `canonfig skills check` or `canonfig skills update` to preview
+changes. `update --apply` writes only when installed skills still match their
+recorded baselines. Roots, source configuration and named selection are
+configurable. See [upstream sources, local edits and recovery](docs/skill-updates.md).

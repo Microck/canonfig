@@ -673,3 +673,17 @@ The normal error message remains fixed; the same result envelope includes a
 redactor. JSON mode still emits one document. Diagnostics are absent by default
 and are not added to expected state-storage failures. Review diagnostic text
 before sharing it: paths and other contextual information can remain sensitive.
+
+## Upstream skills
+
+`canonfig skills track|list|check|update` manages explicit provenance for existing
+skills. `track` requires `--name`, `--path`, `--source` and `--ref`; `--subdir`
+selects the skill within its upstream repository. `--root` and root-relative
+`--config` choose the installed scope and source configuration. `--name` is
+repeatable for check/update. Update previews by default; `--apply` is required
+to write and local edits block the selected update. Public HTTPS/local Git
+sources are supported; private/SSH sources and automatic merges are not.
+
+Updates transfer complete skill directories without executing their code.
+Source/Follower installations should update canonical skills on the Source
+Machine, then review and publish normally, not update follower-owned copies.
