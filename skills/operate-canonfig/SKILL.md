@@ -1,6 +1,6 @@
 ---
 name: operate-canonfig
-description: Operate Canonfig 4.0.2 Source and Follower Machines safely. Use for tool discovery, profile authoring and digests, explicit profile publication, the Source service and tunnel, follower invitations, groups or revocation, unenrollment, profile selection, synchronization planning or apply, no-input automation, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust after apply, Follower Drift, Human Action Required, and interrupted-run recovery.
+description: Operate Canonfig 4.1.0 Source and Follower Machines safely. Use for tool discovery, profile authoring and digests, explicit profile publication, the Source service and tunnel, follower invitations, groups or revocation, unenrollment, profile selection, synchronization planning or apply, no-input automation, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust after apply, Follower Drift, Human Action Required, and interrupted-run recovery.
 ---
 
 # Operate Canonfig

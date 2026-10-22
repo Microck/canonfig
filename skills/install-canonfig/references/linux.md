@@ -12,7 +12,7 @@
 
 Install the exact public package version for the current Node installation.
 
-For an existing 4.0.0 or 4.0.1 installation, follow the
+For an existing 4.0.x installation, follow the
 [patch-upgrade guide](../../../website/content/docs/how-to/upgrade.mdx): finish
 or recover unfinished runs with the original build, back up state, install with
 the same prefix, restart the existing Source service, and verify the existing
@@ -22,7 +22,7 @@ installation. For an existing 3.2.x account, follow the
 instead of replacing its package or state.
 
 ```bash
-npm install --global @microck/canonfig@4.0.2
+npm install --global @microck/canonfig@4.1.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

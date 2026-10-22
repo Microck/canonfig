@@ -11,7 +11,7 @@
   explains each question, recommends safe defaults, then plans and verifies the
   requested Source Machine, Follower Machine, or project harness outcome.
 - [`install-canonfig`](install-canonfig/SKILL.md): direct installation of
-  `@microck/canonfig@4.0.2`, first-time role establishment, profile authoring
+  `@microck/canonfig@4.1.0`, first-time role establishment, profile authoring
   and publication, and follower enrollment.
 - [`operate-canonfig`](operate-canonfig/SKILL.md): evidence-first tool
   discovery, profile digests and publication, the Source service and tunnel,
