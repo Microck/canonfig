@@ -48,7 +48,7 @@ await build({
 // Internal declarations retain every type and exported name, but do not ship
 // duplicated source comments. Public profile-compiler declarations stay intact.
 const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
-for (const file of globSync("dist/{harness-configuration,machine,runtime,enrollment}/**/*.d.ts").sort()) {
+for (const file of globSync("dist/{harness-configuration,machine,runtime,enrollment,cli,schedule,synchronization}/**/*.d.ts").sort()) {
   const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
   writeFileSync(file, printer.printFile(source));
 }

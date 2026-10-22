@@ -217,6 +217,11 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     ],
   },
   {
+    title: "Upstream skills (details: canonfig skills --help)",
+    areas: ["skills"],
+    usage: ["skills track|list|check|update [--root <path>] [--name <id>...] [--apply]"],
+  },
+  {
     title: "Harness configuration (details: canonfig harness --help)",
     areas: ["harness"],
     usage: [

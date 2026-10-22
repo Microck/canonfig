@@ -20,6 +20,14 @@ configuration agents are optional and bounded. canonfig always runs declared det
 
 [documentation](https://github.com/Microck/canonfig/blob/main/website/content/docs/index.mdx) | [tutorial](https://github.com/Microck/canonfig/blob/main/website/content/docs/tutorials/first-sync.mdx) | [architecture](https://github.com/Microck/canonfig/blob/main/website/content/docs/explanation/architecture.mdx) | [install skill](https://github.com/Microck/canonfig/blob/main/skills/install-canonfig/SKILL.md) | [operate skill](https://github.com/Microck/canonfig/blob/main/skills/operate-canonfig/SKILL.md) | [license](https://github.com/Microck/canonfig/blob/main/LICENSE)
 
+### Upstream skill updates
+
+Use `canonfig skills track` to register an existing skill's Git source, ref and
+subdirectory, then `canonfig skills check` or `canonfig skills update` to preview
+changes. `update --apply` writes only when installed skills still match their
+recorded baselines. Roots, source configuration and named selection are
+configurable. See [upstream sources, local edits and recovery](docs/skill-updates.md).
+
 ## why
 
 managing agent setups across multiple machines usually breaks because machines drift, sync tools try to be bidirectional authorities, or agents execute unbounded setup scripts that cannot be verified. canonfig keeps configuration deterministic and one-way:

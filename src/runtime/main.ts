@@ -8,6 +8,8 @@ import { helpOrVersion } from "../cli/help.ts";
 import { installCommandLog, observedSignalExitCode } from "../logging/command-log.ts";
 import { minimumSupportedNodeMajor, nodeRuntimeIsSupported } from "./build-identity.ts";
 import {
+  isSkillsCommand,
+  skillsArguments,
   installerArguments,
   groupHelpRequested,
   secretsArguments,
@@ -164,7 +166,7 @@ const synchronizeSecretsAfterApply = ({ Effect }: typeof EffectModule) =>
 const explicitHelp = groupHelpRequested(arguments_);
 const globalVersion = !explicitHelp && (arguments_.includes("--version") || arguments_.includes("-V"));
 const separateDispatcher = isSecretsCommand(arguments_)
-  || isHarnessConfigurationCommand(arguments_) || isInstallerCommand(arguments_);
+  || isHarnessConfigurationCommand(arguments_) || isInstallerCommand(arguments_) || isSkillsCommand(arguments_);
 const early = isPublicEnrollmentCommand(arguments_) || (separateDispatcher && !globalVersion)
   ? undefined
   : helpOrVersion(arguments_);
@@ -207,6 +209,10 @@ if (early !== undefined) {
       `secrets.${secretsArgv.filter((value) => value !== "--json")[0] ?? "help"}`,
     );
   }
+} else if (isSkillsCommand(arguments_)) {
+  const argv = skillsArguments(arguments_);
+  const { runSkillsCli } = await import("../harness-configuration/skills/cli.ts");
+  await runMain((effect) => effect.Effect.promise(() => runSkillsCli(argv, nodeCliIo)), `skills.${argv.filter((value) => value !== "--json")[0] ?? "help"}`);
 } else if (isHarnessConfigurationCommand(arguments_)) {
   const harnessArgv = harnessArguments(arguments_);
   const { runHarnessConfigurationCli } = await import("../harness-configuration/cli.ts");
