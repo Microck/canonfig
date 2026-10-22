@@ -68,6 +68,11 @@ function checkFiles(files: readonly SkillFile[]): void {
 export async function readLocalSkill(root: string, relative: string): Promise<SkillFile[]> {
   safePath(relative);
   const directory = path.join(root, relative);
+  await assertNoSymlinkPathComponents(root, directory);
+  await fs.lstat(directory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") throw new CanonfigError("SKILL_LOCAL_EDITED", `Installed skill directory is missing: ${relative}; restore it before checking or updating`);
+    throw error;
+  });
   const files: SkillFile[] = [];
   let total = 0;
   async function visit(current: string): Promise<void> {

@@ -96,11 +96,16 @@ backups and stops for manual recovery.
 
 A crash can leave a sibling `.canonfig-backup-<id>` directory, a staged directory,
 a `<config>.pending` journal and/or a `<config>.lock`. Do not delete them blindly.
-The journal records previous configuration and backup/staging paths relative to
-the selected root. Stop any active Canonfig skill updater, inspect those paths,
-preserve any newer local edits, and restore the previous skill directories and
-previous configuration together. Only after recovery is verified should the
-stale journal/lock be removed. Canonfig refuses another write while a journal
+The journal records previous configuration, expected updated digests and
+backup/staging paths relative to the selected root. Stop any active updater and
+inspect the installed trees and configuration together. A journal can remain
+after a completed commit if its cleanup failed: verify the updated digests and
+configuration before clearing that journal. For a partial update, preserve any
+newer local edits and restore previous skill directories and configuration
+together. Only after recovery is verified should the stale journal/lock be
+removed. Best-effort staging/backup cleanup can leave marked directories without
+changing the transaction result; journal-removal failures are reported rather
+than hidden. Canonfig refuses another write while a journal
 exists; this version does not automatically replay interrupted transactions.
 
 ## Research and design

@@ -57,10 +57,10 @@ function checkDestination(location: SkillLocation, skill: TrackedSkill): void {
   const config = safePath(location.config).normalize("NFC").toLowerCase();
   if (config === destination || config.startsWith(`${destination}/`) || destination.startsWith(`${config}/`)) throw new CanonfigError("SKILL_PATH_CONFLICT", "A skill directory cannot contain its source configuration");
 }
-async function writeConfig(location: SkillLocation, config: SkillConfig): Promise<void> {
+async function writeConfig(location: SkillLocation, config: SkillConfig, write = atomicWrite): Promise<void> {
   const validated = parseConfig(config);
   for (const skill of validated.skills) checkDestination(location, skill);
-  await atomicWrite(configPath(location), JSON.stringify(validated, null, 2) + "\n", 0o600, location.root);
+  await write(configPath(location), JSON.stringify(validated, null, 2) + "\n", 0o600, location.root);
 }
 async function exists(file: string): Promise<boolean> {
   try { await fs.lstat(file); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
@@ -77,7 +77,7 @@ async function withLock<T>(location: SkillLocation, action: () => Promise<T>): P
   }
   try {
     await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
-    if (await exists(`${configPath(location)}.pending`)) throw new CanonfigError("SKILL_RECOVERY_REQUIRED", "An interrupted update has a .pending recovery journal. Restore its recorded backups before another update; no data was changed");
+    if (await exists(`${configPath(location)}.pending`)) throw new CanonfigError("SKILL_RECOVERY_REQUIRED", "A previous update left a .pending recovery journal. Inspect its recorded backups and configuration before another update; the previous operation may have changed installed data");
     return await action();
   } finally { await handle.close(); await fs.unlink(lock); }
 }
@@ -123,7 +123,18 @@ export async function checkSkills(location: SkillLocation, names: readonly strin
   return (await prepare(location, await readConfig(location), names)).map((item) => item.check);
 }
 
-export async function updateSkills(location: SkillLocation, names: readonly string[]): Promise<SkillCheck[]> {
+/** Injectable transaction boundary; defaults always use the real filesystem. */
+export interface SkillUpdateOperations {
+  rename: typeof fs.rename;
+  remove: typeof fs.rm;
+  writeFile: typeof fs.writeFile;
+  writeAtomic: typeof atomicWrite;
+}
+export const skillUpdateOperations: SkillUpdateOperations = {
+  rename: fs.rename, remove: fs.rm, writeFile: fs.writeFile, writeAtomic: atomicWrite,
+};
+
+export async function updateSkills(location: SkillLocation, names: readonly string[], operations: SkillUpdateOperations = skillUpdateOperations): Promise<SkillCheck[]> {
   return withLock(location, async () => {
     const original = await readConfig(location);
     const prepared = await prepare(location, original, names);
@@ -152,44 +163,46 @@ export async function updateSkills(location: SkillLocation, names: readonly stri
           const previousStat = await fs.lstat(previous).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
           const permissions = previousStat?.isFile() ? (previousStat.mode & 0o666) : 0o600;
           const mode = permissions | (file.executable ? ((permissions & 0o444) >> 2) : 0);
-          await fs.writeFile(target, file.bytes, { flag: "wx", mode });
+          await operations.writeFile(target, file.bytes, { flag: "wx", mode });
           if (process.platform !== "win32") await fs.chmod(target, mode);
         }
         if (process.platform !== "win32") await fs.chmod(staged, originalDirectoryMode);
         if (fingerprint(await readLocalSkill(location.root, path.relative(location.root, staged).split(path.sep).join("/"))) !== item.digest) throw new CanonfigError("SKILL_VERIFY_FAILED", "Staged skill did not match fetched content");
       }
       if (JSON.stringify(await readConfig(location)) !== JSON.stringify(original)) throw new CanonfigError("SKILL_CONFIG_EDITED", "Source configuration changed while updates were prepared");
-      await atomicWrite(journal, JSON.stringify({ version: 1, previousConfig: original, swaps: swaps.map((swap) => ({ path: swap.item.skill.path, staged: path.relative(location.root, swap.staged), backup: path.relative(location.root, swap.backup), expectedDigest: swap.item.digest })) }, null, 2) + "\n", 0o600, location.root);
+      await operations.writeAtomic(journal, JSON.stringify({ version: 1, previousConfig: original, swaps: swaps.map((swap) => ({ path: swap.item.skill.path, staged: path.relative(location.root, swap.staged), backup: path.relative(location.root, swap.backup), expectedDigest: swap.item.digest })) }, null, 2) + "\n", 0o600, location.root);
       for (const swap of swaps) {
         await assertNoSymlinkPathComponents(location.root, swap.destination);
         if (fingerprint(await readLocalSkill(location.root, swap.item.skill.path)) !== swap.item.skill.digest) throw new CanonfigError("SKILL_LOCAL_EDITED", "Skill changed while update was staged; refusing replacement");
-        await fs.rename(swap.destination, swap.backup); swap.moved = true;
+        await operations.rename(swap.destination, swap.backup); swap.moved = true;
         if (fingerprint(await readLocalSkill(location.root, path.relative(location.root, swap.backup).split(path.sep).join("/"))) !== swap.item.skill.digest) throw new CanonfigError("SKILL_LOCAL_EDITED", "Skill changed during replacement; restoring its backup");
-        await fs.rename(swap.staged, swap.destination); swap.installed = true;
+        await operations.rename(swap.staged, swap.destination); swap.installed = true;
       }
       const next: SkillConfig = { version: 1, skills: original.skills.map((skill) => {
         const updated = changed.find((item) => item.skill.name === skill.name);
         return updated ? { ...skill, commit: updated.check.nextCommit, digest: updated.digest } : skill;
       }) };
       if (JSON.stringify(await readConfig(location)) !== JSON.stringify(original)) throw new CanonfigError("SKILL_CONFIG_EDITED", "Source configuration changed during update; restoring installed skills");
-      await writeConfig(location, next);
+      await writeConfig(location, next, operations.writeAtomic);
       committed = true;
     } catch (error) {
       for (const swap of [...swaps].reverse()) {
         try {
           if (swap.installed) {
             if (fingerprint(await readLocalSkill(location.root, swap.item.skill.path)) !== swap.item.digest) throw new Error("New local edits require manual recovery");
-            await fs.rm(swap.destination, { recursive: true });
+            await operations.remove(swap.destination, { recursive: true });
           }
-          if (swap.moved) await fs.rename(swap.backup, swap.destination);
+          if (swap.moved) await operations.rename(swap.backup, swap.destination);
         } catch { rollbackFailed = true; }
       }
       if (rollbackFailed) throw new CanonfigError("SKILL_RECOVERY_REQUIRED", `Update stopped and rollback needs manual recovery. Backups are preserved; inspect ${location.config}.pending`);
       throw error;
     } finally {
       for (const swap of swaps) {
-        if (await exists(swap.staged)) await fs.rm(swap.staged, { recursive: true });
-        if (committed && await exists(swap.backup)) await fs.rm(swap.backup, { recursive: true });
+        try { if (await exists(swap.staged)) await operations.remove(swap.staged, { recursive: true }); }
+        catch { /* Best-effort cleanup must not mask the transaction result. */ }
+        try { if (committed && await exists(swap.backup)) await operations.remove(swap.backup, { recursive: true }); }
+        catch { /* Retain the backup without preventing journal cleanup. */ }
       }
       if (!rollbackFailed && await exists(journal)) await fs.unlink(journal);
     }

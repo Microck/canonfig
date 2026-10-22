@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, writeFile, readFile, rm, cp, symlink, chmod } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, cp, symlink, chmod, readdir, appendFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { checkSkills, listSkills, parseConfig, trackSkill, updateSkills, type SkillLocation } from "../../src/harness-configuration/skills/manager.ts";
+import { checkSkills, listSkills, parseConfig, trackSkill, updateSkills, type SkillLocation, skillUpdateOperations } from "../../src/harness-configuration/skills/manager.ts";
+import { atomicWrite } from "../../src/harness-configuration/core/filesystem.ts";
 import { fetchSkill, normalizeSource, safePath } from "../../src/harness-configuration/skills/upstream.ts";
 import { runSkillsCli } from "../../src/harness-configuration/skills/cli.ts";
 import { isSkillsCommand, skillsArguments } from "../../src/runtime/command-routing.ts";
@@ -116,6 +117,127 @@ describe("tracked upstream skill updates", () => {
     expect(() => parseConfig({ version: 1, skills: [base, { ...base, name: "other", path: "skills/demo/nested" }] })).toThrow("overlap");
     for (const name of ["../bad", "/tmp/bad", "C:/bad", "a\\b", "a/CON", "a/../b"]) expect(() => safePath(name)).toThrow();
     for (const source of ["https://user:token@example.invalid/repo", "https://example.invalid/repo?token=x", "ext::danger", "ssh://example.invalid/repo"]) expect(() => normalizeSource(source, "/tmp")).toThrow();
+  });
+  it("classifies a deleted installed directory as drift with a relative path", async () => {
+    const { location, input } = await fixture(); await trackSkill(location, input);
+    await rm(path.join(location.root, input.path), { recursive: true });
+    await expect(checkSkills(location, [])).rejects.toMatchObject({ code: "SKILL_LOCAL_EDITED" });
+    let stderr = ""; let code = -1;
+    await runSkillsCli(["check", "--root", location.root, "--json"], {
+      writeStdout: () => {}, writeStderr: (value) => { stderr += value; }, setExitCode: (value) => { code = value; },
+    });
+    expect(code).toBe(4); expect(stderr).not.toContain(location.root);
+    expect(stderr).toContain(input.path);
+  });
+  it("rolls back an installed tree when atomic configuration publication fails", async () => {
+    const { location, input, upstream } = await fixture(); await trackSkill(location, input); await advance(upstream);
+    const configuration = path.join(location.root, location.config);
+    const before = await readFile(configuration);
+    let installedBeforeFailure = false;
+    await expect(updateSkills(location, [], {
+      ...skillUpdateOperations,
+      writeAtomic: async (file, content, mode, root) => {
+        if (file === configuration) {
+          installedBeforeFailure = (await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).includes("Version two");
+          // Exercise real atomicWrite with a controlled non-directory ancestor.
+          return atomicWrite(path.join(configuration, "blocked"), content, mode, root);
+        }
+        return atomicWrite(file, content, mode, root);
+      },
+    })).rejects.toMatchObject({ code: "PATH_COMPONENT_NOT_DIRECTORY" });
+    expect(installedBeforeFailure).toBe(true);
+    expect(await readFile(configuration)).toEqual(before);
+    expect(await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).toContain("Version one");
+    expect(await readdir(path.dirname(path.join(location.root, input.path)))).toEqual(["demo"]);
+    await expect(readFile(`${configuration}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("restores the original directory after a mid-swap rename failure", async () => {
+    const { location, input, upstream } = await fixture(); await trackSkill(location, input); await advance(upstream);
+    let failed = false;
+    await expect(updateSkills(location, [], {
+      ...skillUpdateOperations,
+      rename: async (from, to) => {
+        if (!failed && String(from).includes(".canonfig-stage-")) {
+          failed = true;
+          return skillUpdateOperations.rename(path.join(String(from), "nonexistent"), to);
+        }
+        return skillUpdateOperations.rename(from, to);
+      },
+    })).rejects.toMatchObject({ code: "ENOENT" });
+    expect(failed).toBe(true);
+    expect(await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).toContain("Version one");
+    expect(await readdir(path.dirname(path.join(location.root, input.path)))).toEqual(["demo"]);
+    await expect(readFile(path.join(location.root, `${location.config}.pending`))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("preserves backups and the journal when rollback cannot restore a directory", async () => {
+    const { location, input, upstream } = await fixture(); await trackSkill(location, input); await advance(upstream);
+    await expect(updateSkills(location, [], {
+      ...skillUpdateOperations,
+      rename: async (from, to) => {
+        if (String(from).includes(".canonfig-stage-") || String(from).includes(".canonfig-backup-")) {
+          return skillUpdateOperations.rename(path.join(String(from), "nonexistent"), to);
+        }
+        return skillUpdateOperations.rename(from, to);
+      },
+    })).rejects.toMatchObject({ code: "SKILL_RECOVERY_REQUIRED" });
+    const journal = JSON.parse(await readFile(path.join(location.root, `${location.config}.pending`), "utf8"));
+    expect(await readFile(path.join(location.root, journal.swaps[0].backup, "SKILL.md"), "utf8")).toContain("Version one");
+    await expect(updateSkills(location, [])).rejects.toMatchObject({ code: "SKILL_RECOVERY_REQUIRED" });
+  });
+  it("rejects corrupt staged bytes without changing the installed tree", async () => {
+    const { location, input, upstream } = await fixture(); await trackSkill(location, input); await advance(upstream);
+    await expect(updateSkills(location, [], {
+      ...skillUpdateOperations,
+      writeFile: async (file, bytes, options) => {
+        await skillUpdateOperations.writeFile(file, bytes, options);
+        if (String(file).endsWith("SKILL.md")) await appendFile(file, "corrupted staged content");
+      },
+    })).rejects.toMatchObject({ code: "SKILL_VERIFY_FAILED" });
+    expect(await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).toContain("Version one");
+    expect(await readdir(path.dirname(path.join(location.root, input.path)))).toEqual(["demo"]);
+  });
+  it("preserves local edits made after staging and before the first swap", async () => {
+    const { location, input, upstream } = await fixture(); await trackSkill(location, input); await advance(upstream);
+    const configuration = path.join(location.root, location.config); const before = await readFile(configuration);
+    await expect(updateSkills(location, [], {
+      ...skillUpdateOperations,
+      writeAtomic: async (file, content, mode, root) => {
+        await atomicWrite(file, content, mode, root);
+        if (file.endsWith(".pending")) await writeFile(path.join(location.root, input.path, "SKILL.md"), "new local edit");
+      },
+    })).rejects.toMatchObject({ code: "SKILL_LOCAL_EDITED" });
+    expect(await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).toBe("new local edit");
+    expect(await readFile(configuration)).toEqual(before);
+    expect(await readdir(path.dirname(path.join(location.root, input.path)))).toEqual(["demo"]);
+    await expect(readFile(`${configuration}.pending`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("does not let best-effort backup cleanup prevent journal cleanup after commit", async () => {
+    const { location, input, upstream } = await fixture(); await trackSkill(location, input); await advance(upstream);
+    let cleanupAttempted = false;
+    await updateSkills(location, [], {
+      ...skillUpdateOperations,
+      remove: async (file, options) => {
+        if (String(file).includes(".canonfig-backup-")) { cleanupAttempted = true; throw new Error("fixture cleanup refused"); }
+        return skillUpdateOperations.remove(file, options);
+      },
+    });
+    expect(cleanupAttempted).toBe(true);
+    expect(await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).toContain("Version two");
+    await expect(readFile(path.join(location.root, `${location.config}.pending`))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await readdir(path.dirname(path.join(location.root, input.path)))).some((file) => file.includes(".canonfig-backup-"))).toBe(true);
+  });
+  it("propagates journal-unlink failure after commit and keeps the recovery gate visible", async () => {
+    const { location, input, upstream } = await fixture(); await trackSkill(location, input); await advance(upstream);
+    const configuration = path.join(location.root, location.config);
+    await expect(updateSkills(location, [], {
+      ...skillUpdateOperations,
+      writeAtomic: async (file, content, mode, root) => {
+        await atomicWrite(file, content, mode, root);
+        if (file === configuration) { await rm(`${configuration}.pending`); await mkdir(`${configuration}.pending`); }
+      },
+    })).rejects.toThrow();
+    expect(await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).toContain("Version two");
+    await expect(updateSkills(location, [])).rejects.toMatchObject({ code: "SKILL_RECOVERY_REQUIRED" });
   });
   it("classifies fetch failures without printing remote diagnostics", async () => {
     const { location, input } = await fixture();
