@@ -160,7 +160,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const metadata = Schema.decodeUnknownSync(PackageMetadata)(
     JSON.parse(readFileSync(metadataPath, "utf8")),
   );
-  if (metadata.name !== "@microck/canonfig" || metadata.version !== "4.0.2") {
+  if (metadata.name !== "@microck/canonfig" || metadata.version !== "4.1.0") {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
@@ -194,10 +194,10 @@ const validatePackageMetadata = (metadataPath: string): void => {
 const validatePackageContents = (
   artifact: typeof PackedArtifact.Type,
 ): void => {
-  if (artifact.name !== "@microck/canonfig" || artifact.version !== "4.0.2") {
+  if (artifact.name !== "@microck/canonfig" || artifact.version !== "4.1.0") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
-  // The 4.0.2 concurrency, handover and readiness fixes add runtime modules.
+  // The 4.0.2 concurrency, handover and readiness fixes established these budgets.
   // The candidate measured 461,458 packed / 2,144,997 unpacked bytes.
   // Keep a small build-identity margin while rejecting unintended assets.
   if (artifact.size > 465_000 || artifact.unpackedSize > 2_150_000) {
@@ -254,7 +254,7 @@ const validateBinary = (executable: string): void => {
 
   const version = invokeExecutable(executable, ["--version"]);
   requireSuccess("packed executable version", version);
-  if (version.stdout !== "4.0.2\n" || version.stderr !== "") {
+  if (version.stdout !== "4.1.0\n" || version.stderr !== "") {
     fail("packed executable version output is invalid");
   }
 

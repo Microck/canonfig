@@ -166,7 +166,7 @@ describe("Canonfig foundation CLI", () => {
   it("renders the package version with a successful outcome", () => {
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",
-      text: "4.0.2",
+      text: "4.1.0",
       exitCode: 0,
     });
   });
@@ -194,7 +194,7 @@ describe("Canonfig foundation CLI", () => {
     expect(help.stdout).toContain("Usage: canonfig");
     expect(help.stderr).toBe("");
     expect(version.status).toBe(0);
-    expect(version.stdout.trim()).toBe("4.0.2");
+    expect(version.stdout.trim()).toBe("4.1.0");
     expect(version.stderr).toBe("");
   }, 60_000);
 
