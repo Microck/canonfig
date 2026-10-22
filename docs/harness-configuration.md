@@ -196,3 +196,9 @@ Source: https://kilo.ai/docs/code-with-ai/platforms/cli#environment-variables
 If a generated native file is deleted, the next apply recreates it and clean
 forgets its ownership record without recreating it. Removing managed markers
 inside a file that still exists remains a conflict, protecting outside edits.
+
+## Portable archives
+
+Use `canonfig harness export --source-only --output source.zip` to package
+canonical configuration, or select native harnesses with repeatable `--target`
+and optionally `--include-source`. See [archive selection and safety](harness-archives.md).

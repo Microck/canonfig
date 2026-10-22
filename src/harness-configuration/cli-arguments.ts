@@ -15,6 +15,9 @@ export interface ParsedHarnessArguments {
   readonly force: boolean;
   readonly all: boolean;
   readonly dryRun: boolean;
+  readonly output?: string | undefined;
+  readonly includeSource?: boolean | undefined;
+  readonly sourceOnly?: boolean | undefined;
   readonly targets?: ReadonlyArray<TargetId> | undefined;
 }
 
@@ -33,12 +36,16 @@ Commands:
   diff       Print a unified-style diff for pending changes
   clean      Remove only configuration currently owned by Canonfig
   doctor     Probe selected harness executables
+  export     Package canonical sources and/or selected harness projections
 
 Options:
   --root <path>         Repository root or descendant working directory
   --target <id>         Select one target; repeatable
   --targets <ids>       Select comma-separated targets
   --format <format>     Configuration format for init: yaml or json
+  --output <path>       Export archive (.zip or .tar.gz); never overwritten
+  --include-source      Include canonical configuration alongside targets
+  --source-only         Export canonical configuration without native targets
   --strict              Reject shim, lossy, and unsupported mappings
   --force               Take ownership of explicit collisions or managed edits
   --all                 Include unchanged files in plan output
@@ -66,9 +73,18 @@ export const parseHarnessArguments = (
   let all = false;
   let dryRun = false;
   const requestedTargets: string[] = [];
+  let output: string | undefined;
+  let includeSource = false;
+  let sourceOnly = false;
 
   for (let index = 0; index < rest.length; index += 1) {
     const argument = rest[index]!;
+    if (argument === "--include-source" || argument === "--source-only") {
+      if (command !== "export") throw new CanonfigError("ARCHIVE_OPTION_NOT_ALLOWED", `${argument} requires export`);
+      if (argument === "--include-source") includeSource = true;
+      else sourceOnly = true;
+      continue;
+    }
     if (argument === "--strict") {
       strict = true;
       continue;
@@ -99,7 +115,8 @@ export const parseHarnessArguments = (
       };
     }
     if (
-      argument === "--root"
+      argument === "--output"
+      || argument === "--root"
       || argument === "--cwd"
       || argument === "--target"
       || argument === "--targets"
@@ -113,7 +130,10 @@ export const parseHarnessArguments = (
         );
       }
       index += 1;
-      if (argument === "--root" || argument === "--cwd") {
+      if (argument === "--output") {
+        if (command !== "export") throw new CanonfigError("ARCHIVE_OPTION_NOT_ALLOWED", "--output requires export");
+        output = path.resolve(value);
+      } else if (argument === "--root" || argument === "--cwd") {
         root = path.resolve(value);
       } else if (argument === "--format") {
         if (command !== "init") {
@@ -152,6 +172,7 @@ export const parseHarnessArguments = (
     force,
     all,
     dryRun,
+    output, includeSource, sourceOnly,
     ...(targets === undefined ? {} : { targets }),
   };
 };
