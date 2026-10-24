@@ -28,11 +28,12 @@ fallback tasks; an agent's claim never counts as proof of convergence.
 
 ## why
 
-- keep one source of configuration instead of bidirectional sync conflicts
-- merge declared configuration keys while preserving follower-owned values
-- distribute instructions, skills, files, and platform-specific tool recipes
-- detect local skill edits instead of silently overwriting them
-- use native schedules without a resident follower daemon
+keeping agent setups in sync across machines usually means copying files by hand
+or dealing with bidirectional sync conflicts. canonfig gives you one source for
+configuration, instructions, skills, and platform-specific tool recipes while
+preserving follower-owned configuration values and detecting local skill edits
+before replacing them. native schedules keep followers up to date without a
+resident follower daemon.
 
 ## install
 
