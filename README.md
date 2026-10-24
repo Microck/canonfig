@@ -159,8 +159,8 @@ see [tracking, local edits and recovery](docs/skill-updates.md).
 | resource | default behavior |
 | --- | --- |
 | `file` | replace owned content and mode |
-| `directory` | mirror source-owned entries; preserve unrelated entries |
-| `config` | merge declared TOML, JSON or YAML keys; preserve other keys and comments |
+| `directory` | mirror desired entries; remove only unchanged entries previously written by Canonfig; preserve unrelated or locally modified entries |
+| `config` | merge declared TOML, JSON or YAML keys; preserve follower-owned keys and comments; remove dropped Canonfig-owned keys unless claimed through Local Overlay |
 | `skill` | replace only if the installed copy is unmodified |
 | `tool` | run a platform recipe and independently verify it |
 | `credential` | require a local credential reference; never copy it as profile content |
