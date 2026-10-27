@@ -119,3 +119,43 @@ illustrates separate project/global provenance, exact subpaths and ref-aware
 updates. Canonfig does not import or rewrite those lock formats: its own explicit
 source records add fail-closed local-baseline checks and no-script Git-object
 fetching, without changing the existing Machine Profile contract.
+
+## Automatic upstream updates
+
+This is separate from the Follower synchronization schedule. Opt into a Source
+Machine (or standalone local) worker for already tracked skill sources:
+
+```sh
+canonfig skills auto --root /path/to/source
+canonfig skills auto --root /path/to/source --name review --apply --interval 86400
+canonfig skills auto --root /path/to/source --name review --apply --once --no-input
+```
+
+Without `--apply`, `auto` previews one pass and exits; it never schedules writes.
+With `--apply` it runs immediately, then waits after each completed pass (default
+24 hours, whole seconds from 60 through 604800). Passes do not overlap. `--once`
+runs only one pass for an explicitly configured cron/systemd/launchd/Task
+Scheduler job. Canonfig does not install or modify a native job for this command;
+use an absolute runtime/entrypoint, `--root`, and a PATH containing Git. Do not
+reuse the Follower's existing `canonfig schedule` job for upstream updates.
+
+Only the sources selected at worker startup are followed. New registrations do
+not join a running worker. Editing a selected repository, ref, path or subdirectory
+stops it for review; restart after deliberately approving the new selection.
+The same source identity check runs inside the updater's configuration lock.
+Updater-owned commit/digest changes are allowed between passes. A commit-pinned
+source remains pinned. One-shot scheduler invocations select the configuration
+current at their own startup, so keep that file under the operator's control.
+
+The existing full-tree local-edit checks, staging, rollback and recovery journal
+remain in force. Any conflict, fetch failure or recovery condition exits nonzero;
+there is no force flag or automatic retry loop over unsafe state. Inspect the
+reported problem before restarting or allowing an external scheduler to retry.
+Stop with Ctrl+C/SIGTERM; a killed in-progress transaction may require the same
+journal recovery described above. JSON mode emits one CLI envelope per completed
+pass (a JSON stream), not one indefinitely growing array.
+
+Automatic upstream updates never publish a Machine Profile, apply harness
+projections, enroll a Follower, or run skill scripts. Review resulting changes
+on the Source Machine and publish separately. Do not point this worker at
+Follower-owned or generated skill copies.

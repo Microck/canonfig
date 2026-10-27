@@ -134,9 +134,10 @@ export const skillUpdateOperations: SkillUpdateOperations = {
   rename: fs.rename, remove: fs.rm, writeFile: fs.writeFile, writeAtomic: atomicWrite,
 };
 
-export async function updateSkills(location: SkillLocation, names: readonly string[], operations: SkillUpdateOperations = skillUpdateOperations): Promise<SkillCheck[]> {
+export async function updateSkills(location: SkillLocation, names: readonly string[], operations: SkillUpdateOperations = skillUpdateOperations, validateSelection?: (config: SkillConfig) => void): Promise<SkillCheck[]> {
   return withLock(location, async () => {
     const original = await readConfig(location);
+    validateSelection?.(original);
     const prepared = await prepare(location, original, names);
     if (prepared.some((item) => item.check.status === "local-edits")) throw new CanonfigError("SKILL_LOCAL_EDITED", "Local edits detected. No skill was updated; check the preview and reconcile changes before applying");
     const changed = prepared.filter((item) => item.check.status === "update-available");
