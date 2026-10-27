@@ -51,3 +51,14 @@ export const skillsArguments = (arguments_: ReadonlyArray<string>): ReadonlyArra
   const head = arguments_.indexOf("skills");
   return arguments_.filter((_, index) => index !== head);
 };
+
+/** Authored-file reconciliation needs no enrollment, credentials or state DB. */
+export const isSourceSkillReconciliation = (args: ReadonlyArray<string>): boolean => {
+  const positional = args.filter((arg) => arg !== "--json");
+  return positional[0] === "source" && positional[1] === "reconcile-skills";
+};
+export const sourceSkillReconciliationArguments = (args: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const head = args.indexOf("source");
+  const command = args.findIndex((value,index) => index > head && value !== "--json");
+  return args.filter((_, index) => index !== head && index !== command);
+};

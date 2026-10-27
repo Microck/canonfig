@@ -39,6 +39,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     usage: [
       "source init",
       "source scan --file <path> [--file <path>...]",
+      "source reconcile-skills --profile-file <profile.jsonc> [--apply] [--watch] [--interval <seconds>]",
       "source digest --profile-file <profile.jsonc> [--resource <id>]",
       "source publish --profile-file <profile.jsonc> --reviewer <name> [--proposal <path>] [--allow-empty]",
       "source publish --proposal <path> --profile <id> --name <name> --reviewer <name> [--allow-empty]",
