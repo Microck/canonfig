@@ -220,3 +220,11 @@ scheduled jobs. see the [release runbook](docs/release-runbook.md) for all gates
 ## license
 
 [MIT](LICENSE)
+
+## self-updates
+
+Opt-in `canonfig self-update` supports stable patch updates for user-private
+global npm installs. It stages and verifies candidates, retains old packages,
+and defers activation while Canonfig commands are active. Major/minor fleet
+upgrades remain coordinated manual operations. See [setup, automation and
+recovery](docs/self-update.md) before enabling; no OS service is installed.

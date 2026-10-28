@@ -708,3 +708,16 @@ plans, stops on conflicts/errors, and never accepts `--force`. Use `--dry-run`
 for continuous preview and `--interval 1` for the default one-second polling.
 It does not install a service or reload running harnesses. See the harness
 configuration guide for ownership, cancellation and concurrent-writer limits.
+
+## Self-update
+
+`canonfig self-update enable|disable|status|check|apply|auto` provides opt-in stable
+patch updates for user-private global npm installations. Every mutation requires
+`--apply`; first enable additionally requires `--confirm-idle` and an explicit
+`--npm-cli` path after stopping older processes and schedules. Automatic mode is
+foreground or `--once` for an external scheduler, not an implicit service.
+
+Active Sources/watchers defer activation, unfinished syncs block it, and
+major/minor fleet upgrades remain manual. Successful activation retains the old
+package and exits the worker. See the [self-update operational guide](https://github.com/Microck/canonfig/blob/main/docs/self-update.md)
+for supported prefixes, restart requirements, staging and interruption recovery.
