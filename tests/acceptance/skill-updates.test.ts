@@ -262,3 +262,16 @@ describe("tracked upstream skill updates", () => {
     expect(skillsArguments(["--json", "skills", "list"])).toEqual(["--json", "list"]);
   });
 });
+
+it("runs an automatic one-shot through the real CLI without publishing or applying harnesses", async () => {
+  const { location, input, upstream } = await fixture(); await trackSkill(location, input);
+  await write(location.root, "profile.jsonc", '{"sentinel":"not published"}\n');
+  await advance(upstream);
+  const output: string[] = []; let exitCode = -1;
+  await runSkillsCli(["auto", "--root", location.root, "--apply", "--once", "--json"], {
+    writeStdout: (text) => output.push(text), writeStderr: (text) => output.push(text), setExitCode: (code) => { exitCode = code; },
+  });
+  expect(exitCode).toBe(0); expect(output.join("")).toContain("skills.auto");
+  expect(await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).toContain("Version two");
+  expect(await readFile(path.join(location.root, "profile.jsonc"), "utf8")).toBe('{"sentinel":"not published"}\n');
+});

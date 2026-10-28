@@ -150,6 +150,11 @@ the last command updates all tracked skills; repeat `--name` to select specific
 skills. local edits block the selected update rather than being discarded.
 roots, source configuration, refs and subdirectories are configurable.
 
+for unattended upstream updates, `canonfig skills auto --apply` runs a foreground
+worker every 24 hours. add `--once` for your own OS scheduler. preview with
+`canonfig skills auto` first. local edits or source changes stop the worker;
+it never publishes profiles or applies harness configuration automatically.
+
 only public HTTPS Git sources and local repositories are supported. this is not
 follower synchronization or a skill marketplace. update canonical skills on the
 Source Machine, review, then publish.

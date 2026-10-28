@@ -212,7 +212,7 @@ if (early !== undefined) {
 } else if (isSkillsCommand(arguments_)) {
   const argv = skillsArguments(arguments_);
   const { runSkillsCli } = await import("../harness-configuration/skills/cli.ts");
-  await runMain((effect) => effect.Effect.promise(() => runSkillsCli(argv, nodeCliIo)), `skills.${argv.filter((value) => value !== "--json")[0] ?? "help"}`);
+  await runMain((effect) => effect.Effect.promise((signal) => runSkillsCli(argv, nodeCliIo, signal)), `skills.${argv.filter((value) => value !== "--json")[0] ?? "help"}`);
 } else if (isHarnessConfigurationCommand(arguments_)) {
   const harnessArgv = harnessArguments(arguments_);
   const { runHarnessConfigurationCli } = await import("../harness-configuration/cli.ts");
