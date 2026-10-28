@@ -2,13 +2,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
-import { enable, installation, latestPatch, parseVersion, update, assertNoUnfinishedRun, type Runner } from "../../src/runtime/self-update/core.ts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { enable, installation, latestPatch, parseVersion, update, assertNoUnfinishedRun, run, type Runner } from "../../src/runtime/self-update/core.ts";
 import { commandLease, updateDirectory, acquireGate } from "../../src/runtime/self-update/coordination.ts";
 import { runSelfUpdateCli } from "../../src/runtime/self-update/cli.ts";
 
 const roots:string[]=[];
-afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
+afterEach(()=>{vi.unstubAllEnvs();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
 function fixture(){
  const home=realpathSync(mkdtempSync(join(tmpdir(),"canonfig-self-update-")));roots.push(home);
  const prefix=join(home,"prefix");const packageAt=(prefix:string)=>join(prefix,...(process.platform==="win32"?[]:["lib"]),"node_modules","@microck","canonfig");
@@ -27,6 +27,11 @@ function fixture(){
  return {home,prefix,root,npmCli,runner,calls,packageAt,put};
 }
 describe("self-update policy and package activation",()=>{
+ it("isolates npm config, credentials and Node injection from subprocesses",async()=>{
+  vi.stubEnv("NPM_CONFIG_REGISTRY","https://invalid.example/");vi.stubEnv("NPM_TOKEN","fixture-token");vi.stubEnv("NODE_AUTH_TOKEN","fixture-auth");vi.stubEnv("NODE_OPTIONS","--no-warnings");
+  const text=await run({executable:process.execPath,args:["-e","console.log(JSON.stringify(Object.keys(process.env).filter(k=>/^npm_config_/i.test(k)||['NPM_TOKEN','NODE_AUTH_TOKEN','NODE_OPTIONS'].includes(k))))"]});
+  expect(text.trim()).toBe("[]");
+ });
  it("selects stable forward patches only",()=>{
   expect(latestPatch("4.2.5",["4.2.4","4.2.6","4.2.7-rc.1","4.3.0","5.0.0"])).toBe("4.2.6");
   expect(latestPatch("4.2.5",["4.3.0"])).toBe("4.2.5");
@@ -44,6 +49,12 @@ describe("self-update policy and package activation",()=>{
   expect(f.calls.every(args=>!args.includes("install"))).toBe(true);
   await expect(enable(f.root,f.npmCli,true,f.runner,f.home)).rejects.toThrow("already configured");
  });
+ it("does not persist enable after cancellation during npm root discovery",async()=>{
+  const f=fixture();const controller=new AbortController();
+  const runner:Runner=async(input,signal)=>{expect(signal).toBe(controller.signal);const result=await f.runner(input,signal);controller.abort();return result;};
+  await expect(enable(f.root,f.npmCli,true,runner,f.home,controller.signal)).rejects.toThrow("cancelled");
+  expect(existsSync(join(updateDirectory(f.root),"settings.json"))).toBe(false);
+ });
  it("previews without activation, then retains the old package and receipt",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   expect((await update(f.root,false,f.runner,undefined,f.home)).status).toBe("available");
@@ -55,6 +66,9 @@ describe("self-update policy and package activation",()=>{
   expect(readFileSync(join(dir,backups[0]!,"package.json"),"utf8")).toContain("4.2.0");
   expect(existsSync(join(dir,"last-transaction.json"))).toBe(true);
   const install=f.calls.find(args=>args[1]==="install")!;
+  expect(install).toContain("--@microck:registry=https://registry.npmjs.org/");
+  expect(install).toContain("--userconfig");expect(install).toContain("--globalconfig");
+  const view=f.calls.find(args=>args[1]==="view")!;expect(view).toContain("--global");expect(view).toContain("--@microck:registry=https://registry.npmjs.org/");
   expect(install).toContain("--ignore-scripts");expect(install).toContain("--install-strategy=nested");expect(install).toContain("@microck/canonfig@4.2.1");
  });
  it("defers for active readers and blocks new readers under the updater gate",async()=>{

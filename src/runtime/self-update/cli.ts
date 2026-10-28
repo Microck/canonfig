@@ -57,7 +57,7 @@ export async function runSelfUpdateCli(args: readonly string[],root:string,io:Cl
   if(command==="enable"){
    installation(root);if(!npmCli)throw new Error("enable requires --npm-cli");
    if(!apply){output("Preview: opt in to stable patch updates only. Stop all current Canonfig processes/schedules, then rerun with --apply --confirm-idle.");return;}
-   await enable(root,npmCli,idle);output("Self-update enabled. Run self-update auto --apply in foreground or schedule self-update auto --apply --once. Restart prior services only after enabling.");return;
+   await enable(root,npmCli,idle,undefined,undefined,signal);output("Self-update enabled. Run self-update auto --apply in foreground or schedule self-update auto --apply --once. Restart prior services only after enabling.");return;
   }
   if(command==="disable"){
    if(!apply){output("Preview: disable future self-updates. Rerun with --apply.");return;}

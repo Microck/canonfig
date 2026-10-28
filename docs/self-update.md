@@ -11,7 +11,10 @@ Use a user-owned global npm prefix under your own home, with Node.js 24+ and the
 official npm CLI installed. System-wide/admin prefixes, project installs,
 checkouts, Homebrew-managed packages and other package managers are unsupported.
 The updater never elevates permissions. It only updates `@microck/canonfig` from
-the official npm registry, not Node, npm or other registered CLIs.
+the official npm registry, not Node, npm or other registered CLIs. Registry
+operations override the package scope registry, ignore project/user/global npmrc
+configuration, and strip inherited npm configuration/authentication environment
+variables and Node injection options. Private registries are not supported.
 
 **Before enabling for the first time, stop every existing Canonfig process and
 pause its schedules.** Previously started builds cannot register update leases.

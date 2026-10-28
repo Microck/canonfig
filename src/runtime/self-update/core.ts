@@ -28,7 +28,9 @@ export function latestPatch(current: string, versions: readonly string[]): strin
 export interface Invocation { executable: string; args: readonly string[]; timeout?: number }
 export type Runner = (invocation: Invocation, signal?: AbortSignal) => Promise<string>;
 export const run: Runner = (input, signal) => new Promise((resolveResult,reject) => {
-  const child = spawn(input.executable, [...input.args], { shell: false, windowsHide: true, stdio: ["ignore","pipe","pipe"] });
+  if (signal?.aborted) { reject(new Error("Self-update cancelled")); return; }
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^npm_config_/iu.test(key) && !["NPM_TOKEN","NODE_AUTH_TOKEN","NODE_OPTIONS"].includes(key.toUpperCase())));
+  const child = spawn(input.executable, [...input.args], { env, shell: false, windowsHide: true, stdio: ["ignore","pipe","pipe"] });
   let stdout = ""; let stderr = ""; let failure: Error | undefined; let killTimer: ReturnType<typeof setTimeout> | undefined;
   const stop = (reason: string) => { failure ??= new Error(reason); child.kill("SIGTERM"); killTimer ??= setTimeout(() => child.kill("SIGKILL"), 5000); };
   const timer = setTimeout(() => stop("Self-update subprocess timed out"), input.timeout ?? 120_000);
@@ -64,11 +66,13 @@ export function assertNoUnfinishedRun(state: string): void {
 }
 function syncFile(path: string): void {const fd=openSync(path,"r+");try{fsyncSync(fd);}finally{closeSync(fd);}}
 function syncDirectory(path:string):void {if(process.platform!=="win32"){const fd=openSync(path,"r");try{fsyncSync(fd);}finally{closeSync(fd);}}}
-export async function enable(root: string,npmCli: string,confirmIdle: boolean,runner:Runner=run, home=homedir()):Promise<void>{
+export async function enable(root: string,npmCli: string,confirmIdle: boolean,runner:Runner=run, home=homedir(), signal?:AbortSignal):Promise<void>{
+  if(signal?.aborted)throw new Error("Self-update cancelled");
   if(!confirmIdle)throw new Error("Stop all existing Canonfig processes and schedules, then explicitly use --confirm-idle when enabling coordination for the first time.");
   const location=installation(root,home);npmCli=realpathSync(npmCli);
   if(!isAbsolute(npmCli)||!lstatSync(npmCli).isFile()||!npmCli.endsWith(`${sep}npm-cli.js`))throw new Error("--npm-cli must name the official installed npm/bin/npm-cli.js");
-  const found=(await runner({executable:process.execPath,args:[npmCli,"root","--global","--prefix",location.prefix]})).trim();
+  const found=(await runner({executable:process.execPath,args:[npmCli,"root","--global","--prefix",location.prefix]},signal)).trim();
+  if(signal?.aborted)throw new Error("Self-update cancelled");
   if(realpathSync(found)!==dirname(dirname(location.root)))throw new Error("npm global root does not match this installation");
   const directory=updateDirectory(location.root);mkdirSync(directory,{recursive:true,mode:0o700});
   if(lstatSync(directory).isSymbolicLink())throw new Error("Updater directory cannot be a symlink");
@@ -83,11 +87,21 @@ export async function enable(root: string,npmCli: string,confirmIdle: boolean,ru
 }
 export interface UpdateResult {current:string;candidate:string;status:"current"|"available"|"deferred"|"updated";detail:string}
 export async function update(root:string,apply:boolean,runner:Runner=run,signal?:AbortSignal, home=homedir()):Promise<UpdateResult>{
+  if(signal?.aborted)throw new Error("Self-update cancelled");
   const location=installation(root,home);const directory=updateDirectory(location.root);const settings=readSettings(directory);
   const [major,minor]=parseVersion(location.version);
   if(settings.root!==location.root||settings.prefix!==location.prefix||settings.line!==`${major}.${minor}`||settings.node!==process.execPath||settings.state!==join(home,".canonfig","state.sqlite"))throw new Error("Installation, Node runtime or release line changed; disable and explicitly re-enable self-updating after review");
   if(existsSync(join(directory,"pending.json")))throw new Error("Interrupted self-update: preserve and inspect the pending journal and retained backup. No automatic takeover.");
-  const common=["--registry=https://registry.npmjs.org/","--cache",join(directory,"cache")];
+  // Global mode ignores project .npmrc; isolated empty files ignore user/global
+  // scope registries and credentials. The explicit scope override also wins
+  // against npm defaults. The runner strips npm config/auth environment values.
+  const isolated = ["empty-user.npmrc", "empty-global.npmrc"].map((name) => {
+    const path=join(directory,name);
+    if(!existsSync(path))writeFileSync(path,"",{flag:"wx",mode:0o600});
+    regular(path);if(readFileSync(path,"utf8")!=="")throw new Error("Isolated npm configuration was modified");
+    return path;
+  });
+  const common=["--global","--registry=https://registry.npmjs.org/","--@microck:registry=https://registry.npmjs.org/","--userconfig",isolated[0]!,"--globalconfig",isolated[1]!,"--cache",join(directory,"cache")];
   const raw=await runner({executable:settings.node,args:[settings.npmCli,"view","@microck/canonfig","versions","--json",...common]},signal);
   const versions=Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(raw);
   const candidate=latestPatch(location.version,versions);
