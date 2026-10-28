@@ -77,7 +77,8 @@ if (!selfUpdateCommand) {
     if (release) process.once("exit", release);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(arguments_.includes("--json") ? `${JSON.stringify({error:message})}\n` : `${message}\n`);
+    const {renderCliResult}=await import("../cli/render.ts");
+    process.stderr.write(renderCliResult({command:"runtime",message,exitCode:2},arguments_.includes("--json")?"json":"human"));
     process.exit(2);
   }
 }

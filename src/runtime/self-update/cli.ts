@@ -1,3 +1,5 @@
+import { renderCliResult } from "../../cli/render.ts";
+import { toCliPayload } from "../../harness-configuration/cli-output.ts";
 import { Predicate } from "effect";
 import { readSettings } from "./settings.ts";
 import type { UpdateResult } from "./core.ts";
@@ -6,7 +8,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CliIo } from "../../cli/cli.ts";
 import { acquireGate, readersActive, updateDirectory } from "./coordination.ts";
-import { enable, installation, update } from "./core.ts";
+import { enable, installation, update, syncDirectory } from "./core.ts";
 
 export const selfUpdateHelp = `Usage: canonfig self-update <enable|disable|status|check|apply|auto> [options]
 
@@ -46,9 +48,11 @@ export function parseSelfUpdateArguments(args: readonly string[]) {
 export async function runSelfUpdateCli(args: readonly string[],root:string,io:CliIo,signal?:AbortSignal):Promise<void>{
  const json=args.includes("--json");
  type Status = {enabled:boolean;pending:boolean;settings:ReturnType<typeof readSettings>|null};
- const output=(data:string|UpdateResult|Status)=>io.writeStdout(json?`${JSON.stringify(data)}\n`:`${Predicate.isString(data)?data:JSON.stringify(data,null,2)}\n`);
+ let commandName="self-update";let parsing=true;
+ const output=(data:string|UpdateResult|Status)=>io.writeStdout(json?renderCliResult({command:commandName,message:Predicate.isString(data)?data:"Self-update result",data:Predicate.isString(data)?undefined:toCliPayload(data),exitCode:0},"json"):`${Predicate.isString(data)?data:JSON.stringify(data,null,2)}\n`);
  try{
   const {help,command,apply,idle,once,npmCli,interval}=parseSelfUpdateArguments(args);
+  commandName=`self-update.${help?"help":command}`;parsing=false;
   if(help){output(selfUpdateHelp);return;}
   const directory=updateDirectory(root);
   if(command==="status"){
@@ -63,7 +67,7 @@ export async function runSelfUpdateCli(args: readonly string[],root:string,io:Cl
    if(!apply){output("Preview: disable future self-updates. Rerun with --apply.");return;}
    const release=acquireGate(directory);try{
     if(existsSync(join(directory,"pending.json"))||readersActive(directory))throw new Error("Cannot disable while commands or an interrupted transaction exist");
-    rmSync(join(directory,"settings.json"));
+    rmSync(join(directory,"settings.json"));syncDirectory(directory);
    }finally{release();}output("Self-updating disabled. Backups and receipts retained.");return;
   }
   // Checks require explicit opt-in so the npm executable/prefix are established.
@@ -73,5 +77,5 @@ export async function runSelfUpdateCli(args: readonly string[],root:string,io:Cl
    if(command!=="auto"||once||!apply||result.status==="updated")return;
    await delay(interval*1000,undefined,{signal});
   }while(!signal?.aborted);
- }catch(error){if(signal?.aborted)return;const message=error instanceof Error?error.message:String(error);io.writeStderr(json?`${JSON.stringify({error:message})}\n`:`${message}\n`);io.setExitCode(2);}
+ }catch(error){if(signal?.aborted)return;const message=error instanceof Error?error.message:String(error);const exitCode=parsing?2:3;io.writeStderr(renderCliResult({command:commandName,message,exitCode},json?"json":"human"));io.setExitCode(exitCode);}
 }

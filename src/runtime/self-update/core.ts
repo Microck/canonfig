@@ -2,12 +2,12 @@ import { Schema } from "effect";
 import { readSettings } from "./settings.ts";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync, renameSync, openSync, closeSync, fsyncSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync, renameSync, openSync, closeSync, fsyncSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { acquireGate, readersActive, regular, updateDirectory } from "./coordination.ts";
+import { acquireGate, entry, readersActive, regular, updateDirectory } from "./coordination.ts";
 
 export const parseVersion = (value: string): readonly [number, number, number] => {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(value)) throw new Error(`Unsupported stable version: ${value}`);
@@ -65,7 +65,7 @@ export function assertNoUnfinishedRun(state: string): void {
   } finally {db.close();}
 }
 function syncFile(path: string): void {const fd=openSync(path,"r+");try{fsyncSync(fd);}finally{closeSync(fd);}}
-function syncDirectory(path:string):void {if(process.platform!=="win32"){const fd=openSync(path,"r");try{fsyncSync(fd);}finally{closeSync(fd);}}}
+export function syncDirectory(path:string):void {if(process.platform!=="win32"){const fd=openSync(path,"r");try{fsyncSync(fd);}finally{closeSync(fd);}}}
 export async function enable(root: string,npmCli: string,confirmIdle: boolean,runner:Runner=run, home=homedir(), signal?:AbortSignal):Promise<void>{
   if(signal?.aborted)throw new Error("Self-update cancelled");
   if(!confirmIdle)throw new Error("Stop all existing Canonfig processes and schedules, then explicitly use --confirm-idle when enabling coordination for the first time.");
@@ -115,6 +115,7 @@ export async function update(root:string,apply:boolean,runner:Runner=run,signal?
     if(installation(root,home).version!==location.version)throw new Error("Installation changed during check");
     const token=randomUUID();const stage=join(directory,`stage-${token}`);const backup=join(directory,`backup-${location.version}-${token}`);
     mkdirSync(stage,{mode:0o700});
+    try {
     await runner({executable:settings.node,args:[settings.npmCli,"install","--global","--prefix",stage,"--install-strategy=nested","--ignore-scripts","--no-audit","--no-fund",`@microck/canonfig@${candidate}`,...common],timeout:900_000},signal);
     const staged=join(stage,...(process.platform==="win32"?[]:["lib"]),"node_modules","@microck","canonfig");
     const metadata=Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({name:Schema.Literal("@microck/canonfig"),version:Schema.String,dependencies:Schema.Record(Schema.String,Schema.String)})))(readFileSync(join(staged,"package.json"),"utf8"));
@@ -132,12 +133,18 @@ export async function update(root:string,apply:boolean,runner:Runner=run,signal?
     assertNoUnfinishedRun(settings.state);
     if(readersActive(directory)||installation(root,home).version!==location.version)throw new Error("Installation became busy or changed before activation");
     const journal=join(directory,"pending.json");
-    writeFileSync(journal,JSON.stringify({version:1,root,backup,staged,previous:location.version,candidate},null,2)+"\n",{flag:"wx",mode:0o600});syncFile(journal);syncDirectory(directory);
-    renameSync(root,backup);syncDirectory(dirname(root));syncDirectory(directory);
+    writeFileSync(journal,JSON.stringify({version:1,root:location.root,backup,staged,previous:location.version,candidate},null,2)+"\n",{flag:"wx",mode:0o600});syncFile(journal);syncDirectory(directory);
+    renameSync(location.root,backup);syncDirectory(dirname(location.root));syncDirectory(directory);
     // A failed second rename deliberately retains the gate/journal evidence for
     // operator recovery; never delete the old package or pretend it succeeded.
-    renameSync(staged,root);syncDirectory(dirname(root));
+    renameSync(staged,location.root);syncDirectory(dirname(location.root));
     renameSync(journal,join(directory,"last-transaction.json"));syncDirectory(directory);
     return {...result,status:"updated",detail:`Retained previous package at ${backup}. Restart this updater under the new build; refresh managed follower bindings with sync --apply. No service was restarted.`};
+    } catch(error) {
+      // A pending journal (even partial) owns recovery evidence. Only discard
+      // staging when no transaction could have moved the installed package.
+      if(!entry(join(directory,"pending.json")))rmSync(stage,{recursive:true,force:true});
+      throw error;
+    }
   }finally{release();}
 }

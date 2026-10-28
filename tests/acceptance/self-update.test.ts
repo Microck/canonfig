@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, realpathSync, symlinkSync, lstatSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -98,6 +98,45 @@ describe("self-update policy and package activation",()=>{
   const runner:Runner=(input,signal)=>input.args[1]==="install"?Promise.reject(new Error("offline")):f.runner(input,signal);
   await expect(update(f.root,true,runner,undefined,f.home)).rejects.toThrow("offline");
   expect(installation(f.root,f.home).version).toBe("4.2.0");expect(existsSync(join(updateDirectory(f.root),"pending.json"))).toBe(false);
+  expect(readdirSync(updateDirectory(f.root)).some(n=>n.startsWith("stage-"))).toBe(false);
+ });
+ it("rejects escaping staged dependencies and removes only pre-journal staging",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
+  const runner:Runner=async(input,signal)=>{
+   const result=await f.runner(input,signal);
+   if(input.args[1]==="install"){
+    const staged=f.packageAt(input.args[input.args.indexOf("--prefix")+1]!);
+    writeFileSync(join(staged,"package.json"),JSON.stringify({name:"@microck/canonfig",version:"4.2.1",dependencies:{outside:"1.0.0"}}));
+    const foreign=join(dirname(dirname(staged)),"outside");mkdirSync(foreign);writeFileSync(join(foreign,"index.js"),"module.exports = {};\n");
+   }return result;
+  };
+  await expect(update(f.root,true,runner,undefined,f.home)).rejects.toThrow("not self-contained");
+  expect(installation(f.root,f.home).version).toBe("4.2.0");
+  expect(readdirSync(updateDirectory(f.root)).some(n=>n.startsWith("stage-"))).toBe(false);
+ });
+ it("activates the canonical package instead of moving a directory alias",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
+  const alias=join(f.home,"alias");symlinkSync(f.root,alias,process.platform==="win32"?"junction":"dir");
+  expect((await update(alias,true,f.runner,undefined,f.home)).status).toBe("updated");
+  expect(lstatSync(alias).isSymbolicLink()).toBe(true);expect(installation(f.root,f.home).version).toBe("4.2.1");
+ });
+ it("blocks commands when settings were removed but recovery is pending",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);const dir=updateDirectory(f.root);
+  rmSync(join(dir,"settings.json"));writeFileSync(join(dir,"pending.json"),"{}");
+  expect(()=>commandLease(f.root)).toThrow("Interrupted");
+ });
+ it.skipIf(process.platform==="win32")("refuses dangling settings links and writable coordination directories",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);const dir=updateDirectory(f.root);
+  chmodSync(dir,0o770);expect(()=>acquireGate(dir)).toThrow("not writable");chmodSync(dir,0o700);
+  rmSync(join(dir,"settings.json"));symlinkSync(join(dir,"missing"),join(dir,"settings.json"));
+  expect(()=>commandLease(f.root)).toThrow("regular file");
+ });
+ it("emits the standard JSON envelope for help, status and usage failures",async()=>{
+  let out="",err="";const io={writeStdout:(s:string)=>{out+=s;},writeStderr:(s:string)=>{err+=s;},setExitCode:()=>{}};
+  await runSelfUpdateCli(["--json","--help"],"/missing",io);
+  expect(JSON.parse(out)).toMatchObject({schema:"canonfig.cli/v1",command:"self-update.help",status:"success",exitCode:0});
+  out="";await runSelfUpdateCli(["status","--json"],"/missing",io);expect(JSON.parse(out)).toMatchObject({schema:"canonfig.cli/v1",command:"self-update.status",data:{enabled:false}});
+  await runSelfUpdateCli(["--json","unknown"],"/missing",io);expect(JSON.parse(err)).toMatchObject({schema:"canonfig.cli/v1",status:"error",exitCode:2});
  });
  it("retains recovery evidence when activation is interrupted after backup",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);

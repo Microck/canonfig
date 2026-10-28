@@ -87,12 +87,23 @@ transactions retain `last-transaction.json`; incomplete ones retain `pending.jso
 Do not copy this state between machines or blindly clear a gate/lease.
 
 For an interrupted update, stop all Canonfig/updater/package-manager processes.
-Inspect the pending journal and preserve both old and candidate trees. Restore
-its recorded backup to the original package path using filesystem tools, then
-verify the restored CLI version. Only after restoration and verification remove
-the pending journal and confirmed-stale gate/readers. If unsure, leave the
-installation stopped and restore a reviewed backup manually. Do not run npm over
-an unfinished transaction. No automatic rollback or stale-lock takeover is
+Inspect the pending journal and preserve both old and candidate trees. **Check
+whether the recorded backup exists before attempting any restore.** The journal
+is created before the first rename:
+
+- If the backup is absent, do not remove or replace the installed package. Verify
+  its package.json version matches `previous` in the journal and inspect its files.
+  A mismatch or missing installation requires investigation, not a guessed restore.
+- If the backup exists, preserve any current candidate separately and restore the
+  backup to the recorded canonical package path. Check its package.json version
+  against `previous` and inspect the restored files.
+
+Only after that inspection may you remove the pending journal and confirmed-stale
+gate/readers with all writers stopped. Then verify the CLI version before
+resuming. Ordinary CLI commands deliberately refuse to run while a pending
+transaction remains. If unsure, keep the installation stopped and seek a reviewed
+manual restore. Do not run npm over an unfinished transaction.
+No automatic rollback or stale-lock takeover is
 claimed. POSIX directory entries are flushed; Windows directory-entry power-loss
 durability is not claimed.
 

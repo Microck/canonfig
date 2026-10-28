@@ -1,13 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync, lstatSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export const updateDirectory = (root: string) => join(dirname(root), ".canonfig-self-update");
+export function entry(path: string) {
+  try { return lstatSync(path); }
+  catch(error) { if(error instanceof Error && "code" in error && error.code === "ENOENT") return undefined; throw error; }
+}
 export function regular(path: string): void {
-  if (existsSync(path) && (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink())) throw new Error(`Expected a regular file: ${path}`);
+  const info=entry(path);
+  if (info && (!info.isFile() || info.isSymbolicLink())) throw new Error(`Expected a regular file: ${path}`);
 }
 export function acquireGate(directory: string): () => void {
-  if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) throw new Error("Invalid self-update directory");
+  const info=lstatSync(directory);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Invalid self-update directory");
+  if(process.getuid && (info.uid!==process.getuid() || (info.mode&0o022)!==0))throw new Error("Self-update directory must be user-owned and not writable by other users");
   const gate = join(directory, "gate");
   try { mkdirSync(gate, { mode: 0o700 }); }
   catch { throw new Error(`Self-update coordination is busy or interrupted: ${gate}. Never clear it while a worker is active.`); }
@@ -17,11 +24,14 @@ export function acquireGate(directory: string): () => void {
 export function commandLease(root: string): (() => void) | undefined {
   const directory = updateDirectory(root);
   const settings = join(directory, "settings.json");
-  if (!existsSync(settings)) return;
+  if (!entry(settings)) {
+    if(entry(join(directory,"pending.json")))throw new Error("Interrupted self-update: pending transaction exists without settings");
+    return;
+  }
   regular(settings);
   const release = acquireGate(directory);
   try {
-    if (existsSync(join(directory, "pending.json"))) throw new Error("Interrupted self-update: restore the retained package before running Canonfig commands.");
+    if (entry(join(directory, "pending.json"))) throw new Error("Interrupted self-update: restore the retained package before running Canonfig commands.");
     const readers = join(directory, "readers");
     mkdirSync(readers, { recursive: true, mode: 0o700 });
     const path = join(readers, `${process.pid}-${randomUUID()}.json`);
@@ -31,7 +41,7 @@ export function commandLease(root: string): (() => void) | undefined {
 }
 export function readersActive(directory: string): boolean {
   const readers = join(directory, "readers");
-  if (!existsSync(readers)) return false;
+  if (!entry(readers)) return false;
   if (!lstatSync(readers).isDirectory() || lstatSync(readers).isSymbolicLink()) throw new Error("Invalid self-update readers directory");
   return readdirSync(readers).length > 0;
 }
