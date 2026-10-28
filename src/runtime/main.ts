@@ -213,11 +213,6 @@ if (early !== undefined) {
   const argv = skillsArguments(arguments_);
   const { runSkillsCli } = await import("../harness-configuration/skills/cli.ts");
   await runMain((effect) => effect.Effect.promise(() => runSkillsCli(argv, nodeCliIo)), `skills.${argv.filter((value) => value !== "--json")[0] ?? "help"}`);
-} else if (arguments_.filter((value) => value !== "--json")[0] === "lsops") {
-  const head = arguments_.indexOf("lsops");
-  const argv = arguments_.filter((_, index) => index !== head);
-  const { runLsopsCli } = await import("../profile/lsops-cli.ts");
-  await runMain((effect) => effect.Effect.promise((signal) => runLsopsCli(argv, nodeCliIo, signal)), "lsops");
 } else if (isHarnessConfigurationCommand(arguments_)) {
   const harnessArgv = harnessArguments(arguments_);
   const { runHarnessConfigurationCli } = await import("../harness-configuration/cli.ts");
@@ -225,6 +220,11 @@ if (early !== undefined) {
     effect.Effect.promise(() => runHarnessConfigurationCli(harnessArgv, nodeCliIo)),
     `harness.${harnessArgv.filter((value) => value !== "--json")[0] ?? "help"}`,
   );
+} else if (arguments_.filter((value) => value !== "--json")[0] === "lsops") {
+  const head = arguments_.indexOf("lsops");
+  const argv = arguments_.filter((_, index) => index !== head);
+  const { runLsopsCli } = await import("../profile/lsops-cli.ts");
+  await runMain((effect) => effect.Effect.promise((signal) => runLsopsCli(argv, nodeCliIo, signal)), "lsops");
 } else if (isInstallerCommand(arguments_)) {
   const installer = await import("./installer-cli.ts");
   const installerArgv = installerArguments(arguments_);
