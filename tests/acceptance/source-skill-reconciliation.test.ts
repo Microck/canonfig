@@ -33,6 +33,19 @@ describe("Source skill deletion reconciliation",()=>{
   expect((await reconcileSourceSkills(file,true)).removed).toEqual([]);
   expect(await fs.readFile(path.join(root,"skills","two","SKILL.md"),"utf8")).toBe("# two");
  });
+ it.each([{deleted:["one"]}, {deleted:["one", "two"]}])("removes IDs in original unsorted JSONC order: $deleted",async({deleted})=>{
+  const {root,file}=await fixture();
+  const extra={id:"middle",kind:"file",target:"~/unrelated.txt",spec:{kind:"file",content:"keep me"},verify:{method:"digest"}};
+  const resources=[skillResource("two"),extra,skillResource("one")];
+  const original="// keep authored order\n"+JSON.stringify({id:"dev",version:2,name:"Development",resources},null,2)+"\n";
+  await fs.writeFile(file,original);await reconcileSourceSkills(file,true);
+  for(const id of deleted)await fs.rm(path.join(root,"skills",id),{recursive:true});
+  expect((await reconcileSourceSkills(file,false)).removed).toEqual(deleted);
+  expect(await fs.readFile(file,"utf8")).toBe(original);
+  await reconcileSourceSkills(file,true);
+  const next=await fs.readFile(file,"utf8");expect(next).toContain("keep authored order");
+  expect(JSON.parse(next.slice(next.indexOf("{"))).resources).toEqual(resources.filter(resource=>!deleted.includes(resource.id)));
+ });
  it("refuses an initially missing skill rather than turning a typo into deletion",async()=>{
   const {root,file}=await fixture();const before=await fs.readFile(file,"utf8");await fs.rm(path.join(root,"skills","one"),{recursive:true});
   await expect(reconcileSourceSkills(file,true)).rejects.toThrow("prior observation");expect(await fs.readFile(file,"utf8")).toBe(before);

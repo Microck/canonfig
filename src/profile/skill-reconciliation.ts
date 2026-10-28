@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Schema } from "effect";
 import { applyEdits, modify } from "jsonc-parser";
 import { decodeMachineProfileJsonc, type ProfileResourceInput } from "../domain/profile.ts";
+import { parseJsonc } from "./profile-codec.ts";
 import { CanonfigError } from "../harness-configuration/core/errors.ts";
 import { assertNoSymlinkPathComponents, atomicWrite } from "../harness-configuration/core/filesystem.ts";
 
@@ -79,8 +80,7 @@ export async function reconcileSourceSkills(input: string, apply: boolean, run: 
       : parseObservationState(stateText);
     if (state.profileId !== profile.id) throw new CanonfigError("PROFILE_SKILL_RECONCILE_CONFLICT", "Observation state belongs to a different profile; inspect it before initializing a new one");
     const observed: Observation[] = []; const removed: string[] = []; const skipped: string[] = [];
-    const removedIndices: number[] = [];
-    for (const [index, resource] of profile.resources.entries()) {
+    for (const resource of profile.resources) {
       if (resource.kind !== "skill") continue;
       const directory = skillDirectory(root, resource);
       if (directory === undefined) { skipped.push(resource.id); continue; }
@@ -99,7 +99,7 @@ export async function reconcileSourceSkills(input: string, apply: boolean, run: 
           || previous.parentDevice !== current.parentDevice || previous.parentInode !== current.parentInode) {
           throw new CanonfigError("PROFILE_SKILL_RECONCILE_CONFLICT", "Missing skill has no matching prior observation, its profile declaration changed, or its parent changed; nothing was reconciled");
         }
-        removed.push(resource.id); removedIndices.push(index);
+        removed.push(resource.id);
       } else {
         if (!stat.isDirectory() || stat.isSymbolicLink()) throw new CanonfigError("PROFILE_SKILL_RECONCILE_CONFLICT", "Skill source is no longer a regular directory; nothing was reconciled");
         await assertNoSymlinkPathComponents(root, path.join(directory, "SKILL.md"));
@@ -107,6 +107,13 @@ export async function reconcileSourceSkills(input: string, apply: boolean, run: 
         observed.push(current);
       }
     }
+    // The domain decoder sorts resources by ID; edits must address the original
+    // JSONC array, not the normalized profile's positions.
+    const authored = Schema.decodeUnknownSync(Schema.Struct({
+      resources: Schema.Array(Schema.Struct({ id: Schema.String })),
+    }))(parseJsonc(original));
+    const removedIds = new Set(removed);
+    const removedIndices = authored.resources.flatMap((resource, index) => removedIds.has(resource.id) ? [index] : []);
     let next = original;
     for (const index of removedIndices.reverse()) next = applyEdits(next, modify(next, ["resources", index], undefined, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
     // Dangling dependencies or other invalid combinations block the whole edit.
