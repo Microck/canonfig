@@ -111,6 +111,8 @@ canonfig harness init
 canonfig harness validate
 canonfig harness plan
 canonfig harness apply
+# Or keep local projections updated while this foreground process runs:
+canonfig harness watch
 ```
 
 YAML is the default; use `harness init --format json` for strict JSON. keep only
