@@ -136,7 +136,18 @@ export async function reconcileSourceSkills(input: string, apply: boolean, run: 
     if (next !== original) {
       backup = `${file}.skills-backup-${randomUUID()}.jsonc`;
       await fs.writeFile(backup, original, { flag: "wx", mode: 0o600 });
+      if (await readRegular(file) !== original || await readRegular(stateFile, true) !== stateText) throw new CanonfigError("PROFILE_SKILL_RECONCILE_CONFLICT", `Profile or observation state changed during backup; nothing was replaced. Backup: ${backup}`);
       await run.write(file, next, undefined, root);
+      for (const id of removed) {
+        const record = state.skills.find((skill) => skill.id === id);
+        if (record === undefined) continue;
+        try { await fs.lstat(path.join(root, record.directory)); }
+        catch (error) {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+          throw new CanonfigError("PROFILE_SKILL_RECONCILE_RECOVERY", `Profile was updated and backed up at ${backup}, but skill absence could not be verified; observation state was not refreshed. Inspect before retrying`);
+        }
+        throw new CanonfigError("PROFILE_SKILL_RECONCILE_RECOVERY", `Profile was updated and backed up at ${backup}, but removed skill ${id} reappeared during commit; observation state was not refreshed. Compare the backup and current profile before retrying; no automatic restore was attempted`);
+      }
     }
     // If interrupted after profile commit, the old observation is harmless:
     // already removed resource IDs are absent and disappear on the next pass.

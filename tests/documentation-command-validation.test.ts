@@ -63,3 +63,13 @@ describe("documentation command validation", () => {
       });
     }));
 });
+
+it.each([
+ "canonfig source --json reconcile-skills --profile-file ./profile.jsonc",
+ "canonfig --json source reconcile-skills --profile-file ./profile.jsonc",
+ "canonfig source reconcile-skills --profile-file ./profile.jsonc --json",
+])("validates reconciliation with global JSON placement: %s", async(command)=>
+ withDocumentationFixture(async(_root,docs)=>{
+  const file=path.join(docs,"reconcile.md");await writeFile(file,fenced(command),"utf8");
+  await expect(validateDocumentation([docs])).resolves.toEqual({checked:1,files:[file]});
+ }));

@@ -35,3 +35,9 @@ profile write; keep the backup and inspect that partial outcome.
 The worker is opt-in, foreground and stops on errors; it installs no OS service.
 Use one-shot `--apply` from your own scheduler if desired. Review the resulting
 profile diff and [publish separately](/docs/how-to/publish-profile-changes).
+
+Stop other profile/state writers and source-restoration jobs while applying or
+watching. The reconciler lock does not lock editors; pre-write checks are not a
+filesystem compare-and-swap. A directory that reappears during the profile write
+stops observation refresh and reports the backup for manual comparison, without
+automatically restoring over newer profile edits.

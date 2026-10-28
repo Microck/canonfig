@@ -125,3 +125,18 @@ it("watches an actual source deletion and stops cleanly after reconciliation",as
  expect(passes).toBe(2);expect(code).toBe(0);
  expect(decodeMachineProfileJsonc(await fs.readFile(file,"utf8")).resources.map(r=>r.id)).toEqual(["two"]);
 });
+
+it("retains observations and newer profile edits when a skill reappears during commit",async()=>{
+ const {root,file}=await fixture();await reconcileSourceSkills(file,true);
+ const stateFile=file+".skills-observed.json";const state=await fs.readFile(stateFile,"utf8");
+ const original=await fs.readFile(file,"utf8");await fs.rm(path.join(root,"skills","one"),{recursive:true});
+ await expect(reconcileSourceSkills(file,true,{write:async(target,...rest)=>{
+  await atomicWrite(target,...rest);
+  if(target===file){await fs.mkdir(path.join(root,"skills","one"));await fs.appendFile(file,"\n// newer editor change\n");}
+ }})).rejects.toThrow("reappeared during commit");
+ expect(await fs.readFile(stateFile,"utf8")).toBe(state);
+ const current=await fs.readFile(file,"utf8");expect(current).toContain("newer editor change");
+ expect(decodeMachineProfileJsonc(current).resources.map(r=>r.id)).toEqual(["two"]);
+ const backups=(await fs.readdir(root)).filter(name=>name.includes(".skills-backup-"));expect(backups).toHaveLength(1);
+ expect(await fs.readFile(path.join(root,backups[0]!),"utf8")).toBe(original);
+});

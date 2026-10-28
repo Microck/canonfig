@@ -48,7 +48,17 @@ rewired. No folder scanning imports unrelated skills or invents new resources.
 
 The sidecar is `PROFILE.skills-observed.json`; the writer lock is
 `PROFILE.skills-reconcile.lock`. Profile and observation bytes are rechecked
-before committing. Reappearing directories and changed parents stop the edit.
+before committing and after preparing the backup. The lock coordinates only
+reconcilers: stop editors, other profile/state writers, and source restoration
+jobs while applying or watching. This is not a filesystem compare-and-swap;
+a non-cooperating writer can race the final check and atomic rename. The backup
+contains the originally read bytes, not arbitrary concurrent edits.
+
+Reappearing directories and changed parents detected before commit stop the edit.
+If a removed directory reappears during the profile write, a post-commit check
+stops observation refresh and reports the backup path. It does not undo the
+profile edit automatically: compare and reconcile the current profile and backup
+before retrying, so newer edits are not overwritten by a blind restore.
 A changed profile is backed up to a unique private
 `PROFILE.skills-backup-<id>.jsonc` file before atomic replacement; existing profile
 permissions are preserved. Observation files and backups are owner-only where
