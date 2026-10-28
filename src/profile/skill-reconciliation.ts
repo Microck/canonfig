@@ -110,10 +110,10 @@ export async function reconcileSourceSkills(input: string, apply: boolean, run: 
     // The domain decoder sorts resources by ID; edits must address the original
     // JSONC array, not the normalized profile's positions.
     const authored = Schema.decodeUnknownSync(Schema.Struct({
-      resources: Schema.Array(Schema.Struct({ id: Schema.String })),
+      resources: Schema.optional(Schema.Array(Schema.Struct({ id: Schema.String }))),
     }))(parseJsonc(original));
     const removedIds = new Set(removed);
-    const removedIndices = authored.resources.flatMap((resource, index) => removedIds.has(resource.id) ? [index] : []);
+    const removedIndices = (authored.resources ?? []).flatMap((resource, index) => removedIds.has(resource.id) ? [index] : []);
     let next = original;
     for (const index of removedIndices.reverse()) next = applyEdits(next, modify(next, ["resources", index], undefined, { formattingOptions: { insertSpaces: true, tabSize: 2 } }));
     // Dangling dependencies or other invalid combinations block the whole edit.

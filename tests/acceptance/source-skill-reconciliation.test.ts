@@ -46,6 +46,13 @@ describe("Source skill deletion reconciliation",()=>{
   const next=await fs.readFile(file,"utf8");expect(next).toContain("keep authored order");
   expect(JSON.parse(next.slice(next.indexOf("{"))).resources).toEqual(resources.filter(resource=>!deleted.includes(resource.id)));
  });
+ it("accepts an authored profile with omitted resources in preview and apply",async()=>{
+  const {file}=await fixture();const original='// empty profile\n{"id":"dev","name":"Development"}';
+  await fs.writeFile(file,original);
+  expect(await reconcileSourceSkills(file,false)).toMatchObject({removed:[],observed:[]});
+  expect(await reconcileSourceSkills(file,true)).toMatchObject({removed:[],observed:[]});
+  expect(await fs.readFile(file,"utf8")).toBe(original);
+ });
  it("refuses an initially missing skill rather than turning a typo into deletion",async()=>{
   const {root,file}=await fixture();const before=await fs.readFile(file,"utf8");await fs.rm(path.join(root,"skills","one"),{recursive:true});
   await expect(reconcileSourceSkills(file,true)).rejects.toThrow("prior observation");expect(await fs.readFile(file,"utf8")).toBe(before);
