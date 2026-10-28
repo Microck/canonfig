@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -10,7 +10,7 @@ import { runSelfUpdateCli } from "../../src/runtime/self-update/cli.ts";
 const roots:string[]=[];
 afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
 function fixture(){
- const home=mkdtempSync(join(tmpdir(),"canonfig-self-update-"));roots.push(home);
+ const home=realpathSync(mkdtempSync(join(tmpdir(),"canonfig-self-update-")));roots.push(home);
  const prefix=join(home,"prefix");const packageAt=(prefix:string)=>join(prefix,...(process.platform==="win32"?[]:["lib"]),"node_modules","@microck","canonfig");
  const root=packageAt(prefix);const npmCli=join(home,"npm","bin","npm-cli.js");
  const put=(where:string,version:string)=>{mkdirSync(join(where,"dist","runtime"),{recursive:true});writeFileSync(join(where,"package.json"),JSON.stringify({name:"@microck/canonfig",version,bin:{canonfig:"dist/runtime/main.js"},dependencies:{}}));writeFileSync(join(where,"dist","runtime","main.js"),"// fixture only\n");};

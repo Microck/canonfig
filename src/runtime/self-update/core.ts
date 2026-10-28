@@ -62,8 +62,8 @@ export function assertNoUnfinishedRun(state: string): void {
     if(row)throw new Error("An unfinished sync exists. Finish or recover it with the current build before updating.");
   } finally {db.close();}
 }
-function syncFile(path: string): void {const fd=openSync(path,"r");try{fsyncSync(fd);}finally{closeSync(fd);}}
-function syncDirectory(path:string):void {if(process.platform!=="win32")syncFile(path);}
+function syncFile(path: string): void {const fd=openSync(path,"r+");try{fsyncSync(fd);}finally{closeSync(fd);}}
+function syncDirectory(path:string):void {if(process.platform!=="win32"){const fd=openSync(path,"r");try{fsyncSync(fd);}finally{closeSync(fd);}}}
 export async function enable(root: string,npmCli: string,confirmIdle: boolean,runner:Runner=run, home=homedir()):Promise<void>{
   if(!confirmIdle)throw new Error("Stop all existing Canonfig processes and schedules, then explicitly use --confirm-idle when enabling coordination for the first time.");
   const location=installation(root,home);npmCli=realpathSync(npmCli);
