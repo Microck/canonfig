@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { assertAutomaticSelection, automaticSkillUpdates, type AutomaticSkillOperations } from "../../src/harness-configuration/skills/automatic.ts";
-import { parseSkillsArguments } from "../../src/harness-configuration/skills/cli.ts";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { parseSkillsArguments, runSkillsCli } from "../../src/harness-configuration/skills/cli.ts";
 import type { TrackedSkill, SkillCheck } from "../../src/harness-configuration/skills/manager.ts";
 
 const skill: TrackedSkill = { name: "demo", path: "skills/demo", source: "https://example.invalid/skills.git", ref: "main", subdir: "demo", commit: "a".repeat(40), digest: "b".repeat(64) };
@@ -16,6 +19,18 @@ function fixture(): AutomaticSkillOperations {
 }
 
 describe("automatic upstream skill updates", () => {
+  it("emits the documented zero-pass JSON envelope without data", async () => {
+    const root=await mkdtemp(path.join(tmpdir(),"canonfig-auto-empty-"));
+    try {
+      await mkdir(path.join(root,".canonfig"));
+      await writeFile(path.join(root,".canonfig/skills-sources.json"),JSON.stringify({version:1,skills:[]}));
+      const output:string[]=[];let exit=-1;
+      await runSkillsCli(["auto","--root",root,"--json"],{writeStdout:text=>{output.push(text);},writeStderr:text=>{throw new Error(text);},setExitCode:code=>{exit=code;}});
+      expect(output).toHaveLength(1);const envelope=JSON.parse(output[0]);
+      expect(envelope).toMatchObject({command:"skills.auto",exitCode:0,message:"No automatic update pass ran"});
+      expect(envelope).not.toHaveProperty("data");expect(exit).toBe(0);
+    } finally { await rm(root,{recursive:true,force:true}); }
+  });
   it("previews only once by default, without an update or timer", async () => {
     const run = fixture(); const onPass = vi.fn();
     expect(await automaticSkillUpdates(location, [], { apply: false, once: false, intervalSeconds: 86400, onPass }, run)).toBe(1);

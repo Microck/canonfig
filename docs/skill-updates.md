@@ -153,7 +153,9 @@ there is no force flag or automatic retry loop over unsafe state. Inspect the
 reported problem before restarting or allowing an external scheduler to retry.
 Stop with Ctrl+C/SIGTERM; a killed in-progress transaction may require the same
 journal recovery described above. JSON mode emits one CLI envelope per completed
-pass (a JSON stream), not one indefinitely growing array.
+pass (a JSON stream), not one indefinitely growing array. If no pass runs (for
+example, no skills are tracked or the signal is already aborted), it emits one
+`skills.auto` envelope with a message, exit code 0 and no `data` field.
 
 Automatic upstream updates never publish a Machine Profile, apply harness
 projections, enroll a Follower, or run skill scripts. Review resulting changes
