@@ -1,0 +1,43 @@
+---
+title: Reconcile deleted source skills
+description: Keep authored skill resources aligned with observed Source Machine deletions without publishing automatically.
+---
+
+Initialize observations while source skill directories still exist, then run an
+explicit foreground watcher:
+
+```sh
+canonfig source reconcile-skills --profile-file ./profile.jsonc
+canonfig source reconcile-skills --profile-file ./profile.jsonc --apply
+canonfig source reconcile-skills --profile-file ./profile.jsonc --apply --watch
+```
+
+Without `--apply`, the command only previews. With `--watch --apply`, it checks
+every 5 seconds (configurable with `--interval`) and removes only previously
+observed, unambiguously source-backed skill resources whose source directory was
+deleted. This changes the authored profile, not a published Profile Revision.
+No Follower is changed and no source or follower skill directory is deleted.
+
+The `SKILL.md` source and every declared file must map to one directory beneath
+the profile file. Inline/mixed-source resources are skipped. Missing parents,
+changed declarations, partial deletion, symlinks, invalid state and dangling
+resource dependencies block reconciliation. A typo or initially missing directory
+is never treated as evidence of intentional removal.
+
+The private observation file and lock live beside the profile, with suffixes
+`.skills-observed.json` and `.skills-reconcile.lock`. Each profile edit gets a
+private `.skills-backup-<id>.jsonc` backup. JSONC comments and unrelated resources
+are preserved. Do not delete a live lock or share the state/backup files. If the
+process is interrupted, inspect the profile and backup before clearing a stale
+lock or retrying. A reported observation-refresh failure can occur after the
+profile write; keep the backup and inspect that partial outcome.
+
+The worker is opt-in, foreground and stops on errors; it installs no OS service.
+Use one-shot `--apply` from your own scheduler if desired. Review the resulting
+profile diff and [publish separately](/docs/how-to/publish-profile-changes).
+
+Stop other profile/state writers and source-restoration jobs while applying or
+watching. The reconciler lock does not lock editors; pre-write checks are not a
+filesystem compare-and-swap. A directory that reappears during the profile write
+stops observation refresh and reports the backup for manual comparison, without
+automatically restoring over newer profile edits.

@@ -8,6 +8,8 @@ import { helpOrVersion } from "../cli/help.ts";
 import { installCommandLog, observedSignalExitCode } from "../logging/command-log.ts";
 import { minimumSupportedNodeMajor, nodeRuntimeIsSupported } from "./build-identity.ts";
 import {
+  isSourceSkillReconciliation,
+  sourceSkillReconciliationArguments,
   isSkillsCommand,
   skillsArguments,
   installerArguments,
@@ -166,7 +168,7 @@ const synchronizeSecretsAfterApply = ({ Effect }: typeof EffectModule) =>
 const explicitHelp = groupHelpRequested(arguments_);
 const globalVersion = !explicitHelp && (arguments_.includes("--version") || arguments_.includes("-V"));
 const separateDispatcher = isSecretsCommand(arguments_)
-  || isHarnessConfigurationCommand(arguments_) || isInstallerCommand(arguments_) || isSkillsCommand(arguments_);
+  || isHarnessConfigurationCommand(arguments_) || isInstallerCommand(arguments_) || isSkillsCommand(arguments_) || isSourceSkillReconciliation(arguments_);
 const early = isPublicEnrollmentCommand(arguments_) || (separateDispatcher && !globalVersion)
   ? undefined
   : helpOrVersion(arguments_);
@@ -192,6 +194,10 @@ if (early !== undefined) {
     exitCode: CliExitCode.humanActionRequired,
   }, format));
   nodeCliIo.setExitCode(CliExitCode.humanActionRequired);
+} else if (isSourceSkillReconciliation(arguments_)) {
+  const argv = sourceSkillReconciliationArguments(arguments_);
+  const { runReconciliationCli } = await import("../profile/skill-reconciliation-cli.ts");
+  await runMain((effect) => effect.Effect.promise((signal) => runReconciliationCli(argv, nodeCliIo, signal)), "source.reconcile-skills");
 } else if (isSecretsCommand(arguments_)) {
   const secretsArgv = secretsArguments(arguments_);
   const secrets = await import("../secrets/cli.ts");
