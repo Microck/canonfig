@@ -543,6 +543,7 @@ canonfig harness targets
 canonfig harness plan
 canonfig harness plan --strict
 canonfig harness apply
+canonfig harness watch --targets codex,oh-my-pi
 canonfig harness status
 canonfig harness diff
 canonfig harness clean
@@ -701,3 +702,9 @@ This exports declared project sources and fresh projections, not credentials,
 sessions, unowned native edits, or a full machine backup. Review literal values
 and executable scripts before sharing or using the archive. External services
 and dependencies must be installed separately.
+
+Harness `watch` is an opt-in foreground worker. It applies after two matching
+plans, stops on conflicts/errors, and never accepts `--force`. Use `--dry-run`
+for continuous preview and `--interval 1` for the default one-second polling.
+It does not install a service or reload running harnesses. See the harness
+configuration guide for ownership, cancellation and concurrent-writer limits.

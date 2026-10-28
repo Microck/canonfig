@@ -1,3 +1,4 @@
+import { watchHarness } from "./watch.ts";
 import { CliExitCode } from "../cli/exit-codes.ts";
 import {
   harnessHelpText,
@@ -43,6 +44,7 @@ const renderHelp = (
         "targets",
         "plan",
         "apply",
+        "watch",
         "status",
         "diff",
         "clean",
@@ -59,6 +61,7 @@ const renderHelp = (
 export const runHarnessConfigurationCli = async (
   arguments_: ReadonlyArray<string>,
   io: HarnessConfigurationCliIo,
+  signal?: AbortSignal,
 ): Promise<void> => {
   let parsed: ParsedHarnessArguments | undefined;
   try {
@@ -127,6 +130,19 @@ export const runHarnessConfigurationCli = async (
     }
 
     const root = await findRepositoryRoot(parsed.root);
+    if (parsed.command === "watch") {
+      const controller = new AbortController();
+      const stop = () => controller.abort();
+      if (signal === undefined) { process.once("SIGINT", stop); process.once("SIGTERM", stop); }
+      try {
+        await watchHarness({ root, targets: parsed.targets, strict: parsed.strict, dryRun: parsed.dryRun, interval: parsed.interval ?? 1 }, (pass) => {
+          renderHarnessResult(io, { command: "harness.watch", message: pass.blocked ? "Harness watch stopped on conflicts" : pass.applied ? "Harness changes applied" : "Harness watch ready", data: planPayload(pass.plan), json: parsed!.json,
+            exitCode: pass.blocked ? CliExitCode.conflictOrDrift : CliExitCode.success,
+            human: `${pass.blocked ? "Watch stopped: resolve conflicts and restart." : pass.applied ? "Applied stable harness changes." : "Watching canonical configuration; Ctrl+C to stop."}\n${renderHumanPlan(pass.plan, parsed!.all)}` });
+        }, signal ?? controller.signal);
+      } finally { if (signal === undefined) { process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); } }
+      return;
+    }
     if (parsed.command === "export") {
       if (!parsed.output) throw new CanonfigError("ARCHIVE_OUTPUT_REQUIRED", "export requires --output <archive.zip|archive.tar.gz>");
       if (parsed.force) throw new CanonfigError("ARCHIVE_FORCE_NOT_ALLOWED", "Export never overwrites existing files; choose a new output");
