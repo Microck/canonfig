@@ -1,4 +1,4 @@
-import { lstat, readFile, writeFile, rename, unlink, mkdir, rmdir, realpath, open } from "node:fs/promises";
+import { lstat, readFile, rename, unlink, mkdir, rmdir, realpath, open } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Predicate, Schema } from "effect";
@@ -154,21 +154,41 @@ async function replace(file: string, bytes: string, expected: string | undefined
   const temporary = `${file}.${randomUUID()}.tmp`;
   const mode = expected === undefined ? 0o600 : (await lstat(file)).mode & 0o777;
   try {
-    await writeFile(temporary, bytes, { flag: "wx", mode });
+    const handle = await open(temporary, "wx", mode);
+    try { await handle.writeFile(bytes); await handle.sync(); }
+    finally { await handle.close(); }
     if (await read(file) !== expected) fail(`Concurrent edit: ${file}`);
     await rename(temporary, file);
+    await syncDirectory(path.dirname(file));
   } finally { await unlink(temporary).catch(() => undefined); }
 }
 
-const samePath = (left: string, right: string): boolean => process.platform === "win32"
-  ? left.toLowerCase() === right.toLowerCase() : left === right;
+async function syncDirectory(directory: string): Promise<void> {
+  const handle = await open(directory, "r");
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function statIfPresent(file: string) {
+  try { return await lstat(file, { bigint: true }); }
+  catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined; throw error; }
+}
+/** Reserve case variants on every OS; also reject hard-link and filesystem aliases. */
+async function assertSeparateDestination(config: string, bundle: string): Promise<void> {
+  const state = `${config}.canonfig-lsops.json`;
+  const destination = await statIfPresent(bundle);
+  for (const file of [config, state, `${state}.pending`, `${state}.lock`]) {
+    if (file.toLowerCase() === bundle.toLowerCase()) fail("Bundle must be separate from local config and state (different files)");
+    const reserved = await statIfPresent(file);
+    if (destination && reserved && destination.dev === reserved.dev && destination.ino === reserved.ino) fail("Bundle must be separate from local config and state: filesystem alias");
+  }
+}
 
 export interface BridgeOptions { config: string; bundle: string; apply: boolean }
-export interface BridgeOperations { readonly replace: typeof replace }
+export interface BridgeOperations { readonly replace: typeof replace; readonly syncDirectory?: typeof syncDirectory }
 const operations: BridgeOperations = { replace };
 export async function captureCatalogue(options: BridgeOptions) {
   const config = path.resolve(options.config); const bundle = path.resolve(options.bundle);
-  if (samePath(config, bundle)) fail("Config and bundle must be different files");
+  await assertSeparateDestination(config, bundle);
   const raw = await read(config); if (raw === undefined) fail("Source lsops config does not exist");
   const catalogue = exportCatalogue(decodeCatalogue(raw));
   decodeCatalogue(encode(catalogue), true);
@@ -181,7 +201,7 @@ export async function captureCatalogue(options: BridgeOptions) {
 export async function synchronizeCatalogue(options: BridgeOptions, run: BridgeOperations = operations) {
   const config = path.resolve(options.config); const bundle = path.resolve(options.bundle);
   const statePath = `${config}.canonfig-lsops.json`; const journalPath = `${statePath}.pending`;
-  if ([config, statePath, journalPath, `${statePath}.lock`].some((file) => samePath(file, bundle))) fail("Bundle must be separate from local config and state");
+  await assertSeparateDestination(config, bundle);
   await safePath(config);
   const lock = `${statePath}.lock`;
   if (options.apply) await mkdir(lock).catch((error) => { if (error instanceof Error && "code" in error && error.code === "EEXIST") fail(`Bridge locked: ${lock}. Check the previous process before removing a stale lock.`); throw error; });
@@ -211,9 +231,11 @@ export async function synchronizeCatalogue(options: BridgeOptions, run: BridgeOp
       await journal.writeFile(encode({ version: 1, config, bundle, before: before ?? null, stateBefore: rawState ?? null, afterDigest: sha256Hex(after), stateAfter: state }));
       await journal.sync();
     } finally { await journal.close(); }
+    await (run.syncDirectory ?? syncDirectory)(path.dirname(journalPath));
     await run.replace(config, after, before);
     await run.replace(statePath, stateAfter, rawState);
     await unlink(journalPath);
+    await (run.syncDirectory ?? syncDirectory)(path.dirname(journalPath));
     return plan;
   } finally { if (options.apply) await rmdir(lock); }
 }

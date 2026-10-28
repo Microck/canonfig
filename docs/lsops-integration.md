@@ -123,8 +123,13 @@ Stop other lsops config writers while applying a bridge pass. The bridge has an
 exclusive sibling lock against its own workers and checks for edits before each
 atomic replacement; lsops 0.5 does not share that lock, so this is not a global
 cross-application transaction. Do not edit config/state while a pass is running.
-Symlink files/ancestors are refused. Existing file permissions are preserved;
+Symlink files/ancestors are refused. Capture and sync also reject filesystem aliases
+and destinations reserved for ownership, recovery or lock files. Existing file permissions are preserved;
 new private state and journal files use mode 0600 where supported.
+
+Replacement file contents and parent-directory entries are flushed before the
+recovery journal is removed. The journal and its directory entry are flushed
+before config mutation; flush failures stop the operation rather than being ignored.
 
 Before changing config the bridge writes a private pending journal with the exact
 previous config/state and intended new state. If interrupted after that point,
