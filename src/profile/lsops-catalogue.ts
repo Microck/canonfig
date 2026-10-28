@@ -67,7 +67,8 @@ export function decodeCatalogue(bytes: string, bundle = false): Catalogue {
 function validateInstall(tool: Tool, name: string): void {
   const link = String(tool.install_url ?? ""); const manager = String(tool.install_manager ?? ""); const digest = String(tool.install_sha256 ?? "");
   if (!link) { if (manager || digest) fail(`Install metadata needs a URL: ${name}`); return; }
-  const url = new URL(link);
+  let url: URL;
+  try { url = new URL(link); } catch { fail(`Invalid install URL: ${name}`); }
   if (Buffer.byteLength(link) > 2048 || !link.startsWith("https://") || url.protocol !== "https:" || url.username || url.password || link.includes("?") || link.includes("#") || /[\\\s]/u.test(link)) fail(`Install URL must be plain credential-free HTTPS: ${name}`);
   if (["sh", "bash", "pwsh", "powershell"].includes(manager)) {
     if (!/^[a-f0-9]{64}$/u.test(digest)) fail(`Script needs reviewed lowercase SHA256: ${name}`);
@@ -229,7 +230,7 @@ export async function synchronizeCatalogue(options: BridgeOptions, run: BridgeOp
     let owned: Record<string, Tool> = {};
     if (rawState !== undefined) {
       const state = Schema.decodeUnknownSync(OwnershipState, { onExcessProperty: "error" })(JSON.parse(rawState));
-      if (state.version !== 1 || state.config !== config || state.bundle !== bundle) fail("Ownership state does not match this config and shared catalogue");
+      if (state.version !== 1 || !cataloguePathsEqual(state.config, config) || !cataloguePathsEqual(state.bundle, bundle)) fail("Ownership state does not match this config and shared catalogue");
       owned = decodeCatalogue(encode({ version: 1, tools: state.owned }), true).tools;
     }
     const plan = { ...planCatalogue(current, incoming, owned), durabilityPolicy: catalogueDurabilityPolicy() };

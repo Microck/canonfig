@@ -225,6 +225,9 @@ it("compares Windows parent spelling without weakening non-Windows identity",()=
 it.skipIf(process.platform !== "win32")("accepts ordinary Windows parent case variants",async()=>{
  const options=await fixture();
  expect((await synchronizeCatalogue({...options,config:options.config.toUpperCase(),bundle:options.bundle.toUpperCase(),apply:false})).added).toEqual(["alpha"]);
+ await synchronizeCatalogue(options);
+ expect((await synchronizeCatalogue({...options,config:options.config.toUpperCase(),bundle:options.bundle.toUpperCase()})).conflicts).toEqual([]);
+ expect((await synchronizeCatalogue(options)).conflicts).toEqual([]);
 });
 it.each(["write","flush"])("cleans an incomplete journal before mutation after %s failure",async(stage)=>{
  const options=await fixture();const before=await readFile(options.config,"utf8");let writes=0;
@@ -257,4 +260,14 @@ it("reports unexpected defects as internal failures",async()=>{
 it("matches lsops 0.5 single-line, trimmed display-text semantics",()=>{
  expect(decodeCatalogue(JSON.stringify(cat({local:{help:"  Usage: local  "}}))).tools.local.help).toBe("Usage: local");
  expect(()=>decodeCatalogue(JSON.stringify(cat({local:{help:"Usage:\nlocal"}})))).toThrow("Invalid text");
+});
+
+
+it.each(["not-a-url","https://"])("classifies malformed install URL %s as configuration failure",async(install_url)=>{
+ const options=await fixture();let exit=-1;
+ await put(options.bundle,cat({broken:{description:"Broken URL",install_url}}));
+ await runLsopsCli(["sync","--config",options.config,"--bundle",options.bundle,"--json"],{
+  writeStdout:()=>undefined,writeStderr:()=>undefined,setExitCode:c=>{exit=c;}
+ });
+ expect(exit).toBe(2);
 });
