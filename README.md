@@ -212,3 +212,9 @@ scheduled jobs. see the [release runbook](docs/release-runbook.md) for all gates
 ## license
 
 [MIT](LICENSE)
+
+## lsops integration
+
+Sync portable CLI catalogues while preserving follower-local tools. See the
+[lsops integration guide](docs/lsops-integration.md) for capture, shared transport,
+conflict-safe reconciliation, foreground workers and local approval boundaries.

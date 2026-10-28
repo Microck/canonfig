@@ -34,6 +34,12 @@ export interface HelpGroup {
 
 export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
+    title: "lsops catalogue integration",
+    areas: ["lsops"],
+    usage: ["  lsops capture --config FILE --bundle FILE [--apply] [--watch]", "  lsops sync --config FILE --bundle FILE [--apply] [--watch]"],
+    notes: ["Sync portable CLI metadata while retaining follower-local tools; never install or approve tools."],
+  },
+  {
     title: "Source Machine",
     areas: ["source"],
     usage: [

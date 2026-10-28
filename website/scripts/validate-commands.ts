@@ -1,3 +1,4 @@
+import { parseLsopsArguments } from "../../src/profile/lsops-cli.ts";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -160,6 +161,9 @@ export const validateDocumentation = async (
         }
       } else if (arguments_[0] === "skills") {
         try { parseSkillsArguments(arguments_.slice(1)); }
+        catch { throw new Error(`${path} contains an invalid CLI example: ${example}`); }
+      } else if (arguments_[0] === "lsops") {
+        try { parseLsopsArguments(arguments_.slice(1)); }
         catch { throw new Error(`${path} contains an invalid CLI example: ${example}`); }
       } else if (arguments_[0] === "harness") {
         if (!validHarnessCommand(arguments_)) {
