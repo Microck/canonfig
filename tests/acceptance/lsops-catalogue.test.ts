@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, writeFile, readFile, readdir, rm, mkdir, symlink, realpath, link } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { captureCatalogue, decodeCatalogue, exportCatalogue, planCatalogue, synchronizeCatalogue, type Catalogue } from "../../src/profile/lsops-catalogue.ts";
+import { syncCatalogueDirectory, captureCatalogue, decodeCatalogue, exportCatalogue, planCatalogue, synchronizeCatalogue, type Catalogue } from "../../src/profile/lsops-catalogue.ts";
 import { parseLsopsArguments, runLsopsCli } from "../../src/profile/lsops-cli.ts";
 import { decodeMachineProfileJsonc } from "../../src/domain/profile.ts";
 const roots: string[] = [];
@@ -32,7 +32,7 @@ describe("lsops portable catalogue bridge", () => {
     const result = await load(options.config);
     expect(result.tools.local).toEqual(JSON.parse(before).tools.local);
     expect(result.projects).toEqual([options.root]); expect(result.tools.alpha).toEqual(tool());
-    expect((await readdir(options.root)).sort()).toEqual(["config.json", "config.json.canonfig-lsops.json", "shared.json"]);
+    expect((await readdir(options.root)).sort()).toEqual(["config.json", "config.json.canonfig-lsops.json", "config.json.canonfig-lsops.json.last-transaction.json", "shared.json"]);
     expect((await synchronizeCatalogue(options)).added).toEqual([]);
   });
   it("updates owned metadata but keeps executable paths and visibility local", async () => {
@@ -79,7 +79,7 @@ describe("lsops portable catalogue bridge", () => {
   });
   it("refuses self-overwrite and reserved ownership paths", async () => {
     const options = await fixture();
-    for (const bundle of [options.config, `${options.config}.canonfig-lsops.json`, `${options.config}.canonfig-lsops.json.pending`, `${options.config}.canonfig-lsops.json.lock`]) {
+    for (const bundle of [options.config, `${options.config}.updates.json`, `${options.config}.canonfig-lsops.json`, `${options.config}.canonfig-lsops.json.pending`, `${options.config}.canonfig-lsops.json.lock`, `${options.config}.canonfig-lsops.json.last-transaction.json`]) {
       await expect(synchronizeCatalogue({ ...options, bundle })).rejects.toThrow("separate");
       await expect(captureCatalogue({ ...options, bundle })).rejects.toThrow("separate");
     }
@@ -99,13 +99,25 @@ describe("lsops portable catalogue bridge", () => {
   });
   it("preserves state and recovery evidence when capture targets either directly or by hard link", async () => {
     const options=await fixture();
-    for(const suffix of [".canonfig-lsops.json",".canonfig-lsops.json.pending"]){
+    for(const suffix of [".canonfig-lsops.json",".canonfig-lsops.json.pending",".canonfig-lsops.json.last-transaction.json"]){
       const reserved=options.config+suffix;await writeFile(reserved,"private recovery evidence");
       const alias=path.join(options.root,`alias${suffix}`);await link(reserved,alias);
       await expect(captureCatalogue({...options,bundle:reserved})).rejects.toThrow("separate");
       await expect(captureCatalogue({...options,bundle:alias})).rejects.toThrow("filesystem alias");
       expect(await readFile(reserved,"utf8")).toBe("private recovery evidence");
     }
+  });
+  it("retains a last-successful recovery receipt after flushed config/state commits",async()=>{
+    const options=await fixture();const before=await readFile(options.config,"utf8");
+    const result=await synchronizeCatalogue(options);
+    expect((await load(`${options.config}.canonfig-lsops.json.last-transaction.json`)).before).toBe(before);
+    expect(await readdir(options.root)).not.toContain("config.json.canonfig-lsops.json.pending");
+    expect(result.durabilityPolicy).toContain(process.platform==="win32"?"file-flushed-atomic-renames":"file-and-directory-flushed");
+    expect((await synchronizeCatalogue(options)).conflicts).toEqual([]);
+  });
+  it("does not open a read-only Windows directory for unsupported FlushFileBuffers",async()=>{
+    await expect(syncCatalogueDirectory("does-not-exist", "win32")).resolves.toBeUndefined();
+    await expect(syncCatalogueDirectory("does-not-exist", "linux")).rejects.toMatchObject({code:"ENOENT"});
   });
   it("persists journal directory before mutation and keeps evidence when flushing fails", async () => {
     const options=await fixture();let writes=0;

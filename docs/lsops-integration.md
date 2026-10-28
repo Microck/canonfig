@@ -124,12 +124,23 @@ exclusive sibling lock against its own workers and checks for edits before each
 atomic replacement; lsops 0.5 does not share that lock, so this is not a global
 cross-application transaction. Do not edit config/state while a pass is running.
 Symlink files/ancestors are refused. Capture and sync also reject filesystem aliases
-and destinations reserved for ownership, recovery or lock files. Existing file permissions are preserved;
+and destinations reserved for ownership, recovery, lock files or lsops update approvals. Existing file permissions are preserved;
 new private state and journal files use mode 0600 where supported.
 
-Replacement file contents and parent-directory entries are flushed before the
-recovery journal is removed. The journal and its directory entry are flushed
-before config mutation; flush failures stop the operation rather than being ignored.
+Replacement file contents are flushed before atomic renames. On Linux/macOS,
+parent-directory entries are also flushed, including the journal directory before
+config mutation. Flush failures stop the operation rather than being ignored.
+Windows cannot perform POSIX-style directory fsync through Node's read-only
+directory handles: it uses flushed writable files plus atomic renames instead.
+**Power-loss durability of directory entries is not guaranteed on Windows.**
+The JSON result's `durabilityPolicy` identifies the platform policy. Ordinary
+process interruption recovery remains supported on all three platforms.
+
+After success, the journal becomes `config.json.canonfig-lsops.json.last-transaction.json`
+instead of being deleted. This bounded private recovery receipt preserves the most
+recent prior config/state on every platform. It does not block subsequent passes;
+it is replaced only after the next successful commit. Capture and sync reserve
+this path too. A receipt is not a substitute for filesystem or machine backups.
 
 Before changing config the bridge writes a private pending journal with the exact
 previous config/state and intended new state. If interrupted after that point,

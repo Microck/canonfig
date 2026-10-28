@@ -159,11 +159,15 @@ async function replace(file: string, bytes: string, expected: string | undefined
     finally { await handle.close(); }
     if (await read(file) !== expected) fail(`Concurrent edit: ${file}`);
     await rename(temporary, file);
-    await syncDirectory(path.dirname(file));
+    await syncCatalogueDirectory(path.dirname(file));
   } finally { await unlink(temporary).catch(() => undefined); }
 }
 
-async function syncDirectory(directory: string): Promise<void> {
+export async function syncCatalogueDirectory(directory: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+  // libuv FlushFileBuffers cannot flush a read-only Windows directory handle.
+  // Windows uses flushed writable files + atomic renames and retains the latest
+  // recovery receipt. Do not claim POSIX directory-entry durability there.
+  if (platform === "win32") return;
   const handle = await open(directory, "r");
   try { await handle.sync(); } finally { await handle.close(); }
 }
@@ -176,15 +180,18 @@ async function statIfPresent(file: string) {
 async function assertSeparateDestination(config: string, bundle: string): Promise<void> {
   const state = `${config}.canonfig-lsops.json`;
   const destination = await statIfPresent(bundle);
-  for (const file of [config, state, `${state}.pending`, `${state}.lock`]) {
+  for (const file of [config, `${config}.updates.json`, state, `${state}.pending`, `${state}.lock`, `${state}.last-transaction.json`]) {
     if (file.toLowerCase() === bundle.toLowerCase()) fail("Bundle must be separate from local config and state (different files)");
     const reserved = await statIfPresent(file);
     if (destination && reserved && destination.dev === reserved.dev && destination.ino === reserved.ino) fail("Bundle must be separate from local config and state: filesystem alias");
   }
 }
 
+const catalogueDurabilityPolicy = () => process.platform === "win32"
+  ? "file-flushed-atomic-renames-with-recovery-receipt" : "file-and-directory-flushed-with-recovery-receipt";
+
 export interface BridgeOptions { config: string; bundle: string; apply: boolean }
-export interface BridgeOperations { readonly replace: typeof replace; readonly syncDirectory?: typeof syncDirectory }
+export interface BridgeOperations { readonly replace: typeof replace; readonly syncDirectory?: typeof syncCatalogueDirectory }
 const operations: BridgeOperations = { replace };
 export async function captureCatalogue(options: BridgeOptions) {
   const config = path.resolve(options.config); const bundle = path.resolve(options.bundle);
@@ -194,13 +201,14 @@ export async function captureCatalogue(options: BridgeOptions) {
   decodeCatalogue(encode(catalogue), true);
   const previous = await read(bundle);
   if (options.apply && previous !== encode(catalogue)) await replace(bundle, encode(catalogue), previous);
-  return { tools: Object.keys(catalogue.tools), changed: previous !== encode(catalogue), catalogue };
+  return { tools: Object.keys(catalogue.tools), changed: previous !== encode(catalogue), catalogue, durabilityPolicy: catalogueDurabilityPolicy() };
 }
 
 /** Independent bridge lock; stop other lsops writers during apply. Never touch .updates.json. */
 export async function synchronizeCatalogue(options: BridgeOptions, run: BridgeOperations = operations) {
   const config = path.resolve(options.config); const bundle = path.resolve(options.bundle);
   const statePath = `${config}.canonfig-lsops.json`; const journalPath = `${statePath}.pending`;
+  const receiptPath = `${statePath}.last-transaction.json`;
   await assertSeparateDestination(config, bundle);
   await safePath(config);
   const lock = `${statePath}.lock`;
@@ -218,24 +226,26 @@ export async function synchronizeCatalogue(options: BridgeOptions, run: BridgeOp
       if (state.version !== 1 || state.config !== config || state.bundle !== bundle) fail("Ownership state does not match this config and shared catalogue");
       owned = decodeCatalogue(encode({ version: 1, tools: state.owned }), true).tools;
     }
-    const plan = planCatalogue(current, incoming, owned);
+    const plan = { ...planCatalogue(current, incoming, owned), durabilityPolicy: catalogueDurabilityPolicy() };
     if (!options.apply || plan.conflicts.length > 0) return plan;
     const state: State = { version: 1, config, bundle, owned: plan.owned };
     const after = encode(plan.next); const stateAfter = encode(state);
     if (Buffer.byteLength(after) > 1_048_576 || Buffer.byteLength(stateAfter) > 1_048_576) fail("Merged catalogue or ownership state exceeds 1 MiB");
     if (before === after && rawState === stateAfter) return plan;
     if (await read(bundle) !== input || await read(config) !== before || await read(statePath) !== rawState) fail("Concurrent edit before apply");
+    await safePath(receiptPath);
     // Recovery evidence comes first. A partial write never silently loses ownership.
     const journal = await open(journalPath, "wx", 0o600);
     try {
       await journal.writeFile(encode({ version: 1, config, bundle, before: before ?? null, stateBefore: rawState ?? null, afterDigest: sha256Hex(after), stateAfter: state }));
       await journal.sync();
     } finally { await journal.close(); }
-    await (run.syncDirectory ?? syncDirectory)(path.dirname(journalPath));
+    await (run.syncDirectory ?? syncCatalogueDirectory)(path.dirname(journalPath));
     await run.replace(config, after, before);
     await run.replace(statePath, stateAfter, rawState);
-    await unlink(journalPath);
-    await (run.syncDirectory ?? syncDirectory)(path.dirname(journalPath));
+    // Retain the most recent successful transaction backup on every platform.
+    await rename(journalPath, receiptPath);
+    await (run.syncDirectory ?? syncCatalogueDirectory)(path.dirname(journalPath));
     return plan;
   } finally { if (options.apply) await rmdir(lock); }
 }
