@@ -1,4 +1,4 @@
-import { lstat, readFile, rename, unlink, mkdir, rmdir, realpath, open } from "node:fs/promises";
+import { lstat, readFile, rename, unlink, mkdir, rmdir, realpath, open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Predicate, Schema } from "effect";
@@ -8,7 +8,10 @@ const portable = ["description", "why", "when", "install_url", "install_manager"
 type Tool = Record<string, string | boolean>;
 export interface Catalogue { version: 1; tools: Record<string, Tool>; projects?: string[] }
 interface State { version: 1; config: string; bundle: string; owned: Record<string, Tool> }
-function fail(message: string): never { throw new Error(message); }
+export class CatalogueError extends Error {
+  constructor(message: string, readonly exitCode: 2 | 3 = 2) { super(message); this.name = "CatalogueError"; }
+}
+function fail(message: string, exitCode: 2 | 3 = 2): never { throw new CatalogueError(message, exitCode); }
 const PortableTool = Schema.Struct({
   description: Schema.optional(Schema.String), why: Schema.optional(Schema.String), when: Schema.optional(Schema.String),
   install_url: Schema.optional(Schema.String), install_manager: Schema.optional(Schema.String), install_sha256: Schema.optional(Schema.String),
@@ -136,10 +139,13 @@ export function planCatalogue(config: Catalogue, incoming: Catalogue, owned: Rec
   return { next, owned: nextOwned, added, updated, removed, local: localNames, conflicts };
 }
 
+export function cataloguePathsEqual(left: string, right: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
 async function safePath(file: string): Promise<void> {
   const parent = path.dirname(file);
   // Refuse symlink ancestors, not only the final entry. The parent must exist.
-  if (path.resolve(await realpath(parent)) !== path.resolve(parent)) fail(`Symlink ancestor: ${file}`);
+  if (!cataloguePathsEqual(path.resolve(await realpath(parent)), path.resolve(parent))) fail(`Symlink ancestor: ${file}`);
   try { if (!(await lstat(file)).isFile() || (await lstat(file)).isSymbolicLink()) fail(`Not a regular file: ${file}`); }
   catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
 }
@@ -150,14 +156,14 @@ async function read(file: string): Promise<string | undefined> {
 }
 async function replace(file: string, bytes: string, expected: string | undefined): Promise<void> {
   await safePath(file);
-  if (await read(file) !== expected) fail(`Concurrent edit: ${file}`);
+  if (await read(file) !== expected) fail(`Concurrent edit: ${file}`, 3);
   const temporary = `${file}.${randomUUID()}.tmp`;
   const mode = expected === undefined ? 0o600 : (await lstat(file)).mode & 0o777;
   try {
     const handle = await open(temporary, "wx", mode);
     try { await handle.writeFile(bytes); await handle.sync(); }
     finally { await handle.close(); }
-    if (await read(file) !== expected) fail(`Concurrent edit: ${file}`);
+    if (await read(file) !== expected) fail(`Concurrent edit: ${file}`, 3);
     await rename(temporary, file);
     await syncCatalogueDirectory(path.dirname(file));
   } finally { await unlink(temporary).catch(() => undefined); }
@@ -191,12 +197,12 @@ const catalogueDurabilityPolicy = () => process.platform === "win32"
   ? "file-flushed-atomic-renames-with-recovery-receipt" : "file-and-directory-flushed-with-recovery-receipt";
 
 export interface BridgeOptions { config: string; bundle: string; apply: boolean }
-export interface BridgeOperations { readonly replace: typeof replace; readonly syncDirectory?: typeof syncCatalogueDirectory }
+export interface BridgeOperations { readonly replace: typeof replace; readonly syncDirectory?: typeof syncCatalogueDirectory; readonly writeJournal?: (handle: FileHandle, bytes: string) => Promise<void> }
 const operations: BridgeOperations = { replace };
 export async function captureCatalogue(options: BridgeOptions) {
   const config = path.resolve(options.config); const bundle = path.resolve(options.bundle);
   await assertSeparateDestination(config, bundle);
-  const raw = await read(config); if (raw === undefined) fail("Source lsops config does not exist");
+  const raw = await read(config); if (raw === undefined) fail("Source lsops config does not exist", 3);
   const catalogue = exportCatalogue(decodeCatalogue(raw));
   decodeCatalogue(encode(catalogue), true);
   const previous = await read(bundle);
@@ -212,11 +218,11 @@ export async function synchronizeCatalogue(options: BridgeOptions, run: BridgeOp
   await assertSeparateDestination(config, bundle);
   await safePath(config);
   const lock = `${statePath}.lock`;
-  if (options.apply) await mkdir(lock).catch((error) => { if (error instanceof Error && "code" in error && error.code === "EEXIST") fail(`Bridge locked: ${lock}. Check the previous process before removing a stale lock.`); throw error; });
+  if (options.apply) await mkdir(lock).catch((error) => { if (error instanceof Error && "code" in error && error.code === "EEXIST") fail(`Bridge locked: ${lock}. Check the previous process before removing a stale lock.`, 3); throw error; });
   try {
     const pending = await read(journalPath);
-    if (pending !== undefined) fail(`Interrupted update: inspect ${journalPath} and restore its config backup before removing the pending journal. No automatic overwrite.`);
-    const input = await read(bundle); if (input === undefined) fail("Shared catalogue is missing; absence is not an empty catalogue");
+    if (pending !== undefined) fail(`Interrupted update: inspect ${journalPath} and restore its config backup before removing the pending journal. No automatic overwrite.`, 3);
+    const input = await read(bundle); if (input === undefined) fail("Shared catalogue is missing; absence is not an empty catalogue", 3);
     const incoming = decodeCatalogue(input, true);
     const before = await read(config); const current = decodeCatalogue(before ?? '{"version":1,"tools":{}}');
     const rawState = await read(statePath);
@@ -232,14 +238,21 @@ export async function synchronizeCatalogue(options: BridgeOptions, run: BridgeOp
     const after = encode(plan.next); const stateAfter = encode(state);
     if (Buffer.byteLength(after) > 1_048_576 || Buffer.byteLength(stateAfter) > 1_048_576) fail("Merged catalogue or ownership state exceeds 1 MiB");
     if (before === after && rawState === stateAfter) return plan;
-    if (await read(bundle) !== input || await read(config) !== before || await read(statePath) !== rawState) fail("Concurrent edit before apply");
+    if (await read(bundle) !== input || await read(config) !== before || await read(statePath) !== rawState) fail("Concurrent edit before apply", 3);
     await safePath(receiptPath);
     // Recovery evidence comes first. A partial write never silently loses ownership.
     const journal = await open(journalPath, "wx", 0o600);
     try {
-      await journal.writeFile(encode({ version: 1, config, bundle, before: before ?? null, stateBefore: rawState ?? null, afterDigest: sha256Hex(after), stateAfter: state }));
-      await journal.sync();
-    } finally { await journal.close(); }
+      try {
+        const journalBytes = encode({ version: 1, config, bundle, before: before ?? null, stateBefore: rawState ?? null, afterDigest: sha256Hex(after), stateAfter: state });
+        if (run.writeJournal) await run.writeJournal(journal, journalBytes);
+        else { await journal.writeFile(journalBytes); await journal.sync(); }
+      } finally { await journal.close(); }
+    } catch {
+      try { await unlink(journalPath); }
+      catch { fail(`Journal preparation failed before config/state mutation; incomplete journal remains at ${journalPath}. Inspect and remove it before retrying; no config restore is needed for this failure.`, 3); }
+      fail("Journal preparation failed before config/state mutation; incomplete journal removed. Fix the filesystem error before retrying.", 3);
+    }
     await (run.syncDirectory ?? syncCatalogueDirectory)(path.dirname(journalPath));
     await run.replace(config, after, before);
     await run.replace(statePath, stateAfter, rawState);

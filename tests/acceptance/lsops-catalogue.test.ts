@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, writeFile, readFile, readdir, rm, mkdir, symlink, realpath, link } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { syncCatalogueDirectory, captureCatalogue, decodeCatalogue, exportCatalogue, planCatalogue, synchronizeCatalogue, type Catalogue } from "../../src/profile/lsops-catalogue.ts";
+import { cataloguePathsEqual, syncCatalogueDirectory, captureCatalogue, decodeCatalogue, exportCatalogue, planCatalogue, synchronizeCatalogue, type Catalogue } from "../../src/profile/lsops-catalogue.ts";
 import { parseLsopsArguments, runLsopsCli } from "../../src/profile/lsops-cli.ts";
 import { decodeMachineProfileJsonc } from "../../src/domain/profile.ts";
 const roots: string[] = [];
@@ -214,4 +214,47 @@ describe("lsops portable catalogue bridge", () => {
   it("treats case aliases as conflicts, never merges them", () => {
     expect(planCatalogue(cat({ ALPHA: tool() }), cat({ alpha: tool() }), {}).conflicts).toHaveLength(1);
   });
+});
+
+
+it("compares Windows parent spelling without weakening non-Windows identity",()=>{
+ expect(cataloguePathsEqual("C:\\Users\\Me", "c:\\users\\me", "win32")).toBe(true);
+ expect(cataloguePathsEqual("/home/Me", "/home/me", "linux")).toBe(false);
+ expect(cataloguePathsEqual("C:\\Users\\Me", "C:\\Users\\Other", "win32")).toBe(false);
+});
+it.skipIf(process.platform !== "win32")("accepts ordinary Windows parent case variants",async()=>{
+ const options=await fixture();
+ expect((await synchronizeCatalogue({...options,config:options.config.toUpperCase(),bundle:options.bundle.toUpperCase(),apply:false})).added).toEqual(["alpha"]);
+});
+it.each(["write","flush"])("cleans an incomplete journal before mutation after %s failure",async(stage)=>{
+ const options=await fixture();const before=await readFile(options.config,"utf8");let writes=0;
+ await expect(synchronizeCatalogue(options,{replace:async()=>{writes++;},writeJournal:async(handle,bytes)=>{
+  await handle.writeFile(stage==="write" ? bytes.slice(0,10) : bytes);
+  throw new Error("Simulated journal failure");
+ }})).rejects.toThrow("incomplete journal removed");
+ expect(writes).toBe(0);expect(await readFile(options.config,"utf8")).toBe(before);
+ expect(await readdir(options.root)).not.toContain("config.json.canonfig-lsops.json.pending");
+ expect((await synchronizeCatalogue(options)).added).toEqual(["alpha"]);
+});
+it.each(["parse","pending","io","invalid-json"])("uses the appropriate CLI exit for %s failures",async(mode)=>{
+ const options=await fixture();let exit=-1;const output:string[]=[];
+ if(mode==="pending")await writeFile(options.config+".canonfig-lsops.json.pending","recovery");
+ if(mode==="invalid-json")await writeFile(options.bundle,"{");
+ const config=mode==="io"?path.join(options.root,"missing-parent","config.json"):options.config;
+ await runLsopsCli(mode==="parse"?["invalid","--json"]:["sync","--config",config,"--bundle",options.bundle,"--json"],{
+  writeStdout:s=>output.push(s),writeStderr:s=>output.push(s),setExitCode:c=>{exit=c;}
+ });
+ expect(exit).toBe(mode==="parse"||mode==="invalid-json"?2:3);expect(output.join("")).toContain("lsops");
+});
+
+it("reports unexpected defects as internal failures",async()=>{
+ const options=await fixture();let exit=-1;let injected=false;
+ await runLsopsCli(["capture","--config",options.config,"--bundle",options.bundle,"--json"],{
+  writeStdout:()=>{if(!injected){injected=true;throw new Error("Unexpected renderer defect");}},writeStderr:()=>undefined,setExitCode:c=>{exit=c;}
+ });
+ expect(exit).toBe(1);
+});
+it("matches lsops 0.5 single-line, trimmed display-text semantics",()=>{
+ expect(decodeCatalogue(JSON.stringify(cat({local:{help:"  Usage: local  "}}))).tools.local.help).toBe("Usage: local");
+ expect(()=>decodeCatalogue(JSON.stringify(cat({local:{help:"Usage:\nlocal"}})))).toThrow("Invalid text");
 });

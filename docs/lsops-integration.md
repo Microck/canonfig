@@ -151,3 +151,23 @@ bridge lock only after confirming no worker is running. Preview again. Do not
 blindly delete ownership state: doing so makes shared records independent and
 prevents safe automatic removal. The journal may contain local config data;
 keep it private. This recovery procedure does not undo changes by other writers.
+
+### Error classification and pre-write recovery
+
+Invalid command options and malformed configuration use exit 2. Missing input,
+filesystem I/O failures, pending recovery journals and held bridge locks use
+exit 3 (human action required). Local metadata conflicts use exit 4. Unexpected
+internal defects use exit 1. JSON output retains the error message.
+
+If writing or flushing the initial journal fails before any config/state
+replacement, the bridge removes that incomplete journal and reports the
+pre-mutation failure. If removal also fails, it reports the remaining path and
+that no config restore is needed for that failure. Once the journal is complete,
+subsequent failures retain it for recovery. Abrupt process termination can still
+leave a partial journal; inspect it and the actual config before manual recovery.
+
+Display-text validation follows lsops 0.5: descriptions, why/when and local help
+are single-line strings whose surrounding whitespace is trimmed. Multiline help
+is not a valid lsops 0.5 override. Local help content and visibility remain local;
+normal JSON serialization and lsops-compatible whitespace normalization can
+change their original textual representation.

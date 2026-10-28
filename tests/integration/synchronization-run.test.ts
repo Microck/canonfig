@@ -16,7 +16,7 @@ import {
   watch,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, writeFile, type statfs } from "node:fs/promises";
+import { access, realpath, mkdir, readFile, writeFile, type statfs } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -25,6 +25,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Effect, Fiber, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { synchronizeCatalogue } from "../../src/profile/lsops-catalogue.ts";
 import { AgentResolution } from "../../src/agent/agent-resolution.service.ts";
 import { describeRuntimeError } from "../../src/cli/failure-taxonomy.ts";
 import {
@@ -4508,4 +4509,17 @@ process.exit(child.status ?? 1);
     expect(outcome.outcome).toBe("Failed");
     expect(actionRows(fixture.database)[2]?.rollback_reference).toBeNull();
   });
+});
+
+
+it("delivers a shared lsops catalogue through file synchronization before local reconciliation",async()=>{
+ const root=await realpath(temporaryDirectory());
+ const bytes=JSON.stringify({version:1,tools:{shared:{description:"Shared tool"}}});
+ const fixture=fileFixture(root,"run-lsops-delivery",undefined,new TextEncoder().encode(bytes));
+ await seedAndRun(fixture);
+ expect(await readFile(fixture.target,"utf8")).toBe(bytes);
+ const config=join(root,"local-lsops.json");
+ await writeFile(config,JSON.stringify({version:1,tools:{local:{description:"Follower only"}}}));
+ expect((await synchronizeCatalogue({config,bundle:fixture.target,apply:true})).added).toEqual(["shared"]);
+ expect(JSON.parse(await readFile(config,"utf8")).tools).toEqual({local:{description:"Follower only"},shared:{description:"Shared tool"}});
 });

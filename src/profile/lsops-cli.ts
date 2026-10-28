@@ -1,7 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { Schema } from "effect";
 import { CliExitCode } from "../cli/exit-codes.ts";
 import { renderHarnessResult, toCliPayload, type HarnessConfigurationCliIo } from "../harness-configuration/cli-output.ts";
-import { captureCatalogue, synchronizeCatalogue } from "./lsops-catalogue.ts";
+import { CatalogueError, captureCatalogue, synchronizeCatalogue } from "./lsops-catalogue.ts";
 
 export const lsopsHelp = `Usage: canonfig lsops <capture|sync> --config FILE --bundle FILE [--apply] [--watch] [--interval SECONDS]
 
@@ -41,8 +42,10 @@ export function parseLsopsArguments(args: readonly string[]) {
 
 export async function runLsopsCli(args: readonly string[], io: HarnessConfigurationCliIo, signal?: AbortSignal): Promise<void> {
   const json = args.includes("--json");
+  let parsing = true;
   try {
     const options = parseLsopsArguments(args);
+    parsing = false;
     if (options.help) { renderHarnessResult(io, { command: "lsops.help", message: "lsops catalogue bridge", human: lsopsHelp, json, exitCode: 0 }); return; }
     do {
       if (signal?.aborted) return;
@@ -54,6 +57,10 @@ export async function runLsopsCli(args: readonly string[], io: HarnessConfigurat
       try { await delay(options.interval * 1000, undefined, { signal }); } catch (error) { if (signal?.aborted) return; throw error; }
     } while (!signal?.aborted);
   } catch (error) {
-    renderHarnessResult(io, { command: "lsops", message: error instanceof Error ? error.message : String(error), json, exitCode: CliExitCode.usageOrConfiguration });
+    renderHarnessResult(io, { command: "lsops", message: error instanceof Error ? error.message : String(error), json, exitCode: parsing ? CliExitCode.usageOrConfiguration
+      : error instanceof CatalogueError ? error.exitCode
+      : error instanceof SyntaxError || Schema.isSchemaError(error) ? CliExitCode.usageOrConfiguration
+      : error instanceof Error && "code" in error && "syscall" in error ? CliExitCode.humanActionRequired
+      : CliExitCode.internal });
   }
 }
