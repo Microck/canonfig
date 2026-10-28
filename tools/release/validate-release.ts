@@ -160,7 +160,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const metadata = Schema.decodeUnknownSync(PackageMetadata)(
     JSON.parse(readFileSync(metadataPath, "utf8")),
   );
-  if (metadata.name !== "@microck/canonfig" || metadata.version !== "4.1.0") {
+  if (metadata.name !== "@microck/canonfig" || metadata.version !== "4.2.0") {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
@@ -194,7 +194,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
 const validatePackageContents = (
   artifact: typeof PackedArtifact.Type,
 ): void => {
-  if (artifact.name !== "@microck/canonfig" || artifact.version !== "4.1.0") {
+  if (artifact.name !== "@microck/canonfig" || artifact.version !== "4.2.0") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
   // The 4.0.2 concurrency, handover and readiness fixes established these budgets.
@@ -254,7 +254,7 @@ const validateBinary = (executable: string): void => {
 
   const version = invokeExecutable(executable, ["--version"]);
   requireSuccess("packed executable version", version);
-  if (version.stdout !== "4.1.0\n" || version.stderr !== "") {
+  if (version.stdout !== "4.2.0\n" || version.stderr !== "") {
     fail("packed executable version output is invalid");
   }
 

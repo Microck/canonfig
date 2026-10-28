@@ -51,10 +51,10 @@ Never put literal tokens in an agent tool call or create an unsupported file fla
 Use an approved user-level install only when needed.
 
 For an existing 3.2.x installation, do not replace its package or state.
-Set up 4.1.0 separately using the [fresh-install guide](../../../website/content/docs/how-to/upgrade.mdx).
+Set up 4.2.0 separately using the [fresh-install guide](../../../website/content/docs/how-to/upgrade.mdx).
 
 ```bash
-npm install --global @microck/canonfig@4.1.0
+npm install --global @microck/canonfig@4.2.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

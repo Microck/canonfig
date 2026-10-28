@@ -1153,11 +1153,11 @@ describe("Source upgraded from a release before 3.2.1", () => {
 });
 
 describe("Source/follower version handshake", () => {
-  it("accepts the 4.1 release line but rejects mismatched minor and major peers", () => {
-    expect(peerVersionCompatible("4.1.0")).toBe(true);
-    expect(peerVersionCompatible("4.1.1")).toBe(true);
+  it("accepts the 4.2 release line but rejects mismatched minor and major peers", () => {
+    expect(peerVersionCompatible("4.2.0")).toBe(true);
+    expect(peerVersionCompatible("4.2.1")).toBe(true);
     expect(peerVersionCompatible("4.0.2")).toBe(false);
-    expect(peerVersionCompatible("4.2.0")).toBe(false);
+    expect(peerVersionCompatible("4.1.0")).toBe(false);
     expect(peerVersionCompatible("3.2.2")).toBe(false);
   });
 

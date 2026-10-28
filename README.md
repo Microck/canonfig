@@ -40,7 +40,7 @@ resident follower daemon.
 requires Node.js 24+ and npm. install the same release on the source and every follower:
 
 ```sh
-npm install --global @microck/canonfig@4.1.0
+npm install --global @microck/canonfig@4.2.0
 canonfig --version
 canonfig doctor --no-input
 ```
@@ -49,8 +49,9 @@ check the `credentials` result before continuing. canonfig uses Secret Service
 on linux, Keychain on macos, and Credential Manager on windows. follow the
 reported recovery steps if the store is locked or unavailable.
 
-4.1.0 adds harness archives and tracked skill updates. upgrade the source and
-all followers together: mixed 4.0/4.1 fleets are rejected. **do not replace a
+4.2.0 adds automatic skill updates, source skill deletion reconciliation, and live
+local harness projection. upgrade the source and all followers together: mixed
+4.0/4.1/4.2 fleets are rejected. **do not replace a
 3.2.x installation or its state in place**; use the
 [fresh-install upgrade guide](website/content/docs/how-to/upgrade.mdx).
 
