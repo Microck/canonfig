@@ -131,6 +131,15 @@ describe("self-update policy and package activation",()=>{
   rmSync(join(dir,"settings.json"));symlinkSync(join(dir,"missing"),join(dir,"settings.json"));
   expect(()=>commandLease(f.root)).toThrow("regular file");
  });
+ it.skipIf(process.platform==="win32")("rejects writable ancestors and state before any npm invocation",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);f.calls.length=0;
+  const parent=dirname(f.root);chmodSync(parent,0o777);
+  await expect(update(f.root,false,f.runner,undefined,f.home)).rejects.toThrow("not writable");expect(f.calls).toHaveLength(0);chmodSync(parent,0o755);
+  const dir=updateDirectory(f.root);chmodSync(dir,0o777);
+  await expect(update(f.root,false,f.runner,undefined,f.home)).rejects.toThrow("not writable");expect(f.calls).toHaveLength(0);chmodSync(dir,0o700);
+  chmodSync(join(dir,"settings.json"),0o666);
+  await expect(update(f.root,false,f.runner,undefined,f.home)).rejects.toThrow("not writable");expect(f.calls).toHaveLength(0);
+ });
  it("emits the standard JSON envelope for help, status and usage failures",async()=>{
   let out="",err="";const io={writeStdout:(s:string)=>{out+=s;},writeStderr:(s:string)=>{err+=s;},setExitCode:()=>{}};
   await runSelfUpdateCli(["--json","--help"],"/missing",io);

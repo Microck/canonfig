@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { acquireGate, entry, readersActive, regular, updateDirectory } from "./coordination.ts";
+import { acquireGate, assertPrivateDirectory, entry, readersActive, regular, updateDirectory } from "./coordination.ts";
 
 export const parseVersion = (value: string): readonly [number, number, number] => {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(value)) throw new Error(`Unsupported stable version: ${value}`);
@@ -29,7 +29,8 @@ export interface Invocation { executable: string; args: readonly string[]; timeo
 export type Runner = (invocation: Invocation, signal?: AbortSignal) => Promise<string>;
 export const run: Runner = (input, signal) => new Promise((resolveResult,reject) => {
   if (signal?.aborted) { reject(new Error("Self-update cancelled")); return; }
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^npm_config_/iu.test(key) && !["NPM_TOKEN","NODE_AUTH_TOKEN","NODE_OPTIONS"].includes(key.toUpperCase())));
+  const env = { ...process.env };
+  for(const key of Object.keys(env))if(/^npm_config_/iu.test(key)||["NPM_TOKEN","NODE_AUTH_TOKEN","NODE_OPTIONS"].includes(key.toUpperCase()))delete env[key];
   const child = spawn(input.executable, [...input.args], { env, shell: false, windowsHide: true, stdio: ["ignore","pipe","pipe"] });
   let stdout = ""; let stderr = ""; let failure: Error | undefined; let killTimer: ReturnType<typeof setTimeout> | undefined;
   const stop = (reason: string) => { failure ??= new Error(reason); child.kill("SIGTERM"); killTimer ??= setTimeout(() => child.kill("SIGKILL"), 5000); };
@@ -50,9 +51,14 @@ export function installation(root: string, home=homedir()) {
   let prefix=dirname(dirname(dirname(root)));
   if(process.platform!=="win32") {if(!prefix.endsWith(`${sep}lib`)) throw new Error("Self-update requires a user-local global npm installation");prefix=dirname(prefix);}
   if(existsSync(join(prefix,"package.json"))||existsSync(join(root,"src"))||existsSync(join(root,".git")))throw new Error("Project/checkouts are not supported self-update targets");
-  if(process.getuid && (lstatSync(prefix).uid!==process.getuid() || lstatSync(root).uid!==process.getuid() || ((lstatSync(prefix).mode|lstatSync(root).mode)&0o022)!==0))throw new Error("npm prefix/package must be user-owned and not writable by other users");
   const expected=join(prefix,...(process.platform==="win32"?[]:["lib"]),"node_modules","@microck","canonfig");
   if(root!==expected||!within(prefix,home))throw new Error("Self-update only supports a user-private global npm prefix under your home; system, project and linked installs require manual updates");
+  // Protect every parent that could replace the package or its sibling state,
+  // not only the prefix and leaf package. Check through the user home boundary.
+  for(let parent=root;;parent=dirname(parent)) {
+    assertPrivateDirectory(parent);
+    if(parent===home)break;
+  }
   return {root,prefix,version:manifest.version};
 }
 export function assertNoUnfinishedRun(state: string): void {

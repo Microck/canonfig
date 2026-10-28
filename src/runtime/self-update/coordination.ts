@@ -11,10 +11,13 @@ export function regular(path: string): void {
   const info=entry(path);
   if (info && (!info.isFile() || info.isSymbolicLink())) throw new Error(`Expected a regular file: ${path}`);
 }
-export function acquireGate(directory: string): () => void {
+export function assertPrivateDirectory(directory: string): void {
   const info=lstatSync(directory);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Invalid self-update directory");
   if(process.getuid && (info.uid!==process.getuid() || (info.mode&0o022)!==0))throw new Error("Self-update directory must be user-owned and not writable by other users");
+}
+export function acquireGate(directory: string): () => void {
+  assertPrivateDirectory(directory);
   const gate = join(directory, "gate");
   try { mkdirSync(gate, { mode: 0o700 }); }
   catch { throw new Error(`Self-update coordination is busy or interrupted: ${gate}. Never clear it while a worker is active.`); }
