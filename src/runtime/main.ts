@@ -215,9 +215,11 @@ if (early !== undefined) {
   await runMain((effect) => effect.Effect.promise(() => runSkillsCli(argv, nodeCliIo)), `skills.${argv.filter((value) => value !== "--json")[0] ?? "help"}`);
 } else if (isHarnessConfigurationCommand(arguments_)) {
   const harnessArgv = harnessArguments(arguments_);
-  const { runHarnessConfigurationCli } = await import("../harness-configuration/cli.ts");
-  await runMain((effect) =>
-    effect.Effect.promise(() => runHarnessConfigurationCli(harnessArgv, nodeCliIo)),
+  const [{ runHarnessConfigurationCli }, { runCancellablePromise }] = await Promise.all([
+    import("../harness-configuration/cli.ts"), import("./cancellable-promise.ts"),
+  ]);
+  await runMain(() =>
+    runCancellablePromise((signal) => runHarnessConfigurationCli(harnessArgv, nodeCliIo, signal)),
     `harness.${harnessArgv.filter((value) => value !== "--json")[0] ?? "help"}`,
   );
 } else if (isInstallerCommand(arguments_)) {

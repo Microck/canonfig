@@ -63,7 +63,7 @@ export async function watchHarness(
       if (current === previous) {
         const state = await loadState(root);
         const changed = plan.entries.some((entry) => ["create", "update", "delete"].includes(entry.action))
-          || (Object.keys(plan.nextState.artifacts).length > 0 && JSON.stringify(stateIdentity(state)) !== JSON.stringify(stateIdentity(plan.nextState)));
+          || ((Object.keys(state.artifacts).length > 0 || Object.keys(plan.nextState.artifacts).length > 0) && JSON.stringify(stateIdentity(state)) !== JSON.stringify(stateIdentity(plan.nextState)));
         if (changed && !options.dryRun) {
           if (signal.aborted) return;
           await run.apply(plan);

@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import { Effect, Fiber } from "effect";
+import { runCancellablePromise } from "../../src/runtime/cancellable-promise.ts";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -91,4 +94,41 @@ it("propagates MCP edits to both selected harnesses",async()=>{
  expect(plan.entries.some(entry=>entry.action==="update")).toBe(false);
  const projected=plan.entries.filter(entry=>entry.path.includes(".codex")||entry.path.includes(".omp"));
  expect(projected.filter(entry=>entry.after?.includes("new-server.js")).length).toBeGreaterThanOrEqual(2);
+});
+
+
+it("persists state-only retirement after generated files were already removed",async()=>{
+ const options=await fixture();await applyPlan(await compiler.plan({root:options.root}));
+ const stateFile=path.join(options.root,".canonfig",".harness-state.json");
+ const state=JSON.parse(await fs.readFile(stateFile,"utf8"));
+ for(const file of Object.keys(state.artifacts))await fs.rm(path.join(options.root,file),{force:true});
+ const config=path.join(options.root,".canonfig","harness.json");
+ await fs.writeFile(config,(await fs.readFile(config,"utf8")).replaceAll('"enabled":true','"enabled":false'));
+ const control=new AbortController();let polls=0;let writes=0;
+ await watchHarness(options,()=>undefined,control.signal,{plan:input=>compiler.plan(input),apply:async plan=>{writes++;await applyPlan(plan);},pause:async()=>{if(++polls===6)control.abort();}});
+ expect(writes).toBe(1);await expect(fs.stat(stateFile)).rejects.toMatchObject({code:"ENOENT"});
+});
+it("Effect interruption waits for an in-flight command to finish cleanup",async()=>{
+ const started=Promise.withResolvers<void>();const cancelled=Promise.withResolvers<void>();const release=Promise.withResolvers<void>();let cleaned=false;
+ const fiber=Effect.runFork(runCancellablePromise(async signal=>{
+  signal.addEventListener("abort",()=>cancelled.resolve(),{once:true});started.resolve();
+  await cancelled.promise;await release.promise;cleaned=true;
+ }));
+ await started.promise;const interruption=Effect.runPromise(Fiber.interrupt(fiber));
+ await cancelled.promise;expect(cleaned).toBe(false);release.resolve();await interruption;expect(cleaned).toBe(true);
+});
+it.skipIf(process.platform==="win32").each(["SIGINT","SIGTERM"] as const)("the actual CLI releases its watch lock on %s",async signal=>{
+ const options=await fixture();
+ const child=spawn(process.execPath,["--import","tsx",path.resolve(import.meta.dirname,"../../src/runtime/main.ts"),"harness","watch","--root",options.root,"--json"],{
+  env:{...process.env,HOME:options.root,USERPROFILE:options.root,CANONFIG_LOG_FILE:path.join(options.root,"command.log"),XDG_CACHE_HOME:path.join(options.root,"cache"),XDG_STATE_HOME:path.join(options.root,"state")},stdio:["ignore","pipe","pipe"]
+ });
+ let output="";let errors="";const ready=Promise.withResolvers<void>();
+ const closed=new Promise<number|null>((resolve,reject)=>{child.once("error",reject);child.once("close",code=>{resolve(code);if(!output.includes('"harness.watch"'))ready.reject(new Error(errors||"CLI exited before watch started"));});});
+ child.stdout.on("data",chunk=>{output+=chunk.toString();if(output.includes('"harness.watch"'))ready.resolve();});child.stderr.on("data",chunk=>{errors+=chunk.toString();});
+ const timeout=setTimeout(()=>{ready.reject(new Error("CLI watch startup timed out"));child.kill("SIGKILL");},15000);
+ try{
+  await ready.promise;expect(child.kill(signal)).toBe(true);expect(await closed).toBe(signal==="SIGINT"?130:143);
+  await expect(fs.stat(path.join(options.root,".canonfig",".harness-watch.lock"))).rejects.toMatchObject({code:"ENOENT"});
+  expect(await fs.readFile(path.join(options.root,"AGENTS.md"),"utf8")).toContain("First");
+ }finally{clearTimeout(timeout);if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL");await closed;}
 });
