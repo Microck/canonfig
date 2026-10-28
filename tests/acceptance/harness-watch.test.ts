@@ -132,3 +132,12 @@ it.skipIf(process.platform==="win32").each(["SIGINT","SIGTERM"] as const)("the a
   expect(await fs.readFile(path.join(options.root,"AGENTS.md"),"utf8")).toContain("First");
  }finally{clearTimeout(timeout);if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL");await closed;}
 });
+
+
+it("requires two fresh observations even when a create plan repeats after apply",async()=>{
+ const options=await fixture();const control=new AbortController();const plan=await compiler.plan({root:options.root});let polls=0;let writes=0;
+ await watchHarness(options,()=>undefined,control.signal,{plan:async()=>plan,apply:async()=>{writes++;},pause:async()=>{
+  polls++;if(polls===3)expect(writes).toBe(1);if(polls===4)control.abort();
+ }});
+ expect(writes).toBe(2);
+});

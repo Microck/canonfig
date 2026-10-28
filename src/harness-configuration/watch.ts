@@ -60,6 +60,7 @@ export async function watchHarness(
       if (signal.aborted) return;
       if (isHarnessPlanBlocked(plan)) { report({ plan, applied: false, blocked: true }); return; }
       const current = fingerprint(plan);
+      let committed = false;
       if (current === previous) {
         const state = await loadState(root);
         const changed = plan.entries.some((entry) => ["create", "update", "delete"].includes(entry.action))
@@ -69,12 +70,12 @@ export async function watchHarness(
           await run.apply(plan);
           report({ plan, applied: true, blocked: false });
           // Re-plan after our writes. Do not emit an idle heartbeat each poll.
-          previous = undefined; reported = undefined;
+          committed = true; reported = undefined;
         } else if (reported !== current) {
           report({ plan, applied: false, blocked: false }); reported = current;
         }
       }
-      previous = current;
+      previous = committed ? undefined : current;
       try { await run.pause(options.interval * 1000, signal); }
       catch (error) { if (signal.aborted) return; throw error; }
     }
