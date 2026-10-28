@@ -77,6 +77,17 @@ describe("lsops portable catalogue bridge", () => {
     const options = await fixture(); await synchronizeCatalogue(options); await rm(options.bundle);
     await expect(synchronizeCatalogue(options)).rejects.toThrow("missing"); expect((await load(options.config)).tools.alpha).toEqual(tool());
   });
+  it("refuses self-overwrite and reserved ownership paths", async () => {
+    const options = await fixture();
+    for (const bundle of [options.config, `${options.config}.canonfig-lsops.json`, `${options.config}.canonfig-lsops.json.pending`, `${options.config}.canonfig-lsops.json.lock`]) {
+      await expect(synchronizeCatalogue({ ...options, bundle })).rejects.toThrow("separate");
+    }
+    await expect(captureCatalogue({ ...options, bundle: options.config })).rejects.toThrow("different");
+    if (process.platform === "win32") {
+      await expect(captureCatalogue({ ...options, bundle: options.config.toUpperCase() })).rejects.toThrow("different");
+      await expect(synchronizeCatalogue({ ...options, bundle: options.config.toUpperCase() })).rejects.toThrow("separate");
+    }
+  });
   it("binds ownership to exactly one shared catalogue", async () => {
     const options = await fixture(); await synchronizeCatalogue(options); const bundle = path.join(options.root, "different.json"); await put(bundle, cat({}));
     await expect(synchronizeCatalogue({ ...options, bundle })).rejects.toThrow("does not match");
@@ -156,6 +167,9 @@ describe("lsops portable catalogue bridge", () => {
     const options = await fixture(); await put(options.config, cat({ alpha: tool("Local") })); let exit = 0;
     await runLsopsCli(["sync", "--config", options.config, "--bundle", options.bundle, "--apply"], { writeStdout: () => undefined, writeStderr: () => undefined, setExitCode: (code) => { exit = code; } });
     expect(exit).toBe(4);
+  });
+  it("does not mistake inherited Object members for an owned tool", () => {
+    expect(planCatalogue(cat({}), cat({ toString: { description: "Utility" } }), {}).added).toEqual(["toString"]);
   });
   it("treats case aliases as conflicts, never merges them", () => {
     expect(planCatalogue(cat({ ALPHA: tool() }), cat({ alpha: tool() }), {}).conflicts).toHaveLength(1);

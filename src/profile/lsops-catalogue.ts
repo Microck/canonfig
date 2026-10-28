@@ -112,7 +112,9 @@ export function planCatalogue(config: Catalogue, incoming: Catalogue, owned: Rec
   for (const name of new Set([...Object.keys(owned), ...Object.keys(incoming.tools)])) {
     const actual = actualNames.get(name.toLowerCase());
     if (actual && actual !== name) { conflicts.push(`${name}: case differs from local ${actual}`); continue; }
-    const current = config.tools[name]; const previous = owned[name]; const desired = incoming.tools[name];
+    const current = Object.hasOwn(config.tools, name) ? config.tools[name] : undefined;
+    const previous = Object.hasOwn(owned, name) ? owned[name] : undefined;
+    const desired = Object.hasOwn(incoming.tools, name) ? incoming.tools[name] : undefined;
     if (!previous) {
       if (current) {
         if (desired && !equal(project(current), desired)) conflicts.push(`${name}: independently registered locally`);
@@ -158,12 +160,15 @@ async function replace(file: string, bytes: string, expected: string | undefined
   } finally { await unlink(temporary).catch(() => undefined); }
 }
 
+const samePath = (left: string, right: string): boolean => process.platform === "win32"
+  ? left.toLowerCase() === right.toLowerCase() : left === right;
+
 export interface BridgeOptions { config: string; bundle: string; apply: boolean }
 export interface BridgeOperations { readonly replace: typeof replace }
 const operations: BridgeOperations = { replace };
 export async function captureCatalogue(options: BridgeOptions) {
   const config = path.resolve(options.config); const bundle = path.resolve(options.bundle);
-  if (config === bundle) fail("Config and bundle must be different files");
+  if (samePath(config, bundle)) fail("Config and bundle must be different files");
   const raw = await read(config); if (raw === undefined) fail("Source lsops config does not exist");
   const catalogue = exportCatalogue(decodeCatalogue(raw));
   decodeCatalogue(encode(catalogue), true);
@@ -176,7 +181,7 @@ export async function captureCatalogue(options: BridgeOptions) {
 export async function synchronizeCatalogue(options: BridgeOptions, run: BridgeOperations = operations) {
   const config = path.resolve(options.config); const bundle = path.resolve(options.bundle);
   const statePath = `${config}.canonfig-lsops.json`; const journalPath = `${statePath}.pending`;
-  if ([config, statePath, journalPath, `${statePath}.lock`].includes(bundle)) fail("Bundle must be separate from local config and state");
+  if ([config, statePath, journalPath, `${statePath}.lock`].some((file) => samePath(file, bundle))) fail("Bundle must be separate from local config and state");
   await safePath(config);
   const lock = `${statePath}.lock`;
   if (options.apply) await mkdir(lock).catch((error) => { if (error instanceof Error && "code" in error && error.code === "EEXIST") fail(`Bridge locked: ${lock}. Check the previous process before removing a stale lock.`); throw error; });
