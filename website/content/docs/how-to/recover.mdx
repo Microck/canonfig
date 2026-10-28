@@ -84,7 +84,7 @@ profile. It is not a rollback: whatever the run already applied stays applied,
 and the next run reconciles it like any other follower state.
 
 Recover an open run with the release and state that created it. Recovery after
-an in-place upgrade from 3.2.x to 4.1.0 is unsupported and unverified; see
+an in-place upgrade from 3.2.x to 4.2.0 is unsupported and unverified; see
 [the fresh-install guide](/how-to/upgrade) before replacing any installation.
 
 Before changing an existing file or managed directory, Canonfig captures its permissions in the rollback journal. Rollback restores POSIX modes on Linux and macOS. On Windows it also restores the owner, group, and discretionary access rules, including inheritance flags. It does not capture Windows audit rules. Directory permissions are restored after their children so restrictive permissions do not block recovery.

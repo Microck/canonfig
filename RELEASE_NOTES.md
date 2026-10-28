@@ -1,51 +1,55 @@
-# Canonfig v4.1.0
+# Canonfig v4.2.0
 
-This feature release adds portable harness archives and configurable upstream
-skill tracking. Node.js 24 or newer is required.
+This feature release adds opt-in automation for tracked skills, authored source
+profiles and local harness projection. Node.js 24 or newer is required.
 
-## Harness archives
+## Automatic tracked skill updates
 
-`canonfig harness export` packages canonical configuration alone, one or multiple
-selected harnesses, or selected harnesses plus canonical configuration. ZIP and
-TAR.GZ archives preserve binary files, executable bits and Unicode names, and
-include an inventory with content hashes. Dry runs, strict validation, bounded
-input sizes and no-clobber output make export explicit and inspectable.
+`canonfig skills auto` previews by default. `--apply` runs a foreground update
+loop (24 hours by default); `--once` supports an explicit external scheduler.
+Selected sources are frozen and revalidated under the update lock. Local drift
+and failures stop the updater. It does not install an OS service, publish a
+profile, force an overwrite or apply harness configuration.
 
-Exports do not read environment credentials, upload files or mutate source/native
-configuration. Authored literal secrets are not automatically scrubbed. External
-dependencies remain external; this is not a complete machine backup.
+## Source skill deletion reconciliation
 
-## Tracked skill updates
+`canonfig source reconcile-skills --profile-file FILE` previews removal of
+previously observed source-backed skills that have disappeared. `--apply`
+records observations and makes validated, backed-up JSONC edits; `--watch`
+repeats the process. Changed resource identities, inaccessible parents and
+unsafe dependencies fail closed. Other profile writers must be stopped.
+Profile publication and follower synchronization remain explicit separate steps.
 
-`canonfig skills track`, `list`, `check` and `update` track an existing installed
-skill against an explicit Git source, ref and subdirectory. Roots, configuration
-paths and named selections are configurable. Tracking requires a matching tree;
-updates preview by default and require `--apply` to write.
+## Live local harness projection
 
-Local additions, edits or deletions block the selected update rather than being
-overwritten. Staging, revalidation, locking, rollback and an interruption journal
-protect updates. Public HTTPS and local Git sources are supported; private/SSH
-sources, automatic merges and automatic crash recovery are not claimed. The
-commands do not execute skills or change follower/profile publication policy.
+`canonfig harness watch` projects supported canonical configuration into enabled
+harnesses while running in the foreground. Two matching plans are required
+before each serialized apply. It recreates deleted generated outputs, cleans up
+retired ownership and avoids idle writes. Drift, invalid saves and apply errors
+stop the watcher rather than overwriting local edits. SIGINT/SIGTERM waits for
+in-flight cleanup. Continuous dry-run and strict mode are supported.
+
+The watcher does not coordinate other apply/clean processes or external editors;
+stop those writers first. It does not install a background service, refresh a
+running harness process, transfer credentials or change machine sync transport.
 
 ## Dependency maintenance
 
-Update the documentation site to Next.js 16.4.2 and test tooling to Vitest 4.1.12
-to resolve the advisories found during release preparation. Production and full
-dependency audits are clean on the updated lockfile.
+Pin transitive Zod to 4.6.7 to resolve GHSA-mrhx-c7xc-m3w5 in documentation
+and test tooling. The release candidate is rebuilt and revalidated with this
+lockfile.
 
 ## Upgrade boundaries
 
-The state schema and signed-revision format are unchanged. The existing
-major.minor handshake still rejects mixed 4.0/4.1 fleets: pause synchronization,
-upgrade the Source and every follower to 4.1.0, restart the Source with its prior
-settings, and verify before resuming. Finish or recover unfinished runs using
-their original build and retain backups. In-place migration from 3.2.x remains
-unsupported; follow the separate fresh-install guide.
+State and signed-revision formats are unchanged. The existing major.minor
+handshake rejects mixed 4.0/4.1/4.2 fleets. Pause synchronization, upgrade the
+Source and all followers to 4.2.0, restart the Source with its prior settings,
+and verify before resuming. Finish unfinished runs with their original build
+and retain backups. In-place migration from 3.2.x remains unsupported.
 
 ## Verification
 
-Release is gated on repository checks, native Linux/macOS/Windows x64 and ARM64
-acceptance, packed CLI validation, unchanged package-size budgets and review.
-Publication must be followed by a fresh public npm install and provenance/tag
-verification. Preparing these notes does not assert that publication succeeded.
+Publication is gated on repository validation, packed CLI checks and native
+Linux/macOS/Windows x64 and Windows ARM64 acceptance. Verify the published npm
+artifact, provenance and matching GitHub tag after publication. Release
+preparation alone does not assert that publication succeeded.

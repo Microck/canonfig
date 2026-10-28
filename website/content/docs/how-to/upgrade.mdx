@@ -1,21 +1,21 @@
 ---
-title: "How-to: upgrade to Canonfig 4.1.0"
-description: Update a 4.0.x installation safely, or preserve an older 3.2.x installation before a separate setup.
+title: "How-to: upgrade to Canonfig 4.2.0"
+description: Update a 4.0.x or 4.1.x installation safely, or preserve an older 3.2.x installation before a separate setup.
 ---
 
-## Updating from 4.0.x
+## Updating from 4.0.x or 4.1.x
 
-4.1.0 adds harness archives and tracked skill updates without changing the state
+4.2.0 adds automatic skill updates, source skill deletion reconciliation and live local harness projection without changing the state
 schema or signed-revision format. The existing version handshake still requires
-the same major.minor on the Source and every follower: mixed 4.0/4.1 peers are
+the same major.minor on the Source and every follower: mixed 4.0/4.1/4.2 peers are
 rejected. Pause synchronization during the rollout and upgrade the complete fleet
-to 4.1.0 before resuming scheduled or manual synchronization.
+to 4.2.0 before resuming scheduled or manual synchronization.
 
 Before replacing the installed package, finish or recover any unfinished run
 using the build that created it, and back up the state and current installation.
 Do not use a different build to bypass an open-run upgrade gate.
 
-Install `@microck/canonfig@4.1.0` using the same prefix as the existing 4.0.x
+Install `@microck/canonfig@4.2.0` using the same prefix as the existing 4.0.x or 4.1.x
 installation. Check `canonfig --version` and run `canonfig doctor --no-input`.
 Then verify the role this machine already has:
 
@@ -38,9 +38,9 @@ Keep the old installation available until the new one has been verified.
 
 ## Migrating from 3.2.x
 
-For 3.2.x installations, Canonfig 4.1.0 requires a separate setup. An in-place
+For 3.2.x installations, Canonfig 4.2.0 requires a separate setup. An in-place
 upgrade of a 3.2.x Source or follower is unsupported and unverified. The signed revision wire
-format changed. Do not install 4.1.0 over an existing 3.2.x package, point it
+format changed. Do not install 4.2.0 over an existing 3.2.x package, point it
 at an existing state directory, or expect existing revisions, enrollments,
 credentials, and schedules to carry over. No automatic migration from 3.2.x
 is provided here.
@@ -48,9 +48,9 @@ is provided here.
 ## Version boundary
 
 The new Source and every new follower must run the same `major.minor` release
-line. A 4.1.0 Source refuses requests from 4.0.x and 3.2.x followers; a 4.1.0 follower
-also refuses a 4.0.x or 3.2.x Source. The failure reports "source/follower version
-mismatch" rather than a digest or tampering error. Installing 4.1.0 on one
+line. A 4.2.0 Source refuses requests from 4.0.x, 4.1.x and 3.2.x followers; a 4.2.0 follower
+also refuses a 4.0.x, 4.1.x or 3.2.x Source. The failure reports "source/follower version
+mismatch" rather than a digest or tampering error. Installing 4.2.0 on one
 machine in an existing 3.2.x fleet does not upgrade that fleet.
 
 ## Preserve the existing installation
@@ -59,7 +59,7 @@ machine in an existing 3.2.x fleet does not upgrade that fleet.
    profile, schedule, and any unfinished run **if the old CLI can start**.
    Published older packages may fail even on `canonfig --version`; in that case
    record the installed package metadata without trying to repair it in place.
-   Preserve any unfinished run and its old installation. Do not use 4.1.0 to
+   Preserve any unfinished run and its old installation. Do not use 4.2.0 to
    recover an old run or claim that the old state was migrated.
 2. Choose a time when Canonfig commands and native scheduled jobs are not
    running. Make a separate, access-restricted backup of each machine's
@@ -76,14 +76,14 @@ machine in an existing 3.2.x fleet does not upgrade that fleet.
    A state copy alone is not a verified rollback or migration method.
 
 Leave the existing package, state directory, service, schedules, and credential
-items untouched while setting up 4.1.0. Do not remove or overwrite them to make
+items untouched while setting up 4.2.0. Do not remove or overwrite them to make
 space for the new install. Prefer separate machines. If you use isolated OS
 accounts on the same host, give the new account a distinct npm prefix and
 check that its `canonfig` command resolves to that prefix. A default global
 npm install may replace the package used by the old account. If you cannot
 isolate the package, state, and credential store, stop here.
 
-## Set up a new 4.1.0 Source
+## Set up a new 4.2.0 Source
 
 Use a separate machine or OS account with its own package installation, state
 directory, native credential store, and service. On Linux or macOS, install
@@ -91,7 +91,7 @@ Node.js 24 or newer and npm under that new account, then use an account-local
 npm prefix so a system-wide install cannot replace the old package:
 
 ```bash
-npm install --global --prefix "$HOME/.local" @microck/canonfig@4.1.0
+npm install --global --prefix "$HOME/.local" @microck/canonfig@4.2.0
 export PATH="$HOME/.local/bin:$PATH"
 canonfig --version
 canonfig doctor --no-input
@@ -129,10 +129,10 @@ conversion of an old signed revision. See [the first-sync tutorial](/tutorials/f
 for a complete profile and service configuration. Keep the old Source and the
 new Source's endpoints distinct.
 
-## Enroll new 4.1.0 followers
+## Enroll new 4.2.0 followers
 
 On each separate follower machine or isolated OS account, install
-`@microck/canonfig@4.1.0` using a distinct package path as above and run
+`@microck/canonfig@4.2.0` using a distinct package path as above and run
 `canonfig doctor --no-input`. On the new Source, issue a new short-lived
 invitation for that follower. On Linux or macOS, use the new service's actual
 port in the endpoint (replace `17342` below if you chose another port):
