@@ -305,7 +305,7 @@ function MapCanvas({
           {/* A flat 1.5px dot lattice that pans with the map; calmer than an ambient shader and costs no WebGL context. */}
           <Background variant={BackgroundVariant.Dots} gap={14} size={1.5} color="color-mix(in oklab, var(--border-strong) 75%, transparent)" />
 
-          <Panel position="top-left" className="!m-3 flex max-w-[60%] items-center gap-1.5 text-xs text-faint">
+          <Panel position="top-left" className="!m-3 flex max-w-[60%] items-center gap-1.5 text-xs text-muted-foreground">
             {role === "follower" ? (
               <>
                 <EyeSlash className="size-3.5 shrink-0" />
@@ -321,7 +321,7 @@ function MapCanvas({
           {/* One bottom bar: the controls keep the bottom-right corner and the key sits left of them,
               wrapping above them when the panel is too narrow for both, so neither covers the other.
               The bar itself passes pointer events through so the strip between them still pans. */}
-          <Panel position="bottom-left" className="pointer-events-none right-0 !m-3 flex flex-row-reverse flex-wrap-reverse items-end gap-2">
+          <Panel position="bottom-left" className="pointer-events-none right-0 !m-3 flex flex-row-reverse flex-wrap-reverse items-stretch gap-2">
             <div className="pointer-events-auto flex items-center gap-px rounded-md border border-border bg-panel/90 p-0.5 shadow-sm shadow-black/30 backdrop-blur-sm">
               <ControlButton label="Zoom out" onClick={(event) => void zoomOut({ duration: viewportDuration(event, 150) })}>
                 <MagnifyingGlassMinus />

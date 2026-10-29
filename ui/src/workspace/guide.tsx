@@ -116,7 +116,8 @@ export function GetStarted() {
 
   return (
     <section data-tour="get-started" aria-labelledby="get-started-title" className="border-b border-border px-8 pt-5 pb-6">
-      <div className="flex items-center gap-3">
+      {/* Capped so each Start/Open button stays near its label instead of across a 1300px row. */}
+      <div className="flex max-w-[880px] items-center gap-3">
         <h2 id="get-started-title" className="text-base font-medium">
           Get started
         </h2>
@@ -134,7 +135,7 @@ export function GetStarted() {
           <X />
         </Button>
       </div>
-      <ol className="mt-3 grid gap-px">
+      <ol className="mt-3 grid max-w-[880px] gap-px">
         {items.map((item, i) => (
           <li key={item.id} className={cn("flex min-h-10 items-center gap-3 rounded-md px-2 py-1.5", item === next && "bg-raised/60")}>
             <span
@@ -189,7 +190,8 @@ export function TourOffer() {
           animate={{ opacity: 1, y: 0 }}
           exit={reduce ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, y: 8, transition: { duration: 0.15 } }}
           transition={{ duration: 0.3, ease: SNAP }}
-          className="fixed right-4 bottom-16 z-[80] w-[300px] rounded-xl border border-border-strong bg-popover p-4 shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
+          // bottom-24 clears the machine map's bottom controls (they sit ~64px up from the viewport edge).
+          className="fixed right-4 bottom-24 z-[80] w-[300px] max-w-[calc(100vw-2rem)] rounded-xl border border-border-strong bg-popover p-4 shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
         >
           <div className="flex items-start gap-3">
             <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-raised text-muted-foreground">
