@@ -1,5 +1,9 @@
 // Workspace screens share a sidebar, detail panels, and command palette.
 import { useState } from "react";
+import { List } from "@phosphor-icons/react";
+import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Logo } from "@/shared/shared";
 import { TipHost, TourHost, TourOffer } from "./guide";
 import { followLink, navigate, workspaceHref, type AppRoute } from "./routes";
 import { Palette, Sidebar } from "./frame";
@@ -54,9 +58,12 @@ function Frame() {
   const Screen = screens[ws.view];
   if (!Screen) return <NotFound />;
   return (
-    <div className="flex h-svh bg-canvas text-foreground">
-      <Sidebar />
-      <main data-tour="main" className="my-2 mr-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-panel">
+    // Below md (768px) the 244px sidebar would leave ~140px for content, so it moves into a left Sheet behind a
+    // menu button in a slim top bar. From md up the layout is unchanged.
+    <div className="flex h-svh flex-col bg-canvas text-foreground md:flex-row">
+      <MobileNav />
+      <Sidebar className="hidden md:flex" />
+      <main data-tour="main" className="mx-2 mb-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-panel md:my-2 md:ml-0">
         <Screen key={ws.view} />
       </main>
       <Palette />
@@ -76,14 +83,49 @@ function Frame() {
   );
 }
 
+/** Mobile-only top bar whose menu opens the same Sidebar in a Sheet. Navigating closes the Sheet. */
+function MobileNav() {
+  const ws = useWorkspace();
+  const [open, setOpen] = useState(false);
+  // Close on page change during render rather than in an effect, so the new page never paints under an open sheet.
+  const [shownView, setShownView] = useState(ws.view);
+  if (shownView !== ws.view) {
+    setShownView(ws.view);
+    setOpen(false);
+  }
+  return (
+    <div className="flex h-[48px] shrink-0 items-center gap-1 px-1 md:hidden">
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetTrigger asChild>
+          <Button variant="ghost" size="icon" className="size-10" aria-label="Open navigation">
+            <List className="size-5" />
+          </Button>
+        </SheetTrigger>
+        <SheetContent side="left" className="w-[244px] gap-0 border-sidebar-border bg-sidebar p-0">
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
+          <SheetDescription className="sr-only">Pages and settings for this machine</SheetDescription>
+          <Sidebar className="h-full w-full" />
+        </SheetContent>
+      </Sheet>
+      <span className="flex min-w-0 items-center gap-2 text-base">
+        <Logo />
+        <span className="truncate font-semibold">{ws.machineName}</span>
+        <span className="shrink-0 text-sm text-muted-foreground">{ws.role === "source" ? "Source" : "Follower"}</span>
+      </span>
+    </div>
+  );
+}
+
 function NotFound() {
   return (
-    <main className="flex min-h-svh flex-col items-center justify-center gap-4 bg-canvas px-6 text-foreground">
+    <main className="flex min-h-svh flex-col items-center justify-center gap-4 bg-canvas px-6 text-center text-foreground">
       <h1 className="text-xl font-semibold">Page not found</h1>
       <p className="text-sm text-muted-foreground">This address is not a page for this machine role.</p>
-      <a href="/source/overview" onClick={followLink} className="rounded text-sm underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring/60">
-        Go to Source overview
-      </a>
+      <Button asChild size="lg">
+        <a href="/source/overview" onClick={followLink}>
+          Go to Source overview
+        </a>
+      </Button>
     </main>
   );
 }

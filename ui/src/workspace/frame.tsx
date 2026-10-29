@@ -148,7 +148,8 @@ function Count({ value, tone = "muted", label }: { value: number; tone?: "muted"
   );
 }
 
-export function Sidebar() {
+/** The full navigation column. Frame shows it inline from md up and inside a Sheet below md. */
+export function Sidebar({ className }: { className?: string }) {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
   const { main, settings } = navFor(role);
@@ -175,7 +176,7 @@ export function Sidebar() {
         };
 
   return (
-    <aside className="flex w-[244px] shrink-0 flex-col overflow-y-auto overscroll-contain bg-sidebar px-[12px] pt-[8px] pb-3 [&>*]:shrink-0" aria-label="Main navigation">
+    <aside className={cn("flex w-[244px] shrink-0 flex-col overflow-y-auto overscroll-contain bg-sidebar px-[12px] pt-[8px] pb-3 [&>*]:shrink-0", className)} aria-label="Main navigation">
       {/* One 28px line in a 44px top band, like Linear's workspace switcher; the full role sentence lives in the menu. */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
