@@ -503,7 +503,7 @@ export function PublishDialog() {
           </Field>
 
           {/* The command gets its own full-width row; sharing the footer with the buttons cut it to a few words. */}
-          <Cli>{`canonfig source publish --profile-file ${shq(ws.profileFile)} --reviewer ${reviewer.trim() ? shq(reviewer.trim()) : "<name>"}`}</Cli>
+          <Cli wrap>{`canonfig source publish --profile-file ${shq(ws.profileFile)} --reviewer ${reviewer.trim() ? shq(reviewer.trim()) : "<name>"}`}</Cli>
 
           <DialogFooter>
             <div className="flex shrink-0 gap-2">
