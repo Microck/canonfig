@@ -3,23 +3,44 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 import { Slot } from "radix-ui"
 
+/*
+ * Button rule (u32). One variant language for the whole UI:
+ * - primary: gold fill. The single commit/create action of a view (Publish, Add,
+ *   Apply, Save). At most one per view. Gold on a button means "do the thing".
+ * - default / secondary: neutral fill. Every other action, including onboarding
+ *   and tour CTAs. Green is never a button fill: green and gold elsewhere are
+ *   status colours (ok / warn) only.
+ * - outline: neutral bordered, for toolbar and row actions.
+ * - ghost: no chrome until hover, for low-weight and icon actions.
+ * - link: inline text action, foreground with underline (not green).
+ * - destructive: red text on a faint red tint, for every irreversible action
+ *   (Stop syncing, Remove service, Abandon) and their confirm buttons.
+ * Disabled (every variant): fill and shadow removed, dashed strong border, faint
+ * text, not-allowed cursor, no hover or press feedback. No enabled variant uses
+ * a dashed border, so a disabled control never reads as available, while the
+ * border keeps a busy action ("Checking files...") reading as a button. Faint
+ * text stays ~4.4:1 on the panel. Hover/press use `not-disabled:` (also matches asChild links).
+ * Call sites pick a variant and must not restyle fills via className; the old
+ * `goldButton` string (shared.tsx) is replaced by variant="primary".
+ */
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap outline-none select-none transition-[scale] duration-150 ease-snap focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/60 active:not-aria-[haspopup]:scale-[0.97] disabled:pointer-events-none disabled:text-muted-foreground aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap outline-none select-none transition-[scale] duration-150 ease-snap focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/60 not-disabled:active:not-aria-[haspopup]:scale-[0.97] disabled:cursor-not-allowed disabled:border-dashed disabled:border-border-strong disabled:bg-transparent disabled:text-faint disabled:shadow-none disabled:no-underline aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
-      // Filled variants keep a border and muted fill when disabled, so a busy action such as
-      // "Checking files..." still reads as a button rather than loose text.
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/80 disabled:border-border disabled:bg-muted",
+        primary:
+          "bg-gold text-gold-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] not-disabled:hover:bg-gold-hover",
+        default:
+          "bg-secondary text-secondary-foreground not-disabled:hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_8%)] aria-expanded:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_8%)]",
         outline:
-          "border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
+          "border-border bg-background not-disabled:hover:bg-muted not-disabled:hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:not-disabled:hover:bg-input/50",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground disabled:border-border disabled:bg-muted",
+          "bg-secondary text-secondary-foreground not-disabled:hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_8%)] aria-expanded:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_8%)]",
         ghost:
-          "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50",
+          "not-disabled:hover:bg-muted not-disabled:hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:not-disabled:hover:bg-muted/50",
         destructive:
-          "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 disabled:border-border disabled:bg-muted dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
-        link: "text-primary underline-offset-4 hover:underline",
+          "bg-destructive/10 text-destructive not-disabled:hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/15 dark:not-disabled:hover:bg-destructive/25 dark:focus-visible:ring-destructive/40",
+        link: "text-foreground underline decoration-faint underline-offset-4 not-disabled:hover:decoration-foreground",
       },
       size: {
         default:
