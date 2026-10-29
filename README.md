@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/canonfig-logo.png" width="160" alt="canonfig logo">
+  <img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/canonfig-animation.gif" width="320" alt="canonfig chest filled with AI agent logos">
 
   <h1>canonfig</h1>
   <p>one-way sync for ai agent configuration.</p>
