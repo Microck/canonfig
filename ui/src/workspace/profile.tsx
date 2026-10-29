@@ -906,7 +906,8 @@ function GroupsTab() {
             onSubmit={(e) => {
               e.preventDefault();
               setTried(true);
-              if (problem) return;
+              // Move focus to the field so keyboard and screen-reader users land on the error.
+              if (problem) return document.getElementById("g-name")?.focus();
               setGroups((g) => [...g, { name: trimmed, description: desc.trim() || "No description" }]);
               // A group is profile content, so it waits for the next revision like an item edit.
               ws.markProfileEdit({ area: "group", id: trimmed, change: "added" });
@@ -1020,7 +1021,8 @@ function DefaultsTab() {
   const nameError = tried && !trimmed ? "Enter a display name." : null;
   const scheduleProblem = scheduleError(schedule);
   // Compares what Save would write, so day picks hidden under a daily cadence don't count as edits.
-  const { dialog: leaveDialog } = useLeaveGuard(!sameDefaults({ name, schedule }, saved), "the profile defaults");
+  const dirty = !sameDefaults({ name, schedule }, saved);
+  const { dialog: leaveDialog } = useLeaveGuard(dirty, "the profile defaults");
   return (
     <Body>
       <form
@@ -1091,9 +1093,23 @@ function DefaultsTab() {
             <Cli>canonfig schedule set --default</Cli>
           </div>
         )}
-        <div className="mt-8">
-          <Button type="submit" variant="secondary" size="sm" disabled={scheduleProblem !== null}>
+        {/* Same pattern as the item editor: nothing to save or discard until the form differs from what was saved. */}
+        <div className="mt-8 flex gap-2">
+          <Button type="submit" variant="secondary" size="sm" disabled={!dirty || scheduleProblem !== null}>
             Save defaults
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={!dirty}
+            onClick={() => {
+              setName(saved.name);
+              setSchedule(saved.schedule);
+              setTried(false);
+            }}
+          >
+            Discard
           </Button>
         </div>
       </form>
