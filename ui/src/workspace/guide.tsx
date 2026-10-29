@@ -201,6 +201,22 @@ export function TourOffer() {
   }, []);
   const detailOpen = useDetailPanelOpen();
   const show = ws.tourOffered && ready && !busy && !detailOpen;
+  const { dismissTourOffer, view } = ws;
+  useEffect(() => {
+    if (!show) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Hidden mobile offers must not consume Escape on other pages.
+      if (view !== "overview" && !window.matchMedia("(min-width: 48rem)").matches) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+      if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+      event.preventDefault();
+      dismissTourOffer();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [show, view, dismissTourOffer]);
 
   return (
     <AnimatePresence>
@@ -212,12 +228,13 @@ export function TourOffer() {
           animate={{ opacity: 1, y: 0 }}
           exit={reduce ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, y: 8, transition: { duration: 0.15 } }}
           transition={{ duration: 0.3, ease: SNAP }}
-          // bottom-24 clears the machine map's bottom controls (they sit ~64px up from the viewport edge).
-          // Below md the map stacks its legend above the controls (~130px tall), so the offer sits higher there.
-          // z-30: below the mobile detail panel and demo switcher (z-40) and Sheets/Dialogs (z-50), so every
-          // surface the user opened draws over the offer; still above the map's controls and legend. The offer
-          // also hides while a detail panel is open, since on desktop the panel sits in flow under this corner.
-          className="fixed right-4 bottom-24 z-30 max-md:bottom-[140px] w-[300px] max-w-[calc(100vw-2rem)] rounded-xl border border-border-strong bg-popover p-4 shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
+          // Clear the bottom controls and demo switcher; mobile offers appear only on Overview.
+          // Stay below detail panels, the demo switcher, and dialogs; hide while Details is open.
+          className={cn(
+            "fixed right-4 bottom-24 z-30 w-[300px] max-w-[calc(100vw-2rem)] rounded-xl border border-border-strong bg-popover p-4 shadow-[0_16px_48px_rgba(0,0,0,0.55)]",
+            "max-md:p-3",
+            view !== "overview" && "max-md:hidden",
+          )}
         >
           <div className="flex items-start gap-3">
             <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-raised text-muted-foreground">
