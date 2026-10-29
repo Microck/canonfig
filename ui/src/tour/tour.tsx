@@ -15,8 +15,10 @@ import { fillStyle } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
 
 export interface TourStep {
-  /** `data-tour` ids to spotlight. Omit for a centered card with nothing cut out. */
+  /** `data-tour` ids to spotlight. Omit (and `selector`) for a centered card with nothing cut out. */
   target?: string[];
+  /** CSS selector to spotlight instead of ids, for chrome that has no `data-tour` id (the mobile top bar). */
+  selector?: string;
   title: string;
   body: ReactNode;
   /** Runs before the step measures its target, e.g. to switch to the right page. */
@@ -45,9 +47,9 @@ const GAP = 14;
  */
 const HIT = "relative after:absolute after:-inset-[7px] pointer-coarse:after:-inset-[9px] active:scale-100! transition-none";
 
-function measure(ids: string[]): Rect | null {
-  const boxes = ids
-    .flatMap((id) => [...document.querySelectorAll<HTMLElement>(`[data-tour="${id}"]`)])
+function measure(selectors: string[]): Rect | null {
+  const boxes = selectors
+    .flatMap((sel) => [...document.querySelectorAll<HTMLElement>(sel)])
     .map((el) => el.getBoundingClientRect())
     .filter((r) => r.width > 0 && r.height > 0);
   if (boxes.length === 0) return null;
@@ -126,8 +128,9 @@ export function Tour({ steps, onClose, modal = true }: { steps: TourStep[]; onCl
     let raf2 = 0;
     const raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
-        const target = step.target ? measure(step.target) : null;
-        if (step.target && !target) return go(index + dir.current, dir.current);
+        const selectors = step.selector ? [step.selector] : step.target?.map((id) => `[data-tour="${id}"]`);
+        const target = selectors ? measure(selectors) : null;
+        if (selectors && !target) return go(index + dir.current, dir.current);
         setRect(target);
       });
     });

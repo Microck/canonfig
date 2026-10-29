@@ -2,7 +2,7 @@
 // the evidence warns against (Chameleon 2025: tours past 5 steps lose most
 // users, self-started tours get ~2x the engagement; NN/g: tutorials shown out
 // of context are skipped and forgotten):
-//   1. TourOffer/TourHost: a 4-stop tour, offered in a corner card, never forced.
+//   1. TourOffer/TourHost: a 4-stop tour (2 below md), offered in a corner card, never forced.
 //      Its last stop hands over to the Get started list, so it ends in doing.
 //   2. GetStarted: Linear-style "learn by doing" list on Overview; each item
 //      ticks itself off from real state, not from clicking a checkbox.
@@ -15,7 +15,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { DitherProgress } from "@/shared/shared";
-import { Tour } from "@/tour/tour";
+import { Tour, type TourStep } from "@/tour/tour";
 import { PAGE_TIPS } from "./page-tips";
 import { tourSteps } from "./tour-steps";
 import { useWorkspace, type Workspace } from "./store";
@@ -242,7 +242,7 @@ export function TourOffer() {
             </span>
             <div className="min-w-0">
               <h2 className="text-base font-semibold">New to Canonfig?</h2>
-              <p className="mt-1 text-sm text-pretty text-muted-foreground">A 4-stop tour of where things are. About a minute.</p>
+              <p className="mt-1 text-sm text-pretty text-muted-foreground">A short tour of where things are. About a minute.</p>
             </div>
           </div>
           <div className="mt-3 flex justify-end gap-2">
@@ -259,12 +259,41 @@ export function TourOffer() {
   );
 }
 
+/**
+ * Below md the sidebar lives in the menu sheet, so the machine and nav stops have no
+ * visible target and the tour would skip straight to its last stop. Fold them into one
+ * stop on the mobile top bar (machine name + menu button), listing what the menu holds.
+ * Opening the sheet instead would fight the tour for focus and the click blocker.
+ */
+function narrowSteps(steps: TourStep[]): TourStep[] {
+  if (window.matchMedia("(min-width: 48rem)").matches) return steps;
+  const sidebar = steps.filter((s) => s.target?.some((id) => id === "machine" || id.startsWith("nav-")));
+  const [machineStop, ...navStops] = sidebar;
+  if (!machineStop) return steps;
+  const topBar: TourStep = {
+    selector: 'div:has(> button[aria-label="Open navigation"])',
+    title: machineStop.title,
+    body: (
+      <>
+        {machineStop.body}
+        <span className="mt-2 block">The menu button opens every page, including:</span>
+        {navStops.map((s) => (
+          <span key={s.title} className="mt-1 block">
+            <span className="font-medium text-foreground">{s.title}.</span> {s.body}
+          </span>
+        ))}
+      </>
+    ),
+  };
+  return [topBar, ...steps.filter((s) => !sidebar.includes(s))];
+}
+
 /** The tour itself; steps are built once, the last one reads live state through a ref. */
 export function TourHost() {
   const ws = useWorkspace();
   const live = useRef(ws);
   live.current = ws;
-  const [steps] = useState(() => tourSteps(ws, () => live.current));
+  const [steps] = useState(() => narrowSteps(tourSteps(ws, () => live.current)));
   const close = () => {
     ws.setTourOpen(false);
     // A Source fresh out of onboarding came to review the proposed tools; the tour passed
