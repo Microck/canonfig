@@ -1,5 +1,5 @@
 // Settings shared by both machine roles where the feature exists on both.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { Check, Circle, CircleNotch, Warning, X } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
@@ -458,11 +458,25 @@ const PROJECT_SEED: Project[] = [
   { path: "~/code/canonfig", targets: ["claude", "codex"], pending: 0, status: "applied" },
 ];
 
+// Match DetailPanel's md breakpoint: only the side-by-side layout gets a default selection.
+const HARNESS_DETAIL_QUERY = "(min-width: 48rem)";
+function subscribeHarnessDetailLayout(onChange: () => void) {
+  const query = window.matchMedia(HARNESS_DETAIL_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
 export function HarnessView() {
   const ws = useWorkspace();
   // Shared so added projects and applied plans survive leaving the page.
   const [projects, setProjects] = useSharedState("harness-projects", PROJECT_SEED);
-  const selected = ws.focus ?? harnessProject.path;
+  const sideBySide = useSyncExternalStore(
+    subscribeHarnessDetailLayout,
+    () => window.matchMedia(HARNESS_DETAIL_QUERY).matches,
+    () => false,
+  );
+  // Explicit focus works at every width; an empty focus keeps a closed panel closed.
+  const selected = ws.focus ?? (sideBySide ? harnessProject.path : null);
   const [initOpen, setInitOpen] = useState(false);
   const [folder, setFolder] = useState("");
   const [tried, setTried] = useState(false);
