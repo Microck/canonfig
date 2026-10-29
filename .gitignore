@@ -9,3 +9,4 @@ website/.source/
 .DS_Store
 .vercel/
 .e2e/
+.crabbox/
