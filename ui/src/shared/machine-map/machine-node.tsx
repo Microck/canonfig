@@ -72,7 +72,9 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
   const lit = selected || customizing;
   const { Icon } = DEVICE_ICONS[look.icon];
   const accent = ACCENTS[look.accent].color;
-  const behind = data.kind === "follower" && (data.revision === null || data.revision < data.latest);
+  // Revision 0 means nothing applied yet (a just-joined follower) or nothing published (a new Source): show it as missing.
+  const revision = data.revision === 0 ? null : data.revision;
+  const behind = data.kind === "follower" && (revision === null || revision < data.latest);
 
   return (
     <>
@@ -156,11 +158,11 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
         <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-t border-border px-3 text-xs">
           <span className="flex min-w-0 items-center gap-1.5 text-faint">
             <PlatformMark platform={data.platform} />
-            {data.revision === null ? (
+            {revision === null ? (
               "No revision yet"
             ) : (
               <span className="truncate font-mono">
-                rev {data.revision}
+                rev {revision}
                 {behind && <span className="text-muted-foreground"> → {data.latest}</span>}
               </span>
             )}

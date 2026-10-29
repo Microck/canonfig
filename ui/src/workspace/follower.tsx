@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { AnimatedNumber, DitherProgress, Hint, Mono, StateBand, StateLabel, Term, goldButton } from "@/shared/shared";
 import { PLAIN, POLICY_TITLE, SECRETS_GROUP, configKeysFor, machine, resources, secrets as seedSecrets } from "@/shared/data";
 import { shq } from "@/shared/shell";
-import { FOLLOWER_PLAN, JOINED_PLAN, LOCAL_VALUES, conflictsIn, useSharedState, useWorkspace, type Overlay, type PlanAction, type PlanItem } from "./store";
+import { FOLLOWER_PLAN, JOINED_PLAN, LOCAL_VALUES, conflictsIn, useSharedReader, useSharedState, useWorkspace, type Overlay, type PlanAction, type PlanItem } from "./store";
 import { FOLLOWER_PROFILES, followerProfile, profilePlan } from "./profiles";
 import { GetStarted } from "./guide";
 import {
@@ -33,6 +33,7 @@ import {
   SettingRow,
   StateHeader,
   settingsGroup,
+  useLeaveGuard,
 } from "./kit";
 import { ConfirmDialog } from "./settings";
 import { ScheduleFields, nextCheck, scheduleArg, scheduleError, scheduleSummary, type Schedule } from "./schedule";
@@ -87,15 +88,18 @@ interface Step extends Omit<PlanItem, "action"> {
 
 /**
  * Why this machine can't sync right now, or null. `stopped`: Stop syncing ended it, which blocks
- * every sync action (apply, checking, profile, schedule, secrets). `connection`: anything that
- * must reach the Source (apply, secret refresh) is also blocked while the SSH tunnel is stopped.
+ * every sync action (apply, checking, recovery, profile, schedule, secrets). `connection`: anything
+ * that must reach the Source (apply, checking, secret refresh) is also blocked while the SSH tunnel
+ * is stopped. `unreachable` reads both when called, for an operation already waiting when one stops.
  */
 function useSyncBlocks() {
   const ws = useWorkspace();
   const [tunnelUp] = useSharedState(TUNNEL_KEY, true);
+  const readTunnelUp = useSharedReader(TUNNEL_KEY, true);
   const stopped = ws.unenrolled ? `Syncing is stopped on this machine. Joining again needs a new invitation from ${SOURCE}.` : null;
   const tunnelDown = ws.tunnelConfigured && !tunnelUp ? `The SSH tunnel is stopped, so this machine can't reach ${SOURCE}. Start it in Settings, SSH tunnel.` : null;
-  return { stopped, connection: stopped ?? tunnelDown };
+  const unreachable = () => ws.isStopped() || (ws.tunnelConfigured && !readTunnelUp());
+  return { stopped, connection: stopped ?? tunnelDown, unreachable };
 }
 
 /**
@@ -168,9 +172,13 @@ function Attention({ tone, title, children, actions }: { tone: "warn" | "act" | 
   );
 }
 
-/** Both actions change this machine for good (Recover writes files, Abandon gives up the last 2 steps), so each is confirmed first. */
+/**
+ * Both actions change this machine for good (Recover writes files, Abandon gives up the last 2 steps), so each is confirmed first.
+ * A stopped follower is no longer managed, so neither is offered; the journal is left as it was.
+ */
 function InterruptedNotice() {
   const ws = useWorkspace();
+  const { stopped } = useSyncBlocks();
   const [confirming, setConfirming] = useState<"recover" | "abandon" | null>(null);
   return (
     <>
@@ -186,17 +194,17 @@ function InterruptedNotice() {
               }
               actions={
                 <>
-                  <Button variant="ghost" size="xs" onClick={() => setConfirming("abandon")}>
+                  <Button variant="ghost" size="xs" disabled={stopped !== null} onClick={() => setConfirming("abandon")}>
                     Abandon…
                   </Button>
-                  <Button variant="outline" size="xs" onClick={() => setConfirming("recover")}>
+                  <Button variant="outline" size="xs" disabled={stopped !== null} onClick={() => setConfirming("recover")}>
                     Recover…
                   </Button>
                 </>
               }
             >
               It stopped yesterday at 21:14 after 3 of 5 steps, when this machine went to sleep. Recover finishes the other 2. Abandon closes it and leaves the 3 finished steps in
-              place; nothing is rolled back.
+              place; nothing is rolled back.{stopped && ` ${stopped}`}
             </Attention>
           </AnimatedRow>
         )}
@@ -521,13 +529,13 @@ export function SyncView() {
             <Button
               variant="ghost"
               size="sm"
-              disabled={running || checking || blocks.stopped !== null}
+              disabled={running || checking || blocks.connection !== null}
               onClick={() => {
                 setChecking(true);
                 ws.later(() => {
                   setChecking(false);
-                  // Stop syncing during the check: the stopped machine has no revision to report.
-                  if (ws.isStopped()) return;
+                  // Syncing or the tunnel stopped during the check: the Source can't have answered.
+                  if (blocks.unreachable()) return;
                   toast(ws.phase === "done" ? "No newer revision" : `Revision ${rev} is still the latest`);
                 }, 900);
               }}
@@ -564,7 +572,9 @@ export function SyncView() {
                   </>
                 ) : ws.phase === "done" ? (
                   paused > 0 ? (
-                    `Update #${ws.runs[0].n} finished: revision ${rev} applied, ${paused} ${paused === 1 ? "item" : "items"} paused`
+                    // `paused` is live (a key kept after the run also pauses), while the run record keeps
+                    // the count at completion, so this heading must not attribute it to the run.
+                    `Update #${ws.runs[0].n} finished: revision ${rev} applied. ${paused} ${paused === 1 ? "item is" : "items are"} paused now`
                   ) : (
                     `Update #${ws.runs[0].n} finished`
                   )
@@ -778,6 +788,8 @@ export function ScheduleView() {
   // With no schedule set, the form starts from the Source's default, so Save sets one.
   const [draft, setDraft] = useState<Schedule>(saved ?? SCHEDULE_INITIAL);
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  // With nothing saved, the untouched form is only the Source's default on offer, not an edit to lose.
+  const { dialog: leaveDialog } = useLeaveGuard(JSON.stringify(draft) !== JSON.stringify(saved ?? SCHEDULE_INITIAL), "the schedule");
   const error = scheduleError(draft);
   const defaultLabel = "every day at 09:00";
   const { stopped } = useSyncBlocks();
@@ -825,6 +837,7 @@ export function ScheduleView() {
           )}
         </div>
       </Body>
+      {leaveDialog}
     </>
   );
 }
@@ -836,7 +849,6 @@ export function OverlaysView() {
   const setOverlays = useSetOverlays();
   const selected = ws.focus;
   const setSelected = (id: string | null) => ws.go("overlays", id ?? undefined);
-  const [removing, setRemoving] = useState<string | null>(null);
   const cols = "minmax(160px,1fr) minmax(180px,1.2fr) minmax(160px,1fr)";
   const current = ws.overlays.find((o) => o.resource === selected);
   const startResource = CONFIGS.find((r) => !ws.overlays.some((x) => x.resource === r.id)) ?? CONFIGS[0];
@@ -869,7 +881,11 @@ export function OverlaysView() {
                 // Replace the creation URL so Back does not reopen an already saved draft.
                 ws.go("overlays", o.resource, { replace: adding });
               }}
-              onRemove={() => setRemoving(selected)}
+              onRemove={() => {
+                setOverlays(ws.overlays.filter((o) => o.resource !== selected));
+                setSelected(null);
+                toast("Keys handed back to the Source");
+              }}
             />
           )
         }
@@ -912,19 +928,6 @@ export function OverlaysView() {
           <Cli>canonfig overlay list</Cli>
         </div>
       </Body>
-      <ConfirmDialog
-        open={removing !== null}
-        onOpenChange={(o) => !o && setRemoving(null)}
-        title={`Stop keeping keys in ${removing ?? "this file"}?`}
-        body="Canonfig manages these keys again from the next update. Keys the profile sets go back to the Source's value."
-        confirm="Stop keeping them"
-        cli={removing !== null ? `canonfig overlay remove ${shq(removing)}` : undefined}
-        onConfirm={() => {
-          setOverlays(ws.overlays.filter((o) => o.resource !== removing));
-          setSelected(null);
-          toast("Keys handed back to the Source");
-        }}
-      />
     </>
   );
 }
@@ -947,12 +950,14 @@ function OverlayEditor({
   isNew: boolean;
   onClose: () => void;
   onSave: (o: Overlay) => void;
+  /** Removes the overlay and closes the panel; the editor confirms first. */
   onRemove: () => void;
 }) {
   const ws = useWorkspace();
   const [o, setO] = useState(initial);
   const [newKey, setNewKey] = useState("");
   const [tried, setTried] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const declared = configKeysFor(o.resource);
   const local = LOCAL_VALUES[o.resource] ?? {};
   const existing = ws.overlays.find((x) => x.resource === o.resource);
@@ -978,6 +983,9 @@ function OverlayEditor({
   };
   // Compared with the overlay as saved now, not as the panel opened, so Save turns off once it lands.
   const dirty = JSON.stringify(o) !== JSON.stringify(existing);
+  // A new panel holds only new picks, so it has edits once it has any; an unadded typed key counts too.
+  // Save and confirmed removal settle the draft, so they leave through leaveWithoutAsking.
+  const { dialog: leaveDialog, leaveWithoutAsking } = useLeaveGuard((isNew ? o.keys.length > 0 : dirty) || typedKey !== "", isNew ? "the keys to keep" : o.resource);
 
   return (
     <DetailPanel
@@ -986,7 +994,7 @@ function OverlayEditor({
       footer={
         <>
           {!isNew && (
-            <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-bad" onClick={onRemove}>
+            <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-bad" onClick={() => setConfirmRemove(true)}>
               Stop keeping all…
             </Button>
           )}
@@ -997,7 +1005,7 @@ function OverlayEditor({
             disabled={!isNew && !dirty}
             onClick={() => {
               setTried(true);
-              if (o.keys.length > 0) onSave(result);
+              if (o.keys.length > 0) leaveWithoutAsking(() => onSave(result));
             }}
           >
             {isNew ? "Keep on this machine" : "Save"}
@@ -1091,6 +1099,16 @@ function OverlayEditor({
         )}
         <Cli>{`canonfig overlay set ${shq(result.resource)} --target ${shq(result.target)}${result.keys.length ? result.keys.map((k) => ` --key ${shq(k)}`).join("") : " --key <config.path>"}`}</Cli>
       </div>
+      <ConfirmDialog
+        open={confirmRemove}
+        onOpenChange={setConfirmRemove}
+        title={`Stop keeping keys in ${o.resource}?`}
+        body="Canonfig manages these keys again from the next update. Keys the profile sets go back to the Source's value."
+        confirm="Stop keeping them"
+        cli={`canonfig overlay remove ${shq(o.resource)}`}
+        onConfirm={() => leaveWithoutAsking(onRemove)}
+      />
+      {leaveDialog}
     </DetailPanel>
   );
 }
@@ -1098,7 +1116,7 @@ function OverlayEditor({
 export function FollowerSecretsView() {
   const ws = useWorkspace();
   const [refresh, setRefresh] = useSharedState(SECRETS_KEY, SECRETS_INITIAL);
-  const { connection } = useSyncBlocks();
+  const { connection, unreachable } = useSyncBlocks();
   const cols = "minmax(180px,1.5fr) minmax(140px,1fr)";
   return (
     <>
@@ -1112,8 +1130,8 @@ export function FollowerSecretsView() {
             onClick={() => {
               setRefresh((prev) => ({ ...prev, busy: true }));
               ws.later(() => {
-                if (ws.isStopped()) {
-                  // Stopped during the refresh: nothing was refreshed, so keep the earlier time.
+                if (unreachable()) {
+                  // Syncing or the tunnel stopped during the refresh: nothing was refreshed, so keep the earlier time.
                   setRefresh((prev) => ({ ...prev, busy: false }));
                   return;
                 }
@@ -1166,7 +1184,7 @@ export function TunnelView() {
       toast(next ? "Tunnel started" : "Tunnel stopped", {
         description: next
           ? `In this demo workspace: forwarding 127.0.0.1:17342 to ${SOURCE}.`
-          : "Applying changes and updating secrets wait until you start it again.",
+          : "Applying changes, checking for updates and updating secrets wait until you start it again.",
       });
     }, 700);
   };
@@ -1257,6 +1275,7 @@ export function MachineView() {
   const [, setOrigin] = useSharedState<PlanOrigin>(ORIGIN_KEY, ORIGIN_INITIAL);
   const [prof, setProf] = useState(selectedId);
   const { stopped } = useSyncBlocks();
+  const { dialog: leaveDialog } = useLeaveGuard(prof !== selectedId, "the profile choice");
   const switchProfile = () => {
     setSelectedId(prof);
     setOrigin("profile");
@@ -1331,6 +1350,7 @@ export function MachineView() {
           </div>
         </div>
       </Body>
+      {leaveDialog}
     </>
   );
 }

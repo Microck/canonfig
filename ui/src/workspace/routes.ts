@@ -109,6 +109,7 @@ export function useAppRoute(): AppRoute {
  * One screen with unsaved edits can hold up in-app navigation. The guard receives the pending
  * navigation and returns true when it took over: it shows its own confirmation and calls `proceed`
  * if the person chooses to discard. Browser Back/Forward and full reloads are not intercepted.
+ * Forms register through `useLeaveGuard` in kit.tsx rather than calling this directly.
  */
 export type NavigationGuard = (proceed: () => void) => boolean;
 let guard: NavigationGuard | null = null;

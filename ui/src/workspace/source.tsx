@@ -35,6 +35,7 @@ import {
   StateHeader,
   WithCode,
   copy,
+  useLeaveGuard,
 } from "./kit";
 
 const AGENT_MODE_LABEL: Record<string, string> = { "deterministic-only": "Off", "agent-propose": "Proposes only", "agent-apply": "Applies fixes" };
@@ -91,19 +92,26 @@ function OverviewState() {
   const unreachable = ws.followers.filter((f) => f.state === "offline" && f.revision !== ws.latest);
   const reachable = ws.followers.length - unreachable.length;
   const tone = ws.publishing || ws.syncing.length > 0 ? "ok" : ws.pending.length === 0 ? "ok" : "warn";
+  // Before revision 1, onboarding's proposed tools are what needs review; other edits are only counted as changes.
+  const proposed = ws.proposed.filter((id) => ws.resources.some((r) => r.id === id)).length;
   if (ws.latest === 0 && !ws.publishing)
     return (
       <StateHeader
         tone="warn"
         title="Nothing published yet"
         body={
-          ws.pending.length === 0 ? (
-            "Add what your machines need in Profile, then publish revision 1. Machines you add get nothing until you publish."
-          ) : (
+          proposed > 0 ? (
             <>
-              Review the <AnimatedNumber value={ws.pending.length} /> proposed {ws.pending.length === 1 ? "item" : "items"} in Profile, then publish revision 1. Machines you add get
+              Review the <AnimatedNumber value={proposed} /> proposed {proposed === 1 ? "item" : "items"} in Profile, then publish revision 1. Machines you add get nothing
+              until you publish.
+            </>
+          ) : ws.pending.length > 0 ? (
+            <>
+              <AnimatedNumber value={ws.pending.length} /> unpublished {ws.pending.length === 1 ? "change waits" : "changes wait"} for revision 1. Machines you add get
               nothing until you publish.
             </>
+          ) : (
+            "Add what your machines need in Profile, then publish revision 1. Machines you add get nothing until you publish."
           )
         }
       />
@@ -470,8 +478,8 @@ export function PublishDialog() {
             </div>
             <DitherProgress value={ws.publishing ? 100 : check} running={!checked || ws.publishing} tone="ok" label="File check" />
             <p className="text-sm text-pretty text-faint">
-              Canonfig reads every file in this change and records a fingerprint of it, so each machine can confirm it got exactly these files. Publish unlocks when the check
-              finishes.
+              Canonfig reads every file in this change and records a fingerprint of it, so each machine can confirm it got exactly these files. This demo reads no files: the
+              check is a short wait, and the fingerprint is a stand-in made from the revision number and change list. Publish unlocks when the check finishes.
             </p>
           </section>
 
@@ -588,7 +596,11 @@ function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose:
         <Prop
           label={
             <span className="inline-flex items-center gap-1">
-              Fingerprint <Hint label="Fingerprint">The digest of everything in this revision. Each machine checks it, so it knows the files weren't changed on the way.</Hint>
+              Fingerprint{" "}
+              <Hint label="Fingerprint">
+                The digest of everything in this revision. Each machine checks it, so it knows the files weren't changed on the way. In this demo it is a stand-in value,
+                and no machine checks it.
+              </Hint>
             </span>
           }
         >
@@ -641,6 +653,9 @@ export function SecretsView() {
   const trimmed = name.trim();
   const nameError = !tried || editing ? null : !trimmed ? "Enter a name." : ws.secrets.some((s) => s.name === trimmed) ? `${trimmed} already exists. Use Replace value on its row.` : null;
   const valueError = tried && !value ? "Enter the secret value." : null;
+  // Only an open form holds a draft: Cancel, Escape and Save secret all close it, and reopening starts blank.
+  // Replacing a value has no name field, so only the value counts there.
+  const { dialog: leaveDialog } = useLeaveGuard(open && (value !== "" || (!editing && name !== "")), editing ?? "this new secret");
 
   return (
     <>
@@ -659,12 +674,12 @@ export function SecretsView() {
       />
       <Body>
         <p className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
-          Kept in this machine's credential store and sent only to machines that{" "}
+          Canonfig keeps these in this machine's credential store and sends them only to machines that{" "}
           <Term term="Follower Group">
             <span className="lowercase">{PLAIN.secretsGroup}</span>
           </Term>{" "}
           (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>): {receivers.length ? receivers.map((f) => f.name).join(", ") : "none yet"}. A value can't be viewed
-          again after you set it.
+          again after you set it. This demo keeps only each secret's name and discards the value.
         </p>
         {ws.secrets.length === 0 ? (
           <EmptyState
@@ -758,7 +773,12 @@ export function SecretsView() {
                   />
                 </Field>
               )}
-              <Field label="Value" htmlFor="sec-value" description="Kept in the credential store, never in the profile file." error={valueError}>
+              <Field
+                label="Value"
+                htmlFor="sec-value"
+                description="Canonfig keeps it in the credential store, never in the profile file. This demo discards it."
+                error={valueError}
+              >
                 <Input
                   id="sec-value"
                   type="password"
@@ -790,6 +810,7 @@ export function SecretsView() {
             <DialogTitle>Remove {removing}?</DialogTitle>
             <DialogDescription className="text-base text-pretty">
               Canonfig deletes it from this machine's credential store, and machines delete their copy on their next update. Tools that read it stop working until you set it again.
+              This demo only removes the name from the list.
             </DialogDescription>
           </DialogHeader>
           <Cli>{`canonfig secrets remove ${removing ? shq(removing) : "<name>"}`}</Cli>
@@ -810,6 +831,7 @@ export function SecretsView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {leaveDialog}
     </>
   );
 }

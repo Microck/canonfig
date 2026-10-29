@@ -1,10 +1,11 @@
 // Workspace layout components: page headers, dense rows, and detail panels.
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { AnimatePresence, motion, useReducedMotion, type Transition } from "motion/react";
 import { Check, Copy, FileText, Folder, Key, Question, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -12,7 +13,7 @@ import { AnimatedNumber, DitherBlock, Hint, StateBand, goldButton } from "@/shar
 import { PLAIN, profile, type ResourceKind } from "@/shared/data";
 import { useSharedState, useWorkspace } from "./store";
 import { PAGE_TIPS } from "./page-tips";
-import { followLink } from "./routes";
+import { followLink, holdNavigation } from "./routes";
 
 export const KIND_ICON: Record<ResourceKind, PhosphorIcon> = {
   file: FileText,
@@ -344,6 +345,16 @@ export function DetailPanel({
     if (panel.current) panel.current.style.width = `${width}px`;
     separator.current?.setAttribute("aria-valuenow", String(width));
   };
+  // aria-valuenow is never rendered from JSX: React would only write it on mount, and the width lives in the DOM.
+  // Read the real width before paint; resize() keeps the two in step afterwards.
+  useLayoutEffect(() => {
+    if (panel.current) separator.current?.setAttribute("aria-valuenow", String(panel.current.offsetWidth));
+  }, []);
+  // pointerup, pointercancel (the browser took the gesture, e.g. for touch scrolling) and lostpointercapture
+  // all end a drag; the width keeps whatever the drag last set.
+  const endDrag = () => {
+    drag.current = null;
+  };
   return (
     <motion.aside
       ref={panel}
@@ -365,7 +376,6 @@ export function DetailPanel({
         aria-label="Resize details"
         aria-valuemin={PANEL_MIN}
         aria-valuemax={PANEL_MAX}
-        aria-valuenow={380}
         className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1 after:w-px hover:after:bg-ring/60 focus-visible:after:w-0.5 focus-visible:after:bg-ring"
         onKeyDown={(e) => {
           const w = panel.current?.offsetWidth ?? 380;
@@ -381,7 +391,9 @@ export function DetailPanel({
         onPointerMove={(e) => {
           if (drag.current) resize(drag.current.w + drag.current.x - e.clientX);
         }}
-        onPointerUp={() => (drag.current = null)}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
       />
       <div className="flex h-[44px] shrink-0 items-center gap-2 border-b border-border pr-2 pl-4">
         <h2 className="min-w-0 truncate text-base font-medium">{title}</h2>
@@ -402,6 +414,64 @@ export function DetailPanel({
       {footer && <div className="flex shrink-0 items-center gap-2 border-t border-border px-4 py-2.5">{footer}</div>}
     </motion.aside>
   );
+}
+
+/**
+ * Asks before in-app navigation discards an unsaved draft. While `dirty`, every in-app link, row, sidebar
+ * entry, palette command and Demo switcher change goes through the guard in routes.ts and opens `dialog`
+ * instead; Discard changes completes the navigation, Keep editing stays. Browser Back/Forward and reloads
+ * are not intercepted. Every form with a saveable draft uses this, so they all ask the same way.
+ *
+ * Render `dialog` inside the form. `label` finishes "Your edits to … aren't saved". Exits that settle the
+ * draft themselves (save, remove, Cancel on a new record) navigate inside `leaveWithoutAsking`.
+ */
+export function useLeaveGuard(dirty: boolean, label: string) {
+  const [leaveRequest, setLeaveRequest] = useState<(() => void) | null>(null);
+  // navigate() consults the guard synchronously, so this flag covers exactly the settling exit's own
+  // navigation. The guard itself stays registered, so a draft still dirty afterwards keeps asking.
+  const bypass = useRef(false);
+  useEffect(() => {
+    if (!dirty) return;
+    return holdNavigation((proceed) => {
+      if (bypass.current) return false;
+      setLeaveRequest(() => proceed);
+      return true;
+    });
+  }, [dirty]);
+  const leaveWithoutAsking = (leave: () => void) => {
+    bypass.current = true;
+    try {
+      leave();
+    } finally {
+      bypass.current = false;
+    }
+  };
+  const dialog = (
+    <Dialog open={leaveRequest !== null} onOpenChange={(o) => !o && setLeaveRequest(null)}>
+      <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Discard unsaved changes?</DialogTitle>
+          <DialogDescription className="text-base text-pretty">Your edits to {label} aren't saved. Leaving now discards them.</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setLeaveRequest(null)}>
+            Keep editing
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => {
+              const proceed = leaveRequest;
+              setLeaveRequest(null);
+              proceed?.();
+            }}
+          >
+            Discard changes
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+  return { dialog, leaveWithoutAsking };
 }
 
 /**

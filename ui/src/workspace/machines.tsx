@@ -300,7 +300,7 @@ function FollowerMachinesView() {
   const self: Follower = {
     ...laptop,
     name: ws.machineName,
-    revision: ws.appliedRevision,
+    revision: ws.appliedRevision === 0 ? null : ws.appliedRevision,
     // A machine that has applied nothing yet (just joined) cannot be up to date.
     state: ws.humanAction ? "human-action" : ws.driftOpen ? "drift" : ws.appliedRevision === 0 ? "never-synced" : "converged",
   };
@@ -549,13 +549,18 @@ function newInvitationId(taken: Invitation[]) {
 }
 
 /** One checkbox row per group; the secrets group shows what it does, with its real name in mono. */
-function GroupChecks({ idPrefix, value, onChange }: { idPrefix: string; value: string[]; onChange: (groups: string[]) => void }) {
+function GroupChecks({ idPrefix, value, onChange, disabled }: { idPrefix: string; value: string[]; onChange: (groups: string[]) => void; disabled?: boolean }) {
   const [groups] = useGroups();
   return (
     <div className="grid gap-0.5">
       {groups.map((g) => (
         <Label key={g.name} htmlFor={`${idPrefix}-${g.name}`} className="flex h-7 cursor-pointer items-center gap-2 text-base font-normal">
-          <Checkbox id={`${idPrefix}-${g.name}`} checked={value.includes(g.name)} onCheckedChange={(c) => onChange(c ? [...value, g.name] : value.filter((x) => x !== g.name))} />
+          <Checkbox
+            id={`${idPrefix}-${g.name}`}
+            checked={value.includes(g.name)}
+            disabled={disabled}
+            onCheckedChange={(c) => onChange(c ? [...value, g.name] : value.filter((x) => x !== g.name))}
+          />
           {g.name === SECRETS_GROUP ? (
             <>
               <span>{PLAIN.secretsGroup}</span>
@@ -665,9 +670,10 @@ export function InviteDialog() {
                 <Term term="Follower Machine">follower</Term>.
               </DialogDescription>
             </DialogHeader>
+            {/* While Creating, the invitation was already submitted from these values, so the fields lock until the result shows. */}
             <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
               <Field label="Machine name" htmlFor="inv-name" description="Optional. Fills in the commands below; the machine can pick another name.">
-                <Input id="inv-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="work-laptop" autoComplete="off" spellCheck={false} />
+                <Input id="inv-name" value={name} onChange={(e) => setName(e.target.value)} disabled={busy} placeholder="work-laptop" autoComplete="off" spellCheck={false} />
               </Field>
               <Field
                 label="Address it connects to"
@@ -680,6 +686,7 @@ export function InviteDialog() {
                   type="url"
                   value={endpoint}
                   onChange={(e) => setEndpoint(e.target.value)}
+                  disabled={busy}
                   aria-invalid={!!endpointError}
                   aria-describedby="inv-ep-note"
                   autoComplete="off"
@@ -688,7 +695,7 @@ export function InviteDialog() {
                 />
               </Field>
               <Field label="Expires after" htmlFor="inv-exp">
-                <Select value={expiry} onValueChange={(v: keyof typeof EXPIRY) => setExpiry(v)}>
+                <Select value={expiry} onValueChange={(v: keyof typeof EXPIRY) => setExpiry(v)} disabled={busy}>
                   <SelectTrigger id="inv-exp" className="w-40">
                     <SelectValue />
                   </SelectTrigger>
@@ -702,7 +709,7 @@ export function InviteDialog() {
                 </Select>
               </Field>
               <Field label={<Term term="Follower Group">{PLAIN.groups}</Term>} description="Groups add items on top of the base profile. Leave empty for the base profile only.">
-                <GroupChecks idPrefix="inv" value={groups} onChange={setGroups} />
+                <GroupChecks idPrefix="inv" value={groups} onChange={setGroups} disabled={busy} />
               </Field>
               <Collapsible>
                 <CollapsibleTrigger className="group flex h-7 items-center gap-1 rounded text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
@@ -711,7 +718,7 @@ export function InviteDialog() {
                 </CollapsibleTrigger>
                 <CollapsibleContent className="pt-2 pl-4">
                   <Field label="Save the file in" htmlFor="inv-out">
-                    <Input id="inv-out" value={outDir} onChange={(e) => setOutDir(e.target.value)} autoComplete="off" spellCheck={false} className="font-mono text-sm" />
+                    <Input id="inv-out" value={outDir} onChange={(e) => setOutDir(e.target.value)} disabled={busy} autoComplete="off" spellCheck={false} className="font-mono text-sm" />
                   </Field>
                 </CollapsibleContent>
               </Collapsible>

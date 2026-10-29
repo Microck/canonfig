@@ -56,7 +56,7 @@ The sidebar scrolls independently in short windows. Its Demo switcher stays in t
 
 Profile settings edits include unfinished key rows: adding a blank key enables Save and Discard. Save reports empty or duplicate key names without changing the saved item, focuses the first invalid field, and associates each key error with its input. Discard restores the saved fields and key rows.
 
-Leaving an item editor with unsaved edits asks before discarding them; this covers closing it, choosing another row and in-app navigation, but not browser Back/Forward or reload.
+Leaving any form with an unsaved draft asks before discarding it: the item editor, Profile defaults, new group, Agent policy, new harness project, Source secret, Follower schedule, local settings and profile choice. This covers closing a panel, choosing another row, in-app navigation and Demo switcher changes, but not browser Back/Forward or reload. Each form's own Save, Cancel or remove never asks.
 
 Detail panels return focus to whatever opened them when they close. Their resize edge takes keyboard focus: arrow keys resize in 16px steps, and Home/End jump to the minimum and maximum width. Machine map links are reachable with Tab and show the same explanation on focus as on hover; Escape hides it.
 
