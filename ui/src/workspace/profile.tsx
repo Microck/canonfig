@@ -357,7 +357,7 @@ export function ProfileView() {
                           <span className="flex min-w-0 items-center gap-2">
                             <span className="truncate font-medium">{r.id}</span>
                             {proposed.includes(r.id) && (
-                              <span className="inline-flex h-4 shrink-0 items-center rounded-[3px] bg-gold/15 px-1 text-[10px] font-semibold text-gold">Proposed</span>
+                              <span className="inline-flex h-4 shrink-0 items-center rounded-[3px] bg-gold/15 px-1 text-xs font-semibold text-gold">Proposed</span>
                             )}
                           </span>
                           <Mono className="truncate">{r.target}</Mono>
@@ -640,7 +640,8 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
               Keys Canonfig sets
             </SectionLabel>
             {rows.length === 0 && <p className="text-sm text-faint">No keys yet. Add the first key Canonfig should set in this file.</p>}
-            <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_24px] items-start gap-x-1.5 gap-y-1.5">
+            {/* Key paths are long dotted names; values are short scalars, so the path gets the larger share. */}
+            <div className="grid grid-cols-[minmax(0,3fr)_minmax(0,2fr)_24px] items-start gap-x-1.5 gap-y-1.5">
               {rows.length > 0 && (
                 <>
                   <span className="text-xs text-faint">Key path</span>
@@ -656,6 +657,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
                       <Input
                         id={`res-key-${r.id}`}
                         value={r.name}
+                        title={r.name || undefined}
                         aria-label={`Key ${i + 1} path`}
                         placeholder="permissions.defaultMode"
                         autoFocus={focusRow === r.id}
@@ -670,6 +672,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
                     </div>
                     <Input
                       value={r.value}
+                      title={r.value || undefined}
                       aria-label={`Key ${i + 1} value`}
                       onChange={(e) => updateRows(rows.map((x) => (x.id === r.id ? { ...x, value: e.target.value } : x)))}
                       autoComplete="off"

@@ -272,18 +272,19 @@ export function SourceOverview() {
                   </span>
                 </SectionLabel>
                 <div className="overflow-x-auto border-t border-border pt-2">
-                  <table className="border-separate border-spacing-[3px] text-sm">
+                  {/* Columns stretch to fill the column (capped so squares stay readable) instead of leaving most of it empty at 1920. */}
+                  <table className="w-full max-w-[880px] border-separate border-spacing-[3px] text-sm">
                     <thead>
                       <tr>
                         <th scope="col" className="sr-only">
                           Item
                         </th>
                         {ws.followers.map((f) => (
-                          <th key={f.id} scope="col" className="w-[72px] px-0.5 pb-1 text-left font-normal">
+                          <th key={f.id} scope="col" className="min-w-[72px] px-0.5 pb-1 text-left font-normal">
                             <button
                               type="button"
                               onClick={() => ws.go("machines", f.id)}
-                              className="block max-w-[72px] truncate rounded text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+                              className="block max-w-full truncate rounded text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
                             >
                               {f.name}
                             </button>
@@ -294,7 +295,7 @@ export function SourceOverview() {
                     <tbody>
                       {gridResources.map((r) => (
                         <tr key={r.id}>
-                          <th scope="row" className="pr-4 text-left font-normal">
+                          <th scope="row" className="w-[1%] pr-4 text-left font-normal whitespace-nowrap">
                             <span className="block max-w-[180px] truncate text-muted-foreground">{r.id}</span>
                           </th>
                           {ws.followers.map((f) => {
@@ -303,7 +304,7 @@ export function SourceOverview() {
                               <td key={f.id} className="p-0">
                                 <Tooltip>
                                   <TooltipTrigger asChild>
-                                    <span role="img" className="block h-4 w-[72px]" aria-label={`${r.id} on ${f.name}: ${STATE_META[s].label}`}>
+                                    <span role="img" className="block h-4 w-full min-w-[72px]" aria-label={`${r.id} on ${f.name}: ${STATE_META[s].label}`}>
                                       <StateCell state={s} />
                                     </span>
                                   </TooltipTrigger>
@@ -361,7 +362,7 @@ export function SourceOverview() {
                 ) : (
                   <>
                     <div className="flex items-baseline gap-2">
-                      <span className="text-[15px] font-semibold tabular-nums">
+                      <span className="text-lg font-semibold tabular-nums">
                         Revision <AnimatedNumber value={latest.sequence} />
                       </span>
                       <span className="text-sm text-muted-foreground">
@@ -501,8 +502,10 @@ export function PublishDialog() {
             />
           </Field>
 
-          <DialogFooter className="items-center sm:justify-between">
-            <Cli className="flex-1">{`canonfig source publish --profile-file ${shq(ws.profileFile)} --reviewer ${reviewer.trim() ? shq(reviewer.trim()) : "<name>"}`}</Cli>
+          {/* The command gets its own full-width row; sharing the footer with the buttons cut it to a few words. */}
+          <Cli>{`canonfig source publish --profile-file ${shq(ws.profileFile)} --reviewer ${reviewer.trim() ? shq(reviewer.trim()) : "<name>"}`}</Cli>
+
+          <DialogFooter>
             <div className="flex shrink-0 gap-2">
               <Button type="button" variant="ghost" disabled={ws.publishing} onClick={() => ws.setPublishOpen(false)}>
                 Cancel
