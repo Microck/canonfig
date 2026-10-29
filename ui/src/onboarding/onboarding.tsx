@@ -64,7 +64,7 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
 
   return (
     <OnboardingShell hostname={machine.hostname}>
-      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-6 py-16", stage === "choose" ? "justify-center" : "justify-start pt-[12vh]")}>
+      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 py-8 [overflow-wrap:anywhere] sm:px-6 sm:py-16", stage === "choose" ? "justify-center" : "justify-start sm:pt-[12vh]")}>
         {/* Drifts calmly behind the first question, then holds its frame behind
             the wizard, where people read a form slowly. Still under reduced motion. */}
         <div aria-hidden className="absolute inset-0 -z-10">
@@ -97,7 +97,7 @@ function Choose({ onPick }: { onPick: (stage: Stage) => void }) {
       <p className="mx-auto mt-3 max-w-[480px] leading-relaxed text-balance text-muted-foreground">
         Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.
       </p>
-      <div className="mt-9 grid grid-cols-2 gap-3 text-left">
+      <div className="mt-9 grid grid-cols-1 gap-3 text-left sm:grid-cols-2">
         <Choice
           title="Make this the Source"
           description="For the machine where you edit your setup. Other machines copy from it, and only this one publishes changes."
@@ -123,7 +123,7 @@ function Choose({ onPick }: { onPick: (stage: Stage) => void }) {
 
 function Choice({ title, description, facts, onClick }: { title: string; description: string; facts: ReactNode[]; onClick: () => void }) {
   return (
-    <button type="button" onClick={onClick} className="group flex flex-col rounded-xl border border-border bg-panel p-5 text-left hover:border-border-strong hover:bg-raised">
+    <button type="button" onClick={onClick} className="group flex min-w-0 flex-col rounded-xl border border-border bg-panel p-5 text-left hover:border-border-strong hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring">
       <span className="flex items-center justify-between gap-3 text-[15px] font-medium">
         {title}
         <ArrowRight aria-hidden className="size-4 shrink-0 text-faint group-hover:text-foreground" />
@@ -198,20 +198,20 @@ function Wizard({
         type="button"
         onClick={onBack}
         disabled={busy}
-        className={cn("mb-4 inline-flex items-center gap-1.5 rounded-sm text-sm text-muted-foreground hover:text-foreground disabled:text-faint", done && "invisible")}
+        className={cn("mb-4 inline-flex min-h-11 items-center gap-1.5 rounded-sm text-sm text-muted-foreground hover:text-foreground disabled:text-faint sm:min-h-10", done && "invisible")}
       >
         <ArrowLeft className="size-3.5" /> Change my answer
       </button>
       <form noValidate onSubmit={submit} className="rounded-xl border border-border bg-panel">
         {!done && (
-          <div className="border-b border-border px-6 pt-5 pb-4">
+          <div className="border-b border-border px-4 pt-5 pb-4 sm:px-6">
             <h1 ref={heading} tabIndex={-1} className="text-[15px] font-medium outline-none">
               {title}
             </h1>
             <Stepper steps={steps} step={step} />
           </div>
         )}
-        <div className="px-6 py-6">
+        <div className="px-4 py-6 sm:px-6">
           {done ?? (
             <>
               <h2 className="sr-only">{steps[step]}</h2>
@@ -221,7 +221,7 @@ function Wizard({
           )}
         </div>
         {!done && (
-          <div className="flex items-center justify-end gap-2 border-t border-border px-6 py-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3 sm:px-6">
             {step > 0 && (
               <Button type="button" variant="ghost" disabled={busy} onClick={() => onStep(step - 1)}>
                 Back
@@ -293,7 +293,7 @@ function Finished({ title, children, next, action, onOpen }: { title: string; ch
         {title}
       </h2>
       <div className="mt-2 leading-relaxed text-muted-foreground">{children}</div>
-      <div className="mt-6 flex items-center justify-between gap-6 border-t border-border pt-4">
+      <div className="mt-6 flex flex-col items-start justify-between gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:gap-6">
         <p className="text-muted-foreground">{next}</p>
         <Button type="button" className={cn(goldButton, "shrink-0")} onClick={onOpen}>
           {action}
@@ -397,7 +397,7 @@ function SourceWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: 
           <p className="leading-relaxed text-muted-foreground">
             Your <Term term="Machine Profile" /> is one file that lists everything your other machines should have.
           </p>
-          <div className="grid grid-cols-[1fr_1.4fr] gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_1.4fr]">
             <Field label="Profile name" htmlFor="ob-name" error={nameError}>
               <Input id="ob-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-describedby={nameError ? "ob-name-error" : undefined} />
             </Field>
@@ -444,7 +444,7 @@ function SourceWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: 
           </RadioGroup>
           <Collapsible open={advanced} onOpenChange={setAdvanced}>
             <DisclosureTrigger>Advanced</DisclosureTrigger>
-            <CollapsibleContent className="mt-3 grid grid-cols-[auto_1fr] items-end gap-6">
+            <CollapsibleContent className="mt-3 grid grid-cols-1 items-end gap-4 sm:grid-cols-[auto_1fr] sm:gap-6">
               <Field label="Port" htmlFor="ob-port" error={portError}>
                 <Input
                   id="ob-port"
@@ -636,7 +636,7 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
                     className="h-24 font-mono text-[12px]"
                   />
                 </Field>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button type="button" variant="secondary" size="sm" onClick={readPasted}>
                     Read invitation
                   </Button>
@@ -651,7 +651,7 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
                   <FileArrowUp className="size-5 text-muted-foreground" />
                   <p className="mt-3 font-medium">Add the invitation file</p>
                   <p className="mt-1 text-sm text-muted-foreground">Usually named canonfig-invite. This demo uses an example file.</p>
-                  <div className="mt-4 flex gap-2">
+                  <div className="mt-4 flex flex-wrap justify-center gap-2">
                     <Button type="button" variant="outline" size="sm" onClick={() => setInvite("~/Downloads/canonfig-invite")}>
                       Use the example file
                     </Button>
@@ -665,7 +665,7 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
             )
           ) : (
             <div className="rounded-lg border border-border bg-raised/40 px-4 py-4">
-              <div className="mb-3 flex items-center gap-2">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
                 <Check className="size-4 text-ok" />
                 <span className="font-medium">Example invitation from atlas</span>
                 <Button type="button" variant="ghost" size="xs" className="ml-auto text-muted-foreground" onClick={() => setInvite(null)}>
@@ -703,7 +703,7 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
           </label>
           {tunnel && (
             <>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Field label="SSH host" htmlFor="ob-host" error={shown("host")}>
                   <Input
                     id="ob-host"
@@ -735,12 +735,12 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
                 </Field>
               </div>
               <div className={cn("rounded-lg border px-3.5 py-3", shown("trusted") ? "border-bad/60" : "border-border")}>
-                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
                   atlas's SSH host key, from <Mono>{hostKey}</Mono>
                   <Hint label="checking the SSH host key">Compare it with the output of “ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub” on atlas. Change the file under Advanced.</Hint>
                 </div>
                 <Mono className="mt-1 block text-foreground">ED25519 SHA256:Jx7qL2c9…vR0wPq4sE</Mono>
-                <label className="mt-3 flex cursor-pointer items-center gap-2.5">
+                <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-2.5 sm:min-h-10">
                   <Checkbox checked={trusted} onCheckedChange={(c) => setTrusted(c === true)} aria-invalid={!!shown("trusted")} />
                   This matches atlas
                 </label>
@@ -779,7 +779,7 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
         <div className="space-y-5">
           {progress === null ? (
             <>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <Field label="Name for this machine" htmlFor="ob-mname" hint="Shown on atlas." error={shown("name")}>
                   <Input
                     id="ob-mname"
