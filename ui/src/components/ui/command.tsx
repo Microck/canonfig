@@ -46,20 +46,30 @@ function CommandDialog({
   className?: string
   showCloseButton?: boolean
 }) {
+  const returnFocus = React.useRef<HTMLElement | null>(null)
+
   return (
     <Dialog {...props}>
-      <DialogHeader className="sr-only">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
-      </DialogHeader>
       <DialogContent
         animated={false}
+        onOpenAutoFocus={() => {
+          returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+        }}
+        onCloseAutoFocus={(event) => {
+          // This dialog can open from a shortcut, without a Radix DialogTrigger.
+          event.preventDefault()
+          returnFocus.current?.focus()
+        }}
         className={cn(
           "top-[12vh] translate-y-0 overflow-hidden rounded-xl! p-0",
           className
         )}
         showCloseButton={showCloseButton}
       >
+        <DialogHeader className="sr-only">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
         {children}
       </DialogContent>
     </Dialog>
