@@ -161,13 +161,13 @@ function ActionTag({ action }: { action: Shown }) {
 
 function Attention({ tone, title, children, actions }: { tone: "warn" | "act" | "bad"; title: ReactNode; children: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="flex items-start gap-3 border-b border-border/70 py-3">
+    <div className="grid grid-cols-[6px_minmax(0,1fr)] items-start gap-x-3 gap-y-2 border-b border-border/70 py-3 @min-[640px]:grid-cols-[6px_minmax(0,1fr)_auto]">
       <span aria-hidden className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", tone === "warn" ? "bg-warn" : tone === "act" ? "bg-act" : "bg-bad")} />
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0">
         <h3 className="text-base font-medium">{title}</h3>
         <div className="mt-0.5 max-w-[68ch] text-base text-pretty text-muted-foreground">{children}</div>
       </div>
-      {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
+      {actions && <div className="col-start-2 flex flex-wrap items-center gap-1.5 @min-[640px]:col-start-3">{actions}</div>}
     </div>
   );
 }
@@ -356,7 +356,7 @@ export function FollowerOverview() {
           }
         />
         <GetStarted />
-        <div className="grid grid-cols-[minmax(0,1fr)_300px] gap-12 px-8 pt-6 pb-20">
+        <div className="grid grid-cols-1 gap-8 px-4 pt-6 pb-20 sm:px-8 @min-[900px]:grid-cols-[minmax(0,1fr)_300px] @min-[900px]:gap-12">
           <section className="min-w-0">
             <SectionLabel>Needs you</SectionLabel>
             <div className="border-t border-border">
@@ -564,7 +564,7 @@ export function SyncView() {
         <section className="relative isolate overflow-hidden border-b border-border" aria-live="polite">
           <StateBand tone={ws.phase === "plan" || paused > 0 ? "warn" : "ok"} mode={running ? "running" : "idle"} className="-z-10 opacity-70" />
           <div className="px-4 py-4">
-            <div className="flex items-baseline gap-3 text-base">
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2 text-base">
               <span className="font-medium">
                 {running ? (
                   <>
@@ -599,7 +599,7 @@ export function SyncView() {
                       ? "Once you decide, you can apply what's left."
                       : null}
               </span>
-              <span className="ml-auto font-mono text-xs text-muted-foreground tabular-nums">
+              <span className="ml-auto shrink-0 rounded bg-background px-2 py-1 font-mono text-xs text-foreground tabular-nums">
                 {running ? `${ws.progress}%` : `${steps.length} ${steps.length === 1 ? "change" : "changes"}`}
               </span>
             </div>
@@ -813,7 +813,7 @@ export function ScheduleView() {
         }
       />
       <Body>
-        <div className="max-w-[640px] px-8 pt-6 pb-20">
+        <div className="max-w-[640px] px-4 pt-6 pb-20 sm:px-8">
           <p className="mb-6 max-w-[70ch] text-base text-pretty text-muted-foreground">
             On this <Term term="Synchronization Schedule">schedule</Term>, the system's scheduler checks for a new revision and applies it. You can still update by hand from Sync.
             {stopped
@@ -1037,9 +1037,9 @@ function OverlayEditor({
               const fromProfile = declared.includes(k);
               return (
                 <div key={k} className="rounded-md px-1 py-0.5 hover:bg-raised/40">
-                  <Label htmlFor={`ov-${k}`} className="flex h-7 cursor-pointer items-center gap-2 font-normal">
+                  <Label htmlFor={`ov-${k}`} className="flex min-h-7 flex-wrap cursor-pointer items-center gap-x-2 gap-y-1 py-1 font-normal">
                     <Checkbox id={`ov-${k}`} checked={on} disabled={isKept} onCheckedChange={(c) => toggle(k, !!c)} />
-                    <Mono className="text-foreground">{k}</Mono>
+                    <Mono className="min-w-0 break-all text-foreground">{k}</Mono>
                     {isKept && <span className="shrink-0 text-xs whitespace-nowrap text-faint">kept already</span>}
                     {fromProfile && <span className="shrink-0 text-xs whitespace-nowrap text-faint">set by the Source</span>}
                     <span className="ml-auto truncate font-mono text-xs text-faint" title="Current value in the file on this machine">
@@ -1088,9 +1088,9 @@ function OverlayEditor({
         {o.keys.length > 0 && (
           <div className="flex flex-wrap gap-1" aria-live="polite">
             {o.keys.map((k) => (
-              <span key={k} className="inline-flex h-6 items-center gap-1 rounded border border-border pr-0.5 pl-1.5 font-mono text-xs text-foreground">
+              <span key={k} className="inline-flex min-h-7 max-w-full items-center gap-1 rounded border border-border pr-0.5 pl-1.5 font-mono text-xs break-all text-foreground">
                 {k}
-                <button type="button" aria-label={`Stop keeping ${k}`} className="rounded p-0.5 text-faint hover:text-foreground" onClick={() => toggle(k, false)}>
+                <button type="button" aria-label={`Stop keeping ${k}`} className="flex size-6 shrink-0 items-center justify-center rounded text-faint outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60" onClick={() => toggle(k, false)}>
                   <X className="size-3" />
                 </button>
               </span>
@@ -1212,7 +1212,7 @@ export function TunnelView() {
         }
       />
       <Body>
-        <div className="max-w-[640px] px-8 pt-6 pb-20">
+        <div className="max-w-[640px] px-4 pt-6 pb-20 sm:px-8">
           <p className="mb-6 max-w-[70ch] text-base text-pretty text-muted-foreground">
             This machine reaches the <Term term="Source Machine">Source</Term> through an SSH tunnel: it connects to 127.0.0.1 here, and the tunnel carries that to {SOURCE}. So the
             source service never has to listen on the network.
@@ -1289,7 +1289,7 @@ export function MachineView() {
     <>
       <PageHeader crumbs={["Settings", "This machine"]} />
       <Body>
-        <div className="max-w-[640px] px-8 pt-6 pb-20">
+        <div className="max-w-[640px] px-4 pt-6 pb-20 sm:px-8">
           <SectionLabel>How it joined</SectionLabel>
           <div className="border-t border-border py-2">
             <Prop label="Name">{ws.machineName}</Prop>
@@ -1318,9 +1318,9 @@ export function MachineView() {
               htmlFor="m-prof"
               description={stopped ?? "Takes effect on the next update, after you review what changes."}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Select value={prof} onValueChange={setProf}>
-                  <SelectTrigger id="m-prof" className="w-56">
+                  <SelectTrigger id="m-prof" className="w-56 max-w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1340,11 +1340,11 @@ export function MachineView() {
           </div>
 
           <SectionLabel className="mt-10">{PLAIN.unenroll}</SectionLabel>
-          <div className="flex items-center gap-4 rounded-md border border-bad/30 px-4 py-3">
+          <div className="flex flex-col items-start gap-3 rounded-md border border-bad/30 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">
             <p className="min-w-0 text-sm text-pretty text-muted-foreground">
               Stops updates and deletes this machine's identity. Files stay where they are. Canonfig calls this <Mono>unenroll</Mono>.
             </p>
-            <Button variant="destructive" size="sm" className="ml-auto shrink-0" disabled={ws.unenrolled} onClick={() => ws.setUnenrollOpen(true)}>
+            <Button variant="destructive" size="sm" className="shrink-0 sm:ml-auto" disabled={ws.unenrolled} onClick={() => ws.setUnenrollOpen(true)}>
               {ws.unenrolled ? "Stopped" : `${PLAIN.unenroll}…`}
             </Button>
           </div>

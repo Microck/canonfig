@@ -37,7 +37,7 @@ export function warningName(d: { check: string; detail: string }) {
 
 /** A narrow settings column, like Linear's settings pages. */
 function Column({ children }: { children: React.ReactNode }) {
-  return <div className="max-w-[640px] px-8 pt-6 pb-20">{children}</div>;
+  return <div className="max-w-[640px] px-4 pt-6 pb-20 sm:px-8">{children}</div>;
 }
 
 function Lede({ children }: { children: React.ReactNode }) {
@@ -267,15 +267,11 @@ export function AgentPolicyView() {
   const [newPath, setNewPath] = useState("");
   // A digits-only string while editing; Save stores it as a number.
   const [maxKb, setMaxKb] = useState(String(saved.maxKb));
-  const [dirty, setDirty] = useState(false);
+  const dirty = mode !== saved.mode || harness !== saved.harness || maxKb !== String(saved.maxKb) || paths.length !== saved.paths.length || paths.some((path, i) => path !== saved.paths[i]);
   // Errors show only after a Save attempt, then follow the fields as they change.
   const [tried, setTried] = useState(false);
   // Set by an Add path attempt, so a half-typed path isn't flagged while it is still being typed.
   const [addTried, setAddTried] = useState(false);
-  const touch = <T,>(fn: (v: T) => void) => (v: T) => {
-    fn(v);
-    setDirty(true);
-  };
   const off = mode === "deterministic-only";
   // The input strips non-digits, so the invalid values left are blank, zero and too large.
   // Number() of a very long digit string is huge or Infinity, so the upper bound catches it too.
@@ -283,6 +279,7 @@ export function AgentPolicyView() {
   const maxInvalid = !(kb >= 1 && kb <= MAX_EVIDENCE_KB);
   const typedPath = newPath.trim();
   const pathPending = typedPath !== "";
+  const hasChanges = dirty || pathPending;
   const maxError = tried && !off && maxInvalid ? `Enter a whole number from 1 to ${MAX_EVIDENCE_KB.toLocaleString("en-US")} KB.` : null;
   // A malformed path says so after either attempt; a well-formed one only needs adding before Save.
   const pathError = off || !pathPending
@@ -293,7 +290,7 @@ export function AgentPolicyView() {
         ? "Add this path or clear the field before saving."
         : null;
   // A typed but unadded path is part of the draft too, as it is for Save.
-  const { dialog: leaveDialog } = useLeaveGuard(dirty || pathPending, "the agent policy");
+  const { dialog: leaveDialog } = useLeaveGuard(hasChanges, "the agent policy");
   const save = () => {
     if (off) {
       // With the agent off the bounds are unused and inert, so they can't be checked or fixed here.
@@ -315,7 +312,6 @@ export function AgentPolicyView() {
       setSaved({ mode, harness, paths, maxKb: kb });
     }
     setTried(false);
-    setDirty(false);
     toast.success("Agent policy saved in this demo workspace");
   };
   const addPath = () => {
@@ -325,7 +321,7 @@ export function AgentPolicyView() {
       document.getElementById("ap-path")?.focus();
       return;
     }
-    if (!paths.includes(typedPath)) touch(setPaths)([...paths, typedPath]);
+    if (!paths.includes(typedPath)) setPaths([...paths, typedPath]);
     setNewPath("");
     setAddTried(false);
   };
@@ -335,7 +331,7 @@ export function AgentPolicyView() {
         crumbs={["Settings", "Agent policy"]}
         actions={
           // A typed but unadded path counts as an edit, so Save can say it still needs Add path.
-          <Button size="sm" className={goldButton} disabled={!dirty && !pathPending} onClick={save}>
+          <Button size="sm" variant={hasChanges ? "default" : "outline"} className={hasChanges ? goldButton : undefined} disabled={!hasChanges} onClick={save}>
             Save policy
           </Button>
         }
@@ -345,7 +341,7 @@ export function AgentPolicyView() {
           <Lede>
             Choose whether an <Term term="Configuration Agent">AI agent</Term> may help when Canonfig has no exact recipe.
           </Lede>
-          <RadioGroup value={mode} onValueChange={touch(setMode)} aria-label="Agent policy" className={settingsGroup}>
+          <RadioGroup value={mode} onValueChange={setMode} aria-label="Agent policy" className={settingsGroup}>
             {modes(ws.role === "source").map((m) => (
               <Label
                 key={m.value}
@@ -364,9 +360,9 @@ export function AgentPolicyView() {
           {/* inert keeps the disabled bounds out of the tab order, not just greyed out. */}
           <div className={cn("mt-8 grid gap-4", off && "opacity-40")} inert={off}>
             <SectionLabel>Harness bounds</SectionLabel>
-            <div className={settingsGroup}>
+            <div className={cn(settingsGroup, "max-sm:[&>div]:flex-col max-sm:[&>div]:items-start max-sm:[&>div]:gap-2")}>
               <SettingRow title="Agent harness" htmlFor="ap-harness" description="The installed agent CLI Canonfig starts for each job.">
-                <Select value={harness} onValueChange={touch(setHarness)}>
+                <Select value={harness} onValueChange={setHarness}>
                   <SelectTrigger id="ap-harness" className="w-40">
                     <SelectValue />
                   </SelectTrigger>
@@ -383,7 +379,7 @@ export function AgentPolicyView() {
                 <Input
                   id="ap-max"
                   value={maxKb}
-                  onChange={(e) => touch(setMaxKb)(e.target.value.replace(/\D/g, ""))}
+                  onChange={(e) => setMaxKb(e.target.value.replace(/\D/g, ""))}
                   aria-invalid={!!maxError}
                   aria-describedby={maxError ? "ap-max-note" : undefined}
                   inputMode="numeric"
@@ -394,11 +390,11 @@ export function AgentPolicyView() {
               </SettingRow>
             </div>
             <Field label="Writable paths" htmlFor="ap-path" hint="The agent's sandbox can write only here. Everything else is read-only." error={pathError}>
-              <div className="grid gap-1">
+              <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
                 {paths.map((p) => (
-                  <div key={p} className="flex h-8 items-center gap-2 rounded-md border border-border pr-1 pl-2.5">
-                    <Mono className="truncate text-foreground">{p}</Mono>
-                    <Button variant="ghost" size="icon-xs" className="ml-auto text-faint" aria-label={`Remove ${p}`} onClick={() => touch(setPaths)(paths.filter((x) => x !== p))}>
+                  <div key={p} title={p} className="flex h-8 items-center gap-2 rounded-md border border-border pr-1 pl-2.5">
+                    <Mono className="min-w-0 truncate text-foreground">{p}</Mono>
+                    <Button variant="ghost" size="icon-xs" className="ml-auto size-6 shrink-0 text-faint" aria-label={`Remove ${p}`} onClick={() => setPaths(paths.filter((x) => x !== p))}>
                       <X />
                     </Button>
                   </div>
@@ -440,7 +436,7 @@ export function AgentPolicyView() {
           {/* Outside the faded block so it stays readable. Saving in this mode keeps the last saved
               bounds, so without this note bound edits made earlier in the draft would vanish silently. */}
           {off && <p className="mt-3 text-sm text-pretty text-muted-foreground">Not used while the agent is off. Saving keeps the last saved bounds, not changes made here.</p>}
-          <div className="mt-8">
+          <div className="mt-6">
             <Cli>{`canonfig agent policy ${mode}`}</Cli>
           </div>
         </Column>
@@ -780,7 +776,7 @@ export function SetupView() {
               // Canonfig can't check linger; Resume records the person's word for it, and the row says so.
               const marked = done && s.id === "linger";
               return (
-                <li key={s.id} className="flex h-[40px] items-center gap-3 px-[16px] text-base">
+                <li key={s.id} className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-base">
                   <span className="flex size-4 shrink-0 items-center justify-center">
                     {removed ? (
                       <Warning className="size-3.5 text-warn" aria-label="Removed since setup" />
@@ -951,7 +947,7 @@ export function DoctorView() {
               const shown = !running || progress > (i / checks.length) * 100;
               return (
                 <div key={d.check} className="border-b border-border/70 py-2.5">
-                  <div className="flex items-center gap-3 text-base">
+                  <div className="grid grid-cols-[14px_minmax(0,1fr)] items-center gap-x-3 gap-y-1 text-base sm:grid-cols-[14px_auto_minmax(0,1fr)]">
                     {!shown ? (
                       <Circle className="size-3 text-faint" aria-label="Waiting" />
                     ) : d.result === "ok" ? (
@@ -960,7 +956,7 @@ export function DoctorView() {
                       <Warning className="size-3.5 text-warn" aria-label="Warning" />
                     )}
                     <span>{d.check}</span>
-                    <span className="ml-auto text-sm text-muted-foreground">{shown ? d.detail : "Waiting"}</span>
+                    <span className="col-start-2 text-sm text-muted-foreground sm:col-start-3 sm:text-right">{shown ? d.detail : "Waiting"}</span>
                   </div>
                   {shown && d.fix && (
                     <div className="mt-2 ml-6.5 grid gap-1.5">

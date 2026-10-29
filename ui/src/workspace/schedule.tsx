@@ -110,7 +110,7 @@ export function ScheduleFields({
   const timeError = custom && !TIME.test(value.time) ? TIME_ERROR : null;
   const toggle = (d: Day) => {
     const next = shownDays.includes(d) ? shownDays.filter((x) => x !== d) : WEEK.filter((x) => x === d || shownDays.includes(x));
-    // Picking a day from an "every day" or "weekdays" schedule turns it into a custom set.
+    // Changing weekdays turns it into a custom set; selecting all seven uses the daily cadence.
     onChange({ ...value, cadence: next.length === 5 && WEEKDAYS.every((d) => next.includes(d)) ? "weekdays" : next.length === 7 ? "daily" : "days", days: next });
   };
   return (
@@ -123,7 +123,7 @@ export function ScheduleFields({
           className={settingsGroup}
         >
           {options.map((o) => (
-            <Label key={o.value} htmlFor={`${idPrefix}-${o.value}`} className="flex h-[36px] cursor-pointer items-center gap-2 px-[16px] text-base font-normal hover:bg-raised/40">
+            <Label key={o.value} htmlFor={`${idPrefix}-${o.value}`} className="flex min-h-9 cursor-pointer items-center gap-2 px-4 py-2 text-base font-normal hover:bg-raised/40">
               <RadioGroupItem id={`${idPrefix}-${o.value}`} value={o.value} />
               {o.label}
             </Label>
@@ -132,28 +132,30 @@ export function ScheduleFields({
       </Field>
       {custom && (
         <div className="flex flex-wrap items-start gap-4">
-          <Field label="Days" error={daysError}>
-            <div className="flex gap-1" role="group" aria-label="Days">
-              {WEEK.map((d) => {
-                const on = shownDays.includes(d);
-                return (
-                  <button
-                    key={d}
-                    type="button"
-                    aria-pressed={on}
-                    aria-label={FULL[d]}
-                    onClick={() => toggle(d)}
-                    className={cn(
-                      "h-7 w-10 rounded-md border text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
-                      on ? "border-border-strong bg-raised text-foreground" : "border-border text-faint hover:text-muted-foreground",
-                    )}
-                  >
-                    {d}
-                  </button>
-                );
-              })}
-            </div>
-          </Field>
+          {value.cadence !== "daily" && (
+            <Field label="Days" error={daysError}>
+              <div className="flex flex-wrap gap-1" role="group" aria-label="Days">
+                {WEEK.map((d) => {
+                  const on = shownDays.includes(d);
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      aria-pressed={on}
+                      aria-label={FULL[d]}
+                      onClick={() => toggle(d)}
+                      className={cn(
+                        "h-9 w-10 rounded-md border text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+                        on ? "border-border-strong bg-raised text-foreground" : "border-border text-faint hover:text-muted-foreground",
+                      )}
+                    >
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
           <Field label="Time" htmlFor={`${idPrefix}-time`} error={timeError}>
             <div className="flex items-center gap-2">
               <Input
