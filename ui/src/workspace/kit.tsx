@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AnimatedNumber, DitherBlock, Hint, StateBand, goldButton } from "@/shared/shared";
+import { AnimatedNumber, DitherBlock, Hint, StateBand } from "@/shared/shared";
 import { PLAIN, profile, type ResourceKind } from "@/shared/data";
 import { useSharedState, useWorkspace } from "./store";
 import { PAGE_TIPS } from "./page-tips";
@@ -170,7 +170,7 @@ export function PublishButton() {
   const ws = useWorkspace();
   if (ws.pending.length === 0) return null;
   return (
-    <Button size="sm" data-tour="publish" className={goldButton} onClick={() => ws.setPublishOpen(true)}>
+    <Button size="sm" data-tour="publish" variant="primary" onClick={() => ws.setPublishOpen(true)}>
       Publish revision <AnimatedNumber value={ws.nextSequence} />
     </Button>
   );
