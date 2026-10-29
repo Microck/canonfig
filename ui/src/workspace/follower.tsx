@@ -9,7 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AnimatedNumber, DitherProgress, Hint, Mono, StateBand, StateLabel, Term, goldButton } from "@/shared/shared";
+import { AnimatedNumber, DitherProgress, Hint, Mono, StateBand, StateLabel, Term } from "@/shared/shared";
 import { PLAIN, POLICY_TITLE, SECRETS_GROUP, configKeysFor, machine, resources, secrets as seedSecrets } from "@/shared/data";
 import { shq } from "@/shared/shell";
 import { FOLLOWER_PLAN, JOINED_PLAN, LOCAL_VALUES, conflictsIn, useSharedReader, useSharedState, useWorkspace, type Overlay, type PlanAction, type PlanItem } from "./store";
@@ -194,7 +194,7 @@ function InterruptedNotice() {
               }
               actions={
                 <>
-                  <Button variant="ghost" size="xs" disabled={stopped !== null} onClick={() => setConfirming("abandon")}>
+                  <Button variant="destructive" size="xs" disabled={stopped !== null} onClick={() => setConfirming("abandon")}>
                     Abandon…
                   </Button>
                   <Button variant="outline" size="xs" disabled={stopped !== null} onClick={() => setConfirming("recover")}>
@@ -292,7 +292,7 @@ export function FollowerOverview() {
         crumbs={["Overview"]}
         actions={
           ready && !ws.unenrolled && (
-            <Button size="sm" className={goldButton} onClick={() => ws.setView("sync")}>
+            <Button size="sm" variant="primary" onClick={() => ws.setView("sync")}>
               Review what will change
             </Button>
           )
@@ -537,7 +537,8 @@ export function SyncView() {
   return (
     <>
       <PageHeader
-        crumbs={["Sync", ws.phase === "done" ? `Revision ${rev} applied` : origin === "finish" ? `Finish revision ${rev}` : `What revision ${rev} changes`]}
+        // Title is the page name like every other top-level page; the revision detail is the band heading below.
+        crumbs={["Sync"]}
         actions={
           <>
             <Button
@@ -557,7 +558,7 @@ export function SyncView() {
               {checking && <CircleNotch className="animate-spin" />} {checking ? "Checking…" : "Check for updates"}
             </Button>
             {ws.phase !== "done" && (
-              <Button size="sm" className={goldButton} disabled={running || ws.interrupted || blocks.connection !== null} onClick={ws.applyPlan}>
+              <Button size="sm" variant="primary" disabled={running || ws.interrupted || blocks.connection !== null} onClick={ws.applyPlan}>
                 {running ? "Applying…" : "Apply changes"}
               </Button>
             )}
@@ -579,7 +580,7 @@ export function SyncView() {
           <StateBand tone={ws.phase === "plan" || paused > 0 ? "warn" : "ok"} mode={running ? "running" : "idle"} className="-z-10 opacity-70" />
           <div className="px-4 py-4">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2 text-base">
-              <span className="font-medium">
+              <h2 className="font-medium">
                 {running ? (
                   <>
                     Applying step <AnimatedNumber value={step} /> of {steps.length}
@@ -601,7 +602,7 @@ export function SyncView() {
                 ) : (
                   `From revision ${ws.appliedRevision} to ${rev}`
                 )}
-              </span>
+              </h2>
               <span className="text-muted-foreground">
                 {!running && blocks.connection
                   ? blocks.connection
@@ -814,7 +815,7 @@ export function ScheduleView() {
         actions={
           <Button
             size="sm"
-            className={goldButton}
+            variant="primary"
             disabled={!dirty || error !== null || stopped !== null}
             onClick={() =>
               (setSaved(draft),
@@ -874,7 +875,7 @@ export function OverlaysView() {
       <PageHeader
         crumbs={[PLAIN.localNav]}
         actions={
-          <Button size="sm" className={goldButton} onClick={startAdding}>
+          <Button size="sm" variant="primary" onClick={startAdding}>
             Keep a key on this machine
           </Button>
         }
@@ -1008,7 +1009,7 @@ function OverlayEditor({
       footer={
         <>
           {!isNew && (
-            <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-bad" onClick={() => setConfirmRemove(true)}>
+            <Button variant="destructive" size="sm" onClick={() => setConfirmRemove(true)}>
               Stop keeping all…
             </Button>
           )}
@@ -1139,7 +1140,7 @@ export function FollowerSecretsView() {
         actions={
           <Button
             size="sm"
-            className={goldButton}
+            variant="primary"
             disabled={refresh.busy || connection !== null}
             onClick={() => {
               setRefresh((prev) => ({ ...prev, busy: true }));
@@ -1220,7 +1221,7 @@ export function TunnelView() {
       <PageHeader
         crumbs={["Settings", "SSH tunnel"]}
         actions={
-          <Button size="sm" variant={up ? "outline" : "default"} className={up ? undefined : goldButton} disabled={busy} onClick={toggle}>
+          <Button size="sm" variant={up ? "outline" : "primary"} disabled={busy} onClick={toggle}>
             {busy ? (up ? "Stopping…" : "Starting…") : up ? "Stop tunnel" : "Start tunnel"}
           </Button>
         }

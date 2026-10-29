@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term, goldButton } from "@/shared/shared";
+import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
 import { PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/data";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
@@ -522,7 +522,7 @@ export function PublishDialog() {
               <Button type="button" variant="ghost" disabled={ws.publishing} onClick={() => ws.setPublishOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" className={goldButton} disabled={!checked || ws.publishing}>
+              <Button type="submit" variant="primary" disabled={!checked || ws.publishing}>
                 {ws.publishing ? "Publishing…" : !checked ? "Checking files…" : `Publish revision ${ws.nextSequence}`}
               </Button>
             </div>
@@ -684,7 +684,7 @@ export function SecretsView() {
             <Button variant="outline" size="sm" disabled={others === 0} onClick={share}>
               Share with more machines
             </Button>
-            <Button size="sm" className={goldButton} onClick={() => openSet()}>
+            <Button size="sm" variant="primary" onClick={() => openSet()}>
               Set secret
             </Button>
           </>
@@ -817,7 +817,7 @@ export function SecretsView() {
               <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" variant="secondary">
+              <Button type="submit" variant="primary">
                 Save secret
               </Button>
             </DialogFooter>

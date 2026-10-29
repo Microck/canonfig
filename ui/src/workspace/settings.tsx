@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { DitherProgress, Hint, Mono, Term, goldButton } from "@/shared/shared";
+import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import { agentPolicy, doctor, harnessProject, installers } from "@/shared/data";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace } from "./store";
@@ -142,7 +142,7 @@ export function ServiceView() {
         crumbs={["Settings", "Source service"]}
         actions={
           !installed ? (
-            <Button size="sm" className={goldButton} disabled={!!busy} onClick={() => act(true, "install", "Source service installed in this demo workspace")}>
+            <Button size="sm" variant="primary" disabled={!!busy} onClick={() => act(true, "install", "Source service installed in this demo workspace")}>
               {busy === "install" ? "Installing…" : "Install service"}
             </Button>
           ) : undefined
@@ -191,7 +191,7 @@ export function ServiceView() {
               <Button variant="outline" size="sm" disabled={!!busy} onClick={() => act(true, "restart", "Source service restarted in this demo workspace")}>
                 {busy === "restart" && <CircleNotch className="animate-spin" />} {busy === "restart" ? "Restarting…" : "Restart"}
               </Button>
-              <Button variant="ghost" size="sm" className="ml-4 text-muted-foreground hover:text-bad" disabled={!!busy} onClick={() => setConfirm(true)}>
+              <Button variant="destructive" size="sm" className="ml-4" disabled={!!busy} onClick={() => setConfirm(true)}>
                 Remove service…
               </Button>
             </div>
@@ -331,7 +331,7 @@ export function AgentPolicyView() {
         crumbs={["Settings", "Agent policy"]}
         actions={
           // A typed but unadded path counts as an edit, so Save can say it still needs Add path.
-          <Button size="sm" variant={hasChanges ? "default" : "outline"} className={hasChanges ? goldButton : undefined} disabled={!hasChanges} onClick={save}>
+          <Button size="sm" variant="primary" disabled={!hasChanges} onClick={save}>
             Save policy
           </Button>
         }
@@ -500,7 +500,7 @@ export function HarnessView() {
         crumbs={["Settings", "Harness projects"]}
         actions={
           <Button
-            variant="outline"
+            variant="primary"
             size="sm"
             onClick={() => {
               setFolder("");
@@ -572,7 +572,7 @@ export function HarnessView() {
               <Button type="button" variant="ghost" onClick={() => setInitOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" variant="secondary">
+              <Button type="submit" variant="primary">
                 Create harness file
               </Button>
             </DialogFooter>
@@ -677,9 +677,9 @@ export function InstallersView() {
             <span className={cn("text-sm", r.status === "bound" ? "text-ok" : "text-faint")}>{r.status === "bound" ? "Bound" : "Not on this platform"}</span>
             {r.status === "bound" ? (
               <Button
-                variant="ghost"
+                variant="outline"
                 size="xs"
-                className="justify-self-end text-muted-foreground"
+                className="justify-self-end"
                 disabled={checking !== null}
                 onClick={() => {
                   setChecking(r.name);
@@ -760,11 +760,11 @@ export function SetupView() {
   };
   const primary =
     phase === "planned" ? (
-      <Button size="sm" className={goldButton} onClick={() => setJournal({ phase: "approved", at: 0 })}>
+      <Button size="sm" variant="primary" onClick={() => setJournal({ phase: "approved", at: 0 })}>
         Approve plan
       </Button>
     ) : phase === "approved" ? (
-      <Button size="sm" className={goldButton} onClick={apply}>
+      <Button size="sm" variant="primary" onClick={apply}>
         Apply
       </Button>
     ) : null;
@@ -947,7 +947,7 @@ export function DoctorView() {
       <PageHeader
         crumbs={["Settings", "Health check"]}
         actions={
-          <Button size="sm" className={goldButton} disabled={running} onClick={run}>
+          <Button size="sm" variant="primary" disabled={running} onClick={run}>
             {running ? "Checking…" : "Run checks"}
           </Button>
         }
