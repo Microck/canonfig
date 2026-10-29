@@ -309,6 +309,8 @@ const PANEL_STEP = 16;
  * (300ms, still under reduced motion). The left edge resizes it between 320 and 560px,
  * by dragging or with the arrow keys once focused; Escape closes it while focus is inside.
  * Closing it with focus inside returns focus to whatever opened it, usually the list row.
+ * It opens at 380px, or 440px from a 1600px viewport so key paths and group tags fit. Under 768px
+ * there is no room beside the list, so it covers the content area and the resize edge is hidden.
  */
 export function DetailPanel({
   title,
@@ -361,7 +363,7 @@ export function DetailPanel({
       initial={reduce ? false : { opacity: 0, x: 8 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.3, ease: SNAP }}
-      className="relative flex w-[380px] shrink-0 flex-col border-l border-border bg-panel"
+      className="relative flex w-[380px] shrink-0 flex-col border-l border-border bg-panel min-[1600px]:w-[440px] max-md:fixed max-md:inset-0 max-md:z-40 max-md:w-full! max-md:border-l-0"
       aria-label="Details"
       onKeyDown={(e) => {
         if (e.key === "Escape" && !e.defaultPrevented) onClose();
@@ -376,7 +378,7 @@ export function DetailPanel({
         aria-label="Resize details"
         aria-valuemin={PANEL_MIN}
         aria-valuemax={PANEL_MAX}
-        className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1 after:w-px hover:after:bg-ring/60 focus-visible:after:w-0.5 focus-visible:after:bg-ring"
+        className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1 after:w-px hover:after:bg-ring/60 focus-visible:after:w-0.5 focus-visible:after:bg-ring max-md:hidden"
         onKeyDown={(e) => {
           const w = panel.current?.offsetWidth ?? 380;
           const next = e.key === "ArrowLeft" ? w + PANEL_STEP : e.key === "ArrowRight" ? w - PANEL_STEP : e.key === "Home" ? PANEL_MIN : e.key === "End" ? PANEL_MAX : null;
