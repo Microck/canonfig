@@ -25,8 +25,9 @@ export default function App() {
             Sonner switches to its own full-width mobile offsets. */}
         <Toaster theme="dark" position="bottom-left" offset={{ left: 260, bottom: 16 }} />
         {route.kind !== "workspace" && (
-          <div className="fixed bottom-[80px] left-[12px] z-40">
-            <DemoSwitcher role={role} />
+          // Below md the compact switcher is one button in the reserved slot of the setup header (kit.tsx).
+          <div className="fixed z-40 max-md:top-0.5 max-md:right-16 md:bottom-[80px] md:left-[12px]">
+            <DemoSwitcher role={role} compact />
           </div>
         )}
       </TooltipProvider>

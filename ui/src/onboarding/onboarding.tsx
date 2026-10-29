@@ -64,9 +64,10 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
 
   return (
     <OnboardingShell hostname={machine.hostname}>
-      {/* pb-44 clears the fixed demo switcher (about 70px tall, 80px above the
-          bottom) at the end of the scroll, while the frame still fills the viewport. */}
-      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-44 [overflow-wrap:anywhere] sm:px-6 sm:pt-16", stage === "choose" ? "justify-center" : "justify-start sm:pt-[12vh]")}>
+      {/* md:pb-44 clears the fixed demo switcher (about 70px tall, 80px above the
+          bottom) at the end of the scroll, while the frame still fills the viewport.
+          Below md the switcher lives in the header (kit.tsx), so only normal padding remains. */}
+      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 md:pb-44 [overflow-wrap:anywhere] sm:px-6 sm:pt-16", stage === "choose" ? "justify-center" : "justify-start sm:pt-[12vh]")}>
         {/* Drifts calmly behind the first question, then holds its frame behind
             the wizard, where people read a form slowly. Still under reduced motion. */}
         <div aria-hidden className="absolute inset-0 -z-10">
