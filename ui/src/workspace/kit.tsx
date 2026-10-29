@@ -332,6 +332,36 @@ export function DetailPanel({
   const separator = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; w: number } | null>(null);
   const reduce = useReducedMotion();
+  // Below md the panel is a full-screen overlay, so it acts as a modal: every sibling of the panel and
+  // of each of its ancestors up to <body> goes inert, which keeps Tab, clicks and screen readers
+  // inside the panel. Dialogs and toasts portalled to <body> later are new nodes and stay live.
+  // At md+ the panel sits beside the list and stays non-modal. Declared before the focus-restore
+  // effect so its cleanup runs first: an inert opener can't take focus back.
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767.98px)");
+    let released: HTMLElement[] = [];
+    const release = () => {
+      for (const node of released) node.inert = false;
+      released = [];
+    };
+    const apply = () => {
+      release();
+      if (!mq.matches) return;
+      for (let node = panel.current; node && node !== document.body; node = node.parentElement) {
+        for (const sib of node.parentElement?.children ?? []) {
+          if (sib === node || !(sib instanceof HTMLElement) || sib.inert) continue;
+          sib.inert = true;
+          released.push(sib);
+        }
+      }
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => {
+      mq.removeEventListener("change", apply);
+      release();
+    };
+  }, []);
   // Remember the opener on mount and hand focus back on unmount, so Close and Escape don't drop
   // keyboard users at the top of the document. Skipped when focus already moved elsewhere,
   // e.g. a click on another row that swaps this panel for the next one. A panel opened at mount
@@ -396,6 +426,17 @@ export function DetailPanel({
       transition={{ duration: 0.3, ease: SNAP }}
       className="relative flex w-[380px] shrink-0 flex-col border-l border-border bg-panel min-[1600px]:w-[440px] max-md:fixed max-md:inset-0 max-md:z-40 max-md:w-full! max-md:border-l-0"
       aria-label="Details"
+      // Inert content behind leaves only browser chrome past the panel's ends, so wrap Tab inside it.
+      onKeyDown={(e) => {
+        if (e.key !== "Tab" || !window.matchMedia("(max-width: 767.98px)").matches) return;
+        const items = [...e.currentTarget.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter(
+          (n) => !n.matches(":disabled") && n.getClientRects().length > 0,
+        );
+        const edge = e.shiftKey ? items[0] : items.at(-1);
+        if (!edge || document.activeElement !== edge) return;
+        e.preventDefault();
+        (e.shiftKey ? items.at(-1) : items[0])?.focus();
+      }}
     >
       {/* The panel sits on the right, so moving its left edge left (ArrowLeft) widens it. */}
       <div
