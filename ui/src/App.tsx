@@ -21,14 +21,15 @@ export default function App() {
         </div>
         {/* Bottom-left of the main column, past the 244px sidebar (frame.tsx): footers and right-hand panels keep
             their primary actions bottom-right, where a toast sat on top of the next click. Setup and not-found pages
-            have no sidebar, but the same offset keeps toasts clear of their bottom-left Demo switcher; below 600px
-            Sonner switches to its own full-width mobile offsets. */}
+            have no sidebar, but the same offset keeps toasts clear of their bottom-left Demo switcher. Below 600px
+            Sonner uses its own full-width bottom offsets; there the switcher sits in the top header (md breakpoint),
+            so the two never share a band. */}
         <Toaster theme="dark" position="bottom-left" offset={{ left: 260, bottom: 16 }} />
         {route.kind !== "workspace" && (
           // Below md the compact switcher is one button in the reserved slot of the setup header (kit.tsx).
-          <div className="fixed z-40 max-md:top-0.5 max-md:right-16 md:bottom-[80px] md:left-[12px]">
+          <aside aria-label="Demo" className="fixed z-40 max-md:top-0.5 max-md:right-16 md:bottom-[80px] md:left-[12px]">
             <DemoSwitcher role={role} compact />
-          </div>
+          </aside>
         )}
       </TooltipProvider>
     </IconContext.Provider>
