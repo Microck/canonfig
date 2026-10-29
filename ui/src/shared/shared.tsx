@@ -112,7 +112,7 @@ export function Hint({ label, children, className }: { label: string; children: 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button type="button" aria-label={`More about ${label}`} className={cn("relative inline-flex rounded-sm text-faint after:absolute after:-inset-1.5 hover:text-muted-foreground", className)}>
+        <button type="button" aria-label={`More about ${label}`} className={cn("relative inline-flex size-11 shrink-0 items-center justify-center rounded-sm align-middle text-faint hover:text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring", className)}>
           <Question className="size-3.5" />
         </button>
       </TooltipTrigger>

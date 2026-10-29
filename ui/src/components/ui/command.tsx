@@ -91,17 +91,32 @@ function CommandInput({
 
 function CommandList({
   className,
+  style,
   ...props
 }: React.ComponentProps<typeof CommandPrimitive.List>) {
   return (
     <CommandPrimitive.List
       data-slot="command-list"
       className={cn(
-        // Scrollbar stays visible so a list cut at its max height shows there is more below.
         "max-h-72 scroll-py-1 overflow-x-hidden overflow-y-auto outline-none [scrollbar-width:thin]",
         className
       )}
       {...props}
+      style={{
+        // Local covers hide each fixed scroll shadow when that edge is reached.
+        // Unlike overlay scrollbars, these cues remain visible between gestures.
+        backgroundImage: [
+          "linear-gradient(var(--popover) 30%, transparent)",
+          "linear-gradient(transparent, var(--popover) 70%)",
+          "radial-gradient(farthest-side at 50% 0, color-mix(in oklab, var(--popover-foreground) 25%, transparent), transparent)",
+          "radial-gradient(farthest-side at 50% 100%, color-mix(in oklab, var(--popover-foreground) 25%, transparent), transparent)",
+        ].join(", "),
+        backgroundPosition: "center top, center bottom, center top, center bottom",
+        backgroundSize: "100% 32px, 100% 32px, 100% 12px, 100% 12px",
+        backgroundRepeat: "no-repeat",
+        backgroundAttachment: "local, local, scroll, scroll",
+        ...style,
+      }}
     />
   )
 }
