@@ -61,9 +61,15 @@ function Frame() {
     // Below md (768px) the 244px sidebar would leave ~140px for content, so it moves into a left Sheet behind a
     // menu button in a slim top bar. From md up the layout is unchanged.
     <div className="flex h-svh flex-col bg-canvas text-foreground md:flex-row">
+      <a
+        href="#workspace-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-panel focus:px-4 focus:py-3 focus:text-sm focus:font-medium focus:text-foreground focus:outline-2 focus:outline-offset-2 focus:outline-ring"
+      >
+        Skip to content
+      </a>
       <MobileNav />
       <Sidebar className="hidden md:flex" />
-      <main data-tour="main" className="mx-2 mb-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-panel md:my-2 md:ml-0">
+      <main id="workspace-content" tabIndex={-1} data-tour="main" className="mx-2 mb-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-panel focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring md:my-2 md:ml-0">
         <Screen key={ws.view} />
       </main>
       <Palette />
