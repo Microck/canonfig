@@ -273,7 +273,7 @@ export function ListRow({
       type="button"
       onClick={onClick}
       aria-current={selected || undefined}
-      className={cn(base, "outline-none focus-visible:before:bg-raised focus-visible:before:shadow-[inset_2px_0_0_var(--ring)]")}
+      className={cn(base, "outline-none focus-visible:before:bg-raised focus-visible:before:shadow-[inset_2px_0_0_var(--ring),inset_0_0_0_1px_var(--ring)]")}
       style={style}
     >
       {children}
@@ -310,7 +310,7 @@ const PANEL_STEP = 16;
 /**
  * The right-side panel that opens on row click. It slides in 8px and fades
  * (300ms, still under reduced motion). The left edge resizes it between 320 and 560px,
- * by dragging or with the arrow keys once focused; Escape closes it while focus is inside.
+ * by dragging or with the arrow keys once focused; Escape closes it unless a text field outside it has focus.
  * Closing it with focus inside returns focus to whatever opened it, usually the list row.
  * It opens at 380px, or 440px from a 1600px viewport so key paths and group tags fit. Under 768px
  * there is no room beside the list, so it covers the content area and the resize edge is hidden.
@@ -334,15 +334,43 @@ export function DetailPanel({
   const reduce = useReducedMotion();
   // Remember the opener on mount and hand focus back on unmount, so Close and Escape don't drop
   // keyboard users at the top of the document. Skipped when focus already moved elsewhere,
-  // e.g. a click on another row that swaps this panel for the next one.
+  // e.g. a click on another row that swaps this panel for the next one. A panel opened at mount
+  // (e.g. /follower/sync's default selection) has no opener, so focus goes to the selected row,
+  // else the page heading.
+  // Below md the panel covers the page, so opening it moves focus to its Close button.
   useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const active = document.activeElement;
+    const opener = active instanceof HTMLElement && active !== document.body ? active : null;
     const el = panel.current;
+    if (window.matchMedia("(max-width: 767.98px)").matches) el?.querySelector<HTMLElement>("[data-panel-close]")?.focus();
     return () => {
-      const active = document.activeElement;
-      const lost = !active || active === document.body || !!el?.contains(active);
-      if (lost && opener?.isConnected) opener.focus();
+      const now = document.activeElement;
+      const lost = !now || now === document.body || !!el?.contains(now);
+      if (!lost) return;
+      if (opener?.isConnected) return opener.focus();
+      const fallback = document.querySelector<HTMLElement>('main [aria-current="true"]') ?? document.querySelector<HTMLElement>("main h1");
+      if (fallback && !fallback.matches("button, a, [tabindex]")) fallback.tabIndex = -1;
+      fallback?.focus();
     };
+  }, []);
+  // Escape closes the panel wherever focus is (the row that opened it, the bare page, the panel),
+  // except in a text field outside the panel, where Escape belongs to the field. Below md the panel
+  // is a full-screen overlay, so it closes from anywhere. Handlers that consume Escape (dialogs,
+  // menus, tooltips) prevent default first.
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const active = document.activeElement;
+      const overlay = window.matchMedia("(max-width: 767.98px)").matches;
+      const field = active instanceof HTMLElement && active.matches("input, textarea, select, [contenteditable]") && !panel.current?.contains(active);
+      if (overlay || !field) closeRef.current();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, []);
   // Written straight to the elements so resizing doesn't re-render the panel's contents.
   const resize = (w: number) => {
@@ -368,9 +396,6 @@ export function DetailPanel({
       transition={{ duration: 0.3, ease: SNAP }}
       className="relative flex w-[380px] shrink-0 flex-col border-l border-border bg-panel min-[1600px]:w-[440px] max-md:fixed max-md:inset-0 max-md:z-40 max-md:w-full! max-md:border-l-0"
       aria-label="Details"
-      onKeyDown={(e) => {
-        if (e.key === "Escape" && !e.defaultPrevented) onClose();
-      }}
     >
       {/* The panel sits on the right, so moving its left edge left (ArrowLeft) widens it. */}
       <div
@@ -405,11 +430,11 @@ export function DetailPanel({
         {subtitle && <div className="shrink-0 truncate text-sm text-muted-foreground">{subtitle}</div>}
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-sm" className="ml-auto text-muted-foreground" onClick={onClose} aria-label="Close details">
+            <Button data-panel-close variant="ghost" size="icon-sm" className="ml-auto text-muted-foreground" onClick={onClose} aria-label="Close details">
               <X />
             </Button>
           </TooltipTrigger>
-          {/* Radix consumes Escape while this tooltip is open; keep the advertised panel shortcut working. */}
+          {/* Radix consumes (and prevents) Escape while this tooltip is open, so the document listener above skips it; keep the advertised shortcut working here. */}
           <TooltipContent onEscapeKeyDown={onClose}>
             Close <Kbd>Esc</Kbd>
           </TooltipContent>
@@ -600,7 +625,7 @@ export function ChangeMark({ change }: { change?: keyof typeof CHANGE }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span role="img" className={cn("inline-flex size-4 shrink-0 items-center justify-center rounded-[3px] font-mono text-[10px] font-semibold", c.cls)} aria-label={c.label}>
+        <span role="img" className={cn("inline-flex size-4 shrink-0 items-center justify-center rounded-[3px] font-mono text-xs font-semibold", c.cls)} aria-label={c.label}>
           {c.letter}
         </span>
       </TooltipTrigger>
