@@ -1,5 +1,5 @@
 // Workspace sidebar and command palette.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   ArrowsClockwise,
@@ -54,7 +54,7 @@ import { PLAIN, machine } from "@/shared/data";
 import { DemoSwitcher } from "@/shared/demo-switcher";
 import { useSharedState, useWorkspace, type View } from "./store";
 import { copy } from "./kit";
-import { followLink, workspaceHref } from "./routes";
+import { focusPageHeading, followLink, workspaceHref } from "./routes";
 
 interface NavItem {
   view: View;
@@ -309,13 +309,29 @@ export function Palette() {
     return () => window.removeEventListener("keydown", onKey);
   }, [setPaletteOpen, tourOpen]);
 
+  // The page a command ran from. The opener may be gone after a page change, so focus goes to the new heading.
+  const ranFrom = useRef<View | null>(null);
   const run = (fn: () => void) => {
+    ranFrom.current = ws.view;
     ws.setPaletteOpen(false);
     fn();
   };
 
   return (
-    <CommandDialog open={ws.paletteOpen} onOpenChange={ws.setPaletteOpen} title="Command palette" description="Go to a page or run an action" className="sm:max-w-[520px]">
+    <CommandDialog
+      open={ws.paletteOpen}
+      onOpenChange={ws.setPaletteOpen}
+      onCloseAutoFocus={(event) => {
+        const from = ranFrom.current;
+        ranFrom.current = null;
+        if (from === null || from === ws.view) return;
+        event.preventDefault();
+        focusPageHeading();
+      }}
+      title="Command palette"
+      description="Go to a page or run an action"
+      className="sm:max-w-[520px]"
+    >
       <Command>
       <CommandInput placeholder="Type a command or page…" />
       <CommandList className="max-h-[360px]">

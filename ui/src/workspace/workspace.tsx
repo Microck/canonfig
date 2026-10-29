@@ -1,11 +1,11 @@
 // Workspace screens share a sidebar, detail panels, and command palette.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { List, X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Logo } from "@/shared/shared";
 import { TipHost, TourHost, TourOffer } from "./guide";
-import { followLink, navigate, workspaceHref, type AppRoute } from "./routes";
+import { focusPageHeading, followLink, navigate, workspaceHref, type AppRoute } from "./routes";
 import { Palette, Sidebar } from "./frame";
 import { ChangeGroupsDialog, InviteDialog, MachinesView } from "./machines";
 import { Onboarding, type Setup } from "@/onboarding/onboarding";
@@ -56,6 +56,15 @@ function Frame() {
   const ws = useWorkspace();
   const screens = ws.role === "source" ? SOURCE_SCREENS : FOLLOWER_SCREENS;
   const Screen = screens[ws.view];
+  // Move focus to the new page's h1 on every page change after the first render, so a fresh load still gives the
+  // first Tab to "Skip to content". An open overlay (nav sheet) still traps focus here, so its own close handler
+  // moves focus instead.
+  const shownView = useRef(ws.view);
+  useEffect(() => {
+    if (shownView.current === ws.view) return;
+    shownView.current = ws.view;
+    if (!document.querySelector('[role="dialog"][data-state="open"]')) focusPageHeading();
+  }, [ws.view]);
   if (!Screen) return <NotFound />;
   return (
     // Below md (768px) the 244px sidebar would leave ~140px for content, so it moves into a left Sheet behind a
@@ -93,6 +102,7 @@ function Frame() {
 function MobileNav() {
   const ws = useWorkspace();
   const [open, setOpen] = useState(false);
+  const openedOn = useRef(ws.view);
   // Close on page change during render rather than in an effect, so the new page never paints under an open sheet.
   const [shownView, setShownView] = useState(ws.view);
   if (shownView !== ws.view) {
@@ -101,13 +111,26 @@ function MobileNav() {
   }
   return (
     <div className="flex h-[48px] shrink-0 items-center gap-1 px-1 md:hidden">
-      <Sheet open={open} onOpenChange={setOpen}>
+      <Sheet open={open} onOpenChange={(next) => {
+        if (next) openedOn.current = ws.view;
+        setOpen(next);
+      }}>
         <SheetTrigger asChild>
           <Button variant="ghost" size="icon" className="size-10" aria-label="Open navigation">
             <List className="size-5" />
           </Button>
         </SheetTrigger>
-        <SheetContent side="left" showCloseButton={false} className="w-[244px] gap-0 border-sidebar-border bg-sidebar p-0">
+        <SheetContent
+          side="left"
+          showCloseButton={false}
+          className="w-[244px] gap-0 border-sidebar-border bg-sidebar p-0"
+          // Radix returns focus to the menu button on close; after a page change the new heading should get it.
+          onCloseAutoFocus={(event) => {
+            if (openedOn.current === ws.view) return;
+            event.preventDefault();
+            focusPageHeading();
+          }}
+        >
           <div className="flex h-14 shrink-0 items-center justify-between border-b border-sidebar-border pr-2 pl-5">
             <SheetTitle>Navigation</SheetTitle>
             <SheetClose asChild>

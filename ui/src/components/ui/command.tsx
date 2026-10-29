@@ -39,12 +39,15 @@ function CommandDialog({
   children,
   className,
   showCloseButton = false,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof Dialog> & {
   title?: string
   description?: string
   className?: string
   showCloseButton?: boolean
+  /** Runs before focus returns to the opener; preventDefault to place focus elsewhere. */
+  onCloseAutoFocus?: (event: Event) => void
 }) {
   const returnFocus = React.useRef<HTMLElement | null>(null)
 
@@ -56,6 +59,8 @@ function CommandDialog({
           returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
         }}
         onCloseAutoFocus={(event) => {
+          onCloseAutoFocus?.(event)
+          if (event.defaultPrevented) return
           // This dialog can open from a shortcut, without a Radix DialogTrigger.
           event.preventDefault()
           returnFocus.current?.focus()

@@ -139,6 +139,22 @@ export function initializeAppRoute() {
   navigate(`/source/overview${tour}`, { replace: true });
 }
 
+/**
+ * After an in-app page change, focus moves to the new page's h1 so screen readers announce the page and Tab
+ * continues from its content. The h1 gets tabIndex -1 here so kit headings need no focus wiring; :focus-visible
+ * keeps the ring off after pointer navigation and on after keyboard navigation. Focus a detail panel already took
+ * inside main (e.g. the mobile panel's close button) stays where it is.
+ */
+export function focusPageHeading() {
+  const main = document.getElementById("workspace-content");
+  const active = document.activeElement;
+  if (!main || (active && active !== main && main.contains(active))) return;
+  const heading = main.querySelector<HTMLElement>("h1");
+  if (!heading) return;
+  heading.tabIndex = -1;
+  heading.focus({ preventScroll: true });
+}
+
 /** Leave modified clicks and new-window links to the browser. */
 export function followLink(event: MouseEvent<HTMLAnchorElement>, go: Navigate = navigate) {
   if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.currentTarget.target || event.currentTarget.hasAttribute("download")) return;
