@@ -153,6 +153,8 @@ function jsonc(r: Resource) {
  * "from .claude/CLAUDE.md" whole at 1280px; below their caps the other columns shrink toward their minimums.
  */
 const COLS = "16px minmax(150px,240px) minmax(180px,360px) 190px 140px minmax(140px,1fr)";
+// Column minimums + 5 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
+const COLS_MIN = 16 + 150 + 180 + 190 + 140 + 140 + 5 * 12 + 20;
 
 /** A checkbox row per Follower Group; the whole row toggles. */
 function GroupPicker({ idPrefix, value, onChange }: { idPrefix: string; value: string[]; onChange: (groups: string[]) => void }) {
@@ -274,11 +276,12 @@ export function ProfileView() {
       />
       <Toolbar
         right={
-          <span className="flex min-w-0 items-center gap-1.5 text-sm text-faint">
-            Profile file
+          <span className="flex min-w-0 items-center gap-1.5 text-sm whitespace-nowrap text-faint">
+            <span className="hidden sm:inline">Profile file</span>
             <button
               type="button"
-              title="Copy path"
+              title={`Copy path ${ws.profileFile}`}
+              aria-label={`Copy profile file path ${ws.profileFile}`}
               className="truncate rounded font-mono text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
               onClick={() => copy(ws.profileFile, "Profile path copied")}
             >
@@ -331,7 +334,7 @@ export function ProfileView() {
             />
           ) : (
             <>
-              <ListHead cols={COLS}>
+              <ListHead cols={COLS} minWidth={COLS_MIN}>
                 <span />
                 <span>Name</span>
                 <span>Target</span>
@@ -349,6 +352,7 @@ export function ProfileView() {
                       <AnimatedRow key={r.id}>
                         <ListRow
                           cols={COLS}
+                          minWidth={COLS_MIN}
                           selected={selected === r.id && !creating}
                           onClick={() => ws.go("profile", r.id)}
                           className={cn(r.change === "removed" && "text-faint line-through decoration-faint", proposed.includes(r.id) && selected !== r.id && "before:bg-gold/6")}
@@ -831,6 +835,7 @@ function GroupsTab() {
   const [desc, setDesc] = useState("");
   const [tried, setTried] = useState(false);
   const cols = "minmax(180px,1fr) minmax(220px,2fr) 110px 110px";
+  const colsMin = 180 + 220 + 110 + 110 + 3 * 12 + 20;
   const trimmed = name.trim();
   const problem = !trimmed
     ? "Enter a name."
@@ -864,7 +869,7 @@ function GroupsTab() {
           New group
         </Button>
       </div>
-      <ListHead cols={cols}>
+      <ListHead cols={cols} minWidth={colsMin}>
         <span>Group</span>
         <span>What it's for</span>
         <span>Machines</span>
@@ -873,12 +878,13 @@ function GroupsTab() {
       <RowPresence>
         {groups.map((g) => (
           <AnimatedRow key={g.name}>
-            <ListRow cols={cols} selected={selected === g.name} onClick={() => ws.navigate(workspaceHref("source", "profile", { profileTab: "groups", focus: g.name }))}>
+            <ListRow cols={cols} minWidth={colsMin} selected={selected === g.name} onClick={() => ws.navigate(workspaceHref("source", "profile", { profileTab: "groups", focus: g.name }))}>
               <span className="flex min-w-0 items-center gap-1.5">
                 {g.name === SECRETS_GROUP ? (
                   <>
-                    <span className="truncate">{PLAIN.secretsGroup}</span>
-                    <span className="shrink-0 font-mono text-xs text-faint">{g.name}</span>
+                    {/* The plain name is what people read; the raw id gives way first on narrow screens. */}
+                    <span className="shrink-0">{PLAIN.secretsGroup}</span>
+                    <span className="min-w-0 truncate font-mono text-xs text-faint">{g.name}</span>
                   </>
                 ) : (
                   <span className="truncate font-mono text-sm">{g.name}</span>
@@ -1070,9 +1076,8 @@ function DefaultsTab() {
         {!scheduleProblem && (
           <div className="mt-4 grid gap-2">
             <pre
-              tabIndex={0}
               aria-label="The default schedule as written in the profile file"
-              className="overflow-x-auto rounded-md border border-border bg-canvas/70 p-3 font-mono text-xs leading-relaxed text-muted-foreground"
+              className="rounded-md border border-border bg-canvas/70 p-3 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-muted-foreground"
             >
               <span className="text-faint">// {ws.profileFile}{"\n"}</span>
               {`"scheduleDefault": { ${Object.entries(scheduleDefaultOf(schedule))

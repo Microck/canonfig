@@ -526,6 +526,8 @@ export function RevisionsView() {
   const selected = ws.focus;
   const current = ws.revisions.find((r) => String(r.sequence) === selected);
   const cols = "72px minmax(200px,2fr) 140px 110px 120px";
+  // Column minimums + 4 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
+  const colsMin = 72 + 200 + 140 + 110 + 120 + 4 * 12 + 20;
   return (
     <>
       <PageHeader crumbs={["Revisions"]} actions={<PublishButton />} />
@@ -534,7 +536,7 @@ export function RevisionsView() {
           <EmptyState title="No revisions yet" body="Each time you publish the profile, it becomes a numbered revision here that machines can apply." />
         ) : (
           <>
-            <ListHead cols={cols}>
+            <ListHead cols={cols} minWidth={colsMin}>
               <span>
                 <Term term="Profile Revision">Revision</Term>
               </span>
@@ -546,7 +548,7 @@ export function RevisionsView() {
             <RowPresence>
               {ws.pending.length > 0 && (
                 <AnimatedRow key="next">
-                  <ListRow cols={cols} onClick={() => ws.setPublishOpen(true)} className="text-muted-foreground">
+                  <ListRow cols={cols} minWidth={colsMin} onClick={() => ws.setPublishOpen(true)} className="text-muted-foreground">
                     <span className="text-warn tabular-nums">{ws.nextSequence}</span>
                     <span className="truncate">
                       {ws.pending.length} unpublished {ws.pending.length === 1 ? "change" : "changes"}
@@ -559,7 +561,7 @@ export function RevisionsView() {
               )}
               {ws.revisions.map((r) => (
                 <AnimatedRow key={r.sequence}>
-                  <ListRow cols={cols} selected={selected === String(r.sequence)} onClick={() => ws.go("revisions", String(r.sequence))}>
+                  <ListRow cols={cols} minWidth={colsMin} selected={selected === String(r.sequence)} onClick={() => ws.go("revisions", String(r.sequence))}>
                     <span className="font-medium tabular-nums">{r.sequence}</span>
                     <span className="truncate">{r.changes}</span>
                     <Mono className="truncate">{r.digest}</Mono>
@@ -643,6 +645,7 @@ export function SecretsView() {
   const receivers = ws.followers.filter((f) => f.groups.includes(SECRETS_GROUP));
   const others = ws.followers.length - receivers.length;
   const cols = "minmax(180px,1.5fr) 120px minmax(160px,1fr) 40px";
+  const colsMin = 180 + 120 + 160 + 40 + 3 * 12 + 20;
   const share = () => ws.setChangeGroups({ addGroup: SECRETS_GROUP });
 
   const openSet = (n?: string) => {
@@ -696,7 +699,7 @@ export function SecretsView() {
           />
         ) : (
           <>
-            <ListHead cols={cols}>
+            <ListHead cols={cols} minWidth={colsMin}>
               <span>Name</span>
               <span>Updated</span>
               <span>Eligible machines</span>
@@ -705,7 +708,7 @@ export function SecretsView() {
             <RowPresence>
               {ws.secrets.map((s) => (
                 <AnimatedRow key={s.name}>
-                  <ListRow cols={cols}>
+                  <ListRow cols={cols} minWidth={colsMin}>
                     <span className="flex min-w-0 items-center gap-2">
                       <Key className="size-3.5 shrink-0 text-faint" />
                       <span className="truncate font-mono text-sm">{s.name}</span>
