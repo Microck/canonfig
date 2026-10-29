@@ -167,6 +167,22 @@ export function GetStarted() {
   );
 }
 
+/**
+ * True while a DetailPanel (kit.tsx, `aside[aria-label="Details"]`) is mounted. The panel's open state
+ * lives in each screen's local state, not the workspace store, so the DOM is the one shared signal.
+ */
+function useDetailPanelOpen() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const check = () => setOpen(document.querySelector('aside[aria-label="Details"]') !== null);
+    check();
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+  return open;
+}
+
 /** Corner card that offers the tour once. Not modal: the app stays usable around it. */
 export function TourOffer() {
   const ws = useWorkspace();
@@ -178,7 +194,8 @@ export function TourOffer() {
     const t = window.setTimeout(() => setReady(true), 900);
     return () => window.clearTimeout(t);
   }, []);
-  const show = ws.tourOffered && ready && !busy;
+  const detailOpen = useDetailPanelOpen();
+  const show = ws.tourOffered && ready && !busy && !detailOpen;
 
   return (
     <AnimatePresence>
@@ -192,9 +209,10 @@ export function TourOffer() {
           transition={{ duration: 0.3, ease: SNAP }}
           // bottom-24 clears the machine map's bottom controls (they sit ~64px up from the viewport edge).
           // Below md the map stacks its legend above the controls (~130px tall), so the offer sits higher there.
-          // z-[45]: above the mobile detail panel and demo switcher (z-40), below Sheets/Dialogs (z-50) so the
-          // open mobile navigation covers the offer instead of the offer drawing over it.
-          className="fixed right-4 bottom-24 z-[45] max-md:bottom-[140px] w-[300px] max-w-[calc(100vw-2rem)] rounded-xl border border-border-strong bg-popover p-4 shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
+          // z-30: below the mobile detail panel and demo switcher (z-40) and Sheets/Dialogs (z-50), so every
+          // surface the user opened draws over the offer; still above the map's controls and legend. The offer
+          // also hides while a detail panel is open, since on desktop the panel sits in flow under this corner.
+          className="fixed right-4 bottom-24 z-30 max-md:bottom-[140px] w-[300px] max-w-[calc(100vw-2rem)] rounded-xl border border-border-strong bg-popover p-4 shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
         >
           <div className="flex items-start gap-3">
             <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-raised text-muted-foreground">
