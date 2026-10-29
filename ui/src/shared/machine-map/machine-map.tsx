@@ -325,7 +325,11 @@ function MapCanvas({
           onPaneClick={() => sheetId && setCustomize(null)}
           onKeyDown={(e) => {
             const el = e.target as HTMLElement;
-            if (e.key === "Enter" && el.classList.contains("react-flow__node") && el.dataset.id && el.dataset.id !== ADD_ID) onOpenMachine?.(el.dataset.id);
+            if (e.key !== "Enter" || !el.classList.contains("react-flow__node") || !el.dataset.id || el.dataset.id === ADD_ID) return;
+            // Consume the key: below md the opened panel moves focus to its close button during this keydown,
+            // and an unconsumed Enter would then activate that button and close the panel at once.
+            e.preventDefault();
+            onOpenMachine?.(el.dataset.id);
           }}
           fitView
           autoPanOnNodeFocus={false}
