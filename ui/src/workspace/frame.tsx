@@ -158,6 +158,11 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
   const { main, settings } = navFor(role);
   const inSettings = settings.some((s) => s.view === ws.view);
   const [open, setOpen] = useState(inSettings);
+  const menuNavigatedFrom = useRef<View | null>(null);
+  const navigateFromMenu = (view: View) => {
+    menuNavigatedFrom.current = ws.view;
+    ws.setView(view);
+  };
   useEffect(() => {
     if (inSettings) setOpen(true);
   }, [inSettings]);
@@ -196,7 +201,18 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
             <CaretDown className="ml-auto size-3.5 text-faint" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-60">
+        <DropdownMenuContent
+          align="start"
+          className="w-60"
+          onCloseAutoFocus={(event) => {
+            const from = menuNavigatedFrom.current;
+            menuNavigatedFrom.current = null;
+            if (from === null || from === ws.view) return;
+            // Route navigation owns focus; Radix must not restore the machine switcher.
+            event.preventDefault();
+            focusPageHeading();
+          }}
+        >
           <DropdownMenuLabel className="grid gap-0.5 font-normal">
             <span className="text-sm text-muted-foreground">{role === "source" ? "The Source: you edit here" : "Gets its setup from atlas"}</span>
             <span className="text-xs text-faint">
@@ -209,12 +225,12 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
                 Copy profile file path
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => copy(ws.endpoint, "Endpoint copied")}>Copy source endpoint</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => ws.setView("service")}>Source service settings</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => navigateFromMenu("service")}>Source service settings</DropdownMenuItem>
             </>
           ) : (
             <>
-              <DropdownMenuItem onSelect={() => ws.setView("machine")}>Profile and enrollment</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => ws.setView("tunnel")}>SSH tunnel</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => navigateFromMenu("machine")}>Profile and enrollment</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => navigateFromMenu("tunnel")}>SSH tunnel</DropdownMenuItem>
               <DropdownMenuItem variant="destructive" disabled={ws.unenrolled} onSelect={() => ws.setUnenrollOpen(true)}>
                 {PLAIN.unenroll}…
               </DropdownMenuItem>
