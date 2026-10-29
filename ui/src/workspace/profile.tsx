@@ -1,10 +1,10 @@
 // Profile resources grouped by kind, with an editor in the detail panel.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { flushSync } from "react-dom";
 import { toast } from "sonner";
 import { CaretRight, Plus, Sparkle, X } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
-import { holdNavigation, workspaceHref } from "./routes";
+import { workspaceHref } from "./routes";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -40,6 +40,7 @@ import {
   ToolbarTab,
   copy,
   useGroups,
+  useLeaveGuard,
   type Group,
 } from "./kit";
 
@@ -199,10 +200,22 @@ interface ProfileDefaults {
   schedule: Schedule;
 }
 
-/** Both readers must pass the same initial: the profile as onboarding created it, checked daily at 09:00. */
-function useProfileDefaults() {
+/**
+ * "saved" is what Profile → Defaults last saved. "published" is what the latest revision holds; it is
+ * recorded when a defaults edit starts (until then the two match), so saving the published values back
+ * can withdraw the edit. Both start as the profile onboarding created, checked daily at 09:00.
+ */
+function useProfileDefaults(which: "saved" | "published" = "saved") {
   const ws = useWorkspace();
-  return useSharedState<ProfileDefaults>("profile-defaults", { name: ws.profileName, schedule: { cadence: "daily", days: [], time: "09:00" } });
+  return useSharedState<ProfileDefaults>(which === "saved" ? "profile-defaults" : "profile-defaults-published", {
+    name: ws.profileName,
+    schedule: { cadence: "daily", days: [], time: "09:00" },
+  });
+}
+
+/** Whether two defaults write the same profile file values. Compares the written schedule, so days kept from a weekly choice don't count under daily. */
+function sameDefaults(a: ProfileDefaults, b: ProfileDefaults) {
+  return a.name === b.name && JSON.stringify(scheduleDefaultOf(a.schedule)) === JSON.stringify(scheduleDefaultOf(b.schedule));
 }
 
 /**
@@ -392,8 +405,11 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
   // Config keys are edited as rows so a key can be renamed, including a new one that has no name yet.
   const [rows, setRows] = useState<KeyRow[]>(() => keyRowsOf(resource));
   const [focusRow, setFocusRow] = useState<number | null>(null);
-  // Unnamed rows are still edits even though they cannot enter the saved key map yet.
-  const dirty = JSON.stringify(draft) !== JSON.stringify(resource)
+  // Unnamed rows are still edits even though they cannot enter the saved key map yet. The change marker is
+  // publication state, not an edit: publishing clears it on the saved item while this editor is open, and
+  // the draft must still count as matching the item it now shows, so the comparison leaves it out.
+  const content = (r: Resource) => JSON.stringify({ ...r, change: undefined });
+  const dirty = content(draft) !== content(resource)
     || JSON.stringify(rows.map(({ name, value }) => [name, value])) !== JSON.stringify(Object.entries(resource.keys ?? {}));
   const updateRows = (next: KeyRow[]) => {
     setRows(next);
@@ -409,22 +425,8 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
 
   // Closing, choosing another row or leaving the page asks before discarding edits. The guard sits in
   // routes.ts, which every in-app link, row, sidebar entry and palette command navigates through.
-  const [leaveRequest, setLeaveRequest] = useState<(() => void) | null>(null);
-  const releaseNavigation = useRef<() => void>(() => {});
-  useEffect(() => {
-    if (!dirty) return;
-    const release = holdNavigation((proceed) => {
-      setLeaveRequest(() => proceed);
-      return true;
-    });
-    releaseNavigation.current = release;
-    return release;
-  }, [dirty]);
-  /** For exits that already settle the draft (save, remove, Cancel on a new item), so they never ask. */
-  const leaveWithoutAsking = (leave: () => void) => {
-    releaseNavigation.current();
-    leave();
-  };
+  // Save, remove and Cancel on a new item settle the draft, so they leave through leaveWithoutAsking.
+  const { dialog: leaveDialog, leaveWithoutAsking } = useLeaveGuard(dirty, isNew ? "this new item" : resource.id);
 
   const id = draft.id.trim();
   const idError = !id ? "Enter a name." : !/^[a-z0-9][a-z0-9-]*$/.test(id) ? "Use lowercase letters, digits and dashes." : others.some((r) => r.id === id) ? `${id} is already in the profile.` : null;
@@ -812,32 +814,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <Dialog open={leaveRequest !== null} onOpenChange={(o) => !o && setLeaveRequest(null)}>
-        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Discard unsaved changes?</DialogTitle>
-            <DialogDescription className="text-base text-pretty">
-              Your edits to {isNew ? "this new item" : resource.id} aren't saved. Leaving now discards them.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setLeaveRequest(null)}>
-              Keep editing
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                const proceed = leaveRequest;
-                setLeaveRequest(null);
-                if (proceed) leaveWithoutAsking(proceed);
-              }}
-            >
-              Discard changes
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {leaveDialog}
     </DetailPanel>
   );
 }
@@ -861,6 +838,8 @@ function GroupsTab() {
         : null;
   const nameError = tried ? problem : null;
   const current = groups.find((g) => g.name === selected);
+  // Only an open dialog holds a draft: Cancel, Escape and Add group all close it, and reopening starts blank.
+  const { dialog: leaveDialog } = useLeaveGuard(open && (name !== "" || desc !== ""), "this new group");
 
   return (
     <Body detail={current && <GroupDetail key={current.name} group={current} onClose={() => ws.navigate(workspaceHref("source", "profile", { profileTab: "groups" }))} />}>
@@ -959,6 +938,7 @@ function GroupsTab() {
           </form>
         </DialogContent>
       </Dialog>
+      {leaveDialog}
     </Body>
   );
 }
@@ -1023,12 +1003,15 @@ function GroupDetail({ group: g, onClose }: { group: Group; onClose: () => void 
 function DefaultsTab() {
   const ws = useWorkspace();
   const [saved, setSaved] = useProfileDefaults();
+  const [published, setPublished] = useProfileDefaults("published");
   const [name, setName] = useState(saved.name);
   const [schedule, setSchedule] = useState<Schedule>(saved.schedule);
   const [tried, setTried] = useState(false);
   const trimmed = name.trim();
   const nameError = tried && !trimmed ? "Enter a display name." : null;
   const scheduleProblem = scheduleError(schedule);
+  // Compares what Save would write, so day picks hidden under a daily cadence don't count as edits.
+  const { dialog: leaveDialog } = useLeaveGuard(!sameDefaults({ name, schedule }, saved), "the profile defaults");
   return (
     <Body>
       <form
@@ -1037,15 +1020,26 @@ function DefaultsTab() {
           e.preventDefault();
           setTried(true);
           if (!trimmed || scheduleProblem) return;
-          // Saving unchanged values is not an edit, so it must not add an unpublished change.
-          const changed = trimmed !== saved.name || JSON.stringify(schedule) !== JSON.stringify(saved.schedule);
-          setSaved({ name: trimmed, schedule });
-          if (changed) ws.markProfileEdit({ area: "defaults", id: "defaults", change: "modified" });
+          const next = { name: trimmed, schedule };
+          // Saving unchanged values is not an edit. Saving the published values back withdraws the edit,
+          // so unpublished changes only ever list defaults that differ from the latest revision.
+          const edited = ws.pending.some((c) => c.area === "defaults");
+          const changed = !sameDefaults(next, saved);
+          const unpublished = !sameDefaults(next, edited ? published : saved);
+          if (unpublished && !edited) {
+            setPublished(saved);
+            ws.markProfileEdit({ area: "defaults", id: "defaults", change: "modified" });
+          }
+          if (!unpublished && edited) ws.removeProfileEdit({ area: "defaults", id: "defaults", change: "modified" });
+          setSaved(next);
           setName(trimmed);
           setTried(false);
-          toast.success("Defaults saved", {
-            description: `${scheduleSummary(schedule, "")}.${changed ? ` Goes out with revision ${ws.nextSequence}.` : ""} Saved in this demo workspace.`,
-          });
+          const note = !changed
+            ? ""
+            : unpublished
+              ? ` Goes out with revision ${ws.nextSequence}.`
+              : ` Back to the published values, so the defaults no longer wait for revision ${ws.nextSequence}.`;
+          toast.success("Defaults saved", { description: `${scheduleSummary(schedule, "")}.${note} Saved in this demo workspace.` });
         }}
       >
         <SectionLabel>Profile</SectionLabel>
@@ -1082,7 +1076,10 @@ function DefaultsTab() {
                 .map(([k, v]) => `${JSON.stringify(k)}: ${Array.isArray(v) ? `[${v.map((d) => JSON.stringify(d)).join(", ")}]` : JSON.stringify(v)}`)
                 .join(", ")} }`}
             </pre>
-            <p className="text-sm text-pretty text-faint">Saving writes this into the profile file. A machine follows the default once this runs on it:</p>
+            <p className="text-sm text-pretty text-faint">
+              Canonfig writes this into the profile file when you save; this demo keeps it in the browser session and writes no file. A machine follows the default once
+              this runs on it:
+            </p>
             <Cli>canonfig schedule set --default</Cli>
           </div>
         )}
@@ -1092,6 +1089,7 @@ function DefaultsTab() {
           </Button>
         </div>
       </form>
+      {leaveDialog}
     </Body>
   );
 }
@@ -1112,6 +1110,12 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   }, [open]);
 
   const done = progress >= 100;
+  // Picked tools the profile already has stay as they are, so the button counts and adds only the new ones.
+  const pickedTools = SCANNED_TOOLS.filter((f) => picked.includes(f.id));
+  const fresh = pickedTools.filter((f) => !ws.resources.some((r) => r.id === f.id));
+  const present = pickedTools.filter((f) => !fresh.includes(f)).map((f) => f.id);
+  const presentNote = present.length ? `${present.join(", ")} ${present.length === 1 ? "is" : "are"} already in the profile.` : "";
+  const noneNew = picked.length === 0 ? "Tick the tools to add." : presentNote;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-lg">
@@ -1129,20 +1133,27 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
             <span className="text-sm text-muted-foreground">Finding tools…</span>
           </div>
         ) : (
-          <div className="-mx-4 border-y border-border">
-            {SCANNED_TOOLS.map((f) => (
-              <label key={f.id} className="flex h-11 cursor-pointer items-center gap-3 border-b border-border/70 px-4 last:border-b-0 hover:bg-raised/50">
-                <Checkbox checked={picked.includes(f.id)} onCheckedChange={(c) => setPicked((p) => (c ? [...p, f.id] : p.filter((x) => x !== f.id)))} />
-                <span className="grid min-w-0">
-                  <span className="text-base font-medium">{f.id}</span>
-                  <Mono className="truncate text-faint">{f.command}</Mono>
-                </span>
-                <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-muted-foreground" title={`${f.file}, ${f.where}`}>
-                  {f.file.split("/").pop()}
-                </span>
-              </label>
-            ))}
-          </div>
+          <>
+            <div className="-mx-4 border-y border-border">
+              {SCANNED_TOOLS.map((f) => (
+                <label key={f.id} className="flex h-11 cursor-pointer items-center gap-3 border-b border-border/70 px-4 last:border-b-0 hover:bg-raised/50">
+                  <Checkbox checked={picked.includes(f.id)} onCheckedChange={(c) => setPicked((p) => (c ? [...p, f.id] : p.filter((x) => x !== f.id)))} />
+                  <span className="grid min-w-0">
+                    <span className="text-base font-medium">{f.id}</span>
+                    <Mono className="truncate text-faint">{f.command}</Mono>
+                  </span>
+                  <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-muted-foreground" title={`${f.file}, ${f.where}`}>
+                    {ws.resources.some((r) => r.id === f.id) ? "In the profile" : f.file.split("/").pop()}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {fresh.length === 0 && (
+              <p id="discover-none" className="text-sm text-pretty text-muted-foreground">
+                {noneNew}
+              </p>
+            )}
+          </>
         )}
         <DialogFooter className="items-center sm:justify-between">
           <Cli className="flex-1">{`canonfig source scan${SCAN_FILES.map((f) => ` --file ${shq(f)}`).join("")}`}</Cli>
@@ -1152,23 +1163,17 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
             </Button>
             <Button
               variant="secondary"
-              disabled={!done || picked.length === 0}
+              disabled={!done || fresh.length === 0}
+              aria-describedby={done && fresh.length === 0 ? "discover-none" : undefined}
               onClick={() => {
-                const chosen = SCANNED_TOOLS.filter((f) => picked.includes(f.id)).map(toolFromScan);
-                // Tools already in the profile stay as they are; the toast counts only real additions.
-                const added = chosen.filter((a) => !ws.resources.some((p) => p.id === a.id));
-                const present = chosen.filter((a) => !added.includes(a)).map((a) => a.id);
-                const presentNote = present.length ? `${present.join(", ")} ${present.length === 1 ? "is" : "are"} already in the profile.` : "";
-                if (added.length) ws.setResources((prev) => [...prev, ...added]);
+                ws.setResources((prev) => [...prev, ...fresh.map(toolFromScan)]);
                 onOpenChange(false);
-                if (added.length === 0) toast("Nothing new to add", { description: presentNote });
-                else
-                  toast.success(`Added ${added.length} ${added.length === 1 ? "tool" : "tools"}`, {
-                    description: `${presentNote ? `${presentNote} ` : ""}Publish to send ${added.length === 1 ? "it" : "them"} to your machines.`,
-                  });
+                toast.success(`Added ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`, {
+                  description: `${presentNote ? `${presentNote} ` : ""}Publish to send ${fresh.length === 1 ? "it" : "them"} to your machines.`,
+                });
               }}
             >
-              {picked.length === 0 ? "Add tools" : `Add ${picked.length} ${picked.length === 1 ? "tool" : "tools"}`}
+              {fresh.length === 0 ? "Add tools" : `Add ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`}
             </Button>
           </div>
         </DialogFooter>

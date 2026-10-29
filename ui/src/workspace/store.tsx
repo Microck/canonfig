@@ -290,6 +290,8 @@ export interface Workspace {
   pending: PendingChange[];
   /** Records a group or defaults edit as unpublished; repeating one is a no-op. */
   markProfileEdit: (edit: ProfileEdit) => void;
+  /** Withdraws a recorded group or defaults edit, for example defaults saved back to their published values. */
+  removeProfileEdit: (edit: ProfileEdit) => void;
   nextSequence: number;
   publishing: boolean;
   publish: (reviewer: string, onDone: () => void) => void;
@@ -332,6 +334,18 @@ export interface Workspace {
   later: (fn: () => void, ms: number) => void;
   /** Reads the stopped state when called, for delayed callbacks that would otherwise see a stale value. */
   isStopped: () => boolean;
+}
+
+/**
+ * A demo stand-in for a revision's fingerprint, not a digest of real file contents: a 32-bit
+ * FNV-1a hash of the sequence and change list, shown in the seeded `sha256:xxxx…yyyy` shape so
+ * each published revision gets its own value.
+ */
+function demoDigest(sequence: number, summary: string): string {
+  let hash = 0x811c9dc5;
+  for (const ch of `${sequence}\n${summary}`) hash = Math.imul(hash ^ ch.charCodeAt(0), 0x01000193);
+  const hex = (hash >>> 0).toString(16).padStart(8, "0");
+  return `sha256:${hex.slice(0, 4)}…${hex.slice(4)}`;
 }
 
 function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Setup | null): Workspace {
@@ -402,6 +416,10 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     (edit: ProfileEdit) => setProfileEdits((prev) => (prev.some((e) => e.area === edit.area && e.id === edit.id) ? prev : [...prev, edit])),
     [],
   );
+  const removeProfileEdit = useCallback(
+    (edit: ProfileEdit) => setProfileEdits((prev) => prev.filter((e) => !(e.area === edit.area && e.id === edit.id))),
+    [],
+  );
   // Items carry their own change marker; group and defaults edits are recorded when Profile saves them.
   const pending = useMemo<PendingChange[]>(
     () => [...resources.flatMap((r) => (r.change ? [{ area: "item" as const, id: r.id, change: r.change, resource: r }] : [])), ...profileEdits],
@@ -420,7 +438,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
         const seq = nextSequence;
         const mark = { added: "+", modified: "~", removed: "−" } as const;
         const summary = pending.map((c) => `${mark[c.change]}${c.area === "group" ? `group ${c.id}` : c.id}`).join(", ");
-        setRevisions((prev) => [{ sequence: seq, digest: "sha256:c81b…3fe0", publishedAt: "Just now", reviewer, changes: summary }, ...prev]);
+        setRevisions((prev) => [{ sequence: seq, digest: demoDigest(seq, summary), publishedAt: "Just now", reviewer, changes: summary }, ...prev]);
         setResources((prev) => prev.filter((r) => r.change !== "removed").map((r) => ({ ...r, change: undefined })));
         // Groups and defaults went out with this revision too, so they are no longer unpublished.
         setProfileEdits([]);
@@ -467,6 +485,10 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   );
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearInterval(timer.current), []);
+  // The run's interval closes over the render that started it; completion reads this instead, so
+  // a decision or Local settings change made mid-run is reflected (same pattern as guide.tsx).
+  const latestRun = useRef({ plan, overlays });
+  latestRun.current = { plan, overlays };
 
   // Drift decisions belong to the session, not to one plan: an item that leaves the plan with a
   // profile switch gets the same decision back when it returns (see `replan`).
@@ -535,9 +557,6 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     // Installing gh leaves one step for a person: signing in to it. A later run that doesn't touch gh
     // leaves an earlier sign-in still waiting; only checking again clears it.
     const signInWaiting = humanAction || plan.some((p) => p.resource === "gh-cli" && p.action === "install");
-    // The run skips paused items, so count them now: completion must not call a partial run up to date.
-    const paused = plan.filter((p) => p.action === "skip-drift" || conflictsIn(p.resource, overlays).length > 0).length;
-    const pausedText = `${paused} ${paused === 1 ? "item" : "items"} paused`;
     let tick = 0;
     window.clearInterval(timer.current);
     timer.current = window.setInterval(() => {
@@ -550,6 +569,9 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
       );
       if (value >= 100) {
         window.clearInterval(timer.current);
+        // The run skips paused items, so count them as it ends: completion must not call a partial run up to date.
+        const paused = latestRun.current.plan.filter((p) => p.action === "skip-drift" || conflictsIn(p.resource, latestRun.current.overlays).length > 0).length;
+        const pausedText = `${paused} ${paused === 1 ? "item" : "items"} paused`;
         setPhase("done");
         setAppliedRevision(targetRevision);
         setHumanAction((prev) => prev || signInWaiting);
@@ -567,7 +589,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
           });
       }
     }, 140);
-  }, [plan, targetRevision, humanAction, overlays]);
+  }, [plan, targetRevision, humanAction]);
 
   const driftOpen = plan.some((p) => p.action === "skip-drift");
 
@@ -612,6 +634,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     setSecrets,
     pending,
     markProfileEdit,
+    removeProfileEdit,
     nextSequence,
     publishing,
     publish,
@@ -654,6 +677,8 @@ const WorkspaceContext = createContext<Workspace | null>(null);
 interface SharedStore {
   values: Readonly<Record<string, unknown>>;
   update: (key: string, fn: (prev: unknown) => unknown, initial: unknown) => void;
+  /** Reads a key's current value; see `useSharedReader`. */
+  read: (key: string, initial: unknown) => unknown;
 }
 const SharedContext = createContext<SharedStore | null>(null);
 
@@ -691,7 +716,12 @@ export function WorkspaceProvider({ route, navigate, setup = null, children }: {
     (key: string, fn: (prev: unknown) => unknown, initial: unknown) => setValues((prev) => ({ ...prev, [key]: fn(key in prev ? prev[key] : initial) })),
     [],
   );
-  const shared = useMemo(() => ({ values, update }), [values, update]);
+  // Delayed callbacks close over the render that started them; `read` goes through this instead,
+  // so they see a value changed while they waited (same pattern as guide.tsx).
+  const latest = useRef(values);
+  latest.current = values;
+  const read = useCallback((key: string, initial: unknown) => (key in latest.current ? latest.current[key] : initial), []);
+  const shared = useMemo(() => ({ values, update, read }), [values, update, read]);
   return (
     <WorkspaceContext.Provider value={value}>
       <SharedContext.Provider value={shared}>{children}</SharedContext.Provider>
@@ -723,4 +753,16 @@ export function useSharedState<T>(key: string, initial: T): [T, (next: T | ((pre
     [key, update],
   );
   return [value, set];
+}
+
+/**
+ * Reads `key` when called rather than when rendered, like `isStopped`: for a delayed callback that
+ * must see a value changed while it waited, such as a tunnel stopped during a secret refresh.
+ * Pass the same `initial` as the key's `useSharedState` readers.
+ */
+export function useSharedReader<T>(key: string, initial: T): () => T {
+  const ctx = useContext(SharedContext);
+  if (!ctx) throw new Error("useSharedReader outside WorkspaceProvider");
+  const { read } = ctx;
+  return () => read(key, initial) as T;
 }

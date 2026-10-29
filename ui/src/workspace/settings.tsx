@@ -13,9 +13,17 @@ import { DitherProgress, Hint, Mono, Term, goldButton } from "@/shared/shared";
 import { agentPolicy, doctor, harnessProject, installers } from "@/shared/data";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace } from "./store";
-import { Body, Cli, CommandBox, DetailPanel, Field, ListHead, ListRow, PageHeader, Prop, SectionLabel, SettingRow, settingsGroup } from "./kit";
+import { Body, Cli, CommandBox, DetailPanel, Field, ListHead, ListRow, PageHeader, Prop, SectionLabel, SettingRow, settingsGroup, useLeaveGuard } from "./kit";
 
 const LINGER_FIX = "sudo loginctl enable-linger ubuntu";
+
+/**
+ * Absolute (`/`), home (`~` or `~/`) or explicitly relative (`./`), on one line. A shape check only:
+ * the demo can't see this machine's filesystem, so it never claims the path exists.
+ * Used by Writable paths and harness project folders.
+ */
+const PATH_SHAPE = /^(?:~|(?:\/|~\/|\.\/)[^\r\n]*)$/;
+const PATH_SHAPE_ERROR = "Enter a path that starts with /, ~/ or ./.";
 
 /**
  * Names a health-check warning plainly for summaries that can't show the whole check:
@@ -232,11 +240,14 @@ export interface SavedPolicy {
   mode: string;
   harness: string;
   paths: string[];
-  /** Whole kilobytes, at least 1. */
-  maxKb: string;
+  /** Whole kilobytes, 1 to MAX_EVIDENCE_KB. */
+  maxKb: number;
 }
 
-const POLICY_SEED: SavedPolicy = { mode: agentPolicy.mode, harness: agentPolicy.harness, paths: agentPolicy.writablePaths, maxKb: String(agentPolicy.maxInputKb) };
+/** 1 MiB. Far above any useful evidence size; it keeps the stored value an exact integer. */
+const MAX_EVIDENCE_KB = 1_048_576;
+
+const POLICY_SEED: SavedPolicy = { mode: agentPolicy.mode, harness: agentPolicy.harness, paths: agentPolicy.writablePaths, maxKb: agentPolicy.maxInputKb };
 
 /** Harness versions the demo reports as installed, shared by the harness picker and the health check. */
 const HARNESS_VERSION: Record<string, string> = { codex: "0.62", claude: "2.1" };
@@ -254,20 +265,35 @@ export function AgentPolicyView() {
   const [harness, setHarness] = useState(saved.harness);
   const [paths, setPaths] = useState<string[]>(saved.paths);
   const [newPath, setNewPath] = useState("");
-  const [maxKb, setMaxKb] = useState(saved.maxKb);
+  // A digits-only string while editing; Save stores it as a number.
+  const [maxKb, setMaxKb] = useState(String(saved.maxKb));
   const [dirty, setDirty] = useState(false);
   // Errors show only after a Save attempt, then follow the fields as they change.
   const [tried, setTried] = useState(false);
+  // Set by an Add path attempt, so a half-typed path isn't flagged while it is still being typed.
+  const [addTried, setAddTried] = useState(false);
   const touch = <T,>(fn: (v: T) => void) => (v: T) => {
     fn(v);
     setDirty(true);
   };
   const off = mode === "deterministic-only";
-  // The input strips non-digits, so the only invalid values left are blank and zero.
-  const maxInvalid = !(Number(maxKb) >= 1);
-  const pathPending = newPath.trim() !== "";
-  const maxError = tried && !off && maxInvalid ? "Enter a whole number of 1 KB or more." : null;
-  const pathError = tried && !off && pathPending ? "Add this path or clear the field before saving." : null;
+  // The input strips non-digits, so the invalid values left are blank, zero and too large.
+  // Number() of a very long digit string is huge or Infinity, so the upper bound catches it too.
+  const kb = Number(maxKb);
+  const maxInvalid = !(kb >= 1 && kb <= MAX_EVIDENCE_KB);
+  const typedPath = newPath.trim();
+  const pathPending = typedPath !== "";
+  const maxError = tried && !off && maxInvalid ? `Enter a whole number from 1 to ${MAX_EVIDENCE_KB.toLocaleString("en-US")} KB.` : null;
+  // A malformed path says so after either attempt; a well-formed one only needs adding before Save.
+  const pathError = off || !pathPending
+    ? null
+    : (addTried || tried) && !PATH_SHAPE.test(typedPath)
+      ? PATH_SHAPE_ERROR
+      : tried
+        ? "Add this path or clear the field before saving."
+        : null;
+  // A typed but unadded path is part of the draft too, as it is for Save.
+  const { dialog: leaveDialog } = useLeaveGuard(dirty || pathPending, "the agent policy");
   const save = () => {
     if (off) {
       // With the agent off the bounds are unused and inert, so they can't be checked or fixed here.
@@ -275,16 +301,17 @@ export function AgentPolicyView() {
       setSaved({ ...saved, mode });
       setHarness(saved.harness);
       setPaths(saved.paths);
-      setMaxKb(saved.maxKb);
+      setMaxKb(String(saved.maxKb));
       setNewPath("");
+      setAddTried(false);
     } else {
       setTried(true);
       if (maxInvalid || pathPending) {
         document.getElementById(maxInvalid ? "ap-max" : "ap-path")?.focus();
         return;
       }
-      const kb = String(Number(maxKb));
-      setMaxKb(kb);
+      // Normalizes leading zeros in the field ("064" becomes "64").
+      setMaxKb(String(kb));
       setSaved({ mode, harness, paths, maxKb: kb });
     }
     setTried(false);
@@ -292,9 +319,15 @@ export function AgentPolicyView() {
     toast.success("Agent policy saved in this demo workspace");
   };
   const addPath = () => {
-    const p = newPath.trim();
-    if (p && !paths.includes(p)) touch(setPaths)([...paths, p]);
+    if (!pathPending) return;
+    setAddTried(true);
+    if (!PATH_SHAPE.test(typedPath)) {
+      document.getElementById("ap-path")?.focus();
+      return;
+    }
+    if (!paths.includes(typedPath)) touch(setPaths)([...paths, typedPath]);
     setNewPath("");
+    setAddTried(false);
   };
   return (
     <>
@@ -404,11 +437,15 @@ export function AgentPolicyView() {
               </div>
             </Field>
           </div>
+          {/* Outside the faded block so it stays readable. Saving in this mode keeps the last saved
+              bounds, so without this note bound edits made earlier in the draft would vanish silently. */}
+          {off && <p className="mt-3 text-sm text-pretty text-muted-foreground">Not used while the agent is off. Saving keeps the last saved bounds, not changes made here.</p>}
           <div className="mt-8">
             <Cli>{`canonfig agent policy ${mode}`}</Cli>
           </div>
         </Column>
       </Body>
+      {leaveDialog}
     </>
   );
 }
@@ -436,7 +473,17 @@ export function HarnessView() {
   const current = projects.find((p) => p.path === selected);
   const cols = "minmax(220px,2fr) minmax(160px,1.5fr) 140px";
   const path = folder.trim().replace(/\/+$/, "");
-  const folderError = !tried ? null : !path ? "Enter a folder." : projects.some((p) => p.path === path) ? "That folder is already a harness project." : null;
+  // The shape applies to what was typed, so "./" passes before its trailing slash is dropped.
+  const folderProblem = !path
+    ? "Enter a folder."
+    : !PATH_SHAPE.test(folder.trim())
+      ? PATH_SHAPE_ERROR
+      : projects.some((p) => p.path === path)
+        ? "That folder is already a harness project."
+        : null;
+  const folderError = tried ? folderProblem : null;
+  // Only an open dialog holds a draft: Cancel and Escape close it, and reopening starts blank.
+  const { dialog: leaveDialog, leaveWithoutAsking } = useLeaveGuard(initOpen && folder !== "", "this new harness project");
   return (
     <>
       <PageHeader
@@ -485,9 +532,10 @@ export function HarnessView() {
             onSubmit={(e) => {
               e.preventDefault();
               setTried(true);
-              if (!path || projects.some((p) => p.path === path)) return;
+              if (folderProblem) return;
               setProjects((p) => [...p, { path, targets: ["claude", "codex"], pending: 2, status: "valid" }]);
-              ws.go("harness", path);
+              // Creating settles the draft, so opening the new project must not ask about it.
+              leaveWithoutAsking(() => ws.go("harness", path));
               setInitOpen(false);
               toast.success(`Added ${path} to this demo workspace`);
             }}
@@ -521,6 +569,7 @@ export function HarnessView() {
           </form>
         </DialogContent>
       </Dialog>
+      {leaveDialog}
     </>
   );
 }
@@ -666,7 +715,8 @@ const JOURNAL_SEED: Journal = { phase: "planned", at: 0 };
 
 export function SetupView() {
   const ws = useWorkspace();
-  // Shared so approval and progress survive leaving the page, as the journal promises.
+  // Shared so approval and progress survive moving between this role's pages. Like all demo state they
+  // end on reload (or a Demo switch); only the real command's journal outlives that, and the Lede says so.
   const [journal, setJournal] = useSharedState("setup-journal", JOURNAL_SEED);
   // Setup's install step and the person's linger step feed the same state Service and Health read,
   // so Done never disagrees with them.
@@ -713,7 +763,10 @@ export function SetupView() {
       <PageHeader crumbs={["Settings", "Setup"]} actions={primary} />
       <Body>
         <Column>
-          <Lede>Setup writes each step to a journal before running it, so an interrupted setup resumes where it stopped.</Lede>
+          <Lede>
+            The setup command writes each step to a journal before running it, so an interrupted setup resumes where it stopped. In this demo, progress carries on while you
+            visit other pages, and is lost on reload or when you switch roles.
+          </Lede>
           <SectionLabel action={<span className="text-xs text-faint tabular-nums">Journal #3</span>}>
             {phase === "planned" ? "Plan" : phase === "complete" ? "Done" : "Approved plan"}
           </SectionLabel>
@@ -818,6 +871,7 @@ export function useChecks(): DoctorCheck[] {
                 fix: { why: "Install it so other machines can fetch new revisions.", command: installCommand(ws.endpoint) },
               },
           // Marked by the person when resuming setup; Canonfig never checks or changes linger itself.
+          // Omitted below while the service is absent, matching the Service page.
           Linger: lingerMarked
             ? { result: "ok", detail: "On: you marked it done in setup" }
             : { fix: { why: "To keep user services running after you log out, run this yourself. Canonfig won't change it.", command: LINGER_FIX } },
@@ -839,7 +893,9 @@ export function useChecks(): DoctorCheck[] {
           Linger: { result: "ok", detail: "Not used on macOS" },
           "Configuration Agent": agent,
         };
-  return doctor.map((c) => ({ ...c, ...overrides[c.check] }));
+  const checks = doctor.map((c) => ({ ...c, ...overrides[c.check] }));
+  // Linger only matters for a service that exists; the Source service warning already covers its absence.
+  return ws.role === "source" && !installed ? checks.filter((c) => c.check !== "Linger") : checks;
 }
 
 export function DoctorView() {
@@ -848,8 +904,10 @@ export function DoctorView() {
   const [progress, setProgress] = useState(100);
   const tick = useTicker();
   const checks = useChecks();
-  const warned = checks.filter((c) => c.result === "warn");
-  const warnings = warned.length;
+  // The run's interval closes over the render that started it; the finish toast reads this
+  // instead, so a service or linger change made mid-run is reflected (same pattern as guide.tsx).
+  const latest = useRef(checks);
+  latest.current = checks;
   const run = () => {
     setRunning(true);
     setProgress(0);
@@ -860,7 +918,9 @@ export function DoctorView() {
       if (v < 100) return false;
       setRunning(false);
       ws.reach("health-check");
-      toast("Health check finished", { description: `${checks.length - warnings} passed${warnings ? `. Warning: ${warned.map(warningName).join(", ")}` : ""}` });
+      const final = latest.current;
+      const warned = final.filter((c) => c.result === "warn");
+      toast("Health check finished", { description: `${final.length - warned.length} passed${warned.length ? `. Warning: ${warned.map(warningName).join(", ")}` : ""}` });
       return true;
     }, 120);
   };

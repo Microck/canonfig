@@ -532,6 +532,10 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
     ...(useSchedule ? ["Setting the daily 09:00 schedule"] : []),
   ];
 
+  // Typing keeps only lowercase letters, digits and dashes (spaces become dashes); edge dashes are trimmed
+  // here rather than per keystroke, so typing "my laptop" can pass through "my-". Everything below uses this.
+  const machineName = name.replace(/^-+|-+$/g, "");
+
   // Validate late: these only show after a Continue that couldn't proceed.
   const errors = {
     invite: step === 0 && invite === null ? "Use the example file, or paste the invitation." : null,
@@ -539,7 +543,7 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
     user: step === 1 && tunnel && !sshUser.trim() ? "Enter your SSH user on atlas." : null,
     hostKey: step === 1 && tunnel && !hostKey.trim() ? "Enter the path to atlas's SSH host public key file." : null,
     trusted: step === 1 && tunnel && !trusted ? "Confirm the fingerprint matches atlas." : null,
-    name: step === 2 && !name.trim() ? "Enter a name for this machine." : null,
+    name: step === 2 && !machineName ? "Enter a name for this machine." : null,
   };
   const blocked = Object.values(errors).some(Boolean);
   const shown = (key: keyof typeof errors) => (tried ? errors[key] : null);
@@ -586,15 +590,15 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
               `canonfig tunnel start --invitation ${invitePath} --ssh-host ${arg(sshHost, "<host>")} --ssh-user ${arg(sshUser, "<user>")} --ssh-host-key-file ${arg(hostKey, "<path>")}`,
             ]
           : []),
-        `cat ${invitePath} | canonfig follower enroll --stdin --name ${arg(name, "<name>")} --profile ${shq(profileId)}`,
+        `cat ${invitePath} | canonfig follower enroll --stdin --name ${arg(machineName, "<name>")} --profile ${shq(profileId)}`,
         ...(useSchedule ? ["canonfig schedule set --default"] : []),
       ]}
       done={
         done ? (
           <Finished
-            title={`${name} now follows atlas`}
+            title={`${machineName} now follows atlas`}
             action="Open Canonfig"
-            onOpen={() => onDone({ role: "follower", name: name.trim(), profileId, tunnel, schedule: useSchedule })}
+            onOpen={() => onDone({ role: "follower", name: machineName, profileId, tunnel, schedule: useSchedule })}
             next="Next: see what revision 7 would change here, before you apply it."
           >
             atlas can disconnect this machine on its own, without affecting the others. Canonfig hasn't changed any files here yet.
@@ -780,7 +784,9 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
                   <Input
                     id="ob-mname"
                     value={name}
-                    onChange={(e) => setName(e.target.value.toLowerCase().replace(/\s+/g, "-"))}
+                    // Collapse dash runs too: typing spaces one at a time turns "a  b" into "a--b" otherwise.
+                    onChange={(e) => setName(e.target.value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-"))}
+                    onBlur={() => setName(machineName)}
                     spellCheck={false}
                     autoComplete="off"
                     aria-invalid={!!shown("name")}

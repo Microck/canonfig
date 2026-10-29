@@ -140,7 +140,7 @@ function MapCanvas({
       id: SOURCE_ID,
       type: "machine",
       position: saved[SOURCE_ID] ?? layout[SOURCE_ID],
-      ariaLabel: `${looks[SOURCE_ID].name}, the Source${role === "source" ? ", this machine" : ""}, on revision ${latest}${publishing ? ", publishing" : ""}`,
+      ariaLabel: `${looks[SOURCE_ID].name}, the Source${role === "source" ? ", this machine" : ""}, ${latest === 0 ? "no revision yet" : `on revision ${latest}`}${publishing ? ", publishing" : ""}`,
       data: {
         kind: "source",
         hostname: machine.hostname,
