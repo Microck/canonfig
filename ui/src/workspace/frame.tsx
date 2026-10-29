@@ -233,7 +233,7 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
       >
         <MagnifyingGlass className="size-3.5 shrink-0" />
         <span className="min-w-0 truncate whitespace-nowrap">Search or jump to…</span>
-        <Kbd className="ml-auto h-4 bg-raised px-1 text-[10px]">{MOD}K</Kbd>
+        <Kbd className="ml-auto h-4 bg-raised px-1 text-xs">{MOD}K</Kbd>
       </button>
 
       <nav className="mt-4 grid gap-px">

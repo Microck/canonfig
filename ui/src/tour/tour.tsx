@@ -273,7 +273,7 @@ export function Tour({ steps, onClose, modal = true }: { steps: TourStep[]; onCl
           <Button variant="ghost" size="icon-sm" className={cn("col-start-2 row-start-1 text-faint", HIT)} aria-label={steps.length > 1 ? "Close tour" : "Close tip"} onClick={() => onClose(false)}>
             <X />
           </Button>
-          <h2 id={titleId} className={cn("text-[15px] leading-snug font-semibold text-foreground", steps.length > 1 ? "col-span-2 mt-3" : "col-start-1 row-start-1")}>
+          <h2 id={titleId} className={cn("text-lg leading-snug font-semibold text-foreground", steps.length > 1 ? "col-span-2 mt-3" : "col-start-1 row-start-1")}>
             {step.title}
           </h2>
         </div>

@@ -133,7 +133,7 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
         }}
       >
         {data.isSelf && (
-          <span className="absolute -top-2 left-3 rounded-[4px] border border-border bg-raised px-1 text-[10.5px] leading-4 text-muted-foreground">
+          <span className="absolute -top-2 left-3 rounded-[4px] border border-border bg-raised px-1 text-xs leading-4 text-muted-foreground">
             This machine
           </span>
         )}
@@ -149,8 +149,8 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-baseline gap-1.5">
-              <span className="truncate text-[14px] leading-[18px] font-semibold text-foreground">{look.name}</span>
-              {look.name !== data.hostname && <span className="truncate font-mono text-[11px] text-faint">{data.hostname}</span>}
+              <span className="truncate text-lg leading-[18px] font-semibold text-foreground">{look.name}</span>
+              {look.name !== data.hostname && <span className="truncate font-mono text-xs text-faint">{data.hostname}</span>}
             </div>
             <div className="truncate text-sm text-muted-foreground">{look.purpose || <span className="text-faint">No purpose set</span>}</div>
           </div>
