@@ -115,47 +115,52 @@ export function WithCode({ text }: { text: string }) {
 }
 
 /**
- * The 44px bar at the top of the content panel: breadcrumb on the left, view actions on the right.
+ * The 44px bar at the top of the content panel: page title on the left, view actions on the right.
  * Pages with a first-visit tip get a quiet "?" that shows it again; the tip card opens under it.
  * Sizes are explicit px so the bar matches Linear's measured 44px header whatever the rem scale.
- * The 18px left inset lines the crumb up with the toolbar pills and list text below it.
+ * The 18px left inset lines the title up with the toolbar pills and list text below it.
+ * One rule for every screen: the h1 (last crumb, 15px/600 so it reads above 13px section labels)
+ * always starts at the inset, so the title never shifts between routes; parent crumbs follow it
+ * as a quiet "in Settings" label on desktop only.
  */
 export function PageHeader({ crumbs, actions }: { crumbs: ReactNode[]; actions?: ReactNode }) {
   const ws = useWorkspace();
   const hasTip = PAGE_TIPS[ws.role][ws.view] !== undefined;
+  const title = crumbs[crumbs.length - 1];
+  const parents = crumbs.slice(0, -1);
   return (
-    // Below md the header may wrap: actions drop to a second row instead of being clipped, and parent crumbs
-    // hide so the page title keeps the width. Desktop stays a single 44px row.
+    // Below md: title row, then one right-aligned actions row that wraps instead of clipping, primary
+    // (last child) at the right edge. Desktop stays a single 44px row.
     <header className="flex min-h-[44px] shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border py-1.5 pr-[10px] pl-[18px] md:h-[44px] md:flex-nowrap md:py-0">
-      <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-base">
-        {crumbs.map((c, i) =>
-          i === crumbs.length - 1 ? (
-            <h1 key={i} title={typeof c === "string" ? c : undefined} className="truncate font-medium text-foreground">
-              {c}
-            </h1>
-          ) : (
-            <span key={i} className="hidden min-w-0 items-center gap-1.5 text-muted-foreground md:flex">
-              <span className="truncate">{c}</span>
-              <span aria-hidden className="text-faint">
-                /
+      <div className="flex min-w-0 flex-1 items-baseline gap-2">
+        <h1 title={typeof title === "string" ? title : undefined} className="truncate text-[15px] leading-5 font-semibold text-foreground">
+          {title}
+        </h1>
+        {parents.length > 0 && (
+          <span className="hidden shrink-0 text-sm text-muted-foreground md:inline">
+            in{" "}
+            {parents.map((p, i) => (
+              <span key={i}>
+                {i > 0 && " / "}
+                {p}
               </span>
-            </span>
-          ),
+            ))}
+          </span>
         )}
-      </nav>
-      <div className="ml-auto flex max-w-full min-w-0 flex-wrap items-center justify-end gap-1.5">
-        {hasTip && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon-sm" data-tour="page-help" className="text-faint" aria-label="How this page works" onClick={() => ws.openTip(ws.view)}>
-                <Question />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>How this page works</TooltipContent>
-          </Tooltip>
-        )}
-        {actions}
       </div>
+      {/* The "?" stays on the title row at every width; only real actions take the mobile second row. */}
+      {hasTip && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon-sm" data-tour="page-help" className="text-faint" aria-label="How this page works" onClick={() => ws.openTip(ws.view)}>
+              <Question />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>How this page works</TooltipContent>
+        </Tooltip>
+      )}
+      {/* empty:hidden: an action like PublishButton may render nothing, which must not leave a blank row. */}
+      {actions && <div className="flex max-w-full min-w-0 flex-wrap items-center justify-end gap-1.5 empty:hidden max-md:basis-full">{actions}</div>}
     </header>
   );
 }
@@ -363,11 +368,14 @@ export function DetailPanel({
     };
   }, []);
   // Remember the opener on mount and hand focus back on unmount, so Close and Escape don't drop
-  // keyboard users at the top of the document. Skipped when focus already moved elsewhere,
-  // e.g. a click on another row that swaps this panel for the next one. A panel opened at mount
-  // (e.g. /follower/sync's default selection) has no opener, so focus goes to the selected row,
-  // else the page heading.
+  // keyboard users at the top of the document. Only when focus was inside the panel: a panel that
+  // never held focus (e.g. /follower/sync's default selection at mount, or StrictMode's replay)
+  // must not steal it, or the first Tab skips the skip link. Skipped too when focus moved to
+  // another row that swaps this panel for the next one. Removing the focused Close button drops
+  // focus to <body> without a blur, so `focusInside` still reads true there. Without a live
+  // opener focus goes to the selected row, else the page heading.
   // Below md the panel covers the page, so opening it moves focus to its Close button.
+  const focusInside = useRef(false);
   useEffect(() => {
     const active = document.activeElement;
     const opener = active instanceof HTMLElement && active !== document.body ? active : null;
@@ -375,7 +383,7 @@ export function DetailPanel({
     if (window.matchMedia("(max-width: 767.98px)").matches) el?.querySelector<HTMLElement>("[data-panel-close]")?.focus();
     return () => {
       const now = document.activeElement;
-      const lost = !now || now === document.body || !!el?.contains(now);
+      const lost = !!el?.contains(now) || ((!now || now === document.body) && focusInside.current);
       if (!lost) return;
       if (opener?.isConnected) return opener.focus();
       const fallback = document.querySelector<HTMLElement>('main [aria-current="true"]') ?? document.querySelector<HTMLElement>("main h1");
@@ -426,6 +434,10 @@ export function DetailPanel({
       transition={{ duration: 0.3, ease: SNAP }}
       className="relative flex w-[380px] shrink-0 flex-col border-l border-border bg-panel min-[1600px]:w-[440px] max-md:fixed max-md:inset-0 max-md:z-40 max-md:w-full! max-md:border-l-0"
       aria-label="Details"
+      onFocus={() => (focusInside.current = true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) focusInside.current = false;
+      }}
       // Inert content behind leaves only browser chrome past the panel's ends, so wrap Tab inside it.
       onKeyDown={(e) => {
         if (e.key !== "Tab" || !window.matchMedia("(max-width: 767.98px)").matches) return;
