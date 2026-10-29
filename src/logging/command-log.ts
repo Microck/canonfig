@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
+  ["self-update", new Set(["enable", "disable", "status", "check", "apply", "auto"])],
   ["agent", new Set(["harness", "policy"])],
   ["follower", new Set(["enroll"])],
   [

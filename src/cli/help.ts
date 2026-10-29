@@ -34,6 +34,12 @@ export interface HelpGroup {
 
 export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
+    title: "Self-update",
+    areas: ["self-update"],
+    usage: ["self-update enable|disable|status|check|apply|auto [--apply]"],
+    notes: ["Opt-in stable patch updates for user-private global npm installations; see self-update --help.", "Active commands and unfinished syncs block activation. Major/minor fleet upgrades remain manual."],
+  },
+  {
     title: "Source Machine",
     areas: ["source"],
     usage: [

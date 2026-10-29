@@ -33,7 +33,7 @@ await build({
 // exports and Function.name values. This keeps the corrective work within
 // the existing package-size budgets without removing checks or features.
 await build({
-  entryPoints: ["dist/machine/installed-scheduler-command.js", ...globSync("dist/harness-configuration/**/*.js")].sort(),
+  entryPoints: ["dist/machine/installed-scheduler-command.js", ...globSync("dist/runtime/self-update/**/*.js"), ...globSync("dist/harness-configuration/**/*.js")].sort(),
   outbase: "dist",
   outdir: "dist",
   allowOverwrite: true,

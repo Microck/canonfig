@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { fileURLToPath } from "node:url";
+import { commandLease } from "./self-update/coordination.ts";
+
 import type * as EffectModule from "effect";
 
 import type { CliIo } from "../cli/cli.ts";
@@ -64,6 +67,21 @@ process.on("SIGINT", exitBeforeRuntime);
 process.on("SIGTERM", exitBeforeRuntime);
 
 const arguments_ = process.argv.slice(2);
+const selfUpdateCommand = arguments_.filter((arg) => arg !== "--json")[0] === "self-update";
+const installedRoot = fileURLToPath(new URL("../../", import.meta.url));
+// Once opted in, every ordinary command holds a lease before loading a command
+// graph. Long-lived sources/watchers defer activation instead of losing code.
+if (!selfUpdateCommand) {
+  try {
+    const release = commandLease(installedRoot);
+    if (release) process.once("exit", release);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const {renderCliResult}=await import("../cli/render.ts");
+    process.stderr.write(renderCliResult({command:"runtime",message,exitCode:2},arguments_.includes("--json")?"json":"human"));
+    process.exit(2);
+  }
+}
 // Capture only the original non-secret command line, before reading stdin.
 installCommandLog(arguments_);
 
@@ -167,7 +185,7 @@ const synchronizeSecretsAfterApply = ({ Effect }: typeof EffectModule) =>
 // invitation is refused below even when --help accompanies it.
 const explicitHelp = groupHelpRequested(arguments_);
 const globalVersion = !explicitHelp && (arguments_.includes("--version") || arguments_.includes("-V"));
-const separateDispatcher = isSecretsCommand(arguments_)
+const separateDispatcher = selfUpdateCommand || isSecretsCommand(arguments_)
   || isHarnessConfigurationCommand(arguments_) || isInstallerCommand(arguments_) || isSkillsCommand(arguments_) || isSourceSkillReconciliation(arguments_);
 const early = isPublicEnrollmentCommand(arguments_) || (separateDispatcher && !globalVersion)
   ? undefined
@@ -194,6 +212,12 @@ if (early !== undefined) {
     exitCode: CliExitCode.humanActionRequired,
   }, format));
   nodeCliIo.setExitCode(CliExitCode.humanActionRequired);
+} else if (selfUpdateCommand) {
+  const [{ runSelfUpdateCli }, { runCancellablePromise }] = await Promise.all([
+    import("./self-update/cli.ts"), import("./cancellable-promise.ts"),
+  ]);
+  const index = arguments_.indexOf("self-update");
+  await runMain(() => runCancellablePromise((signal) => runSelfUpdateCli(arguments_.filter((_, i) => i !== index), installedRoot, nodeCliIo, signal)), "self-update");
 } else if (isSourceSkillReconciliation(arguments_)) {
   const argv = sourceSkillReconciliationArguments(arguments_);
   const { runReconciliationCli } = await import("../profile/skill-reconciliation-cli.ts");
