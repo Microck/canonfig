@@ -1,5 +1,5 @@
 // Profile resources grouped by kind, with an editor in the detail panel.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { toast } from "sonner";
 import { CaretRight, Plus, Sparkle, X } from "@phosphor-icons/react";
@@ -394,6 +394,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
   const ws = useWorkspace();
   const [draft, setDraft] = useState<Resource>(resource);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const returnFocus = useRef<HTMLElement | null>(null);
   const [tried, setTried] = useState(false);
   const set = (patch: Partial<Resource>) => setDraft((d) => ({ ...d, ...patch }));
   const setDetail = (k: string, v: string) => setDraft((d) => ({ ...d, detail: { ...d.detail, [k]: v } }));
@@ -788,7 +789,22 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
       </form>
 
       <Dialog open={confirmRemove} onOpenChange={setConfirmRemove}>
-        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
+        <DialogContent
+          className="grid-cols-[minmax(0,1fr)] sm:max-w-md"
+          onOpenAutoFocus={() => {
+            const active = document.activeElement;
+            if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            // Confirming removes the editor; cancellation returns to its Remove button.
+            const target = returnFocus.current?.isConnected && returnFocus.current !== document.body
+              ? returnFocus.current
+              : document.querySelector<HTMLElement>("main h1");
+            if (target && !target.matches("button, a, [tabindex]")) target.tabIndex = -1;
+            target?.focus();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>Remove {resource.id}?</DialogTitle>
             <DialogDescription className="text-base text-pretty">
@@ -831,6 +847,7 @@ function GroupsTab() {
   const [groups, setGroups] = useGroups();
   const selected = ws.focus;
   const [open, setOpen] = useState(false);
+  const returnFocus = useRef<HTMLElement | null>(null);
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [tried, setTried] = useState(false);
@@ -900,7 +917,17 @@ function GroupsTab() {
         ))}
       </RowPresence>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
+        <DialogContent
+          className="grid-cols-[minmax(0,1fr)] sm:max-w-md"
+          onOpenAutoFocus={() => {
+            const active = document.activeElement;
+            if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            returnFocus.current?.focus();
+          }}
+        >
           <form
             className="contents"
             onSubmit={(e) => {
@@ -1125,6 +1152,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const ws = useWorkspace();
   const [progress, setProgress] = useState(0);
   const [picked, setPicked] = useState<string[]>(["playwright-mcp", "uv"]);
+  const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -1142,7 +1170,17 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const noneNew = picked.length === 0 ? "Tick the tools to add." : presentNote;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-lg">
+      <DialogContent
+        className="grid-cols-[minmax(0,1fr)] sm:max-w-lg"
+        onOpenAutoFocus={() => {
+          const active = document.activeElement;
+          if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          returnFocus.current?.focus();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>Discover tools</DialogTitle>
           <DialogDescription className="text-base text-pretty">

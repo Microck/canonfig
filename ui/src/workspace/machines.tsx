@@ -392,6 +392,7 @@ function SourceDetail({ onClose, onCustomize }: { onClose: () => void; onCustomi
 function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follower; onClose: () => void; onCustomize: () => void }) {
   const ws = useWorkspace();
   const [revokeOpen, setRevokeOpen] = useState(false);
+  const returnFocus = useRef<HTMLElement | null>(null);
   const step = nextStep(f);
   const why = whyBehind(f, ws.latest, ws.syncing.includes(f.id));
   return (
@@ -473,7 +474,22 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
       </div>
 
       <Dialog open={revokeOpen} onOpenChange={setRevokeOpen}>
-        <DialogContent className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-md">
+        <DialogContent
+          className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-md"
+          onOpenAutoFocus={() => {
+            const active = document.activeElement;
+            if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            // Revocation removes the detail panel and its opener.
+            const target = returnFocus.current?.isConnected && returnFocus.current !== document.body
+              ? returnFocus.current
+              : document.querySelector<HTMLElement>("main h1");
+            if (target && !target.matches("button, a, [tabindex]")) target.tabIndex = -1;
+            target?.focus();
+          }}
+        >
           <DialogHeader>
             <DialogTitle>Revoke {f.name}?</DialogTitle>
             <DialogDescription className="text-base text-pretty">
@@ -608,6 +624,7 @@ export function InviteDialog() {
   const [result, setResult] = useState<SubmittedInvitation | null>(null);
   const [tried, setTried] = useState(false);
   const creating = useRef<number | undefined>(undefined);
+  const returnFocus = useRef<HTMLElement | null>(null);
 
   const reset = () => {
     setName("");
@@ -664,7 +681,13 @@ export function InviteDialog() {
         className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[540px]"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
+          const active = document.activeElement;
+          if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
           document.getElementById("inv-name")?.focus();
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          returnFocus.current?.focus();
         }}
       >
         {!result ? (
@@ -820,6 +843,7 @@ export function ChangeGroupsDialog() {
   const [followerId, setFollowerId] = useState<string>("");
   const [groups, setGroups] = useState<string[]>([]);
   const [file, setFile] = useState<string | null>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
 
   const pickFollower = (id: string) => {
     const next = ws.followers.find((x) => x.id === id);
@@ -846,7 +870,17 @@ export function ChangeGroupsDialog() {
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[540px]">
+      <DialogContent
+        className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[540px]"
+        onOpenAutoFocus={() => {
+          const active = document.activeElement;
+          if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          returnFocus.current?.focus();
+        }}
+      >
         {!file || !f ? (
           <form
             className="contents"
