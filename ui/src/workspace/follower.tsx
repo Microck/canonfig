@@ -1,5 +1,5 @@
 // Follower screens use simulated sync plans, schedules, local settings, secrets, tunnels, and enrollment.
-import { useState, type ReactNode } from "react";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
 import { ArrowRight, Check, Circle, CircleNotch, DotsThree, Pause, Plus, WarningCircle, X } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
@@ -501,6 +501,14 @@ function StepIcon({ step }: { step: Step }) {
   return <Circle className="size-3 text-faint" aria-label="Not started" />;
 }
 
+// Match DetailPanel's md breakpoint: only the side-by-side layout gets a default selection.
+const SYNC_DETAIL_QUERY = "(min-width: 48rem)";
+function subscribeSyncDetailLayout(onChange: () => void) {
+  const query = window.matchMedia(SYNC_DETAIL_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
 export function SyncView() {
   const ws = useWorkspace();
   const rev = ws.targetRevision;
@@ -509,8 +517,14 @@ export function SyncView() {
   const [origin] = useSharedState<PlanOrigin>(ORIGIN_KEY, ORIGIN_INITIAL);
   const paused = steps.filter(isPaused).length;
   const selectedProfile = followerProfile(profileId);
-  // The Overview's "Decide" opens this page on the item it named.
-  const selected = ws.focus ?? "claude-review-skill";
+  const sideBySide = useSyncExternalStore(
+    subscribeSyncDetailLayout,
+    () => window.matchMedia(SYNC_DETAIL_QUERY).matches,
+    () => false,
+  );
+  // Explicit URL selections (including Overview's "Decide") work at every width.
+  // An empty focus means the user closed the panel, so it must not select the default.
+  const selected = ws.focus ?? (sideBySide ? "claude-review-skill" : null);
   const setSelected = (id: string | null) => ws.go("sync", id ?? "");
   const [checking, setChecking] = useSharedState(CHECKING_KEY, false);
   const blocks = useSyncBlocks();
