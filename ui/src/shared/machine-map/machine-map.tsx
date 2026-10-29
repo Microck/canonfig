@@ -102,7 +102,7 @@ function MapCanvas({
   onCustomizeChange,
 }: MachineMapProps) {
   const store = useMapStore();
-  const { fitView, zoomIn, zoomOut } = useReactFlow();
+  const { fitView, zoomIn, zoomOut, getViewport, setViewport } = useReactFlow();
   const reduced = usePrefersReducedMotion();
   const viewportDuration = (event: MouseEvent<HTMLButtonElement>, duration: number) => reduced || event.detail === 0 ? 0 : duration;
   const latest = latestRevision ?? revisions[0].sequence;
@@ -270,9 +270,51 @@ function MapCanvas({
   const containerRef = useRef<HTMLDivElement>(null);
   const focusNode = (id: string) => containerRef.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`)?.focus();
 
+  // Pans just enough that a node and its toolbar sit inside the map, keeping the zoom. ReactFlow's own
+  // autoPanOnNodeFocus only recentres fully hidden nodes and ignores the toolbar, which at 390px (fit zoom 1)
+  // left half-visible nodes and their Open/Customize buttons off-screen. Runs on keyboard focus and selection,
+  // never on hover; reduced motion jumps instantly.
+  const reveal = useCallback(
+    (id: string) => {
+      requestAnimationFrame(() => {
+        const root = containerRef.current;
+        if (!root) return;
+        const sel = `[data-id="${CSS.escape(id)}"]`;
+        const rects = [...root.querySelectorAll<HTMLElement>(`.react-flow__node${sel}, .react-flow__node-toolbar${sel}`)].map((el) => el.getBoundingClientRect());
+        if (!rects.length) return;
+        const box = root.getBoundingClientRect();
+        const pad = 12;
+        const left = Math.min(...rects.map((r) => r.left));
+        const right = Math.max(...rects.map((r) => r.right));
+        const top = Math.min(...rects.map((r) => r.top));
+        const bottom = Math.max(...rects.map((r) => r.bottom));
+        // Shift toward whichever edge is crossed; when the target is wider than the map, keep its start edge.
+        const shift = (lo: number, hi: number, min: number, max: number) => (lo < min ? min - lo : hi > max ? Math.max(max - hi, min - lo) : 0);
+        const dx = shift(left, right, box.left + pad, box.right - pad);
+        const dy = shift(top, bottom, box.top + pad, box.bottom - pad);
+        if (!dx && !dy) return;
+        const vp = getViewport();
+        void setViewport({ x: vp.x + dx, y: vp.y + dy, zoom: vp.zoom }, { duration: reduced ? 0 : 200 });
+      });
+    },
+    [getViewport, setViewport, reduced],
+  );
+  useEffect(() => {
+    if (selectedId) reveal(selectedId);
+  }, [selectedId, reveal]);
+
   return (
     <MapActionsContext value={actions}>
-      <div ref={containerRef} className={cn("cf-map relative isolate h-full min-h-[420px] w-full overflow-hidden rounded-lg border border-border bg-panel", className)}>
+      <div
+        ref={containerRef}
+        className={cn("cf-map relative isolate h-full min-h-[420px] w-full overflow-hidden rounded-lg border border-border bg-panel", className)}
+        onFocus={(e) => {
+          // Keyboard focus only: a pointer press also focuses the node, and selection already covers that case.
+          if (!e.target.matches(":focus-visible")) return;
+          const owner = e.target.closest<HTMLElement>(".react-flow__node, .react-flow__node-toolbar");
+          if (owner?.dataset.id) reveal(owner.dataset.id);
+        }}
+      >
         <ReactFlow<MapNode, SyncEdgeType | Edge>
           nodes={nodes}
           edges={edges}
@@ -286,6 +328,7 @@ function MapCanvas({
             if (e.key === "Enter" && el.classList.contains("react-flow__node") && el.dataset.id && el.dataset.id !== ADD_ID) onOpenMachine?.(el.dataset.id);
           }}
           fitView
+          autoPanOnNodeFocus={false}
           fitViewOptions={FIT}
           // Low enough that the first fit shows every machine, even many followers in a narrow panel.
           minZoom={0.1}
