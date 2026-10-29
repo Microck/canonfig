@@ -40,8 +40,7 @@ export function OnboardingShell({ hostname, children }: { hostname: string; chil
             </Button>
           </SheetTrigger>
         </header>
-        {/* Reserve the demo switcher's height and bottom offset outside the scroll viewport. */}
-        <main className="mx-2 mb-44 min-h-0 flex-1 overflow-y-auto rounded-xl border border-border bg-background">{children}</main>
+        <main className="mx-2 mb-2 min-h-0 flex-1 overflow-y-auto rounded-xl border border-border bg-background">{children}</main>
         <SheetContent side="right" className="gap-0 border-border bg-panel p-0 data-[side=right]:w-[min(440px,100vw)] data-[side=right]:sm:max-w-[440px]">
           <div className="border-b border-border px-6 pt-5 pb-4">
             <SheetTitle className="text-[15px] font-medium">Glossary</SheetTitle>
