@@ -6,6 +6,7 @@ import { ArrowCounterClockwise, X } from "@phosphor-icons/react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 import { usePrefersReducedMotion } from "@/lib/dither";
 import { Hint } from "@/shared/shared";
 import { ACCENTS, DEVICE_ICONS, mapStore, type Accent, type DeviceIcon, type Look, type ResolvedLook } from "./model";
@@ -55,14 +56,16 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
             </Hint>
           </p>
         </div>
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-sm"
           aria-label="Close"
           onClick={onClose}
-          className="-mt-0.5 -mr-1.5 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="-mt-0.5 -mr-1.5 rounded-md text-muted-foreground"
         >
           <X className="size-4" />
-        </button>
+        </Button>
       </header>
 
       <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-3.5 py-3.5">
@@ -153,15 +156,17 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
       </div>
 
       <footer className="border-t border-border px-2 py-1.5">
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="sm"
           disabled={!saved}
           onClick={() => mapStore.resetLook(id)}
-          className="inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:text-faint [&_svg]:size-3.5"
+          className="rounded-md px-1.5"
         >
           <ArrowCounterClockwise />
           Reset this machine's look
-        </button>
+        </Button>
       </footer>
     </motion.aside>
   );

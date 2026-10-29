@@ -6,6 +6,7 @@ import { AppleLogo, ArrowSquareOut, LinuxLogo, PaintBrush, Plus, WindowsLogo, ty
 import { cn } from "@/lib/utils";
 import { DitherShader, fillStyle, usePrefersReducedMotion } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 import { StateLabel, Term } from "@/shared/shared";
 import type { Follower, FollowerState } from "@/shared/data";
 import { ACCENTS, ADD_W, DEVICE_ICONS, MapActionsContext, NODE_H, NODE_W, type ResolvedLook } from "./model";
@@ -52,10 +53,11 @@ const GLOW_PALETTE = ["transparent", "green"] as const;
 
 function ToolbarButton({ className, ...props }: ComponentProps<"button">) {
   return (
-    <button
+    <Button
       type="button"
+      variant="outline"
       className={cn(
-        "inline-flex min-h-[40px] min-w-[40px] shrink-0 items-center gap-1.5 rounded-[5px] px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground pointer-coarse:min-h-[44px] pointer-coarse:min-w-[44px] [&_svg]:size-3.5",
+        "min-h-10 min-w-10 rounded-[5px] px-2 pointer-coarse:min-h-11 pointer-coarse:min-w-11 [&_svg]:size-3.5",
         className,
       )}
       {...props}
@@ -203,20 +205,21 @@ export const AddNode = memo(function AddNode() {
   return (
     <>
       <Handle type="target" position={Position.Top} isConnectable={false} />
-      <button
+      <Button
         type="button"
+        variant="outline"
         onClick={invite}
-        className="nodrag pointer-events-auto flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border-strong px-3 text-center text-muted-foreground hover:border-faint hover:bg-raised/50 hover:text-foreground"
+        className="nodrag pointer-events-auto flex-col gap-2 border-border-strong px-3 text-center"
         style={{ width: ADD_W, height: NODE_H }}
       >
-        <span className="grid size-9 shrink-0 place-items-center rounded-md border border-dashed border-border-strong">
+        <span className="grid size-9 shrink-0 place-items-center rounded-md border border-border-strong">
           <Plus className="size-5" />
         </span>
         <span className="leading-tight">
           <span className="block font-medium">Add machine</span>
           <span className="block text-xs text-faint">Invite a follower</span>
         </span>
-      </button>
+      </Button>
     </>
   );
 });

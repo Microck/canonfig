@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { machine, profile } from "@/shared/data";
-import { DitherProgress, Hint, Mono, Term, goldButton } from "@/shared/shared";
+import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import { shq } from "@/shared/shell";
 import { CliEquivalent, DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, RadioRow, Stepper, simulate, useFocusOnMount } from "./kit";
 
@@ -197,14 +197,15 @@ function Wizard({
   return (
     <div className="w-full max-w-[600px] pb-12">
       {/* Kept in layout (invisible, so not focusable) once done, so the card doesn't jump. */}
-      <button
+      <Button
         type="button"
+        variant="ghost"
         onClick={onBack}
         disabled={busy}
-        className={cn("mb-4 inline-flex min-h-11 items-center gap-1.5 rounded-sm text-sm text-muted-foreground hover:text-foreground disabled:text-faint sm:min-h-10", done && "invisible")}
+        className={cn("mb-4 min-h-11 text-muted-foreground sm:min-h-10", done && "invisible")}
       >
         <ArrowLeft className="size-3.5" /> Change my answer
-      </button>
+      </Button>
       <form noValidate onSubmit={submit} className="rounded-xl border border-border bg-panel">
         {!done && (
           <div className="border-b border-border px-4 pt-5 pb-4 sm:px-6">
@@ -231,7 +232,7 @@ function Wizard({
               </Button>
             )}
             {last ? (
-              <Button type="submit" className={goldButton} disabled={busy}>
+              <Button type="submit" variant="primary" disabled={busy}>
                 {/* Both labels share one grid cell so the button keeps its width when it switches. */}
                 <span className="grid">
                   <span className={cn("col-start-1 row-start-1", busy && "invisible")}>{finalLabel}</span>
@@ -298,7 +299,7 @@ function Finished({ title, children, next, action, onOpen }: { title: string; ch
       <div className="mt-2 leading-relaxed text-muted-foreground">{children}</div>
       <div className="mt-6 flex flex-col items-start justify-between gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:gap-6">
         <p className="text-muted-foreground">{next}</p>
-        <Button type="button" className={cn(goldButton, "shrink-0")} onClick={onOpen}>
+        <Button type="button" variant="default" onClick={onOpen}>
           {action}
           <ArrowRight data-icon="inline-end" />
         </Button>

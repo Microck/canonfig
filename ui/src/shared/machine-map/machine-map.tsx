@@ -21,6 +21,7 @@ import { ArrowCounterClockwise, CornersOut, EyeSlash, MagnifyingGlassMinus, Magn
 import { cn } from "@/lib/utils";
 import { usePrefersReducedMotion } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 import { Term } from "@/shared/shared";
 import { followers as seedFollowers, followerSelf, machine, revisions, STATE_META, type Follower } from "@/shared/data";
 import { AddNode, MachineNode, type AddNodeType, type MachineNodeType } from "./machine-node";
@@ -382,15 +383,16 @@ function MapCanvas({
                 <CornersOut />
               </ControlButton>
               <span aria-hidden className="mx-0.5 h-4 w-px bg-border" />
-              <button
+              <Button
                 type="button"
+                variant="outline"
                 disabled={!store.positions[role]}
                 onClick={resetLayout}
-                className="inline-flex min-h-[40px] min-w-[40px] shrink-0 items-center gap-1.5 rounded-[5px] px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:text-faint pointer-coarse:min-h-[44px] pointer-coarse:min-w-[44px] [&_svg]:size-3.5"
+                className="min-h-10 min-w-10 rounded-[5px] px-2 pointer-coarse:min-h-11 pointer-coarse:min-w-11 [&_svg]:size-3.5"
               >
                 <ArrowCounterClockwise />
                 Reset layout
-              </button>
+              </Button>
             </div>
             {role === "source" && <Legend links={Object.values(links)} />}
           </Panel>
@@ -420,14 +422,16 @@ function ControlButton({ label, onClick, children }: { label: string; onClick: (
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon"
           aria-label={label}
           onClick={onClick}
-          className="grid size-[40px] shrink-0 place-items-center rounded-[5px] text-muted-foreground hover:bg-muted hover:text-foreground pointer-coarse:size-[44px] [&_svg]:size-4"
+          className="size-10 rounded-[5px] text-muted-foreground pointer-coarse:size-11"
         >
           {children}
-        </button>
+        </Button>
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
