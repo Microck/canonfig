@@ -266,14 +266,15 @@ function Invitations() {
             <RowPresence>
               {ws.invitations.map((inv) => (
                 <AnimatedRow key={inv.id}>
-                  <ListRow cols="minmax(140px,1fr) minmax(200px,2fr) 140px 90px">
-                    <span className="truncate font-medium">{name(inv)}</span>
-                    <Mono className="truncate">{inv.file}</Mono>
-                    <span className="text-sm text-muted-foreground">Expires {inv.expires}</span>
+                  <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-2 sm:grid-cols-[minmax(100px,1fr)_minmax(0,2fr)_auto_auto]">
+                    <span className="min-w-0 truncate font-medium" title={name(inv)}>{name(inv)}</span>
+                    <Mono className="col-start-1 row-start-2 min-w-0 break-all text-sm sm:col-start-auto sm:row-start-auto">{inv.file}</Mono>
+                    <span className="col-start-1 text-sm text-muted-foreground sm:col-start-auto">Expires {inv.expires}</span>
                     <Button
                       variant="ghost"
                       size="xs"
-                      className="justify-self-end text-muted-foreground"
+                      className="col-start-2 row-span-3 row-start-1 min-h-11 justify-self-end text-muted-foreground sm:col-start-auto sm:row-span-1 sm:row-start-auto sm:min-h-0"
+                      aria-label={`Cancel invitation for ${name(inv)}`}
                       onClick={() => {
                         ws.setInvitations((p) => p.filter((x) => x.id !== inv.id));
                         toast("Invitation cancelled", { description: "It can no longer be used to join." });
@@ -281,7 +282,7 @@ function Invitations() {
                     >
                       Cancel
                     </Button>
-                  </ListRow>
+                  </div>
                 </AnimatedRow>
               ))}
             </RowPresence>
@@ -380,7 +381,7 @@ function SourceDetail({ onClose, onCustomize }: { onClose: () => void; onCustomi
           <AnimatedNumber value={ws.pending.length} /> {ws.pending.length === 1 ? "change" : "changes"}
         </Prop>
         <Prop label="Address">
-          <Mono className="text-foreground">{ws.endpoint}</Mono>
+          <Mono className="break-all text-foreground">{ws.endpoint}</Mono>
         </Prop>
         <Prop label="Service">{serviceInstalled ? "Running" : "Not installed"}</Prop>
       </div>
@@ -427,7 +428,7 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
           {f.revision !== null && f.revision < ws.latest && <span className="text-muted-foreground"> of {ws.latest}</span>}
         </Prop>
         <Prop label={<Term term="Follower Group">{PLAIN.groups}</Term>}>
-          <span className="flex items-center gap-2">
+          <span className="flex flex-wrap items-center gap-2">
             <GroupChips groups={f.groups} empty="None, base profile only" />
             <Button variant="ghost" size="xs" className="shrink-0 text-muted-foreground" onClick={() => ws.setChangeGroups({ followerId: f.id })}>
               Change…
@@ -443,7 +444,7 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
             </span>
           }
         >
-          <Mono className="text-foreground">{f.id}</Mono>
+          <Mono className="break-all text-foreground">{f.id}</Mono>
         </Prop>
       </div>
       <div className="border-t border-border px-4 pt-3">
@@ -472,7 +473,7 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
       </div>
 
       <Dialog open={revokeOpen} onOpenChange={setRevokeOpen}>
-        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
+        <DialogContent className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Revoke {f.name}?</DialogTitle>
             <DialogDescription className="text-base text-pretty">
@@ -480,7 +481,7 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
               {ws.invitations.some((inv) => inv.replaces === f.id) && " Its waiting group-change invitation is cancelled too."}
             </DialogDescription>
           </DialogHeader>
-          <Cli>{`canonfig source revoke ${shq(f.id)}`}</Cli>
+          <Cli wrap>{`canonfig source revoke ${shq(f.id)}`}</Cli>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRevokeOpen(false)}>
               Cancel
@@ -554,7 +555,7 @@ function GroupChecks({ idPrefix, value, onChange, disabled }: { idPrefix: string
   return (
     <div className="grid gap-0.5">
       {groups.map((g) => (
-        <Label key={g.name} htmlFor={`${idPrefix}-${g.name}`} className="flex h-7 cursor-pointer items-center gap-2 text-base font-normal">
+        <Label key={g.name} htmlFor={`${idPrefix}-${g.name}`} className="flex min-h-11 cursor-pointer items-center gap-2 text-base font-normal sm:min-h-8">
           <Checkbox
             id={`${idPrefix}-${g.name}`}
             checked={value.includes(g.name)}
@@ -587,7 +588,9 @@ function Step({ title, note, command }: { title: ReactNode; note?: ReactNode; co
   return (
     <li className="grid min-w-0 grid-cols-[20px_minmax(0,1fr)] gap-x-2 gap-y-1.5 [counter-increment:step] before:row-span-3 before:pt-px before:text-sm before:text-faint before:tabular-nums before:content-[counter(step)'.']">
       <span>{title}</span>
-      <CommandBox>{command}</CommandBox>
+      <div className="min-w-0 rounded-md border border-border bg-canvas/60 px-2.5 py-2">
+        <Cli wrap>{command}</Cli>
+      </div>
       {note && <span className="text-sm text-pretty text-faint">{note}</span>}
     </li>
   );
@@ -642,7 +645,10 @@ export function InviteDialog() {
 
   const create = () => {
     setTried(true);
-    if (!url) return;
+    if (!url) {
+      document.getElementById("inv-ep")?.focus();
+      return;
+    }
     const submitted: SubmittedInvitation = { file, name: trimmedName, groups, endpoint: endpoint.trim(), url, expiry };
     setBusy(true);
     creating.current = window.setTimeout(() => {
@@ -654,10 +660,17 @@ export function InviteDialog() {
 
   return (
     <Dialog open={ws.inviteOpen} onOpenChange={ws.setInviteOpen}>
-      <DialogContent className="grid-cols-[minmax(0,1fr)] gap-5 sm:max-w-[540px]">
+      <DialogContent
+        className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[540px]"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          document.getElementById("inv-name")?.focus();
+        }}
+      >
         {!result ? (
           <form
             className="contents"
+            noValidate
             onSubmit={(e) => {
               e.preventDefault();
               if (!busy) create();
@@ -673,7 +686,7 @@ export function InviteDialog() {
             {/* While Creating, the invitation was already submitted from these values, so the fields lock until the result shows. */}
             <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
               <Field label="Machine name" htmlFor="inv-name" description="Optional. Fills in the commands below; the machine can pick another name.">
-                <Input id="inv-name" value={name} onChange={(e) => setName(e.target.value)} disabled={busy} placeholder="work-laptop" autoComplete="off" spellCheck={false} />
+                <Input id="inv-name" value={name} onChange={(e) => setName(e.target.value)} disabled={busy} placeholder="work-laptop" aria-describedby="inv-name-note" autoComplete="off" spellCheck={false} />
               </Field>
               <Field
                 label="Address it connects to"
@@ -712,7 +725,7 @@ export function InviteDialog() {
                 <GroupChecks idPrefix="inv" value={groups} onChange={setGroups} disabled={busy} />
               </Field>
               <Collapsible>
-                <CollapsibleTrigger className="group flex h-7 items-center gap-1 rounded text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
+                <CollapsibleTrigger className="group flex min-h-11 items-center gap-1 rounded text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 sm:min-h-8">
                   <CaretRight className="size-3.5 transition-transform duration-150 ease-snap group-data-[state=open]:rotate-90" />
                   Advanced
                 </CollapsibleTrigger>
@@ -723,9 +736,9 @@ export function InviteDialog() {
                 </CollapsibleContent>
               </Collapsible>
             </div>
-            <DialogFooter className="items-center sm:justify-between">
-              <Cli className="flex-1">{`canonfig source invite --endpoint ${shq(endpoint.trim())} --output ${shq(file)} --expires ${expiry}${groups.map((g) => ` --group ${shq(g)}`).join("")}`}</Cli>
-              <div className="flex shrink-0 gap-2">
+            <DialogFooter className="flex-col items-stretch gap-3 sm:flex-col">
+              <Cli wrap>{`canonfig source invite --endpoint ${shq(endpoint.trim())} --output ${shq(file)} --expires ${expiry}${groups.map((g) => ` --group ${shq(g)}`).join("")}`}</Cli>
+              <div className="flex justify-end gap-2">
                 <Button type="button" variant="ghost" onClick={() => ws.setInviteOpen(false)}>
                   Cancel
                 </Button>
@@ -740,7 +753,7 @@ export function InviteDialog() {
             <DialogHeader>
               <DialogTitle>Invitation ready</DialogTitle>
               <DialogDescription className="text-base text-pretty">
-                Saved in this demo workspace as <Mono className="text-sm text-foreground">{result.file}</Mono>; no file was written. A real invitation works once and expires{" "}
+                Saved in this demo workspace as <Mono className="break-all text-sm text-foreground">{result.file}</Mono>; no file was written. A real invitation works once and expires{" "}
                 {EXPIRY[result.expiry].at}. Anyone holding it can join a machine, so move it privately.
               </DialogDescription>
             </DialogHeader>
@@ -773,11 +786,11 @@ export function InviteDialog() {
             <div className="grid gap-1 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
               <div className="flex justify-between gap-4">
                 <span>Connects to</span>
-                <Mono className="truncate">{result.endpoint}</Mono>
+                <Mono className="min-w-0 break-all text-right">{result.endpoint}</Mono>
               </div>
               <div className="flex justify-between gap-4">
                 <span>{PLAIN.groups}</span>
-                <span className="truncate">{result.groups.length ? result.groups.map(groupLabel).join(", ") : "Base profile only"}</span>
+                <span className="min-w-0 break-words text-right">{result.groups.length ? result.groups.map(groupLabel).join(", ") : "Base profile only"}</span>
               </div>
             </div>
             <DialogFooter>
@@ -833,7 +846,7 @@ export function ChangeGroupsDialog() {
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
-      <DialogContent className="grid-cols-[minmax(0,1fr)] gap-5 sm:max-w-[540px]">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[540px]">
         {!file || !f ? (
           <form
             className="contents"
@@ -877,9 +890,9 @@ export function ChangeGroupsDialog() {
                 : [added.length ? `Adds ${added.map(groupLabel).join(", ")}` : "", removed.length ? `Removes ${removed.map(groupLabel).join(", ")}` : ""].filter(Boolean).join(". ") + "."}
               {added.includes(SECRETS_GROUP) && " It gets the shared secrets on its next update."}
             </p>
-            <DialogFooter className="items-center sm:justify-between">
-              <Cli className="flex-1">{`canonfig source invite --endpoint ${shq(ws.endpoint)} --output ${shq(out)} --expires 1h${groups.map((g) => ` --group ${shq(g)}`).join("")}`}</Cli>
-              <div className="flex shrink-0 gap-2">
+            <DialogFooter className="flex-col items-stretch gap-3 sm:flex-col">
+              <Cli wrap>{`canonfig source invite --endpoint ${shq(ws.endpoint)} --output ${shq(out)} --expires 1h${groups.map((g) => ` --group ${shq(g)}`).join("")}`}</Cli>
+              <div className="flex justify-end gap-2">
                 <Button type="button" variant="ghost" onClick={close}>
                   Cancel
                 </Button>
@@ -894,7 +907,7 @@ export function ChangeGroupsDialog() {
             <DialogHeader>
               <DialogTitle>Re-join {f.name} with its new groups</DialogTitle>
               <DialogDescription className="text-base text-pretty">
-                Saved in this demo workspace as <Mono className="text-sm text-foreground">{file}</Mono>; no file was written. A real invitation works once and expires in 1 hour. Until{" "}
+                Saved in this demo workspace as <Mono className="break-all text-sm text-foreground">{file}</Mono>; no file was written. A real invitation works once and expires in 1 hour. Until{" "}
                 {f.name} re-joins, it keeps its old groups.
               </DialogDescription>
             </DialogHeader>
