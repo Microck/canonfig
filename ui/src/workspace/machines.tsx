@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AnimatedNumber, Hint, Mono, StateLabel, Term, goldButton } from "@/shared/shared";
+import { AnimatedNumber, Hint, Mono, StateLabel, Term } from "@/shared/shared";
 import { PLAIN, SECRETS_GROUP, followers as seedFollowers, followerSelf, machine, profile, type Follower } from "@/shared/data";
 import { MachineMap, SOURCE_ID } from "@/shared/machine-map";
 import { shq } from "@/shared/shell";
@@ -42,9 +42,9 @@ import {
 
 const PLATFORM = { macos: "macOS", linux: "Linux", windows: "Windows" } as const;
 
-// The name minimum stays small: pinned at 320px, it must leave room to read any other column beside it.
-const COLS = "minmax(112px,1.2fr) 90px minmax(140px,1fr) 72px 180px 100px 130px";
-const COLS_NARROW = "minmax(112px,1.2fr) 90px minmax(120px,1fr) 72px 180px 100px";
+// Keep names and groups readable without spreading them across a wide screen; the final column takes surplus.
+const COLS = "minmax(112px,240px) 90px minmax(140px,360px) 72px 180px 100px minmax(130px,1fr)";
+const COLS_NARROW = "minmax(112px,240px) 90px minmax(120px,360px) 72px 180px minmax(100px,1fr)";
 // Column minimums + 12px gaps + 32px padding. Narrower than this, the list scrolls sideways with the name pinned,
 // instead of squeezing state and revision out of view.
 const COLS_MIN = 112 + 90 + 140 + 72 + 180 + 100 + 130 + 6 * 12 + 32;
@@ -139,7 +139,7 @@ function SourceMachinesView() {
       <PageHeader
         crumbs={["Machines"]}
         actions={
-          <Button size="sm" className={goldButton} onClick={() => ws.setInviteOpen(true)}>
+          <Button size="sm" variant="primary" onClick={() => ws.setInviteOpen(true)}>
             Add machine
           </Button>
         }
@@ -271,9 +271,9 @@ function Invitations() {
                     <Mono className="col-start-1 row-start-2 min-w-0 break-all text-sm sm:col-start-auto sm:row-start-auto">{inv.file}</Mono>
                     <span className="col-start-1 text-sm text-muted-foreground sm:col-start-auto">Expires {inv.expires}</span>
                     <Button
-                      variant="ghost"
+                      variant="destructive"
                       size="xs"
-                      className="col-start-2 row-span-3 row-start-1 min-h-11 justify-self-end text-muted-foreground sm:col-start-auto sm:row-span-1 sm:row-start-auto sm:min-h-0"
+                      className="col-start-2 row-span-3 row-start-1 min-h-11 justify-self-end sm:col-start-auto sm:row-span-1 sm:row-start-auto sm:min-h-0"
                       aria-label={`Cancel invitation for ${name(inv)}`}
                       onClick={() => {
                         ws.setInvitations((p) => p.filter((x) => x.id !== inv.id));
@@ -329,15 +329,15 @@ function FollowerMachinesView() {
           />
         </div> : (
           <div className="min-h-0 overflow-auto">
-            <ListHead cols="minmax(112px,1fr) 140px minmax(200px,2fr)" minWidth={508}>
+            <ListHead cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508}>
               <span>Machine</span><span>Role</span><span>Details</span>
             </ListHead>
-            <ListRow cols="minmax(112px,1fr) 140px minmax(200px,2fr)" minWidth={508} onClick={() => ws.setView("tunnel")}>
+            <ListRow cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508} onClick={() => ws.setView("tunnel")}>
               <span className="truncate font-medium">{machine.hostname}</span>
               <span className="text-muted-foreground">Source</span>
               <Mono className="truncate">{ws.endpoint}</Mono>
             </ListRow>
-            <ListRow cols="minmax(112px,1fr) 140px minmax(200px,2fr)" minWidth={508} onClick={() => ws.setView("machine")}>
+            <ListRow cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508} onClick={() => ws.setView("machine")}>
               <span className="truncate font-medium">{self.name}</span>
               <span className="text-muted-foreground">This follower</span>
               <StateLabel state={self.state} />
@@ -402,13 +402,13 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
       onClose={onClose}
       footer={
         <>
-          <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-bad" onClick={() => setRevokeOpen(true)}>
+          <Button variant="destructive" size="sm" onClick={() => setRevokeOpen(true)}>
             Revoke…
           </Button>
           <Button variant="ghost" size="sm" className="ml-auto" onClick={onCustomize}>
             Customize look
           </Button>
-          <Button variant="secondary" size="sm" onClick={() => ws.setChangeGroups({ followerId: f.id })}>
+          <Button variant="outline" size="sm" onClick={() => ws.setChangeGroups({ followerId: f.id })}>
             Change groups…
           </Button>
         </>
@@ -765,7 +765,7 @@ export function InviteDialog() {
                 <Button type="button" variant="ghost" onClick={() => ws.setInviteOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" className={goldButton} disabled={busy}>
+                <Button type="submit" variant="primary" disabled={busy}>
                   {busy ? "Creating…" : "Create invitation"}
                 </Button>
               </div>
@@ -872,6 +872,14 @@ export function ChangeGroupsDialog() {
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
       <DialogContent
         className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[540px]"
+        onKeyDownCapture={(event) => {
+          // A focused glossary tooltip otherwise consumes Escape before the dialog can close.
+          if (event.key === "Escape" && document.querySelector('[role="tooltip"]')) {
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+          }
+        }}
         onOpenAutoFocus={() => {
           const active = document.activeElement;
           if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
@@ -930,7 +938,7 @@ export function ChangeGroupsDialog() {
                 <Button type="button" variant="ghost" onClick={close}>
                   Cancel
                 </Button>
-                <Button type="submit" className={goldButton} disabled={!f || unchanged}>
+                <Button type="submit" variant="primary" disabled={!f || unchanged}>
                   Create invitation
                 </Button>
               </div>

@@ -33,7 +33,6 @@ import {
   ListRow,
   PageHeader,
   Prop,
-  PublishButton,
   RowPresence,
   SectionLabel,
   Toolbar,
@@ -263,14 +262,18 @@ export function ProfileView() {
         crumbs={["Profile", defaults.name]}
         actions={
           <>
-            <Button variant="ghost" size="sm" onClick={() => setDiscoverOpen(true)}>
+            <Button variant="outline" size="sm" onClick={() => setDiscoverOpen(true)}>
               Discover tools
             </Button>
-            <Button variant="ghost" size="sm" onClick={startCreating}>
+            <Button variant={ws.pending.length === 0 && !detail && tab !== "defaults" ? "primary" : "outline"} size="sm" onClick={startCreating}>
               <Plus />
               Add item
             </Button>
-            <PublishButton />
+            {ws.pending.length > 0 && (
+              <Button size="sm" data-tour="publish" variant={detail || tab === "defaults" ? "outline" : "primary"} onClick={() => ws.setPublishOpen(true)}>
+                Publish revision <AnimatedNumber value={ws.nextSequence} />
+              </Button>
+            )}
           </>
         }
       />
@@ -499,7 +502,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
       footer={
         <>
           {!isNew && (
-            <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-bad" onClick={() => setConfirmRemove(true)}>
+            <Button variant="destructive" size="sm" onClick={() => setConfirmRemove(true)}>
               Remove…
             </Button>
           )}
@@ -512,7 +515,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
             >
               {isNew ? "Cancel" : "Discard"}
             </Button>
-            <Button type="submit" form="res-form" variant="secondary" size="sm" disabled={!isNew && !dirty}>
+            <Button type="submit" form="res-form" variant="primary" size="sm" disabled={!isNew && !dirty}>
               {isNew ? "Add to profile" : "Save to profile"}
             </Button>
           </div>
@@ -968,7 +971,7 @@ function GroupsTab() {
               <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" variant="secondary">
+              <Button type="submit" variant="primary">
                 Add group
               </Button>
             </DialogFooter>
@@ -1009,7 +1012,7 @@ function GroupDetail({ group: g, onClose }: { group: Group; onClose: () => void 
           {members.map((f) => (
             <div key={f.id} className="flex h-8 items-center gap-2 px-4 text-base">
               {f.name}
-              <Button variant="ghost" size="xs" className="ml-auto text-muted-foreground" onClick={() => ws.setChangeGroups({ followerId: f.id })}>
+              <Button variant="outline" size="xs" className="ml-auto" onClick={() => ws.setChangeGroups({ followerId: f.id })}>
                 Change groups…
               </Button>
             </div>
@@ -1053,7 +1056,7 @@ function DefaultsTab() {
   return (
     <Body>
       <form
-        className="max-w-[560px] px-8 py-6"
+        className="max-w-[880px] px-8 py-6"
         onSubmit={(e) => {
           e.preventDefault();
           setTried(true);
@@ -1122,7 +1125,7 @@ function DefaultsTab() {
         )}
         {/* Same pattern as the item editor: nothing to save or discard until the form differs from what was saved. */}
         <div className="mt-8 flex gap-2">
-          <Button type="submit" variant="secondary" size="sm" disabled={!dirty || scheduleProblem !== null}>
+          <Button type="submit" variant="primary" size="sm" disabled={!dirty || scheduleProblem !== null}>
             Save defaults
           </Button>
           <Button
@@ -1224,7 +1227,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
               Cancel
             </Button>
             <Button
-              variant="secondary"
+              variant="primary"
               disabled={!done || fresh.length === 0}
               aria-describedby={done && fresh.length === 0 ? "discover-none" : undefined}
               onClick={() => {
