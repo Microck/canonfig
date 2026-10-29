@@ -528,7 +528,7 @@ export function SyncView() {
   const setSelected = (id: string | null) => ws.go("sync", id ?? "");
   const [checking, setChecking] = useSharedState(CHECKING_KEY, false);
   const blocks = useSyncBlocks();
-  const cols = "18px 92px minmax(150px,1fr) minmax(200px,1.4fr) minmax(220px,2fr)";
+  const cols = "18px 92px minmax(150px,240px) minmax(200px,360px) minmax(220px,1fr)";
   const current = steps.find((p) => p.resource === selected);
   const unchanged = selectedProfile.sends.length - steps.length;
   const running = ws.phase === "running";
@@ -827,7 +827,7 @@ export function ScheduleView() {
         }
       />
       <Body>
-        <div className="max-w-[640px] px-4 pt-6 pb-20 sm:px-8">
+        <div className="max-w-[880px] px-4 pt-6 pb-20 sm:px-8">
           <p className="mb-6 max-w-[70ch] text-base text-pretty text-muted-foreground">
             On this <Term term="Synchronization Schedule">schedule</Term>, the system's scheduler checks for a new revision and applies it. You can still update by hand from Sync.
             {stopped
@@ -863,7 +863,7 @@ export function OverlaysView() {
   const setOverlays = useSetOverlays();
   const selected = ws.focus;
   const setSelected = (id: string | null) => ws.go("overlays", id ?? undefined);
-  const cols = "minmax(160px,1fr) minmax(180px,1.2fr) minmax(160px,1fr)";
+  const cols = "minmax(160px,240px) minmax(180px,360px) minmax(160px,1fr)";
   const current = ws.overlays.find((o) => o.resource === selected);
   const startResource = CONFIGS.find((r) => !ws.overlays.some((x) => x.resource === r.id)) ?? CONFIGS[0];
   const adding = selected === "new";
@@ -1131,7 +1131,7 @@ export function FollowerSecretsView() {
   const ws = useWorkspace();
   const [refresh, setRefresh] = useSharedState(SECRETS_KEY, SECRETS_INITIAL);
   const { connection, unreachable } = useSyncBlocks();
-  const cols = "minmax(180px,1.5fr) minmax(140px,1fr)";
+  const cols = "minmax(180px,240px) minmax(140px,1fr)";
   return (
     <>
       <PageHeader
@@ -1226,7 +1226,7 @@ export function TunnelView() {
         }
       />
       <Body>
-        <div className="max-w-[640px] px-4 pt-6 pb-20 sm:px-8">
+        <div className="max-w-[880px] px-4 pt-6 pb-20 sm:px-8">
           <p className="mb-6 max-w-[70ch] text-base text-pretty text-muted-foreground">
             This machine reaches the <Term term="Source Machine">Source</Term> through an SSH tunnel: it connects to 127.0.0.1 here, and the tunnel carries that to {SOURCE}. So the
             source service never has to listen on the network.
@@ -1303,7 +1303,7 @@ export function MachineView() {
     <>
       <PageHeader crumbs={["Settings", "This machine"]} />
       <Body>
-        <div className="max-w-[640px] px-4 pt-6 pb-20 sm:px-8">
+        <div className="max-w-[880px] px-4 pt-6 pb-20 sm:px-8">
           <SectionLabel>How it joined</SectionLabel>
           <div className="border-t border-border py-2">
             <Prop label="Name">{ws.machineName}</Prop>

@@ -35,9 +35,9 @@ export function warningName(d: { check: string; detail: string }) {
   return `${effect.charAt(0).toUpperCase()}${effect.slice(1)} (${d.check.toLowerCase()} ${state.toLowerCase()})`;
 }
 
-/** A narrow settings column, like Linear's settings pages. */
+/** Settings share an 880px outer cap; list columns keep their own readable caps. */
 function Column({ children }: { children: React.ReactNode }) {
-  return <div className="max-w-[640px] px-4 pt-6 pb-20 sm:px-8">{children}</div>;
+  return <div className="max-w-[880px] px-4 pt-6 pb-20 sm:px-8">{children}</div>;
 }
 
 function Lede({ children }: { children: React.ReactNode }) {
@@ -481,7 +481,7 @@ export function HarnessView() {
   const [folder, setFolder] = useState("");
   const [tried, setTried] = useState(false);
   const current = projects.find((p) => p.path === selected);
-  const cols = "minmax(220px,2fr) minmax(160px,1.5fr) 140px";
+  const cols = "minmax(220px,360px) minmax(160px,240px) minmax(140px,1fr)";
   const path = folder.trim().replace(/\/+$/, "");
   // The shape applies to what was typed, so "./" passes before its trailing slash is dropped.
   const folderProblem = !path
@@ -655,7 +655,7 @@ export function InstallersView() {
   // Shared and finished through ws.later for the same reasons as the service's busy state:
   // the guard survives leaving the page, and switching roles cancels the result.
   const [checking, setChecking] = useSharedState<string | null>("installer-checking", null);
-  const cols = "120px minmax(200px,2fr) 160px 90px";
+  const cols = "120px minmax(200px,360px) 160px minmax(90px,1fr)";
   return (
     <>
       <PageHeader crumbs={["Settings", "Installers"]} />

@@ -537,7 +537,7 @@ export function RevisionsView() {
   const ws = useWorkspace();
   const selected = ws.focus;
   const current = ws.revisions.find((r) => String(r.sequence) === selected);
-  const cols = "72px minmax(200px,2fr) 140px 110px 120px";
+  const cols = "72px minmax(200px,360px) 140px 110px minmax(120px,1fr)";
   // Column minimums + 4 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
   const colsMin = 72 + 200 + 140 + 110 + 120 + 4 * 12 + 20;
   return (
@@ -656,7 +656,7 @@ export function SecretsView() {
   const [tried, setTried] = useState(false);
   const receivers = ws.followers.filter((f) => f.groups.includes(SECRETS_GROUP));
   const others = ws.followers.length - receivers.length;
-  const cols = "minmax(180px,1.5fr) 120px minmax(160px,1fr) 40px";
+  const cols = "minmax(180px,240px) 120px minmax(160px,360px) minmax(40px,1fr)";
   const colsMin = 180 + 120 + 160 + 40 + 3 * 12 + 20;
   const share = () => ws.setChangeGroups({ addGroup: SECRETS_GROUP });
 
