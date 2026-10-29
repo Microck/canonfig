@@ -527,6 +527,7 @@ export function Field({
 
 /** A quiet CLI equivalent with a copy button. */
 // `wrap` breaks long commands across lines (e.g. inside dialogs) instead of truncating them to one line.
+// Matching margins reserve the copy target's 40px (44px coarse) hit area without enlarging its icon.
 export function Cli({ children, className, wrap = false }: { children: string; className?: string; wrap?: boolean }) {
   const [done, flash] = useCopied();
   return (
@@ -544,7 +545,7 @@ export function Cli({ children, className, wrap = false }: { children: string; c
         onClick={async () => {
           if (await copy(children, "Command copied")) flash();
         }}
-        className="relative shrink-0 rounded p-0.5 text-faint outline-none before:absolute before:-inset-1.5 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+        className="relative m-3 shrink-0 rounded p-0.5 text-faint outline-none before:absolute before:-inset-3 pointer-coarse:m-3.5 pointer-coarse:before:-inset-3.5 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
       >
         {done ? <Check className="size-3 text-ok" /> : <Copy className="size-3" />}
       </button>

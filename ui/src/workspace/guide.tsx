@@ -116,19 +116,19 @@ export function GetStarted() {
 
   return (
     <section data-tour="get-started" aria-labelledby="get-started-title" className="border-b border-border px-8 pt-5 pb-6">
-      {/* Capped so each Start/Open button stays near its label instead of across a 1300px row. */}
-      <div className="flex max-w-[880px] items-center gap-3">
-        <h2 id="get-started-title" className="text-base font-medium">
+      {/* Capped to keep actions nearby; narrow headers put progress below the title, clear of dismiss. */}
+      <div className="grid max-w-[880px] grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1 sm:flex sm:gap-3">
+        <h2 id="get-started-title" className="whitespace-nowrap text-base font-medium">
           Get started
         </h2>
-        <span className="text-sm text-faint">
+        <span className="col-start-1 row-start-2 whitespace-nowrap text-sm text-faint">
           {done} of {items.length} done
         </span>
-        <DitherProgress value={(done / items.length) * 100} label="Get started progress" className="w-32" />
+        <DitherProgress value={(done / items.length) * 100} label="Get started progress" className="col-start-2 row-start-2 w-32 max-w-full" />
         <Button
           variant="ghost"
           size="icon-xs"
-          className="ml-auto text-faint"
+          className="col-start-3 row-span-2 row-start-1 ml-auto text-faint"
           aria-label="Hide Get started"
           onClick={hide}
         >
