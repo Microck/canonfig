@@ -310,7 +310,3 @@ export function Logo({ className }: { className?: string }) {
 export function Mono({ children, className }: { children: ReactNode; className?: string }) {
   return <span className={cn("font-mono text-xs text-muted-foreground", className)}>{children}</span>;
 }
-
-/** The primary action of a screen: gold, used once per view (ADR 0001 theme). */
-export const goldButton =
-  "bg-gold text-gold-foreground hover:bg-gold-hover font-medium shadow-[inset_0_1px_0_rgba(255,255,255,0.35)] disabled:bg-muted disabled:shadow-none";
