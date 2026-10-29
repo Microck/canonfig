@@ -1,5 +1,5 @@
 // Source screens use simulated data for overview, revisions, secrets, and publishing.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowRight, CalendarDots, Check, DotsThree, Key, UsersThree, type Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
@@ -413,6 +413,7 @@ export function PublishDialog() {
   const [reviewer, setReviewer] = useState("marcos");
   const [tried, setTried] = useState(false);
   const open = ws.publishOpen;
+  const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -431,7 +432,18 @@ export function PublishDialog() {
         className="grid-cols-[minmax(0,1fr)] gap-5 sm:max-w-[540px]"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
+          const active = document.activeElement;
+          if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
           document.getElementById("pub-reviewer")?.focus();
+        }}
+        onCloseAutoFocus={(e) => {
+          e.preventDefault();
+          // Publishing removes its trigger; cancellation returns to the actual opener.
+          const target = returnFocus.current?.isConnected && returnFocus.current !== document.body
+            ? returnFocus.current
+            : document.querySelector<HTMLElement>('main [data-tour="publish"], main h1');
+          if (target && !target.matches("button, a, [tabindex]")) target.tabIndex = -1;
+          target?.focus();
         }}
       >
         <form
@@ -750,8 +762,11 @@ export function SecretsView() {
             onSubmit={(e) => {
               e.preventDefault();
               setTried(true);
-              const bad = !value || (!editing && (!trimmed || ws.secrets.some((s) => s.name === trimmed)));
-              if (bad) return;
+              const badName = !editing && (!trimmed || ws.secrets.some((s) => s.name === trimmed));
+              if (badName || !value) {
+                document.getElementById(badName ? "sec-name" : "sec-value")?.focus();
+                return;
+              }
               ws.setSecrets((p) => (editing ? p.map((s) => (s.name === editing ? { ...s, updated: "Today" } : s)) : [...p, { name: trimmed, updated: "Today", sharedWith: receivers.length }]));
               setOpen(false);
               toast.success(editing ? `Replaced ${editing}` : `Saved ${trimmed}`, { description: "Saved in this demo workspace." });

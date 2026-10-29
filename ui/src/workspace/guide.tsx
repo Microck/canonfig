@@ -97,6 +97,11 @@ export function GetStarted() {
   const next = items.find((i) => !i.done);
   const hide = () => {
     ws.setGetStartedHidden(true);
+    const heading = document.querySelector<HTMLElement>("main h1");
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
     toast("Get started is hidden", { description: "Bring it back from search (Ctrl K)." });
   };
 

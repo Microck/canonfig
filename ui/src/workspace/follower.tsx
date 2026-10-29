@@ -164,7 +164,7 @@ function Attention({ tone, title, children, actions }: { tone: "warn" | "act" | 
     <div className="grid grid-cols-[6px_minmax(0,1fr)] items-start gap-x-3 gap-y-2 border-b border-border/70 py-3 @min-[640px]:grid-cols-[6px_minmax(0,1fr)_auto]">
       <span aria-hidden className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", tone === "warn" ? "bg-warn" : tone === "act" ? "bg-act" : "bg-bad")} />
       <div className="min-w-0">
-        <h3 className="text-base font-medium">{title}</h3>
+        <h2 className="text-base font-medium">{title}</h2>
         <div className="mt-0.5 max-w-[68ch] text-base text-pretty text-muted-foreground">{children}</div>
       </div>
       {actions && <div className="col-start-2 flex flex-wrap items-center gap-1.5 @min-[640px]:col-start-3">{actions}</div>}
