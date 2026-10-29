@@ -75,7 +75,9 @@ type MapNode = MachineNodeType | AddNodeType;
 const nodeTypes = { machine: MachineNode, add: AddNode };
 const edgeTypes = { sync: SyncEdge };
 // Cards stay readable at fit: a 4-follower row fills most of an 1100px panel without blowing up a 1-machine map.
-const FIT: FitViewOptions = { padding: 0.2, maxZoom: 1.15 };
+// minZoom 1 keeps 11px card text at true size in narrow panels: fit centres the map and the user pans to the rest
+// (wide panels already fit above 1, so they are unaffected). Manual zoom-out still goes to the ReactFlow minZoom.
+const FIT: FitViewOptions = { padding: 0.2, minZoom: 1, maxZoom: 1.15 };
 const NO_SYNCING: readonly string[] = [];
 
 export function MachineMap(props: MachineMapProps) {
