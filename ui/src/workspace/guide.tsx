@@ -191,7 +191,10 @@ export function TourOffer() {
           exit={reduce ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, y: 8, transition: { duration: 0.15 } }}
           transition={{ duration: 0.3, ease: SNAP }}
           // bottom-24 clears the machine map's bottom controls (they sit ~64px up from the viewport edge).
-          className="fixed right-4 bottom-24 z-[80] w-[300px] max-w-[calc(100vw-2rem)] rounded-xl border border-border-strong bg-popover p-4 shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
+          // Below md the map stacks its legend above the controls (~130px tall), so the offer sits higher there.
+          // z-[45]: above the mobile detail panel and demo switcher (z-40), below Sheets/Dialogs (z-50) so the
+          // open mobile navigation covers the offer instead of the offer drawing over it.
+          className="fixed right-4 bottom-24 z-[45] max-md:bottom-[140px] w-[300px] max-w-[calc(100vw-2rem)] rounded-xl border border-border-strong bg-popover p-4 shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
         >
           <div className="flex items-start gap-3">
             <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-raised text-muted-foreground">

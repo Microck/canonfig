@@ -124,15 +124,17 @@ export function PageHeader({ crumbs, actions }: { crumbs: ReactNode[]; actions?:
   const ws = useWorkspace();
   const hasTip = PAGE_TIPS[ws.role][ws.view] !== undefined;
   return (
-    <header className="flex h-[44px] shrink-0 items-center gap-2 border-b border-border pr-[10px] pl-[18px]">
+    // Below md the header may wrap: actions drop to a second row instead of being clipped, and parent crumbs
+    // hide so the page title keeps the width. Desktop stays a single 44px row.
+    <header className="flex min-h-[44px] shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border py-1.5 pr-[10px] pl-[18px] md:h-[44px] md:flex-nowrap md:py-0">
       <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-base">
         {crumbs.map((c, i) =>
           i === crumbs.length - 1 ? (
-            <h1 key={i} className="truncate font-medium text-foreground">
+            <h1 key={i} title={typeof c === "string" ? c : undefined} className="truncate font-medium text-foreground">
               {c}
             </h1>
           ) : (
-            <span key={i} className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+            <span key={i} className="hidden min-w-0 items-center gap-1.5 text-muted-foreground md:flex">
               <span className="truncate">{c}</span>
               <span aria-hidden className="text-faint">
                 /
@@ -141,7 +143,7 @@ export function PageHeader({ crumbs, actions }: { crumbs: ReactNode[]; actions?:
           ),
         )}
       </nav>
-      <div className="ml-auto flex items-center gap-1.5">
+      <div className="ml-auto flex max-w-full min-w-0 flex-wrap items-center justify-end gap-1.5">
         {hasTip && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -523,14 +525,15 @@ export function Field({
 }
 
 /** A quiet CLI equivalent with a copy button. */
-export function Cli({ children, className }: { children: string; className?: string }) {
+// `wrap` breaks long commands across lines (e.g. inside dialogs) instead of truncating them to one line.
+export function Cli({ children, className, wrap = false }: { children: string; className?: string; wrap?: boolean }) {
   const [done, flash] = useCopied();
   return (
-    <div className={cn("group flex min-w-0 items-center gap-2 font-mono text-xs text-faint", className)}>
+    <div className={cn("group flex min-w-0 gap-2 font-mono text-xs text-faint", wrap ? "items-start" : "items-center", className)}>
       <span aria-hidden className="select-none">
         $
       </span>
-      <span className="truncate text-muted-foreground" title={children}>
+      <span className={cn("text-muted-foreground", wrap ? "min-w-0 break-all" : "truncate")} title={children}>
         {children}
       </span>
       <button
