@@ -19,12 +19,14 @@ import { Slot } from "radix-ui"
  * text, not-allowed cursor, no hover or press feedback. No enabled variant uses
  * a dashed border, so a disabled control never reads as available, while the
  * border keeps a busy action ("Checking files...") reading as a button. Faint
- * text stays ~4.4:1 on the panel. Hover/press use `not-disabled:` (also matches asChild links).
+ * text stays ~4.4:1 on the panel. The disabled selector covers native controls
+ * and slotted links; important utilities beat dark, expanded, hover and active
+ * variant styles without changing any enabled appearance.
  * Call sites pick a variant and must not restyle fills via className; the old
  * `goldButton` string (shared.tsx) is replaced by variant="primary".
  */
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap outline-none select-none transition-[scale] duration-150 ease-snap focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/60 not-disabled:active:not-aria-[haspopup]:scale-[0.97] disabled:cursor-not-allowed disabled:border-dashed disabled:border-border-strong disabled:bg-transparent disabled:text-faint disabled:shadow-none disabled:no-underline aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap outline-none select-none transition-[scale] duration-150 ease-snap focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/60 not-disabled:active:not-aria-[haspopup]:scale-[0.97] [&:is(:disabled,[disabled],[aria-disabled=true])]:cursor-not-allowed! [&:is(:disabled,[disabled],[aria-disabled=true])]:border-dashed! [&:is(:disabled,[disabled],[aria-disabled=true])]:border-border-strong! [&:is(:disabled,[disabled],[aria-disabled=true])]:bg-transparent! [&:is(:disabled,[disabled],[aria-disabled=true])]:text-faint! [&:is(:disabled,[disabled],[aria-disabled=true])]:shadow-none! [&:is(:disabled,[disabled],[aria-disabled=true])]:no-underline! [&:is(:disabled,[disabled],[aria-disabled=true])]:scale-none! aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
