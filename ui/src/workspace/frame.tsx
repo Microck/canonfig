@@ -110,14 +110,17 @@ const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator
  * at x27 and, with a 5px gap, the label at x40: the same centre and label edge as Linear's 14px box at x20 with 6px.
  * Inactive rows use the muted tier so the active page reads first; hover brings them to full foreground.
  */
-function NavButton({ item, active, badge }: { item: NavItem; active: boolean; badge?: React.ReactNode }) {
+function NavButton({ item, active, badge, onNavigate }: { item: NavItem; active: boolean; badge?: React.ReactNode; onNavigate?: () => void }) {
   const ws = useWorkspace();
   const Icon = item.icon;
   return (
     <a
       href={workspaceHref(ws.role, item.view)}
       data-tour={`nav-${item.view}`}
-      onClick={(event) => followLink(event, ws.navigate)}
+      onClick={(event) => followLink(event, (href) => {
+        onNavigate?.();
+        ws.navigate(href);
+      })}
       aria-current={active ? "page" : undefined}
       className={cn(
         "flex h-[28px] w-full items-center gap-[5px] rounded-lg pr-[9px] pl-[7px] text-base font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
@@ -149,7 +152,7 @@ function Count({ value, tone = "muted", label }: { value: number; tone?: "muted"
 }
 
 /** The full navigation column. Frame shows it inline from md up and inside a Sheet below md. */
-export function Sidebar({ className }: { className?: string }) {
+export function Sidebar({ className, onNavigate }: { className?: string; onNavigate?: () => void }) {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
   const { main, settings } = navFor(role);
@@ -235,7 +238,7 @@ export function Sidebar({ className }: { className?: string }) {
 
       <nav className="mt-4 grid gap-px">
         {main.map((item) => (
-          <NavButton key={item.view} item={item} active={ws.view === item.view} badge={badges[item.view]} />
+          <NavButton key={item.view} item={item} active={ws.view === item.view} badge={badges[item.view]} onNavigate={onNavigate} />
         ))}
       </nav>
 
@@ -249,7 +252,7 @@ export function Sidebar({ className }: { className?: string }) {
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-px grid gap-px">
           {settings.map((item) => (
-            <NavButton key={item.view} item={item} active={ws.view === item.view} />
+            <NavButton key={item.view} item={item} active={ws.view === item.view} onNavigate={onNavigate} />
           ))}
         </CollapsibleContent>
       </Collapsible>

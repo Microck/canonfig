@@ -1,8 +1,8 @@
 // Workspace screens share a sidebar, detail panels, and command palette.
 import { useState } from "react";
-import { List } from "@phosphor-icons/react";
+import { List, X } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Logo } from "@/shared/shared";
 import { TipHost, TourHost, TourOffer } from "./guide";
 import { followLink, navigate, workspaceHref, type AppRoute } from "./routes";
@@ -101,10 +101,17 @@ function MobileNav() {
             <List className="size-5" />
           </Button>
         </SheetTrigger>
-        <SheetContent side="left" className="w-[244px] gap-0 border-sidebar-border bg-sidebar p-0">
-          <SheetTitle className="sr-only">Navigation</SheetTitle>
+        <SheetContent side="left" showCloseButton={false} className="w-[244px] gap-0 border-sidebar-border bg-sidebar p-0">
+          <div className="flex h-14 shrink-0 items-center justify-between border-b border-sidebar-border pr-2 pl-5">
+            <SheetTitle>Navigation</SheetTitle>
+            <SheetClose asChild>
+              <Button variant="ghost" size="icon" className="size-11" aria-label="Close navigation">
+                <X className="size-4" />
+              </Button>
+            </SheetClose>
+          </div>
           <SheetDescription className="sr-only">Pages and settings for this machine</SheetDescription>
-          <Sidebar className="h-full w-full" />
+          <Sidebar className="min-h-0 w-full flex-1 [&_[data-tour=machine]]:min-h-11" onNavigate={() => setOpen(false)} />
         </SheetContent>
       </Sheet>
       <span className="flex min-w-0 items-center gap-2 text-base">
