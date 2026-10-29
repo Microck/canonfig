@@ -286,9 +286,10 @@ export function ListRow({
  * Its (?) shows on hover or keyboard focus with a fine pointer, so a list of groups doesn't repeat
  * the same mark down the page; touch screens, which can't hover, always show it.
  */
-export function GroupRow({ icon: Icon, label, count, hint }: { icon?: PhosphorIcon; label: string; count?: number; hint?: ReactNode }) {
+/** `minWidth` should match the list's rows so the band spans the sideways-scrolled list. */
+export function GroupRow({ icon: Icon, label, count, hint, minWidth }: { icon?: PhosphorIcon; label: string; count?: number; hint?: ReactNode; minWidth?: number }) {
   return (
-    <div className={cn("group/band flex h-[36px] items-center gap-2 rounded-lg bg-raised/50 text-base", LIST_INSET)}>
+    <div className={cn("group/band flex h-[36px] items-center gap-2 rounded-lg bg-raised/50 text-base", LIST_INSET)} style={{ minWidth }}>
       {Icon && <Icon className="size-[14px] text-muted-foreground" />}
       <span className="font-medium text-foreground">{label}</span>
       {count !== undefined && <AnimatedNumber value={count} className="text-faint tabular-nums" />}

@@ -346,7 +346,7 @@ export function ProfileView() {
               </ListHead>
               {grouped.map((g) => (
                 <div key={g.kind}>
-                  <GroupRow icon={KIND_ICON[g.kind]} label={KIND_LABEL[g.kind].label} count={g.items.length} hint={KIND_LABEL[g.kind].hint} />
+                  <GroupRow icon={KIND_ICON[g.kind]} label={KIND_LABEL[g.kind].label} count={g.items.length} hint={KIND_LABEL[g.kind].hint} minWidth={COLS_MIN} />
                   <RowPresence>
                     {g.items.map((r) => (
                       <AnimatedRow key={r.id}>
