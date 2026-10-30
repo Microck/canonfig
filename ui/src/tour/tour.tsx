@@ -90,7 +90,7 @@ function placeCard(r: Rect | null, cardH: number, vw: number, vh: number) {
  * the card or Esc dismisses it and the click still lands, so a tip never stands between
  * someone and the task they opened the page for.
  */
-export function Tour({ steps, onClose, modal = true }: { steps: TourStep[]; onClose: (finished: boolean) => void; modal?: boolean }) {
+export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps: TourStep[]; onClose: (finished: boolean) => void; modal?: boolean; onFocusFallback?: () => void }) {
   const titleId = useId();
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
@@ -171,8 +171,25 @@ export function Tour({ steps, onClose, modal = true }: { steps: TourStep[]; onCl
     };
   }, [modal, onClose]);
 
-  // Give focus back to wherever it was when the tour opened (tips never took it).
-  useEffect(() => () => void (modal && (returnFocus.current as HTMLElement | null)?.focus?.()), [modal]);
+  // Wait for removal before restoring focus. StrictMode's effect replay leaves the
+  // card connected; tips and a last action that already moved focus need no restoration.
+  useEffect(() => {
+    if (!modal) return;
+    const card = cardRef.current;
+    const opener = returnFocus.current;
+    return () => {
+      queueMicrotask(() => {
+        if (card?.isConnected) return;
+        const active = document.activeElement;
+        if (active && active !== document.body && !card?.contains(active)) return;
+        if (opener instanceof HTMLElement && opener.isConnected && opener.getClientRects().length) {
+          opener.focus({ preventScroll: true });
+          if (document.activeElement === opener) return;
+        }
+        onFocusFallback?.();
+      });
+    };
+  }, [modal, onFocusFallback]);
 
   const next = () => {
     if (!last) return go(index + 1, 1);

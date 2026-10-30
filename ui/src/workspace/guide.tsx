@@ -19,6 +19,7 @@ import { Tour, type TourStep } from "@/tour/tour";
 import { PAGE_TIPS } from "./page-tips";
 import { tourSteps } from "./tour-steps";
 import { useWorkspace, type Workspace } from "./store";
+import { focusPageHeading } from "./routes";
 
 const SNAP = [0.175, 0.885, 0.32, 1.1] as const;
 
@@ -300,7 +301,7 @@ export function TourHost() {
     // through Overview, so put them back where they were headed (unless the last stop moved them).
     if (ws.proposed.length > 0 && live.current.view === "overview") ws.setView("profile");
   };
-  return <Tour steps={steps} onClose={close} />;
+  return <Tour steps={steps} onClose={close} onFocusFallback={focusPageHeading} />;
 }
 
 /** Opens a page's tip on its first visit, once nothing else is asking for attention. */
