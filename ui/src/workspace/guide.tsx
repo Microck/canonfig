@@ -147,11 +147,11 @@ export function GetStarted() {
             <span
               aria-hidden
               className={cn(
-                "grid size-5 shrink-0 place-items-center rounded-full border text-xs",
+                "grid size-5 shrink-0 place-items-center rounded-full border text-xs leading-none tabular-nums",
                 item.done ? "border-transparent bg-ok/15 text-ok" : item === next ? "border-foreground/50 text-foreground" : "border-border-strong text-faint",
               )}
             >
-              {item.done ? <Check className="size-3" /> : i + 1}
+              {item.done ? <Check className="size-3" /> : <span className="pt-px">{i + 1}</span>}
             </span>
             <span className="min-w-0 flex-1">
               <span className={cn("block text-base", item.done ? "text-muted-foreground line-through decoration-faint" : "text-foreground")}>
