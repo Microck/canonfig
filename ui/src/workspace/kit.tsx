@@ -678,7 +678,7 @@ export function ChangeMark({ change }: { change?: keyof typeof CHANGE }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span role="img" className={cn("inline-flex size-4 shrink-0 items-center justify-center rounded-[3px] font-mono text-xs font-semibold", c.cls)} aria-label={c.label}>
+        <span role="img" className={cn("inline-flex size-4 shrink-0 items-center justify-center rounded-[3px] pt-[0.5px] font-mono text-xs leading-none font-semibold", c.cls)} aria-label={c.label}>
           {c.letter}
         </span>
       </TooltipTrigger>

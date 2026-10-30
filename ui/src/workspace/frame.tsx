@@ -139,7 +139,7 @@ function Count({ value, tone = "muted", label }: { value: number; tone?: "muted"
   return (
     <span
       className={cn(
-        "inline-flex h-4 min-w-4 items-center justify-center rounded px-1 text-xs font-medium tabular-nums",
+        "inline-flex h-4 min-w-4 items-center justify-center rounded px-1 pt-[0.5px] text-xs leading-none font-medium tabular-nums",
         tone === "warn" ? "bg-warn/15 text-warn" : tone === "act" ? "bg-act/15 text-act" : "text-faint",
       )}
     >
