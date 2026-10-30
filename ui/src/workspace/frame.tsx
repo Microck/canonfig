@@ -152,7 +152,7 @@ function Count({ value, tone = "muted", label }: { value: number; tone?: "muted"
 }
 
 /** The full navigation column. Frame shows it inline from md up and inside a Sheet below md. */
-export function Sidebar({ className, onNavigate }: { className?: string; onNavigate?: () => void }) {
+export function Sidebar({ className, onNavigate, onStartTour }: { className?: string; onNavigate?: () => void; onStartTour?: () => void }) {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
   const { main, settings } = navFor(role);
@@ -284,7 +284,7 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
         <button
           type="button"
           data-tour="tour"
-          onClick={() => ws.setTourOpen(true)}
+          onClick={onStartTour ?? (() => ws.setTourOpen(true))}
           className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
         >
           <Signpost className="size-3.5" />

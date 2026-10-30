@@ -107,6 +107,7 @@ function MobileNav() {
   const ws = useWorkspace();
   const [open, setOpen] = useState(false);
   const openedOn = useRef(ws.view);
+  const startTourOnClose = useRef(false);
   // Close on page change during render rather than in an effect, so the new page never paints under an open sheet.
   const [shownView, setShownView] = useState(ws.view);
   if (shownView !== ws.view) {
@@ -130,6 +131,17 @@ function MobileNav() {
           className="w-[244px] gap-0 border-sidebar-border bg-sidebar p-0"
           // Radix returns focus to the menu button on close; after a page change the new heading should get it.
           onCloseAutoFocus={(event) => {
+            // Hand focus to the tour only after the sheet's focus trap has been removed.
+            if (startTourOnClose.current) {
+              event.preventDefault();
+              startTourOnClose.current = false;
+              // Let Radix finish focus-scope teardown before choosing the tour's return target.
+              requestAnimationFrame(() => {
+                focusPageHeading();
+                ws.setTourOpen(true);
+              });
+              return;
+            }
             if (openedOn.current === ws.view) return;
             event.preventDefault();
             focusPageHeading();
@@ -144,7 +156,14 @@ function MobileNav() {
             </SheetClose>
           </div>
           <SheetDescription className="sr-only">Pages and settings for this machine</SheetDescription>
-          <Sidebar className="min-h-0 w-full flex-1 [&_[data-tour=machine]]:min-h-11" onNavigate={() => setOpen(false)} />
+          <Sidebar
+            className="min-h-0 w-full flex-1 [&_[data-tour=machine]]:min-h-11"
+            onNavigate={() => setOpen(false)}
+            onStartTour={() => {
+              startTourOnClose.current = true;
+              setOpen(false);
+            }}
+          />
         </SheetContent>
       </Sheet>
       <span className="flex min-w-0 items-center gap-2 text-base">
