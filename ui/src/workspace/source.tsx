@@ -1,7 +1,7 @@
 // Source screens use simulated data for overview, revisions, secrets, and publishing.
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowRight, CalendarDots, Check, DotsThree, Key, UsersThree, type Icon as PhosphorIcon } from "@phosphor-icons/react";
+import { ArrowRight, CalendarDots, Check, DotsThree, HourglassMedium, Key, UsersThree, type Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -484,7 +484,7 @@ export function PublishDialog() {
 
           <section className="grid gap-2" aria-live="polite">
             <div className="flex items-center gap-2 text-base">
-              {checked ? <Check className="size-3.5 text-ok" /> : <span className="size-3.5 animate-spin rounded-full border border-faint border-t-foreground" />}
+              {checked ? <Check className="size-3.5 text-ok" /> : <HourglassMedium className="size-3.5 text-muted-foreground" />}
               <span className={checked ? "text-foreground" : "text-muted-foreground"}>
                 {checked ? `Checked ${ws.pending.length} ${ws.pending.length === 1 ? "change" : "changes"}: no problems` : "Checking the files first (about a second)…"}
               </span>

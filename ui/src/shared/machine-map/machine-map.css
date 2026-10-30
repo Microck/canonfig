@@ -59,22 +59,3 @@
 .cf-map .react-flow__attribution a:hover {
   opacity: 1;
 }
-/* A working machine's icon tile: the hatch marches one tile (4 cells of 1.5px) in four hard steps, about 7fps. */
-.cf-map-tile-run {
-  animation: cf-map-tile-run 600ms steps(4) infinite;
-}
-@keyframes cf-map-tile-run {
-  from {
-    -webkit-mask-position: 0 0;
-    mask-position: 0 0;
-  }
-  to {
-    -webkit-mask-position: 6px 0;
-    mask-position: 6px 0;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .cf-map-tile-run {
-    animation: none;
-  }
-}

@@ -145,7 +145,8 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
             style={{ color: accent, backgroundColor: `color-mix(in oklab, ${accent} 9%, transparent)` }}
           >
             <span aria-hidden className="absolute inset-0 opacity-70" style={fillStyle("gradient", { color: accent, cell: 1.5, edge: "bottom", length: 12, from: 0.5, to: 0 })} />
-            {data.active && <span aria-hidden className="cf-map-tile-run absolute inset-0 opacity-30" style={fillStyle("hatched", { color: accent, cell: 1.5 })} />}
+            {/* A working machine's tile carries a still hatch; the source's dither glow is the map's one moving signal. */}
+            {data.active && <span aria-hidden className="absolute inset-0 opacity-30" style={fillStyle("hatched", { color: accent, cell: 1.5 })} />}
             <span aria-hidden className="absolute inset-0 rounded-md border" style={{ borderColor: `color-mix(in oklab, ${accent} 40%, transparent)` }} />
             <Icon className="relative size-5" weight={lit ? "fill" : "regular"} />
           </span>

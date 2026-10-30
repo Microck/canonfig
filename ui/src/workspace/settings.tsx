@@ -1,7 +1,7 @@
 // Settings shared by both machine roles where the feature exists on both.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
-import { Check, Circle, CircleNotch, Warning, X } from "@phosphor-icons/react";
+import { Check, Circle, HourglassMedium, Warning, X } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -189,7 +189,7 @@ export function ServiceView() {
           {installed && (
             <div className="mt-4 flex items-center gap-2">
               <Button variant="outline" size="sm" disabled={!!busy} onClick={() => act(true, "restart", "Source service restarted in this demo workspace")}>
-                {busy === "restart" && <CircleNotch className="animate-spin" />} {busy === "restart" ? "Restarting…" : "Restart"}
+                {busy === "restart" && <HourglassMedium />} {busy === "restart" ? "Restarting…" : "Restart"}
               </Button>
               <Button variant="destructive" size="sm" className="ml-4" disabled={!!busy} onClick={() => setConfirm(true)}>
                 Remove service…
@@ -797,7 +797,7 @@ export function SetupView() {
                     ) : done ? (
                       <Check className="size-3.5 text-ok" aria-label={marked ? "Marked done by you" : "Done"} />
                     ) : running ? (
-                      <CircleNotch className="size-3.5 animate-spin text-muted-foreground" aria-label="Running" />
+                      <HourglassMedium className="size-3.5 text-muted-foreground" aria-label="Running" />
                     ) : blocked ? (
                       <Warning className="size-3.5 text-act" aria-label="Needs you" />
                     ) : (

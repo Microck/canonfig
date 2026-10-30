@@ -1,7 +1,7 @@
 // Follower screens use simulated sync plans, schedules, local settings, secrets, tunnels, and enrollment.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
-import { ArrowRight, Check, Circle, CircleNotch, DotsThree, Pause, Plus, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowRight, Check, Circle, DotsThree, HourglassMedium, Pause, Plus, WarningCircle, X } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -497,7 +497,7 @@ function StepIcon({ step }: { step: Step }) {
   // A paused step is skipped by the run, so it never shows as done.
   if (isPaused(step)) return <Pause className="size-3.5 text-act" aria-label="Paused" />;
   if (step.status === "done") return <Check className="size-3.5 text-ok" aria-label="Done" />;
-  if (step.status === "running") return <CircleNotch className="size-3.5 animate-spin text-muted-foreground" aria-label="Running" />;
+  if (step.status === "running") return <HourglassMedium className="size-3.5 text-muted-foreground" aria-label="Running" />;
   return <Circle className="size-3 text-faint" aria-label="Not started" />;
 }
 
@@ -555,7 +555,7 @@ export function SyncView() {
                 }, 900);
               }}
             >
-              {checking && <CircleNotch className="animate-spin" />} {checking ? "Checking…" : "Check for updates"}
+              {checking && <HourglassMedium />} {checking ? "Checking…" : "Check for updates"}
             </Button>
             {ws.phase !== "done" && (
               <Button size="sm" variant="primary" disabled={running || ws.interrupted || blocks.connection !== null} onClick={ws.applyPlan}>

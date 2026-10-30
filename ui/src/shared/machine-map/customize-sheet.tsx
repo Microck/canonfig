@@ -35,7 +35,7 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
       initial={{ opacity: 0, x: slide }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: slide, transition: { duration: 0.15 } }}
-      transition={{ duration: 0.18, ease: SNAP }}
+      transition={{ duration: 0.2, ease: SNAP }}
       onKeyDown={(e) => {
         if (e.key !== "Escape") return;
         e.stopPropagation();
