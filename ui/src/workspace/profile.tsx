@@ -437,7 +437,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
   const { dialog: leaveDialog, leaveWithoutAsking } = useLeaveGuard(dirty, isNew ? "this new item" : resource.id);
 
   const id = draft.id.trim();
-  const idError = !id ? "Enter a name." : !/^[a-z0-9][a-z0-9-]*$/.test(id) ? "Use lowercase letters, digits and dashes." : others.some((r) => r.id === id) ? `${id} is already in the profile.` : null;
+  const idError = !id ? "Enter a name." : !/^[a-z0-9][a-z0-9-]*$/.test(id) ? "Use lowercase letters, digits and dashes." : others.some((r) => r.id === id) ? `${id} is already in the profile. Choose another name.` : null;
   const targetError = !draft.target.trim() ? TARGET[draft.kind].missing : null;
   const hasMode = draft.kind === "file" || draft.kind === "directory";
   // Unix permission bits: three octal digits (644), or four with the setuid/setgid/sticky digit first (0644).
@@ -862,7 +862,7 @@ function GroupsTab() {
     : !/^[a-z0-9][a-z0-9-]*$/.test(trimmed)
       ? "Use lowercase letters, digits and dashes."
       : groups.some((g) => g.name === trimmed)
-        ? `${trimmed} already exists.`
+        ? `${trimmed} already exists. Choose another name.`
         : null;
   const nameError = tried ? problem : null;
   const current = groups.find((g) => g.name === selected);

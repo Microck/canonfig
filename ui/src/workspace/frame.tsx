@@ -361,7 +361,7 @@ export function Palette() {
               <CommandItem disabled={ws.pending.length === 0} onSelect={() => run(() => ws.setPublishOpen(true))}>
                 <PaperPlaneTilt className="text-muted-foreground" />
                 Publish revision {ws.nextSequence}
-                <CommandShortcut className="text-xs tracking-normal tabular-nums">{ws.pending.length === 0 ? "No changes" : `${ws.pending.length} changes`}</CommandShortcut>
+                <CommandShortcut className="text-xs tracking-normal tabular-nums">{ws.pending.length === 0 ? "No changes" : ws.pending.length === 1 ? "1 change" : `${ws.pending.length} changes`}</CommandShortcut>
               </CommandItem>
               <CommandItem onSelect={() => run(() => ws.setInviteOpen(true))}>
                 <UserPlus className="text-muted-foreground" />

@@ -60,7 +60,7 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
           type="button"
           variant="ghost"
           size="icon-sm"
-          aria-label="Close"
+          aria-label="Close customize panel"
           onClick={onClose}
           className="-mt-0.5 -mr-1.5 rounded-md text-muted-foreground"
         >
