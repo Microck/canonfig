@@ -10,7 +10,7 @@
 //      re-openable from that page's "?" button.
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowRight, Check, Compass, X } from "@/components/icons";
+import { ArrowRight, Check, FoldedMap, X } from "@/components/icons";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -201,7 +201,10 @@ export function TourOffer() {
     return () => window.clearTimeout(t);
   }, []);
   const detailOpen = useDetailPanelOpen();
-  const show = ws.tourOffered && ready && !busy && !detailOpen;
+  // The machine map's control row spans the full content width at the bottom, so any
+  // corner card covers zoom/fit/reset; the offer waits for a non-map page instead.
+  const onMap = ws.view === "machines" && ws.machinesMode === "map";
+  const show = ws.tourOffered && ready && !busy && !detailOpen && !onMap;
   const { dismissTourOffer, view } = ws;
   useEffect(() => {
     if (!show) return;
@@ -229,10 +232,10 @@ export function TourOffer() {
           animate={{ opacity: 1, y: 0 }}
           exit={reduce ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, y: 8, transition: { duration: 0.15 } }}
           transition={{ duration: 0.2, ease: SNAP }}
-          // Clear the bottom controls and demo switcher; mobile offers appear only on Overview.
+          // Pinned to the main panel's bottom-right corner (main uses an 8px m-2 inset); mobile offers appear only on Overview.
           // Stay below detail panels, the demo switcher, and dialogs; hide while Details is open.
           className={cn(
-            "fixed right-4 bottom-24 z-30 w-[280px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border-strong bg-popover shadow-[0_16px_48px_rgba(0,0,0,0.55)]",
+            "fixed right-2 bottom-2 z-30 w-[280px] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-border-strong bg-popover shadow-[0_16px_48px_rgba(0,0,0,0.55)]",
             view !== "overview" && "max-md:hidden",
           )}
         >
@@ -245,7 +248,7 @@ export function TourOffer() {
           </div>
           <div className="p-4 max-md:p-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
-              <Compass className="size-4 text-dither-purple" />
+              <FoldedMap className="size-4 text-dither-purple" />
               Find your way around
             </h2>
             <p className="mt-1 text-sm text-pretty text-muted-foreground">Your Source, what syncs, your machines, and what to do next. About a minute.</p>

@@ -69,7 +69,7 @@ ICONS = {
     "Question": "question-circle",
     "RadioButton": "circle-dot",
     "Robot": "bot",
-    "Compass": "compass",
+    "FoldedMap": "map",
     "SlidersHorizontal": "tuning-2",
     "Sparkle": "stars-minimalistic",
     "SquaresFour": "widget",
