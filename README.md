@@ -209,6 +209,10 @@ the separate documentation browser suite uses `npm run website:build`,
 Node.js 24.8+. browser checks do not verify native keyrings, synchronization or
 scheduled jobs. see the [release runbook](docs/release-runbook.md) for all gates.
 
+CI cancels superseded pull-request runs but validates every push to `main`.
+The CLI-only platform and uv jobs use `npm ci --workspaces=false`; repository
+validation, browser checks, and release validation keep the full workspace install.
+
 ## documentation
 
 - [first sync](website/content/docs/tutorials/first-sync.mdx) · [profiles](website/content/docs/reference/profile-schema.mdx)

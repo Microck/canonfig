@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Superseded PR revisions can stop; every main push keeps its own validation run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   command-contract:
     name: uv command (${{ matrix.os }})
@@ -29,7 +34,8 @@ jobs:
         with:
           version: '0.10.0'
           enable-cache: false
-      - run: npm ci
+      # This CLI-only contract does not need the website workspace dependencies.
+      - run: npm ci --workspaces=false
       - run: npm test -- tests/acceptance/uv-command-contract.test.ts
         env:
           CANONFIG_REQUIRE_UV_TESTS: '1'

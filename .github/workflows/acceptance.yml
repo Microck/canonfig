@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Superseded PR revisions can stop; every main push keeps its own validation run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   acceptance:
     name: Acceptance (${{ matrix.platform }})
@@ -43,8 +48,9 @@ jobs:
           node-version: 24
           cache: npm
 
+      # CLI contracts do not use the website workspace; repository validation installs it.
       - name: Install locked dependencies
-        run: npm ci
+        run: npm ci --workspaces=false
 
       # The E2E test packs the CLI itself and its prepack builds dist and
       # build-receipt.json in the checkout, so the workflow builds exactly once.
