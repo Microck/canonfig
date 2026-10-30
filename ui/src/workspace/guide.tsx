@@ -10,11 +10,11 @@
 //      re-openable from that page's "?" button.
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowRight, Check, Signpost, X } from "@/components/icons";
+import { ArrowRight, Check, Compass, X } from "@/components/icons";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { DitherProgress } from "@/shared/shared";
+import { DitherBlock, DitherProgress } from "@/shared/shared";
 import { Tour, type TourStep } from "@/tour/tour";
 import { PAGE_TIPS } from "./page-tips";
 import { tourSteps } from "./tour-steps";
@@ -228,30 +228,29 @@ export function TourOffer() {
           initial={reduce ? false : { opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           exit={reduce ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, y: 8, transition: { duration: 0.15 } }}
-          transition={{ duration: 0.3, ease: SNAP }}
+          transition={{ duration: 0.2, ease: SNAP }}
           // Clear the bottom controls and demo switcher; mobile offers appear only on Overview.
           // Stay below detail panels, the demo switcher, and dialogs; hide while Details is open.
           className={cn(
-            "fixed right-4 bottom-24 z-30 w-[300px] max-w-[calc(100vw-2rem)] rounded-xl border border-border-strong bg-popover p-4 shadow-[0_16px_48px_rgba(0,0,0,0.55)]",
-            "max-md:p-3",
+            "fixed right-4 bottom-24 z-30 w-[280px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-border-strong bg-popover shadow-[0_16px_48px_rgba(0,0,0,0.55)]",
             view !== "overview" && "max-md:hidden",
           )}
         >
-          <div className="flex items-start gap-3">
-            <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-raised text-muted-foreground">
-              <Signpost className="size-4" />
-            </span>
-            <div className="min-w-0">
-              <h2 className="text-base font-semibold">New to Canonfig?</h2>
-              <p className="mt-1 text-sm text-pretty text-muted-foreground">A short tour of where things are. About a minute.</p>
-            </div>
-          </div>
-          <div className="mt-3 flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={ws.dismissTourOffer}>
-              Not now
+          {/* Purple (the focus-ring violet) keeps gold for the page's own primary action. */}
+          <div className="relative h-20 border-b border-border bg-panel">
+            <DitherBlock tone="purple" edge="bottom" className="absolute inset-0" />
+            <Button variant="ghost" size="icon-xs" aria-label="Dismiss tour offer" onClick={ws.dismissTourOffer} className="absolute top-2 right-2 bg-popover/70">
+              <X />
             </Button>
-            <Button size="sm" onClick={() => ws.setTourOpen(true)}>
-              Show me around
+          </div>
+          <div className="p-4 max-md:p-3">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Compass className="size-4 text-dither-purple" />
+              Find your way around
+            </h2>
+            <p className="mt-1 text-sm text-pretty text-muted-foreground">Your Source, what syncs, your machines, and what to do next. About a minute.</p>
+            <Button size="sm" variant="secondary" className="mt-3 w-full" onClick={() => ws.setTourOpen(true)}>
+              Start the tour <ArrowRight />
             </Button>
           </div>
         </motion.aside>

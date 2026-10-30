@@ -123,7 +123,7 @@ export function Hint({ label, children, className }: { label: string; children: 
 
 const TONE_TEXT = { ok: "text-ok", warn: "text-warn", act: "text-act", bad: "text-bad", muted: "text-faint" } as const;
 const TONE_BG = { ok: "bg-ok", warn: "bg-warn", act: "bg-act", bad: "bg-bad", muted: "bg-faint" } as const;
-const TONE_DITHER = { ok: "green", warn: "#f1c332", act: "orange", bad: "red", muted: "grey" } as const;
+const TONE_DITHER = { ok: "green", warn: "#f1c332", act: "orange", bad: "red", muted: "grey", purple: "purple" } as const;
 
 /**
  * Status dot + label. The label always carries the meaning; colour only

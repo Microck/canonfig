@@ -19,7 +19,7 @@ import {
   PaperPlaneTilt,
   Plug,
   Robot,
-  Signpost,
+  Compass,
   SquaresFour,
   Stack,
   Stethoscope,
@@ -289,7 +289,7 @@ export function Sidebar({ className, onNavigate, onStartTour }: { className?: st
           onClick={onStartTour ?? (() => ws.setTourOpen(true))}
           className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
         >
-          <Signpost className="size-3.5" />
+          <Compass className="size-3.5" />
           Take the tour
         </button>
         {role === "source" ? (
@@ -389,7 +389,7 @@ export function Palette() {
             </>
           )}
           <CommandItem onSelect={() => run(() => ws.setTourOpen(true))}>
-            <Signpost className="text-muted-foreground" />
+            <Compass className="text-muted-foreground" />
             Take the tour
           </CommandItem>
           {ws.getStartedHidden && (
