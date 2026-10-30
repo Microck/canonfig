@@ -63,7 +63,11 @@ function Frame() {
   useEffect(() => {
     if (shownView.current === ws.view) return;
     shownView.current = ws.view;
-    if (!document.querySelector('[role="dialog"][data-state="open"]')) focusPageHeading();
+    // Wait until the outgoing page's effects have cleaned up before choosing the new focus target.
+    const frame = requestAnimationFrame(() => {
+      if (!document.querySelector('[role="dialog"][data-state="open"]')) focusPageHeading();
+    });
+    return () => cancelAnimationFrame(frame);
   }, [ws.view]);
   if (!Screen) return <NotFound />;
   return (

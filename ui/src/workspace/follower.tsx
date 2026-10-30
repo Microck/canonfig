@@ -1264,7 +1264,7 @@ export function TunnelView() {
   );
 }
 
-/** "Stop syncing this machine", reachable from the Overview's machine menu, the sidebar menu and This machine; always confirmed. */
+/** "Stop syncing this machine", reachable from the Overview's machine menu, the sidebar menu and Enrollment; always confirmed. */
 export function UnenrollDialog() {
   const ws = useWorkspace();
   const [, setSchedule] = useSharedState<Schedule | null>(SCHEDULE_KEY, SCHEDULE_INITIAL);
@@ -1302,7 +1302,7 @@ export function MachineView() {
   };
   return (
     <>
-      <PageHeader crumbs={["Settings", "This machine"]} />
+      <PageHeader crumbs={["Settings", "Enrollment"]} />
       <Body>
         <div className="max-w-[880px] px-4 pt-6 pb-20 sm:px-8">
           <SectionLabel>How it joined</SectionLabel>

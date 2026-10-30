@@ -93,7 +93,7 @@ const FOLLOWER_SETTINGS: NavItem[] = [
   { view: "agent", label: "Agent policy", icon: Robot },
   { view: "harness", label: "Harness projects", icon: GitBranch },
   { view: "doctor", label: "Health check", icon: Stethoscope },
-  { view: "machine", label: "This machine", icon: Monitor },
+  { view: "machine", label: "Enrollment", icon: Monitor },
 ];
 
 function navFor(role: "source" | "follower") {
@@ -158,9 +158,9 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
   const { main, settings } = navFor(role);
   const inSettings = settings.some((s) => s.view === ws.view);
   const [open, setOpen] = useState(inSettings);
-  const menuNavigatedFrom = useRef<View | null>(null);
+  const menuNavigated = useRef(false);
   const navigateFromMenu = (view: View) => {
-    menuNavigatedFrom.current = ws.view;
+    menuNavigated.current = view !== ws.view;
     ws.setView(view);
   };
   useEffect(() => {
@@ -205,10 +205,11 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
           align="start"
           className="w-60"
           onCloseAutoFocus={(event) => {
-            const from = menuNavigatedFrom.current;
-            menuNavigatedFrom.current = null;
-            if (from === null || from === ws.view) return;
-            // Route navigation owns focus; Radix must not restore the machine switcher.
+            // The mobile sheet can unmount this sidebar before its new view reaches this callback.
+            // Record the navigation at selection time instead of comparing a teardown closure's view.
+            const navigated = menuNavigated.current;
+            menuNavigated.current = false;
+            if (!navigated) return;
             event.preventDefault();
             focusPageHeading();
           }}
@@ -229,7 +230,7 @@ export function Sidebar({ className, onNavigate }: { className?: string; onNavig
             </>
           ) : (
             <>
-              <DropdownMenuItem onSelect={() => navigateFromMenu("machine")}>Profile and enrollment</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => navigateFromMenu("machine")}>Enrollment</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => navigateFromMenu("tunnel")}>SSH tunnel</DropdownMenuItem>
               <DropdownMenuItem variant="destructive" disabled={ws.unenrolled} onSelect={() => ws.setUnenrollOpen(true)}>
                 {PLAIN.unenroll}…
