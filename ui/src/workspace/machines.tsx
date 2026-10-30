@@ -1,6 +1,6 @@
 // Machines: the map or list, the machine detail panel,
 // adding a machine (invite), changing a machine's groups (new invitation + `enroll --replace`), and revoke.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { toast } from "sonner";
 import { CaretRight, ListBullets, TreeStructure } from "@/components/icons";
 import { cn } from "@/lib/utils";
@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AnimatedNumber, Hint, Mono, StateLabel, Term } from "@/shared/shared";
 import { PLAIN, SECRETS_GROUP, followers as seedFollowers, followerSelf, machine, profile, type Follower } from "@/shared/data";
-import { MachineMap, SOURCE_ID } from "@/shared/machine-map";
+import { SOURCE_ID } from "@/shared/machine-map/model";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace, type Invitation } from "./store";
 import {
@@ -39,6 +39,14 @@ import {
   groupLabel,
   useGroups,
 } from "./kit";
+
+
+// @xyflow/react and the map's motion/shader code only load when a map is shown, keeping them out of the
+// initial bundle. The fallback takes the map's className so the flex layout does not shift while it loads.
+const LazyMachineMap = lazy(() => import("@/shared/machine-map/machine-map").then((m) => ({ default: m.MachineMap })));
+function MachineMap(props: ComponentProps<typeof LazyMachineMap>) {
+  return <Suspense fallback={<div className={props.className} />}><LazyMachineMap {...props} /></Suspense>;
+}
 
 const PLATFORM = { macos: "macOS", linux: "Linux", windows: "Windows" } as const;
 

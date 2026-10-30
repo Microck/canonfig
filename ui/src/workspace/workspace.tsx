@@ -1,5 +1,5 @@
 // Workspace screens share a sidebar, detail panels, and command palette.
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { List, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -8,23 +8,27 @@ import { TipHost, TourHost, TourOffer } from "./guide";
 import { focusPageHeading, followLink, navigate, workspaceHref, type AppRoute } from "./routes";
 import { Palette, Sidebar } from "./frame";
 import { ChangeGroupsDialog, InviteDialog, MachinesView } from "./machines";
-import { Onboarding, type Setup } from "@/onboarding/onboarding";
+import type { Setup } from "@/onboarding/onboarding";
+
+// Setup only runs once per machine, so its screens and dither shader load on demand.
+const Onboarding = lazy(() => import("@/onboarding/onboarding").then((m) => ({ default: m.Onboarding })));
 import { ProfileView } from "./profile";
 import { PublishDialog, RevisionsView, SecretsView, SourceOverview } from "./source";
 import { AgentPolicyView, DoctorView, HarnessView, InstallersView, ServiceView, SetupView } from "./settings";
-import {
-  FollowerOverview,
-  FollowerSecretsView,
-  MachineView,
-  OverlaysView,
-  ScheduleView,
-  SyncView,
-  TunnelView,
-  UnenrollDialog,
-} from "./follower";
+// A session is one role, so the Follower screens load only when a Follower workspace opens. All of them share
+// one chunk: after the first Follower page suspends once, page changes inside the role never suspend.
+const follower = () => import("./follower");
+const FollowerOverview = lazy(() => follower().then((m) => ({ default: m.FollowerOverview })));
+const FollowerSecretsView = lazy(() => follower().then((m) => ({ default: m.FollowerSecretsView })));
+const MachineView = lazy(() => follower().then((m) => ({ default: m.MachineView })));
+const OverlaysView = lazy(() => follower().then((m) => ({ default: m.OverlaysView })));
+const ScheduleView = lazy(() => follower().then((m) => ({ default: m.ScheduleView })));
+const SyncView = lazy(() => follower().then((m) => ({ default: m.SyncView })));
+const TunnelView = lazy(() => follower().then((m) => ({ default: m.TunnelView })));
+const UnenrollDialog = lazy(() => follower().then((m) => ({ default: m.UnenrollDialog })));
 import { WorkspaceProvider, useWorkspace, type View } from "./store";
 
-const SOURCE_SCREENS: Partial<Record<View, () => React.ReactElement>> = {
+const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   overview: SourceOverview,
   profile: ProfileView,
   machines: MachinesView,
@@ -38,7 +42,7 @@ const SOURCE_SCREENS: Partial<Record<View, () => React.ReactElement>> = {
   doctor: DoctorView,
 };
 
-const FOLLOWER_SCREENS: Partial<Record<View, () => React.ReactElement>> = {
+const FOLLOWER_SCREENS: Partial<Record<View, React.ComponentType>> = {
   overview: FollowerOverview,
   machines: MachinesView,
   sync: SyncView,
@@ -83,7 +87,9 @@ function Frame() {
       <MobileNav />
       <Sidebar className="hidden md:flex" />
       <main id="workspace-content" tabIndex={-1} data-tour="main" className="mx-2 mb-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-panel focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring md:my-2 md:ml-0">
-        <Screen key={ws.view} />
+        <Suspense fallback={null}>
+          <Screen key={ws.view} />
+        </Suspense>
       </main>
       <Palette />
       {ws.tourOpen && <TourHost />}
@@ -96,7 +102,9 @@ function Frame() {
           <ChangeGroupsDialog />
         </>
       ) : (
-        <UnenrollDialog />
+        <Suspense fallback={null}>
+          <UnenrollDialog />
+        </Suspense>
       )}
     </div>
   );
@@ -198,10 +206,10 @@ export function WorkspaceApp({ route }: { route: AppRoute }) {
     return null;
   }
   if (route.kind === "not-found") return <NotFound />;
-  if (route.kind === "setup") return <Onboarding onDone={(setup) => {
+  if (route.kind === "setup") return <Suspense fallback={null}><Onboarding onDone={(setup) => {
     setSession({ role: setup.role, setup });
     navigate(workspaceHref(setup.role, setup.role === "source" && setup.scan ? "profile" : "overview"));
-  }} />;
+  }} /></Suspense>;
   return (
     <WorkspaceProvider key={route.role} route={route} navigate={navigate} setup={session.setup}>
       <Frame />
