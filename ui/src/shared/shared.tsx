@@ -304,7 +304,7 @@ const DIGIT = {
 
 /** The 300px pixel-art chest, downscaled smoothly: `pixelated` only helps when scaling up. */
 export function Logo({ className }: { className?: string }) {
-  return <img src="/logo.png" alt="" width={20} height={20} decoding="async" className={cn("size-5", className)} />;
+  return <img src="/favicon.png" alt="" width={20} height={20} decoding="async" className={cn("size-5", className)} />;
 }
 
 export function Mono({ children, className }: { children: ReactNode; className?: string }) {
