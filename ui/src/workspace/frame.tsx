@@ -159,8 +159,10 @@ export function Sidebar({ className, onNavigate, onStartTour }: { className?: st
   const inSettings = settings.some((s) => s.view === ws.view);
   const [open, setOpen] = useState(inSettings);
   const menuNavigated = useRef(false);
+  // Choosing a page counts even when it is already shown: the user asked to land on it, so focus goes to its h1
+  // rather than back to the switcher.
   const navigateFromMenu = (view: View) => {
-    menuNavigated.current = view !== ws.view;
+    menuNavigated.current = true;
     ws.setView(view);
   };
   useEffect(() => {

@@ -3,7 +3,7 @@ import { useState } from "react";
 import { CaretDown } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import type { Role } from "./data";
-import { followLink, roleHref } from "@/workspace/routes";
+import { focusPageHeading, followLink, roleHref } from "@/workspace/routes";
 
 const ROLES: { key: Role; label: string }[] = [
   { key: "source", label: "Source" },
@@ -19,7 +19,12 @@ function RoleLinks({ role }: { role: Role | null }) {
           key={r.key}
           href={roleHref(r.key)}
           aria-current={r.key === role ? "page" : undefined}
-          onClick={followLink}
+          onClick={(event) => {
+            followLink(event);
+            // A role change remounts the workspace, so Frame's page-change effect never sees it and the clicked link
+            // unmounts, leaving focus on body. Wait for the new role to render, then focus its h1.
+            if (event.defaultPrevented) requestAnimationFrame(() => requestAnimationFrame(focusPageHeading));
+          }}
           className={cn(
             "flex min-h-11 min-w-11 flex-auto items-center justify-center rounded-md px-2 whitespace-nowrap md:min-h-10",
             r.key === role
