@@ -279,36 +279,6 @@
   ::selection {
     background: color-mix(in oklab, var(--primary) 35%, transparent);
   }
-  /*
-   * Thin, quiet scrollbars that match the dark surfaces: a rounded thumb on a transparent track,
-   * no arrow buttons. Chromium and Safari use the ::-webkit rules. Chromium ignores those rules on
-   * any element that sets the standard scrollbar-width/scrollbar-color (and then draws arrow
-   * buttons), so the standard properties apply only where ::-webkit-scrollbar is unsupported
-   * (Firefox). Keep them out of component classes for the same reason.
-   */
-  @supports not selector(::-webkit-scrollbar) {
-    * {
-      scrollbar-width: thin;
-      scrollbar-color: var(--border-strong) transparent;
-    }
-  }
-  ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-  ::-webkit-scrollbar-track,
-  ::-webkit-scrollbar-corner {
-    background: transparent;
-  }
-  ::-webkit-scrollbar-thumb {
-    background: var(--border-strong);
-    border: 3px solid transparent;
-    border-radius: 9999px;
-    background-clip: padding-box;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background-color: var(--faint);
-  }
 }
 
 /* DitherProgress while running: a dotted highlight sweeps toward the leading
