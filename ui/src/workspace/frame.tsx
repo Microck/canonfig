@@ -49,7 +49,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
-import { AnimatedNumber, Logo } from "@/shared/shared";
+import { AnimatedNumber, Logo, StatusMark } from "@/shared/shared";
 import { PLAIN, machine } from "@/shared/data";
 import { DemoSwitcher } from "@/shared/demo-switcher";
 import { useSharedState, useWorkspace, type View } from "./store";
@@ -294,13 +294,13 @@ export function Sidebar({ className, onNavigate, onStartTour }: { className?: st
         </button>
         {role === "source" ? (
           <button type="button" onClick={() => ws.setView("service")} className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
-            <span className={cn("mx-[4px] size-1.5 rounded-full", serviceInstalled ? "bg-ok" : "bg-faint")} />
-            {serviceInstalled ? "Source service running" : "Source service not installed"}
+            <StatusMark kind={serviceInstalled ? "ok" : "off"} />
+            <span>{serviceInstalled ? "Source service running" : "Source service not installed"}</span>
           </button>
         ) : (
           <button type="button" onClick={() => ws.setView("tunnel")} className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
-            <span className={cn("mx-[4px] size-1.5 rounded-full", !ws.tunnelConfigured ? "bg-faint" : tunnelUp ? "bg-ok" : "bg-bad")} />
-            {!ws.tunnelConfigured ? "No SSH tunnel set up" : tunnelUp ? "Tunnel connected to atlas" : "Tunnel stopped"}
+            <StatusMark kind={!ws.tunnelConfigured ? "off" : tunnelUp ? "ok" : "offline"} />
+            <span>{!ws.tunnelConfigured ? "No SSH tunnel set up" : tunnelUp ? "Tunnel connected to atlas" : "Tunnel stopped"}</span>
           </button>
         )}
       </div>

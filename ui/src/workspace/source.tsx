@@ -2,13 +2,12 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowRight, CalendarDots, Check, DotsThree, HourglassMedium, Key, UsersThree, type IconComponent } from "@/components/icons";
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
+import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import { PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/data";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
@@ -70,7 +69,7 @@ function SectionLink({ onClick, children }: { onClick: () => void; children: str
 }
 
 /** A row in the overview's side column that opens the matching settings page. */
-function StatusRow({ dot, label, value, title, onClick }: { dot?: string; label: string; value: string; title?: string; onClick: () => void }) {
+function StatusRow({ status, label, value, title, onClick }: { status?: StatusKind; label: string; value: string; title?: string; onClick: () => void }) {
   return (
     <button
       type="button"
@@ -78,7 +77,8 @@ function StatusRow({ dot, label, value, title, onClick }: { dot?: string; label:
       onClick={onClick}
       className="flex min-h-9 w-full items-center gap-2 border-b border-border/70 px-1 py-1.5 text-left text-base outline-none hover:bg-raised/50 focus-visible:bg-raised"
     >
-      <span className={cn("size-1.5 shrink-0 rounded-full", dot)} />
+      {/* Rows without a status keep the marker's slot so labels stay in one column. */}
+      {status ? <StatusMark kind={status} /> : <span aria-hidden className="w-3.5 shrink-0" />}
       <span className="shrink-0 whitespace-nowrap">{label}</span>
       {/* Wraps instead of truncating: a health warning cut mid-word is worse than a second line. */}
       <span className="ml-auto pl-3 text-right text-sm text-pretty text-muted-foreground">{value}</span>
@@ -381,13 +381,13 @@ export function SourceOverview() {
               <SectionLabel>This machine</SectionLabel>
               <div className="border-t border-border">
                 <StatusRow
-                  dot={serviceInstalled ? "bg-ok" : "bg-faint"}
+                  status={serviceInstalled ? "ok" : "off"}
                   label="Source service"
                   value={serviceInstalled ? "Running" : "Not installed"}
                   onClick={() => ws.setView("service")}
                 />
                 <StatusRow
-                  dot={warn.length ? "bg-warn" : "bg-ok"}
+                  status={warn.length ? "warn" : "ok"}
                   label="Health check"
                   title="Canonfig calls this doctor (canonfig doctor)."
                   value={warn.length ? warn.map(warningName).join(", ") : "All checks pass"}

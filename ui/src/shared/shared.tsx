@@ -122,23 +122,71 @@ export function Hint({ label, children, className }: { label: string; children: 
 }
 
 const TONE_TEXT = { ok: "text-ok", warn: "text-warn", act: "text-act", bad: "text-bad", muted: "text-faint" } as const;
-const TONE_BG = { ok: "bg-ok", warn: "bg-warn", act: "bg-act", bad: "bg-bad", muted: "bg-faint" } as const;
 const TONE_DITHER = { ok: "green", warn: "#f1c332", act: "orange", bad: "red", muted: "grey", purple: "purple" } as const;
 
 /**
- * Status dot + label. The label always carries the meaning; colour only
- * reinforces it. `self` uses the wording for the follower's own screens
+ * Every state a status marker shows. `bad` and `offline` share a colour, so shape
+ * carries the difference (and keeps all six apart in greyscale / colour-blindness).
+ * `off` covers not installed / not used / not applied.
+ */
+export type StatusKind = "ok" | "warn" | "act" | "bad" | "offline" | "off";
+
+const STATUS_TEXT: Record<StatusKind, string> = { ok: "text-ok", warn: "text-warn", act: "text-act", bad: "text-bad", offline: "text-bad", off: "text-faint" };
+
+/**
+ * Linear-style status marker: fill amount reads as progress (ring, half, three-quarter,
+ * check), × and a dashed ring mark the exceptions. 14px, centred by its flex parent.
+ * Decorative: the adjacent label always carries the meaning.
+ */
+export function StatusMark({ kind, className }: { kind: StatusKind; className?: string }) {
+  const ring = <circle cx="7" cy="7" r="5.25" stroke="currentColor" strokeWidth="1.5" />;
+  return (
+    <svg aria-hidden width="14" height="14" viewBox="0 0 14 14" fill="none" data-status-mark={kind} className={cn("shrink-0", STATUS_TEXT[kind], className)}>
+      {kind === "ok" && (
+        <>
+          <circle cx="7" cy="7" r="6" fill="currentColor" />
+          <path d="M4.4 7.2 6.2 9 9.6 5.3" stroke="var(--background)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </>
+      )}
+      {kind === "warn" && (
+        <>
+          {ring}
+          <path d="M7 3.5a3.5 3.5 0 0 1 0 7z" fill="currentColor" />
+        </>
+      )}
+      {kind === "act" && (
+        <>
+          {ring}
+          <path d="M7 7V3.5a3.5 3.5 0 1 1-3.5 3.5z" fill="currentColor" />
+        </>
+      )}
+      {kind === "bad" && (
+        <>
+          <circle cx="7" cy="7" r="6" fill="currentColor" />
+          <path d="m4.8 4.8 4.4 4.4m0-4.4-4.4 4.4" stroke="var(--background)" strokeWidth="1.6" strokeLinecap="round" />
+        </>
+      )}
+      {kind === "offline" && <circle cx="7" cy="7" r="5.25" stroke="currentColor" strokeWidth="1.5" strokeDasharray="2.2 2" />}
+      {kind === "off" && <circle cx="7" cy="7" r="5.25" stroke="currentColor" strokeWidth="1.5" strokeOpacity="0.9" />}
+    </svg>
+  );
+}
+
+/**
+ * Status marker + label. The label always carries the meaning; colour and shape
+ * only reinforce it. `self` uses the wording for the follower's own screens
  * ("You edited this" instead of "Edited on that machine").
  */
 export function StateLabel({ state, compact, self }: { state: FollowerState | "excluded"; compact?: boolean; self?: boolean }) {
   const meta = STATE_META[state];
   const label = (self && meta.selfLabel) || meta.label;
   const hint = (self && meta.selfHint) || meta.hint;
+  const kind: StatusKind = state === "offline" ? "offline" : meta.tone === "muted" ? "off" : meta.tone;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span className={cn("inline-flex items-center gap-1.5 whitespace-nowrap", TONE_TEXT[meta.tone])}>
-          <span aria-hidden className={cn("size-1.5 rounded-full", TONE_BG[meta.tone])} />
+          <StatusMark kind={kind} />
           {compact ? <span className="sr-only">{label}</span> : <span className="text-sm">{label}</span>}
         </span>
       </TooltipTrigger>

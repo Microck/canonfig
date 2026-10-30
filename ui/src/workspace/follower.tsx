@@ -9,7 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AnimatedNumber, DitherProgress, Hint, Mono, StateBand, StateLabel, Term } from "@/shared/shared";
+import { AnimatedNumber, DitherProgress, Hint, Mono, StateBand, StateLabel, StatusMark, Term } from "@/shared/shared";
 import { PLAIN, POLICY_TITLE, SECRETS_GROUP, configKeysFor, machine, resources, secrets as seedSecrets } from "@/shared/data";
 import { shq } from "@/shared/shell";
 import { FOLLOWER_PLAN, JOINED_PLAN, LOCAL_VALUES, conflictsIn, useSharedReader, useSharedState, useWorkspace, type Overlay, type PlanAction, type PlanItem } from "./store";
@@ -161,8 +161,11 @@ function ActionTag({ action }: { action: Shown }) {
 
 function Attention({ tone, title, children, actions }: { tone: "warn" | "act" | "bad"; title: ReactNode; children: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="grid grid-cols-[6px_minmax(0,1fr)] items-start gap-x-3 gap-y-2 border-b border-border/70 py-3 @min-[640px]:grid-cols-[6px_minmax(0,1fr)_auto]">
-      <span aria-hidden className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", tone === "warn" ? "bg-warn" : tone === "act" ? "bg-act" : "bg-bad")} />
+    <div className="grid grid-cols-[14px_minmax(0,1fr)] items-start gap-x-3 gap-y-2 border-b border-border/70 py-3 @min-[640px]:grid-cols-[14px_minmax(0,1fr)_auto]">
+      {/* h-lh centres the marker on the title's first line, whatever the marker's height. */}
+      <span className="flex h-lh items-center text-base">
+        <StatusMark kind={tone} />
+      </span>
       <div className="min-w-0">
         <h2 className="text-base font-medium">{title}</h2>
         <div className="mt-0.5 max-w-[68ch] text-base text-pretty text-muted-foreground">{children}</div>
@@ -453,7 +456,7 @@ export function FollowerOverview() {
                 <Prop label="Tunnel">
                   {ws.tunnelConfigured ? (
                     <button type="button" onClick={() => ws.setView("tunnel")} className="inline-flex items-center gap-1.5 rounded outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/60">
-                      <span className={cn("size-1.5 rounded-full", tunnelUp ? "bg-ok" : "bg-bad")} /> {tunnelUp ? "Connected" : "Stopped"}
+                      <StatusMark kind={tunnelUp ? "ok" : "offline"} /> {tunnelUp ? "Connected" : "Stopped"}
                     </button>
                   ) : (
                     "Not used"
@@ -1236,7 +1239,7 @@ export function TunnelView() {
           <div className="border-t border-border py-2">
             <Prop label="State">
               <span className="inline-flex items-center gap-1.5">
-                <span className={cn("size-1.5 rounded-full", up ? "bg-ok" : "bg-bad")} />{" "}
+                <StatusMark kind={up ? "ok" : "offline"} />{" "}
                 {up ? (startedHere || ws.justJoined ? "Connected just now" : "Connected for 3 h 12 min") : "Stopped"}
               </span>
             </Prop>

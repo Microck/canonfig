@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
+import { DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
 import { agentPolicy, doctor, harnessProject, installers } from "@/shared/data";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace } from "./store";
@@ -157,7 +157,7 @@ export function ServiceView() {
           <div className={cn("mt-1", settingsGroup)}>
             <SettingRow title="State">
               <span className="inline-flex items-center gap-1.5 text-base">
-                <span className={cn("size-1.5 rounded-full", installed ? "bg-ok" : "bg-faint")} />
+                <StatusMark kind={installed ? "ok" : "off"} />
                 {installed ? `Running since ${since}` : "Not installed"}
               </span>
             </SettingRow>
