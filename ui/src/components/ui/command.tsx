@@ -15,7 +15,7 @@ import {
   InputGroup,
   InputGroupAddon,
 } from "@/components/ui/input-group"
-import { MagnifyingGlass, Check } from "@phosphor-icons/react"
+import { MagnifyingGlass, Check } from "@/components/icons"
 
 function Command({
   className,

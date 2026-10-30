@@ -25,8 +25,8 @@ import {
   Stethoscope,
   UserPlus,
   UsersThree,
-  type Icon,
-} from "@phosphor-icons/react";
+  type IconComponent,
+} from "@/components/icons";
 import { cn } from "@/lib/utils";
 import {
   Command,
@@ -59,7 +59,7 @@ import { focusPageHeading, followLink, workspaceHref } from "./routes";
 interface NavItem {
   view: View;
   label: string;
-  icon: Icon;
+  icon: IconComponent;
 }
 
 const SOURCE_NAV: NavItem[] = [
@@ -104,9 +104,9 @@ function navFor(role: "source" | "follower") {
 const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl ";
 
 /*
- * Sidebar rows sit 12px in from the sidebar edge with 7px of padding. Icons are Phosphor regular at 16px: the
- * glyph fills about 13px of the box, close to the ~12px glyphs beside Linear's 13px labels, where regular at 14px
- * painted only 10-11px and bold at 14px stayed as small but heavier. A 16px box at x19 puts the icon's centre
+ * Sidebar rows sit 12px in from the sidebar edge with 7px of padding. Icons are Solar Linear at 16px (Bold for the
+ * active page): the glyph fills about 13px of the box, close to the ~12px glyphs beside Linear's 13px labels; a 14px
+ * box would paint only ~11px. A 16px box at x19 puts the icon's centre
  * at x27 and, with a 5px gap, the label at x40: the same centre and label edge as Linear's 14px box at x20 with 6px.
  * Inactive rows use the muted tier so the active page reads first; hover brings them to full foreground.
  */
@@ -127,7 +127,7 @@ function NavButton({ item, active, badge, onNavigate }: { item: NavItem; active:
         active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
       )}
     >
-      <Icon weight={active ? "fill" : "regular"} className="size-4 shrink-0" />
+      <Icon bold={active} className="size-4 shrink-0" />
       <span className="truncate">{item.label}</span>
       {badge && <span className="ml-auto">{badge}</span>}
     </a>

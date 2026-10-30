@@ -3,7 +3,7 @@
 import { memo, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
-import { LinkBreak } from "@phosphor-icons/react";
+import { LinkBreak } from "@/components/icons";
 import { usePrefersReducedMotion } from "@/lib/dither";
 import { STATE_META } from "@/shared/data";
 import { PACKET_FILL, PACKET_PATH, TONE_STROKE, type Link } from "./model";

@@ -1,7 +1,7 @@
 // Settings shared by both machine roles where the feature exists on both.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
-import { Check, Circle, HourglassMedium, Warning, X } from "@phosphor-icons/react";
+import { Check, Circle, HourglassMedium, Warning, X } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";

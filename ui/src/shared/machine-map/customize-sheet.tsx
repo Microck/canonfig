@@ -2,7 +2,7 @@
 import { useId } from "react";
 import { motion } from "motion/react";
 import { RadioGroup } from "radix-ui";
-import { ArrowCounterClockwise, X } from "@phosphor-icons/react";
+import { ArrowCounterClockwise, X } from "@/components/icons";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -117,7 +117,7 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
                       className="grid h-9 place-items-center rounded-md border border-transparent text-muted-foreground hover:bg-muted hover:text-foreground data-[state=checked]:border-border-strong data-[state=checked]:bg-raised data-[state=checked]:text-foreground"
                       style={checked ? { color: ACCENTS[look.accent].color } : undefined}
                     >
-                      <Icon className="size-[18px]" weight={checked ? "fill" : "regular"} />
+                      <Icon className="size-[18px]" bold={checked} />
                     </RadioGroup.Item>
                   </TooltipTrigger>
                   <TooltipContent>{label}</TooltipContent>

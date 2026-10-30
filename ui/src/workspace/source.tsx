@@ -1,7 +1,7 @@
 // Source screens use simulated data for overview, revisions, secrets, and publishing.
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowRight, CalendarDots, Check, DotsThree, HourglassMedium, Key, UsersThree, type Icon as PhosphorIcon } from "@phosphor-icons/react";
+import { ArrowRight, CalendarDots, Check, DotsThree, HourglassMedium, Key, UsersThree, type IconComponent } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -41,7 +41,7 @@ import {
 const AGENT_MODE_LABEL: Record<string, string> = { "deterministic-only": "Off", "agent-propose": "Proposes only", "agent-apply": "Applies fixes" };
 
 /** How one unpublished change reads in review lists, and where it is edited: items in their editor, groups and defaults on their Profile tab. */
-function pendingRow(ws: Workspace, p: PendingChange): { icon: PhosphorIcon; name: string; what: React.ReactNode; open: () => void } {
+function pendingRow(ws: Workspace, p: PendingChange): { icon: IconComponent; name: string; what: React.ReactNode; open: () => void } {
   if (p.area === "item") return { icon: KIND_ICON[p.resource.kind], name: p.id, what: <Mono className="ml-auto truncate">{p.resource.target}</Mono>, open: () => ws.go("profile", p.id) };
   const what = (text: string) => <span className="ml-auto truncate text-sm text-faint">{text}</span>;
   if (p.area === "group")
@@ -730,7 +730,7 @@ export function SecretsView() {
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon-xs" className="justify-self-end" aria-label={`Actions for ${s.name}`}>
-                          <DotsThree weight="bold" />
+                          <DotsThree />
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">

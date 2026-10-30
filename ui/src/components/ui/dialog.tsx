@@ -3,7 +3,7 @@ import { cn } from "cn"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
-import { X } from "@phosphor-icons/react"
+import { X } from "@/components/icons"
 
 function Dialog({
   ...props

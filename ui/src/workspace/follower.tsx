@@ -1,7 +1,7 @@
 // Follower screens use simulated sync plans, schedules, local settings, secrets, tunnels, and enrollment.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
-import { ArrowRight, Check, Circle, DotsThree, HourglassMedium, Pause, Plus, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowRight, Check, Circle, DotsThree, HourglassMedium, Pause, Plus, WarningCircle, X } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -412,7 +412,7 @@ export function FollowerOverview() {
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="icon-xs" aria-label="This machine: more actions">
-                        <DotsThree weight="bold" />
+                        <DotsThree />
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-60">

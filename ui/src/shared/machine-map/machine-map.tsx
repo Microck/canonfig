@@ -17,7 +17,7 @@ import {
   type FitViewOptions,
   type NodeChange,
 } from "@xyflow/react";
-import { ArrowCounterClockwise, CornersOut, EyeSlash, MagnifyingGlassMinus, MagnifyingGlassPlus } from "@phosphor-icons/react";
+import { ArrowCounterClockwise, CornersOut, EyeSlash, MagnifyingGlassMinus, MagnifyingGlassPlus } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { usePrefersReducedMotion } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";

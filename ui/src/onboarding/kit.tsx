@@ -1,7 +1,7 @@
 // Shared components for the simulated first-run flow.
 import { useEffect, useId, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { toast } from "sonner";
-import { CaretRight, Check, Copy, Question, WarningCircle } from "@phosphor-icons/react";
+import { CaretRight, Check, Copy, Question, WarningCircle } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { CollapsibleTrigger, Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
@@ -201,7 +201,7 @@ export function Stepper({ steps, step }: { steps: string[]; step: number }) {
           >
             {i < step ? (
               <>
-                <Check aria-hidden weight="bold" className="size-3" />
+                <Check aria-hidden className="size-3" />
                 <span className="sr-only">Done:</span>
               </>
             ) : (

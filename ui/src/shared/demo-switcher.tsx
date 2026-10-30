@@ -1,6 +1,6 @@
 // Demo controls switch between simulated machine roles without changing the backend.
 import { useState } from "react";
-import { CaretDown } from "@phosphor-icons/react";
+import { CaretDown } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import type { Role } from "./data";
 import { focusPageHeading, followLink, roleHref } from "@/workspace/routes";

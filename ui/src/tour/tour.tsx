@@ -9,7 +9,7 @@
 // visual (pointer-events: none); a transparent blocker underneath the card
 // swallows clicks, so the highlighted control can't fire while it's explained.
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, X } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowRight, X } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { fillStyle } from "@/lib/dither";
 import { Button } from "@/components/ui/button";

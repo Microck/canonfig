@@ -10,7 +10,7 @@
 //      re-openable from that page's "?" button.
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowRight, Check, Signpost, X } from "@phosphor-icons/react";
+import { ArrowRight, Check, Signpost, X } from "@/components/icons";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -111,7 +111,7 @@ export function GetStarted() {
     return (
       <section data-tour="get-started" aria-label="Get started" className="flex items-center gap-3 border-b border-border px-8 py-3">
         <span aria-hidden className="grid size-5 place-items-center rounded-full bg-ok/15 text-ok">
-          <Check weight="bold" className="size-3" />
+          <Check className="size-3" />
         </span>
         <p className="text-base">You're set up. Every first step is done.</p>
         <Button variant="ghost" size="sm" className="ml-auto text-muted-foreground" onClick={hide}>
@@ -151,7 +151,7 @@ export function GetStarted() {
                 item.done ? "border-transparent bg-ok/15 text-ok" : item === next ? "border-foreground/50 text-foreground" : "border-border-strong text-faint",
               )}
             >
-              {item.done ? <Check weight="bold" className="size-3" /> : i + 1}
+              {item.done ? <Check className="size-3" /> : i + 1}
             </span>
             <span className="min-w-0 flex-1">
               <span className={cn("block text-base", item.done ? "text-muted-foreground line-through decoration-faint" : "text-foreground")}>

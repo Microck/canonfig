@@ -2,7 +2,7 @@
 import { memo, use, type ComponentProps } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Handle, NodeToolbar, Position, type Node, type NodeProps } from "@xyflow/react";
-import { AppleLogo, ArrowSquareOut, LinuxLogo, PaintBrush, Plus, WindowsLogo, type Icon } from "@phosphor-icons/react";
+import { ArrowSquareOut, PaintBrush, Plus } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { DitherShader, fillStyle, usePrefersReducedMotion } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -11,11 +11,9 @@ import { StateLabel, Term } from "@/shared/shared";
 import type { Follower, FollowerState } from "@/shared/data";
 import { ACCENTS, ADD_W, DEVICE_ICONS, MapActionsContext, NODE_H, NODE_W, type ResolvedLook } from "./model";
 
-const PLATFORM: Record<Follower["platform"], { label: string; Icon: Icon }> = {
-  macos: { label: "macOS", Icon: AppleLogo },
-  linux: { label: "Linux", Icon: LinuxLogo },
-  windows: { label: "Windows", Icon: WindowsLogo },
-};
+// Platform reads as a word ahead of the purpose: Solar has no brand logos, and a name is clearer than a 14px glyph
+// behind a tooltip. It sits on the purpose line so the footer keeps its width for the revision and state.
+const PLATFORM: Record<Follower["platform"], string> = { macos: "macOS", linux: "Linux", windows: "Windows" };
 
 export type MachineNodeData = {
   kind: "source" | "follower";
@@ -95,7 +93,7 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
           <Tooltip>
             <TooltipTrigger asChild>
               <ToolbarButton aria-label={`Customize ${look.name}`} aria-expanded={customizing} onClick={() => actions.toggleCustomize(id)}>
-                <PaintBrush weight={customizing ? "fill" : "regular"} />
+                <PaintBrush bold={customizing} />
                 Customize
               </ToolbarButton>
             </TooltipTrigger>
@@ -148,19 +146,20 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
             {/* A working machine's tile carries a still hatch; the source's dither glow is the map's one moving signal. */}
             {data.active && <span aria-hidden className="absolute inset-0 opacity-30" style={fillStyle("hatched", { color: accent, cell: 1.5 })} />}
             <span aria-hidden className="absolute inset-0 rounded-md border" style={{ borderColor: `color-mix(in oklab, ${accent} 40%, transparent)` }} />
-            <Icon className="relative size-5" weight={lit ? "fill" : "regular"} />
+            <Icon className="relative size-5" bold={lit} />
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-baseline gap-1.5">
               <span className="truncate text-lg leading-[18px] font-semibold text-foreground">{look.name}</span>
               {look.name !== data.hostname && <span className="truncate font-mono text-xs text-faint">{data.hostname}</span>}
             </div>
-            <div className="truncate text-sm text-muted-foreground">{look.purpose || <span className="text-faint">No purpose set</span>}</div>
+            <div className="truncate text-sm text-muted-foreground">
+              {PLATFORM[data.platform]} · {look.purpose || <span className="text-faint">No purpose set</span>}
+            </div>
           </div>
         </div>
         <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-t border-border px-3 text-xs">
           <span className="flex min-w-0 items-center gap-1.5 text-faint">
-            <PlatformMark platform={data.platform} />
             {revision === null ? (
               "No revision yet"
             ) : (
@@ -185,21 +184,6 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
     </>
   );
 });
-
-function PlatformMark({ platform }: { platform: Follower["platform"] }) {
-  const { label, Icon } = PLATFORM[platform];
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="inline-flex shrink-0 text-muted-foreground">
-          <Icon className="size-3.5" aria-hidden />
-          <span className="sr-only">{label}</span>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  );
-}
 
 export const AddNode = memo(function AddNode() {
   const { invite } = use(MapActionsContext);

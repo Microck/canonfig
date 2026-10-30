@@ -3,7 +3,7 @@
 // are GUI-only presentation kept in this browser's localStorage; nothing here
 // is ever sent to the Source Machine or to followers.
 import { createContext, useSyncExternalStore } from "react";
-import type { Icon } from "@phosphor-icons/react";
+import type { IconComponent } from "@/components/icons";
 import {
   Briefcase,
   Circuitry,
@@ -17,7 +17,7 @@ import {
   Laptop,
   Monitor,
   Package,
-} from "@phosphor-icons/react";
+} from "@/components/icons";
 import { ditherPath } from "@/lib/dither";
 import type { Follower, FollowerState } from "@/shared/data";
 
@@ -39,7 +39,7 @@ export const DEVICE_ICONS = {
   vm: { label: "Virtual machine", Icon: Package },
   home: { label: "Home", Icon: House },
   work: { label: "Work", Icon: Briefcase },
-} as const satisfies Record<string, { label: string; Icon: Icon }>;
+} as const satisfies Record<string, { label: string; Icon: IconComponent }>;
 export type DeviceIcon = keyof typeof DEVICE_ICONS;
 
 /** Accents from the Canonfig dither palette; state colours stay on edges and labels. */

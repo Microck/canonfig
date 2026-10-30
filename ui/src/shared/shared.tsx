@@ -1,6 +1,6 @@
 // Shared display components used by the workspace and onboarding.
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { Question } from "@phosphor-icons/react";
+import { Question } from "@/components/icons";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { DitherShader, ditherMask, fillStyle } from "@/lib/dither";

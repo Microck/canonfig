@@ -2,7 +2,7 @@
 // adding a machine (invite), changing a machine's groups (new invitation + `enroll --replace`), and revoke.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { CaretRight, ListBullets, TreeStructure } from "@phosphor-icons/react";
+import { CaretRight, ListBullets, TreeStructure } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { workspaceHref } from "./routes";
 import { Button } from "@/components/ui/button";
@@ -154,10 +154,10 @@ function SourceMachinesView() {
         }
       >
         <ToolbarTab active={map} href={workspaceHref(ws.role, "machines", { focus: selected })}>
-          <TreeStructure weight={map ? "fill" : "regular"} className="size-3.5" /> Map
+          <TreeStructure bold={map} className="size-3.5" /> Map
         </ToolbarTab>
         <ToolbarTab active={!map} href={workspaceHref(ws.role, "machines", { machinesMode: "list", focus: selected })}>
-          <ListBullets weight={!map ? "fill" : "regular"} className="size-3.5" /> List
+          <ListBullets bold={!map} className="size-3.5" /> List
         </ToolbarTab>
       </Toolbar>
       <Body detail={detail}>
@@ -310,10 +310,10 @@ function FollowerMachinesView() {
       <PageHeader crumbs={["Machines"]} />
       <Toolbar>
         <ToolbarTab active={map} href={workspaceHref("follower", "machines")}>
-          <TreeStructure weight={map ? "fill" : "regular"} className="size-3.5" /> Map
+          <TreeStructure bold={map} className="size-3.5" /> Map
         </ToolbarTab>
         <ToolbarTab active={!map} href={workspaceHref("follower", "machines", { machinesMode: "list" })}>
-          <ListBullets weight={!map ? "fill" : "regular"} className="size-3.5" /> List
+          <ListBullets bold={!map} className="size-3.5" /> List
         </ToolbarTab>
       </Toolbar>
       <Body>

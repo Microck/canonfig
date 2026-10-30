@@ -1,7 +1,7 @@
 // First-run flow for a simulated, unconfigured machine.
 // `onDone` returns the setup choices that seed the new workspace role.
 import { useState, type FormEvent, type ReactNode } from "react";
-import { ArrowLeft, ArrowRight, Check, Circle, FileArrowUp, RadioButton } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowRight, Check, Circle, FileArrowUp, RadioButton } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { DitherShader } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
@@ -267,9 +267,9 @@ function RunList({ items, progress }: { items: string[]; progress: number }) {
             <li key={label} className="flex items-center gap-2.5">
               <span className="grid size-4 place-items-center">
                 {state === "done" ? (
-                  <Check weight="bold" className="size-3.5 text-ok" />
+                  <Check className="size-3.5 text-ok" />
                 ) : state === "running" ? (
-                  <RadioButton weight="fill" className="size-3.5 text-foreground" />
+                  <RadioButton bold className="size-3.5 text-foreground" />
                 ) : (
                   <Circle className="size-3 text-faint" />
                 )}
@@ -291,7 +291,7 @@ function Finished({ title, children, next, action, onOpen }: { title: string; ch
   return (
     <div>
       <span aria-hidden className="grid size-8 place-items-center rounded-full bg-ok/15 text-ok">
-        <Check weight="bold" className="size-4" />
+        <Check className="size-4" />
       </span>
       <h2 ref={heading} tabIndex={-1} className="mt-4 text-[17px] font-medium tracking-[-0.01em] outline-none">
         {title}

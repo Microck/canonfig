@@ -1,6 +1,6 @@
 // Workspace screens share a sidebar, detail panels, and command palette.
 import { useEffect, useRef, useState } from "react";
-import { List, X } from "@phosphor-icons/react";
+import { List, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Logo } from "@/shared/shared";

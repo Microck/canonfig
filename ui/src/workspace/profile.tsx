@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { toast } from "sonner";
-import { CaretRight, Plus, Sparkle, X } from "@phosphor-icons/react";
+import { CaretRight, Plus, Sparkle, X } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { workspaceHref } from "./routes";
 import { Button } from "@/components/ui/button";
@@ -313,7 +313,7 @@ export function ProfileView() {
             {proposed.length > 0 && (
               <AnimatedRow key="proposed">
                 <div className="flex items-center gap-3 border-b border-border bg-gold/8 px-4 py-2.5 text-sm">
-                  <Sparkle weight="fill" className="size-3.5 shrink-0 text-gold" />
+                  <Sparkle bold className="size-3.5 shrink-0 text-gold" />
                   <span className="min-w-0 text-pretty">
                     Canonfig found <AnimatedNumber value={proposed.length} /> {proposed.length === 1 ? "tool" : "tools"} in your agent config. Open each one to review it, remove
                     any you don't want, then publish revision {ws.nextSequence}. Nothing reaches other machines before you publish.

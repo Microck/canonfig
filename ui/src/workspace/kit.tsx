@@ -2,7 +2,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { AnimatePresence, motion, useReducedMotion, type Transition } from "motion/react";
-import { Check, Copy, FileText, Folder, Key, Question, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type Icon as PhosphorIcon } from "@phosphor-icons/react";
+import { Check, Copy, FileText, Folder, Key, Question, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type IconComponent } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -15,7 +15,7 @@ import { useSharedState, useWorkspace } from "./store";
 import { PAGE_TIPS } from "./page-tips";
 import { followLink, holdNavigation } from "./routes";
 
-export const KIND_ICON: Record<ResourceKind, PhosphorIcon> = {
+export const KIND_ICON: Record<ResourceKind, IconComponent> = {
   file: FileText,
   directory: Folder,
   config: SlidersHorizontal,
@@ -292,7 +292,7 @@ export function ListRow({
  * the same mark down the page; touch screens, which can't hover, always show it.
  */
 /** `minWidth` should match the list's rows so the band spans the sideways-scrolled list. */
-export function GroupRow({ icon: Icon, label, count, hint, minWidth }: { icon?: PhosphorIcon; label: string; count?: number; hint?: ReactNode; minWidth?: number }) {
+export function GroupRow({ icon: Icon, label, count, hint, minWidth }: { icon?: IconComponent; label: string; count?: number; hint?: ReactNode; minWidth?: number }) {
   return (
     <div className={cn("group/band flex h-[36px] items-center gap-2 rounded-lg bg-raised/50 text-base", LIST_INSET)} style={{ minWidth }}>
       {Icon && <Icon className="size-[14px] text-muted-foreground" />}
