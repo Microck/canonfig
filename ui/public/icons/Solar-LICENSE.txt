@@ -1,0 +1,9 @@
+Solar Icon Set
+Copyright (c) 480 Design
+https://github.com/480-Design/Solar-Icon-Set
+
+Licensed under the Creative Commons Attribution 4.0 International License (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/
+
+Canonfig embeds the Linear and Bold variants of the glyphs listed in ui/scripts/build-icons.py,
+unmodified, taken from the @iconify-json/solar package.
