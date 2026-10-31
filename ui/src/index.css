@@ -3,37 +3,17 @@
 @import "shadcn/tailwind.css";
 
 /*
- * UI text: Open Runde 1.0.1 (Laurids Kern, OFL), a rounded variant of Inter,
- * self-hosted from the official release in four static weights. Code text:
- * Ioskeley Mono 2.2.0 (Ahmed Hatem, OFL), an Iosevka build. Licences sit next
- * to the files in public/fonts.
- *
- * Open Runde ships no `tnum`, `cv01`, `ss03` or optical-size axis, so
- * `tabular-nums` has no effect on it; numbers that must align use font-mono.
+ * UI text: Manrope (Mikhail Sharanda, OFL), a variable font on the weight axis,
+ * self-hosted as one Latin woff2 from google/fonts. Code text: Ioskeley Mono
+ * 2.2.0 (Ahmed Hatem, OFL), an Iosevka build. Licences sit next to the files in
+ * public/fonts.
  */
 @font-face {
-  font-family: "Open Runde";
-  font-weight: 400;
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 200 800;
   font-display: swap;
-  src: url("/fonts/OpenRunde-Regular.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Open Runde";
-  font-weight: 500;
-  font-display: swap;
-  src: url("/fonts/OpenRunde-Medium.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Open Runde";
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/OpenRunde-Semibold.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Open Runde";
-  font-weight: 700;
-  font-display: swap;
-  src: url("/fonts/OpenRunde-Bold.woff2") format("woff2");
+  src: url("/fonts/Manrope.woff2") format("woff2");
 }
 @font-face {
   font-family: "Ioskeley Mono";
@@ -76,7 +56,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: "Open Runde", -apple-system, system-ui, sans-serif;
+  --font-sans: "Manrope", -apple-system, system-ui, sans-serif;
   --font-mono: "Ioskeley Mono", ui-monospace, monospace;
   /* Static faces exist only at 400/500/600/700. Linear's in-between weights
      (510/590/680) would make the browser jump to the next heavier file. */
