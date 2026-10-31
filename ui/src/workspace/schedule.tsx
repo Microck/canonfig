@@ -1,7 +1,9 @@
 // Schedule picker shared by the follower's Schedule and the profile's default.
 // Mirrors `canonfig schedule set <daily@HH:mm|weekly:Day[,Day...]@HH:mm>` and `--default`.
+import { useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Field, settingsGroup } from "./kit";
@@ -158,14 +160,12 @@ export function ScheduleFields({
           )}
           <Field label="Time" htmlFor={`${idPrefix}-time`} error={timeError}>
             <div className="flex items-center gap-2">
-              <Input
+              <TimeField
                 id={`${idPrefix}-time`}
-                type="time"
                 value={value.time}
-                onChange={(e) => onChange({ ...value, time: e.target.value })}
-                aria-invalid={timeError ? true : undefined}
-                aria-describedby={timeError ? `${idPrefix}-time-note` : undefined}
-                className="w-32 font-mono text-sm tabular-nums [color-scheme:dark]"
+                onChange={(time) => onChange({ ...value, time })}
+                invalid={!!timeError}
+                describedBy={timeError ? `${idPrefix}-time-note` : undefined}
               />
               <span className="text-sm text-faint">local time</span>
             </div>
@@ -173,5 +173,105 @@ export function ScheduleFields({
         </div>
       )}
     </div>
+  );
+}
+
+/** Every half hour of the day, the list offered under the time field. */
+const SLOTS = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).padStart(2, "0")}:${i % 2 ? "30" : "00"}`);
+
+/**
+ * A typed HH:mm field with a half-hour list underneath, the Google Calendar pattern.
+ * Replaces `<input type="time">`, whose picker the browser draws in its own light,
+ * unstyleable colours, and whose segment editing many people find fiddly. Typing stays
+ * the fast path and allows any minute; the list shows the format and covers the usual
+ * choices with one click. ArrowDown moves into the list, arrows walk it, Enter picks,
+ * Escape closes and keeps focus in the field.
+ */
+function TimeField({ id, value, onChange, invalid, describedBy }: { id: string; value: string; onChange: (time: string) => void; invalid: boolean; describedBy?: string }) {
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const pick = (time: string) => {
+    onChange(time);
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+  const focusSlot = (i: number) => listRef.current?.querySelectorAll<HTMLButtonElement>("button")[Math.max(0, Math.min(SLOTS.length - 1, i))]?.focus();
+  // The nearest slot at or before the typed time, so the list opens where the user is.
+  const current = Math.max(0, SLOTS.findLastIndex((s) => s <= value));
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverAnchor asChild>
+        <Input
+          ref={inputRef}
+          id={id}
+          type="text"
+          inputMode="numeric"
+          autoComplete="off"
+          placeholder="09:00"
+          maxLength={5}
+          value={value}
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={`${id}-list`}
+          aria-invalid={invalid || undefined}
+          aria-describedby={describedBy}
+          onChange={(e) => onChange(e.target.value)}
+          onClick={() => setOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setOpen(true);
+              requestAnimationFrame(() => focusSlot(current));
+            } else if (e.key === "Escape" && open) {
+              e.stopPropagation();
+              setOpen(false);
+            }
+          }}
+          className="w-24 font-mono text-sm tabular-nums"
+        />
+      </PopoverAnchor>
+      <PopoverContent
+        align="start"
+        className="w-24 gap-0 p-1"
+        // Keep typing in the field; the list only takes focus via ArrowDown.
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          requestAnimationFrame(() => listRef.current?.querySelectorAll("button")[current]?.scrollIntoView({ block: "center" }));
+        }}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        onInteractOutside={(e) => e.target === inputRef.current && e.preventDefault()}
+      >
+        <div ref={listRef} id={`${id}-list`} role="listbox" aria-label="Times" className="max-h-56 overflow-y-auto">
+          {SLOTS.map((slot, i) => (
+            <button
+              key={slot}
+              type="button"
+              role="option"
+              aria-selected={slot === value}
+              tabIndex={-1}
+              onClick={() => pick(slot)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  focusSlot(i + (e.key === "ArrowDown" ? 1 : -1));
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setOpen(false);
+                  inputRef.current?.focus();
+                }
+              }}
+              className={cn(
+                "flex h-8 w-full items-center rounded-md px-2 font-mono text-sm tabular-nums outline-none hover:bg-raised focus-visible:bg-raised focus-visible:text-foreground",
+                slot === value ? "text-foreground" : "text-muted-foreground",
+              )}
+            >
+              {slot}
+              {slot === value && <span aria-hidden className="ml-auto size-1.5 rounded-full bg-primary" />}
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
