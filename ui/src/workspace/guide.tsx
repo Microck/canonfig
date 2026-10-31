@@ -4,6 +4,8 @@
 // of context are skipped and forgotten):
 //   1. TourOffer/TourHost: a 4-stop tour (2 below md), offered in a corner card, never forced.
 //      Its last stop hands over to the Get started list, so it ends in doing.
+//      TourPicker ("Take the tour") lists it again with one opt-in chapter per area
+//      (tour-steps.tsx), each short enough to stay inside the same benchmark.
 //   2. GetStarted: Linear-style "learn by doing" list on Overview; each item
 //      ticks itself off from real state, not from clicking a checkbox.
 //   3. TipHost: one spotlight the first time a complex page opens (PAGE_TIPS),
@@ -14,10 +16,11 @@ import { ArrowRight, Check, FoldedMap, X } from "@/components/icons";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DitherBlock, DitherProgress } from "@/shared/shared";
 import { Tour, type TourStep } from "@/tour/tour";
 import { PAGE_TIPS } from "./page-tips";
-import { tourSteps } from "./tour-steps";
+import { tourChapters } from "./tour-steps";
 import { useWorkspace, type Workspace } from "./store";
 import { focusPageHeading } from "./routes";
 
@@ -193,7 +196,7 @@ function useDetailPanelOpen() {
 export function TourOffer() {
   const ws = useWorkspace();
   const reduce = useReducedMotion();
-  const busy = ws.tourOpen || ws.paletteOpen || ws.publishOpen || ws.inviteOpen;
+  const busy = ws.tourOpen || ws.tourPickerOpen || ws.paletteOpen || ws.publishOpen || ws.inviteOpen;
   // A short delay so the offer arrives after the page has settled, not with it.
   const [ready, setReady] = useState(false);
   useEffect(() => {
@@ -252,7 +255,7 @@ export function TourOffer() {
               Find your way around
             </h2>
             <p className="mt-1 text-sm text-pretty text-muted-foreground">Your Source, what syncs, your machines, and what to do next. About a minute.</p>
-            <Button size="sm" variant="secondary" className="mt-3 w-full" onClick={() => ws.setTourOpen(true)}>
+            <Button size="sm" variant="secondary" className="mt-3 w-full" onClick={() => ws.startTour("quick")}>
               Start the tour <ArrowRight />
             </Button>
           </div>
@@ -291,19 +294,101 @@ function narrowSteps(steps: TourStep[]): TourStep[] {
   return [topBar, ...steps.filter((s) => !sidebar.includes(s))];
 }
 
-/** The tour itself; steps are built once, the last one reads live state through a ref. */
+/** The picker's entries with each tour's sidebar stops folded for narrow screens; only the short tour has any. */
+function chaptersFor(ws: Workspace, live: () => Workspace) {
+  return tourChapters(ws, live).map((chapter) => ({ ...chapter, steps: narrowSteps(chapter.steps) }));
+}
+
+/**
+ * The running tour. WorkspaceApp keys it by tour id, so "Next chapter" mounts a fresh one; steps
+ * are built once per tour, and the short tour's last stop reads live state through a ref.
+ */
 export function TourHost() {
   const ws = useWorkspace();
   const live = useRef(ws);
   live.current = ws;
-  const [steps] = useState(() => narrowSteps(tourSteps(ws, () => live.current)));
-  const close = () => {
-    ws.setTourOpen(false);
-    // A Source fresh out of onboarding came to review the proposed tools; the tour passed
+  // `tour` only ever holds an id from this role's list: the picker, the offer and ?tour=1 ("quick").
+  const [chapter] = useState(() => chaptersFor(ws, () => live.current).find((c) => c.id === ws.tour)!);
+  const close = (finished: boolean) => {
+    ws.closeTour(finished);
+    // A Source fresh out of onboarding came to review the proposed tools; the short tour passed
     // through Overview, so put them back where they were headed (unless the last stop moved them).
-    if (ws.proposed.length > 0 && live.current.view === "overview") ws.setView("profile");
+    if (chapter.id === "quick" && ws.proposed.length > 0 && live.current.view === "overview") ws.setView("profile");
   };
-  return <Tour steps={steps} onClose={close} onFocusFallback={focusPageHeading} />;
+  return <Tour steps={chapter.steps} onClose={close} onFocusFallback={focusPageHeading} />;
+}
+
+/**
+ * "Take the tour": the short tour, then one chapter per area, each with what it covers, its
+ * length and a tick once finished. Finished chapters stay re-runnable.
+ */
+export function TourPicker() {
+  const ws = useWorkspace();
+  const chosen = useRef<string | null>(null);
+  return (
+    <Dialog open={ws.tourPickerOpen} onOpenChange={ws.setTourPickerOpen}>
+      <DialogContent
+        className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-md"
+        onCloseAutoFocus={() => {
+          // Start only after the dialog is gone and Radix has handed focus back to the opener,
+          // so the tour returns focus there when it ends and never fights this dialog's focus trap.
+          const id = chosen.current;
+          chosen.current = null;
+          if (id) requestAnimationFrame(() => ws.startTour(id));
+        }}
+      >
+        <DialogHeader>
+          <DialogTitle>Take the tour</DialogTitle>
+          <DialogDescription className="text-base text-pretty">Each chapter shows one area in a few steps.</DialogDescription>
+        </DialogHeader>
+        <ChapterList
+          onChoose={(id) => {
+            chosen.current = id;
+            ws.setTourPickerOpen(false);
+          }}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Inside DialogContent, so the steps are only built while the picker is mounted. */
+function ChapterList({ onChoose }: { onChoose: (id: string) => void }) {
+  const ws = useWorkspace();
+  const chapters = chaptersFor(ws, () => ws);
+  return (
+    <ul className="-mx-2 grid gap-px">
+      {chapters.map((chapter) => {
+        const done = ws.tourFinished(chapter.id);
+        return (
+          <li key={chapter.id}>
+            <button
+              type="button"
+              onClick={() => onChoose(chapter.id)}
+              className="flex min-h-11 w-full items-center gap-3 rounded-lg px-2 py-2 text-left outline-none hover:bg-raised/60 focus-visible:bg-raised focus-visible:ring-2 focus-visible:ring-ring/60"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block text-base font-medium text-foreground">
+                  {chapter.title}
+                  <span className="sr-only">{done ? ", done" : ""}</span>
+                </span>
+                <span className="block text-sm text-pretty text-muted-foreground">{chapter.summary}</span>
+              </span>
+              <span className="shrink-0 text-xs text-faint tabular-nums">{chapter.steps.length} steps</span>
+              {/* The column is always there, so step counts line up whether or not a row is ticked. */}
+              <span aria-hidden className="grid size-5 shrink-0 place-items-center">
+                {done && (
+                  <span className="grid size-5 place-items-center rounded-full bg-ok/15 text-ok">
+                    <Check className="size-3" />
+                  </span>
+                )}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 /** Opens a page's tip on its first visit, once nothing else is asking for attention. */
@@ -311,7 +396,7 @@ export function TipHost() {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
   const tip = PAGE_TIPS[role][ws.view];
-  const busy = ws.tourOpen || ws.tourOffered || ws.paletteOpen || ws.publishOpen || ws.inviteOpen || ws.changeGroups !== null;
+  const busy = ws.tourOpen || ws.tourPickerOpen || ws.tourOffered || ws.paletteOpen || ws.publishOpen || ws.inviteOpen || ws.changeGroups !== null;
   const { openTip, activeTip, view } = ws;
   const seen = ws.tipSeen(view);
 

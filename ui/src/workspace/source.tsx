@@ -178,7 +178,7 @@ export function SourceOverview() {
         {/* Two columns only when the page has room; narrower, the side column moves below instead of squeezing the main one to nothing. */}
         <div className="grid grid-cols-[minmax(0,1fr)] gap-8 px-4 pt-6 pb-20 @3xl:grid-cols-[minmax(0,1fr)_320px] @3xl:gap-12 @3xl:px-8">
           <div className="min-w-0 space-y-8">
-            <section>
+            <section data-tour="overview-pending">
               <SectionLabel action={<SectionLink onClick={() => ws.setView("profile")}>Profile</SectionLink>}>Unpublished changes</SectionLabel>
               <div className="border-t border-border">
                 <RowPresence>
@@ -212,7 +212,7 @@ export function SourceOverview() {
             </section>
 
             {ws.followers.length > 0 && (
-              <section>
+              <section data-tour="overview-behind">
                 <SectionLabel action={<SectionLink onClick={() => ws.setView("machines")}>All machines</SectionLink>}>Not up to date, and why</SectionLabel>
                 <div className="border-t border-border">
                   <RowPresence>
@@ -261,7 +261,7 @@ export function SourceOverview() {
             )}
 
             {ws.followers.length > 0 && gridResources.length > 0 && (
-              <section>
+              <section data-tour="overview-grid">
                 <SectionLabel>
                   <span className="inline-flex items-center gap-1.5">
                     Each item on each machine
@@ -377,7 +377,7 @@ export function SourceOverview() {
                 )}
               </div>
             </section>
-            <section>
+            <section data-tour="overview-this-machine">
               <SectionLabel>This machine</SectionLabel>
               <div className="border-t border-border">
                 <StatusRow
@@ -548,7 +548,7 @@ export function RevisionsView() {
           <EmptyState title="No revisions yet" body="Each time you publish the profile, it becomes a numbered revision here that machines can apply." />
         ) : (
           <>
-            <ListHead cols={cols} minWidth={colsMin}>
+            <ListHead cols={cols} minWidth={colsMin} data-tour="revisions-list">
               <span>
                 <Term term="Profile Revision">Revision</Term>
               </span>
@@ -560,7 +560,7 @@ export function RevisionsView() {
             <RowPresence>
               {ws.pending.length > 0 && (
                 <AnimatedRow key="next">
-                  <ListRow cols={cols} minWidth={colsMin} onClick={() => ws.setPublishOpen(true)} className="text-muted-foreground">
+                  <ListRow cols={cols} minWidth={colsMin} onClick={() => ws.setPublishOpen(true)} className="text-muted-foreground" data-tour="revisions-next">
                     <span className="text-warn tabular-nums">{ws.nextSequence}</span>
                     <span className="truncate">
                       {ws.pending.length} unpublished {ws.pending.length === 1 ? "change" : "changes"}
@@ -573,7 +573,7 @@ export function RevisionsView() {
               )}
               {ws.revisions.map((r) => (
                 <AnimatedRow key={r.sequence}>
-                  <ListRow cols={cols} minWidth={colsMin} selected={selected === String(r.sequence)} onClick={() => ws.go("revisions", String(r.sequence))}>
+                  <ListRow cols={cols} minWidth={colsMin} selected={selected === String(r.sequence)} onClick={() => ws.go("revisions", String(r.sequence))} data-tour="revisions-list">
                     <span className="font-medium tabular-nums">{r.sequence}</span>
                     <span className="truncate">{r.changes}</span>
                     <Mono className="truncate">{r.digest}</Mono>
@@ -681,17 +681,17 @@ export function SecretsView() {
         crumbs={["Secrets"]}
         actions={
           <>
-            <Button variant="outline" size="sm" disabled={others === 0} onClick={share}>
+            <Button variant="outline" size="sm" disabled={others === 0} onClick={share} data-tour="secrets-share">
               Share with more machines
             </Button>
-            <Button size="sm" variant="primary" onClick={() => openSet()}>
+            <Button size="sm" variant="primary" onClick={() => openSet()} data-tour="secrets-set">
               Set secret
             </Button>
           </>
         }
       />
       <Body>
-        <p className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
+        <p data-tour="secrets-about" className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
           Canonfig keeps these in this machine's credential store and sends them only to machines that{" "}
           <Term term="Follower Group">
             <span className="lowercase">{PLAIN.secretsGroup}</span>
@@ -711,7 +711,7 @@ export function SecretsView() {
           />
         ) : (
           <>
-            <ListHead cols={cols} minWidth={colsMin}>
+            <ListHead cols={cols} minWidth={colsMin} data-tour="secrets-list">
               <span>Name</span>
               <span>Updated</span>
               <span>Eligible machines</span>
@@ -720,7 +720,7 @@ export function SecretsView() {
             <RowPresence>
               {ws.secrets.map((s) => (
                 <AnimatedRow key={s.name}>
-                  <ListRow cols={cols} minWidth={colsMin}>
+                  <ListRow cols={cols} minWidth={colsMin} data-tour="secrets-list">
                     <span className="flex min-w-0 items-center gap-2">
                       <Key className="size-3.5 shrink-0 text-faint" />
                       <span className="truncate font-mono text-sm">{s.name}</span>

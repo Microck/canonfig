@@ -243,10 +243,12 @@ export const ROW_FILL = "before:absolute before:inset-x-0 before:inset-y-[4px] b
 /**
  * Column header for a dense list. `cols` is a CSS grid template shared with its rows.
  * `minWidth` keeps the columns from squeezing below it: a narrower page scrolls the list sideways instead.
+ * `data-tour` lets a tour chapter spotlight a list: give the head and its rows the same id.
  */
-export function ListHead({ cols, minWidth, children }: { cols: string; minWidth?: number; children: ReactNode }) {
+export function ListHead({ cols, minWidth, children, "data-tour": tour }: { cols: string; minWidth?: number; children: ReactNode; "data-tour"?: string }) {
   return (
     <div
+      data-tour={tour}
       className={cn("sticky top-0 z-10 grid h-[28px] items-center gap-3 border-b border-border bg-panel text-xs font-medium text-faint", LIST_INSET)}
       style={{ gridTemplateColumns: cols, minWidth }}
     >
@@ -262,6 +264,7 @@ export function ListRow({
   onClick,
   children,
   className,
+  "data-tour": tour,
 }: {
   cols: string;
   minWidth?: number;
@@ -269,6 +272,7 @@ export function ListRow({
   onClick?: () => void;
   children: ReactNode;
   className?: string;
+  "data-tour"?: string;
 }) {
   const style = { gridTemplateColumns: cols, minWidth };
   // No rule between rows: the rounded hover and selected fills separate them, as in Linear's lists.
@@ -279,9 +283,10 @@ export function ListRow({
     selected ? "before:bg-raised" : onClick && "hover:before:bg-raised/50",
     className,
   );
-  if (!onClick) return <div className={base} style={style}>{children}</div>;
+  if (!onClick) return <div data-tour={tour} className={base} style={style}>{children}</div>;
   return (
     <button
+      data-tour={tour}
       type="button"
       onClick={onClick}
       aria-current={selected || undefined}

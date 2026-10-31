@@ -4,7 +4,7 @@ import { List, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Logo } from "@/shared/shared";
-import { TipHost, TourHost, TourOffer } from "./guide";
+import { TipHost, TourHost, TourOffer, TourPicker } from "./guide";
 import { focusPageHeading, followLink, navigate, workspaceHref, type AppRoute } from "./routes";
 import { Palette, Sidebar } from "./frame";
 import { ChangeGroupsDialog, InviteDialog, MachinesView } from "./machines";
@@ -62,14 +62,15 @@ function Frame() {
   const Screen = screens[ws.view];
   // Move focus to the new page's h1 on every page change after the first render, so a fresh load still gives the
   // first Tab to "Skip to content". An open overlay (nav sheet) still traps focus here, so its own close handler
-  // moves focus instead.
+  // moves focus instead. The tour card (aria-modal, no Radix data-state) switches pages from its own steps and
+  // keeps focus on its buttons, so it counts as an open overlay too.
   const shownView = useRef(ws.view);
   useEffect(() => {
     if (shownView.current === ws.view) return;
     shownView.current = ws.view;
     // Wait until the outgoing page's effects have cleaned up before choosing the new focus target.
     const frame = requestAnimationFrame(() => {
-      if (!document.querySelector('[role="dialog"][data-state="open"]')) focusPageHeading();
+      if (!document.querySelector('[role="dialog"][data-state="open"], [role="dialog"][aria-modal="true"]')) focusPageHeading();
     });
     return () => cancelAnimationFrame(frame);
   }, [ws.view]);
@@ -92,7 +93,9 @@ function Frame() {
         </Suspense>
       </main>
       <Palette />
-      {ws.tourOpen && <TourHost />}
+      {/* Keyed by tour, so moving to the next chapter starts a fresh tour at its first stop. */}
+      {ws.tour && <TourHost key={ws.tour} />}
+      <TourPicker />
       <TourOffer />
       <TipHost />
       {ws.role === "source" ? (
@@ -115,7 +118,7 @@ function MobileNav() {
   const ws = useWorkspace();
   const [open, setOpen] = useState(false);
   const openedOn = useRef(ws.view);
-  const startTourOnClose = useRef(false);
+  const openToursOnClose = useRef(false);
   // Close on page change during render rather than in an effect, so the new page never paints under an open sheet.
   const [shownView, setShownView] = useState(ws.view);
   if (shownView !== ws.view) {
@@ -139,14 +142,15 @@ function MobileNav() {
           className="w-[244px] gap-0 border-sidebar-border bg-sidebar p-0"
           // Radix returns focus to the menu button on close; after a page change the new heading should get it.
           onCloseAutoFocus={(event) => {
-            // Hand focus to the tour only after the sheet's focus trap has been removed.
-            if (startTourOnClose.current) {
+            // Open the tour picker only after the sheet's focus trap has been removed, so no
+            // spotlight ever sits under the open sheet.
+            if (openToursOnClose.current) {
               event.preventDefault();
-              startTourOnClose.current = false;
-              // Let Radix finish focus-scope teardown before choosing the tour's return target.
+              openToursOnClose.current = false;
+              // Let Radix finish focus-scope teardown; the heading is then where focus returns after the tour.
               requestAnimationFrame(() => {
                 focusPageHeading();
-                ws.setTourOpen(true);
+                ws.setTourPickerOpen(true);
               });
               return;
             }
@@ -167,8 +171,8 @@ function MobileNav() {
           <Sidebar
             className="min-h-0 w-full flex-1 [&_[data-tour=machine]]:min-h-11"
             onNavigate={() => setOpen(false)}
-            onStartTour={() => {
-              startTourOnClose.current = true;
+            onOpenTours={() => {
+              openToursOnClose.current = true;
               setOpen(false);
             }}
           />

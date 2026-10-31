@@ -122,6 +122,8 @@ export function ScheduleFields({
           value={value.cadence}
           onValueChange={(c: Cadence) => onChange({ ...value, cadence: c, days: c === "days" && value.days.length === 0 ? WEEKDAYS : value.days })}
           aria-label="When"
+          // Spotlit by both the Profile defaults and the Follower Schedule tour chapters.
+          data-tour="schedule-when"
           className={settingsGroup}
         >
           {options.map((o) => (

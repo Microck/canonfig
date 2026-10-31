@@ -360,7 +360,7 @@ export function FollowerOverview() {
         />
         <GetStarted />
         <div className="grid grid-cols-1 gap-8 px-4 pt-6 pb-20 sm:px-8 @min-[900px]:grid-cols-[minmax(0,1fr)_300px] @min-[900px]:gap-12">
-          <section className="min-w-0">
+          <section data-tour="follower-needs" className="min-w-0">
             <SectionLabel>Needs you</SectionLabel>
             <div className="border-t border-border">
               <InterruptedNotice />
@@ -409,7 +409,7 @@ export function FollowerOverview() {
             </div>
           </section>
           <aside className="space-y-8">
-            <section>
+            <section data-tour="follower-this-machine">
               <SectionLabel
                 action={
                   <DropdownMenu>
@@ -465,7 +465,7 @@ export function FollowerOverview() {
                 {ws.unenrolled && <Prop label="Syncing">Stopped</Prop>}
               </div>
             </section>
-            <section>
+            <section data-tour="follower-runs">
               <SectionLabel>Recent updates</SectionLabel>
               <ol className="border-t border-border text-base">
                 <RowPresence>
@@ -545,6 +545,7 @@ export function SyncView() {
         actions={
           <>
             <Button
+              data-tour="sync-check"
               variant="ghost"
               size="sm"
               disabled={running || checking || blocks.connection !== null}
@@ -561,7 +562,7 @@ export function SyncView() {
               {checking && <HourglassMedium />} {checking ? "Checking…" : "Check for updates"}
             </Button>
             {ws.phase !== "done" && (
-              <Button size="sm" variant="primary" disabled={running || ws.interrupted || blocks.connection !== null} onClick={ws.applyPlan}>
+              <Button size="sm" variant="primary" disabled={running || ws.interrupted || blocks.connection !== null} onClick={ws.applyPlan} data-tour="sync-apply">
                 {running ? "Applying…" : "Apply changes"}
               </Button>
             )}
@@ -579,7 +580,7 @@ export function SyncView() {
           ) : undefined
         }
       >
-        <section className="relative isolate overflow-hidden border-b border-border" aria-live="polite">
+        <section data-tour="sync-summary" className="relative isolate overflow-hidden border-b border-border" aria-live="polite">
           <StateBand tone={ws.phase === "plan" || paused > 0 ? "warn" : "ok"} mode={running ? "running" : "idle"} className="-z-10 opacity-70" />
           <div className="px-4 py-4">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2 text-base">
@@ -625,12 +626,12 @@ export function SyncView() {
           </div>
         </section>
         {(ws.interrupted || ws.humanAction) && (
-          <div className="px-4">
+          <div data-tour="sync-recover" className="px-4">
             <InterruptedNotice />
             <HumanActionItem />
           </div>
         )}
-        <ListHead cols={cols}>
+        <ListHead cols={cols} data-tour="sync-plan">
           <span />
           <span>Change</span>
           <span>Item</span>
@@ -640,7 +641,7 @@ export function SyncView() {
         {steps.map((p) => {
           const Icon = KIND_ICON[p.kind];
           return (
-            <ListRow key={p.resource} cols={cols} selected={selected === p.resource} onClick={() => setSelected(p.resource)}>
+            <ListRow key={p.resource} cols={cols} selected={selected === p.resource} onClick={() => setSelected(p.resource)} data-tour={isPaused(p) ? "sync-paused" : "sync-plan"}>
               <StepIcon step={p} />
               <span className="flex items-center gap-1">
                 <ActionTag action={p.action} />
@@ -817,6 +818,7 @@ export function ScheduleView() {
         crumbs={["Schedule"]}
         actions={
           <Button
+            data-tour="schedule-save"
             size="sm"
             variant="primary"
             disabled={!dirty || error !== null || stopped !== null}
@@ -839,7 +841,7 @@ export function ScheduleView() {
               : saved === null && " No schedule is set yet, so this machine only updates when you apply from Sync. Save one to turn it on."}
           </p>
           <ScheduleFields idPrefix="sch" value={draft} onChange={setDraft} defaultLabel={defaultLabel} />
-          <div className={cn("mt-8", settingsGroup)}>
+          <div data-tour="schedule-next" className={cn("mt-8", settingsGroup)}>
             {/* Only a saved schedule has a real next check; an edited or never-saved one is a preview. */}
             <SettingRow title={!stopped && dirty ? "If you save this" : "Next check"}>{stopped ? "None" : nextCheck(draft, DEFAULT_TIME)}</SettingRow>
             <SettingRow title="Runs through" description="launchd agent">
@@ -878,7 +880,7 @@ export function OverlaysView() {
       <PageHeader
         crumbs={[PLAIN.localNav]}
         actions={
-          <Button size="sm" variant="primary" onClick={startAdding}>
+          <Button size="sm" variant="primary" onClick={startAdding} data-tour="overlays-add">
             Keep a key on this machine
           </Button>
         }
@@ -924,7 +926,7 @@ export function OverlaysView() {
           />
         ) : (
           <>
-            <ListHead cols={cols}>
+            <ListHead cols={cols} data-tour="overlays-list">
               <span>Item</span>
               <span>File</span>
               <span>Keys kept here</span>
@@ -932,7 +934,7 @@ export function OverlaysView() {
             <RowPresence>
               {ws.overlays.map((o) => (
                 <AnimatedRow key={o.resource}>
-                  <ListRow cols={cols} selected={selected === o.resource && !adding} onClick={() => setSelected(o.resource)}>
+                  <ListRow cols={cols} selected={selected === o.resource && !adding} onClick={() => setSelected(o.resource)} data-tour="overlays-list">
                     <span className="truncate font-medium">{o.resource}</span>
                     <Mono className="truncate">{o.target}</Mono>
                     <Mono className="truncate text-foreground">{o.keys.join(", ")}</Mono>
@@ -1142,6 +1144,7 @@ export function FollowerSecretsView() {
         crumbs={["Secrets"]}
         actions={
           <Button
+            data-tour="secrets-update"
             size="sm"
             variant="primary"
             disabled={refresh.busy || connection !== null}
@@ -1164,16 +1167,16 @@ export function FollowerSecretsView() {
         }
       />
       <Body>
-        <p className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
+        <p data-tour="secrets-about" className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
           This machine <span className="lowercase">{PLAIN.secretsGroup}</span> (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from atlas
           into the macOS Keychain. Last updated {refresh.updated}.{connection && ` ${connection}`}
         </p>
-        <ListHead cols={cols}>
+        <ListHead cols={cols} data-tour="secrets-list">
           <span>Name</span>
           <span>Updated on atlas</span>
         </ListHead>
         {seedSecrets.map((s) => (
-          <ListRow key={s.name} cols={cols}>
+          <ListRow key={s.name} cols={cols} data-tour="secrets-list">
             <span className="truncate font-mono text-sm">{s.name}</span>
             <span className="text-sm text-muted-foreground tabular-nums">{s.updated}</span>
           </ListRow>
@@ -1236,7 +1239,7 @@ export function TunnelView() {
             source service never has to listen on the network.
           </p>
           <SectionLabel>Status</SectionLabel>
-          <div className="border-t border-border py-2">
+          <div data-tour="tunnel-status" className="border-t border-border py-2">
             <Prop label="State">
               <span className="inline-flex items-center gap-1.5">
                 <StatusMark kind={up ? "ok" : "offline"} />{" "}
@@ -1330,7 +1333,7 @@ export function MachineView() {
           </div>
 
           <SectionLabel className="mt-6">Profile</SectionLabel>
-          <div className="border-t border-border pt-3">
+          <div data-tour="enrollment-profile" className="border-t border-border pt-3">
             <Field
               label={<Term term="Machine Profile">Profile</Term>}
               htmlFor="m-prof"
@@ -1358,7 +1361,7 @@ export function MachineView() {
           </div>
 
           <SectionLabel className="mt-10">{PLAIN.unenroll}</SectionLabel>
-          <div className="flex flex-col items-start gap-3 rounded-md border border-bad/30 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">
+          <div data-tour="enrollment-stop" className="flex flex-col items-start gap-3 rounded-md border border-bad/30 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">
             <p className="min-w-0 text-sm text-pretty text-muted-foreground">
               Stops updates and deletes this machine's identity. Files stay where they are. Canonfig calls this <Mono>unenroll</Mono>.
             </p>

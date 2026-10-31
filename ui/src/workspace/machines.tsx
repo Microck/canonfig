@@ -147,7 +147,7 @@ function SourceMachinesView() {
       <PageHeader
         crumbs={["Machines"]}
         actions={
-          <Button size="sm" variant="primary" onClick={() => ws.setInviteOpen(true)}>
+          <Button size="sm" variant="primary" onClick={() => ws.setInviteOpen(true)} data-tour="machines-add">
             Add machine
           </Button>
         }
@@ -170,7 +170,7 @@ function SourceMachinesView() {
       </Toolbar>
       <Body detail={detail}>
         {map ? (
-          <div className="flex h-full flex-col">
+          <div data-tour="machine-map" className="flex h-full flex-col">
             <MachineMap
               role="source"
               followers={ws.followers}
@@ -201,7 +201,7 @@ function SourceMachinesView() {
               // The list is its own scroll box on both axes, sized to its rows up to the space left above the invitations.
               // Inside it the header sticks to the top and names stick to the left; the header row (z-10) stays above the
               // pinned name cells (z-[1]), so its corner covers both while scrolling.
-              <div className="min-h-0 overflow-auto">
+              <div data-tour="machines-list" className="min-h-0 overflow-auto">
                 <ListHead cols={cols} minWidth={colsMin}>
                   <span className={PINNED}>
                     <Term term="Follower Machine">Machine</Term>
@@ -325,7 +325,7 @@ function FollowerMachinesView() {
         </ToolbarTab>
       </Toolbar>
       <Body>
-        {map ? <div className="flex h-full flex-col">
+        {map ? <div data-tour="machine-map" className="flex h-full flex-col">
           <MachineMap
             role="follower"
             followers={[self]}

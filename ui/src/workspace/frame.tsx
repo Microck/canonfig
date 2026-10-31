@@ -164,8 +164,11 @@ function Count({ value, tone = "muted", label }: { value: number; tone?: "muted"
   );
 }
 
-/** The full navigation column. Frame shows it inline from md up and inside a Sheet below md. */
-export function Sidebar({ className, onNavigate, onStartTour }: { className?: string; onNavigate?: () => void; onStartTour?: () => void }) {
+/**
+ * The full navigation column. Frame shows it inline from md up and inside a Sheet below md, where
+ * `onOpenTours` waits for the sheet to close before opening the tour picker.
+ */
+export function Sidebar({ className, onNavigate, onOpenTours }: { className?: string; onNavigate?: () => void; onOpenTours?: () => void }) {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
   const { main, settings } = navFor(role);
@@ -303,7 +306,7 @@ export function Sidebar({ className, onNavigate, onStartTour }: { className?: st
         <button
           type="button"
           data-tour="tour"
-          onClick={onStartTour ?? (() => ws.setTourOpen(true))}
+          onClick={onOpenTours ?? (() => ws.setTourPickerOpen(true))}
           className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
         >
           <FoldedMap className="size-3.5" />
@@ -405,7 +408,7 @@ export function Palette() {
               </CommandItem>
             </>
           )}
-          <CommandItem onSelect={() => run(() => ws.setTourOpen(true))}>
+          <CommandItem onSelect={() => run(() => ws.setTourPickerOpen(true))}>
             <FoldedMap className="text-muted-foreground" />
             Take the tour
           </CommandItem>

@@ -262,10 +262,10 @@ export function ProfileView() {
         crumbs={["Profile", defaults.name]}
         actions={
           <>
-            <Button variant="outline" size="sm" onClick={() => setDiscoverOpen(true)}>
+            <Button variant="outline" size="sm" onClick={() => setDiscoverOpen(true)} data-tour="profile-add">
               Discover tools
             </Button>
-            <Button variant={ws.pending.length === 0 && !detail && tab !== "defaults" ? "primary" : "outline"} size="sm" onClick={startCreating}>
+            <Button variant={ws.pending.length === 0 && !detail && tab !== "defaults" ? "primary" : "outline"} size="sm" onClick={startCreating} data-tour="profile-add">
               <Plus />
               Add item
             </Button>
@@ -279,7 +279,7 @@ export function ProfileView() {
       />
       <Toolbar
         right={
-          <span className="flex min-w-0 items-center gap-1.5 text-sm whitespace-nowrap text-faint">
+          <span data-tour="profile-file" className="flex min-w-0 items-center gap-1.5 text-sm whitespace-nowrap text-faint">
             <span className="hidden sm:inline">Profile file</span>
             <button
               type="button"
@@ -337,7 +337,7 @@ export function ProfileView() {
             />
           ) : (
             <>
-              <ListHead cols={COLS} minWidth={COLS_MIN}>
+              <ListHead cols={COLS} minWidth={COLS_MIN} data-tour="profile-items">
                 <span />
                 <span>Name</span>
                 <span>Target</span>
@@ -348,7 +348,7 @@ export function ProfileView() {
                 <span>Summary</span>
               </ListHead>
               {grouped.map((g) => (
-                <div key={g.kind}>
+                <div key={g.kind} data-tour="profile-items">
                   <GroupRow icon={KIND_ICON[g.kind]} label={KIND_LABEL[g.kind].label} count={g.items.length} hint={KIND_LABEL[g.kind].hint} minWidth={COLS_MIN} />
                   <RowPresence>
                     {g.items.map((r) => (
@@ -871,7 +871,7 @@ function GroupsTab() {
 
   return (
     <Body detail={current && <GroupDetail key={current.name} group={current} onClose={() => ws.navigate(workspaceHref("source", "profile", { profileTab: "groups" }))} />}>
-      <div className="flex items-center gap-3 border-b border-border px-4 py-2.5 text-sm text-muted-foreground">
+      <div data-tour="profile-groups" className="flex items-center gap-3 border-b border-border px-4 py-2.5 text-sm text-muted-foreground">
         <span className="text-pretty">
           A <Term term="Follower Group">group</Term> gets extra items on top of the base profile. A machine's groups come from its invitation; open a group to add machines.
         </span>
@@ -889,7 +889,7 @@ function GroupsTab() {
           New group
         </Button>
       </div>
-      <ListHead cols={cols} minWidth={colsMin}>
+      <ListHead cols={cols} minWidth={colsMin} data-tour="profile-groups">
         <span>Group</span>
         <span>What it's for</span>
         <span>Machines</span>
@@ -898,7 +898,7 @@ function GroupsTab() {
       <RowPresence>
         {groups.map((g) => (
           <AnimatedRow key={g.name}>
-            <ListRow cols={cols} minWidth={colsMin} selected={selected === g.name} onClick={() => ws.navigate(workspaceHref("source", "profile", { profileTab: "groups", focus: g.name }))}>
+            <ListRow cols={cols} minWidth={colsMin} selected={selected === g.name} onClick={() => ws.navigate(workspaceHref("source", "profile", { profileTab: "groups", focus: g.name }))} data-tour="profile-groups">
               <span className="flex min-w-0 items-center gap-1.5">
                 {g.name === SECRETS_GROUP ? (
                   <>

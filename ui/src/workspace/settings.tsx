@@ -154,7 +154,7 @@ export function ServiceView() {
             Your other machines fetch signed revisions from this <Term term="Source Machine">Source</Term> through the source service. It runs in the background under your user account.
           </Lede>
           <SectionLabel>Status</SectionLabel>
-          <div className={cn("mt-1", settingsGroup)}>
+          <div data-tour="service-status" className={cn("mt-1", settingsGroup)}>
             <SettingRow title="State">
               <span className="inline-flex items-center gap-1.5 text-base">
                 <StatusMark kind={installed ? "ok" : "off"} />
@@ -416,7 +416,7 @@ export function AgentPolicyView() {
           <Lede>
             Choose whether an <Term term="Configuration Agent">AI agent</Term> may help when Canonfig has no exact recipe.
           </Lede>
-          <RadioGroup value={mode} onValueChange={setMode} aria-label="Agent policy" className={settingsGroup}>
+          <RadioGroup value={mode} onValueChange={setMode} aria-label="Agent policy" className={settingsGroup} data-tour="agent-mode">
             {modes(ws.role === "source").map((m) => (
               <Label
                 key={m.value}
@@ -438,7 +438,7 @@ export function AgentPolicyView() {
             <div className={cn(settingsGroup, "max-sm:[&>div]:flex-col max-sm:[&>div]:items-start max-sm:[&>div]:gap-2")}>
               <SettingRow title="Agent harness" htmlFor="ap-harness" description="The agent CLI Canonfig starts for each job.">
                 <Select value={harness} onValueChange={setHarness}>
-                  <SelectTrigger id="ap-harness" className="w-40">
+                  <SelectTrigger id="ap-harness" className="w-40" data-tour="agent-harness">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -535,7 +535,7 @@ export function AgentPolicyView() {
               </SettingRow>
             </div>
             <Field label="Writable paths" htmlFor="ap-path" hint="The agent's sandbox can write only here. Everything else is read-only." error={pathError}>
-              <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
+              <div data-tour="agent-paths" className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
                 {paths.map((p) => (
                   <div key={p} title={p} className="flex h-8 items-center gap-2 rounded-md border border-border pr-1 pl-2.5">
                     <Mono className="min-w-0 truncate text-foreground">{p}</Mono>
@@ -662,16 +662,16 @@ export function HarnessView() {
           )
         }
       >
-        <p className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
+        <p data-tour="harness-projects" className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
           A harness project keeps one <Mono>{harnessProject.file}</Mono> in a repository and writes each agent's instruction files from it. It's separate from the profile your machines sync.
         </p>
-        <ListHead cols={cols}>
+        <ListHead cols={cols} data-tour="harness-projects">
           <span>Folder</span>
           <span>Agents</span>
           <span>State</span>
         </ListHead>
         {projects.map((p) => (
-          <ListRow key={p.path} cols={cols} selected={selected === p.path} onClick={() => ws.go("harness", p.path)}>
+          <ListRow key={p.path} cols={cols} selected={selected === p.path} onClick={() => ws.go("harness", p.path)} data-tour="harness-projects">
             <Mono className="truncate text-foreground">{p.path}</Mono>
             <span className="truncate text-sm text-muted-foreground">{p.targets.join(", ")}</span>
             <span className={cn("text-sm tabular-nums", p.pending ? "text-warn" : "text-muted-foreground")}>{p.pending ? `${p.pending} files to write` : "Up to date"}</span>
@@ -807,14 +807,14 @@ export function InstallersView() {
           Installer bindings point tool recipes at a package manager on this machine.
           <Hint label="installer bindings">Tool resources carry an installation recipe per platform, like brew on macOS or apt on Linux. A binding points that recipe at a real executable.</Hint>
         </div>
-        <ListHead cols={cols}>
+        <ListHead cols={cols} data-tour="installers-list">
           <span>Installer</span>
           <span>Executable</span>
           <span>Status</span>
           <span />
         </ListHead>
         {installers.map((r) => (
-          <ListRow key={r.name} cols={cols}>
+          <ListRow key={r.name} cols={cols} data-tour="installers-list">
             <span className="font-medium">{r.name}</span>
             <Mono className={r.path === "-" ? "text-faint" : "text-foreground"}>{r.path === "-" ? "None" : r.path}</Mono>
             <span className={cn("text-sm", r.status === "bound" ? "text-ok" : "text-faint")}>{r.status === "bound" ? "Bound" : "Not on this platform"}</span>
@@ -923,7 +923,7 @@ export function SetupView() {
           <SectionLabel action={<span className="text-xs text-faint tabular-nums">Journal #3</span>}>
             {phase === "planned" ? "Plan" : phase === "complete" ? "Done" : "Approved plan"}
           </SectionLabel>
-          <ol className={cn("mt-1", settingsGroup)} aria-live="polite">
+          <ol data-tour="setup-plan" className={cn("mt-1", settingsGroup)} aria-live="polite">
             {steps.map((s, i) => {
               const done = phase === "complete" || (phase === "paused" ? i < last : phase === "applying" && i < at);
               const running = phase === "applying" && i === at;
@@ -1099,7 +1099,7 @@ export function DoctorView() {
         <Column>
           <Lede>The health check (Canonfig calls it doctor) tests whether this machine can run Canonfig. It changes nothing, and each problem lists the command that fixes it.</Lede>
           <div className="mb-4 h-1.5">{running && <DitherProgress label="Running health check" value={progress} />}</div>
-          <div className="border-t border-border" aria-live="polite">
+          <div data-tour="doctor-results" className="border-t border-border" aria-live="polite">
             {checks.map((d, i) => {
               const shown = !running || progress > (i / checks.length) * 100;
               return (

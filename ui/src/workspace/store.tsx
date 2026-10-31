@@ -134,7 +134,7 @@ export function toolFromScan(f: (typeof SCANNED_TOOLS)[number]): Resource {
 const GUIDE_KEY = "canonfig-ui:guide";
 
 /**
- * Where guidance preferences (seen tour, seen tips, hidden Get started) live. A browser can deny
+ * Where guidance preferences (seen tour, finished tour chapters, seen tips, hidden Get started) live. A browser can deny
  * localStorage, for example with blocked site data; then they are kept in memory for this page
  * load instead, so a refused preference never stops the workspace from opening. Machine state
  * is unaffected: it is demo state and never stored.
@@ -254,13 +254,22 @@ export interface Workspace {
   /**
    * Guidance for a first-time user, in three parts: a short tour that is offered (never
    * forced), a "Get started" list on Overview, and one tip per complex page on its first
-   * visit. What has been seen or hidden is remembered per role in localStorage, or only for
+   * visit. "Take the tour" opens a picker with that short tour and a longer chapter per area.
+   * What has been seen, finished or hidden is remembered per role in localStorage, or only for
    * this page load when the browser denies storage.
    */
   tourOffered: boolean;
   dismissTourOffer: () => void;
+  /** The running tour: "quick" (the short first-visit tour) or a chapter id from tour-steps.tsx. */
+  tour: string | null;
+  /** Derived from `tour`, for everything that only needs to know the app is blocked by a tour. */
   tourOpen: boolean;
-  setTourOpen: (open: boolean) => void;
+  startTour: (id: string) => void;
+  /** Ends the running tour; `finished` (reached its end, not skipped) marks it done in the picker. */
+  closeTour: (finished: boolean) => void;
+  tourPickerOpen: boolean;
+  setTourPickerOpen: (open: boolean) => void;
+  tourFinished: (id: string) => boolean;
   /** The page whose tip is showing, if any. Leaving that page closes it. */
   activeTip: View | null;
   openTip: (view: View) => void;
@@ -360,15 +369,32 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const [paletteOpen, setPaletteOpen] = useState(false);
   const seenKey = (what: string) => `${GUIDE_KEY}:${role}:${what}`;
   const [tourOffered, setTourOffered] = useState(() => !guidePrefs.has(seenKey("tour")));
-  const [tourOpen, setTourOpenState] = useState(() => new URLSearchParams(location.search).get("tour") === "1");
   // Taking or declining the tour both settle the offer for good; the tour stays one click away.
   const dismissTourOffer = () => {
     guidePrefs.set(seenKey("tour"));
     setTourOffered(false);
   };
-  const setTourOpen = (open: boolean) => {
+  const [tour, setTour] = useState<string | null>(() => (new URLSearchParams(location.search).get("tour") === "1" ? "quick" : null));
+  const startTour = (id: string) => {
     dismissTourOffer();
-    setTourOpenState(open);
+    setTour(id);
+  };
+  const [finishedTours, setFinishedTours] = useState<ReadonlySet<string>>(
+    () => new Set(guidePrefs.keys().filter((k) => k.startsWith(seenKey("chapter:"))).map((k) => k.slice(seenKey("chapter:").length))),
+  );
+  const closeTour = (finished: boolean) => {
+    if (finished && tour) {
+      guidePrefs.set(seenKey(`chapter:${tour}`));
+      setFinishedTours((prev) => new Set(prev).add(tour));
+    }
+    setTour(null);
+  };
+  const tourFinished = (id: string) => finishedTours.has(id);
+  const [tourPickerOpen, setPickerOpen] = useState(false);
+  // Finding the tour on your own settles the offer the same way taking it does.
+  const setTourPickerOpen = (open: boolean) => {
+    if (open) dismissTourOffer();
+    setPickerOpen(open);
   };
   const [activeTip, setActiveTip] = useState<View | null>(null);
   const [seenTips, setSeenTips] = useState<ReadonlySet<string>>(
@@ -608,8 +634,13 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     setPaletteOpen,
     tourOffered,
     dismissTourOffer,
-    tourOpen,
-    setTourOpen,
+    tour,
+    tourOpen: tour !== null,
+    startTour,
+    closeTour,
+    tourPickerOpen,
+    setTourPickerOpen,
+    tourFinished,
     activeTip,
     openTip,
     closeTip,

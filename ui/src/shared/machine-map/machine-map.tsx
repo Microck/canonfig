@@ -468,7 +468,7 @@ function Legend({ links }: { links: Link[] }) {
   if (items.length === 0) return null;
   return (
     // mr-auto keeps the key at the left edge, on the controls' line or above them.
-    <ul aria-label="Line key" className="pointer-events-auto mr-auto flex flex-wrap items-center gap-x-3.5 gap-y-1 rounded-md border border-border bg-panel/90 px-2.5 py-1.5 text-xs text-muted-foreground backdrop-blur-sm">
+    <ul aria-label="Line key" data-tour="map-key" className="pointer-events-auto mr-auto flex flex-wrap items-center gap-x-3.5 gap-y-1 rounded-md border border-border bg-panel/90 px-2.5 py-1.5 text-xs text-muted-foreground backdrop-blur-sm">
       {items.map((item) => (
         <li key={item.key} className="flex items-center gap-1.5">
           <svg aria-hidden width="18" height="6" className="shrink-0">
