@@ -585,9 +585,7 @@ export function RevisionsView() {
             </RowPresence>
           </>
         )}
-        <div className="px-4 pt-5 pb-16">
-          <Cli>canonfig profile list</Cli>
-        </div>
+        <div className="pb-16" />
       </Body>
     </>
   );
@@ -750,9 +748,7 @@ export function SecretsView() {
             </RowPresence>
           </>
         )}
-        <div className="px-4 pt-5 pb-16">
-          <Cli>canonfig secrets list</Cli>
-        </div>
+        <div className="pb-16" />
       </Body>
 
       <Dialog open={open} onOpenChange={setOpen}>

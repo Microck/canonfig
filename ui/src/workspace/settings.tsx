@@ -839,10 +839,6 @@ export function InstallersView() {
             )}
           </ListRow>
         ))}
-        <div className="grid gap-1 px-4 pt-5">
-          <Cli>canonfig installer list</Cli>
-          <Cli>{`canonfig installer check ${checking ?? "<method>"}`}</Cli>
-        </div>
       </Body>
     </>
   );
@@ -981,11 +977,6 @@ export function SetupView() {
               </div>
             </div>
           )}
-          <div className="mt-8 grid gap-1">
-            <Cli>canonfig setup plan --role source</Cli>
-            <Cli>canonfig setup approve --approver marcos && canonfig setup apply</Cli>
-            <Cli>canonfig setup status</Cli>
-          </div>
         </Column>
       </Body>
     </>
@@ -1124,9 +1115,6 @@ export function DoctorView() {
                 </div>
               );
             })}
-          </div>
-          <div className="mt-6">
-            <Cli>canonfig doctor</Cli>
           </div>
         </Column>
       </Body>

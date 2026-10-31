@@ -668,10 +668,7 @@ export function SyncView() {
               .join(" ")}
           </div>
         )}
-        <div className="grid gap-1 px-4 pt-5 pb-16">
-          <Cli>canonfig sync --plan</Cli>
-          <Cli>canonfig sync --apply</Cli>
-        </div>
+        <div className="pb-16" />
       </Body>
     </>
   );
@@ -944,9 +941,6 @@ export function OverlaysView() {
             </RowPresence>
           </>
         )}
-        <div className="px-4 pt-5">
-          <Cli>canonfig overlay list</Cli>
-        </div>
       </Body>
     </>
   );
@@ -1181,9 +1175,6 @@ export function FollowerSecretsView() {
             <span className="text-sm text-muted-foreground tabular-nums">{s.updated}</span>
           </ListRow>
         ))}
-        <div className="px-4 pt-5">
-          <Cli>canonfig secrets sync</Cli>
-        </div>
       </Body>
     </>
   );
@@ -1215,9 +1206,6 @@ export function TunnelView() {
         <PageHeader crumbs={["Settings", "SSH tunnel"]} />
         <Body>
           <EmptyState title="No SSH tunnel" body={`This machine joined without a tunnel, so it connects to ${SOURCE}'s source service directly.`} />
-          <div className="px-4 pt-5">
-            <Cli>canonfig tunnel status</Cli>
-          </div>
         </Body>
       </>
     );
@@ -1259,10 +1247,6 @@ export function TunnelView() {
             >
               <Mono>SHA256:mG3k…Q9a</Mono>
             </Prop>
-          </div>
-          <div className="mt-6 grid gap-1">
-            <Cli>canonfig tunnel status</Cli>
-            <Cli>{up ? "canonfig tunnel stop" : "canonfig tunnel start"}</Cli>
           </div>
         </div>
       </Body>

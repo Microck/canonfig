@@ -101,18 +101,25 @@ function useCopied() {
  * Renders `backtick` spans in mock data as inline code instead of raw backticks.
  * The chip (fill, hairline, side margin) keeps the command visibly apart from the
  * prose around it; Manrope's narrow word space alone made "Run gh auth login on" read as one run.
+ * Each chip is a button that copies its text in one click, with the same toast as the
+ * copy icons; hover brightens its border so it reads as clickable. Never render this inside
+ * another button or link: a nested button is invalid and would steal the row's click.
  */
 export function WithCode({ text }: { text: string }) {
   return (
     <>
       {text.split("`").map((part, i) =>
         i % 2 ? (
-          <code
+          <button
             key={i}
-            className="mx-0.5 rounded-[4px] border border-border bg-secondary/70 px-1 py-px font-mono text-xs whitespace-nowrap text-foreground [box-decoration-break:clone]"
+            type="button"
+            title="Copy"
+            aria-label={`Copy ${part}`}
+            onClick={() => void copy(part, "Command copied")}
+            className="mx-0.5 cursor-copy rounded-[4px] border border-border bg-secondary/70 px-1 py-px font-mono text-xs whitespace-nowrap text-foreground transition-colors duration-150 outline-none [box-decoration-break:clone] hover:border-border-strong hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring/60"
           >
             {part}
-          </code>
+          </button>
         ) : (
           <Fragment key={i}>{part}</Fragment>
         ),

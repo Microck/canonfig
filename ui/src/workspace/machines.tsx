@@ -247,9 +247,7 @@ function SourceMachinesView() {
               </div>
             )}
             <Invitations />
-            <div className="shrink-0 px-4 pt-5 pb-16">
-              <Cli>canonfig status</Cli>
-            </div>
+            <div className="shrink-0 pb-16" />
           </div>
         )}
       </Body>
