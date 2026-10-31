@@ -6,10 +6,10 @@
   <p>one-way sync for ai agent configuration.</p>
 
   <p>
-    <a href="https://www.npmjs.com/package/@microck/canonfig"><img src="https://img.shields.io/npm/v/@microck/canonfig?style=flat-square&color=000000" alt="npm version badge"></a>
-    <a href="https://www.npmjs.com/package/@microck/canonfig"><img src="https://img.shields.io/npm/dt/@microck/canonfig?style=flat-square&color=000000" alt="npm total downloads badge"></a>
-    <a href="https://github.com/Microck/canonfig/actions/workflows/acceptance.yml"><img src="https://img.shields.io/github/actions/workflow/status/Microck/canonfig/acceptance.yml?branch=main&style=flat-square&label=ci&color=000000" alt="ci badge"></a>
-    <a href="https://github.com/Microck/canonfig/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-000000?style=flat-square" alt="license badge"></a>
+    <a href="https://www.npmjs.com/package/@microck/canonfig"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/npm/@microck/canonfig.svg?variant=secondary&amp;size=xs&amp;logo=false&amp;mode=dark"><img src="https://shieldcn.dev/npm/@microck/canonfig.svg?variant=secondary&amp;size=xs&amp;logo=false&amp;mode=light" alt="npm version"></picture></a>
+    <a href="https://www.npmjs.com/package/@microck/canonfig"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/npm/dt/@microck/canonfig.svg?variant=secondary&amp;size=xs&amp;logo=false&amp;mode=dark"><img src="https://shieldcn.dev/npm/dt/@microck/canonfig.svg?variant=secondary&amp;size=xs&amp;logo=false&amp;mode=light" alt="npm total downloads"></picture></a>
+    <a href="https://github.com/Microck/canonfig/actions/workflows/acceptance.yml"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/ci/Microck/canonfig.svg?workflow=acceptance.yml&amp;branch=main&amp;variant=secondary&amp;size=xs&amp;logo=false&amp;mode=dark"><img src="https://shieldcn.dev/github/ci/Microck/canonfig.svg?workflow=acceptance.yml&amp;branch=main&amp;variant=secondary&amp;size=xs&amp;logo=false&amp;mode=light" alt="ci status"></picture></a>
+    <a href="LICENSE"><picture><source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/license/Microck/canonfig.svg?variant=secondary&amp;size=xs&amp;logo=false&amp;mode=dark"><img src="https://shieldcn.dev/github/license/Microck/canonfig.svg?variant=secondary&amp;size=xs&amp;logo=false&amp;mode=light" alt="license"></picture></a>
   </p>
 </div>
 
