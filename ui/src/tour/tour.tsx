@@ -57,6 +57,14 @@ const HIT = "relative after:absolute after:-inset-[7px] pointer-coarse:after:-in
  */
 const MOVE_MS = 260;
 
+/**
+ * How long a step waits for its target before it counts as absent and is skipped. A page that
+ * `before` just opened can still be loading: a lazy screen renders nothing until its code resolves,
+ * and React 19 holds a Suspense reveal for up to 300ms. Absent targets (Publish with nothing to
+ * publish) pay this delay once, with the card hidden.
+ */
+const FIND_MS = 800;
+
 /** cubic-bezier(0.175, 0.885, 0.32, 1.1), i.e. --ease-snap, solved for x so JS tweens match CSS. */
 function easeSnap(t: number) {
   const [x1, y1, x2, y2] = [0.175, 0.885, 0.32, 1.1];
@@ -98,6 +106,11 @@ function useGlidingRect(target: Rect | null, reduce: boolean) {
     return () => cancelAnimationFrame(raf);
   }, [target, reduce]);
   return shown;
+}
+
+/** The CSS selectors a step spotlights; undefined for a centred card. */
+function selectorsOf(step: TourStep) {
+  return step.selector ? [step.selector] : step.target?.map((id) => `[data-tour="${id}"]`);
 }
 
 function measure(selectors: string[]): Rect | null {
@@ -154,6 +167,9 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
   // centre; `ready` turns gliding on one frame later, after that first placement has painted.
   const [measured, setMeasured] = useState(false);
   const [ready, setReady] = useState(false);
+  // True while a step's target hasn't appeared yet (see FIND_MS); the card hides rather than show
+  // the new step's text beside the previous step's spotlight.
+  const [searching, setSearching] = useState(false);
   const shown = useGlidingRect(rect, reduce);
   const dir = useRef<1 | -1>(1);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -181,23 +197,42 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // When the current step started looking for its target. A ref, not effect-local, because the
+  // effect below reruns whenever `go` changes identity (the host re-renders with a new onClose),
+  // and a restart must not move the deadline or a step could search forever.
+  const searchFrom = useRef({ index: -1, at: 0 });
+
   // Measure after `before` has rendered. Card, cutout and blur change together;
   // moving a full-screen blur adds paint work without helping explain the step.
   useLayoutEffect(() => {
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => {
-        const selectors = step.selector ? [step.selector] : step.target?.map((id) => `[data-tour="${id}"]`);
-        const target = selectors ? measure(selectors) : null;
-        if (selectors && !target) return go(index + dir.current, dir.current);
-        setRect(target);
-        setMeasured(true);
-      });
-    });
-    return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
+    let raf = 0;
+    let frames = 0;
+    if (searchFrom.current.index !== index) searchFrom.current = { index, at: performance.now() };
+    const start = searchFrom.current.at;
+    const attempt = () => {
+      // Two frames, so the page `before` switched to has rendered.
+      if (++frames < 2) return void (raf = requestAnimationFrame(attempt));
+      const selectors = selectorsOf(step);
+      // A chapter can point at a section below the fold of a scrolling page. Scroll the first target
+      // into view instantly, so the measurement below sees where it ends up; "nearest" leaves a
+      // target that is already visible where it is.
+      if (selectors) document.querySelector(selectors.join(", "))?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+      const target = selectors ? measure(selectors) : null;
+      if (selectors && !target) {
+        if (performance.now() - start < FIND_MS) {
+          setSearching(true);
+          raf = requestAnimationFrame(attempt);
+          return;
+        }
+        setSearching(false);
+        return go(index + dir.current, dir.current);
+      }
+      setSearching(false);
+      setRect(target);
+      setMeasured(true);
     };
+    raf = requestAnimationFrame(attempt);
+    return () => cancelAnimationFrame(raf);
   }, [index, step, go]);
 
   // Glide only after the first placement has painted; otherwise the card would slide in from 0,0.
@@ -210,18 +245,21 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
   useEffect(() => {
     const onResize = () => {
       setViewport({ w: window.innerWidth, h: window.innerHeight });
-      const target = step.target ? measure(step.target) : null;
+      const selectors = selectorsOf(step);
+      const target = selectors ? measure(selectors) : null;
       setRect(target);
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [step]);
 
+  const visible = measured && !searching;
   useLayoutEffect(() => {
     if (cardRef.current) setCardH(cardRef.current.offsetHeight);
     // A tip doesn't take focus from the page; the tour does, since it blocks everything else.
-    if (modal) nextRef.current?.focus();
-  }, [index, modal]);
+    // A hidden card can't hold focus, so this also runs when the card first shows.
+    if (modal && visible) nextRef.current?.focus();
+  }, [index, modal, visible]);
 
   // Tips: a click anywhere outside the card, or Esc, dismisses; the click still reaches its target.
   useEffect(() => {
@@ -249,7 +287,8 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
         if (card?.isConnected) return;
         const active = document.activeElement;
         if (active && active !== document.body && !card?.contains(active)) return;
-        if (opener instanceof HTMLElement && opener.isConnected && opener.getClientRects().length) {
+        // The body is not an opener: a tour started after a dialog closed may find nothing focused.
+        if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected && opener.getClientRects().length) {
           opener.focus({ preventScroll: true });
           if (document.activeElement === opener) return;
         }
@@ -344,7 +383,7 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
         aria-labelledby={titleId}
         className={cn(
           "pointer-events-auto absolute left-0 top-0 rounded-2xl border border-border-strong bg-popover p-4 text-popover-foreground shadow-[0_16px_48px_rgba(0,0,0,0.55)]",
-          !measured && "invisible",
+          !visible && "invisible",
         )}
         style={{
           transform: `translate(${pos.left}px, ${pos.top}px)`,
