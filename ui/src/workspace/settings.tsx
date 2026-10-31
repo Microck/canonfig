@@ -238,19 +238,60 @@ function modes(source: boolean) {
 
 export interface SavedPolicy {
   mode: string;
+  /** "codex" | "claude" (built-ins) or "custom". */
   harness: string;
+  /** Built-ins only; "" means the agent's own default model. */
+  model: string;
+  /** "" runs a built-in from PATH by its name; required for custom. */
+  executable: string;
+  /** Custom only: one argv entry each, run without a shell. */
+  args: string[];
   paths: string[];
   /** Whole kilobytes, 1 to MAX_EVIDENCE_KB. */
   maxKb: number;
 }
 
-/** 1 MiB. Far above any useful evidence size; it keeps the stored value an exact integer. */
-const MAX_EVIDENCE_KB = 1_048_576;
+/** 1 MiB in KB, the most `canonfig agent harness --maximum-input-bytes` accepts (1024 * 1024 bytes). */
+const MAX_EVIDENCE_KB = 1024;
 
-const POLICY_SEED: SavedPolicy = { mode: agentPolicy.mode, harness: agentPolicy.harness, paths: agentPolicy.writablePaths, maxKb: agentPolicy.maxInputKb };
+const POLICY_SEED: SavedPolicy = { mode: agentPolicy.mode, harness: agentPolicy.harness, model: "", executable: "", args: [], paths: agentPolicy.writablePaths, maxKb: agentPolicy.maxInputKb };
 
-/** Harness versions the demo reports as installed, shared by the harness picker and the health check. */
+/** Built-in harnesses and the versions the demo reports as installed, shared by the picker and the health check. */
 const HARNESS_VERSION: Record<string, string> = { codex: "0.62", claude: "2.1" };
+
+/** Typed into the model field as hints only; any name the CLI accepts works. */
+const MODEL_EXAMPLE: Record<string, string> = { codex: "gpt-5-codex", claude: "opus" };
+
+/** Mirrors the CLI: one token, never starting with "-", so it can't become a second flag. */
+const MODEL_SHAPE = /^[^\s-]\S*$/u;
+
+/** Whole field: entries separated by whitespace; an entry is "quoted", 'quoted' or has no quotes. */
+const ARGS_SHAPE = /^\s*(?:(?:"[^"]*"|'[^']*'|[^\s"']+)\s*)*$/u;
+
+/**
+ * Splits the custom arguments field into argv entries. Quotes keep spaces inside one entry;
+ * there is no shell, so nothing else is special. Null when a quote is unclosed or mid-entry.
+ */
+function splitArguments(text: string): string[] | null {
+  if (!ARGS_SHAPE.test(text)) return null;
+  return [...text.matchAll(/"([^"]*)"|'([^']*)'|([^\s"']+)/gu)].map((m) => m[1] ?? m[2] ?? m[3] ?? "");
+}
+
+/** Inverse of splitArguments: entries with spaces get double quotes. */
+function joinArguments(args: string[]): string {
+  return args.map((a) => (/\s/u.test(a) ? `"${a}"` : a)).join(" ");
+}
+
+/** The full `canonfig agent harness` command for a draft policy, every bound on the page included. */
+function harnessCommand(p: Pick<SavedPolicy, "harness" | "model" | "executable" | "args" | "paths" | "maxKb">): string {
+  const parts = ["canonfig agent harness", p.harness, "--executable", shq(p.executable || p.harness)];
+  if (p.harness !== "custom" && p.model) parts.push("--model", shq(p.model));
+  if (p.harness === "custom") for (const a of p.args) parts.push("--argument", shq(a));
+  for (const path of p.paths) parts.push("--allow-path", shq(path));
+  for (const origin of agentPolicy.origins) parts.push("--allow-origin", origin);
+  if (p.maxKb >= 1 && p.maxKb <= MAX_EVIDENCE_KB) parts.push("--maximum-input-bytes", String(p.maxKb * 1024));
+  return parts.join(" ");
+}
 
 /** The saved agent policy. Health check and Overview read it so their summaries match this page. */
 export function useAgentPolicy() {
@@ -263,11 +304,25 @@ export function AgentPolicyView() {
   const [saved, setSaved] = useAgentPolicy();
   const [mode, setMode] = useState(saved.mode);
   const [harness, setHarness] = useState(saved.harness);
+  const [model, setModel] = useState(saved.model);
+  const [executable, setExecutable] = useState(saved.executable);
+  // Edited as text; Save stores the split argv. Re-joined with quotes so a round trip is lossless.
+  const [argsText, setArgsText] = useState(joinArguments(saved.args));
   const [paths, setPaths] = useState<string[]>(saved.paths);
   const [newPath, setNewPath] = useState("");
   // A digits-only string while editing; Save stores it as a number.
   const [maxKb, setMaxKb] = useState(String(saved.maxKb));
-  const dirty = mode !== saved.mode || harness !== saved.harness || maxKb !== String(saved.maxKb) || paths.length !== saved.paths.length || paths.some((path, i) => path !== saved.paths[i]);
+  const custom = harness === "custom";
+  const args = splitArguments(argsText);
+  const dirty =
+    mode !== saved.mode ||
+    harness !== saved.harness ||
+    model.trim() !== saved.model ||
+    executable.trim() !== saved.executable ||
+    (custom && JSON.stringify(args) !== JSON.stringify(saved.args)) ||
+    maxKb !== String(saved.maxKb) ||
+    paths.length !== saved.paths.length ||
+    paths.some((path, i) => path !== saved.paths[i]);
   // Errors show only after a Save attempt, then follow the fields as they change.
   const [tried, setTried] = useState(false);
   // Set by an Add path attempt, so a half-typed path isn't flagged while it is still being typed.
@@ -281,6 +336,14 @@ export function AgentPolicyView() {
   const pathPending = typedPath !== "";
   const hasChanges = dirty || pathPending;
   const maxError = tried && !off && maxInvalid ? `Enter a whole number from 1 to ${MAX_EVIDENCE_KB.toLocaleString("en-US")} KB.` : null;
+  const modelTyped = model.trim();
+  const modelInvalid = !custom && modelTyped !== "" && !MODEL_SHAPE.test(modelTyped);
+  const modelError = tried && !off && modelInvalid ? "Enter one model name with no spaces, like opus." : null;
+  // A custom agent has no name Canonfig could look up on PATH, so it needs one.
+  const executableInvalid = custom && executable.trim() === "";
+  const executableError = tried && !off && executableInvalid ? "Enter the command or full path of your agent." : null;
+  const argsInvalid = custom && args === null;
+  const argsError = tried && !off && argsInvalid ? "Close the quote, or remove it." : null;
   // A malformed path says so after either attempt; a well-formed one only needs adding before Save.
   const pathError = off || !pathPending
     ? null
@@ -297,19 +360,31 @@ export function AgentPolicyView() {
       // Saving keeps the last saved bounds and resets the greyed-out fields to match them.
       setSaved({ ...saved, mode });
       setHarness(saved.harness);
+      setModel(saved.model);
+      setExecutable(saved.executable);
+      setArgsText(joinArguments(saved.args));
       setPaths(saved.paths);
       setMaxKb(String(saved.maxKb));
       setNewPath("");
       setAddTried(false);
     } else {
       setTried(true);
-      if (maxInvalid || pathPending) {
-        document.getElementById(maxInvalid ? "ap-max" : "ap-path")?.focus();
+      const checks: Array<[boolean, string]> = [
+        [modelInvalid, "ap-model"],
+        [executableInvalid, "ap-exec"],
+        [argsInvalid, "ap-args"],
+        [maxInvalid, "ap-max"],
+        [pathPending, "ap-path"],
+      ];
+      const firstInvalid = checks.find(([bad]) => bad);
+      if (firstInvalid) {
+        document.getElementById(firstInvalid[1])?.focus();
         return;
       }
       // Normalizes leading zeros in the field ("064" becomes "64").
       setMaxKb(String(kb));
-      setSaved({ mode, harness, paths, maxKb: kb });
+      // Fields that don't apply to the chosen harness are stored empty, as the CLI would.
+      setSaved({ mode, harness, model: custom ? "" : modelTyped, executable: executable.trim(), args: custom ? (args ?? []) : [], paths, maxKb: kb });
     }
     setTried(false);
     toast.success("Agent policy saved in this demo workspace");
@@ -361,7 +436,7 @@ export function AgentPolicyView() {
           <div className={cn("mt-8 grid gap-4", off && "opacity-40")} inert={off}>
             <SectionLabel>Harness bounds</SectionLabel>
             <div className={cn(settingsGroup, "max-sm:[&>div]:flex-col max-sm:[&>div]:items-start max-sm:[&>div]:gap-2")}>
-              <SettingRow title="Agent harness" htmlFor="ap-harness" description="The installed agent CLI Canonfig starts for each job.">
+              <SettingRow title="Agent harness" htmlFor="ap-harness" description="The agent CLI Canonfig starts for each job.">
                 <Select value={harness} onValueChange={setHarness}>
                   <SelectTrigger id="ap-harness" className="w-40">
                     <SelectValue />
@@ -372,9 +447,79 @@ export function AgentPolicyView() {
                         {name} {version}
                       </SelectItem>
                     ))}
+                    <SelectItem value="custom">Custom command</SelectItem>
                   </SelectContent>
                 </Select>
               </SettingRow>
+              {custom ? (
+                <>
+                  <SettingRow title="Command" htmlFor="ap-exec" description="Your agent's executable, by name or full path." error={executableError}>
+                    <Input
+                      id="ap-exec"
+                      value={executable}
+                      onChange={(e) => setExecutable(e.target.value)}
+                      aria-invalid={!!executableError}
+                      aria-describedby={executableError ? "ap-exec-note" : undefined}
+                      placeholder="/usr/local/bin/my-agent"
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="h-[28px] w-64 font-mono text-sm"
+                    />
+                  </SettingRow>
+                  <SettingRow
+                    title="Arguments"
+                    htmlFor="ap-args"
+                    description={
+                      <>
+                        Passed exactly as written, with no shell. Quote an argument that contains spaces. Include your agent's own plan or read-only flag.
+                        <Hint label="How a custom agent talks to Canonfig">
+                          Canonfig writes the task as JSON to the command's standard input and reads a proposal as JSON from its standard output. Anything else is refused, and every proposed action is still checked against the bounds on this page.
+                        </Hint>
+                      </>
+                    }
+                    error={argsError}
+                  >
+                    <Input
+                      id="ap-args"
+                      value={argsText}
+                      onChange={(e) => setArgsText(e.target.value)}
+                      aria-invalid={!!argsError}
+                      aria-describedby={argsError ? "ap-args-note" : undefined}
+                      placeholder="run --plan --json"
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="h-[28px] w-64 font-mono text-sm"
+                    />
+                  </SettingRow>
+                </>
+              ) : (
+                <>
+                  <SettingRow title="Model" htmlFor="ap-model" description="Leave empty to use the agent's own default." error={modelError}>
+                    <Input
+                      id="ap-model"
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      aria-invalid={!!modelError}
+                      aria-describedby={modelError ? "ap-model-note" : undefined}
+                      placeholder={MODEL_EXAMPLE[harness]}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="h-[28px] w-40 font-mono text-sm"
+                    />
+                  </SettingRow>
+                  <SettingRow title="Executable" htmlFor="ap-exec" description={<>Leave empty to run <Mono>{harness}</Mono> from your PATH.</>}>
+                    <Input
+                      id="ap-exec"
+                      value={executable}
+                      onChange={(e) => setExecutable(e.target.value)}
+                      placeholder={harness}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="h-[28px] w-40 font-mono text-sm"
+                    />
+                  </SettingRow>
+                </>
+              )}
               <SettingRow title="Max evidence per task" htmlFor="ap-max" description="How much observed state Canonfig may hand the agent." error={maxError}>
                 <Input
                   id="ap-max"
@@ -433,8 +578,9 @@ export function AgentPolicyView() {
               </div>
             </Field>
           </div>
-          <div className="mt-6">
+          <div className="mt-6 grid gap-1">
             <Cli>{`canonfig agent policy ${mode}`}</Cli>
+            {!off && <Cli wrap>{harnessCommand({ harness, model: modelTyped, executable: executable.trim(), args: args ?? [], paths, maxKb: kb })}</Cli>}
           </div>
         </Column>
       </Body>
@@ -866,7 +1012,7 @@ export function useChecks(): DoctorCheck[] {
   const [tunnelUp] = useSharedState("tunnel-up", true);
   const [policy] = useAgentPolicy();
   const agent: Partial<DoctorCheck> =
-    policy.mode === "deterministic-only" ? { detail: "Not used: agent policy is deterministic only" } : { detail: `${policy.harness} ${HARNESS_VERSION[policy.harness]} found` };
+    policy.mode === "deterministic-only" ? { detail: "Not used: agent policy is deterministic only" } : { detail: policy.harness === "custom" ? `${policy.executable} found` : `${policy.executable || policy.harness} ${HARNESS_VERSION[policy.harness]} found` };
   const overrides: Record<string, Partial<DoctorCheck>> =
     ws.role === "source"
       ? {
