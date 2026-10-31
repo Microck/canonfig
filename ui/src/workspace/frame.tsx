@@ -1,5 +1,6 @@
 // Workspace sidebar and command palette.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { toast } from "sonner";
 import {
   ArrowsClockwise,
@@ -109,9 +110,13 @@ const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator
  * box would paint only ~11px. A 16px box at x19 puts the icon's centre
  * at x27 and, with a 5px gap, the label at x40: the same centre and label edge as Linear's 14px box at x20 with 6px.
  * Inactive rows use the muted tier so the active page reads first; hover brings them to full foreground.
+ * The current page's fill is one shared element (`layoutId`) that glides to the clicked item in 150ms
+ * on --ease-snap instead of jumping, so the eye follows the selection. Navigation is frequent, so it
+ * stays short and transform-only; reduced motion makes it instant.
  */
 function NavButton({ item, active, badge, onNavigate }: { item: NavItem; active: boolean; badge?: React.ReactNode; onNavigate?: () => void }) {
   const ws = useWorkspace();
+  const reduce = useReducedMotion();
   const Icon = item.icon;
   return (
     <a
@@ -123,10 +128,18 @@ function NavButton({ item, active, badge, onNavigate }: { item: NavItem; active:
       })}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex h-[28px] w-full items-center gap-[5px] rounded-lg pr-[9px] pl-[7px] text-base font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
-        active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
+        "relative isolate flex h-[28px] w-full items-center gap-[5px] rounded-lg pr-[9px] pl-[7px] text-base font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+        active ? "text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
       )}
     >
+      {active && (
+        <motion.span
+          layoutId="nav-active"
+          aria-hidden
+          className="absolute inset-0 -z-10 rounded-lg bg-sidebar-accent"
+          transition={reduce ? { duration: 0 } : { duration: 0.15, ease: [0.175, 0.885, 0.32, 1.1] }}
+        />
+      )}
       <Icon bold={active} className="size-4 shrink-0" />
       <span className="truncate">{item.label}</span>
       {badge && <span className="ml-auto">{badge}</span>}
@@ -158,6 +171,7 @@ export function Sidebar({ className, onNavigate, onStartTour }: { className?: st
   const { main, settings } = navFor(role);
   const inSettings = settings.some((s) => s.view === ws.view);
   const [open, setOpen] = useState(inSettings);
+  const navGroup = useId();
   const menuNavigated = useRef(false);
   // Choosing a page counts even when it is already shown: the user asked to land on it, so focus goes to its h1
   // rather than back to the switcher.
@@ -255,26 +269,29 @@ export function Sidebar({ className, onNavigate, onStartTour }: { className?: st
         <Kbd className="ml-auto h-4 bg-raised px-1 text-xs">{MOD}K</Kbd>
       </button>
 
-      <nav className="mt-4 grid gap-px">
-        {main.map((item) => (
-          <NavButton key={item.view} item={item} active={ws.view === item.view} badge={badges[item.view]} onNavigate={onNavigate} />
-        ))}
-      </nav>
-
-      <Collapsible open={open} onOpenChange={setOpen} className="mt-5">
-        <CollapsibleTrigger
-          data-tour="settings"
-          className="flex h-6 w-full items-center gap-1 rounded-md px-[8px] text-xs font-medium text-faint outline-none hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
-        >
-          Settings
-          <CaretRight className={cn("size-3 transition-transform duration-150 ease-snap", open && "rotate-90")} />
-        </CollapsibleTrigger>
-        <CollapsibleContent className="mt-px grid gap-px">
-          {settings.map((item) => (
-            <NavButton key={item.view} item={item} active={ws.view === item.view} onNavigate={onNavigate} />
+      {/* One group per sidebar instance, so the desktop sidebar and the mobile sheet never trade the highlight. */}
+      <LayoutGroup id={navGroup}>
+        <nav className="mt-4 grid gap-px">
+          {main.map((item) => (
+            <NavButton key={item.view} item={item} active={ws.view === item.view} badge={badges[item.view]} onNavigate={onNavigate} />
           ))}
-        </CollapsibleContent>
-      </Collapsible>
+        </nav>
+
+        <Collapsible open={open} onOpenChange={setOpen} className="mt-5">
+          <CollapsibleTrigger
+            data-tour="settings"
+            className="flex h-6 w-full items-center gap-1 rounded-md px-[8px] text-xs font-medium text-faint outline-none hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            Settings
+            <CaretRight className={cn("size-3 transition-transform duration-150 ease-snap", open && "rotate-90")} />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-px grid gap-px">
+            {settings.map((item) => (
+              <NavButton key={item.view} item={item} active={ws.view === item.view} onNavigate={onNavigate} />
+            ))}
+          </CollapsibleContent>
+        </Collapsible>
+      </LayoutGroup>
 
       {/* Keep demo controls in flow so short windows never place them over navigation links. */}
       <div className="mt-auto pt-3">
