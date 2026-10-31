@@ -332,6 +332,28 @@
   }
 }
 
+/* Guided tour (tour/tour.tsx). The overlay fades in; the card grows from 0.96 at its own
+   centre; on each step the title and body fade up 4px so the change reads without a jump.
+   All on --ease-snap, inside the 200-300ms overlay band. Transform and opacity only. */
+.tour-in {
+  animation: tour-fade 200ms var(--ease-snap) both;
+}
+.tour-card-in {
+  animation: tour-card 240ms var(--ease-snap) both;
+}
+.tour-step-in {
+  animation: tour-step 220ms var(--ease-snap) both;
+}
+@keyframes tour-fade {
+  from { opacity: 0; }
+}
+@keyframes tour-card {
+  from { opacity: 0; transform: scale(0.96); }
+}
+@keyframes tour-step {
+  from { opacity: 0; transform: translateY(4px); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

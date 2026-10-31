@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, X } from "@/components/icons";
 import { cn } from "@/lib/utils";
-import { fillStyle } from "@/lib/dither";
+import { fillStyle, usePrefersReducedMotion } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
 
 export interface TourStep {
@@ -46,6 +46,59 @@ const GAP = 14;
  * scale: the card is read, not tapped through quickly.
  */
 const HIT = "relative after:absolute after:-inset-[7px] pointer-coarse:after:-inset-[9px] active:scale-100! transition-none";
+
+/**
+ * Motion. Opening fades the overlay and grows the card from 0.96 (CSS keyframes in index.css,
+ * `tour-in` / `tour-card-in`). Moving between steps glides the spotlight and the card together
+ * so the eye follows the target instead of hunting for it. Both use --ease-snap, the app's one
+ * motion curve; MOVE_MS sits in the 200–300ms overlay band. Reduced motion jumps instead of
+ * gliding and keeps only the fades. There is no exit animation: closing restores focus on unmount,
+ * and delaying unmount would delay that focus.
+ */
+const MOVE_MS = 260;
+
+/** cubic-bezier(0.175, 0.885, 0.32, 1.1), i.e. --ease-snap, solved for x so JS tweens match CSS. */
+function easeSnap(t: number) {
+  const [x1, y1, x2, y2] = [0.175, 0.885, 0.32, 1.1];
+  const bez = (p1: number, p2: number, s: number) => 3 * (1 - s) * (1 - s) * s * p1 + 3 * (1 - s) * s * s * p2 + s * s * s;
+  let s = t;
+  for (let i = 0; i < 8; i++) {
+    const dx = bez(x1, x2, s) - t;
+    const d = 3 * (1 - s) * (1 - s) * x1 + 6 * (1 - s) * s * (x2 - x1) + 3 * s * s * (1 - x2);
+    if (Math.abs(dx) < 1e-4 || d === 0) break;
+    s -= dx / d;
+  }
+  return bez(y1, y2, Math.min(1, Math.max(0, s)));
+}
+
+/**
+ * The spotlight rect, gliding from where it was to `target`. One tween drives the blur panels,
+ * the dim cutout and the rim, so they can't drift apart. Snaps when there is nothing to glide
+ * from (first step, or to/from a centred card), or under reduced motion.
+ */
+function useGlidingRect(target: Rect | null, reduce: boolean) {
+  const [shown, setShown] = useState<Rect | null>(target);
+  const shownRef = useRef(shown);
+  // Last painted rect, so a step change mid-glide starts from where the spotlight actually is.
+  useLayoutEffect(() => {
+    shownRef.current = shown;
+  });
+  useEffect(() => {
+    const from = shownRef.current;
+    if (reduce || !from || !target) return setShown(target);
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const k = easeSnap(Math.min(1, (now - start) / MOVE_MS));
+      const lerp = (a: number, b: number) => a + (b - a) * k;
+      setShown({ x: lerp(from.x, target.x), y: lerp(from.y, target.y), w: lerp(from.w, target.w), h: lerp(from.h, target.h) });
+      if (now - start < MOVE_MS) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, reduce]);
+  return shown;
+}
 
 function measure(selectors: string[]): Rect | null {
   const boxes = selectors
@@ -96,6 +149,12 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
   const [rect, setRect] = useState<Rect | null>(null);
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
   const [cardH, setCardH] = useState(180);
+  const reduce = usePrefersReducedMotion();
+  // The card stays hidden until the first step is measured, so it never flies in from the
+  // centre; `ready` turns gliding on one frame later, after that first placement has painted.
+  const [measured, setMeasured] = useState(false);
+  const [ready, setReady] = useState(false);
+  const shown = useGlidingRect(rect, reduce);
   const dir = useRef<1 | -1>(1);
   const cardRef = useRef<HTMLDivElement>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
@@ -132,6 +191,7 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
         const target = selectors ? measure(selectors) : null;
         if (selectors && !target) return go(index + dir.current, dir.current);
         setRect(target);
+        setMeasured(true);
       });
     });
     return () => {
@@ -139,6 +199,13 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
       cancelAnimationFrame(raf2);
     };
   }, [index, step, go]);
+
+  // Glide only after the first placement has painted; otherwise the card would slide in from 0,0.
+  useEffect(() => {
+    if (!measured) return;
+    const raf = requestAnimationFrame(() => setReady(true));
+    return () => cancelAnimationFrame(raf);
+  }, [measured]);
 
   useEffect(() => {
     const onResize = () => {
@@ -219,19 +286,20 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
   };
 
   const pos = placeCard(rect, cardH, viewport.w, viewport.h);
+  const glide = ready && !reduce;
 
   return (
-    <div className={cn("fixed inset-0 z-[90]", !modal && "pointer-events-none")} onKeyDown={onKeyDown}>
+    <div className={cn("fixed inset-0 z-[90]", !modal && "pointer-events-none", modal && "tour-in")} onKeyDown={onKeyDown}>
       {/* Swallows clicks so nothing behind the tour changes while it's explained. */}
       {modal && <div className="absolute inset-0" aria-hidden onClick={() => nextRef.current?.focus()} />}
 
       {/* Keep blur in rectangular panels outside the target. Animating a cutout
           on a backdrop-filter layer can leave Chromium painting the old hole. */}
-      {modal && (rect ? [
-        { left: 0, top: 0, width: viewport.w, height: Math.max(0, rect.y) },
-        { left: 0, top: rect.y + rect.h, width: viewport.w, height: Math.max(0, viewport.h - rect.y - rect.h) },
-        { left: 0, top: rect.y, width: Math.max(0, rect.x), height: rect.h },
-        { left: rect.x + rect.w, top: rect.y, width: Math.max(0, viewport.w - rect.x - rect.w), height: rect.h },
+      {modal && (shown ? [
+        { left: 0, top: 0, width: viewport.w, height: Math.max(0, shown.y) },
+        { left: 0, top: shown.y + shown.h, width: viewport.w, height: Math.max(0, viewport.h - shown.y - shown.h) },
+        { left: 0, top: shown.y, width: Math.max(0, shown.x), height: shown.h },
+        { left: shown.x + shown.w, top: shown.y, width: Math.max(0, viewport.w - shown.x - shown.w), height: shown.h },
       ] : [{ left: 0, top: 0, width: viewport.w, height: viewport.h }]).map((panel, i) => (
         <div key={i} aria-hidden className="pointer-events-none absolute backdrop-blur-[3px]" style={panel} />
       ))}
@@ -239,21 +307,21 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 bg-black/55"
-          style={{ clipPath: holePath(rect, viewport.w, viewport.h) }}
+          style={{ clipPath: holePath(shown, viewport.w, viewport.h) }}
         />
       )}
 
-      {modal && rect && (
+      {modal && shown && (
         <>
           {/* Dithered rim around the window: a 3px band kept by a mask, filled with dither dots (CSS, no WebGL). */}
           <div
             aria-hidden
             className="pointer-events-none absolute rounded-[10px] p-[3px]"
             style={{
-              left: rect.x - 3,
-              top: rect.y - 3,
-              width: rect.w + 6,
-              height: rect.h + 6,
+              left: shown.x - 3,
+              top: shown.y - 3,
+              width: shown.w + 6,
+              height: shown.h + 6,
               mask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
               maskComposite: "exclude",
               WebkitMaskComposite: "xor",
@@ -264,7 +332,7 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
           <div
             aria-hidden
             className="pointer-events-none absolute rounded-[8px] ring-1 ring-ring/70"
-            style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}
+            style={{ left: shown.x, top: shown.y, width: shown.w, height: shown.h }}
           />
         </>
       )}
@@ -274,15 +342,24 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
         role="dialog"
         aria-modal={modal}
         aria-labelledby={titleId}
-        className="pointer-events-auto absolute left-0 top-0 rounded-2xl border border-border-strong bg-popover p-4 text-popover-foreground shadow-[0_16px_48px_rgba(0,0,0,0.55)]"
-        style={{ transform: `translate(${pos.left}px, ${pos.top}px)`, width: CARD_W }}
+        className={cn(
+          "pointer-events-auto absolute left-0 top-0 rounded-2xl border border-border-strong bg-popover p-4 text-popover-foreground shadow-[0_16px_48px_rgba(0,0,0,0.55)]",
+          !measured && "invisible",
+        )}
+        style={{
+          transform: `translate(${pos.left}px, ${pos.top}px)`,
+          width: CARD_W,
+          transition: glide ? `transform ${MOVE_MS}ms var(--ease-snap)` : undefined,
+        }}
       >
+        {/* Inner layer owns the entrance scale so it doesn't fight the positioning transform. */}
+        <div className={cn(measured && "tour-card-in")}>
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2">
           {steps.length > 1 && (
             <div className="col-start-1 row-start-1 flex items-center gap-2">
               <ol className="flex gap-1" aria-label={`Step ${index + 1} of ${steps.length}`}>
                 {steps.map((_, i) => (
-                  <li key={i} className={cn("h-1 w-3 rounded-full", i === index ? "bg-foreground" : i < index ? "bg-muted-foreground/60" : "bg-border-strong")} />
+                  <li key={i} className={cn("h-1 w-3 rounded-full transition-colors duration-150", i === index ? "bg-foreground" : i < index ? "bg-muted-foreground/60" : "bg-border-strong")} />
                 ))}
               </ol>
               <span className="text-xs text-faint" aria-hidden>
@@ -293,11 +370,11 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
           <Button variant="ghost" size="icon-sm" className={cn("col-start-2 row-start-1 text-faint", HIT)} aria-label={steps.length > 1 ? "Close tour" : "Close tip"} onClick={() => onClose(false)}>
             <X />
           </Button>
-          <h2 id={titleId} className={cn("text-lg leading-snug font-semibold text-foreground", steps.length > 1 ? "col-span-2 mt-3" : "col-start-1 row-start-1")}>
+          <h2 key={index} id={titleId} className={cn("tour-step-in text-lg leading-snug font-semibold text-foreground", steps.length > 1 ? "col-span-2 mt-3" : "col-start-1 row-start-1")}>
             {step.title}
           </h2>
         </div>
-        <div className="mt-1.5 text-base leading-relaxed text-pretty text-muted-foreground">
+        <div key={index} className="tour-step-in mt-1.5 text-base leading-relaxed text-pretty text-muted-foreground">
           {step.body}
         </div>
         <div className="mt-4 flex items-center gap-2">
@@ -316,6 +393,7 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
             {last ? (step.action?.label ?? (steps.length > 1 ? "Done" : "Got it")) : "Next"}
             {(!last || step.action) && <ArrowRight />}
           </Button>
+        </div>
         </div>
       </div>
     </div>
