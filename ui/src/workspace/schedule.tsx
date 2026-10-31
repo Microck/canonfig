@@ -189,7 +189,7 @@ const SLOTS = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).
  * choices with one click. ArrowDown moves into the list, arrows walk it, Enter picks,
  * Escape closes and keeps focus in the field.
  */
-function TimeField({ id, value, onChange, invalid, describedBy }: { id: string; value: string; onChange: (time: string) => void; invalid: boolean; describedBy?: string }) {
+export function TimeField({ id, value, onChange, invalid, describedBy }: { id: string; value: string; onChange: (time: string) => void; invalid: boolean; describedBy?: string }) {
   const [open, setOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);

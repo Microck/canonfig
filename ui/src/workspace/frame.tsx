@@ -93,7 +93,7 @@ function NavButton({ item, active, badge, onNavigate }: { item: NavItem; active:
 }
 
 /** A sidebar count. Neutral counts are plain digits; only states that ask for action get a tinted chip. */
-function Count({ value, tone = "muted", label }: { value: number; tone?: "muted" | "warn" | "act"; label: string }) {
+export function Count({ value, tone = "muted", label }: { value: number; tone?: "muted" | "warn" | "act"; label: string }) {
   return (
     <span
       className={cn(

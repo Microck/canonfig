@@ -150,7 +150,7 @@ function useSetOverlays() {
   };
 }
 
-function ActionTag({ action }: { action: Shown }) {
+export function ActionTag({ action }: { action: Shown }) {
   const a = ACTION[action];
   return (
     <span title={a.hint} className={cn("inline-flex h-5 items-center rounded px-1.5 text-xs font-medium whitespace-nowrap", a.cls)}>
@@ -159,7 +159,7 @@ function ActionTag({ action }: { action: Shown }) {
   );
 }
 
-function Attention({ tone, title, children, actions }: { tone: "warn" | "act" | "bad"; title: ReactNode; children: ReactNode; actions?: ReactNode }) {
+export function Attention({ tone, title, children, actions }: { tone: "warn" | "act" | "bad"; title: ReactNode; children: ReactNode; actions?: ReactNode }) {
   return (
     <div className="grid grid-cols-[14px_minmax(0,1fr)] items-start gap-x-3 gap-y-2 border-b border-border/70 py-3 @min-[640px]:grid-cols-[14px_minmax(0,1fr)_auto]">
       {/* h-lh centres the marker on the title's first line, whatever the marker's height. */}

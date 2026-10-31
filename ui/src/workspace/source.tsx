@@ -69,7 +69,7 @@ function SectionLink({ onClick, children }: { onClick: () => void; children: str
 }
 
 /** A row in the overview's side column that opens the matching settings page. */
-function StatusRow({ status, label, value, title, onClick }: { status?: StatusKind; label: string; value: string; title?: string; onClick: () => void }) {
+export function StatusRow({ status, label, value, title, onClick }: { status?: StatusKind; label: string; value: string; title?: string; onClick: () => void }) {
   return (
     <button
       type="button"

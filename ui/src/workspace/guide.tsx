@@ -391,7 +391,7 @@ export function TourPicker() {
  * first. The selected chapter is the list's one tab stop, so Tab goes straight from the list to the
  * button.
  */
-function ChapterPicker({ onChoose }: { onChoose: (id: string) => void }) {
+export function ChapterPicker({ onChoose }: { onChoose: (id: string) => void }) {
   const ws = useWorkspace();
   const chapters = chaptersFor(ws, () => ws);
   const nextId = chapters.find((chapter) => !ws.tourFinished(chapter.id))?.id;
