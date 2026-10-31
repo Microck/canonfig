@@ -209,6 +209,24 @@ export function TourOffer() {
   const onMap = ws.view === "machines" && ws.machinesMode === "map";
   const show = ws.tourOffered && ready && !busy && !detailOpen && !onMap;
   const { dismissTourOffer, view } = ws;
+  // Toasts live in the same bottom-right corner (App.tsx). While the card is on screen its height
+  // plus an 8px gap becomes --toast-lift, so toasts stack above it; removing the card resets the lift.
+  // A ResizeObserver also covers the card being display:none on small screens (height 0, no lift).
+  const offerRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const card = offerRef.current;
+    if (!show || !card) return;
+    const root = document.documentElement;
+    const observer = new ResizeObserver(() => {
+      const height = card.offsetHeight;
+      root.style.setProperty("--toast-lift", height ? `${height + 8}px` : "0px");
+    });
+    observer.observe(card);
+    return () => {
+      observer.disconnect();
+      root.style.removeProperty("--toast-lift");
+    };
+  }, [show]);
   useEffect(() => {
     if (!show) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -229,6 +247,7 @@ export function TourOffer() {
     <AnimatePresence>
       {show && (
         <motion.aside
+          ref={offerRef}
           role="region"
           aria-label="Tour offer"
           initial={reduce ? false : { opacity: 0, y: 8 }}

@@ -14,12 +14,16 @@ export default function App() {
       <div className="dark min-h-svh">
         <WorkspaceApp route={route} />
       </div>
-      {/* Bottom-left of the main column, past the 244px sidebar (frame.tsx): footers and right-hand panels keep
-          their primary actions bottom-right, where a toast sat on top of the next click. Setup and not-found pages
-          have no sidebar, but the same offset keeps toasts clear of their bottom-left Demo switcher. Below 600px
-          Sonner uses its own full-width bottom offsets; there the switcher sits in the top header (md breakpoint),
-          so the two never share a band. */}
-      <Toaster theme="dark" position="bottom-left" offset={{ left: 260, bottom: 16 }} />
+      {/* Bottom-right, the usual place for notifications, 8px in like the main panel and the tour offer card. While the tour offer card occupies that corner it
+          publishes its height as --toast-lift (guide.tsx), so toasts sit above it and drop back down once it
+          is dismissed. Footers and side panels keep primary actions bottom-right too, so a toast can briefly
+          cover one; toasts close on their own after 4s. Below 600px Sonner uses its own full-width offsets. */}
+      <Toaster
+        theme="dark"
+        position="bottom-right"
+        offset={{ right: 8, bottom: "calc(8px + var(--toast-lift, 0px))" }}
+        mobileOffset={{ bottom: "calc(8px + var(--toast-lift, 0px))" }}
+      />
       {route.kind !== "workspace" && (
         // Below md the compact switcher is one button in the reserved slot of the setup header (kit.tsx).
         <aside aria-label="Demo" className="fixed z-40 max-md:top-0.5 max-md:right-16 md:bottom-[80px] md:left-[12px]">

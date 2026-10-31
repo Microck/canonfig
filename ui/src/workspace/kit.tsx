@@ -102,7 +102,8 @@ function useCopied() {
  * The chip (fill, hairline, side margin) keeps the command visibly apart from the
  * prose around it; Manrope's narrow word space alone made "Run gh auth login on" read as one run.
  * Each chip is a button that copies its text in one click, with the same toast as the
- * copy icons; hover brightens its border so it reads as clickable. Never render this inside
+ * copy icons; hover brightens its border and the app tooltip says "Copy", with the normal
+ * cursor every other button uses. Never render this inside
  * another button or link: a nested button is invalid and would steal the row's click.
  */
 export function WithCode({ text }: { text: string }) {
@@ -110,16 +111,19 @@ export function WithCode({ text }: { text: string }) {
     <>
       {text.split("`").map((part, i) =>
         i % 2 ? (
-          <button
-            key={i}
-            type="button"
-            title="Copy"
-            aria-label={`Copy ${part}`}
-            onClick={() => void copy(part, "Command copied")}
-            className="mx-0.5 cursor-copy rounded-[4px] border border-border bg-secondary/70 px-1 py-px font-mono text-xs whitespace-nowrap text-foreground transition-colors duration-150 outline-none [box-decoration-break:clone] hover:border-border-strong hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring/60"
-          >
-            {part}
-          </button>
+          <Tooltip key={i}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={`Copy ${part}`}
+                onClick={() => void copy(part, "Command copied")}
+                className="mx-0.5 rounded-[4px] border border-border bg-secondary/70 px-1 py-px font-mono text-xs whitespace-nowrap text-foreground transition-colors duration-150 outline-none [box-decoration-break:clone] hover:border-border-strong hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring/60"
+              >
+                {part}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Copy</TooltipContent>
+          </Tooltip>
         ) : (
           <Fragment key={i}>{part}</Fragment>
         ),

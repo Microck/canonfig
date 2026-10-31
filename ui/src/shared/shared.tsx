@@ -91,7 +91,7 @@ export function Term({ children, term }: { children?: ReactNode; term: Term }) {
       <TooltipTrigger asChild>
         <span
           tabIndex={0}
-          className="cursor-help rounded-[2px] underline decoration-faint decoration-dotted underline-offset-[3px] outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          className="rounded-[2px] underline decoration-faint decoration-dotted underline-offset-[3px] outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >
           {children ?? plain}
         </span>
