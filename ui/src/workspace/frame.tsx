@@ -4,29 +4,17 @@ import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { toast } from "sonner";
 import {
   ArrowsClockwise,
-  CalendarDots,
   CaretDown,
   CaretRight,
-  ClockCounterClockwise,
-  Devices,
   FileCode,
-  GitBranch,
-  HardDrives,
-  Key,
   ListChecks,
   MagnifyingGlass,
-  Monitor,
-  Package,
   PaperPlaneTilt,
-  Plug,
-  Robot,
   FoldedMap,
-  SquaresFour,
   Stack,
   Stethoscope,
   UserPlus,
   UsersThree,
-  type IconComponent,
 } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import {
@@ -56,50 +44,7 @@ import { DemoSwitcher } from "@/shared/demo-switcher";
 import { useSharedState, useWorkspace, type View } from "./store";
 import { copy } from "./kit";
 import { focusPageHeading, followLink, workspaceHref } from "./routes";
-
-interface NavItem {
-  view: View;
-  label: string;
-  icon: IconComponent;
-}
-
-const SOURCE_NAV: NavItem[] = [
-  { view: "overview", label: "Overview", icon: SquaresFour },
-  { view: "profile", label: "Profile", icon: FileCode },
-  { view: "machines", label: "Machines", icon: Devices },
-  { view: "revisions", label: "Revisions", icon: ClockCounterClockwise },
-  { view: "secrets", label: "Secrets", icon: Key },
-];
-
-const SOURCE_SETTINGS: NavItem[] = [
-  { view: "service", label: "Source service", icon: HardDrives },
-  { view: "agent", label: "Agent policy", icon: Robot },
-  { view: "harness", label: "Harness projects", icon: GitBranch },
-  { view: "installers", label: "Installers", icon: Package },
-  { view: "setup", label: "Setup", icon: ListChecks },
-  { view: "doctor", label: "Health check", icon: Stethoscope },
-];
-
-const FOLLOWER_NAV: NavItem[] = [
-  { view: "overview", label: "Overview", icon: SquaresFour },
-  { view: "machines", label: "Machines", icon: Devices },
-  { view: "sync", label: "Sync", icon: ArrowsClockwise },
-  { view: "schedule", label: "Schedule", icon: CalendarDots },
-  { view: "overlays", label: PLAIN.localNav, icon: Stack },
-  { view: "secrets", label: "Secrets", icon: Key },
-];
-
-const FOLLOWER_SETTINGS: NavItem[] = [
-  { view: "tunnel", label: "SSH tunnel", icon: Plug },
-  { view: "agent", label: "Agent policy", icon: Robot },
-  { view: "harness", label: "Harness projects", icon: GitBranch },
-  { view: "doctor", label: "Health check", icon: Stethoscope },
-  { view: "machine", label: "Enrollment", icon: Monitor },
-];
-
-function navFor(role: "source" | "follower") {
-  return role === "source" ? { main: SOURCE_NAV, settings: SOURCE_SETTINGS } : { main: FOLLOWER_NAV, settings: FOLLOWER_SETTINGS };
-}
+import { NAV, type NavItem } from "./nav";
 
 /** ⌘ on Apple platforms, Ctrl elsewhere; the palette listens for both. */
 const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl ";
@@ -171,7 +116,7 @@ function Count({ value, tone = "muted", label }: { value: number; tone?: "muted"
 export function Sidebar({ className, onNavigate, onOpenTours }: { className?: string; onNavigate?: () => void; onOpenTours?: () => void }) {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
-  const { main, settings } = navFor(role);
+  const { main, settings } = NAV[role];
   const inSettings = settings.some((s) => s.view === ws.view);
   const [open, setOpen] = useState(inSettings);
   const navGroup = useId();
@@ -332,7 +277,7 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
 export function Palette() {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
-  const { main, settings } = navFor(role);
+  const { main, settings } = NAV[role];
 
   const { setPaletteOpen, tourOpen } = ws;
   useEffect(() => {

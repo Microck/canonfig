@@ -5,23 +5,26 @@
 //   1. TourOffer/TourHost: a 4-stop tour (2 below md), offered in a corner card, never forced.
 //      Its last stop hands over to the Get started list, so it ends in doing.
 //      TourPicker ("Take the tour") lists it again with one opt-in chapter per area
-//      (tour-steps.tsx), each short enough to stay inside the same benchmark.
+//      (tour-steps.tsx), each short enough to stay inside the same benchmark, and
+//      previews the selected chapter's route through the sidebar before it starts.
 //   2. GetStarted: Linear-style "learn by doing" list on Overview; each item
 //      ticks itself off from real state, not from clicking a checkbox.
 //   3. TipHost: one spotlight the first time a complex page opens (PAGE_TIPS),
 //      re-openable from that page's "?" button.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ArrowRight, Check, FoldedMap, X } from "@/components/icons";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { fillStyle } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DitherBlock, DitherProgress } from "@/shared/shared";
+import { DitherBlock, DitherProgress, StatusMark } from "@/shared/shared";
 import { Tour, type TourStep } from "@/tour/tour";
 import { PAGE_TIPS } from "./page-tips";
-import { tourChapters } from "./tour-steps";
-import { useWorkspace, type Workspace } from "./store";
+import { tourChapters, type TourChapter } from "./tour-steps";
+import { useWorkspace, type View, type Workspace } from "./store";
+import { NAV, type NavItem } from "./nav";
 import { focusPageHeading } from "./routes";
 
 const SNAP = [0.175, 0.885, 0.32, 1.1] as const;
@@ -338,16 +341,22 @@ export function TourHost() {
 }
 
 /**
- * "Take the tour": the short tour, then one chapter per area, each with what it covers, its
- * length and a tick once finished. Finished chapters stay re-runnable.
+ * "Take the tour": the short tour, then one chapter per area. The list marks each chapter done,
+ * next or not started; the preview beside it shows the selected chapter's route through a small
+ * copy of the sidebar, and its steps. Finished chapters stay re-runnable.
  */
 export function TourPicker() {
   const ws = useWorkspace();
   const chosen = useRef<string | null>(null);
   return (
     <Dialog open={ws.tourPickerOpen} onOpenChange={ws.setTourPickerOpen}>
+      {/*
+        Radix focuses the first tabbable control on open: the selected chapter, the list's one tab stop.
+        Below md the preview sits under the list and changes height with the selected chapter, so the
+        dialog hangs from the top there: centred, it would re-centre and slide the list under the pointer.
+      */}
       <DialogContent
-        className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-md"
+        className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-md md:max-w-4xl max-md:top-4 max-md:translate-y-0"
         onCloseAutoFocus={() => {
           // Start only after the dialog is gone and Radix has handed focus back to the opener,
           // so the tour returns focus there when it ends and never fights this dialog's focus trap.
@@ -358,9 +367,9 @@ export function TourPicker() {
       >
         <DialogHeader>
           <DialogTitle>Take the tour</DialogTitle>
-          <DialogDescription className="text-base text-pretty">Each chapter shows one area in a few steps.</DialogDescription>
+          <DialogDescription className="text-base text-pretty">Choose a chapter to see where it goes, then start it.</DialogDescription>
         </DialogHeader>
-        <ChapterList
+        <ChapterPicker
           onChoose={(id) => {
             chosen.current = id;
             ws.setTourPickerOpen(false);
@@ -371,42 +380,229 @@ export function TourPicker() {
   );
 }
 
-/** Inside DialogContent, so the steps are only built while the picker is mounted. */
-function ChapterList({ onChoose }: { onChoose: (id: string) => void }) {
+/**
+ * Inside DialogContent, so the steps are only built while the picker is mounted. The next chapter
+ * starts selected, or the short tour once every chapter is done.
+ *
+ * Hover (mouse only), focus and the arrow keys select a chapter and the preview follows. Enter, the
+ * gold button, a mouse click or a tap on the selected chapter starts it. A mouse user has seen the
+ * preview on hover, so a click starts at once, even when the picker opened under a resting pointer
+ * that never hovered. A tap on an unselected chapter only selects it, so touch users see the preview
+ * first. The selected chapter is the list's one tab stop, so Tab goes straight from the list to the
+ * button.
+ */
+function ChapterPicker({ onChoose }: { onChoose: (id: string) => void }) {
   const ws = useWorkspace();
   const chapters = chaptersFor(ws, () => ws);
+  const nextId = chapters.find((chapter) => !ws.tourFinished(chapter.id))?.id;
+  const doneCount = chapters.filter((chapter) => ws.tourFinished(chapter.id)).length;
+  const [selectedId, select] = useState(nextId ?? chapters[0].id);
+  // Whether the press should start its chapter: always for a mouse, otherwise only when the chapter
+  // was already selected at pointerdown, since focus selects it before click runs.
+  const armed = useRef<string | null>(null);
+  const preview = useRef<HTMLElement>(null);
+  const active = chapters.find((chapter) => chapter.id === selectedId)!;
   return (
-    <ul className="-mx-2 grid gap-px">
-      {chapters.map((chapter) => {
-        const done = ws.tourFinished(chapter.id);
-        return (
-          <li key={chapter.id}>
-            <button
-              type="button"
-              onClick={() => onChoose(chapter.id)}
-              className="flex min-h-11 w-full items-center gap-3 rounded-lg px-2 py-2 text-left outline-none hover:bg-raised/60 focus-visible:bg-raised focus-visible:ring-2 focus-visible:ring-ring/60"
-            >
-              <span className="min-w-0 flex-1">
-                <span className="block text-base font-medium text-foreground">
-                  {chapter.title}
-                  <span className="sr-only">{done ? ", done" : ""}</span>
-                </span>
-                <span className="block text-sm text-pretty text-muted-foreground">{chapter.summary}</span>
-              </span>
-              <span className="shrink-0 text-xs text-faint tabular-nums">{chapter.steps.length} steps</span>
-              {/* The column is always there, so step counts line up whether or not a row is ticked. */}
-              <span aria-hidden className="grid size-5 shrink-0 place-items-center">
-                {done && (
-                  <span className="grid size-5 place-items-center rounded-full bg-ok/15 text-ok">
-                    <Check className="size-3" />
+    <>
+      <div className="flex items-center gap-3">
+        <DitherProgress value={(doneCount / chapters.length) * 100} label="Chapters done" className="flex-1" />
+        <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
+          {doneCount} of {chapters.length} done
+        </span>
+      </div>
+      <div className="grid gap-4 md:grid-cols-[minmax(0,15rem)_minmax(0,1fr)]">
+        <ul className="grid content-start gap-px">
+          {chapters.map((chapter, i) => {
+            const done = ws.tourFinished(chapter.id);
+            const next = chapter.id === nextId;
+            const isActive = chapter.id === active.id;
+            return (
+              <li key={chapter.id}>
+                <button
+                  type="button"
+                  data-chapter={chapter.id}
+                  tabIndex={isActive ? 0 : -1}
+                  onFocus={() => select(chapter.id)}
+                  onPointerEnter={(event) => {
+                    if (event.pointerType === "mouse") select(chapter.id);
+                  }}
+                  onPointerDown={(event) => {
+                    armed.current = event.pointerType === "mouse" || isActive ? chapter.id : null;
+                  }}
+                  onClick={(event) => {
+                    // detail 0: Enter or Space, which always start.
+                    if (event.detail === 0 || armed.current === chapter.id) {
+                      onChoose(chapter.id);
+                      return;
+                    }
+                    select(chapter.id);
+                    // Below md the preview sits under the list.
+                    requestAnimationFrame(() => preview.current?.scrollIntoView({ block: "nearest" }));
+                  }}
+                  onKeyDown={(event) => {
+                    const moves: Record<string, number> = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: chapters.length - 1 };
+                    const to = moves[event.key];
+                    if (to === undefined) return;
+                    event.preventDefault();
+                    // Focusing a chapter selects it.
+                    event.currentTarget.closest("ul")!.querySelectorAll("button")[Math.min(Math.max(to, 0), chapters.length - 1)].focus();
+                  }}
+                  className={cn(
+                    "flex min-h-11 w-full items-center gap-3 rounded-lg px-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+                    isActive && "bg-raised",
+                  )}
+                >
+                  <ChapterMark done={done} next={next} />
+                  <span className="min-w-0 flex-1 font-medium">
+                    {chapter.title}
+                    <span className="sr-only">
+                      {done ? ", done" : next ? ", next" : ""}, {chapter.steps.length} steps
+                    </span>
                   </span>
-                )}
-              </span>
-            </button>
-          </li>
-        );
-      })}
-    </ul>
+                  {next && (
+                    <span aria-hidden className="text-xs text-dither-purple">
+                      Next
+                    </span>
+                  )}
+                  <span aria-hidden className="w-[2ch] text-right font-mono text-xs text-muted-foreground tabular-nums">
+                    {chapter.steps.length}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <ChapterPreview ref={preview} chapter={active} done={ws.tourFinished(active.id)} onChoose={onChoose} />
+      </div>
+    </>
+  );
+}
+
+/** Done is the status tick, next a violet radio (the tour's colour since the offer card), the rest an empty ring. */
+function ChapterMark({ done, next }: { done: boolean; next: boolean }) {
+  if (done) return <StatusMark kind="ok" />;
+  if (!next) return <StatusMark kind="off" />;
+  return (
+    <span aria-hidden className="grid size-[14px] shrink-0 place-items-center rounded-full border-[1.5px] border-dither-purple">
+      <span className="size-1.5 rounded-full bg-dither-purple" />
+    </span>
+  );
+}
+
+/**
+ * The selected chapter: its route through a copy of the sidebar (from md up) or a numbered row of
+ * pages (below md), what it covers, its steps and the one button that starts it.
+ */
+function ChapterPreview({ chapter, done, onChoose, ref }: { chapter: TourChapter; done: boolean; onChoose: (id: string) => void; ref: Ref<HTMLElement> }) {
+  const nav = NAV[useWorkspace().role];
+  const items = [...nav.main, ...nav.settings];
+  const route = chapter.pages.map((view) => items.find((item) => item.view === view)!);
+  return (
+    <section ref={ref} aria-label={`Preview: ${chapter.title}`} className="grid overflow-hidden rounded-lg border border-border bg-panel md:grid-cols-[12rem_minmax(0,1fr)]">
+      <RouteSidebar main={nav.main} settings={nav.settings} pages={chapter.pages} />
+      <div className="flex min-w-0 flex-col items-start gap-4 p-4 md:p-5">
+        <div>
+          <h3 className="text-lg font-semibold">{chapter.title}</h3>
+          <p className="text-pretty text-muted-foreground">{chapter.summary}</p>
+        </div>
+        <p className="sr-only">Goes to {route.map((page) => page.label).join(", ")}.</p>
+        <RouteRow route={route} />
+        <ol className="grid gap-1.5">
+          {chapter.steps.map((step, i) => (
+            <li key={step.title} className="flex gap-3">
+              <span className="font-mono text-muted-foreground tabular-nums">{String(i + 1).padStart(2, "0")}</span>
+              {step.title}
+            </li>
+          ))}
+        </ol>
+        <Button variant="primary" size="lg" className="mt-auto max-md:w-full" onClick={() => onChoose(chapter.id)}>
+          {done ? "Replay" : "Start"} {chapter.title} <ArrowRight />
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/** The dotted violet line that joins a route's pages in visit order, in the sidebar copy and the phone row alike. */
+const ROUTE_LINE = { stroke: "var(--dither-color-purple)", strokeWidth: 1.5, strokeDasharray: "0.1 3.5", strokeLinecap: "round" } as const;
+
+/** A lit page: violet dither thinning away from the icon, sparse enough to keep its label legible. Static, so it never repaints. */
+const LIT = fillStyle("gradient", { color: "purple", edge: "left", length: 80, from: 0.6, to: 0.04, cell: 1.5 });
+
+/** A page's place in the route. The fill hides the route line where it passes under the badge. */
+function RouteBadge({ n, className }: { n: number; className?: string }) {
+  return <span className={cn("grid size-[18px] shrink-0 place-items-center rounded-full border border-dither-purple font-mono text-xs text-dither-purple", className)}>{n}</span>;
+}
+
+// RouteSidebar's geometry, which its route line is drawn from: p-1.5 padding, h-7 rows and the h-6 Settings label.
+const NAV_PAD = 6;
+const NAV_ROW = 28;
+const NAV_LABEL = 24;
+
+/**
+ * A copy of the role's sidebar with the chapter's pages lit and numbered in visit order, joined by
+ * a dotted line that bows out to the right between badges. From md up; RouteRow takes over below.
+ */
+function RouteSidebar({ main, settings, pages }: { main: NavItem[]; settings: NavItem[]; pages: View[] }) {
+  const rowY = (view: View) => {
+    const inMain = main.findIndex((item) => item.view === view);
+    const row = inMain >= 0 ? inMain : main.length + settings.findIndex((item) => item.view === view);
+    return NAV_PAD + row * NAV_ROW + (inMain >= 0 ? 0 : NAV_LABEL) + NAV_ROW / 2;
+  };
+  const ys = pages.map(rowY);
+  // Badges centre 23px in from the right edge (6px padding, 8px row padding, half the 18px badge):
+  // x 25 in this 48px-wide svg. Legs alternate how far they bow, so legs that overlap stay apart.
+  const x = 25;
+  const d = ys
+    .slice(1)
+    .map((y, i) => {
+      const bow = x + 12 + (i % 2) * 8;
+      return `M${x} ${ys[i]} C${bow} ${ys[i]} ${bow} ${y} ${x} ${y}`;
+    })
+    .join(" ");
+  const row = (item: NavItem) => {
+    const order = pages.indexOf(item.view);
+    const lit = order >= 0;
+    const Icon = item.icon;
+    return (
+      <li key={item.view} className={cn("relative flex h-7 items-center gap-2 rounded-md px-2 text-xs", lit ? "font-medium text-foreground" : "text-muted-foreground")}>
+        {lit && <span className="absolute inset-0 rounded-md opacity-50" style={LIT} />}
+        <Icon className="relative size-3.5 shrink-0" bold={lit} />
+        <span className="relative min-w-0 flex-1 truncate">{item.label}</span>
+        {lit && <RouteBadge n={order + 1} className="relative bg-sidebar" />}
+      </li>
+    );
+  };
+  return (
+    <div aria-hidden className="relative border-r border-border bg-sidebar p-1.5 max-md:hidden">
+      {d && (
+        <svg className="pointer-events-none absolute top-0 right-0 h-full w-12" fill="none">
+          <path d={d} {...ROUTE_LINE} />
+        </svg>
+      )}
+      <ul className="relative">{main.map(row)}</ul>
+      <p className="relative flex h-6 items-end px-2 pb-1 text-xs text-muted-foreground">Settings</p>
+      <ul className="relative">{settings.map(row)}</ul>
+    </div>
+  );
+}
+
+/** Below md the sidebar copy would outgrow the screen, so the route reads as a row of numbered pages. */
+function RouteRow({ route }: { route: NavItem[] }) {
+  return (
+    <ol aria-hidden className="flex flex-wrap items-center gap-y-2 text-xs md:hidden">
+      {route.map(({ view, label }, i) => (
+        <li key={view} className="flex items-center">
+          {i > 0 && (
+            <svg className="mx-1.5 h-0.5 w-4" fill="none">
+              <path d="M1 1H15" {...ROUTE_LINE} />
+            </svg>
+          )}
+          <RouteBadge n={i + 1} />
+          <span className="ml-1.5">{label}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 

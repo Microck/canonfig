@@ -17,7 +17,7 @@ import { machine } from "@/shared/data";
 import type { TourStep } from "@/tour/tour";
 import { getStartedItems } from "./guide";
 import { workspaceHref } from "./routes";
-import type { Workspace } from "./store";
+import type { View, Workspace } from "./store";
 
 const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
 
@@ -27,6 +27,12 @@ export interface TourChapter {
   title: string;
   /** One line in the picker saying what the chapter covers. */
   summary: string;
+  /**
+   * The sidebar pages the chapter visits, in visit order; the picker draws them as its route.
+   * Kept by hand because steps switch pages in `before` callbacks, which can't be read without
+   * running them, so a chapter that changes where its steps go must update this too.
+   */
+  pages: View[];
   steps: TourStep[];
 }
 
@@ -39,6 +45,8 @@ export function tourChapters(ws: Workspace, live: () => Workspace): TourChapter[
     id: "quick",
     title: "Quick tour",
     summary: ws.role === "source" ? "Your Source, the profile, your machines and what to do next." : "This machine, Sync, Local settings and what to do next.",
+    // The short tour points at sidebar entries rather than visiting them, then ends on Overview.
+    pages: ws.role === "source" ? ["profile", "machines", "overview"] : ["sync", "overlays", "overview"],
     steps: tourSteps(ws, live),
   };
   const chapters = ws.role === "source" ? sourceChapters(ws) : followerChapters(ws);
@@ -115,6 +123,7 @@ function agentsChapter(ws: Workspace): TourChapter {
     id: "agents",
     title: "AI agents",
     summary: "When an AI agent may help, and what it may change.",
+    pages: ["agent", "harness"],
     steps: [
       {
         target: ["agent-mode"],
@@ -151,6 +160,7 @@ function sourceChapters(ws: Workspace): TourChapter[] {
       id: "source",
       title: "Your Source",
       summary: "What the Overview says about your profile and machines.",
+      pages: ["overview"],
       steps: [
         {
           target: ["overview-head"],
@@ -188,6 +198,7 @@ function sourceChapters(ws: Workspace): TourChapter[] {
       id: "profile",
       title: "Profile",
       summary: "What every machine gets, and how to add to it.",
+      pages: ["profile"],
       steps: [
         {
           target: ["profile-items"],
@@ -225,6 +236,7 @@ function sourceChapters(ws: Workspace): TourChapter[] {
       id: "publishing",
       title: "Publishing and revisions",
       summary: "How changes reach your machines, and the revisions you published.",
+      pages: ["revisions"],
       steps: [
         {
           target: ["revisions-next"],
@@ -250,6 +262,7 @@ function sourceChapters(ws: Workspace): TourChapter[] {
       id: "machines",
       title: "Machines",
       summary: "Each machine's state, and how to add new ones.",
+      pages: ["machines"],
       steps: [
         {
           target: ["machine-map"],
@@ -281,6 +294,7 @@ function sourceChapters(ws: Workspace): TourChapter[] {
       id: "secrets",
       title: "Secrets",
       summary: "Tokens and keys, and which machines receive them.",
+      pages: ["secrets"],
       steps: [
         {
           target: ["secrets-about"],
@@ -313,6 +327,7 @@ function sourceChapters(ws: Workspace): TourChapter[] {
       id: "health",
       title: "Service and health",
       summary: "The source service, setup, installers and health check.",
+      pages: ["service", "setup", "installers", "doctor"],
       steps: [
         {
           target: ["service-status"],
@@ -349,6 +364,7 @@ function followerChapters(ws: Workspace): TourChapter[] {
       id: "machine",
       title: "This machine",
       summary: "Where this machine stands, and which profile it follows.",
+      pages: ["overview", "machines", "machine"],
       steps: [
         {
           target: ["overview-head"],
@@ -386,6 +402,7 @@ function followerChapters(ws: Workspace): TourChapter[] {
       id: "sync",
       title: "Sync",
       summary: "What an update will change here, before it does.",
+      pages: ["sync"],
       steps: [
         {
           target: ["sync-check"],
@@ -423,6 +440,7 @@ function followerChapters(ws: Workspace): TourChapter[] {
       id: "schedule",
       title: "Schedule",
       summary: "When this machine updates on its own.",
+      pages: ["schedule"],
       steps: [
         {
           target: ["schedule-when"],
@@ -448,6 +466,7 @@ function followerChapters(ws: Workspace): TourChapter[] {
       id: "local",
       title: "Local settings",
       summary: "Settings that stay different on this machine.",
+      pages: ["overlays", "sync"],
       steps: [
         {
           target: ["overlays-list"],
@@ -473,6 +492,7 @@ function followerChapters(ws: Workspace): TourChapter[] {
       id: "secrets",
       title: "Secrets",
       summary: "Shared tokens and keys this machine receives.",
+      pages: ["secrets"],
       steps: [
         {
           target: ["secrets-about"],
@@ -499,6 +519,7 @@ function followerChapters(ws: Workspace): TourChapter[] {
       id: "health",
       title: "Health and recovery",
       summary: "What stops updates, and how to fix it.",
+      pages: ["overview", "sync", "doctor", "tunnel", "machine"],
       steps: [
         {
           target: ["follower-needs"],
