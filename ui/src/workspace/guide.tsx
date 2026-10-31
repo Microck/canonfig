@@ -151,7 +151,7 @@ export function GetStarted() {
                 item.done ? "border-transparent bg-ok/15 text-ok" : item === next ? "border-foreground/50 text-foreground" : "border-border-strong text-faint",
               )}
             >
-              {item.done ? <Check className="size-3" /> : <span className="pt-px">{i + 1}</span>}
+              {item.done ? <Check className="size-3" /> : <span className="block -translate-y-px">{i + 1}</span>}
             </span>
             <span className="min-w-0 flex-1">
               <span className={cn("block text-base", item.done ? "text-muted-foreground line-through decoration-faint" : "text-foreground")}>
