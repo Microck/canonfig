@@ -766,10 +766,13 @@ const evaluateAgentHarnessCommand = (
 ): CliOutcome => {
   if (rest.length === 0) return command({ _tag: "AgentHarnessGet" }, format);
   const [kind, ...harnessArguments] = rest;
+  // `--argument` takes values that look like flags (`--argument --json`), so it is the literal option.
   const options = parseOptions(
     harnessArguments,
     new Set([
       "--executable",
+      "--model",
+      "--argument",
       "--allow-path",
       "--allow-leaf-executable",
       "--bind-secret",
@@ -778,9 +781,19 @@ const evaluateAgentHarnessCommand = (
       "--maximum-input-bytes",
     ]),
     new Set(),
+    "--argument",
   );
   if (options.positionals.length > 0) {
     return invalid("agent harness accepts one adapter kind and named options");
+  }
+  // Built-ins own their flags and only take a model; a custom harness owns its whole command line.
+  const model = one(options, "--model");
+  const customArguments = options.values.get("--argument");
+  if (kind === "custom" && model !== undefined) {
+    return invalid("--model applies to codex and claude; pass a custom harness's model with --argument");
+  }
+  if (kind !== "custom" && customArguments !== undefined) {
+    return invalid("--argument applies only to the custom harness; codex and claude get Canonfig's read-only flags");
   }
   const origins = options.values.get("--allow-origin") ?? [];
   for (const origin of origins) {
@@ -798,6 +811,8 @@ const evaluateAgentHarnessCommand = (
     Schema.Struct({
       kind: SupportedAgentHarness,
       executable: Schema.NonEmptyString,
+      model: Schema.optional(Schema.NonEmptyString.check(Schema.isPattern(/^[^\s-][^\s]*$/u))),
+      arguments: Schema.optional(Schema.Array(Schema.String)),
       maximumInputBytes: Schema.Int.check(
         Schema.isGreaterThan(0),
         Schema.isLessThanOrEqualTo(1024 * 1024),
@@ -815,6 +830,8 @@ const evaluateAgentHarnessCommand = (
   )({
     kind,
     executable: one(options, "--executable", true),
+    model,
+    arguments: customArguments,
     maximumInputBytes: parsePositiveInteger(
       one(options, "--maximum-input-bytes") ?? `${1024 * 1024}`,
       "agent harness maximum input bytes",
@@ -991,8 +1008,11 @@ const evaluateCommand = (
 export const evaluateCli = (arguments_: ReadonlyArray<string>): CliOutcome => {
   const early = helpOrVersion(arguments_);
   if (early !== undefined) return early;
-  const format: CliOutputFormat = arguments_.includes("--json") ? "json" : "human";
-  const rest = arguments_.filter((argument) => argument !== "--json");
+  // `--json` right after `--argument` is a custom harness's own flag, not Canonfig's output format.
+  const isOutputFlag = (argument: string, index: number) =>
+    argument === "--json" && arguments_[index - 1] !== "--argument";
+  const format: CliOutputFormat = arguments_.some(isOutputFlag) ? "json" : "human";
+  const rest = arguments_.filter((argument, index) => !isOutputFlag(argument, index));
   const outcome = rest.length === 0
     ? invalid("Missing command")
     : evaluateCommand(rest, format);

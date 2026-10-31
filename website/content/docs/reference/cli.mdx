@@ -327,7 +327,9 @@ canonfig agent harness
 canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-leaf-executable npm --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
 ```
 
-Harness kinds are `codex`, `claude`, and `gemini`. Capabilities are
+Harness kinds are `codex`, `claude`, and `custom`. `--model <name>` applies to
+`codex` and `claude`. `--argument <value>` (repeatable) applies only to `custom`
+and is passed to it verbatim. Capabilities are
 `elevation`, `login`, `restart`, and `reboot`. Allow origins must be exact
 HTTPS origins. See [Configure agent policies](/how-to/configure-agent-policies).
 

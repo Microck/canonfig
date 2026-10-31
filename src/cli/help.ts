@@ -166,7 +166,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     areas: ["agent"],
     usage: [
       "agent policy [deterministic-only|agent-propose|agent-apply]",
-      "agent harness [codex|claude|gemini] --executable <path> [--allow-path <path>...]",
+      "agent harness [codex|claude|custom] --executable <path> [--model <name>] [--argument <arg>...] [--allow-path <path>...]",
       "  [--allow-leaf-executable <name>...] [--bind-secret <ENV=secret-name>...]",
       "  [--allow-origin <https-origin>...] [--allow-capability <capability>...]",
       "  [--maximum-input-bytes <bytes>]",

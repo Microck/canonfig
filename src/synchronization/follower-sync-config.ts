@@ -16,7 +16,7 @@ import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 export const SupportedAgentHarness = Schema.Literals([
   "codex",
   "claude",
-  "gemini",
+  "custom",
 ]);
 
 export const AgentHarnessCapability = Schema.Literals([
@@ -29,6 +29,10 @@ export const AgentHarnessCapability = Schema.Literals([
 export const FollowerAgentHarnessConfiguration = Schema.Struct({
   kind: SupportedAgentHarness,
   executable: Schema.NonEmptyString,
+  /** codex/claude only: passed as `--model`. Absent means the agent's own default. */
+  model: Schema.optional(Schema.NonEmptyString),
+  /** custom only: the complete argument list, run without a shell (ADR 0002). */
+  arguments: Schema.optional(Schema.Array(Schema.String)),
   environment: Schema.optional(Schema.Array(Schema.Struct({
     name: Schema.NonEmptyString,
     value: Schema.String,

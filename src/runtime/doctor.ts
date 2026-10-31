@@ -531,7 +531,7 @@ const agentProbe = Effect.fn("Doctor.agentAdapter")(function*(
       { policy: configuredPolicy.policy, configured: false },
     );
   }
-  if (!["codex", "claude", "gemini"].includes(agent.adapter)) {
+  if (!["codex", "claude", "custom"].includes(agent.adapter)) {
     return failed(
       "agent-adapter",
       "usage-or-configuration",

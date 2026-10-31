@@ -33,12 +33,20 @@ configuration.
 
 ## Configure a harness
 
-Canonfig supports `codex`, `claude`, and `gemini` harness adapters. Every
-configuration names the executable and allowlists. This example authorizes only
+Canonfig has two built-in harnesses, `codex` and `claude`, and a `custom`
+harness for any other agent CLI. Every configuration names the executable and
+allowlists. This example authorizes only
 one path, executable family, exact HTTPS origin, and restart capability:
 
 ```bash
 canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-leaf-executable npm --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
+```
+
+Pick a model for a built-in harness with `--model`. Canonfig passes it as the
+CLI's own `--model` flag; leave it out to use the agent's default:
+
+```bash
+canonfig agent harness claude --executable /usr/local/bin/claude --model opus --allow-path /home/operator/.canonfig
 ```
 
 Inspect the active harness:
@@ -55,7 +63,23 @@ Launchers that run nested commands - `xargs`, `find -exec`, `awk`, `perl`,
 `make`, `npx`, elevation wrappers, and similar - are rejected at configuration
 time and always require Human Action Required. Inline programs and
 unclassified executables fail closed the same way.
-`--maximum-input-bytes` is positive and cannot exceed 1 MiB. Repeat
+`--maximum-input-bytes` is positive and cannot exceed 1 MiB.
+
+## Use a custom agent
+
+A `custom` harness runs any executable with exactly the arguments you give, one
+`--argument` per argv entry, with no shell. Canonfig writes the Agent Task as a
+`canonfig.agent-task/v1` JSON document to its standard input and reads a
+proposal JSON object (`summary` and `actions`) from its standard output:
+
+```bash
+canonfig agent harness custom --executable /usr/local/bin/my-agent --argument run --argument --json --allow-path /home/operator/.canonfig
+```
+
+Canonfig cannot force a custom agent into a read-only mode the way it does for
+`codex` and `claude`. Start it in its own plan or read-only mode through its
+arguments. Every proposed action is still checked against the allowlists below
+before anything runs, and output that is not a proposal is refused. Repeat
 `--allow-path`, `--allow-leaf-executable`, `--allow-origin`, or
 `--allow-capability` to add entries.
 

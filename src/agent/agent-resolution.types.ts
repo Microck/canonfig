@@ -10,11 +10,19 @@ export type AgentPolicy =
   | "agent-propose"
   | "agent-apply";
 
-export type SupportedHarness = "codex" | "claude" | "gemini";
+/**
+ * `codex` and `claude` are built-in adapters: Canonfig supplies their read-only
+ * flags and reads their output envelopes. `custom` runs any executable with the
+ * user's own arguments under the stdin/stdout contract in docs/adr/0002.
+ */
+export type SupportedHarness = "codex" | "claude" | "custom";
 
 export interface AgentHarnessConfiguration {
   readonly harness: SupportedHarness;
   readonly executable: string;
+  /** Built-in adapters only: passed as `--model`. Unset uses the agent's own default. */
+  readonly model?: string | undefined;
+  /** `custom` only: the complete argument list. Built-ins get Canonfig's fixed flags instead. */
   readonly arguments?: ReadonlyArray<string> | undefined;
   readonly environment?: ReadonlyArray<{
     readonly name: string;

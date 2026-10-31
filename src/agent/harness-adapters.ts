@@ -24,10 +24,6 @@ const ClaudeResultSchema = Schema.Struct({
   result: Schema.String,
 });
 
-const GeminiResultSchema = Schema.Struct({
-  response: Schema.String,
-});
-
 const CodexEventSchema = Schema.Struct({
   type: Schema.String,
   item: Schema.optional(Schema.Struct({
@@ -49,16 +45,23 @@ export const encodeAgentTask = (task: AgentTask): Uint8Array => {
   return encoder.encode(`${JSON.stringify(document, undefined, 2)}\n`);
 };
 
+/**
+ * Built-ins get fixed read-only flags, plus `--model` when set (both CLIs take it
+ * as a top-level option: `codex --model <m> exec ...`, `claude --model <m> --print ...`).
+ * A custom harness gets exactly the arguments the user configured and nothing else,
+ * so its read-only behaviour is the user's responsibility (ADR 0002).
+ */
 const harnessArguments = (
-  harness: SupportedHarness,
+  configuration: AgentHarnessConfiguration,
 ): ReadonlyArray<string> => {
-  switch (harness) {
+  const model = configuration.model === undefined ? [] : ["--model", configuration.model];
+  switch (configuration.harness) {
     case "codex":
-      return ["exec", "--json", "--sandbox", "read-only", "-"];
+      return [...model, "exec", "--json", "--sandbox", "read-only", "-"];
     case "claude":
-      return ["--print", "--permission-mode", "plan", "--output-format", "json"];
-    case "gemini":
-      return ["--approval-mode", "plan", "--output-format", "json"];
+      return [...model, "--print", "--permission-mode", "plan", "--output-format", "json"];
+    case "custom":
+      return configuration.arguments ?? [];
   }
 };
 
@@ -71,22 +74,20 @@ export const adaptHarnessInvocation = (
   task: AgentTask,
 ): HarnessInvocation => ({
   executable: configuration.executable,
-  arguments: [
-    ...(configuration.arguments ?? []),
-    ...harnessArguments(configuration.harness),
-  ],
+  arguments: harnessArguments(configuration),
   environment: configuration.environment ?? [],
   input: encodeAgentTask(task),
 });
 
 /**
- * Normalizes each supported CLI's machine-readable envelope. Recording
- * harnesses may return the proposal JSON directly.
+ * Normalizes each built-in CLI's machine-readable envelope. A custom harness
+ * writes the proposal JSON itself to stdout, so its output is used as is.
  */
 export const extractHarnessResponse = (
   harness: SupportedHarness,
   output: string,
 ): string => {
+  if (harness === "custom") return output;
   if (harness === "codex") {
     const events = output
       .split(/\r?\n/u)
@@ -105,13 +106,8 @@ export const extractHarnessResponse = (
     return message ?? output;
   }
   try {
-    const parsed = JSON.parse(output);
-    if (harness === "claude") {
-      const decoded = Schema.decodeUnknownOption(ClaudeResultSchema)(parsed);
-      return Option.isSome(decoded) ? decoded.value.result : output;
-    }
-    const decoded = Schema.decodeUnknownOption(GeminiResultSchema)(parsed);
-    return Option.isSome(decoded) ? decoded.value.response : output;
+    const decoded = Schema.decodeUnknownOption(ClaudeResultSchema)(JSON.parse(output));
+    return Option.isSome(decoded) ? decoded.value.result : output;
   } catch {
     return output;
   }
