@@ -97,13 +97,20 @@ function useCopied() {
   return [done, flash] as const;
 }
 
-/** Renders `backtick` spans in mock data as inline code instead of raw backticks. */
+/**
+ * Renders `backtick` spans in mock data as inline code instead of raw backticks.
+ * The chip (fill, hairline, side margin) keeps the command visibly apart from the
+ * prose around it; Manrope's narrow word space alone made "Run gh auth login on" read as one run.
+ */
 export function WithCode({ text }: { text: string }) {
   return (
     <>
       {text.split("`").map((part, i) =>
         i % 2 ? (
-          <code key={i} className="font-mono text-xs text-foreground">
+          <code
+            key={i}
+            className="mx-0.5 rounded-[4px] border border-border bg-secondary/70 px-1 py-px font-mono text-xs whitespace-nowrap text-foreground [box-decoration-break:clone]"
+          >
             {part}
           </code>
         ) : (
