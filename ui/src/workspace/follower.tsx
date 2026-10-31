@@ -1037,7 +1037,7 @@ function OverlayEditor({
             <SelectTrigger id="ov-res" className="w-full">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent position="popper" className="w-[var(--radix-select-trigger-width)]">
+            <SelectContent>
               {CONFIGS.map((r) => (
                 <SelectItem key={r.id} value={r.id}>
                   <span className="font-mono text-sm">{r.target}</span>

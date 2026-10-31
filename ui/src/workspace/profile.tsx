@@ -556,7 +556,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
             <SelectTrigger id="res-kind" className="w-full">
               <SelectValue>{KIND_LABEL[draft.kind].label}</SelectValue>
             </SelectTrigger>
-            <SelectContent position="popper" className="w-[var(--radix-select-trigger-width)]">
+            <SelectContent>
               {KINDS.map((k) => {
                 const KIcon = KIND_ICON[k];
                 return (
@@ -593,7 +593,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
                 <PolicyName id={draft.policy} tip={false} />
               </SelectValue>
             </SelectTrigger>
-            <SelectContent position="popper" className="w-[var(--radix-select-trigger-width)]">
+            <SelectContent>
               {POLICIES_BY_KIND[draft.kind].map((p) => (
                 <SelectItem key={p} value={p} className="items-start py-1.5">
                   <span className="grid gap-0.5">
@@ -728,7 +728,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
                     <span className="font-mono text-sm">{draft.detail.Verify ?? DEFAULT_VERIFY[draft.kind]}</span>
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent position="popper">
+                <SelectContent>
                   {Object.entries(VERIFY).map(([v, hint]) => (
                     <SelectItem key={v} value={v} className="items-start py-1.5">
                       <span className="grid gap-0.5">
@@ -764,7 +764,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
                 <SelectTrigger id="res-deps" className="w-full" size="sm" aria-invalid={tried && !!dependencyError} aria-describedby="res-deps-note">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent position="popper">
+                <SelectContent>
                   <SelectItem value="none">Nothing</SelectItem>
                   {dependencyChoices.map((o) => (
                     <SelectItem key={o.id} value={o.id}>

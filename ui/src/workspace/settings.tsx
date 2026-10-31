@@ -433,9 +433,6 @@ export function AgentPolicyView() {
               </div>
             </Field>
           </div>
-          {/* Outside the faded block so it stays readable. Saving in this mode keeps the last saved
-              bounds, so without this note bound edits made earlier in the draft would vanish silently. */}
-          {off && <p className="mt-3 text-sm text-pretty text-muted-foreground">Not used while the agent is off. Saving keeps the last saved bounds, not changes made here.</p>}
           <div className="mt-6">
             <Cli>{`canonfig agent policy ${mode}`}</Cli>
           </div>
