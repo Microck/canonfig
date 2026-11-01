@@ -287,7 +287,12 @@
   }
 }
 
-/* DitherBlock: revealed once on mount, growing away from its dense edge. */
+/* DitherBlock: revealed once on mount, growing away from its dense edge.
+   --ease-snap overshoots (~3%), so the mask briefly travels past --reveal-to. Ending at
+   100% would push the no-repeat mask image off the dense edge and leave its last rows
+   unmasked (a dark seam under the band, visible for ~half the reveal). Each --reveal-to
+   therefore stops 10% short: the mask's solid 40% still covers the whole block there,
+   and the overshoot runs into solid mask instead of past the image. */
 .dither-reveal {
   -webkit-mask-image: var(--reveal-mask);
   mask-image: var(--reveal-mask);
@@ -301,25 +306,25 @@
   --reveal-mask: linear-gradient(to top, #000 40%, transparent 60%);
   --reveal-size: 100% 300%;
   --reveal-from: 0 0%;
-  --reveal-to: 0 100%;
+  --reveal-to: 0 90%;
 }
 .dither-reveal[data-edge="top"] {
   --reveal-mask: linear-gradient(to bottom, #000 40%, transparent 60%);
   --reveal-size: 100% 300%;
   --reveal-from: 0 100%;
-  --reveal-to: 0 0%;
+  --reveal-to: 0 10%;
 }
 .dither-reveal[data-edge="left"] {
   --reveal-mask: linear-gradient(to right, #000 40%, transparent 60%);
   --reveal-size: 300% 100%;
   --reveal-from: 100% 0;
-  --reveal-to: 0% 0;
+  --reveal-to: 10% 0;
 }
 .dither-reveal[data-edge="right"] {
   --reveal-mask: linear-gradient(to left, #000 40%, transparent 60%);
   --reveal-size: 300% 100%;
   --reveal-from: 0% 0;
-  --reveal-to: 100% 0;
+  --reveal-to: 90% 0;
 }
 @keyframes dither-reveal {
   from {
