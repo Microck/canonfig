@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Button } from "@/components/ui/button";
 import { StateLabel, Term } from "@/shared/shared";
 import type { Follower, FollowerState } from "@/shared/data";
-import { ACCENTS, ADD_W, DEVICE_ICONS, MapActionsContext, NODE_H, NODE_W, type ResolvedLook } from "./model";
+import { ADD_W, DEVICE_ICONS, ICON_TILE_TINT, MapActionsContext, NODE_H, NODE_W, type ResolvedLook } from "./model";
 
 // Platform reads as a word ahead of the purpose: Solar has no brand logos, and a name is clearer than a 14px glyph
 // behind a tooltip. It sits on the purpose line so the footer keeps its width for the revision and state.
@@ -63,6 +63,20 @@ function ToolbarButton({ className, ...props }: ComponentProps<"button">) {
   );
 }
 
+/**
+ * A machine's icon: a Solar preset, or the uploaded image drawn as a mask so only its alpha counts and it takes
+ * the accent through `currentColor`, like the presets. Loaded as an image, an SVG upload never runs scripts or
+ * fetches anything, so it needs no sanitising.
+ */
+export function LookIcon({ look, bold, className }: { look: Pick<ResolvedLook, "icon" | "iconSrc">; bold?: boolean; className?: string }) {
+  if (look.icon !== "custom") {
+    const { Icon } = DEVICE_ICONS[look.icon];
+    return <Icon className={className} bold={bold} />;
+  }
+  const mask = `url("${look.iconSrc}") center / contain no-repeat`;
+  return <span aria-hidden className={cn("block bg-current", className)} style={{ mask, WebkitMask: mask }} />;
+}
+
 export const MachineNode = memo(function MachineNode({ id, data, selected }: NodeProps<MachineNodeType>) {
   const { look } = data;
   const actions = use(MapActionsContext);
@@ -70,8 +84,7 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
   const customizing = actions.customizingId === id;
   // The sheet's machine keeps its ring even when the sheet was opened from outside the map.
   const lit = selected || customizing;
-  const { Icon } = DEVICE_ICONS[look.icon];
-  const accent = ACCENTS[look.accent].color;
+  const accent = look.color;
   // Revision 0 means nothing applied yet (a just-joined follower) or nothing published (a new Source): show it as missing.
   const revision = data.revision === 0 ? null : data.revision;
   const behind = data.kind === "follower" && (revision === null || revision < data.latest);
@@ -140,13 +153,13 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
         <div className="flex min-h-0 flex-1 items-center gap-3 px-3">
           <span
             className="relative grid size-9 shrink-0 place-items-center overflow-hidden rounded-md"
-            style={{ color: accent, backgroundColor: `color-mix(in oklab, ${accent} 9%, transparent)` }}
+            style={{ color: accent, backgroundColor: `color-mix(in oklab, ${accent} ${Math.round(ICON_TILE_TINT * 100)}%, transparent)` }}
           >
             <span aria-hidden className="absolute inset-0 opacity-70" style={fillStyle("gradient", { color: accent, cell: 1.5, edge: "bottom", length: 12, from: 0.5, to: 0 })} />
             {/* A working machine's tile carries a still hatch; the source's dither glow is the map's one moving signal. */}
             {data.active && <span aria-hidden className="absolute inset-0 opacity-30" style={fillStyle("hatched", { color: accent, cell: 1.5 })} />}
             <span aria-hidden className="absolute inset-0 rounded-md border" style={{ borderColor: `color-mix(in oklab, ${accent} 40%, transparent)` }} />
-            <Icon className="relative size-5" bold={lit} />
+            <LookIcon look={look} bold={lit} className="relative size-5" />
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-baseline gap-1.5">

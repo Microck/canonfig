@@ -4,20 +4,7 @@
 // is ever sent to the Source Machine or to followers.
 import { createContext, useSyncExternalStore } from "react";
 import type { IconComponent } from "@/components/icons";
-import {
-  Briefcase,
-  Circuitry,
-  Cloud,
-  Cpu,
-  Desktop,
-  DeviceMobile,
-  GameController,
-  HardDrives,
-  House,
-  Laptop,
-  Monitor,
-  Package,
-} from "@/components/icons";
+import { Briefcase, Circuitry, Cloud, Cpu, Desktop, DeviceMobile, GameController, HardDrives, House, Laptop, Package } from "@/components/icons";
 import { ditherPath } from "@/lib/dither";
 import type { Follower, FollowerState } from "@/shared/data";
 
@@ -26,6 +13,7 @@ export type MapRole = "source" | "follower";
 /** The Source Machine's node id; followers use their Follower Identity id. */
 export const SOURCE_ID = "source";
 
+// Eleven presets plus the Custom tile keep the picker a full 2x6 grid.
 export const DEVICE_ICONS = {
   desktop: { label: "Desktop", Icon: Desktop },
   laptop: { label: "Laptop", Icon: Laptop },
@@ -33,7 +21,6 @@ export const DEVICE_ICONS = {
   gaming: { label: "Gaming PC", Icon: GameController },
   compute: { label: "Workstation", Icon: Cpu },
   cloud: { label: "Cloud machine", Icon: Cloud },
-  display: { label: "All-in-one", Icon: Monitor },
   mobile: { label: "Mobile", Icon: DeviceMobile },
   board: { label: "Single-board computer", Icon: Circuitry },
   vm: { label: "Virtual machine", Icon: Package },
@@ -53,38 +40,122 @@ export const ACCENTS = {
 } as const;
 export type Accent = keyof typeof ACCENTS;
 
+/** Uploaded icons: SVG or PNG, read into a data URL and drawn as a mask in the accent colour. */
+export const CUSTOM_ICON_TYPES = ["image/svg+xml", "image/png"] as const;
+export const CUSTOM_ICON_MAX_BYTES = 64 * 1024;
+/** Icons and marks need 3:1 against what they sit on (WCAG 1.4.11, non-text contrast). */
+export const ACCENT_MIN_CONTRAST = 3;
+/** The node's icon tile tints the card with this share of the accent (see MachineNode); contrast is measured on it. */
+export const ICON_TILE_TINT = 0.09;
+
 export interface Look {
   name?: string;
   purpose?: string;
-  icon?: DeviceIcon;
-  accent?: Accent;
+  icon?: DeviceIcon | "custom";
+  accent?: Accent | "custom";
+  /** The uploaded icon as a `data:image/svg+xml` or `data:image/png` URL, kept while a preset is picked. */
+  customIcon?: string;
+  /** `#rrggbb`, already lifted to `ACCENT_MIN_CONTRAST` by the sheet; kept while a preset is picked. */
+  customAccent?: string;
 }
-export type ResolvedLook = Required<Look>;
+
+export interface ResolvedLook {
+  name: string;
+  purpose: string;
+  icon: DeviceIcon | "custom";
+  accent: Accent | "custom";
+  /** The uploaded icon's data URL, or "" when none is saved. */
+  iconSrc: string;
+  /** The saved custom colour, or "" when none is saved. */
+  customAccent: string;
+  /** The CSS colour to draw this machine with, preset or custom. */
+  color: string;
+}
 
 // Demo defaults so the map reads like the user's sketch out of the box.
-const DEFAULT_LOOKS: Record<string, Omit<ResolvedLook, "name">> = {
+const DEFAULT_LOOKS: Record<string, { purpose: string; icon: DeviceIcon; accent: Accent }> = {
   [SOURCE_ID]: { purpose: "Main desktop", icon: "desktop", accent: "purple" },
   f_8c21: { purpose: "Work laptop", icon: "laptop", accent: "blue" },
-  f_3b90: { purpose: "Design studio", icon: "display", accent: "pink" },
+  f_3b90: { purpose: "Design studio", icon: "desktop", accent: "pink" },
   f_d417: { purpose: "Games and CUDA", icon: "gaming", accent: "green" },
   f_71ea: { purpose: "Build server", icon: "server", accent: "slate" },
 };
 
 const PLATFORM_ICON: Record<Follower["platform"], DeviceIcon> = { macos: "laptop", windows: "desktop", linux: "server" };
 
-export function defaultLook(id: string, hostname: string, platform: Follower["platform"]): ResolvedLook {
-  const preset = DEFAULT_LOOKS[id];
-  return { name: hostname, purpose: preset?.purpose ?? "", icon: preset?.icon ?? PLATFORM_ICON[platform], accent: preset?.accent ?? "slate" };
-}
+const CUSTOM_ICON_SRC = /^data:image\/(svg\+xml|png)[;,]/;
+const HEX = /^#[0-9a-f]{6}$/i;
 
 export function resolveLook(id: string, hostname: string, platform: Follower["platform"], look: Look | undefined): ResolvedLook {
-  const base = defaultLook(id, hostname, platform);
+  const preset = DEFAULT_LOOKS[id];
+  const baseIcon = preset?.icon ?? PLATFORM_ICON[platform];
+  const baseAccent = preset?.accent ?? "slate";
+  // Stored looks come from localStorage (and other tabs), so unknown keys and malformed custom values fall back.
+  const iconSrc = look?.customIcon && CUSTOM_ICON_SRC.test(look.customIcon) ? look.customIcon : "";
+  const customAccent = look?.customAccent && HEX.test(look.customAccent) ? look.customAccent : "";
+  const icon = look?.icon === "custom" ? (iconSrc ? "custom" : baseIcon) : look?.icon && look.icon in DEVICE_ICONS ? look.icon : baseIcon;
+  const accent = look?.accent === "custom" ? (customAccent ? "custom" : baseAccent) : look?.accent && look.accent in ACCENTS ? look.accent : baseAccent;
   return {
-    name: look?.name?.trim() || base.name,
-    purpose: look?.purpose ?? base.purpose,
-    icon: look?.icon && look.icon in DEVICE_ICONS ? look.icon : base.icon,
-    accent: look?.accent && look.accent in ACCENTS ? look.accent : base.accent,
+    name: look?.name?.trim() || hostname,
+    purpose: look?.purpose ?? preset?.purpose ?? "",
+    icon,
+    accent,
+    iconSrc,
+    customAccent,
+    color: accent === "custom" ? customAccent : ACCENTS[accent].color,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Contrast: WCAG relative luminance on #rrggbb colours.
+
+function hexToRgb(hex: string): number[] {
+  const n = Number.parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+export function rgbToHex(rgb: ArrayLike<number>): string {
+  return `#${Array.from(rgb, (c) => Math.round(c).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function luminance(rgb: readonly number[]): number {
+  const [r, g, b] = rgb.map((c) => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/**
+ * Contrast of an accent's icon on its tile: the card tinted by `ICON_TILE_TINT` of that same accent. The tint makes
+ * the tile lighter than the bare card, so measuring against the card alone would pass colours that fall short on
+ * the tile. sRGB mixing stands in for the tile's oklab color-mix, which is close enough at a 9% tint.
+ */
+function tileContrast(rgb: readonly number[], card: readonly number[]): number {
+  const tile = card.map((c, i) => c + (rgb[i] - c) * ICON_TILE_TINT);
+  const [a, b] = [luminance(rgb), luminance(tile)];
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+/**
+ * The colour itself when its icon reads at `ACCENT_MIN_CONTRAST` on a `card` tile, else the least mix of it with
+ * white that does. Mixing toward white keeps the hue and gives up some saturation: navy becomes a muted blue-violet.
+ */
+export function liftAccent(hex: string, card: string): string {
+  const rgb = hexToRgb(hex);
+  const cardRgb = hexToRgb(card);
+  if (tileContrast(rgb, cardRgb) >= ACCENT_MIN_CONTRAST) return hex;
+  // Rounded per step, so the 8-bit colour that gets saved is the one that passed.
+  const mix = (t: number) => rgb.map((c) => Math.round(c + (255 - c) * t));
+  // Contrast grows with t on a dark card; 12 halvings resolve below one 8-bit step.
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 12; i++) {
+    const t = (lo + hi) / 2;
+    if (tileContrast(mix(t), cardRgb) >= ACCENT_MIN_CONTRAST) hi = t;
+    else lo = t;
+  }
+  return rgbToHex(mix(hi));
 }
 
 // ---------------------------------------------------------------------------

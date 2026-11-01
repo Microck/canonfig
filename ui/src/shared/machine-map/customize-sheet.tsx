@@ -1,17 +1,89 @@
 // The side sheet that changes how one machine looks in this app.
-import { useId } from "react";
+import { useId, useRef, useState, type ChangeEvent } from "react";
 import { motion } from "motion/react";
 import { RadioGroup } from "radix-ui";
-import { ArrowCounterClockwise, X } from "@/components/icons";
+import { ArrowCounterClockwise, FileArrowUp, Plus, X } from "@/components/icons";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { usePrefersReducedMotion } from "@/lib/dither";
 import { Hint } from "@/shared/shared";
-import { ACCENTS, DEVICE_ICONS, mapStore, type Accent, type DeviceIcon, type Look, type ResolvedLook } from "./model";
+import { LookIcon } from "./machine-node";
+import {
+  ACCENTS,
+  CUSTOM_ICON_MAX_BYTES,
+  CUSTOM_ICON_TYPES,
+  DEVICE_ICONS,
+  liftAccent,
+  mapStore,
+  rgbToHex,
+  type Accent,
+  type DeviceIcon,
+  type Look,
+  type ResolvedLook,
+} from "./model";
 
 const SNAP = [0.175, 0.885, 0.32, 1.1] as const;
+const HEX_INPUT = /^#?[0-9a-f]{6}$/i;
+/** The Custom swatch is a hue wheel, the usual sign for "any colour"; one lightness keeps it as calm as the presets. */
+const HUE_WHEEL = "conic-gradient(in oklch longer hue, oklch(0.76 0.13 0), oklch(0.76 0.13 0))";
+const ICON_KEYS = [...(Object.keys(DEVICE_ICONS) as DeviceIcon[]), "custom"] as const;
+const ACCENT_KEYS = [...(Object.keys(ACCENTS) as Accent[]), "custom"] as const;
+
+/** Reads an icon upload into a data URL, or throws an Error whose message says what to change. */
+async function readCustomIcon(file: File): Promise<string> {
+  // Some systems hand over an .svg with no MIME type, so the extension decides when the type is missing.
+  const type = file.type || (/\.svg$/i.test(file.name) ? "image/svg+xml" : /\.png$/i.test(file.name) ? "image/png" : "");
+  if (!(CUSTOM_ICON_TYPES as readonly string[]).includes(type)) throw new Error("Choose an SVG or PNG file.");
+  if (file.size > CUSTOM_ICON_MAX_BYTES) throw new Error(`Choose a file up to 64 KB. This one is ${Math.ceil(file.size / 1024)} KB.`);
+  const unreadable = new Error("This file can't be read as an image. Export it again as SVG or PNG.");
+  // Re-typing the blob makes the data URL carry the checked type even when the file had none.
+  const url = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(unreadable);
+    reader.readAsDataURL(new Blob([file], { type }));
+  });
+  const img = new Image();
+  img.src = url;
+  await img.decode().catch(() => {
+    throw unreadable;
+  });
+  // The icon is drawn as a mask, so only its alpha shows. On a 32px copy, a glyph has some solid pixels; a photo
+  // or an opaque background has nearly all of them and would show as a solid block.
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 32;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(img, 0, 0, 32, 32);
+  let alpha: Uint8ClampedArray;
+  try {
+    alpha = ctx.getImageData(0, 0, 32, 32).data;
+  } catch {
+    // Older WebKit taints canvases that drew an SVG; the upload is still valid, it just skips this check.
+    return url;
+  }
+  let visible = 0;
+  let solid = 0;
+  for (let i = 3; i < alpha.length; i += 4) {
+    if (alpha[i] > 0) visible++;
+    if (alpha[i] > 127) solid++;
+  }
+  if (visible === 0) throw new Error("This image is fully transparent. Choose one with a visible shape.");
+  if (solid > 0.85 * 32 * 32) throw new Error("Use an image with a transparent background. This one would show as a solid block.");
+  return url;
+}
+
+/** Any CSS colour, `var(--token)` and oklch included, as #rrggbb, read back through a 1x1 canvas. */
+function cssToHex(color: string, el: Element): string {
+  const value = color.replace(/^var\((--[\w-]+)\)$/, (_, name: string) => getComputedStyle(el).getPropertyValue(name).trim());
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 1;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  ctx.fillStyle = value;
+  ctx.fillRect(0, 0, 1, 1);
+  return rgbToHex(ctx.getImageData(0, 0, 1, 1).data.subarray(0, 3));
+}
 
 export interface CustomizeSheetProps {
   id: string;
@@ -27,9 +99,47 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
   // Reduced motion keeps the fade (a state change) and drops the slide.
   const slide = usePrefersReducedMotion() ? 0 : 12;
   const set = (patch: Look) => mapStore.setLook(id, patch);
+  const sheetRef = useRef<HTMLElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // Local state is keyed by machine id: the sheet stays mounted when it switches machines.
+  // Choosing Custom with nothing uploaded shows the uploader but saves nothing, so the map keeps the old icon
+  // until an upload succeeds.
+  const [pickingFor, setPickingFor] = useState<string | null>(null);
+  const [iconError, setIconError] = useState<{ id: string; message: string } | null>(null);
+  // The colour as last typed or picked, before lifting, so the inputs don't jump while a too-dark colour is lifted.
+  const [accentInput, setAccentInput] = useState<{ id: string; hex: string; text: string } | null>(null);
+  const iconValue = look.icon === "custom" || pickingFor === id ? "custom" : look.icon;
+  const error = iconError?.id === id ? iconError.message : null;
+  const input = accentInput?.id === id ? accentInput : null;
+  const lifted = input && look.accent === "custom" && look.customAccent !== input.hex ? look.customAccent : null;
+
+  /** Saves a custom accent, lifted to readable contrast on the card it is drawn on. */
+  const applyAccent = (hex: string) => set({ accent: "custom", customAccent: liftAccent(hex, cssToHex("var(--raised)", sheetRef.current!)) });
+  /** `raw` is what the user typed or picked (with or without "#", any case); the inputs keep showing it. */
+  const pickAccent = (raw: string) => {
+    const normal = `#${raw.replace("#", "").toLowerCase()}`;
+    setAccentInput({ id, hex: normal, text: raw });
+    applyAccent(normal);
+  };
+
+  const onIconFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Cleared so choosing the same file again (after fixing it, say) still fires change.
+    e.target.value = "";
+    if (!file) return;
+    try {
+      set({ icon: "custom", customIcon: await readCustomIcon(file) });
+      setIconError(null);
+      setPickingFor(null);
+    } catch (err) {
+      setIconError({ id, message: (err as Error).message });
+    }
+  };
 
   return (
     <motion.aside
+      ref={sheetRef}
       role="dialog"
       aria-labelledby={`${uid}-title`}
       initial={{ opacity: 0, x: slide }}
@@ -101,23 +211,38 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
           </span>
           <RadioGroup.Root
             aria-labelledby={`${uid}-icon`}
-            value={look.icon}
-            onValueChange={(v) => set({ icon: v as DeviceIcon })}
+            value={iconValue}
+            onValueChange={(v) => {
+              if (v !== "custom") {
+                setPickingFor(null);
+                set({ icon: v as DeviceIcon });
+              } else if (look.iconSrc) set({ icon: "custom" });
+              else setPickingFor(id);
+            }}
             className="grid grid-cols-6 gap-1"
           >
-            {(Object.keys(DEVICE_ICONS) as DeviceIcon[]).map((key) => {
-              const { label, Icon } = DEVICE_ICONS[key];
-              const checked = key === look.icon;
+            {ICON_KEYS.map((key) => {
+              const label = key === "custom" ? "Custom icon" : DEVICE_ICONS[key].label;
+              const checked = key === iconValue;
               return (
                 <Tooltip key={key}>
                   <TooltipTrigger asChild>
                     <RadioGroup.Item
                       value={key}
                       aria-label={label}
-                      className="grid h-9 place-items-center rounded-md border border-transparent text-muted-foreground hover:bg-muted hover:text-foreground data-[state=checked]:border-border-strong data-[state=checked]:bg-raised data-[state=checked]:text-foreground"
-                      style={checked ? { color: ACCENTS[look.accent].color } : undefined}
+                      // A pointer click on an empty Custom tile goes straight to the file picker. Keyboard selection
+                      // (arrows, Space) clicks with detail 0, so arrowing past the tile never opens a dialog.
+                      onClick={key === "custom" ? (e) => e.detail > 0 && !look.iconSrc && fileRef.current?.click() : undefined}
+                      // aria-checked, not data-state: the Tooltip trigger shares this button and its data-state
+                      // ("closed", "delayed-open") overwrites the radio's, so data-[state=checked] never matched.
+                      className="grid h-9 place-items-center rounded-md border border-transparent text-muted-foreground hover:bg-muted hover:text-foreground aria-checked:border-border-strong aria-checked:bg-raised aria-checked:text-foreground"
+                      style={checked ? { color: look.color } : undefined}
                     >
-                      <Icon className="size-[18px]" bold={checked} />
+                      {key === "custom" && !look.iconSrc ? (
+                        <Plus className="size-[18px]" />
+                      ) : (
+                        <LookIcon look={{ icon: key, iconSrc: look.iconSrc }} bold={checked} className="size-[18px]" />
+                      )}
                     </RadioGroup.Item>
                   </TooltipTrigger>
                   <TooltipContent>{label}</TooltipContent>
@@ -125,6 +250,31 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
               );
             })}
           </RadioGroup.Root>
+          <input ref={fileRef} type="file" accept=".svg,.png,image/svg+xml,image/png" hidden onChange={onIconFile} />
+          {iconValue === "custom" && (
+            <div className="grid animate-in gap-1.5 duration-150 ease-snap fade-in-0">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-describedby={error ? `${uid}-icon-error ${uid}-icon-help` : `${uid}-icon-help`}
+                onClick={() => fileRef.current?.click()}
+                className="justify-self-start rounded-md px-1.5"
+              >
+                <FileArrowUp />
+                {look.iconSrc ? "Replace image" : "Upload image"}
+              </Button>
+              {error && (
+                <p id={`${uid}-icon-error`} role="alert" className="text-xs text-bad">
+                  {error}
+                </p>
+              )}
+              <p id={`${uid}-icon-help`} className="text-xs text-faint">
+                Use a square, one-colour SVG or PNG on a transparent background, up to 64 KB. Keep it simple so it still reads at
+                16 px. It takes the accent colour.
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-1.5">
@@ -134,24 +284,75 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
           <RadioGroup.Root
             aria-labelledby={`${uid}-accent`}
             value={look.accent}
-            onValueChange={(v) => set({ accent: v as Accent })}
-            className="flex gap-2"
+            onValueChange={(v) => {
+              if (v !== "custom") set({ accent: v as Accent });
+              else if (look.customAccent) set({ accent: "custom" });
+              // First time: start from the colour in use, so choosing Custom changes nothing until the user picks.
+              else applyAccent(cssToHex(look.color, sheetRef.current!));
+            }}
+            // Seven swatches spread edge to edge line up with the icon grid's outer columns.
+            className="flex justify-between"
           >
-            {(Object.keys(ACCENTS) as Accent[]).map((key) => (
-              <Tooltip key={key}>
-                <TooltipTrigger asChild>
-                  <RadioGroup.Item
-                    value={key}
-                    aria-label={ACCENTS[key].label}
-                    className="grid size-7 place-items-center rounded-full border border-transparent hover:border-border-strong data-[state=checked]:border-foreground/70"
-                  >
-                    <span className="size-[18px] rounded-full" style={{ backgroundColor: ACCENTS[key].color }} />
-                  </RadioGroup.Item>
-                </TooltipTrigger>
-                <TooltipContent>{ACCENTS[key].label}</TooltipContent>
-              </Tooltip>
-            ))}
+            {ACCENT_KEYS.map((key) => {
+              const label = key === "custom" ? "Custom colour" : ACCENTS[key].label;
+              return (
+                <Tooltip key={key}>
+                  <TooltipTrigger asChild>
+                    <RadioGroup.Item
+                      value={key}
+                      aria-label={label}
+                      className="grid size-7 place-items-center rounded-full border border-transparent hover:border-border-strong aria-checked:border-foreground/70 pointer-coarse:size-9"
+                    >
+                      {key === "custom" ? (
+                        <span className="grid size-[18px] place-items-center rounded-full" style={{ background: HUE_WHEEL }}>
+                          {look.customAccent && <span className="size-2.5 rounded-full ring-2 ring-popover" style={{ backgroundColor: look.customAccent }} />}
+                        </span>
+                      ) : (
+                        <span className="size-[18px] rounded-full" style={{ backgroundColor: ACCENTS[key].color }} />
+                      )}
+                    </RadioGroup.Item>
+                  </TooltipTrigger>
+                  <TooltipContent>{label}</TooltipContent>
+                </Tooltip>
+              );
+            })}
           </RadioGroup.Root>
+          {look.accent === "custom" && (
+            <div className="grid animate-in gap-1.5 duration-150 ease-snap fade-in-0">
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  aria-label="Custom colour"
+                  value={input?.hex ?? look.customAccent}
+                  onChange={(e) => pickAccent(e.target.value)}
+                  className="h-8 w-10 shrink-0 cursor-pointer rounded-md border border-input bg-transparent p-1 outline-none focus-visible:ring-2 focus-visible:ring-ring/60 [&::-moz-color-swatch]:rounded-[3px] [&::-moz-color-swatch]:border-0 [&::-webkit-color-swatch]:rounded-[3px] [&::-webkit-color-swatch]:border-0 [&::-webkit-color-swatch-wrapper]:p-0"
+                />
+                <Input
+                  aria-label="Custom colour hex code"
+                  value={input?.text ?? look.customAccent}
+                  maxLength={7}
+                  spellCheck={false}
+                  autoComplete="off"
+                  placeholder="#7dd3fc"
+                  onChange={(e) => {
+                    const text = e.target.value;
+                    if (HEX_INPUT.test(text)) pickAccent(text);
+                    else setAccentInput({ id, hex: input?.hex ?? look.customAccent, text });
+                  }}
+                  className="w-24 font-mono"
+                />
+              </div>
+              {/* Always mounted so screen readers announce the lift when it appears. */}
+              <p role="status" className="text-xs text-warn empty:hidden">
+                {lifted && (
+                  <>
+                    Too dark to read on the map, so it's lightened to <span className="font-mono">{lifted}</span>.
+                  </>
+                )}
+              </p>
+              <p className="text-xs text-faint">Pick a mid-to-light colour that stands apart from the status colours: green, gold, orange and red.</p>
+            </div>
+          )}
         </div>
       </div>
 
