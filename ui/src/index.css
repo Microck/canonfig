@@ -394,3 +394,52 @@
   from { height: var(--radix-collapsible-content-height); opacity: 1; overflow: clip; }
   to { height: 0; opacity: 0; overflow: clip; }
 }
+
+/* Custom accent picker (shared/machine-map/customize-sheet.tsx): react-colorful's area and hue
+   slider redrawn for the popover. Each selector starts with .accent-picker so it outranks the
+   defaults react-colorful injects at runtime. Handles are white rings with a dark edge so they
+   read on any colour; keyboard focus adds the app's ring rather than react-colorful's 1.1x
+   scale, which moved the handle off the value it marks. */
+.accent-picker.react-colorful {
+  width: 100%;
+  height: auto;
+  gap: 12px;
+}
+.accent-picker .react-colorful__saturation {
+  flex: none;
+  height: 144px;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.08);
+}
+.accent-picker .react-colorful__hue,
+.accent-picker .react-colorful__last-control {
+  height: 12px;
+  border-radius: 9999px;
+}
+.accent-picker .react-colorful__pointer {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px oklch(0 0 0 / 0.45), 0 1px 3px oklch(0 0 0 / 0.5);
+}
+.accent-picker .react-colorful__interactive:focus .react-colorful__pointer {
+  transform: translate(-50%, -50%);
+}
+.accent-picker .react-colorful__interactive:focus-visible .react-colorful__pointer {
+  box-shadow: 0 0 0 1px oklch(0 0 0 / 0.45), 0 0 0 4px color-mix(in oklab, var(--ring) 60%, transparent);
+}
+/* Touch: a taller slider and bigger handles, so a fingertip lands on them at phone width. */
+@media (pointer: coarse) {
+  .accent-picker .react-colorful__saturation {
+    height: 160px;
+  }
+  .accent-picker .react-colorful__hue,
+  .accent-picker .react-colorful__last-control {
+    height: 20px;
+  }
+  .accent-picker .react-colorful__pointer {
+    width: 24px;
+    height: 24px;
+  }
+}

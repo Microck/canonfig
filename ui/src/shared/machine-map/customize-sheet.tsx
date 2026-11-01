@@ -2,8 +2,10 @@
 import { useId, useRef, useState, type ChangeEvent } from "react";
 import { motion } from "motion/react";
 import { RadioGroup } from "radix-ui";
+import { HexColorPicker } from "react-colorful";
 import { ArrowCounterClockwise, FileArrowUp, Plus, X } from "@/components/icons";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -26,6 +28,8 @@ import {
 
 const SNAP = [0.175, 0.885, 0.32, 1.1] as const;
 const HEX_INPUT = /^#?[0-9a-f]{6}$/i;
+/** What the hex field accepts while typing: a "#" and up to six hex digits. Anything else is flagged at once. */
+const HEX_PARTIAL = /^#?[0-9a-f]{0,6}$/i;
 /** The Custom swatch is a hue wheel, the usual sign for "any colour"; one lightness keeps it as calm as the presets. */
 const HUE_WHEEL = "conic-gradient(in oklch longer hue, oklch(0.76 0.13 0), oklch(0.76 0.13 0))";
 const ICON_KEYS = [...(Object.keys(DEVICE_ICONS) as DeviceIcon[]), "custom"] as const;
@@ -101,6 +105,11 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
   const set = (patch: Look) => mapStore.setLook(id, patch);
   const sheetRef = useRef<HTMLElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const swatchRef = useRef<HTMLButtonElement>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // Set when the Custom swatch opens the picker, so closing it hands focus back there instead of to the hex
+  // button. A click outside clears it: focus then belongs to whatever was clicked.
+  const focusSwatchOnClose = useRef(false);
 
   // Local state is keyed by machine id: the sheet stays mounted when it switches machines.
   // Choosing Custom with nothing uploaded shows the uploader but saves nothing, so the map keeps the old icon
@@ -113,6 +122,7 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
   const error = iconError?.id === id ? iconError.message : null;
   const input = accentInput?.id === id ? accentInput : null;
   const lifted = input && look.accent === "custom" && look.customAccent !== input.hex ? look.customAccent : null;
+  const hexInvalid = input !== null && !HEX_PARTIAL.test(input.text);
 
   /** Saves a custom accent, lifted to readable contrast on the card it is drawn on. */
   const applyAccent = (hex: string) => set({ accent: "custom", customAccent: liftAccent(hex, cssToHex("var(--raised)", sheetRef.current!)) });
@@ -122,6 +132,17 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
     setAccentInput({ id, hex: normal, text: raw });
     applyAccent(normal);
   };
+  /** Selects the custom accent; the first time, it starts from the colour in use so nothing changes until the user picks. */
+  const chooseCustom = () => (look.customAccent ? set({ accent: "custom" }) : applyAccent(cssToHex(look.color, sheetRef.current!)));
+  const openFromSwatch = () => {
+    focusSwatchOnClose.current = true;
+    setPickerOpen(true);
+  };
+  const liftNotice = lifted && (
+    <>
+      Too dark to read on the map, so it's lightened to <span className="font-mono">{lifted}</span>.
+    </>
+  );
 
   const onIconFile = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -277,83 +298,133 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
           )}
         </div>
 
-        <div className="grid gap-1.5">
-          <span id={`${uid}-accent`} className="text-sm font-medium">
-            Accent
-          </span>
-          <RadioGroup.Root
-            aria-labelledby={`${uid}-accent`}
-            value={look.accent}
-            onValueChange={(v) => {
-              if (v !== "custom") set({ accent: v as Accent });
-              else if (look.customAccent) set({ accent: "custom" });
-              // First time: start from the colour in use, so choosing Custom changes nothing until the user picks.
-              else applyAccent(cssToHex(look.color, sheetRef.current!));
-            }}
-            // Seven swatches spread edge to edge line up with the icon grid's outer columns.
-            className="flex justify-between"
-          >
-            {ACCENT_KEYS.map((key) => {
-              const label = key === "custom" ? "Custom colour" : ACCENTS[key].label;
-              return (
-                <Tooltip key={key}>
-                  <TooltipTrigger asChild>
-                    <RadioGroup.Item
-                      value={key}
-                      aria-label={label}
-                      className="grid size-7 place-items-center rounded-full border border-transparent hover:border-border-strong aria-checked:border-foreground/70 pointer-coarse:size-9"
-                    >
-                      {key === "custom" ? (
-                        <span className="grid size-[18px] place-items-center rounded-full" style={{ background: HUE_WHEEL }}>
-                          {look.customAccent && <span className="size-2.5 rounded-full ring-2 ring-popover" style={{ backgroundColor: look.customAccent }} />}
-                        </span>
-                      ) : (
-                        <span className="size-[18px] rounded-full" style={{ backgroundColor: ACCENTS[key].color }} />
-                      )}
-                    </RadioGroup.Item>
-                  </TooltipTrigger>
-                  <TooltipContent>{label}</TooltipContent>
-                </Tooltip>
-              );
-            })}
-          </RadioGroup.Root>
-          {look.accent === "custom" && (
-            <div className="grid animate-in gap-1.5 duration-150 ease-snap fade-in-0">
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  aria-label="Custom colour"
-                  value={input?.hex ?? look.customAccent}
-                  onChange={(e) => pickAccent(e.target.value)}
-                  className="h-8 w-10 shrink-0 cursor-pointer rounded-md border border-input bg-transparent p-1 outline-none focus-visible:ring-2 focus-visible:ring-ring/60 [&::-moz-color-swatch]:rounded-[3px] [&::-moz-color-swatch]:border-0 [&::-webkit-color-swatch]:rounded-[3px] [&::-webkit-color-swatch]:border-0 [&::-webkit-color-swatch-wrapper]:p-0"
-                />
-                <Input
-                  aria-label="Custom colour hex code"
-                  value={input?.text ?? look.customAccent}
-                  maxLength={7}
-                  spellCheck={false}
-                  autoComplete="off"
-                  placeholder="#7dd3fc"
-                  onChange={(e) => {
-                    const text = e.target.value;
-                    if (HEX_INPUT.test(text)) pickAccent(text);
-                    else setAccentInput({ id, hex: input?.hex ?? look.customAccent, text });
-                  }}
-                  className="w-24 font-mono"
-                />
+        <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+          <div className="grid gap-1.5">
+            <span id={`${uid}-accent`} className="text-sm font-medium">
+              Accent
+            </span>
+            {/* The picker opens under the Custom swatch whichever control opened it. */}
+            <PopoverAnchor virtualRef={swatchRef} />
+            <RadioGroup.Root
+              aria-labelledby={`${uid}-accent`}
+              value={look.accent}
+              onValueChange={(v) => (v === "custom" ? chooseCustom() : set({ accent: v as Accent }))}
+              // Seven swatches spread edge to edge line up with the icon grid's outer columns.
+              className="flex justify-between"
+            >
+              {ACCENT_KEYS.map((key) => {
+                const label = key === "custom" ? "Custom colour" : ACCENTS[key].label;
+                const custom = key === "custom";
+                return (
+                  <Tooltip key={key}>
+                    <TooltipTrigger asChild>
+                      <RadioGroup.Item
+                        ref={custom ? swatchRef : undefined}
+                        value={key}
+                        aria-label={label}
+                        // A pointer click on Custom opens (or closes) the picker. Arrowing through the group also clicks,
+                        // with detail 0, so passing the swatch never opens it; Enter or Space on it does.
+                        onClick={custom ? (e) => e.detail > 0 && (pickerOpen ? setPickerOpen(false) : openFromSwatch()) : undefined}
+                        onKeyDown={
+                          custom
+                            ? (e) => {
+                                if (e.key !== "Enter" && e.key !== " ") return;
+                                // Focus moves into the picker before Space's keyup, so no click follows to check the radio.
+                                e.preventDefault();
+                                if (look.accent !== "custom") chooseCustom();
+                                openFromSwatch();
+                              }
+                            : undefined
+                        }
+                        className="grid size-7 place-items-center rounded-full border border-transparent hover:border-border-strong aria-checked:border-foreground/70 pointer-coarse:size-9"
+                      >
+                        {custom ? (
+                          <span className="grid size-[18px] place-items-center rounded-full" style={{ background: HUE_WHEEL }}>
+                            {look.customAccent && <span className="size-2.5 rounded-full ring-2 ring-popover" style={{ backgroundColor: look.customAccent }} />}
+                          </span>
+                        ) : (
+                          <span className="size-[18px] rounded-full" style={{ backgroundColor: ACCENTS[key].color }} />
+                        )}
+                      </RadioGroup.Item>
+                    </TooltipTrigger>
+                    <TooltipContent>{label}</TooltipContent>
+                  </Tooltip>
+                );
+              })}
+            </RadioGroup.Root>
+            {look.accent === "custom" && (
+              <div className="grid animate-in gap-1.5 duration-150 ease-snap fade-in-0">
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Edit custom colour ${look.customAccent}`}
+                    onClick={() => (focusSwatchOnClose.current = false)}
+                    className="justify-self-start rounded-md px-1.5 font-mono"
+                  >
+                    <span className="size-3.5 rounded-[3px] ring-1 ring-foreground/15" style={{ backgroundColor: look.customAccent }} />
+                    {look.customAccent}
+                  </Button>
+                </PopoverTrigger>
+                {/* While the picker is open its own copy announces the lift; this one keeps it in view after it closes. */}
+                {!pickerOpen && liftNotice && <p className="text-xs text-warn">{liftNotice}</p>}
               </div>
-              {/* Always mounted so screen readers announce the lift when it appears. */}
-              <p role="status" className="text-xs text-warn empty:hidden">
-                {lifted && (
-                  <>
-                    Too dark to read on the map, so it's lightened to <span className="font-mono">{lifted}</span>.
-                  </>
-                )}
-              </p>
-              <p className="text-xs text-faint">Pick a mid-to-light colour that stands apart from the status colours: green, gold, orange and red.</p>
+            )}
+          </div>
+          <PopoverContent
+            side="bottom"
+            align="end"
+            aria-label="Custom colour"
+            className="w-60 gap-3 p-3"
+            // Escape closes only the picker: Radix has handled it by now, so the sheet must not see it too.
+            onKeyDown={(e) => e.key === "Escape" && e.stopPropagation()}
+            onInteractOutside={(e) => {
+              // The swatch toggles the picker itself; letting this close it first would reopen it on the same click.
+              if (swatchRef.current?.contains(e.target as Node)) e.preventDefault();
+              else focusSwatchOnClose.current = false;
+            }}
+            onCloseAutoFocus={(e) => {
+              if (!focusSwatchOnClose.current) return;
+              e.preventDefault();
+              swatchRef.current?.focus();
+            }}
+          >
+            <HexColorPicker className="accent-picker" color={input?.hex ?? look.customAccent} onChange={pickAccent} />
+            <div className="flex items-center gap-2">
+              {/* What the map draws: the picked colour, or its lightened version when that is too dark. */}
+              <span className="size-8 shrink-0 rounded-md ring-1 ring-foreground/15" style={{ backgroundColor: look.customAccent }} />
+              <Input
+                aria-label="Custom colour hex code"
+                aria-invalid={hexInvalid || undefined}
+                aria-describedby={hexInvalid ? `${uid}-hex-error` : undefined}
+                value={input?.text ?? look.customAccent}
+                maxLength={7}
+                spellCheck={false}
+                autoComplete="off"
+                placeholder="#7dd3fc"
+                onChange={(e) => {
+                  const text = e.target.value;
+                  if (HEX_INPUT.test(text)) pickAccent(text);
+                  else setAccentInput({ id, hex: input?.hex ?? look.customAccent, text });
+                }}
+                // An unfinished or invalid code goes back to the colour in use rather than lingering.
+                onBlur={() => input && !HEX_INPUT.test(input.text) && setAccentInput({ ...input, text: input.hex })}
+                className="font-mono"
+              />
             </div>
-          )}
-        </div>
+            {hexInvalid && (
+              <p id={`${uid}-hex-error`} className="text-xs text-bad">
+                Use six hex digits, like #7dd3fc.
+              </p>
+            )}
+            {/* Always mounted so screen readers announce the lift when it appears. */}
+            <p role="status" className="text-xs text-warn empty:hidden">
+              {liftNotice}
+            </p>
+            <p className="text-xs text-faint">Pick a mid-to-light colour that stands apart from the status colours: green, gold, orange and red.</p>
+          </PopoverContent>
+        </Popover>
       </div>
 
       <footer className="border-t border-border px-2 py-1.5">
