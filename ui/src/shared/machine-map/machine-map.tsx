@@ -14,7 +14,6 @@ import {
   useNodesState,
   useReactFlow,
   useStore,
-  type CoordinateExtent,
   type Edge,
   type FitViewOptions,
   type NodeChange,
@@ -31,13 +30,10 @@ import { CustomizeSheet } from "./customize-sheet";
 import { SyncEdge, type SyncEdgeType } from "./sync-edge";
 import {
   ADD_ID,
-  ADD_W,
   defaultLayout,
   linkFor,
   MapActionsContext,
   mapStore,
-  NODE_H,
-  NODE_W,
   PACKET_FILL,
   PACKET_PATH,
   resolveLook,
@@ -86,33 +82,33 @@ const edgeTypes = { sync: SyncEdge };
 const FIT: FitViewOptions = { padding: 0.2, minZoom: 1, maxZoom: 1.15 };
 const NO_SYNCING: readonly string[] = [];
 
-// Viewport feel. Plain scroll pans and Ctrl/⌘ + scroll or a trackpad pinch zooms, the design-tool convention
-// (Figma's documented gestures, tldraw's default wheelBehavior "pan", React Flow's "design tool" preset). Guessing
-// mouse from trackpad to let a bare mouse wheel zoom is unreliable across browsers (tldraw turned down exactly that
-// heuristic), and a wrong guess turns a two-finger pan into a lurching zoom.
-/** Low enough to see a few rows of followers at once; manual zoom only, fit never goes below FIT.minZoom. */
-const MIN_ZOOM = 0.25;
-const MAX_ZOOM = 2;
+// Viewport feel. The mouse wheel and trackpad scroll zoom around the pointer, a pinch zooms, and dragging the
+// background pans: React Flow's default controls. useSmoothZoom keeps React Flow's wheel-to-zoom rate (one 100px
+// mouse notch is 1.15x) and only changes how a step lands, easing it instead of jumping.
+/** Low enough that the first fit shows every machine, even many followers in a narrow panel. */
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 1.75;
 /** One zoom button press, and the most a single wheel event may zoom (one mouse-wheel notch). */
 const ZOOM_STEP = 1.2;
 /** Smooth zoom closes 63% of the remaining distance every ZOOM_TAU ms: 95% within 90ms, done (ZOOM_DONE) by ~130ms. */
 const ZOOM_TAU = 30;
 /** Within 0.3% of the target the zoom snaps there and stops: under a pixel across a card. */
 const ZOOM_DONE = 0.003;
-/** A pinch moves zoom a few percent per event and applies at once; larger steps (notches, buttons) ease instead. */
+/** A pinch moves zoom a few percent per event and applies at once; a larger Ctrl + scroll step eases instead. */
 const SMOOTH_ABOVE = Math.log(1.08);
 /** The app's --ease-snap curve, for fit, reset and focus pans. */
 const VIEW_EASE = cubicBezier(0.175, 0.885, 0.32, 1.1);
-const ZOOM_HINT = `${typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl"} + scroll, or pinch`;
+/** React Flow multiplies Ctrl + wheel deltas by 10 on macOS, where a trackpad pinch arrives as Ctrl + wheel. */
+const IS_MAC = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
 
 /**
- * Zoom for Ctrl/⌘ + scroll, trackpad pinch and the zoom buttons, anchored at a point in the pane.
+ * Zoom for the wheel, trackpad pinch and the zoom buttons, anchored at a point in the pane.
  *
- * Replaces React Flow's modifier-wheel zoom, which multiplies every Ctrl + wheel delta by 10 on macOS to suit
- * pinch, so one Ctrl + mouse-wheel notch there jumps 4x, and every notch jumps without easing. Here a pinch tracks
- * the fingers 1:1 (Chromium encodes pinch scale as deltaY = -100 * ln(scale)), a notch is capped at one ZOOM_STEP,
- * and large steps ease toward their target. The easing is an exponential approach rather than a fixed tween, so a
- * new notch mid-animation retargets without restarting, and nothing coasts once the target is reached.
+ * Takes over React Flow's wheel zoom with the same rate (its d3 wheelDelta: 2^(-deltaY * 0.002), x10 for Ctrl on
+ * macOS) but caps one event at ZOOM_STEP, so a Ctrl + mouse notch on macOS no longer jumps 4x, and eases each
+ * wheel step toward its target instead of jumping. A pinch still tracks the fingers at once. The easing is an
+ * exponential approach rather than a fixed tween, so a new notch mid-animation retargets without restarting,
+ * and nothing coasts once the target is reached.
  */
 function useSmoothZoom(containerRef: RefObject<HTMLDivElement | null>, reduced: boolean) {
   const { getViewport, setViewport } = useReactFlow();
@@ -163,20 +159,19 @@ function useSmoothZoom(containerRef: RefObject<HTMLDivElement | null>, reduced: 
   useEffect(() => {
     const root = containerRef.current!;
     const onWheel = (e: WheelEvent) => {
-      // Plain scroll stays with React Flow, which pans (panOnScroll).
-      if (!e.ctrlKey && !e.metaKey) return;
       const target = e.target as Element;
       const pane = target.closest(".react-flow__renderer");
       if (!pane || target.closest(".nowheel")) return;
-      // Capture phase on an ancestor: stopping here keeps the event from React Flow's own handler, and
-      // preventDefault keeps a pinch from zooming the whole page.
+      // Capture phase on an ancestor: stopping here keeps the event from React Flow's own zoom, and
+      // preventDefault keeps the page from scrolling, or a pinch from zooming the whole page.
       e.preventDefault();
       e.stopPropagation();
-      const px = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? pane.clientHeight : 1);
+      const delta = -e.deltaY * (e.deltaMode === 1 ? 0.05 : e.deltaMode ? 1 : 0.002) * (e.ctrlKey && IS_MAC ? 10 : 1);
       const cap = Math.log(ZOOM_STEP);
-      const step = Math.min(cap, Math.max(-cap, -px / 100));
+      const step = Math.min(cap, Math.max(-cap, delta * Math.LN2));
       const box = pane.getBoundingClientRect();
-      zoomBy(Math.exp(step), e.clientX - box.left, e.clientY - box.top, Math.abs(step) > SMOOTH_ABOVE);
+      // Ctrl marks a pinch (or Ctrl + scroll); a bare wheel always eases.
+      zoomBy(Math.exp(step), e.clientX - box.left, e.clientY - box.top, !e.ctrlKey || Math.abs(step) > SMOOTH_ABOVE);
     };
     root.addEventListener("wheel", onWheel, { capture: true, passive: false });
     return () => {
@@ -336,24 +331,6 @@ function MapCanvas({
     mapStore.setPositions(role, Object.fromEntries(nodes.filter((n) => n.type === "machine").map((n) => [n.id, n.position])));
   }, [nodes, role]);
 
-  // Keeps part of the map on screen: trackpad scrolling coasts on after the fingers lift (OS momentum) and could
-  // fling every machine out of view. The margin is half the pane's shorter side, so at fit zoom (1) at least half
-  // the pane stays over the machines' bounds. Live positions mean a dragged node widens the extent as it goes.
-  const extent = useMemo((): CoordinateExtent => {
-    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const n of nodes) {
-      x0 = Math.min(x0, n.position.x);
-      y0 = Math.min(y0, n.position.y);
-      x1 = Math.max(x1, n.position.x + (n.type === "add" ? ADD_W : NODE_W));
-      y1 = Math.max(y1, n.position.y + NODE_H);
-    }
-    const margin = Math.min(paneWidth, paneHeight) / 2;
-    return [
-      [x0 - margin, y0 - margin],
-      [x1 + margin, y1 + margin],
-    ];
-  }, [nodes, paneWidth, paneHeight]);
-
   const resetLayout = (event: MouseEvent<HTMLButtonElement>) => {
     const duration = viewportDuration(event, 200);
     stopZoom();
@@ -467,12 +444,6 @@ function MapCanvas({
           fitViewOptions={FIT}
           minZoom={MIN_ZOOM}
           maxZoom={MAX_ZOOM}
-          translateExtent={extent}
-          // Two-finger scroll pans 1:1 like a page (deltaY is the distance a page would scroll; React Flow's default is 0.5).
-          panOnScroll
-          panOnScrollSpeed={1}
-          // Ctrl/⌘ + scroll and pinch go through useSmoothZoom, so React Flow needs no zoom key of its own.
-          zoomActivationKeyCode={null}
           // A click that wobbles a few pixels still counts as a click (closes the sheet, clears selection), not a pan.
           paneClickDistance={4}
           nodesConnectable={false}
@@ -512,10 +483,10 @@ function MapCanvas({
               The bar itself passes pointer events through so the strip between them still pans. */}
           <Panel position="bottom-left" className="pointer-events-none right-0 !m-3 flex flex-row-reverse flex-wrap-reverse items-stretch gap-2">
             <div className="pointer-events-auto flex items-center gap-px rounded-md border border-border bg-panel/95 p-0.5 shadow-sm shadow-black/30">
-              <ControlButton label="Zoom out" hint={ZOOM_HINT} onClick={(event) => zoomFromCentre(1 / ZOOM_STEP, event)}>
+              <ControlButton label="Zoom out" onClick={(event) => zoomFromCentre(1 / ZOOM_STEP, event)}>
                 <MagnifyingGlassMinus />
               </ControlButton>
-              <ControlButton label="Zoom in" hint={ZOOM_HINT} onClick={(event) => zoomFromCentre(ZOOM_STEP, event)}>
+              <ControlButton label="Zoom in" onClick={(event) => zoomFromCentre(ZOOM_STEP, event)}>
                 <MagnifyingGlassPlus />
               </ControlButton>
               <ControlButton
@@ -563,8 +534,7 @@ function MapCanvas({
   );
 }
 
-/** A map control; `hint` names the gesture that does the same, shown after the label in the tooltip only. */
-function ControlButton({ label, hint, onClick, children }: { label: string; hint?: string; onClick: (event: MouseEvent<HTMLButtonElement>) => void; children: ReactNode }) {
+function ControlButton({ label, onClick, children }: { label: string; onClick: (event: MouseEvent<HTMLButtonElement>) => void; children: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -579,10 +549,7 @@ function ControlButton({ label, hint, onClick, children }: { label: string; hint
           {children}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>
-        {label}
-        {hint && <span className="ml-1.5 text-muted-foreground">{hint}</span>}
-      </TooltipContent>
+      <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
 }
