@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AnimatedNumber, DitherBlock, Hint, StateBand } from "@/shared/shared";
+import { AnimatedNumber, DitherBlock, Hint, StateBand, StatusMark, type StatusKind } from "@/shared/shared";
 import { PLAIN, profile, type ResourceKind } from "@/shared/data";
 import { useSharedState, useWorkspace } from "./store";
 import { PAGE_TIPS } from "./page-tips";
@@ -835,6 +835,27 @@ export function Prop({ label, children }: { label: ReactNode; children: ReactNod
       <span className="text-sm text-muted-foreground">{label}</span>
       <span className="min-w-0 break-words text-foreground">{children}</span>
     </div>
+  );
+}
+
+/**
+ * A row in an Overview's side column ("This machine") that opens the page owning that fact. Both roles
+ * use it, so the column reads the same on a Source and a Follower.
+ */
+export function StatusRow({ status, label, value, title, onClick }: { status?: StatusKind; label: string; value: ReactNode; title?: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className="flex min-h-9 w-full items-center gap-2 border-b border-border/70 px-1 py-1.5 text-left text-base outline-none hover:bg-raised/50 focus-visible:bg-raised"
+    >
+      {/* Rows without a status keep the marker's slot so labels stay in one column. */}
+      {status ? <StatusMark kind={status} /> : <span aria-hidden className="w-3.5 shrink-0" />}
+      <span className="shrink-0 whitespace-nowrap">{label}</span>
+      {/* Wraps instead of truncating: a health warning cut mid-word is worse than a second line. */}
+      <span className="ml-auto pl-3 text-right text-sm text-pretty text-muted-foreground">{value}</span>
+    </button>
   );
 }
 

@@ -32,6 +32,7 @@ import {
   SectionLabel,
   SettingRow,
   StateHeader,
+  StatusRow,
   settingsGroup,
   useLeaveGuard,
 } from "./kit";
@@ -161,7 +162,8 @@ export function ActionTag({ action }: { action: Shown }) {
 
 export function Attention({ tone, title, children, actions }: { tone: "warn" | "act" | "bad"; title: ReactNode; children: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="grid grid-cols-[14px_minmax(0,1fr)] items-start gap-x-3 gap-y-2 border-b border-border/70 py-3 @min-[640px]:grid-cols-[14px_minmax(0,1fr)_auto]">
+    // px-1: the same 4px row inset as the Source overview's lists; Sync offsets its wrapper to keep the text at 18px.
+    <div className="grid grid-cols-[14px_minmax(0,1fr)] items-start gap-x-3 gap-y-2 border-b border-border/70 px-1 py-3 @min-[640px]:grid-cols-[14px_minmax(0,1fr)_auto]">
       {/* h-lh centres the marker on the title's first line, whatever the marker's height. */}
       <span className="flex h-lh items-center text-base">
         <StatusMark kind={tone} />
@@ -358,9 +360,10 @@ export function FollowerOverview() {
             )
           }
         />
-        <div className="grid grid-cols-1 gap-8 px-4 pt-6 pb-20 @3xl:px-8 @min-[900px]:grid-cols-[minmax(0,1fr)_300px] @min-[900px]:gap-12">
+        {/* Same columns as the Source overview: the side column joins at @3xl, 320px wide. */}
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-8 px-4 pt-6 pb-20 @3xl:grid-cols-[minmax(0,1fr)_320px] @3xl:gap-12 @3xl:px-8">
           <div className="min-w-0 space-y-8">
-            <GetStarted rowInset={0} />
+            <GetStarted rowInset={4} />
             <section data-tour="follower-needs">
               <SectionLabel>Needs you</SectionLabel>
               <div className="border-t border-border">
@@ -403,14 +406,14 @@ export function FollowerOverview() {
                 </RowPresence>
                 <HumanActionItem />
                 {!ws.interrupted && !ws.driftOpen && !ws.humanAction && conflicts.length === 0 && (
-                  <div className="flex h-10 items-center gap-2 text-base text-muted-foreground">
+                  <div className="flex h-9 items-center gap-2 px-1 text-base text-muted-foreground">
                     <Check className="size-3.5 text-ok" /> Nothing needs you.
                   </div>
                 )}
               </div>
             </section>
           </div>
-          <aside className="space-y-8">
+          <aside className="min-w-0 space-y-8">
             <section data-tour="follower-this-machine">
               <SectionLabel
                 action={
@@ -434,37 +437,31 @@ export function FollowerOverview() {
               >
                 This machine
               </SectionLabel>
-              <div className="border-t border-border pt-1">
-                <Prop label={<Term term="Profile Revision">Revision</Term>}>
-                  {ws.appliedRevision === 0 ? (
-                    "None applied yet"
-                  ) : (
-                    <span className="tabular-nums">
-                      <AnimatedNumber value={ws.appliedRevision} />
-                    </span>
-                  )}
-                </Prop>
-                <Prop label="Profile">{profileName}</Prop>
-                <Prop label="Next check">
-                  <button type="button" onClick={() => ws.setView("schedule")} className="rounded text-left outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/60">
-                    {schedule ? nextCheck(schedule, DEFAULT_TIME) : "Not scheduled"}
-                  </button>
-                </Prop>
-                <Prop label="Kept here">
-                  <button type="button" onClick={() => ws.setView("overlays")} className="rounded text-left tabular-nums outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/60">
-                    <AnimatedNumber value={kept} /> {kept === 1 ? "key" : "keys"}
-                  </button>
-                </Prop>
-                <Prop label="Tunnel">
-                  {ws.tunnelConfigured ? (
-                    <button type="button" onClick={() => ws.setView("tunnel")} className="inline-flex items-center gap-1.5 rounded outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/60">
-                      <StatusMark kind={tunnelUp ? "ok" : "offline"} /> {tunnelUp ? "Connected" : "Stopped"}
-                    </button>
-                  ) : (
-                    "Not used"
-                  )}
-                </Prop>
-                {ws.unenrolled && <Prop label="Syncing">Stopped</Prop>}
+              <div className="border-t border-border">
+                <StatusRow
+                  label="Revision"
+                  title="Canonfig calls this the profile revision."
+                  value={ws.appliedRevision === 0 ? "None applied yet" : <AnimatedNumber value={ws.appliedRevision} />}
+                  onClick={() => ws.setView("sync")}
+                />
+                <StatusRow label="Profile" value={profileName} onClick={() => ws.setView("machine")} />
+                <StatusRow label="Next check" value={schedule ? nextCheck(schedule, DEFAULT_TIME) : "Not scheduled"} onClick={() => ws.setView("schedule")} />
+                <StatusRow
+                  label="Kept here"
+                  value={
+                    <>
+                      <AnimatedNumber value={kept} /> {kept === 1 ? "key" : "keys"}
+                    </>
+                  }
+                  onClick={() => ws.setView("overlays")}
+                />
+                <StatusRow
+                  status={!ws.tunnelConfigured ? "off" : tunnelUp ? "ok" : "offline"}
+                  label="Tunnel"
+                  value={!ws.tunnelConfigured ? "Not used" : tunnelUp ? "Connected" : "Stopped"}
+                  onClick={() => ws.setView("tunnel")}
+                />
+                {ws.unenrolled && <StatusRow status="off" label="Syncing" value="Stopped" onClick={() => ws.setView("machine")} />}
               </div>
             </section>
             <section data-tour="follower-runs">
@@ -473,10 +470,10 @@ export function FollowerOverview() {
                 <RowPresence>
                   {ws.runs.map((r) => (
                     <AnimatedRow key={r.n} as="li">
-                      <div className="flex h-8 items-center gap-2 border-b border-border/70">
+                      <div className="flex h-8 items-center gap-2 border-b border-border/70 px-1">
                         <span className="w-8 font-mono text-xs text-faint tabular-nums">#{r.n}</span>
                         <span className={cn("truncate", r.tone === "bad" && "text-bad", r.tone === "muted" && "text-muted-foreground")}>{r.what}</span>
-                        <span className="ml-auto shrink-0 pl-2 text-sm text-muted-foreground tabular-nums">{r.when}</span>
+                        <span className="ml-auto shrink-0 pl-2 text-sm text-faint tabular-nums">{r.when}</span>
                       </div>
                     </AnimatedRow>
                   ))}
@@ -628,7 +625,8 @@ export function SyncView() {
           </div>
         </section>
         {(ws.interrupted || ws.humanAction) && (
-          <div data-tour="sync-recover" className="px-[18px]">
+          // 14px plus Attention's own 4px row inset puts the notice text on the list's 18px line.
+          <div data-tour="sync-recover" className="px-[14px]">
             <InterruptedNotice />
             <HumanActionItem />
           </div>

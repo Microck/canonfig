@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
+import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
 import { PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/data";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
@@ -32,6 +32,7 @@ import {
   RowPresence,
   SectionLabel,
   StateHeader,
+  StatusRow,
   WithCode,
   copy,
   useLeaveGuard,
@@ -65,24 +66,6 @@ function SectionLink({ onClick, children }: { onClick: () => void; children: str
     <Button variant="ghost" size="xs" className="text-muted-foreground" onClick={onClick}>
       {children} <ArrowRight />
     </Button>
-  );
-}
-
-/** A row in the overview's side column that opens the matching settings page. */
-export function StatusRow({ status, label, value, title, onClick }: { status?: StatusKind; label: string; value: string; title?: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      title={title}
-      onClick={onClick}
-      className="flex min-h-9 w-full items-center gap-2 border-b border-border/70 px-1 py-1.5 text-left text-base outline-none hover:bg-raised/50 focus-visible:bg-raised"
-    >
-      {/* Rows without a status keep the marker's slot so labels stay in one column. */}
-      {status ? <StatusMark kind={status} /> : <span aria-hidden className="w-3.5 shrink-0" />}
-      <span className="shrink-0 whitespace-nowrap">{label}</span>
-      {/* Wraps instead of truncating: a health warning cut mid-word is worse than a second line. */}
-      <span className="ml-auto pl-3 text-right text-sm text-pretty text-muted-foreground">{value}</span>
-    </button>
   );
 }
 
