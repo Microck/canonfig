@@ -417,10 +417,12 @@ export function AnimatedNumber({ value, className, format = String }: { value: n
   );
 }
 
+// Transform strings, not the `y` shorthand: motion hands a plain transform to the compositor (WAAPI),
+// while `y` is composed on the main thread every frame.
 const DIGIT = {
-  enter: (direction: number) => ({ y: direction > 0 ? "100%" : "-100%", opacity: 0 }),
-  center: { y: "0%", opacity: 1 },
-  exit: (direction: number) => ({ y: direction > 0 ? "-100%" : "100%", opacity: 0 }),
+  enter: (direction: number) => ({ transform: `translateY(${direction > 0 ? "100%" : "-100%"})`, opacity: 0 }),
+  center: { transform: "translateY(0%)", opacity: 1 },
+  exit: (direction: number) => ({ transform: `translateY(${direction > 0 ? "-100%" : "100%"})`, opacity: 0 }),
 };
 
 /** The 300px pixel-art chest, downscaled smoothly: `pixelated` only helps when scaling up. */
