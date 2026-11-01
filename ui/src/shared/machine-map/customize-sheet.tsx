@@ -4,6 +4,7 @@ import { motion } from "motion/react";
 import { RadioGroup } from "radix-ui";
 import { HexColorPicker } from "react-colorful";
 import { ArrowCounterClockwise, FileArrowUp, Plus, X } from "@/components/icons";
+import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Label } from "@/components/ui/label";
@@ -413,16 +414,21 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
                 className="font-mono"
               />
             </div>
-            {hexInvalid && (
-              <p id={`${uid}-hex-error`} className="text-xs text-bad">
+            {/* One message slot whose height never changes: the hint, the lift notice and the hex error
+                share a single grid cell and only the active one is visible. A growing popover that sits
+                above the swatch would otherwise move up under the pointer when a notice appears (a layout shift). */}
+            <div className="grid text-xs *:col-start-1 *:row-start-1">
+              <p id={`${uid}-hex-error`} className={cn("text-bad", !hexInvalid && "invisible")} aria-hidden={!hexInvalid}>
                 Use six hex digits, like #7dd3fc.
               </p>
-            )}
-            {/* Always mounted so screen readers announce the lift when it appears. */}
-            <p role="status" className="text-xs text-warn empty:hidden">
-              {liftNotice}
-            </p>
-            <p className="text-xs text-faint">Pick a mid-to-light colour that stands apart from the status colours: green, gold, orange and red.</p>
+              {/* Always mounted so screen readers announce the lift when it appears. */}
+              <p role="status" className={cn("text-warn", (hexInvalid || !lifted) && "invisible")}>
+                {liftNotice}
+              </p>
+              <p className={cn("text-faint", (hexInvalid || lifted) && "invisible")} aria-hidden={hexInvalid || !!lifted}>
+                Pick a mid-to-light colour that stands apart from the status colours: green, gold, orange and red.
+              </p>
+            </div>
           </PopoverContent>
         </Popover>
       </div>
