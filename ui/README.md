@@ -47,8 +47,6 @@ Guidance lives in `src/workspace/guide.tsx`, with the spotlight component in `sr
 
 The machine map in `src/shared/machine-map/` also runs alone at `/map-demo.html?role=source|follower`, with `&publishing=1`, `&syncing=<follower ids>` and `&customize=<id>`. This separate component demo and `/break.html` are development-only entrypoints, not application routes.
 
-`/components.html` is a temporary component gallery (`src/gallery/`) that renders every GUI component with its variants; `?only=<id>` shows one full width. It is development-only like `/break.html`; delete `components.html` and `src/gallery/` once the components are refined.
-
 The spotlight uses separate blur panels and a rounded dimming cutout. The card, cutout and blur switch targets together without a trailing animation. Tour and map controls have 40px minimum hit targets, increasing to 44px for coarse pointers. Map customization lives in the selected machine's unscaled toolbar.
 
 Initial map fitting and Fit to screen never shrink nodes below their natural size, keeping node text at least 11px at narrow widths. Pan to reach the remaining machines, or zoom out manually. Keyboard focus and selection pan the node and its Open/Customize toolbar into view without changing zoom; hovering does not pan. Reduced motion makes these pans instant.
