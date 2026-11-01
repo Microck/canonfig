@@ -79,17 +79,20 @@ export function RadioRow({
   className?: string;
 }) {
   const id = useId();
+  // The radio and icon centre on the whole text block (title, description, children), so a
+  // one-line row and a two-line row read the same way. The icon is 20px: at 16px it read
+  // smaller than the medium-weight title beside it.
   return (
     <label
       htmlFor={id}
       className={cn(
-        "flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50",
+        "flex cursor-pointer items-center gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50",
         "has-data-[state=checked]:border-border-strong has-data-[state=checked]:bg-raised",
         className,
       )}
     >
-      <RadioGroupItem id={id} value={value} className="mt-px" />
-      {Icon && <Icon className="mt-px size-4 shrink-0 text-muted-foreground" />}
+      <RadioGroupItem id={id} value={value} />
+      {Icon && <Icon className="size-5 shrink-0 text-muted-foreground" />}
       <span className="min-w-0 flex-1">
         <span className="block leading-none font-medium">{title}</span>
         {description && <span className="mt-1.5 block text-sm text-muted-foreground">{description}</span>}
