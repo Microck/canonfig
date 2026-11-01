@@ -16,8 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { machine, profile } from "@/shared/data";
 import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
-import { shq } from "@/shared/shell";
-import { CliEquivalent, DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
+import { DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
 
 // Rings drifting inward toward the centre: many machines converging on one.
 // At speed 1 a ring takes about 20 seconds to move one ring inward.
@@ -355,7 +354,6 @@ function Wizard({
   onBlocked,
   busy = false,
   done,
-  cli,
   children,
 }: {
   role: Role;
@@ -371,7 +369,6 @@ function Wizard({
   onBlocked?: () => void;
   busy?: boolean;
   done?: ReactNode;
-  cli: string[];
   children: ReactNode;
 }) {
   const heading = useFocusOnMount<HTMLHeadingElement>();
@@ -391,8 +388,8 @@ function Wizard({
 
   // Arrival from the choice: while the shell is still growing (CARD_MORPH), the wizard's parts
   // rise in top to bottom, 35ms apart from 200ms in, so they land as the card does: the
-  // back link, the header with the stepper, the first step's items, the CLI disclosure, the
-  // footer. The header and footer carry their dividers, so no rule shows before its card.
+  // back link, the header with the stepper, the first step's items, the footer. The header
+  // and footer carry their dividers, so no rule shows before its card.
   useLayoutEffect(() => {
     if (reduced) return;
     riseIn(card.current!.parentElement!.querySelectorAll(`[data-rise], ${STEP_ITEMS}`), { delay: 200, gap: 35, duration: 320, cap: 6 });
@@ -469,9 +466,6 @@ function Wizard({
                 <StepTransition step={step} direction={direction}>
                   {children}
                 </StepTransition>
-                <div data-rise className="mt-7">
-                  <CliEquivalent lines={cli} />
-                </div>
               </>
             )}
           </div>
@@ -608,8 +602,6 @@ function SourceWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: 
     ...(service === "service" ? [`Background service at https://127.0.0.1:${portNumber}`] : []),
     ...(scan ? ["2 proposed tools, found in ~/.claude.json and ~/.codex/config.toml"] : []),
   ];
-  // Never show a port the CLI would reject; the placeholder marks what's missing.
-  const portFlag = !portValid ? " --port <port>" : portNumber === DEFAULT_PORT ? "" : ` --port ${portNumber}`;
 
   const nameError = tried && !name.trim() ? "Enter a profile name." : null;
   const fileError = tried && !file.trim() ? "Enter where to save the profile file." : null;
@@ -639,14 +631,6 @@ function SourceWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: 
         setProgress(0);
         simulate(2600, setProgress, () => setDone(true));
       }}
-      cli={[
-        "canonfig source init",
-        // `source init` takes no profile options: the profile is a file the person authors, and later commands
-        // read it by path. So the entered name and file appear as a note, quoted the same way as real arguments.
-        `# The profile ${arg(name, "<name>")} lives in ${arg(file, "<profile.jsonc>")}; source digest and source publish read it with --profile-file ${arg(file, "<profile.jsonc>")}`,
-        ...(scan ? ["canonfig source scan --file ~/.claude.json --file ~/.codex/config.toml"] : []),
-        service === "service" ? `canonfig source service install${portFlag}` : `canonfig source serve${portFlag}`,
-      ]}
       done={
         done ? (
           <Finished
@@ -779,11 +763,6 @@ function SourceWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: 
 /* Follower enroll                                                     */
 /* ------------------------------------------------------------------ */
 
-/** A typed value as one shell argument, or a placeholder while the field is empty, so no line passes an empty argument. */
-function arg(value: string, placeholder: string) {
-  return value.trim() ? shq(value.trim()) : placeholder;
-}
-
 function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: FollowerSetup) => void }) {
   const [step, setStep] = useState(0);
   const [tried, setTried] = useState(false);
@@ -834,8 +813,6 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
     setPasteTried(true);
     if (pasteValid) setInvite("(pasted)");
   };
-  // A pasted invitation is saved to ./canonfig-invite by the first command line.
-  const invitePath = invite === null || invite === "(pasted)" ? "./canonfig-invite" : shq(invite);
 
   return (
     <Wizard
@@ -861,18 +838,6 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
         setProgress(0);
         simulate(3000, setProgress, () => setDone(true));
       }}
-      cli={[
-        // `tunnel start` and `follower enroll` both read the invitation, and the tunnel needs it as a file,
-        // so a pasted invitation is saved to one first.
-        ...(invite === "(pasted)" ? ["cat > ./canonfig-invite   # paste the invitation, then Ctrl-D"] : []),
-        ...(tunnel
-          ? [
-              `canonfig tunnel start --invitation ${invitePath} --ssh-host ${arg(sshHost, "<host>")} --ssh-user ${arg(sshUser, "<user>")} --ssh-host-key-file ${arg(hostKey, "<path>")}`,
-            ]
-          : []),
-        `cat ${invitePath} | canonfig follower enroll --stdin --name ${arg(machineName, "<name>")} --profile ${shq(profileId)}`,
-        ...(useSchedule ? ["canonfig schedule set --default"] : []),
-      ]}
       done={
         done ? (
           <Finished

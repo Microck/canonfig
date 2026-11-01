@@ -1,11 +1,10 @@
 // Shared components for the simulated first-run flow.
-import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { useContext, useEffect, useId, useLayoutEffect, useRef, type ComponentType, type ReactNode } from "react";
 import { AnimatePresence, motion, PresenceContext, useIsPresent, useReducedMotion, type Variants } from "motion/react";
-import { toast } from "sonner";
-import { CaretRight, Check, Copy, Question, WarningCircle } from "@/components/icons";
+import { CaretRight, Check, Question, WarningCircle } from "@/components/icons";
 import { cn, riseIn, SNAP } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { CollapsibleTrigger, Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { CollapsibleTrigger } from "@/components/ui/collapsible";
 import { RadioGroupItem } from "@/components/ui/radio-group";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { GLOSSARY, Logo } from "@/shared/shared";
@@ -189,56 +188,6 @@ export function RadioRow({
   );
 }
 
-/** A copyable block of commands. Lines starting with `#` are notes, not commands. */
-function CodeBlock({ lines, className }: { lines: string[]; className?: string }) {
-  const [copied, setCopied] = useState(false);
-  // Confirm only once the browser accepts the write; a denied or missing clipboard says so instead.
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(lines.join("\n"));
-    } catch {
-      toast.error("Couldn't copy. Select the text and copy it by hand.");
-      return;
-    }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
-  };
-  return (
-    <div className={cn("relative rounded-md border border-border bg-canvas/70", className)}>
-      <pre className="px-3 py-2.5 pr-14 font-mono text-[12px] leading-[1.7] whitespace-pre-wrap text-foreground/90 [overflow-wrap:anywhere]">
-        {lines.map((line, i) => (
-          <div key={i} className={cn("pl-[2ch] -indent-[2ch]", line.startsWith("#") && "text-faint")}>
-            {!line.startsWith("#") && <span className="text-faint select-none">$ </span>}
-            {line}
-          </div>
-        ))}
-      </pre>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-xs"
-        aria-label={copied ? "Copied" : "Copy commands"}
-        className="absolute top-1 right-1 size-11 text-faint hover:text-foreground sm:size-10"
-        onClick={copy}
-      >
-        {copied ? <Check className="text-ok" /> : <Copy />}
-      </Button>
-    </div>
-  );
-}
-
-/** Quiet disclosure with the CLI commands that do the same thing. */
-export function CliEquivalent({ lines }: { lines: string[] }) {
-  return (
-    <Collapsible className="text-sm">
-      <DisclosureTrigger>Command line equivalent</DisclosureTrigger>
-      <CollapsibleContent>
-        <CodeBlock lines={lines} className="mt-2" />
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
 export function Field({
   label,
   hint,
@@ -363,7 +312,7 @@ export function simulate(ms: number, onTick: (value: number) => void, onDone: ()
   return () => window.clearInterval(id);
 }
 
-/** Quiet disclosure label, for "Advanced" fields and the CLI equivalent. */
+/** Quiet disclosure label, for "Advanced" fields. */
 export function DisclosureTrigger({ children }: { children: ReactNode }) {
   return (
     <CollapsibleTrigger className="group inline-flex min-h-11 items-center gap-1 rounded-sm text-sm text-faint hover:text-muted-foreground sm:min-h-10">
