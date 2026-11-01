@@ -140,7 +140,7 @@ const STATE_BANDS = [
   { tone: "ok", mode: "idle", motion: "drift" },
   { tone: "warn", mode: "idle", motion: "breath" },
   { tone: "act", mode: "idle", motion: "flow right" },
-  { tone: "bad", mode: "idle", motion: "flicker" },
+  { tone: "bad", mode: "idle", motion: "glitch" },
   { tone: "muted", mode: "idle", motion: "near still" },
   { tone: "ok", mode: "running", motion: "sweep" },
 ] as const;
@@ -1183,7 +1183,7 @@ const ENTRIES: Entry[] = [
     name: "StateBand",
     group: SHARED,
     file: "src/shared/shared.tsx",
-    note: "Each state moves in its own way: ok drifts, warn breathes, act flows right, bad flickers irregularly, muted barely moves, running sweeps. Reduced motion holds one still frame per state. One WebGL context each; the page budget is 8 live contexts, so off-screen bands may show their still fallback.",
+    note: "Each state moves in its own way: ok drifts, warn breathes, act flows right, bad glitches (a stepped, torn horizon with dropouts), muted barely moves, running sweeps. Reduced motion holds one still frame per state. One WebGL context each; the page budget is 8 live contexts, so off-screen bands may show their still fallback.",
     render: () => (
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {STATE_BANDS.map(({ tone, mode, motion }) => (

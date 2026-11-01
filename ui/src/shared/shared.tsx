@@ -255,37 +255,64 @@ export function DitherProgress({
 const HORIZON_FIELD = /* glsl */ `
 float field(vec2 uv, vec2 res, float t) {
   float aspect = res.x / res.y;
+  // bad: a failing feed. Its clock holds, then jumps, 6 times a field second
+  // (3.6 a second at speed 0.6), and every glitch below changes only on these
+  // beats. So no spot changes more than 3.6 times a second: under 2 flashes a
+  // second, inside the 3 of WCAG 2.3.1.
+  float beat = floor(t * 6.0);
+  t = mix(t, beat / 6.0, glitch);
+  // bad: tears come in bursts. Each run of 4 beats is torn or clean on a coin
+  // toss, so the failures never settle into a rhythm. In a burst, coarse strips
+  // of rows tear sideways by up to a fifth of the width; only some strips tear
+  // on a beat, so the band never moves as one.
+  float burst = step(0.5, hash21(vec2(floor(beat / 4.0), 0.37)));
+  float strip = floor(uv.y * 5.0);
+  float torn = glitch * burst * step(0.55, hash21(vec2(strip, beat)));
+  uv.x += torn * 0.4 * (hash21(vec2(beat, strip + 9.0)) - 0.5);
   vec2 p = uv * vec2(aspect, 1.0);
   // Every state: two waves slide past each other on the horizon.
   float wave = 0.06 * sin(p.x * 3.0 + t * 0.35) + 0.04 * sin(p.x * 7.0 - t * 0.2);
-  // bad: noise unsettles the horizon, so it never falls into a rhythm.
-  wave += flicker * 0.06 * snoise(vec2(p.x * 1.2, t * 0.7));
+  // bad: the horizon breaks into blocks at different heights, which jump to new
+  // heights every third beat. Torn strips carry their blocks sideways. Each
+  // height is the difference of two neighbouring random values, so the heights
+  // cancel across the band: the horizon breaks, but the band's ink barely
+  // changes when it jumps.
+  float block = floor(p.x * 2.5);
+  float shuffle = floor(beat / 3.0) + 0.5;
+  wave += glitch * 0.2 * (hash21(vec2(block, shuffle)) - hash21(vec2(block + 1.0, shuffle)));
   // warn: the band rises, brightens and settles on one slow breath.
   float breathe = breath * sin(t * 2.5);
-  float body = smoothstep(0.85 + 0.1 * breathe + 0.15 * sweep, 0.0, uv.y + wave);
+  // bad: a harder edge, so the broken horizon reads as steps, not a blur.
+  float body = smoothstep(0.85 + 0.1 * breathe + 0.15 * sweep - 0.2 * glitch, 0.3 * glitch, uv.y + wave);
+  // bad: signal dropouts. About 1 cell in 16 blanks out for a beat. A cell is
+  // a quarter of the band's height wide and a sixth tall (1/130 of a wide
+  // band), so no large area changes at once.
+  vec2 cell = floor(vec2(p.x * 4.0, uv.y * 6.0));
+  body *= 1.0 - glitch * step(0.94, hash21(cell + vec2(beat * 0.618, beat * 0.271)));
   float level = 0.9 + 0.12 * breathe;
   // Texture: a fine diagonal grain, swapped for chevrons marching right
-  // (act: toward the action) or rings spreading from the right edge (bad).
+  // (act: toward the action) or scanlines on the strips that tear (bad).
   float grain = 0.5 + 0.5 * sin(p.x * 18.0 + p.y * 9.0 + t * 0.15);
   float chevron = smoothstep(0.3, 0.7, 0.5 + 0.5 * sin((p.x + abs(uv.y - 0.4) * 0.8) * 8.0 - t * 3.0));
-  float ripple = 0.5 + 0.5 * sin(length(p - vec2(aspect * 0.85, 0.0)) * 14.0 - t * 2.0);
+  float scanline = step(0.5, fract(uv.y * res.y * 0.25));
   grain = mix(grain, chevron, flow);
-  grain = mix(grain, ripple, 0.6 * flicker);
-  // bad: patches dim and recover on smooth noise, about once a second at
-  // speed 0.6: irregular, but far below the 3 flashes a second of WCAG 2.3.1.
-  level *= 1.0 + flicker * 0.3 * snoise(vec2(p.x * 0.7 + 3.1, t * 0.9));
+  grain = mix(grain, scanline, torn);
   // running: a lit front sweeps left to right, leaving a fading trail.
   float behind = fract(t * 0.25) * 2.0 - 0.25 - uv.x;
   float trail = behind > 0.0 ? exp(-behind * 5.0) : exp(behind * 30.0);
   level += sweep * (0.1 + 0.5 * trail);
   // The grain only shades the body; act and bad cut deeper so their texture reads
   // as motion, and act's level rises to make up for the ink its gaps remove.
-  float depth = 0.25 + 0.35 * flow + 0.15 * flicker;
+  // Torn strips cut deeper, into scanlines, which drops their mean grain from
+  // 0.8 to 0.7, so their level rises by 8/7: a tear moves ink into lines
+  // instead of dimming a whole strip at once.
+  float depth = 0.25 + 0.35 * flow + 0.15 * glitch + 0.2 * torn;
+  level *= 1.0 + torn / 7.0;
   return clamp(body * (1.0 - depth + depth * grain) * (level + 0.15 * flow), 0.0, 1.0);
 }
 `;
 
-const CALM = { breath: 0, flow: 0, flicker: 0, sweep: 0 } as const;
+const CALM = { breath: 0, flow: 0, glitch: 0, sweep: 0 } as const;
 
 /**
  * Each state's motion character, all slow while idle. `stillTime` is the
@@ -299,8 +326,9 @@ const BAND_MOTION = {
   warn: { speed: 0.5, fps: 20, stillTime: 0.63, uniforms: { ...CALM, breath: 1 } },
   // Chevrons flowing right at about a fifth of the band's height a second.
   act: { speed: 0.6, fps: 20, stillTime: 4, uniforms: { ...CALM, flow: 1 } },
-  // Irregular dimming and a slow ripple.
-  bad: { speed: 0.6, fps: 20, stillTime: 4, uniforms: { ...CALM, flicker: 1 } },
+  // A failing feed: stuttered steps, a broken horizon, steady dropouts and tears
+  // in bursts. The still frame is a beat mid-burst, with the lower strips torn.
+  bad: { speed: 0.6, fps: 20, stillTime: 3.08, uniforms: { ...CALM, glitch: 1 } },
   // Nearly still.
   muted: { speed: 0.15, fps: 10, stillTime: 4, uniforms: CALM },
 } as const;
