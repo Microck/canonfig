@@ -359,13 +359,17 @@
   from { opacity: 0; transform: translateY(4px); }
 }
 
-/* First-run setup (onboarding/). Seen once per machine, so it gets a little more motion
-   than screens people visit daily; still --ease-snap (except the progress-like sweep below),
-   and transform, opacity or clip-path.
+/* First-run setup (onboarding/). Seen once per machine, so it gets more motion than screens
+   people visit daily; still --ease-snap (except the progress-like sweep below), and
+   transform, opacity or clip-path. The entrances and the choice-to-wizard hand-off run in
+   motion and WAAPI (onboarding.tsx); these are the CSS-only parts.
    Delays are set inline, so entrances fill backwards (hidden until their turn) and leave no
    transform behind once done.
-   rise-in: the role choice and the finished screen arrive in a short stagger.
-   pop-in: the finished check badge grows from 0.9.
+   choice-card: a role card on the first question. Hover (fine pointers only: touch fires
+     hover on tap) lifts it 2px, nudges its arrow 2px toward the wizard and brightens its
+     shell's border and fill with a faint green glow from the background's palette, at
+     150ms; a press sinks it to 0.98 in 100ms, so the pick registers before the hand-off.
+   rise-in: the finished screen's text arrives in a short stagger.
    check-draw: a check is uncovered left to right, the way its stroke runs (it only moves
      right), so it reads as drawn. It starts at 25%, the stroke's first point.
    field-error-in: an inline error drops 4px into place, so it reads as new without a jump.
@@ -373,11 +377,43 @@
      Linear, like DitherProgress's own shimmer: it carries the progress motion on, and progress
      doesn't ease. On --ease-snap it crossed the card in the first ~150ms and spent the rest
      off the edge. */
+.choice-card {
+  transition: transform 150ms var(--ease-snap);
+}
+.choice-card:active {
+  transform: scale(0.98);
+  transition-duration: 100ms;
+}
+.choice-shell {
+  transition:
+    border-color 150ms var(--ease-snap),
+    background-color 150ms var(--ease-snap),
+    box-shadow 150ms var(--ease-snap);
+}
+.choice-arrow {
+  transition:
+    transform 150ms var(--ease-snap),
+    color 150ms var(--ease-snap);
+}
+@media (hover: hover) and (pointer: fine) {
+  .choice-card:hover {
+    transform: translateY(-2px);
+  }
+  .choice-card:hover:active {
+    transform: translateY(-2px) scale(0.98);
+  }
+  .choice-card:hover .choice-shell {
+    border-color: var(--border-strong);
+    background-color: var(--raised);
+    box-shadow: 0 12px 32px -18px color-mix(in oklab, var(--ok) 45%, transparent);
+  }
+  .choice-card:hover .choice-arrow {
+    transform: translateX(2px);
+    color: var(--foreground);
+  }
+}
 .rise-in {
   animation: rise-in 300ms var(--ease-snap) backwards;
-}
-.pop-in {
-  animation: pop-in 300ms var(--ease-snap) backwards;
 }
 .check-draw {
   animation: check-draw 200ms var(--ease-snap) backwards;
@@ -390,9 +426,6 @@
 }
 @keyframes rise-in {
   from { opacity: 0; transform: translateY(8px); }
-}
-@keyframes pop-in {
-  from { opacity: 0; transform: scale(0.9); }
 }
 @keyframes check-draw {
   from { clip-path: inset(0 75% 0 0); }
@@ -423,12 +456,16 @@
     mask-image: none;
   }
   /* The rule above zeroes durations but keeps delays, which would hold staggered items
-     hidden for a moment: show them at once instead. The sweep is decoration only. */
+     hidden for a moment: show them at once instead. The sweep is decoration only. Role
+     cards keep their colour change on hover but don't move. */
   .rise-in,
-  .pop-in,
   .check-draw,
   .field-error-in {
     animation: none;
+  }
+  .choice-card,
+  .choice-card .choice-arrow {
+    transform: none !important;
   }
   .finish-sweep {
     display: none;

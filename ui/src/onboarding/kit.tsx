@@ -1,9 +1,9 @@
 // Shared components for the simulated first-run flow.
-import { useEffect, useId, useRef, useState, type ComponentType, type ReactNode, type Ref } from "react";
-import { AnimatePresence, motion, useIsPresent, useReducedMotion, type Variants } from "motion/react";
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { AnimatePresence, motion, PresenceContext, useIsPresent, useReducedMotion, type Variants } from "motion/react";
 import { toast } from "sonner";
 import { CaretRight, Check, Copy, Question, WarningCircle } from "@/components/icons";
-import { cn, SNAP } from "@/lib/utils";
+import { cn, riseIn, SNAP } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { CollapsibleTrigger, Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { RadioGroupItem } from "@/components/ui/radio-group";
@@ -13,24 +13,37 @@ import { GLOSSARY, Logo } from "@/shared/shared";
 /**
  * Moves focus to the returned element when it mounts. The flow swaps whole
  * screens (choice, wizard, finished), so without this the control the person
- * just used disappears and keyboard focus falls back to <body>.
+ * just used disappears and keyboard focus falls back to <body>. A screen that
+ * was leaving and comes back (AnimatePresence keeps it rather than mounting a
+ * new one) takes focus again too.
  */
 export function useFocusOnMount<T extends HTMLElement>() {
   const ref = useRef<T>(null);
+  const present = useIsPresent();
   useEffect(() => {
-    ref.current?.focus();
-  }, []);
+    if (present) ref.current?.focus();
+  }, [present]);
   return ref;
 }
 
-// Steps slide 16px in the direction of travel and crossfade: Continue brings the next
-// step in from the right, Back from the left. 16px stays inside the card's padding at
-// every width. Enter at 200ms, exit quicker at 150ms. Transform strings, not `x`: motion
-// hands a plain transform to the compositor.
+/**
+ * One step change's length: the pane's slide, the stepper ring's glide and the card's
+ * height tween (Wizard) all run this long on --ease-snap, so they read as one movement.
+ * The Stepper's connector fill below repeats it as the Tailwind class `duration-240`.
+ */
+export const STEP_MS = 240;
+const STEP_MOVE = { duration: STEP_MS / 1000, ease: SNAP };
+
+// Steps slide 20px in the direction of travel: Continue brings the next step in from the
+// right, Back from the left. The pane itself only moves; its items fade in one after
+// another as they rise (StepPane), so the step reads as built up rather than swapped.
+// The leaving step fades and drifts 12px the other way in 120ms, clearing the stage
+// before the new items arrive. 20px stays inside the card's padding at every width.
+// Transform strings, not `x`: motion hands a plain transform to the compositor.
 const STEP_SLIDE: Variants = {
-  enter: (direction: number) => ({ transform: `translateX(${direction * 16}px)`, opacity: 0 }),
-  center: { transform: "translateX(0px)", opacity: 1, transition: { duration: 0.2, ease: SNAP } },
-  exit: (direction: number) => ({ transform: `translateX(${direction * -16}px)`, opacity: 0, transition: { duration: 0.15, ease: SNAP } }),
+  enter: (direction: number) => ({ transform: `translateX(${direction * 20}px)` }),
+  center: { transform: "translateX(0px)", opacity: 1, transition: STEP_MOVE },
+  exit: (direction: number) => ({ transform: `translateX(${direction * -12}px)`, opacity: 0, transition: { duration: 0.12, ease: SNAP } }),
 };
 // Reduced motion: no movement. The new step fades in; the old one leaves at once, so two steps never overlap.
 const STEP_FADE: Variants = {
@@ -51,7 +64,7 @@ export function StepTransition({ step, direction, children }: { step: number; di
     // The pop-out is positioned against this box.
     <div className="relative">
       <AnimatePresence initial={false} mode="popLayout" custom={direction}>
-        <StepPane key={step} direction={direction} variants={reduced ? STEP_FADE : STEP_SLIDE}>
+        <StepPane key={step} direction={direction} reduced={!!reduced}>
           {children}
         </StepPane>
       </AnimatePresence>
@@ -59,11 +72,38 @@ export function StepTransition({ step, direction, children }: { step: number; di
   );
 }
 
-/** One step's content. Inert while leaving, so its fields can't take a click or focus during the exit. */
-function StepPane({ ref, direction, variants, children }: { ref?: Ref<HTMLDivElement>; direction: 1 | -1; variants: Variants; children: ReactNode }) {
+/** A step's top-level items, the ones StepPane rises in: pane > the step's root > its children. */
+export const STEP_ITEMS = "[data-step-pane] > * > *";
+
+/**
+ * One step's content. Inert while leaving, so its fields can't take a click or focus
+ * during the exit. A step that arrives by Continue or Back rises its top-level items in,
+ * 30ms apart, all done within 290ms, alongside the card's 240ms height tween on the same
+ * curve. The wizard's first step is left alone: the wizard's entrance staggers it.
+ * AnimatePresence's pop-out finds the pane itself (its outermost motion element).
+ */
+function StepPane({ direction, reduced, children }: { direction: 1 | -1; reduced: boolean; children: ReactNode }) {
   const present = useIsPresent();
+  // AnimatePresence marks the children of its first render with initial: false.
+  const first = useContext(PresenceContext)?.initial === false;
+  const pane = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (first || reduced) return;
+    riseIn(pane.current!.querySelectorAll(":scope > * > *"), { gap: 30, duration: 200, distance: 6, cap: 3 });
+    // Mount only: a step that turns around mid-exit is already built.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return (
-    <motion.div ref={ref} custom={direction} variants={variants} initial="enter" animate="center" exit="exit" inert={!present}>
+    <motion.div
+      ref={pane}
+      data-step-pane
+      custom={direction}
+      variants={reduced ? STEP_FADE : STEP_SLIDE}
+      initial="enter"
+      animate="center"
+      exit="exit"
+      inert={!present}
+    >
       {children}
     </motion.div>
   );
@@ -188,9 +228,9 @@ function CodeBlock({ lines, className }: { lines: string[]; className?: string }
 }
 
 /** Quiet disclosure with the CLI commands that do the same thing. */
-export function CliEquivalent({ lines, className }: { lines: string[]; className?: string }) {
+export function CliEquivalent({ lines }: { lines: string[] }) {
   return (
-    <Collapsible className={cn("text-sm", className)}>
+    <Collapsible className="text-sm">
       <DisclosureTrigger>Command line equivalent</DisclosureTrigger>
       <CollapsibleContent>
         <CodeBlock lines={lines} className="mt-2" />
@@ -240,20 +280,39 @@ export function FieldError({ id, children }: { id?: string; children: ReactNode 
   );
 }
 
+/**
+ * The current step's ring. One shared element (layoutId, in the Wizard's LayoutGroup) that
+ * glides from marker to marker, and on finishing grows into the success badge (Finished).
+ * Reduced motion doesn't share it, so the ring and the badge simply appear in place.
+ */
+export const PROGRESS_MARK = "progress-mark";
+
 export function Stepper({ steps, step }: { steps: string[]; step: number }) {
+  const reduced = useReducedMotion();
   return (
     <ol aria-label="Steps" className="mt-4 grid grid-cols-3 gap-2 text-sm sm:flex sm:flex-wrap sm:items-center">
       {steps.map((title, i) => (
         <li key={title} className="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:items-center" aria-current={i === step ? "step" : undefined}>
-          {/* Markers and labels change colour at state speed; a newly completed step draws its check (check-draw). */}
+          {/* Markers and labels change colour at state speed; a newly completed step draws its check (check-draw).
+              The ring travels to the new current step in STEP_MS, the same curve and time as the step's own slide.
+              layoutDependency: it only re-measures when the step changes, not on every keystroke in the wizard. */}
           <span
             className={cn(
-              "grid size-[18px] place-items-center rounded-full border text-[11px] font-medium tabular-nums transition-[color,background-color,border-color] duration-150 ease-snap",
+              "relative grid size-[18px] place-items-center rounded-full border text-[11px] font-medium tabular-nums transition-[color,background-color,border-color] duration-150 ease-snap",
               i < step && "border-transparent bg-ok/15 text-ok",
-              i === step && "border-foreground/50 text-foreground",
+              i === step && "border-transparent text-foreground",
               i > step && "border-border text-faint",
             )}
           >
+            {i === step && (
+              <motion.span
+                layoutId={reduced ? undefined : PROGRESS_MARK}
+                layoutDependency={step}
+                aria-hidden
+                className="absolute -inset-px rounded-full border border-foreground/50"
+                transition={STEP_MOVE}
+              />
+            )}
             {i < step ? (
               <>
                 <Check aria-hidden className="check-draw size-3" />
@@ -264,7 +323,12 @@ export function Stepper({ steps, step }: { steps: string[]; step: number }) {
             )}
           </span>
           <span className={cn("transition-colors duration-150 ease-snap", i === step ? "text-foreground" : i < step ? "text-muted-foreground" : "text-faint")}>{title}</span>
-          {i < steps.length - 1 && <span aria-hidden className="mx-1 hidden h-px w-5 bg-border sm:block" />}
+          {/* The connector fills left to right once the step before it is done, as the ring leaves it. */}
+          {i < steps.length - 1 && (
+            <span aria-hidden className="relative mx-1 hidden h-px w-5 bg-border sm:block">
+              <span className={cn("absolute inset-0 origin-left bg-ok/60 transition-transform duration-240 ease-snap", i < step ? "scale-x-100" : "scale-x-0")} />
+            </span>
+          )}
         </li>
       ))}
     </ol>

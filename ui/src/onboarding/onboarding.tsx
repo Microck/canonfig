@@ -1,10 +1,10 @@
 // First-run flow for a simulated, unconfigured machine.
 // `onDone` returns the setup choices that seed the new workspace role.
-import { useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
-import { useReducedMotion } from "motion/react";
+import { AnimatePresence, LayoutGroup, motion, useIsPresent, usePresenceData, useReducedMotion, type Variants } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, Circle, FileArrowUp, RadioButton } from "@/components/icons";
-import { cn, SNAP } from "@/lib/utils";
+import { cn, riseIn, SNAP, SNAP_EASING } from "@/lib/utils";
 import { DitherShader, fillStyle } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -17,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { machine, profile } from "@/shared/data";
 import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import { shq } from "@/shared/shell";
-import { CliEquivalent, DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, RadioRow, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
+import { CliEquivalent, DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
 
 // Rings drifting inward toward the centre: many machines converging on one.
 // At speed 1 a ring takes about 20 seconds to move one ring inward.
@@ -33,7 +33,8 @@ float field(vec2 uv, vec2 res, float t) {
 }
 `;
 
-type Stage = "choose" | "source" | "follower";
+type Role = "source" | "follower";
+type Stage = "choose" | Role;
 
 /** A new Source, as the wizard created it. */
 export interface SourceSetup {
@@ -63,11 +64,11 @@ const DEFAULT_PORT = 17342;
 
 export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
   const [stage, setStage] = useState<Stage>("choose");
-  // The choice staggers in on the first visit only; coming back with "Change my answer" shows it at once.
-  const [introPlayed, setIntroPlayed] = useState(false);
-  const pick = (next: Stage) => {
-    setIntroPlayed(true);
-    setStage(next);
+  // The wizard left with "Change my answer", or null on the first visit, which gets the full entrance.
+  const [returnedFrom, setReturnedFrom] = useState<Role | null>(null);
+  const back = (from: Role) => {
+    setReturnedFrom(from);
+    setStage("choose");
   };
 
   return (
@@ -76,50 +77,143 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
           bottom) at the end of the scroll, while the frame still fills the viewport.
           Below md the switcher lives in the header (kit.tsx), so only normal padding remains. */}
       <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 md:pb-44 [overflow-wrap:anywhere] sm:px-6 sm:pt-16", stage === "choose" ? "justify-center" : "justify-start sm:pt-[12vh]")}>
-        {/* Drifts calmly behind the first question, then holds its frame behind
-            the wizard, where people read a form slowly. Still under reduced motion. */}
+        {/* Drifts calmly behind every screen of setup, choice and wizard alike. Still under reduced motion. */}
         <div aria-hidden className="absolute inset-0 -z-10">
           <DitherShader
             field={CONVERGE_FIELD}
             palette={["--dither-paper", "--dither-color-grey", "--dither-color-green"]}
             cell={3}
-            animate={stage === "choose"}
             fps={15}
             stillTime={6}
             className="absolute inset-0 opacity-60"
           />
           <div className="absolute inset-0 bg-[radial-gradient(ellipse_48%_52%_at_50%_48%,var(--background)_45%,transparent_100%)]" />
         </div>
-        {stage === "choose" && <Choose intro={!introPlayed} onPick={pick} />}
-        {stage === "source" && <SourceWizard onBack={() => setStage("choose")} onDone={onDone} />}
-        {stage === "follower" && <FollowerWizard onBack={() => setStage("choose")} onDone={onDone} />}
+        {/* popLayout takes the leaving screen out of flow, so the next one lays out at once and
+            the picked card's shell (CardShell) can grow straight into the wizard card's place.
+            `custom` tells the leaving choice which card was picked. */}
+        <AnimatePresence mode="popLayout" custom={stage}>
+          {stage === "choose" && <Choose key="choose" returnedFrom={returnedFrom} onPick={setStage} />}
+          {stage === "source" && <SourceWizard key="source" onBack={() => back("source")} onDone={onDone} />}
+          {stage === "follower" && <FollowerWizard key="follower" onBack={() => back("follower")} onDone={onDone} />}
+        </AnimatePresence>
       </div>
     </OnboardingShell>
   );
 }
 
-/** Entrance delay for the nth item of the first-visit stagger, 50ms apart. */
-const stagger = (intro: boolean, index: number): { className?: string; style?: CSSProperties } =>
-  intro ? { className: "rise-in", style: { animationDelay: `${index * 50}ms` } } : {};
+// The shared card's grow and shrink between choice and wizard. A spring with a little bounce
+// (0.15), so the card lands with weight; about 500ms, the longest motion in setup, which is
+// seen once.
+const CARD_MORPH = { type: "spring", bounce: 0.15, duration: 0.5 } as const;
 
-function Choose({ intro, onPick }: { intro: boolean; onPick: (stage: Stage) => void }) {
-  const heading = useFocusOnMount<HTMLHeadingElement>();
-  const lead = stagger(intro, 0);
-  const source = stagger(intro, 1);
-  const follower = stagger(intro, 2);
-  const footnote = stagger(intro, 3);
+/**
+ * A card's border and fill, as one shared element per role (layoutId): the picked choice
+ * card's shell grows into the wizard card, and shrinks back on "Change my answer". It has no
+ * children, so the morph's scale never stretches text; each side's content fades on its own
+ * above it. `layoutDependency` differs between the two sides, so the shell only re-measures
+ * across the hand-off, not on every keystroke in the wizard. The old shell hides at once
+ * (no crossfade): both look the same, and a crossfade would thin the card mid-flight.
+ * Reduced motion shares nothing: a zero-length layout transition still paints the old box
+ * for a frame, so each screen simply fades with its own shell.
+ */
+function CardShell({ role, side, shared = true, className }: { role: Role; side: "choose" | "wizard"; shared?: boolean; className?: string }) {
+  const reduced = useReducedMotion();
   return (
-    <div className="w-full max-w-[680px] pb-10 text-center">
-      <div className={lead.className} style={lead.style}>
+    <motion.span
+      aria-hidden
+      layoutId={shared && !reduced ? `card-${role}` : undefined}
+      layoutDependency={side}
+      layoutCrossfade={false}
+      transition={CARD_MORPH}
+      // Inline radius, so motion corrects it while the shell scales.
+      style={{ borderRadius: 12 }}
+      className={cn("absolute inset-0 -z-10 border border-border bg-panel", className)}
+    />
+  );
+}
+
+// Reduced motion, for the choice and the wizard alike: the screen fades in and out.
+const SCREEN_FADE = {
+  hidden: { opacity: 0 },
+  shown: { opacity: 1, transition: { duration: 0.2, ease: SNAP } },
+  exit: { opacity: 0, transition: { duration: 0.12, ease: SNAP } },
+} satisfies Variants;
+
+// The choice screen's motion, by visit. Normal motion only; reduced motion fades the screen.
+// First visit: the group arrives from 0.96 and a 4px blur in 450ms, and inside it the heading,
+// both cards and the footnote rise in 60ms apart, the cards with a slight lift from 0.98.
+// Coming back: the group is already there; everything but the returning card rises in 40ms
+// apart once the shell has mostly landed, and that card's text fades in over its shell.
+// Leaving: the heading and footnote lift away, the other card drops and fades in 200ms, and
+// the picked card's text clears in 120ms while its shell carries on into the wizard.
+const CHOOSE_SCREEN = {
+  intro: {
+    hidden: { opacity: 0, transform: "scale(0.96)", filter: "blur(4px)" },
+    shown: {
+      opacity: 1,
+      transform: "scale(1)",
+      filter: "blur(0px)",
+      transition: { duration: 0.45, ease: SNAP, delayChildren: 0.08, staggerChildren: 0.06 },
+      // No filter or transform left behind: they'd keep the whole group on its own layer.
+      transitionEnd: { filter: "none", transform: "none" },
+    },
+    exit: {},
+  },
+  return: {
+    hidden: {},
+    shown: { transition: { delayChildren: 0.12, staggerChildren: 0.04 } },
+    exit: {},
+  },
+  reduced: SCREEN_FADE,
+} satisfies Record<string, Variants>;
+
+const CHOOSE_ITEM: Variants = {
+  hidden: { opacity: 0, transform: "translateY(10px)" },
+  shown: { opacity: 1, transform: "translateY(0px)", transition: { duration: 0.4, ease: SNAP } },
+  exit: { opacity: 0, transform: "translateY(-6px)", transition: { duration: 0.15, ease: SNAP } },
+};
+
+/** The choice card's own motion (normal motion only); `returning` is the card that takes the wizard card back. */
+function choiceVariants(role: Role, returning: boolean): { card: Variants; content: Variants } {
+  return {
+    card: {
+      // The returning card stays put: its shell is mid-morph, measured against this box. Its
+      // start is spelled out: from an unset transform, motion fills the string with zeros (scale 0).
+      hidden: returning ? { transform: "translateY(0px) scale(1)" } : { opacity: 0, transform: "translateY(16px) scale(0.98)" },
+      shown: { opacity: 1, transform: "translateY(0px) scale(1)", transition: { duration: 0.45, ease: SNAP } },
+      exit: (to: Stage) => (to === role ? {} : { opacity: 0, transform: "translateY(12px) scale(0.97)", transition: { duration: 0.2, ease: SNAP } }),
+    },
+    content: {
+      hidden: returning ? { opacity: 0 } : {},
+      shown: { opacity: 1, transition: { duration: 0.25, ease: SNAP, delay: returning ? 0.2 : 0 } },
+      exit: (to: Stage) => (to === role ? { opacity: 0, transition: { duration: 0.12, ease: SNAP } } : {}),
+    },
+  };
+}
+
+// popLayout finds a leaving screen through its outermost motion element, so screens need no ref.
+function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (role: Role) => void }) {
+  const heading = useFocusOnMount<HTMLHeadingElement>();
+  const present = useIsPresent();
+  const reduced = useReducedMotion();
+  const screen = CHOOSE_SCREEN[reduced ? "reduced" : returnedFrom ? "return" : "intro"];
+  const item = reduced ? undefined : CHOOSE_ITEM;
+  return (
+    // Leaving, it sits above the wizard so the picked card's text clears over the growing shell; inert, so it can't be picked twice.
+    <motion.div inert={!present} variants={screen} initial="hidden" animate="shown" exit="exit" className={cn("w-full max-w-[680px] pb-10 text-center", !present && "z-10")}>
+      <motion.div variants={item}>
         <h1 ref={heading} tabIndex={-1} className="text-[28px] leading-tight font-semibold tracking-[-0.025em] outline-none">
           What should this machine do?
         </h1>
         <p className="mx-auto mt-3 max-w-[480px] leading-relaxed text-balance text-muted-foreground">
           Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.
         </p>
-      </div>
+      </motion.div>
       <div className="mt-9 grid grid-cols-1 gap-3 text-left sm:grid-cols-2">
         <Choice
+          role="source"
+          returning={returnedFrom === "source"}
           title="Make this the Source"
           description="For the machine where you edit your setup. Other machines copy from it, and only this one publishes changes."
           facts={[
@@ -128,71 +222,64 @@ function Choose({ intro, onPick }: { intro: boolean; onPick: (stage: Stage) => v
             </>,
             "Runs a small service other machines connect to",
           ]}
-          onClick={() => onPick("source")}
-          {...source}
+          onPick={onPick}
         />
         <Choice
+          role="follower"
+          returning={returnedFrom === "follower"}
           title="Copy the setup from another machine"
           description="For a machine that should get its setup from your Source."
           facts={["Needs an invitation file from the Source", "Gets updates on a schedule you choose", "Settings you mark as local stay as they are"]}
-          onClick={() => onPick("follower")}
-          {...follower}
+          onPick={onPick}
         />
       </div>
-      <p className={cn("mt-6 text-sm text-muted-foreground", footnote.className)} style={footnote.style}>
+      <motion.p variants={item} className="mt-6 text-sm text-muted-foreground">
         Not sure? Make the computer you use most the Source.
-      </p>
-    </div>
+      </motion.p>
+    </motion.div>
   );
 }
 
-function Choice({
-  title,
-  description,
-  facts,
-  onClick,
-  className,
-  style,
-}: {
-  title: string;
-  description: string;
-  facts: ReactNode[];
-  onClick: () => void;
-  className?: string;
-  style?: CSSProperties;
-}) {
+/**
+ * One role card. Hover lifts it 2px and brightens its border and fill, and a press sinks it
+ * to 0.98 (choice-card in index.css). Only the picked card keeps its shared shell while the
+ * choice leaves; the other drops its layoutId, so it never hands off a stale position later.
+ */
+function Choice({ role, returning, title, description, facts, onPick }: { role: Role; returning: boolean; title: string; description: string; facts: ReactNode[]; onPick: (role: Role) => void }) {
+  const reduced = useReducedMotion();
+  const present = useIsPresent();
+  const leavingTo = usePresenceData() as Stage | undefined;
+  const variants = reduced ? undefined : choiceVariants(role, returning);
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={style}
-      className={cn(
-        "group flex min-w-0 flex-col rounded-xl border border-border bg-panel p-5 text-left hover:border-border-strong hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring",
-        className,
-      )}
-    >
-      <span className="flex items-center justify-between gap-3 text-[15px] font-medium">
-        {title}
-        <ArrowRight aria-hidden className="size-4 shrink-0 text-faint group-hover:text-foreground" />
-      </span>
-      <span className="mt-1.5 leading-relaxed text-muted-foreground">{description}</span>
-      <span className="mt-4 block space-y-1.5 border-t border-border pt-4 text-sm text-muted-foreground">
-        {facts.map((fact, i) => (
-          <span key={i} className="block">
-            {fact}
+    <motion.div variants={variants?.card} className="grid">
+      <button
+        type="button"
+        onClick={() => onPick(role)}
+        className="choice-card group relative isolate flex min-w-0 flex-col rounded-xl p-5 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+      >
+        <CardShell role={role} side="choose" shared={present || leavingTo === role} className="choice-shell" />
+        <motion.span variants={variants?.content} className="flex flex-col">
+          <span className="flex items-center justify-between gap-3 text-[15px] font-medium">
+            {title}
+            <ArrowRight aria-hidden className="choice-arrow size-4 shrink-0 text-faint" />
           </span>
-        ))}
-      </span>
-    </button>
+          <span className="mt-1.5 leading-relaxed text-muted-foreground">{description}</span>
+          <span className="mt-4 block space-y-1.5 border-t border-border pt-4 text-sm text-muted-foreground">
+            {facts.map((fact, i) => (
+              <span key={i} className="block">
+                {fact}
+              </span>
+            ))}
+          </span>
+        </motion.span>
+      </button>
+    </motion.div>
   );
 }
 
 /* ------------------------------------------------------------------ */
 /* Wizard frame                                                        */
 /* ------------------------------------------------------------------ */
-
-/** --ease-snap as a WAAPI easing string. */
-const SNAP_EASING = `cubic-bezier(${SNAP.join(", ")})`;
 
 /**
  * Smooths the height change when `key` changes (a wizard step, the finished screen):
@@ -240,12 +327,22 @@ function useHeightTween<T extends HTMLElement>(key: unknown, duration: number) {
   return ref;
 }
 
+// The wizard screen. Normal motion: nothing on the screen itself as it arrives (its card
+// shell grows out of the picked choice, and its parts rise in, see Wizard); it fades out in
+// 120ms when it leaves, while the choice card's shell takes the card back. Reduced motion
+// fades it in and out.
+const WIZARD_SCREEN = {
+  normal: { hidden: {}, shown: {}, exit: SCREEN_FADE.exit },
+  reduced: SCREEN_FADE,
+} satisfies Record<string, Variants>;
+
 /**
  * One form for every step, so Enter continues from any field. A step that is
  * not complete keeps Continue enabled: submitting it calls `onBlocked`, and the
  * step then shows its errors next to the fields that need attention.
  */
 function Wizard({
+  role,
   title,
   steps,
   step,
@@ -261,6 +358,7 @@ function Wizard({
   cli,
   children,
 }: {
+  role: Role;
   title: string;
   steps: string[];
   step: number;
@@ -279,12 +377,28 @@ function Wizard({
   const heading = useFocusOnMount<HTMLHeadingElement>();
   const stepHeading = useRef<HTMLHeadingElement>(null);
   const reduced = useReducedMotion();
+  const present = useIsPresent();
+  // One LayoutGroup per wizard, so its progress mark never glides in from another wizard's stepper.
+  const group = useId();
   // Which way the last step change went: the steps slide with it.
   const [direction, setDirection] = useState<1 | -1>(1);
-  // The step content and the whole card (when it turns into the finished screen) run to their new height.
-  const card = useHeightTween<HTMLFormElement>(!!done, 300);
-  const body = useHeightTween<HTMLDivElement>(step, 200);
+  // The step content and the whole card (when it turns into the finished screen) run to their
+  // new height on the same curve as the content: STEP_MS with a step's slide, 450ms as the
+  // card settles into the finished screen.
+  const card = useHeightTween<HTMLFormElement>(!!done, 450);
+  const body = useHeightTween<HTMLDivElement>(step, STEP_MS);
   const last = step === steps.length - 1;
+
+  // Arrival from the choice: while the shell is still growing (CARD_MORPH), the wizard's parts
+  // rise in top to bottom, 35ms apart from 200ms in, so they land as the card does: the
+  // back link, the header with the stepper, the first step's items, the CLI disclosure, the
+  // footer. The header and footer carry their dividers, so no rule shows before its card.
+  useLayoutEffect(() => {
+    if (reduced) return;
+    riseIn(card.current!.parentElement!.querySelectorAll(`[data-rise], ${STEP_ITEMS}`), { delay: 200, gap: 35, duration: 320, cap: 6 });
+    // Arrival only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Commit the new step synchronously, then focus its heading: the control just used may be
   // gone (Back on the second step, or Enter in a field), and focus would fall to <body>.
@@ -309,47 +423,61 @@ function Wizard({
   };
 
   return (
-    <div className="w-full max-w-[600px] pb-12">
+    // Leaving, it sits above the choice so its content clears over the shrinking shell; inert meanwhile.
+    <motion.div
+      inert={!present}
+      variants={WIZARD_SCREEN[reduced ? "reduced" : "normal"]}
+      initial="hidden"
+      animate="shown"
+      exit="exit"
+      className={cn("w-full max-w-[600px] pb-12", !present && "z-10")}
+    >
       {/* Kept in layout (invisible, so not focusable) once done, so the card doesn't jump. */}
       <Button
         type="button"
         variant="ghost"
         onClick={onBack}
         disabled={busy}
-        className={cn("mb-4 min-h-11 text-muted-foreground sm:min-h-10", done && "invisible")}
+        data-rise
+        className={cn("mb-4 min-h-11 text-muted-foreground transition-[opacity,visibility] duration-150 ease-snap sm:min-h-10", done && "invisible opacity-0")}
       >
         <ArrowLeft className="size-3.5" /> Change my answer
       </Button>
-      <form ref={card} noValidate onSubmit={submit} className="relative isolate rounded-xl border border-border bg-panel">
+      <form ref={card} noValidate onSubmit={submit} className="relative isolate rounded-xl">
+        <CardShell role={role} side="wizard" />
         {done && (
           <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden rounded-[inherit]">
             <div className="finish-sweep absolute inset-0 opacity-40" style={SWEEP_STYLE} />
           </div>
         )}
-        {!done && (
-          <div className="border-b border-border px-4 pt-5 pb-4 sm:px-6">
-            <h1 ref={heading} tabIndex={-1} className="text-[15px] font-medium outline-none">
-              {title}
-            </h1>
-            <Stepper steps={steps} step={step} />
-          </div>
-        )}
-        <div ref={body} className="px-4 py-6 sm:px-6">
-          {done ?? (
-            <>
-              {/* Keyed, so each step's heading is a new element that screen readers announce on focus. */}
-              <h2 key={step} ref={stepHeading} tabIndex={-1} className="sr-only">
-                {steps[step]}
-              </h2>
-              <StepTransition step={step} direction={direction}>
-                {children}
-              </StepTransition>
-              <CliEquivalent lines={cli} className="mt-7" />
-            </>
+        <LayoutGroup id={group}>
+          {!done && (
+            <div data-rise className="border-b border-border px-4 pt-5 pb-4 sm:px-6">
+              <h1 ref={heading} tabIndex={-1} className="text-[15px] font-medium outline-none">
+                {title}
+              </h1>
+              <Stepper steps={steps} step={step} />
+            </div>
           )}
-        </div>
+          <div ref={body} className="px-4 py-6 sm:px-6">
+            {done ?? (
+              <>
+                {/* Keyed, so each step's heading is a new element that screen readers announce on focus. */}
+                <h2 key={step} ref={stepHeading} tabIndex={-1} className="sr-only">
+                  {steps[step]}
+                </h2>
+                <StepTransition step={step} direction={direction}>
+                  {children}
+                </StepTransition>
+                <div data-rise className="mt-7">
+                  <CliEquivalent lines={cli} />
+                </div>
+              </>
+            )}
+          </div>
+        </LayoutGroup>
         {!done && (
-          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3 sm:px-6">
+          <div data-rise className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3 sm:px-6">
             {step > 0 && (
               <Button type="button" variant="ghost" disabled={busy} onClick={() => go(step - 1)}>
                 Back
@@ -371,7 +499,7 @@ function Wizard({
           </div>
         )}
       </form>
-    </div>
+    </motion.div>
   );
 }
 
@@ -424,23 +552,26 @@ function RunList({ items, progress }: { items: string[]; progress: number }) {
 }
 
 /**
- * The end of setup. Once, on arrival: the badge grows in and its check draws, the text
- * rises in behind it, and the Wizard's green sweep crosses the card (about 800ms in all).
+ * The end of setup. Once, on arrival: the stepper's ring leaves the header and grows into
+ * the success badge (the shared PROGRESS_MARK, on CARD_MORPH) while the card settles to its
+ * new height; the check draws as the badge lands, the text rises in behind it 50ms apart,
+ * and the Wizard's green sweep crosses the card. About 800ms in all, and none of it repeats.
  */
 function Finished({ title, children, next, action, onOpen }: { title: string; children: ReactNode; next: ReactNode; action: string; onOpen: () => void }) {
   const heading = useFocusOnMount<HTMLHeadingElement>();
+  const reduced = useReducedMotion();
   return (
     <div>
-      <span aria-hidden className="pop-in grid size-8 place-items-center rounded-full bg-ok/15 text-ok">
-        <Check className="check-draw size-4" style={{ animationDelay: "150ms" }} />
-      </span>
-      <h2 ref={heading} tabIndex={-1} className="rise-in mt-4 text-[17px] font-medium tracking-[-0.01em] outline-none" style={{ animationDelay: "60ms" }}>
+      <motion.span layoutId={reduced ? undefined : PROGRESS_MARK} aria-hidden transition={CARD_MORPH} className="grid size-8 place-items-center rounded-full bg-ok/15 text-ok">
+        <Check className="check-draw size-4" style={{ animationDelay: "300ms" }} />
+      </motion.span>
+      <h2 ref={heading} tabIndex={-1} className="rise-in mt-4 text-[17px] font-medium tracking-[-0.01em] outline-none" style={{ animationDelay: "150ms" }}>
         {title}
       </h2>
-      <div className="rise-in mt-2 leading-relaxed text-muted-foreground" style={{ animationDelay: "60ms" }}>
+      <div className="rise-in mt-2 leading-relaxed text-muted-foreground" style={{ animationDelay: "200ms" }}>
         {children}
       </div>
-      <div className="rise-in mt-6 flex flex-col items-start justify-between gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:gap-6" style={{ animationDelay: "120ms" }}>
+      <div className="rise-in mt-6 flex flex-col items-start justify-between gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:gap-6" style={{ animationDelay: "250ms" }}>
         <p className="text-muted-foreground">{next}</p>
         <Button type="button" variant="default" onClick={onOpen}>
           {action}
@@ -486,6 +617,7 @@ function SourceWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: 
 
   return (
     <Wizard
+      role="source"
       title="Make atlas the Source"
       steps={["Your profile", "The service", "Create"]}
       step={step}
@@ -707,6 +839,7 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
 
   return (
     <Wizard
+      role="follower"
       title="Copy the setup from atlas"
       steps={["Invitation", "Connection", "This machine"]}
       step={step}
