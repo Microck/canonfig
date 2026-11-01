@@ -1357,7 +1357,7 @@ const ENTRIES: Entry[] = [
     name: "DetailPanel",
     group: KIT,
     file: "src/workspace/kit.tsx",
-    note: "Opens from the list above; isolate this to see it beside an empty body.",
+    note: "Opens from the list above; isolate this to see it beside an empty body. Prototype: ?panel=<n> or [ and ] switch how it opens and closes (label bottom-left).",
     render: () => <DetailPanelDemo />,
   },
   {

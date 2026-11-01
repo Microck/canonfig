@@ -1,7 +1,7 @@
 // Workspace layout components: page headers, dense rows, and detail panels.
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { AnimatePresence, motion, useReducedMotion, type Transition } from "motion/react";
+import { AnimatePresence, motion, usePresence, useReducedMotion, type Transition } from "motion/react";
 import { Check, Copy, FileText, Folder, Key, Question, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type IconComponent } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { PLAIN, profile, type ResourceKind } from "@/shared/data";
 import { useSharedState, useWorkspace } from "./store";
 import { PAGE_TIPS } from "./page-tips";
 import { followLink, holdNavigation } from "./routes";
+import { panelMotionTarget, panelStyle } from "./panel-motion";
 
 export const KIND_ICON: Record<ResourceKind, IconComponent> = {
   file: FileText,
@@ -334,10 +335,13 @@ export function GroupRow({ icon: Icon, label, count, hint, minWidth }: { icon?: 
 const PANEL_MIN = 320;
 const PANEL_MAX = 560;
 const PANEL_STEP = 16;
+/** True between a DetailPanel unmounting and the end of that commit; see DetailPanel's open effect. */
+let panelJustClosed = false;
 
 /**
- * The right-side panel that opens on row click. It slides in 8px and fades
- * (300ms, still under reduced motion). The left edge resizes it between 320 and 560px,
+ * The right-side panel that opens on row click. How it opens, swaps rows and closes comes from
+ * panel-motion.ts (a live prototype of several styles; none under reduced motion). Body's AnimatePresence
+ * keeps it mounted while it closes. The left edge resizes it between 320 and 560px,
  * by dragging or with the arrow keys once focused; Escape closes it unless a text field outside it has focus.
  * Closing it with focus inside returns focus to whatever opened it, usually the list row.
  * It opens at 380px, or 440px from a 1600px viewport so key paths and group tags fit. Under 768px
@@ -359,7 +363,34 @@ export function DetailPanel({
   const panel = useRef<HTMLElement>(null);
   const separator = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; w: number } | null>(null);
-  const reduce = useReducedMotion();
+  const [isPresent, safeToRemove] = usePresence();
+  // Open, or swap when another row's panel unmounted in this same commit (pages key the panel by row,
+  // so a row change remounts it). React runs every layout cleanup of a commit before its new layout
+  // effects, so the outgoing panel can leave a note the incoming one reads. The decision is kept in a ref
+  // because StrictMode replays this effect on the same element, after its own cleanup wrote the note.
+  const swapped = useRef<boolean | null>(null);
+  useLayoutEffect(() => {
+    swapped.current ??= panelJustClosed;
+    const style = panelStyle();
+    const anims = style ? (swapped.current ? style.swap : style.open)(panelMotionTarget(panel.current!)) : [];
+    return () => {
+      for (const a of anims) a.cancel();
+      panelJustClosed = true;
+      queueMicrotask(() => (panelJustClosed = false));
+    };
+  }, []);
+  // Close: play the style's exit, then let Body's AnimatePresence unmount the panel. Reopening during the
+  // exit brings the panel back present, and the cleanup snaps it back to rest.
+  useLayoutEffect(() => {
+    if (isPresent) return;
+    const style = panelStyle();
+    const anims = style ? style.close(panelMotionTarget(panel.current!)) : [];
+    // `finished` rejects when the cleanup cancels a reopened panel's exit; that panel stays.
+    Promise.all(anims.map((a) => a.finished)).then(() => safeToRemove?.(), () => {});
+    return () => {
+      for (const a of anims) a.cancel();
+    };
+  }, [isPresent, safeToRemove]);
   // Below md the panel is a full-screen overlay, so it acts as a modal: every sibling of the panel and
   // of each of its ancestors up to <body> goes inert, which keeps Tab, clicks and screen readers
   // inside the panel. Dialogs and toasts portalled to <body> later are new nodes and stay live.
@@ -450,11 +481,8 @@ export function DetailPanel({
     drag.current = null;
   };
   return (
-    <motion.aside
+    <aside
       ref={panel}
-      initial={reduce ? false : { opacity: 0, x: 8 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.3, ease: SNAP }}
       className="relative flex w-[380px] shrink-0 flex-col border-l border-border bg-panel min-[1600px]:w-[440px] max-md:fixed max-md:inset-0 max-md:z-40 max-md:w-full! max-md:border-l-0"
       aria-label="Details"
       onFocus={() => (focusInside.current = true)}
@@ -501,7 +529,7 @@ export function DetailPanel({
         onPointerCancel={endDrag}
         onLostPointerCapture={endDrag}
       />
-      <div className="flex h-[44px] shrink-0 items-center gap-2 border-b border-border pr-2 pl-4">
+      <div data-panel-part className="flex h-[44px] shrink-0 items-center gap-2 border-b border-border pr-2 pl-4">
         <h2 className="min-w-0 truncate text-base font-medium">{title}</h2>
         {subtitle && <div className="shrink-0 truncate text-sm text-muted-foreground">{subtitle}</div>}
         <Tooltip>
@@ -516,9 +544,15 @@ export function DetailPanel({
           </TooltipContent>
         </Tooltip>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
-      {footer && <div className="flex shrink-0 items-center gap-2 border-t border-border px-4 py-2.5">{footer}</div>}
-    </motion.aside>
+      <div data-panel-part className="min-h-0 flex-1 overflow-y-auto">
+        {children}
+      </div>
+      {footer && (
+        <div data-panel-part className="flex shrink-0 items-center gap-2 border-t border-border px-4 py-2.5">
+          {footer}
+        </div>
+      )}
+    </aside>
   );
 }
 
@@ -816,6 +850,8 @@ export function SettingRow({
  * It is a flex column so a child can `grow` into the leftover height (EmptyState anchors its dither to the
  * bottom that way); `*:shrink-0` keeps every child at its content height, as block flow did, so a tall page
  * scrolls instead of squeezing overflow-hidden children.
+ * The detail panel sits in one AnimatePresence slot with a fixed key, so it can play a closing animation
+ * when `detail` goes empty, while a row change (pages key their panel by row) stays a plain remount.
  */
 export function Body({ children, detail }: { children: ReactNode; detail?: ReactNode }) {
   return (
@@ -823,7 +859,7 @@ export function Body({ children, detail }: { children: ReactNode; detail?: React
       <div className="@container flex min-w-0 flex-1 flex-col overflow-y-auto *:shrink-0">
         {children}
       </div>
-      {detail}
+      <AnimatePresence>{detail ? <Fragment key="detail">{detail}</Fragment> : null}</AnimatePresence>
     </div>
   );
 }
