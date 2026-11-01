@@ -185,15 +185,80 @@ function placeCard(r: Rect | null, cardH: number, vw: number, vh: number) {
 }
 
 /**
+ * What a page tip must leave clear. `hard`: regions marked `data-tip-avoid`, an open DetailPanel (what
+ * the person is reading) and the page header's actions; the tip never covers them. `soft`: the controls
+ * in the page (list rows, notice actions, tabs), covered only when no spot clears them too. Measured with
+ * the target, so a resize re-measures them.
+ */
+interface Avoid {
+  hard: Rect[];
+  soft: Rect[];
+}
+
+function measureAvoid(): Avoid {
+  const rects = (els: Element[]) =>
+    els
+      .map((el) => el.getBoundingClientRect())
+      .filter((b) => b.width > 0 && b.height > 0)
+      .map((b) => ({ x: b.left, y: b.top, w: b.width, h: b.height }));
+  const controls = [...document.querySelectorAll('main :is(a[href], button, input, select, textarea, [tabindex="0"])')];
+  return {
+    hard: rects([...document.querySelectorAll("[data-tip-avoid]")]),
+    soft: rects(controls.filter((el) => !el.closest("[data-tip-avoid]"))),
+  };
+}
+
+/**
+ * A tip's card, like a popover from its trigger: below it, hanging left from its right edge, else slid
+ * sideways past a hard region or dropped below whatever is in the way, else above the trigger.
+ * Candidates nearest the trigger win; a spot clear of the page's controls beats one that only clears
+ * the hard regions. Null when no spot on screen clears the hard regions: a tip is not modal, so it
+ * must never sit on what someone is reading.
+ */
+function placeTip(r: Rect, cardH: number, vw: number, vh: number, { hard, soft }: Avoid) {
+  const clampX = (x: number) => Math.min(Math.max(12, x), vw - CARD_W - 12);
+  const below = r.y + r.h + GAP;
+  const ideal = clampX(r.x + r.w - CARD_W);
+  // Sliding sideways only helps past the block-shaped hard regions; list rows span the column, so
+  // controls only push the card down.
+  const xs = [ideal, clampX(r.x), ...hard.flatMap((a) => [clampX(a.x - 12 - CARD_W), clampX(a.x + a.w + 12)])].sort((a, b) => Math.abs(a - ideal) - Math.abs(b - ideal));
+  const fit = (avoid: Rect[]) => {
+    const tops = [below, ...avoid.map((a) => a.y + a.h + GAP).filter((y) => y > below).sort((a, b) => a - b), r.y - GAP - cardH];
+    for (const top of tops) {
+      if (top < 12 || top + cardH > vh - 12) continue;
+      const left = xs.find((x) => !avoid.some((a) => x < a.x + a.w && a.x < x + CARD_W && top < a.y + a.h && a.y < top + cardH));
+      if (left !== undefined) return { left, top };
+    }
+    return null;
+  };
+  return fit([...hard, ...soft]) ?? fit(hard);
+}
+
+/**
  * `modal` (the tour) blocks the app, blurs and dims it, and rims the target. Non-modal
  * (page tips) draws only the card beside its target, like a popover: any click outside
  * the card or Esc dismisses it and the click still lands, so a tip never stands between
- * someone and the task they opened the page for.
+ * someone and the task they opened the page for. It never covers a `data-tip-avoid` region either
+ * (see placeTip); when nothing on screen is free, `onNoRoom` lets an unrequested tip step back
+ * unseen, and without it (opened from "?") the card takes the usual spot beside its target.
  */
-export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps: TourStep[]; onClose: (finished: boolean) => void; modal?: boolean; onFocusFallback?: () => void }) {
+export function Tour({
+  steps,
+  onClose,
+  modal = true,
+  onFocusFallback,
+  onNoRoom,
+}: {
+  steps: TourStep[];
+  onClose: (finished: boolean) => void;
+  modal?: boolean;
+  onFocusFallback?: () => void;
+  onNoRoom?: () => void;
+}) {
   const titleId = useId();
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
+  const [avoid, setAvoid] = useState<Avoid>({ hard: [], soft: [] });
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
   const [cardH, setCardH] = useState(180);
   const reduce = usePrefersReducedMotion();
@@ -263,6 +328,7 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
       }
       setSearching(false);
       setRect(target);
+      setAvoid(measureAvoid());
       setMeasured(true);
     };
     raf = requestAnimationFrame(attempt);
@@ -282,12 +348,18 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
       const selectors = selectorsOf(step);
       const target = selectors ? measure(selectors) : null;
       setRect(target);
+      setAvoid(measureAvoid());
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [step]);
 
-  const visible = measured && !searching;
+  const tipPos = !modal && rect ? placeTip(rect, cardH, viewport.w, viewport.h, avoid) : undefined;
+  const noRoom = tipPos === null && onNoRoom !== undefined;
+  const visible = measured && !searching && !noRoom;
+  useEffect(() => {
+    if (noRoom) onNoRoom?.();
+  }, [noRoom, onNoRoom]);
   useLayoutEffect(() => {
     if (cardRef.current) setCardH(cardRef.current.offsetHeight);
     // A tip doesn't take focus from the page; the tour does, since it blocks everything else.
@@ -358,7 +430,7 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
     }
   };
 
-  const pos = placeCard(rect, cardH, viewport.w, viewport.h);
+  const pos = tipPos ?? placeCard(rect, cardH, viewport.w, viewport.h);
   const glide = ready && !reduce;
 
   return (

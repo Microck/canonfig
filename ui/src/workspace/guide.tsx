@@ -610,23 +610,44 @@ function RouteRow({ route }: { route: NavItem[] }) {
   );
 }
 
-/** Opens a page's tip on its first visit, once nothing else is asking for attention. */
+/**
+ * Opens a page's tip on its first visit, once nothing else is asking for attention. A tip it opened
+ * itself that finds no free spot (Tour's onNoRoom, e.g. a full-screen detail panel on a phone) is
+ * withdrawn unseen and retried only when the page or the detail panel's presence changes, so it
+ * never loops; the "?" still opens it on demand.
+ */
 export function TipHost() {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
   const tip = PAGE_TIPS[role][ws.view];
   const busy = ws.tourOpen || ws.tourPickerOpen || ws.tourOffered || ws.paletteOpen || ws.publishOpen || ws.inviteOpen || ws.changeGroups !== null;
-  const { openTip, activeTip, view } = ws;
+  const { openTip, withdrawTip, activeTip, view } = ws;
   const seen = ws.tipSeen(view);
+  const detailOpen = useDetailPanelOpen();
+  // The tip this host opened, as opposed to one asked for from "?"; cleared once it closes.
+  const [autoTip, setAutoTip] = useState<View | null>(null);
+  if (autoTip !== null && autoTip !== activeTip) setAutoTip(null);
+  const [deferred, setDeferred] = useState<{ view: View; detailOpen: boolean } | null>(null);
+  const waiting = deferred?.view === view && deferred.detailOpen === detailOpen;
 
   useEffect(() => {
-    if (!tip || busy || activeTip || seen) return;
+    if (!tip || busy || activeTip || seen || waiting) return;
     // Let the page render and the eye land before pointing at part of it.
-    const t = window.setTimeout(() => openTip(view), 700);
+    const t = window.setTimeout(() => {
+      setAutoTip(view);
+      openTip(view);
+    }, 700);
     return () => window.clearTimeout(t);
-  }, [tip, busy, activeTip, view, seen, openTip]);
+  }, [tip, busy, activeTip, view, seen, waiting, openTip]);
 
   const active = activeTip ? PAGE_TIPS[role][activeTip] : undefined;
   if (!active || ws.tourOpen) return null;
-  return <Tour key={activeTip} steps={[active]} onClose={ws.closeTip} modal={false} />;
+  const onNoRoom =
+    autoTip === activeTip
+      ? () => {
+          setDeferred({ view, detailOpen });
+          withdrawTip();
+        }
+      : undefined;
+  return <Tour key={activeTip} steps={[active]} onClose={ws.closeTip} modal={false} onNoRoom={onNoRoom} />;
 }

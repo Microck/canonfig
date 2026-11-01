@@ -1,7 +1,8 @@
 // First-visit tips: one card per page that has something non-obvious to
 // learn, shown the first time the page opens and again from its "?" button.
-// Every tip opens at that "?" (`page-help` in kit PageHeader), usually below it,
-// like a popover from its trigger, which also shows where to find it again.
+// Every tip targets that "?" (`page-help` in kit PageHeader) and opens below it,
+// like a popover from its trigger, as far down or across as it must go to keep
+// clear of open details, header actions and the page's controls (tour.tsx placeTip).
 // Pages that follow common conventions (lists, settings forms) get none, so
 // the tips stay rare enough to be read.
 import type { TourStep } from "@/tour/tour";

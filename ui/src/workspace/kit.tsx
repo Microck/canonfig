@@ -177,8 +177,9 @@ export function PageHeader({ crumbs, actions }: { crumbs: ReactNode[]; actions?:
           <TooltipContent>How this page works</TooltipContent>
         </Tooltip>
       )}
-      {/* empty:hidden: an action like PublishButton may render nothing, which must not leave a blank row. */}
-      {actions && <div className="flex max-w-full min-w-0 flex-wrap items-center justify-end gap-1.5 empty:hidden max-md:basis-full">{actions}</div>}
+      {/* empty:hidden: an action like PublishButton may render nothing, which must not leave a blank row.
+          data-tip-avoid: the page tip opening from "?" must never cover these (tour.tsx placeTip). */}
+      {actions && <div data-tip-avoid className="flex max-w-full min-w-0 flex-wrap items-center justify-end gap-1.5 empty:hidden max-md:basis-full">{actions}</div>}
     </header>
   );
 }
@@ -516,8 +517,10 @@ export function DetailPanel({
     drag.current = null;
   };
   return (
+    // data-tip-avoid: a page tip never covers the details someone is reading (tour.tsx placeTip).
     <aside
       ref={panel}
+      data-tip-avoid
       className="relative flex w-[380px] shrink-0 flex-col border-l border-border bg-panel min-[1600px]:w-[440px] max-md:fixed max-md:inset-0 max-md:z-40 max-md:w-full! max-md:border-l-0"
       aria-label="Details"
       onFocus={() => (focusInside.current = true)}

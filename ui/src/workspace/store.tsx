@@ -274,6 +274,8 @@ export interface Workspace {
   activeTip: View | null;
   openTip: (view: View) => void;
   closeTip: () => void;
+  /** Takes down a tip that found no free spot without marking it seen, so its first visit can still show it. */
+  withdrawTip: () => void;
   tipSeen: (view: View) => boolean;
   getStartedHidden: boolean;
   setGetStartedHidden: (hidden: boolean) => void;
@@ -408,6 +410,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     }
     setActiveTip(null);
   };
+  const withdrawTip = () => setActiveTip(null);
   // A tip explains one page. When the route moves on, including browser Back/Forward, which
   // bypass closeTip, leaving counts as closing it, so the next page never shows the old text.
   // Adjusted during render rather than in an effect so the stale tip never paints; marking it
@@ -644,6 +647,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     activeTip,
     openTip,
     closeTip,
+    withdrawTip,
     tipSeen,
     getStartedHidden,
     setGetStartedHidden,
