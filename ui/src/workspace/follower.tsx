@@ -9,7 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AnimatedNumber, DitherProgress, Hint, Mono, StateBand, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
+import { AnimatedNumber, DitherProgress, Mono, StateBand, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import { PLAIN, POLICY_TITLE, SECRETS_GROUP, configKeysFor, machine, resources, secrets as seedSecrets } from "@/shared/data";
 import { shq } from "@/shared/shell";
 import { FOLLOWER_PLAN, JOINED_PLAN, LOCAL_VALUES, conflictsIn, useSharedReader, useSharedState, useWorkspace, type Overlay, type PlanAction, type PlanItem } from "./store";
@@ -27,7 +27,6 @@ import {
   ListHead,
   ListRow,
   PageHeader,
-  Prop,
   RowPresence,
   SectionLabel,
   SettingRow,
@@ -36,7 +35,7 @@ import {
   settingsGroup,
   useLeaveGuard,
 } from "./kit";
-import { ConfirmDialog } from "./settings";
+import { Column, ConfirmDialog, Lede } from "./settings";
 import { ScheduleFields, nextCheck, scheduleArg, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 
 /** "decide" is never stored: Sync derives it from the plan and the kept keys (see `useSteps`). */
@@ -836,13 +835,13 @@ export function ScheduleView() {
         }
       />
       <Body>
-        <div className="max-w-[880px] px-4 pt-6 pb-20 sm:px-8">
-          <p className="mb-6 max-w-[70ch] text-base text-pretty text-muted-foreground">
+        <Column>
+          <Lede>
             On this <Term term="Synchronization Schedule">schedule</Term>, the system's scheduler checks for a new revision and applies it. You can still update by hand from Sync.
             {stopped
               ? ` ${stopped} Its schedule was removed.`
               : saved === null && " No schedule is set yet, so this machine only updates when you apply from Sync. Save one to turn it on."}
-          </p>
+          </Lede>
           <ScheduleFields idPrefix="sch" value={draft} onChange={setDraft} defaultLabel={defaultLabel} />
           <div data-tour="schedule-next" className={cn("mt-8", settingsGroup)}>
             {/* Only a saved schedule has a real next check; an edited or never-saved one is a preview. */}
@@ -858,7 +857,7 @@ export function ScheduleView() {
               <Cli>{`canonfig schedule set ${scheduleArg(draft)}`}</Cli>
             </div>
           )}
-        </div>
+        </Column>
       </Body>
       {leaveDialog}
     </>
@@ -884,7 +883,8 @@ export function OverlaysView() {
       <PageHeader
         crumbs={[PLAIN.localNav]}
         actions={
-          <Button size="sm" variant="primary" onClick={startAdding} data-tour="overlays-add">
+          // One gold action per view: while the editor is open its Save is the commit, so this steps down, like Profile's Add item.
+          <Button size="sm" variant={adding || current ? "outline" : "primary"} onClick={startAdding} data-tour="overlays-add">
             Keep a key on this machine
           </Button>
         }
@@ -1019,18 +1019,28 @@ function OverlayEditor({
               Stop keeping all…
             </Button>
           )}
-          <Button
-            variant="secondary"
-            size="sm"
-            className="ml-auto"
-            disabled={!isNew && !dirty}
-            onClick={() => {
-              setTried(true);
-              if (o.keys.length > 0) leaveWithoutAsking(() => onSave(result));
-            }}
-          >
-            {isNew ? "Keep on this machine" : "Save"}
-          </Button>
+          {/* Same footer as Profile's item editor: Cancel or Discard beside the one gold commit. */}
+          <div className="ml-auto flex items-center gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!isNew && !dirty && typedKey === ""}
+              onClick={isNew ? () => leaveWithoutAsking(onClose) : () => (setO(existing ?? initial), setNewKey(""), setTried(false))}
+            >
+              {isNew ? "Cancel" : "Discard"}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!isNew && !dirty}
+              onClick={() => {
+                setTried(true);
+                if (o.keys.length > 0) leaveWithoutAsking(() => onSave(result));
+              }}
+            >
+              {isNew ? "Keep on this machine" : "Save"}
+            </Button>
+          </div>
         </>
       }
     >
@@ -1208,11 +1218,9 @@ export function TunnelView() {
       setUp(next);
       if (next) setStartedHere(true);
       setBusy(false);
-      toast(next ? "Tunnel started" : "Tunnel stopped", {
-        description: next
-          ? `In this demo workspace: forwarding 127.0.0.1:17342 to ${SOURCE}.`
-          : "Applying changes, checking for updates and updating secrets wait until you start it again.",
-      });
+      // Like the Source service: a completed start is a success; stopping is neutral, as removals are.
+      if (next) toast.success("Tunnel started", { description: `In this demo workspace: forwarding 127.0.0.1:17342 to ${SOURCE}.` });
+      else toast("Tunnel stopped", { description: "Applying changes, checking for updates and updating secrets wait until you start it again." });
     }, 700);
   };
   if (!ws.tunnelConfigured) {
@@ -1236,34 +1244,28 @@ export function TunnelView() {
         }
       />
       <Body>
-        <div className="max-w-[880px] px-4 pt-6 pb-20 sm:px-8">
-          <p className="mb-6 max-w-[70ch] text-base text-pretty text-muted-foreground">
+        <Column>
+          <Lede>
             This machine reaches the <Term term="Source Machine">Source</Term> through an SSH tunnel: it connects to 127.0.0.1 here, and the tunnel carries that to {SOURCE}. So the
             source service never has to listen on the network.
-          </p>
+          </Lede>
           <SectionLabel>Status</SectionLabel>
-          <div data-tour="tunnel-status" className="border-t border-border py-2">
-            <Prop label="State">
-              <span className="inline-flex items-center gap-1.5">
-                <StatusMark kind={up ? "ok" : "offline"} />{" "}
+          <div data-tour="tunnel-status" className={cn("mt-1", settingsGroup)}>
+            <SettingRow title="State">
+              <span className="inline-flex items-center gap-1.5 text-base">
+                <StatusMark kind={up ? "ok" : "offline"} />
                 {up ? (startedHere || ws.justJoined ? "Connected just now" : "Connected for 3 h 12 min") : "Stopped"}
               </span>
-            </Prop>
-            <Prop label="Host">marcos@atlas.local</Prop>
-            <Prop label="Forwarding">
+            </SettingRow>
+            <SettingRow title="Host">marcos@atlas.local</SettingRow>
+            <SettingRow title="Forwarding">
               <Mono className="text-foreground">127.0.0.1:17342 → atlas:17342</Mono>
-            </Prop>
-            <Prop
-              label={
-                <span className="inline-flex items-center gap-1">
-                  Host key <Hint label="Host key">Pinned when this machine joined. The tunnel refuses to connect if atlas presents a different key.</Hint>
-                </span>
-              }
-            >
-              <Mono>SHA256:mG3k…Q9a</Mono>
-            </Prop>
+            </SettingRow>
+            <SettingRow title="Host key" description="Pinned when this machine joined. The tunnel refuses to connect if atlas presents a different key.">
+              <Mono className="text-foreground">SHA256:mG3k…Q9a</Mono>
+            </SettingRow>
           </div>
-        </div>
+        </Column>
       </Body>
     </>
   );
@@ -1309,26 +1311,21 @@ export function MachineView() {
     <>
       <PageHeader crumbs={["Settings", "Enrollment"]} />
       <Body>
-        <div className="max-w-[880px] px-4 pt-6 pb-20 sm:px-8">
+        <Column>
           <SectionLabel>How it joined</SectionLabel>
-          <div className="border-t border-border py-2">
-            <Prop label="Name">{ws.machineName}</Prop>
-            <Prop label="Source">
+          <div className={cn("mt-1", settingsGroup)}>
+            <SettingRow title="Name">{ws.machineName}</SettingRow>
+            <SettingRow title="Source">
               {SOURCE}
               {ws.tunnelConfigured ? " (via SSH tunnel)" : ""}
-            </Prop>
-            <Prop label="Identity">
-              {ws.unenrolled ? "Deleted" : <Mono className="text-foreground">f_8c21</Mono>}
-            </Prop>
-            <Prop
-              label={
-                <span className="inline-flex items-center gap-1">
-                  {PLAIN.groups} <Hint label={PLAIN.groups}>Groups come from the invitation. To change them, {SOURCE} makes a new invitation and this machine joins again with it.</Hint>
-                </span>
-              }
-            >
-              {PLAIN.secretsGroup} <Mono>{SECRETS_GROUP}</Mono>
-            </Prop>
+            </SettingRow>
+            <SettingRow title="Identity">{ws.unenrolled ? "Deleted" : <Mono className="text-foreground">f_8c21</Mono>}</SettingRow>
+            <SettingRow title={PLAIN.groups} description={`Groups come from the invitation. To change them, ${SOURCE} makes a new invitation and this machine joins again with it.`}>
+              {/* Name over id keeps the value narrow, so the description keeps its width on a phone. */}
+              <span className="grid justify-items-end">
+                {PLAIN.secretsGroup} <Mono>{SECRETS_GROUP}</Mono>
+              </span>
+            </SettingRow>
           </div>
 
           <SectionLabel className="mt-6">Profile</SectionLabel>
@@ -1351,7 +1348,8 @@ export function MachineView() {
                     ))}
                   </SelectContent>
                 </Select>
-                <Button variant="secondary" size="sm" disabled={prof === selectedId || ws.phase === "running" || stopped !== null} onClick={switchProfile}>
+                {/* The view's one commit, so it takes the gold primary like Save schedule and Save policy. */}
+                <Button variant="primary" size="sm" disabled={prof === selectedId || ws.phase === "running" || stopped !== null} onClick={switchProfile}>
                   Switch profile
                 </Button>
               </div>
@@ -1368,7 +1366,7 @@ export function MachineView() {
               {ws.unenrolled ? "Stopped" : `${PLAIN.unenroll}…`}
             </Button>
           </div>
-        </div>
+        </Column>
       </Body>
       {leaveDialog}
     </>

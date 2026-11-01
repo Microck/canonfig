@@ -35,12 +35,12 @@ export function warningName(d: { check: string; detail: string }) {
   return `${effect.charAt(0).toUpperCase()}${effect.slice(1)} (${d.check.toLowerCase()} ${state.toLowerCase()})`;
 }
 
-/** Settings share an 880px outer cap; list columns keep their own readable caps. */
-function Column({ children }: { children: React.ReactNode }) {
+/** Settings share an 880px outer cap; list columns keep their own readable caps. Follower forms (follower.tsx) use it too. */
+export function Column({ children }: { children: React.ReactNode }) {
   return <div className="max-w-[880px] px-4 pt-6 pb-20 sm:px-8">{children}</div>;
 }
 
-function Lede({ children }: { children: React.ReactNode }) {
+export function Lede({ children }: { children: React.ReactNode }) {
   return <p className="mb-6 max-w-[70ch] text-base text-pretty text-muted-foreground">{children}</p>;
 }
 
