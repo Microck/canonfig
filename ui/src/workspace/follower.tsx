@@ -1,7 +1,7 @@
 // Follower screens use simulated sync plans, schedules, local settings, secrets, tunnels, and enrollment.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
-import { ArrowRight, Check, Circle, DotsThree, HourglassMedium, Pause, Plus, WarningCircle, X } from "@/components/icons";
+import { ArrowRight, Check, DotsThree, HourglassMedium, Key, Plus, WarningCircle, X } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -9,7 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AnimatedNumber, DitherProgress, Hint, Mono, StateBand, StateLabel, StatusMark, Term } from "@/shared/shared";
+import { AnimatedNumber, DitherProgress, Hint, Mono, StateBand, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import { PLAIN, POLICY_TITLE, SECRETS_GROUP, configKeysFor, machine, resources, secrets as seedSecrets } from "@/shared/data";
 import { shq } from "@/shared/shell";
 import { FOLLOWER_PLAN, JOINED_PLAN, LOCAL_VALUES, conflictsIn, useSharedReader, useSharedState, useWorkspace, type Overlay, type PlanAction, type PlanItem } from "./store";
@@ -495,12 +495,16 @@ const DIFF = [
   { t: " ", s: "- Keep comments short." },
 ];
 
+/** A plan step's progress in the app's status-marker language: ring, half while it runs, check when done. */
 function StepIcon({ step }: { step: Step }) {
-  // A paused step is skipped by the run, so it never shows as done.
-  if (isPaused(step)) return <Pause className="size-3.5 text-act" aria-label="Paused" />;
-  if (step.status === "done") return <Check className="size-3.5 text-ok" aria-label="Done" />;
-  if (step.status === "running") return <HourglassMedium className="size-3.5 text-muted-foreground" aria-label="Running" />;
-  return <Circle className="size-3 text-faint" aria-label="Not started" />;
+  // A paused step is skipped by the run, so it never shows as done; it waits for a person like other "needs you" states.
+  const [kind, label]: [StatusKind, string] = isPaused(step) ? ["act", "Paused"] : step.status === "done" ? ["ok", "Done"] : step.status === "running" ? ["warn", "Running"] : ["off", "Not started"];
+  return (
+    <span className="flex items-center">
+      <StatusMark kind={kind} />
+      <span className="sr-only">{label}</span>
+    </span>
+  );
 }
 
 // Match DetailPanel's md breakpoint: only the side-by-side layout gets a default selection.
@@ -531,6 +535,8 @@ export function SyncView() {
   const [checking, setChecking] = useSharedState(CHECKING_KEY, false);
   const blocks = useSyncBlocks();
   const cols = "18px 92px minmax(150px,240px) minmax(200px,360px) minmax(220px,1fr)";
+  // Column minimums + 4 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
+  const colsMin = 18 + 92 + 150 + 200 + 220 + 4 * 12 + 20;
   const current = steps.find((p) => p.resource === selected);
   const unchanged = selectedProfile.sends.length - steps.length;
   const running = ws.phase === "running";
@@ -545,7 +551,7 @@ export function SyncView() {
           <>
             <Button
               data-tour="sync-check"
-              variant="ghost"
+              variant="outline"
               size="sm"
               disabled={running || checking || blocks.connection !== null}
               onClick={() => {
@@ -631,7 +637,7 @@ export function SyncView() {
             <HumanActionItem />
           </div>
         )}
-        <ListHead cols={cols} data-tour="sync-plan">
+        <ListHead cols={cols} minWidth={colsMin} data-tour="sync-plan">
           <span />
           <span>Change</span>
           <span>Item</span>
@@ -641,7 +647,7 @@ export function SyncView() {
         {steps.map((p) => {
           const Icon = KIND_ICON[p.kind];
           return (
-            <ListRow key={p.resource} cols={cols} selected={selected === p.resource} onClick={() => setSelected(p.resource)} data-tour={isPaused(p) ? "sync-paused" : "sync-plan"}>
+            <ListRow key={p.resource} cols={cols} minWidth={colsMin} selected={selected === p.resource} onClick={() => setSelected(p.resource)} data-tour={isPaused(p) ? "sync-paused" : "sync-plan"}>
               <StepIcon step={p} />
               <span className="flex items-center gap-1">
                 <ActionTag action={p.action} />
@@ -867,6 +873,7 @@ export function OverlaysView() {
   const selected = ws.focus;
   const setSelected = (id: string | null) => ws.go("overlays", id ?? undefined);
   const cols = "minmax(160px,240px) minmax(180px,360px) minmax(160px,1fr)";
+  const colsMin = 160 + 180 + 160 + 2 * 12 + 20;
   const current = ws.overlays.find((o) => o.resource === selected);
   const startResource = CONFIGS.find((r) => !ws.overlays.some((x) => x.resource === r.id)) ?? CONFIGS[0];
   const adding = selected === "new";
@@ -923,7 +930,7 @@ export function OverlaysView() {
           />
         ) : (
           <>
-            <ListHead cols={cols} data-tour="overlays-list">
+            <ListHead cols={cols} minWidth={colsMin} data-tour="overlays-list">
               <span>Item</span>
               <span>File</span>
               <span>Keys kept here</span>
@@ -931,7 +938,7 @@ export function OverlaysView() {
             <RowPresence>
               {ws.overlays.map((o) => (
                 <AnimatedRow key={o.resource}>
-                  <ListRow cols={cols} selected={selected === o.resource && !adding} onClick={() => setSelected(o.resource)} data-tour="overlays-list">
+                  <ListRow cols={cols} minWidth={colsMin} selected={selected === o.resource && !adding} onClick={() => setSelected(o.resource)} data-tour="overlays-list">
                     <span className="truncate font-medium">{o.resource}</span>
                     <Mono className="truncate">{o.target}</Mono>
                     <Mono className="truncate text-foreground">{o.keys.join(", ")}</Mono>
@@ -1132,6 +1139,7 @@ export function FollowerSecretsView() {
   const [refresh, setRefresh] = useSharedState(SECRETS_KEY, SECRETS_INITIAL);
   const { connection, unreachable } = useSyncBlocks();
   const cols = "minmax(180px,240px) minmax(140px,1fr)";
+  const colsMin = 180 + 140 + 12 + 20;
   return (
     <>
       <PageHeader
@@ -1162,16 +1170,23 @@ export function FollowerSecretsView() {
       />
       <Body>
         <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          This machine <span className="lowercase">{PLAIN.secretsGroup}</span> (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from atlas
+          This machine{" "}
+          <Term term="Follower Group">
+            <span className="lowercase">{PLAIN.secretsGroup}</span>
+          </Term>{" "}
+          (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from atlas
           into the macOS Keychain. Last updated {refresh.updated}.{connection && ` ${connection}`}
         </p>
-        <ListHead cols={cols} data-tour="secrets-list">
+        <ListHead cols={cols} minWidth={colsMin} data-tour="secrets-list">
           <span>Name</span>
           <span>Updated on atlas</span>
         </ListHead>
         {seedSecrets.map((s) => (
-          <ListRow key={s.name} cols={cols} data-tour="secrets-list">
-            <span className="truncate font-mono text-sm">{s.name}</span>
+          <ListRow key={s.name} cols={cols} minWidth={colsMin} data-tour="secrets-list">
+            <span className="flex min-w-0 items-center gap-2">
+              <Key className="size-3.5 shrink-0 text-faint" />
+              <span className="truncate font-mono text-sm">{s.name}</span>
+            </span>
             <span className="text-sm text-muted-foreground tabular-nums">{s.updated}</span>
           </ListRow>
         ))}

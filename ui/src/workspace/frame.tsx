@@ -144,7 +144,8 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
       : {
           // A stopped machine cannot apply, so it must not advertise a ready revision.
           sync: ws.phase !== "done" && !ws.unenrolled ? <Count tone="warn" value={1} label={`Revision ${ws.targetRevision} ready to apply`} /> : undefined,
-          overlays: <Count value={ws.overlays.length} label={`${ws.overlays.length} files with keys kept here`} />,
+          // Like the Source's counts, a badge only appears when there is something to count.
+          overlays: ws.overlays.length > 0 ? <Count value={ws.overlays.length} label={`${ws.overlays.length} files with keys kept here`} /> : undefined,
         };
 
   return (
