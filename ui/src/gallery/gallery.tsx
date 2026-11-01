@@ -135,6 +135,15 @@ function Ws({ role = "source", view = "overview", children }: { role?: "source" 
 const STATES = ["converged", "drift", "human-action", "failed", "offline", "never-synced", "excluded"] as const satisfies readonly (FollowerState | "excluded")[];
 const STATUS_KINDS: StatusKind[] = ["ok", "warn", "act", "bad", "offline", "off"];
 const TONES = ["ok", "warn", "act", "bad", "muted", "purple"] as const;
+// Every StateBand motion character; running replaces the tone's own motion, so one running band covers it.
+const STATE_BANDS = [
+  { tone: "ok", mode: "idle", motion: "drift" },
+  { tone: "warn", mode: "idle", motion: "breath" },
+  { tone: "act", mode: "idle", motion: "flow right" },
+  { tone: "bad", mode: "idle", motion: "flicker" },
+  { tone: "muted", mode: "idle", motion: "near still" },
+  { tone: "ok", mode: "running", motion: "sweep" },
+] as const;
 const FOCUS_LOOK = "border-ring ring-2 ring-ring/60";
 
 /* ------------------------------------------------------------------------------------------------
@@ -1174,19 +1183,17 @@ const ENTRIES: Entry[] = [
     name: "StateBand",
     group: SHARED,
     file: "src/shared/shared.tsx",
-    note: "One WebGL context each; the page budget is 8 live contexts, so off-screen bands may show their still fallback.",
+    note: "Each state moves in its own way: ok drifts, warn breathes, act flows right, bad flickers irregularly, muted barely moves, running sweeps. Reduced motion holds one still frame per state. One WebGL context each; the page budget is 8 live contexts, so off-screen bands may show their still fallback.",
     render: () => (
-      <div className="grid grid-cols-3 gap-3">
-        {(["ok", "warn", "act", "bad", "muted"] as const).map((tone) => (
-          <div key={tone} className="relative h-28 overflow-hidden rounded-lg border border-border">
-            <StateBand tone={tone} />
-            <span className="relative p-3 font-mono text-xs">{tone} idle</span>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {STATE_BANDS.map(({ tone, mode, motion }) => (
+          <div key={`${tone}-${mode}`} className="relative h-28 overflow-hidden rounded-lg border border-border">
+            <StateBand tone={tone} mode={mode} />
+            <span className="relative block p-3 font-mono text-xs">
+              {tone} {mode} <span className="text-muted-foreground">{motion}</span>
+            </span>
           </div>
         ))}
-        <div className="relative h-28 overflow-hidden rounded-lg border border-border">
-          <StateBand tone="ok" mode="running" />
-          <span className="relative p-3 font-mono text-xs">ok running</span>
-        </div>
       </div>
     ),
   },

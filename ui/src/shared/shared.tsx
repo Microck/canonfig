@@ -248,30 +248,75 @@ export function DitherProgress({
   );
 }
 
-// Soft contour bands rising from the bottom edge, drifting only while running.
-// `energy` (0 idle, 1 running) lifts and brightens the bands without a new shader.
+// Soft contour bands rising from the bottom edge. One shader serves every state:
+// each state sets one motion weight (see BAND_MOTION) and the other terms vanish,
+// so a change of state only swaps uniforms and never rebuilds the WebGL context.
+// Rates below are in field seconds, which `speed` scales into real time.
 const HORIZON_FIELD = /* glsl */ `
 float field(vec2 uv, vec2 res, float t) {
-  vec2 p = uv * vec2(res.x / res.y, 1.0);
+  float aspect = res.x / res.y;
+  vec2 p = uv * vec2(aspect, 1.0);
+  // Every state: two waves slide past each other on the horizon.
   float wave = 0.06 * sin(p.x * 3.0 + t * 0.35) + 0.04 * sin(p.x * 7.0 - t * 0.2);
-  float body = smoothstep(0.85 + 0.15 * energy, 0.0, uv.y + wave);
+  // bad: noise unsettles the horizon, so it never falls into a rhythm.
+  wave += flicker * 0.06 * snoise(vec2(p.x * 1.2, t * 0.7));
+  // warn: the band rises, brightens and settles on one slow breath.
+  float breathe = breath * sin(t * 2.5);
+  float body = smoothstep(0.85 + 0.1 * breathe + 0.15 * sweep, 0.0, uv.y + wave);
+  float level = 0.9 + 0.12 * breathe;
+  // Texture: a fine diagonal grain, swapped for chevrons marching right
+  // (act: toward the action) or rings spreading from the right edge (bad).
   float grain = 0.5 + 0.5 * sin(p.x * 18.0 + p.y * 9.0 + t * 0.15);
-  return clamp(body * (0.75 + 0.25 * grain) * (0.9 + 0.3 * energy), 0.0, 1.0);
+  float chevron = smoothstep(0.3, 0.7, 0.5 + 0.5 * sin((p.x + abs(uv.y - 0.4) * 0.8) * 8.0 - t * 3.0));
+  float ripple = 0.5 + 0.5 * sin(length(p - vec2(aspect * 0.85, 0.0)) * 14.0 - t * 2.0);
+  grain = mix(grain, chevron, flow);
+  grain = mix(grain, ripple, 0.6 * flicker);
+  // bad: patches dim and recover on smooth noise, about once a second at
+  // speed 0.6: irregular, but far below the 3 flashes a second of WCAG 2.3.1.
+  level *= 1.0 + flicker * 0.3 * snoise(vec2(p.x * 0.7 + 3.1, t * 0.9));
+  // running: a lit front sweeps left to right, leaving a fading trail.
+  float behind = fract(t * 0.25) * 2.0 - 0.25 - uv.x;
+  float trail = behind > 0.0 ? exp(-behind * 5.0) : exp(behind * 30.0);
+  level += sweep * (0.1 + 0.5 * trail);
+  // The grain only shades the body; act and bad cut deeper so their texture reads
+  // as motion, and act's level rises to make up for the ink its gaps remove.
+  float depth = 0.25 + 0.35 * flow + 0.15 * flicker;
+  return clamp(body * (1.0 - depth + depth * grain) * (level + 0.15 * flow), 0.0, 1.0);
 }
 `;
 
-const BAND = {
-  idle: { speed: 0.6, uniforms: { energy: 0 } },
-  running: { speed: 2.4, uniforms: { energy: 1 } },
-} as const;
+const CALM = { breath: 0, flow: 0, flicker: 0, sweep: 0 } as const;
 
 /**
- * A dithered band behind a machine-state header. `idle` moves gently;
- * `running` (a publish or sync in progress) speeds up and brightens the same shader.
- * Reduced motion shows one still frame. One WebGL context.
+ * Each state's motion character, all slow while idle. `stillTime` is the
+ * frame reduced motion shows, chosen so the frozen frame still reads as that state.
+ * `fps` never exceeds 20; muted barely moves, so 10 is enough.
  */
-export function StateBand({ tone = "ok", mode = "idle", className }: { tone?: keyof typeof TONE_DITHER; mode?: "idle" | "running"; className?: string }) {
-  const band = BAND[mode];
+const BAND_MOTION = {
+  // Calm drift: the plain horizon.
+  ok: { speed: 0.6, fps: 20, stillTime: 4, uniforms: CALM },
+  // A breath every 5s (2.5 rad per field second at speed 0.5).
+  warn: { speed: 0.5, fps: 20, stillTime: 0.63, uniforms: { ...CALM, breath: 1 } },
+  // Chevrons flowing right at about a fifth of the band's height a second.
+  act: { speed: 0.6, fps: 20, stillTime: 4, uniforms: { ...CALM, flow: 1 } },
+  // Irregular dimming and a slow ripple.
+  bad: { speed: 0.6, fps: 20, stillTime: 4, uniforms: { ...CALM, flicker: 1 } },
+  // Nearly still.
+  muted: { speed: 0.15, fps: 10, stillTime: 4, uniforms: CALM },
+} as const;
+
+// A publish or sync in progress, in any tone: a sweep every 2.5s (0.25 cycles
+// per field second at speed 1.6). The front runs on to 175% so its trail has
+// faded before it wraps. The still frame holds the front at 75%.
+const BAND_RUNNING = { speed: 1.6, fps: 20, stillTime: 2, uniforms: { ...CALM, sweep: 1 } } as const;
+
+/**
+ * A dithered band behind a machine-state header. Each tone moves in its own
+ * way while `idle` (see BAND_MOTION); `running` replaces that with a sweep.
+ * Reduced motion shows one still frame per state. One WebGL context.
+ */
+export function StateBand({ tone = "ok", mode = "idle", className }: { tone?: keyof typeof BAND_MOTION; mode?: "idle" | "running"; className?: string }) {
+  const band = mode === "running" ? BAND_RUNNING : BAND_MOTION[tone];
   return (
     <div className={cn("pointer-events-none absolute inset-0 overflow-hidden", className)} aria-hidden>
       <DitherShader
@@ -279,8 +324,8 @@ export function StateBand({ tone = "ok", mode = "idle", className }: { tone?: ke
         uniforms={band.uniforms}
         palette={["--dither-paper", TONE_DITHER[tone]]}
         speed={band.speed}
-        fps={20}
-        stillTime={4}
+        fps={band.fps}
+        stillTime={band.stillTime}
         cell={2}
         className="absolute inset-0 opacity-70"
       />
