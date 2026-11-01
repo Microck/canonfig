@@ -95,8 +95,12 @@ export function getStartedItems(ws: Workspace): GetStartedItem[] {
   ];
 }
 
-/** Embedded on Overview. Hidden for good with its X; ⌘K brings it back. */
-export function GetStarted() {
+/**
+ * Embedded as the first block of Overview's main column, so it shares that column's edges. Hidden for good with its X; ⌘K brings it back.
+ * `rowInset` is the horizontal padding of that Overview's own rows (Source rows are 4px-inset buttons, Follower rows sit flush):
+ * the step rows hang their 8px-padded fill outside the column by the difference, so marks and buttons line up with those rows.
+ */
+export function GetStarted({ rowInset }: { rowInset: 0 | 4 }) {
   const ws = useWorkspace();
   if (ws.getStartedHidden) return null;
   const items = getStartedItems(ws);
@@ -115,7 +119,7 @@ export function GetStarted() {
   // Finished: one quiet line instead of a list of crossed-out steps.
   if (!next)
     return (
-      <section data-tour="get-started" aria-label="Get started" className="flex items-center gap-3 border-b border-border px-8 py-3">
+      <section data-tour="get-started" aria-label="Get started" className="flex items-center gap-3">
         <span aria-hidden className="grid size-5 place-items-center rounded-full bg-ok/15 text-ok">
           <Check className="size-3" />
         </span>
@@ -127,9 +131,9 @@ export function GetStarted() {
     );
 
   return (
-    <section data-tour="get-started" aria-labelledby="get-started-title" className="border-b border-border px-8 pt-5 pb-6">
-      {/* Capped to keep actions nearby; narrow headers put progress below the title, clear of dismiss. */}
-      <div className="grid max-w-[880px] grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1 sm:flex sm:gap-3">
+    <section data-tour="get-started" aria-labelledby="get-started-title">
+      {/* Narrow headers put progress below the title, clear of dismiss. */}
+      <div className="grid grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1 sm:flex sm:gap-3">
         <h2 id="get-started-title" className="whitespace-nowrap text-base font-medium">
           Get started
         </h2>
@@ -147,7 +151,7 @@ export function GetStarted() {
           <X />
         </Button>
       </div>
-      <ol className="mt-3 grid max-w-[880px] gap-px">
+      <ol className="mt-3 grid gap-px" style={{ marginInline: rowInset - 8 }}>
         {items.map((item, i) => (
           <li key={item.id} className={cn("flex min-h-10 items-center gap-3 rounded-md px-2 py-1.5", item === next && "bg-raised/60")}>
             <span

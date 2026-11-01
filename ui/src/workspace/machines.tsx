@@ -266,13 +266,13 @@ function Invitations() {
       {ws.invitations.length > 0 && (
         <AnimatedRow key="invitations" className="shrink-0">
           <section className="border-t border-border pt-3">
-            <div className="px-4">
+            <div className="px-[18px]">
               <SectionLabel>Invitations waiting to be used</SectionLabel>
             </div>
             <RowPresence>
               {ws.invitations.map((inv) => (
                 <AnimatedRow key={inv.id}>
-                  <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-2 sm:grid-cols-[minmax(100px,1fr)_minmax(0,2fr)_auto_auto]">
+                  <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-[18px] py-2 sm:grid-cols-[minmax(100px,1fr)_minmax(0,2fr)_auto_auto]">
                     <span className="min-w-0 truncate font-medium" title={name(inv)}>{name(inv)}</span>
                     <Mono className="col-start-1 row-start-2 min-w-0 break-all text-sm sm:col-start-auto sm:row-start-auto">{inv.file}</Mono>
                     <span className="col-start-1 text-sm text-muted-foreground sm:col-start-auto">Expires {inv.expires}</span>

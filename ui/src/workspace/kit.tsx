@@ -238,7 +238,8 @@ export function SectionLabel({ children, action, className }: { children: ReactN
 /*
  * List geometry, shared by ListHead, ListRow and GroupRow so their columns line up on every page:
  * an 8px margin keeps each rounded fill clear of the panel edge, and 10px padding puts the text
- * 18px in, under the header crumb and the toolbar pill labels. Rows use a width instead of
+ * 18px in, under the header crumb and the toolbar pill labels. Full-width blocks above a list (intros,
+ * notices, the Sync band) use `px-[18px]` so their text starts on that same line. Rows use a width instead of
  * `w-full` because a <button> doesn't stretch to fill its parent, and `w-full` plus a margin overflows.
  */
 const LIST_INSET = "mx-[8px] w-[calc(100%-16px)] px-[10px]";
@@ -917,7 +918,8 @@ export function StateHeader({
   return (
     <section data-tour="overview-head" className="relative isolate overflow-hidden border-b border-border" aria-live="polite">
       <StateBand tone={tone} mode={running ? "running" : "idle"} className="-z-10" />
-      <div className="max-w-[620px] px-8 pt-8 pb-7">
+      {/* Same inset as the Overview grid below it (px-4, px-8 from a 48rem column), so the text shares the lists' left edge. */}
+      <div className="max-w-[620px] px-4 pt-8 pb-7 @3xl:px-8">
         <h2 className="text-[20px] leading-tight font-semibold tracking-[-0.01em] text-balance">{title}</h2>
         <p className="mt-2 text-base text-pretty text-muted-foreground">{body}</p>
       </div>

@@ -173,11 +173,10 @@ export function SourceOverview() {
       <PageHeader crumbs={["Overview"]} actions={<PublishButton />} />
       <Body>
         <OverviewState />
-        <GetStarted />
-
         {/* Two columns only when the page has room; narrower, the side column moves below instead of squeezing the main one to nothing. */}
         <div className="grid grid-cols-[minmax(0,1fr)] gap-8 px-4 pt-6 pb-20 @3xl:grid-cols-[minmax(0,1fr)_320px] @3xl:gap-12 @3xl:px-8">
           <div className="min-w-0 space-y-8">
+            <GetStarted rowInset={4} />
             <section data-tour="overview-pending">
               <SectionLabel action={<SectionLink onClick={() => ws.setView("profile")}>Profile</SectionLink>}>Unpublished changes</SectionLabel>
               <div className="border-t border-border">
@@ -272,8 +271,8 @@ export function SourceOverview() {
                   </span>
                 </SectionLabel>
                 <div className="overflow-x-auto border-t border-border pt-2">
-                  {/* Columns stretch to fill the column (capped so squares stay readable) instead of leaving most of it empty at 1920. */}
-                  <table className="w-full max-w-[880px] border-separate border-spacing-[3px] text-sm">
+                  {/* Columns stretch to fill the column, so the table ends where the lists above it do. */}
+                  <table className="w-full border-separate border-spacing-[3px] text-sm">
                     <thead>
                       <tr>
                         <th scope="col" className="sr-only">
@@ -689,7 +688,7 @@ export function SecretsView() {
         }
       />
       <Body>
-        <p data-tour="secrets-about" className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
+        <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           Canonfig keeps these in this machine's credential store and sends them only to machines that{" "}
           <Term term="Follower Group">
             <span className="lowercase">{PLAIN.secretsGroup}</span>

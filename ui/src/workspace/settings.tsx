@@ -662,7 +662,7 @@ export function HarnessView() {
           )
         }
       >
-        <p data-tour="harness-projects" className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
+        <p data-tour="harness-projects" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           A harness project keeps one <Mono>{harnessProject.file}</Mono> in a repository and writes each agent's instruction files from it. It's separate from the profile your machines sync.
         </p>
         <ListHead cols={cols} data-tour="harness-projects">
@@ -803,7 +803,7 @@ export function InstallersView() {
     <>
       <PageHeader crumbs={["Settings", "Installers"]} />
       <Body>
-        <div className="flex items-center gap-1.5 border-b border-border px-4 py-3 text-sm text-muted-foreground">
+        <div className="flex items-center gap-1.5 border-b border-border px-[18px] py-3 text-sm text-muted-foreground">
           Installer bindings point tool recipes at a package manager on this machine.
           <Hint label="installer bindings">Tool resources carry an installation recipe per platform, like brew on macOS or apt on Linux. A binding points that recipe at a real executable.</Hint>
         </div>

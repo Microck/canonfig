@@ -358,56 +358,58 @@ export function FollowerOverview() {
             )
           }
         />
-        <GetStarted />
-        <div className="grid grid-cols-1 gap-8 px-4 pt-6 pb-20 sm:px-8 @min-[900px]:grid-cols-[minmax(0,1fr)_300px] @min-[900px]:gap-12">
-          <section data-tour="follower-needs" className="min-w-0">
-            <SectionLabel>Needs you</SectionLabel>
-            <div className="border-t border-border">
-              <InterruptedNotice />
-              <RowPresence>
-                {ws.driftOpen && (
-                  <AnimatedRow key="drift">
-                    <Attention
-                      tone="warn"
-                      title={
-                        <>
-                          <Term term="Follower Drift">You edited</Term> claude-review-skill
-                        </>
-                      }
-                      actions={
-                        <Button variant="outline" size="xs" onClick={() => ws.go("sync", "claude-review-skill")}>
-                          Decide <ArrowRight />
-                        </Button>
-                      }
-                    >
-                      You changed <Mono>~/.claude/skills/code-review/SKILL.md</Mono>. Keep your edit or take revision {rev}'s copy.
-                    </Attention>
-                  </AnimatedRow>
+        <div className="grid grid-cols-1 gap-8 px-4 pt-6 pb-20 @3xl:px-8 @min-[900px]:grid-cols-[minmax(0,1fr)_300px] @min-[900px]:gap-12">
+          <div className="min-w-0 space-y-8">
+            <GetStarted rowInset={0} />
+            <section data-tour="follower-needs">
+              <SectionLabel>Needs you</SectionLabel>
+              <div className="border-t border-border">
+                <InterruptedNotice />
+                <RowPresence>
+                  {ws.driftOpen && (
+                    <AnimatedRow key="drift">
+                      <Attention
+                        tone="warn"
+                        title={
+                          <>
+                            <Term term="Follower Drift">You edited</Term> claude-review-skill
+                          </>
+                        }
+                        actions={
+                          <Button variant="outline" size="xs" onClick={() => ws.go("sync", "claude-review-skill")}>
+                            Decide <ArrowRight />
+                          </Button>
+                        }
+                      >
+                        You changed <Mono>~/.claude/skills/code-review/SKILL.md</Mono>. Keep your edit or take revision {rev}'s copy.
+                      </Attention>
+                    </AnimatedRow>
+                  )}
+                  {conflicts.map((s) => (
+                    <AnimatedRow key={`conflict:${s.resource}`}>
+                      <Attention
+                        tone="act"
+                        title={`${s.resource} is paused`}
+                        actions={
+                          <Button variant="outline" size="xs" onClick={() => ws.go("sync", s.resource)}>
+                            Decide <ArrowRight />
+                          </Button>
+                        }
+                      >
+                        {s.reason}
+                      </Attention>
+                    </AnimatedRow>
+                  ))}
+                </RowPresence>
+                <HumanActionItem />
+                {!ws.interrupted && !ws.driftOpen && !ws.humanAction && conflicts.length === 0 && (
+                  <div className="flex h-10 items-center gap-2 text-base text-muted-foreground">
+                    <Check className="size-3.5 text-ok" /> Nothing needs you.
+                  </div>
                 )}
-                {conflicts.map((s) => (
-                  <AnimatedRow key={`conflict:${s.resource}`}>
-                    <Attention
-                      tone="act"
-                      title={`${s.resource} is paused`}
-                      actions={
-                        <Button variant="outline" size="xs" onClick={() => ws.go("sync", s.resource)}>
-                          Decide <ArrowRight />
-                        </Button>
-                      }
-                    >
-                      {s.reason}
-                    </Attention>
-                  </AnimatedRow>
-                ))}
-              </RowPresence>
-              <HumanActionItem />
-              {!ws.interrupted && !ws.driftOpen && !ws.humanAction && conflicts.length === 0 && (
-                <div className="flex h-10 items-center gap-2 text-base text-muted-foreground">
-                  <Check className="size-3.5 text-ok" /> Nothing needs you.
-                </div>
-              )}
-            </div>
-          </section>
+              </div>
+            </section>
+          </div>
           <aside className="space-y-8">
             <section data-tour="follower-this-machine">
               <SectionLabel
@@ -582,7 +584,7 @@ export function SyncView() {
       >
         <section data-tour="sync-summary" className="relative isolate overflow-hidden border-b border-border" aria-live="polite">
           <StateBand tone={ws.phase === "plan" || paused > 0 ? "warn" : "ok"} mode={running ? "running" : "idle"} className="-z-10 opacity-70" />
-          <div className="px-4 py-4">
+          <div className="px-[18px] py-4">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-2 text-base">
               <h2 className="font-medium">
                 {running ? (
@@ -626,7 +628,7 @@ export function SyncView() {
           </div>
         </section>
         {(ws.interrupted || ws.humanAction) && (
-          <div data-tour="sync-recover" className="px-4">
+          <div data-tour="sync-recover" className="px-[18px]">
             <InterruptedNotice />
             <HumanActionItem />
           </div>
@@ -907,7 +909,7 @@ export function OverlaysView() {
           )
         }
       >
-        <p className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
+        <p className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           Keys you keep here stay as this machine has them: Canonfig doesn't overwrite them and never sends their values to the Source. Canonfig calls this a{" "}
           <Term term="Local Overlay">local overlay</Term>.
         </p>
@@ -1161,7 +1163,7 @@ export function FollowerSecretsView() {
         }
       />
       <Body>
-        <p data-tour="secrets-about" className="border-b border-border px-4 py-3 text-sm text-pretty text-muted-foreground">
+        <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           This machine <span className="lowercase">{PLAIN.secretsGroup}</span> (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from atlas
           into the macOS Keychain. Last updated {refresh.updated}.{connection && ` ${connection}`}
         </p>

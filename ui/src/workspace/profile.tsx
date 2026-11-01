@@ -312,7 +312,7 @@ export function ProfileView() {
           <RowPresence>
             {proposed.length > 0 && (
               <AnimatedRow key="proposed">
-                <div className="flex items-center gap-3 border-b border-border bg-gold/8 px-4 py-2.5 text-sm">
+                <div className="flex items-center gap-3 border-b border-border bg-gold/8 px-[18px] py-2.5 text-sm">
                   <Sparkle bold className="size-3.5 shrink-0 text-gold" />
                   <span className="min-w-0 text-pretty">
                     Canonfig found <AnimatedNumber value={proposed.length} /> {proposed.length === 1 ? "tool" : "tools"} in your agent config. Open each one to review it, remove
@@ -871,7 +871,7 @@ function GroupsTab() {
 
   return (
     <Body detail={current && <GroupDetail key={current.name} group={current} onClose={() => ws.navigate(workspaceHref("source", "profile", { profileTab: "groups" }))} />}>
-      <div data-tour="profile-groups" className="flex items-center gap-3 border-b border-border px-4 py-2.5 text-sm text-muted-foreground">
+      <div data-tour="profile-groups" className="flex items-center gap-3 border-b border-border px-[18px] py-2.5 text-sm text-muted-foreground">
         <span className="text-pretty">
           A <Term term="Follower Group">group</Term> gets extra items on top of the base profile. A machine's groups come from its invitation; open a group to add machines.
         </span>
@@ -1056,7 +1056,7 @@ function DefaultsTab() {
   return (
     <Body>
       <form
-        className="max-w-[880px] px-8 py-6"
+        className="max-w-[880px] px-4 py-6 sm:px-8"
         onSubmit={(e) => {
           e.preventDefault();
           setTried(true);
