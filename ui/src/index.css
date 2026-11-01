@@ -376,3 +376,21 @@
     mask-image: none;
   }
 }
+
+/* Collapsible (components/ui/collapsible.tsx): height runs from 0 to the height Radix
+   measures into --radix-collapsible-content-height, with a fade so the clipped content
+   does not read as a hard wipe. 200ms on open (popover band), 150ms on close (exits are
+   quicker). overflow sits inside the keyframes, so content is clipped only while it
+   animates; once open, focus rings at the content's edges are not cut off. It is clip, not
+   hidden: hidden would make the content a scroll container, so a scrollIntoView on an item
+   mid-animation (the tour opening Settings to spotlight one entry) would scroll it inside
+   the clipped box. Reduced motion: the global rule above drops the duration to 0, so it
+   opens instantly. */
+@keyframes collapsible-open {
+  from { height: 0; opacity: 0; overflow: clip; }
+  to { height: var(--radix-collapsible-content-height); opacity: 1; overflow: clip; }
+}
+@keyframes collapsible-close {
+  from { height: var(--radix-collapsible-content-height); opacity: 1; overflow: clip; }
+  to { height: 0; opacity: 0; overflow: clip; }
+}
