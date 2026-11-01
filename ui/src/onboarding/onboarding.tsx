@@ -1,9 +1,11 @@
 // First-run flow for a simulated, unconfigured machine.
 // `onDone` returns the setup choices that seed the new workspace role.
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { flushSync } from "react-dom";
+import { useReducedMotion } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, Circle, FileArrowUp, RadioButton } from "@/components/icons";
-import { cn } from "@/lib/utils";
-import { DitherShader } from "@/lib/dither";
+import { cn, SNAP } from "@/lib/utils";
+import { DitherShader, fillStyle } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
@@ -15,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { machine, profile } from "@/shared/data";
 import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import { shq } from "@/shared/shell";
-import { CliEquivalent, DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, RadioRow, Stepper, simulate, useFocusOnMount } from "./kit";
+import { CliEquivalent, DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, RadioRow, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
 
 // Rings drifting inward toward the centre: many machines converging on one.
 // At speed 1 a ring takes about 20 seconds to move one ring inward.
@@ -61,6 +63,12 @@ const DEFAULT_PORT = 17342;
 
 export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
   const [stage, setStage] = useState<Stage>("choose");
+  // The choice staggers in on the first visit only; coming back with "Change my answer" shows it at once.
+  const [introPlayed, setIntroPlayed] = useState(false);
+  const pick = (next: Stage) => {
+    setIntroPlayed(true);
+    setStage(next);
+  };
 
   return (
     <OnboardingShell hostname={machine.hostname}>
@@ -82,7 +90,7 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
           />
           <div className="absolute inset-0 bg-[radial-gradient(ellipse_48%_52%_at_50%_48%,var(--background)_45%,transparent_100%)]" />
         </div>
-        {stage === "choose" && <Choose onPick={setStage} />}
+        {stage === "choose" && <Choose intro={!introPlayed} onPick={pick} />}
         {stage === "source" && <SourceWizard onBack={() => setStage("choose")} onDone={onDone} />}
         {stage === "follower" && <FollowerWizard onBack={() => setStage("choose")} onDone={onDone} />}
       </div>
@@ -90,16 +98,26 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
   );
 }
 
-function Choose({ onPick }: { onPick: (stage: Stage) => void }) {
+/** Entrance delay for the nth item of the first-visit stagger, 50ms apart. */
+const stagger = (intro: boolean, index: number): { className?: string; style?: CSSProperties } =>
+  intro ? { className: "rise-in", style: { animationDelay: `${index * 50}ms` } } : {};
+
+function Choose({ intro, onPick }: { intro: boolean; onPick: (stage: Stage) => void }) {
   const heading = useFocusOnMount<HTMLHeadingElement>();
+  const lead = stagger(intro, 0);
+  const source = stagger(intro, 1);
+  const follower = stagger(intro, 2);
+  const footnote = stagger(intro, 3);
   return (
     <div className="w-full max-w-[680px] pb-10 text-center">
-      <h1 ref={heading} tabIndex={-1} className="text-[28px] leading-tight font-semibold tracking-[-0.025em] outline-none">
-        What should this machine do?
-      </h1>
-      <p className="mx-auto mt-3 max-w-[480px] leading-relaxed text-balance text-muted-foreground">
-        Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.
-      </p>
+      <div className={lead.className} style={lead.style}>
+        <h1 ref={heading} tabIndex={-1} className="text-[28px] leading-tight font-semibold tracking-[-0.025em] outline-none">
+          What should this machine do?
+        </h1>
+        <p className="mx-auto mt-3 max-w-[480px] leading-relaxed text-balance text-muted-foreground">
+          Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.
+        </p>
+      </div>
       <div className="mt-9 grid grid-cols-1 gap-3 text-left sm:grid-cols-2">
         <Choice
           title="Make this the Source"
@@ -111,22 +129,48 @@ function Choose({ onPick }: { onPick: (stage: Stage) => void }) {
             "Runs a small service other machines connect to",
           ]}
           onClick={() => onPick("source")}
+          {...source}
         />
         <Choice
           title="Copy the setup from another machine"
           description="For a machine that should get its setup from your Source."
           facts={["Needs an invitation file from the Source", "Gets updates on a schedule you choose", "Settings you mark as local stay as they are"]}
           onClick={() => onPick("follower")}
+          {...follower}
         />
       </div>
-      <p className="mt-6 text-sm text-muted-foreground">Not sure? Make the computer you use most the Source.</p>
+      <p className={cn("mt-6 text-sm text-muted-foreground", footnote.className)} style={footnote.style}>
+        Not sure? Make the computer you use most the Source.
+      </p>
     </div>
   );
 }
 
-function Choice({ title, description, facts, onClick }: { title: string; description: string; facts: ReactNode[]; onClick: () => void }) {
+function Choice({
+  title,
+  description,
+  facts,
+  onClick,
+  className,
+  style,
+}: {
+  title: string;
+  description: string;
+  facts: ReactNode[];
+  onClick: () => void;
+  className?: string;
+  style?: CSSProperties;
+}) {
   return (
-    <button type="button" onClick={onClick} className="group flex min-w-0 flex-col rounded-xl border border-border bg-panel p-5 text-left hover:border-border-strong hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring">
+    <button
+      type="button"
+      onClick={onClick}
+      style={style}
+      className={cn(
+        "group flex min-w-0 flex-col rounded-xl border border-border bg-panel p-5 text-left hover:border-border-strong hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring",
+        className,
+      )}
+    >
       <span className="flex items-center justify-between gap-3 text-[15px] font-medium">
         {title}
         <ArrowRight aria-hidden className="size-4 shrink-0 text-faint group-hover:text-foreground" />
@@ -146,6 +190,55 @@ function Choice({ title, description, facts, onClick }: { title: string; descrip
 /* ------------------------------------------------------------------ */
 /* Wizard frame                                                        */
 /* ------------------------------------------------------------------ */
+
+/** --ease-snap as a WAAPI easing string. */
+const SNAP_EASING = `cubic-bezier(${SNAP.join(", ")})`;
+
+/**
+ * Smooths the height change when `key` changes (a wizard step, the finished screen):
+ * the element runs from the height it last painted at to its new height, clipped while
+ * it moves, then hands height back to layout. Other size changes stay instant: a
+ * disclosure animates its own height, and an error line is small. Interruptible: a new
+ * key mid-run starts from the height on screen. Instant under reduced motion.
+ */
+function useHeightTween<T extends HTMLElement>(key: unknown, duration: number) {
+  const ref = useRef<T>(null);
+  const reduced = useReducedMotion();
+  // Border-box height at the last layout. The observer reports after layout, so in the
+  // layout effect below it still holds the height before this commit (mid-run, the
+  // tweened height), which is where the next run must start.
+  const painted = useRef(0);
+  const tween = useRef<Animation | null>(null);
+  const shownKey = useRef(key);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => {
+      painted.current = entry.borderBoxSize[0].blockSize;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  useLayoutEffect(() => {
+    if (shownKey.current === key) return;
+    shownKey.current = key;
+    const element = ref.current;
+    if (!element || reduced) return;
+    // Cancel first: while a run is active, the element measures at the tweened height.
+    tween.current?.cancel();
+    const from = painted.current;
+    const to = element.getBoundingClientRect().height;
+    if (Math.abs(to - from) < 1) return;
+    tween.current = element.animate(
+      [
+        { height: `${from}px`, overflow: "clip" },
+        { height: `${to}px`, overflow: "clip" },
+      ],
+      { duration, easing: SNAP_EASING },
+    );
+  }, [key, reduced, duration]);
+  return ref;
+}
 
 /**
  * One form for every step, so Enter continues from any field. A step that is
@@ -184,14 +277,35 @@ function Wizard({
   children: ReactNode;
 }) {
   const heading = useFocusOnMount<HTMLHeadingElement>();
+  const stepHeading = useRef<HTMLHeadingElement>(null);
+  const reduced = useReducedMotion();
+  // Which way the last step change went: the steps slide with it.
+  const [direction, setDirection] = useState<1 | -1>(1);
+  // The step content and the whole card (when it turns into the finished screen) run to their new height.
+  const card = useHeightTween<HTMLFormElement>(!!done, 300);
+  const body = useHeightTween<HTMLDivElement>(step, 200);
   const last = step === steps.length - 1;
 
-  const submit = (event: FormEvent) => {
+  // Commit the new step synchronously, then focus its heading: the control just used may be
+  // gone (Back on the second step, or Enter in a field), and focus would fall to <body>.
+  const go = (next: number) => {
+    flushSync(() => {
+      setDirection(next > step ? 1 : -1);
+      onStep(next);
+    });
+    stepHeading.current?.focus();
+  };
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busy || done) return;
-    if (blocked) onBlocked?.();
-    else if (last) onFinish();
-    else onStep(step + 1);
+    if (blocked) {
+      // Errors already on screen shake once, so a repeated Continue visibly registers.
+      // Errors this press reveals drop in on their own (field-error-in); nothing to shake yet.
+      if (!reduced) for (const error of event.currentTarget.querySelectorAll("[data-field-error]")) error.animate(SHAKE, { duration: 300, easing: SNAP_EASING });
+      onBlocked?.();
+    } else if (last) onFinish();
+    else go(step + 1);
   };
 
   return (
@@ -206,7 +320,12 @@ function Wizard({
       >
         <ArrowLeft className="size-3.5" /> Change my answer
       </Button>
-      <form noValidate onSubmit={submit} className="rounded-xl border border-border bg-panel">
+      <form ref={card} noValidate onSubmit={submit} className="relative isolate rounded-xl border border-border bg-panel">
+        {done && (
+          <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden rounded-[inherit]">
+            <div className="finish-sweep absolute inset-0 opacity-40" style={SWEEP_STYLE} />
+          </div>
+        )}
         {!done && (
           <div className="border-b border-border px-4 pt-5 pb-4 sm:px-6">
             <h1 ref={heading} tabIndex={-1} className="text-[15px] font-medium outline-none">
@@ -215,11 +334,16 @@ function Wizard({
             <Stepper steps={steps} step={step} />
           </div>
         )}
-        <div className="px-4 py-6 sm:px-6">
+        <div ref={body} className="px-4 py-6 sm:px-6">
           {done ?? (
             <>
-              <h2 className="sr-only">{steps[step]}</h2>
-              {children}
+              {/* Keyed, so each step's heading is a new element that screen readers announce on focus. */}
+              <h2 key={step} ref={stepHeading} tabIndex={-1} className="sr-only">
+                {steps[step]}
+              </h2>
+              <StepTransition step={step} direction={direction}>
+                {children}
+              </StepTransition>
               <CliEquivalent lines={cli} className="mt-7" />
             </>
           )}
@@ -227,7 +351,7 @@ function Wizard({
         {!done && (
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3 sm:px-6">
             {step > 0 && (
-              <Button type="button" variant="ghost" disabled={busy} onClick={() => onStep(step - 1)}>
+              <Button type="button" variant="ghost" disabled={busy} onClick={() => go(step - 1)}>
                 Back
               </Button>
             )}
@@ -250,6 +374,19 @@ function Wizard({
     </div>
   );
 }
+
+const SHAKE: Keyframe[] = [
+  { transform: "translateX(0px)" },
+  { transform: "translateX(-3px)" },
+  { transform: "translateX(3px)" },
+  { transform: "translateX(-2px)" },
+  { transform: "translateX(0px)" },
+];
+
+// The finish sweep: DitherProgress's green ramp at the background's 3px cell, half density
+// at its leading (right) edge so it reads as dots rather than a solid bar, thinning to
+// nothing 240px behind it, so no floor of dots tints the rest of the card while it crosses.
+const SWEEP_STYLE = fillStyle("gradient", { color: "green", edge: "right", length: 80, from: 0.5, to: 0, cell: 3 });
 
 /**
  * The live checklist while a fake job runs. Icons are static: no spinner.
@@ -286,18 +423,24 @@ function RunList({ items, progress }: { items: string[]; progress: number }) {
   );
 }
 
+/**
+ * The end of setup. Once, on arrival: the badge grows in and its check draws, the text
+ * rises in behind it, and the Wizard's green sweep crosses the card (about 800ms in all).
+ */
 function Finished({ title, children, next, action, onOpen }: { title: string; children: ReactNode; next: ReactNode; action: string; onOpen: () => void }) {
   const heading = useFocusOnMount<HTMLHeadingElement>();
   return (
     <div>
-      <span aria-hidden className="grid size-8 place-items-center rounded-full bg-ok/15 text-ok">
-        <Check className="size-4" />
+      <span aria-hidden className="pop-in grid size-8 place-items-center rounded-full bg-ok/15 text-ok">
+        <Check className="check-draw size-4" style={{ animationDelay: "150ms" }} />
       </span>
-      <h2 ref={heading} tabIndex={-1} className="mt-4 text-[17px] font-medium tracking-[-0.01em] outline-none">
+      <h2 ref={heading} tabIndex={-1} className="rise-in mt-4 text-[17px] font-medium tracking-[-0.01em] outline-none" style={{ animationDelay: "60ms" }}>
         {title}
       </h2>
-      <div className="mt-2 leading-relaxed text-muted-foreground">{children}</div>
-      <div className="mt-6 flex flex-col items-start justify-between gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:gap-6">
+      <div className="rise-in mt-2 leading-relaxed text-muted-foreground" style={{ animationDelay: "60ms" }}>
+        {children}
+      </div>
+      <div className="rise-in mt-6 flex flex-col items-start justify-between gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:gap-6" style={{ animationDelay: "120ms" }}>
         <p className="text-muted-foreground">{next}</p>
         <Button type="button" variant="default" onClick={onOpen}>
           {action}

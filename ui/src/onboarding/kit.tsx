@@ -1,8 +1,9 @@
 // Shared components for the simulated first-run flow.
-import { useEffect, useId, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ComponentType, type ReactNode, type Ref } from "react";
+import { AnimatePresence, motion, useIsPresent, useReducedMotion, type Variants } from "motion/react";
 import { toast } from "sonner";
 import { CaretRight, Check, Copy, Question, WarningCircle } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, SNAP } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { CollapsibleTrigger, Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { RadioGroupItem } from "@/components/ui/radio-group";
@@ -20,6 +21,52 @@ export function useFocusOnMount<T extends HTMLElement>() {
     ref.current?.focus();
   }, []);
   return ref;
+}
+
+// Steps slide 16px in the direction of travel and crossfade: Continue brings the next
+// step in from the right, Back from the left. 16px stays inside the card's padding at
+// every width. Enter at 200ms, exit quicker at 150ms. Transform strings, not `x`: motion
+// hands a plain transform to the compositor.
+const STEP_SLIDE: Variants = {
+  enter: (direction: number) => ({ transform: `translateX(${direction * 16}px)`, opacity: 0 }),
+  center: { transform: "translateX(0px)", opacity: 1, transition: { duration: 0.2, ease: SNAP } },
+  exit: (direction: number) => ({ transform: `translateX(${direction * -16}px)`, opacity: 0, transition: { duration: 0.15, ease: SNAP } }),
+};
+// Reduced motion: no movement. The new step fades in; the old one leaves at once, so two steps never overlap.
+const STEP_FADE: Variants = {
+  enter: { opacity: 0 },
+  center: { opacity: 1, transition: { duration: 0.15, ease: SNAP } },
+  exit: { opacity: 0, transition: { duration: 0 } },
+};
+
+/**
+ * Swaps wizard steps with a direction-aware slide. The leaving step is popped out of
+ * layout (absolute), so the container measures the new step at once and
+ * `useHeightTween` on an ancestor can run to it. Rapid Continue/Back retargets: a step
+ * that comes back while leaving turns around rather than mounting a second copy.
+ */
+export function StepTransition({ step, direction, children }: { step: number; direction: 1 | -1; children: ReactNode }) {
+  const reduced = useReducedMotion();
+  return (
+    // The pop-out is positioned against this box.
+    <div className="relative">
+      <AnimatePresence initial={false} mode="popLayout" custom={direction}>
+        <StepPane key={step} direction={direction} variants={reduced ? STEP_FADE : STEP_SLIDE}>
+          {children}
+        </StepPane>
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/** One step's content. Inert while leaving, so its fields can't take a click or focus during the exit. */
+function StepPane({ ref, direction, variants, children }: { ref?: Ref<HTMLDivElement>; direction: 1 | -1; variants: Variants; children: ReactNode }) {
+  const present = useIsPresent();
+  return (
+    <motion.div ref={ref} custom={direction} variants={variants} initial="enter" animate="center" exit="exit" inert={!present}>
+      {children}
+    </motion.div>
+  );
 }
 
 /** Top bar for a machine that isn't set up yet: brand, machine, glossary. */
@@ -179,10 +226,14 @@ export function Field({
   );
 }
 
-/** Inline error next to the control that caused it: colour, icon and text. */
+/**
+ * Inline error next to the control that caused it: colour, icon and text. It drops in
+ * (field-error-in); `data-field-error` lets the wizard shake errors that are already
+ * showing when Continue is pressed again.
+ */
 export function FieldError({ id, children }: { id?: string; children: ReactNode }) {
   return (
-    <p id={id} className="flex items-start gap-1.5 text-sm text-bad">
+    <p id={id} data-field-error className="field-error-in flex items-start gap-1.5 text-sm text-bad">
       <WarningCircle className="mt-0.5 size-3.5 shrink-0" />
       {children}
     </p>
@@ -194,9 +245,10 @@ export function Stepper({ steps, step }: { steps: string[]; step: number }) {
     <ol aria-label="Steps" className="mt-4 grid grid-cols-3 gap-2 text-sm sm:flex sm:flex-wrap sm:items-center">
       {steps.map((title, i) => (
         <li key={title} className="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:items-center" aria-current={i === step ? "step" : undefined}>
+          {/* Markers and labels change colour at state speed; a newly completed step draws its check (check-draw). */}
           <span
             className={cn(
-              "grid size-[18px] place-items-center rounded-full border text-[11px] font-medium tabular-nums",
+              "grid size-[18px] place-items-center rounded-full border text-[11px] font-medium tabular-nums transition-[color,background-color,border-color] duration-150 ease-snap",
               i < step && "border-transparent bg-ok/15 text-ok",
               i === step && "border-foreground/50 text-foreground",
               i > step && "border-border text-faint",
@@ -204,14 +256,14 @@ export function Stepper({ steps, step }: { steps: string[]; step: number }) {
           >
             {i < step ? (
               <>
-                <Check aria-hidden className="size-3" />
+                <Check aria-hidden className="check-draw size-3" />
                 <span className="sr-only">Done:</span>
               </>
             ) : (
               i + 1
             )}
           </span>
-          <span className={cn(i === step ? "text-foreground" : i < step ? "text-muted-foreground" : "text-faint")}>{title}</span>
+          <span className={cn("transition-colors duration-150 ease-snap", i === step ? "text-foreground" : i < step ? "text-muted-foreground" : "text-faint")}>{title}</span>
           {i < steps.length - 1 && <span aria-hidden className="mx-1 hidden h-px w-5 bg-border sm:block" />}
         </li>
       ))}

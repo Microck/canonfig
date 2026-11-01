@@ -2,7 +2,7 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { Question } from "@/components/icons";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { cn } from "@/lib/utils";
+import { cn, SNAP } from "@/lib/utils";
 import { DitherShader, ditherMask, fillStyle } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { STATE_META, type FollowerState } from "./data";
@@ -370,8 +370,6 @@ export function DitherBlock({ tone = "muted", edge = "bottom", className }: { to
     </div>
   );
 }
-
-const SNAP = [0.175, 0.885, 0.32, 1.1] as const;
 
 /**
  * A number whose changed digits slide in (150ms) after an action: up when it
