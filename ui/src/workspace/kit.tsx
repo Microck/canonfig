@@ -14,7 +14,6 @@ import { PLAIN, profile, type ResourceKind } from "@/shared/data";
 import { useSharedState, useWorkspace } from "./store";
 import { PAGE_TIPS } from "./page-tips";
 import { followLink, holdNavigation } from "./routes";
-import { panelMotionTarget, panelStyle } from "./panel-motion";
 
 export const KIND_ICON: Record<ResourceKind, IconComponent> = {
   file: FileText,
@@ -338,9 +337,43 @@ const PANEL_STEP = 16;
 /** True between a DetailPanel unmounting and the end of that commit; see DetailPanel's open effect. */
 let panelJustClosed = false;
 
+// DetailPanel motion. The panel grows out of the row that opened it: scale from 0.96 with the origin
+// on the panel's left edge (or the mobile overlay's centre line) at that row's height, so it visibly
+// comes from the row. A row switch only fades the content in, since the frame is already there, and
+// closing is quicker than opening. Only transform and opacity move, on the repo's one curve; nothing
+// moves under reduced motion. It runs through WAAPI from layout effects, so the first frame is already
+// the start pose (no flash) and no React state changes per frame.
+const SNAP_CSS = "cubic-bezier(0.175, 0.885, 0.32, 1.1)";
+
+// Where the last press landed. Safari doesn't focus a clicked button, so focus alone can't say which
+// row opened the panel; a keyboard open still prefers the focused row (see openPanel).
+let pointerY: number | null = null;
+document.addEventListener("pointerdown", (e) => (pointerY = e.clientY), true);
+
+/** Scales a fresh panel in from its opener: the focused element outside it, else the last press, else its centre. */
+function openPanel(panel: HTMLElement): Animation[] {
+  const rect = panel.getBoundingClientRect();
+  const opener = document.activeElement;
+  let openerY = pointerY;
+  if (opener instanceof HTMLElement && opener !== document.body && !panel.contains(opener)) {
+    const r = opener.getBoundingClientRect();
+    openerY = r.top + r.height / 2;
+  }
+  const overlay = window.matchMedia("(max-width: 767.98px)").matches;
+  panel.style.transformOrigin = `${overlay ? "50%" : "0"} ${(openerY ?? rect.top + rect.height / 2) - rect.top}px`;
+  return [panel.animate({ opacity: [0, 1], transform: ["scale(0.96)", "none"] }, { duration: 220, easing: SNAP_CSS })];
+}
+
+/** Another row replaced the panel's contents: fade its header, body and footer in. */
+function swapPanel(panel: HTMLElement): Animation[] {
+  return [...panel.querySelectorAll<HTMLElement>(":scope > [data-panel-part]")].map((part) =>
+    part.animate({ opacity: [0, 1] }, { duration: 120, easing: SNAP_CSS, fill: "backwards" }),
+  );
+}
+
 /**
- * The right-side panel that opens on row click. How it opens, swaps rows and closes comes from
- * panel-motion.ts (a live prototype of several styles; none under reduced motion). Body's AnimatePresence
+ * The right-side panel that opens on row click. It scales in from the clicked row, fades its content on a
+ * row switch and closes faster than it opens (see the motion notes above). Body's AnimatePresence
  * keeps it mounted while it closes. The left edge resizes it between 320 and 560px,
  * by dragging or with the arrow keys once focused; Escape closes it unless a text field outside it has focus.
  * Closing it with focus inside returns focus to whatever opened it, usually the list row.
@@ -371,20 +404,21 @@ export function DetailPanel({
   const swapped = useRef<boolean | null>(null);
   useLayoutEffect(() => {
     swapped.current ??= panelJustClosed;
-    const style = panelStyle();
-    const anims = style ? (swapped.current ? style.swap : style.open)(panelMotionTarget(panel.current!)) : [];
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const anims = reduce ? [] : (swapped.current ? swapPanel : openPanel)(panel.current!);
     return () => {
       for (const a of anims) a.cancel();
       panelJustClosed = true;
       queueMicrotask(() => (panelJustClosed = false));
     };
   }, []);
-  // Close: play the style's exit, then let Body's AnimatePresence unmount the panel. Reopening during the
-  // exit brings the panel back present, and the cleanup snaps it back to rest.
+  // Close: fade and shrink slightly, then let Body's AnimatePresence unmount the panel. Reopening during
+  // the exit brings the panel back present, and the cleanup snaps it back to rest.
   useLayoutEffect(() => {
     if (isPresent) return;
-    const style = panelStyle();
-    const anims = style ? style.close(panelMotionTarget(panel.current!)) : [];
+    const anims = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? []
+      : [panel.current!.animate({ opacity: [1, 0], transform: ["none", "scale(0.98)"] }, { duration: 120, easing: SNAP_CSS, fill: "forwards" })];
     // `finished` rejects when the cleanup cancels a reopened panel's exit; that panel stays.
     Promise.all(anims.map((a) => a.finished)).then(() => safeToRemove?.(), () => {});
     return () => {
