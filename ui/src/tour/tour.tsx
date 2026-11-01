@@ -79,33 +79,67 @@ function easeSnap(t: number) {
   return bez(y1, y2, Math.min(1, Math.max(0, s)));
 }
 
+/** The spotlight's DOM nodes; the glide writes their geometry directly, never through React state. */
+interface SpotlightNodes {
+  panels: (HTMLDivElement | null)[];
+  dim: HTMLDivElement | null;
+  rim: HTMLDivElement | null;
+  ring: HTMLDivElement | null;
+}
+
 /**
- * The spotlight rect, gliding from where it was to `target`. One tween drives the blur panels,
- * the dim cutout and the rim, so they can't drift apart. Snaps when there is nothing to glide
- * from (first step, or to/from a centred card), or under reduced motion.
+ * Writes one spotlight rect into the blur panels, the dim cutout, the rim and the ring. With no
+ * rect (a centred card) the first panel blurs the whole viewport; the others and the rim aren't rendered.
  */
-function useGlidingRect(target: Rect | null, reduce: boolean) {
-  const [shown, setShown] = useState<Rect | null>(target);
-  const shownRef = useRef(shown);
+function paintSpotlight(n: SpotlightNodes, r: Rect | null, vw: number, vh: number) {
+  const place = (el: HTMLElement | null, left: number, top: number, width: number, height: number) => {
+    if (el) Object.assign(el.style, { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px` });
+  };
+  if (n.dim) n.dim.style.clipPath = holePath(r, vw, vh);
+  if (!r) return place(n.panels[0], 0, 0, vw, vh);
+  place(n.panels[0], 0, 0, vw, Math.max(0, r.y));
+  place(n.panels[1], 0, r.y + r.h, vw, Math.max(0, vh - r.y - r.h));
+  place(n.panels[2], 0, r.y, Math.max(0, r.x), r.h);
+  place(n.panels[3], r.x + r.w, r.y, Math.max(0, vw - r.x - r.w), r.h);
+  place(n.rim, r.x - 3, r.y - 3, r.w + 6, r.h + 6);
+  place(n.ring, r.x, r.y, r.w, r.h);
+}
+
+/**
+ * Glides the spotlight from where it was to `target`. One tween drives the blur panels, the dim
+ * cutout and the rim, so they can't drift apart. Snaps when there is nothing to glide from (first
+ * step, or to/from a centred card), or under reduced motion. Each frame goes straight to the DOM
+ * through the returned nodes: a per-frame setState would re-render the whole tour ~16 times a glide.
+ * Those nodes must not get a React `style` for these properties, or a re-render would reset them.
+ */
+function useGlidingSpotlight(target: Rect | null, reduce: boolean, vw: number, vh: number) {
+  const nodes = useRef<SpotlightNodes>({ panels: [], dim: null, rim: null, ring: null });
   // Last painted rect, so a step change mid-glide starts from where the spotlight actually is.
+  const shown = useRef<Rect | null>(null);
+  const viewport = useRef({ vw, vh });
   useLayoutEffect(() => {
-    shownRef.current = shown;
-  });
-  useEffect(() => {
-    const from = shownRef.current;
-    if (reduce || !from || !target) return setShown(target);
+    viewport.current = { vw, vh };
+    paintSpotlight(nodes.current, shown.current, vw, vh);
+  }, [vw, vh]);
+  useLayoutEffect(() => {
+    const draw = (r: Rect | null) => {
+      shown.current = r;
+      paintSpotlight(nodes.current, r, viewport.current.vw, viewport.current.vh);
+    };
+    const from = shown.current;
+    if (reduce || !from || !target) return draw(target);
     let raf = 0;
     const start = performance.now();
     const tick = (now: number) => {
       const k = easeSnap(Math.min(1, (now - start) / MOVE_MS));
       const lerp = (a: number, b: number) => a + (b - a) * k;
-      setShown({ x: lerp(from.x, target.x), y: lerp(from.y, target.y), w: lerp(from.w, target.w), h: lerp(from.h, target.h) });
+      draw({ x: lerp(from.x, target.x), y: lerp(from.y, target.y), w: lerp(from.w, target.w), h: lerp(from.h, target.h) });
       if (now - start < MOVE_MS) raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [target, reduce]);
-  return shown;
+  return nodes;
 }
 
 /** The CSS selectors a step spotlights; undefined for a centred card. */
@@ -170,7 +204,7 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
   // True while a step's target hasn't appeared yet (see FIND_MS); the card hides rather than show
   // the new step's text beside the previous step's spotlight.
   const [searching, setSearching] = useState(false);
-  const shown = useGlidingRect(rect, reduce);
+  const spot = useGlidingSpotlight(rect, reduce, viewport.w, viewport.h);
   const dir = useRef<1 | -1>(1);
   const cardRef = useRef<HTMLDivElement>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
@@ -333,34 +367,21 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
       {modal && <div className="absolute inset-0" aria-hidden onClick={() => nextRef.current?.focus()} />}
 
       {/* Keep blur in rectangular panels outside the target. Animating a cutout
-          on a backdrop-filter layer can leave Chromium painting the old hole. */}
-      {modal && (shown ? [
-        { left: 0, top: 0, width: viewport.w, height: Math.max(0, shown.y) },
-        { left: 0, top: shown.y + shown.h, width: viewport.w, height: Math.max(0, viewport.h - shown.y - shown.h) },
-        { left: 0, top: shown.y, width: Math.max(0, shown.x), height: shown.h },
-        { left: shown.x + shown.w, top: shown.y, width: Math.max(0, viewport.w - shown.x - shown.w), height: shown.h },
-      ] : [{ left: 0, top: 0, width: viewport.w, height: viewport.h }]).map((panel, i) => (
-        <div key={i} aria-hidden className="pointer-events-none absolute backdrop-blur-[3px]" style={panel} />
+          on a backdrop-filter layer can leave Chromium painting the old hole.
+          Panels, dim, rim and ring get their geometry from useGlidingSpotlight, not `style`. */}
+      {modal && (rect ? [0, 1, 2, 3] : [0]).map((i) => (
+        <div key={i} ref={(el) => void (spot.current.panels[i] = el)} aria-hidden className="pointer-events-none absolute backdrop-blur-[3px]" />
       ))}
-      {modal && (
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 bg-black/55"
-          style={{ clipPath: holePath(shown, viewport.w, viewport.h) }}
-        />
-      )}
+      {modal && <div ref={(el) => void (spot.current.dim = el)} aria-hidden className="pointer-events-none absolute inset-0 bg-black/55" />}
 
-      {modal && shown && (
+      {modal && rect && (
         <>
           {/* Dithered rim around the window: a 3px band kept by a mask, filled with dither dots (CSS, no WebGL). */}
           <div
+            ref={(el) => void (spot.current.rim = el)}
             aria-hidden
             className="pointer-events-none absolute rounded-[10px] p-[3px]"
             style={{
-              left: shown.x - 3,
-              top: shown.y - 3,
-              width: shown.w + 6,
-              height: shown.h + 6,
               mask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
               maskComposite: "exclude",
               WebkitMaskComposite: "xor",
@@ -369,9 +390,9 @@ export function Tour({ steps, onClose, modal = true, onFocusFallback }: { steps:
             <div className="absolute inset-0" style={fillStyle("dotted", { color: "#c4b5fd", cell: 1.5 })} />
           </div>
           <div
+            ref={(el) => void (spot.current.ring = el)}
             aria-hidden
             className="pointer-events-none absolute rounded-[8px] ring-1 ring-ring/70"
-            style={{ left: shown.x, top: shown.y, width: shown.w, height: shown.h }}
           />
         </>
       )}
