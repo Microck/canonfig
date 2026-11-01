@@ -366,9 +366,10 @@
    Delays are set inline, so entrances fill backwards (hidden until their turn) and leave no
    transform behind once done.
    choice-card: a role card on the first question. Hover (fine pointers only: touch fires
-     hover on tap) lifts it 2px, nudges its arrow 2px toward the wizard and brightens its
-     shell's border and fill with a faint green glow from the background's palette, at
-     150ms; a press sinks it to 0.98 in 100ms, so the pick registers before the hand-off.
+     hover on tap) nudges its arrow 2px toward the wizard and brightens its shell's border
+     and fill with a faint green glow from the background's palette, at 150ms; the card
+     itself stays put. A press sinks it to 0.98 in 100ms, so the pick registers before the
+     hand-off.
    rise-in: the finished screen's text arrives in a short stagger.
    check-draw: a check is uncovered left to right, the way its stroke runs (it only moves
      right), so it reads as drawn. It starts at 25%, the stroke's first point.
@@ -396,12 +397,6 @@
     color 150ms var(--ease-snap);
 }
 @media (hover: hover) and (pointer: fine) {
-  .choice-card:hover {
-    transform: translateY(-2px);
-  }
-  .choice-card:hover:active {
-    transform: translateY(-2px) scale(0.98);
-  }
   .choice-card:hover .choice-shell {
     border-color: var(--border-strong);
     background-color: var(--raised);

@@ -241,8 +241,8 @@ function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (
 }
 
 /**
- * One role card. Hover lifts it 2px and brightens its border and fill, and a press sinks it
- * to 0.98 (choice-card in index.css). Only the picked card keeps its shared shell while the
+ * One role card. Hover brightens its border and fill and nudges its arrow, and a press sinks
+ * it to 0.98 (choice-card in index.css). Only the picked card keeps its shared shell while the
  * choice leaves; the other drops its layoutId, so it never hands off a stale position later.
  */
 function Choice({ role, returning, title, description, facts, onPick }: { role: Role; returning: boolean; title: string; description: string; facts: ReactNode[]; onPick: (role: Role) => void }) {
