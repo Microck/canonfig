@@ -677,13 +677,22 @@ export function CommandBox({ children }: { children: string }) {
   );
 }
 
+/**
+ * The message a list shows when it has nothing in it. It grows into the leftover height of a flex-column
+ * parent (Body's column, or a `flex flex-col` card) so its dither sits on that parent's bottom edge.
+ * The dither is an in-flow strip under the text, not an absolute layer behind it: a short message (no
+ * action) used to leave the 96px strip climbing over the title, and a parent taller than the message left
+ * the strip's dense edge floating mid-card.
+ */
 export function EmptyState({ title, body, action, tone = "muted" }: { title: string; body: ReactNode; action?: ReactNode; tone?: "muted" | "ok" }) {
   return (
-    <div className="relative flex flex-col items-center justify-center overflow-hidden px-6 py-16 text-center">
-      <DitherBlock tone={tone} edge="bottom" className="absolute inset-x-0 bottom-0 h-24 opacity-60" />
-      <h3 className="relative text-base font-medium">{title}</h3>
-      <p className="relative mt-1 max-w-xs text-sm text-pretty text-muted-foreground">{body}</p>
-      {action && <div className="relative mt-4">{action}</div>}
+    <div className="flex grow flex-col">
+      <div className="flex grow flex-col items-center justify-center px-6 pt-16 pb-4 text-center">
+        <h3 className="text-base font-medium">{title}</h3>
+        <p className="mt-1 max-w-xs text-sm text-pretty text-muted-foreground">{body}</p>
+        {action && <div className="mt-4">{action}</div>}
+      </div>
+      <DitherBlock tone={tone} edge="bottom" className="h-24 shrink-0 opacity-60" />
     </div>
   );
 }
@@ -804,11 +813,14 @@ export function SettingRow({
 /**
  * Page body: a scrolling main column and an optional detail panel.
  * The column is a size container, so page layouts follow its width (narrowed by the panel), not the window's.
+ * It is a flex column so a child can `grow` into the leftover height (EmptyState anchors its dither to the
+ * bottom that way); `*:shrink-0` keeps every child at its content height, as block flow did, so a tall page
+ * scrolls instead of squeezing overflow-hidden children.
  */
 export function Body({ children, detail }: { children: ReactNode; detail?: ReactNode }) {
   return (
     <div className="flex min-h-0 flex-1">
-      <div className="@container min-w-0 flex-1 overflow-y-auto">
+      <div className="@container flex min-w-0 flex-1 flex-col overflow-y-auto *:shrink-0">
         {children}
       </div>
       {detail}

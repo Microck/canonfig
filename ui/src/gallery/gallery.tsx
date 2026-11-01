@@ -1460,12 +1460,13 @@ const ENTRIES: Entry[] = [
     name: "EmptyState",
     group: KIT,
     file: "src/workspace/kit.tsx",
+    note: "Grows to fill a flex-column parent, so the dither meets the card's bottom edge even when the neighbour card is taller.",
     render: () => (
       <div className="grid gap-3 md:grid-cols-2">
-        <Panel>
+        <Panel className="flex flex-col">
           <EmptyState title="No machines yet" body="Create an invitation, then join from the other machine." action={<Button variant="primary" size="sm">Add a machine</Button>} />
         </Panel>
-        <Panel>
+        <Panel className="flex flex-col">
           <EmptyState tone="ok" title="Nothing to review" body="Every machine is up to date." />
         </Panel>
       </div>
