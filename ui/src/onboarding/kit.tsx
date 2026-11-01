@@ -108,8 +108,12 @@ function StepPane({ direction, reduced, children }: { direction: 1 | -1; reduced
   );
 }
 
-/** Top bar for a machine that isn't set up yet: brand, machine, glossary. */
-export function OnboardingShell({ hostname, children }: { hostname: string; children: ReactNode }) {
+/**
+ * Top bar for a machine that isn't set up yet: brand, machine, glossary. `backdrop` fills
+ * the frame behind <main>, outside the scrolling content, so its size follows the viewport
+ * only: a step that grows, an opened disclosure or a scroll never resizes or moves it.
+ */
+export function OnboardingShell({ hostname, backdrop, children }: { hostname: string; backdrop: ReactNode; children: ReactNode }) {
   return (
     <div className="flex h-svh flex-col bg-canvas text-foreground">
       <Sheet>
@@ -127,7 +131,12 @@ export function OnboardingShell({ hostname, children }: { hostname: string; chil
             </Button>
           </SheetTrigger>
         </header>
-        <main className="mx-2 mb-2 min-h-0 flex-1 overflow-y-auto rounded-xl border border-border bg-background">{children}</main>
+        <div className="relative isolate mx-2 mb-2 min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-background">
+          <div aria-hidden data-setup-backdrop className="absolute inset-0 -z-10">
+            {backdrop}
+          </div>
+          <main className="h-full overflow-y-auto">{children}</main>
+        </div>
         <SheetContent side="right" className="gap-0 border-border bg-panel p-0 data-[side=right]:w-[min(440px,100vw)] data-[side=right]:sm:max-w-[440px]">
           <div className="border-b border-border px-6 pt-5 pb-4">
             <SheetTitle className="text-[15px] font-medium">Glossary</SheetTitle>

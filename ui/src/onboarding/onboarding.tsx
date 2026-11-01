@@ -71,13 +71,11 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
   };
 
   return (
-    <OnboardingShell hostname={machine.hostname}>
-      {/* md:pb-44 clears the fixed demo switcher (about 70px tall, 80px above the
-          bottom) at the end of the scroll, while the frame still fills the viewport.
-          Below md the switcher lives in the header (kit.tsx), so only normal padding remains. */}
-      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 md:pb-44 [overflow-wrap:anywhere] sm:px-6 sm:pt-16", stage === "choose" ? "justify-center" : "justify-start sm:pt-[12vh]")}>
-        {/* Drifts calmly behind every screen of setup, choice and wizard alike. Still under reduced motion. */}
-        <div aria-hidden className="absolute inset-0 -z-10">
+    <OnboardingShell
+      hostname={machine.hostname}
+      // Drifts calmly behind every screen of setup, choice and wizard alike. Still under reduced motion.
+      backdrop={
+        <>
           <DitherShader
             field={CONVERGE_FIELD}
             palette={["--dither-paper", "--dither-color-grey", "--dither-color-green"]}
@@ -87,7 +85,15 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
             className="absolute inset-0 opacity-60"
           />
           <div className="absolute inset-0 bg-[radial-gradient(ellipse_48%_52%_at_50%_48%,var(--background)_45%,transparent_100%)]" />
-        </div>
+        </>
+      }
+    >
+      {/* md:pb-44 clears the fixed demo switcher (215px wide and about 70px tall, 12px from
+          the left and 80px above the bottom) at the end of the scroll, where the cards can
+          reach under it. From xl the cards start right of it, so normal padding returns and a
+          card that fits the window doesn't scroll. Below md the switcher lives in the header
+          (kit.tsx), so only normal padding remains. */}
+      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 md:pb-44 xl:pb-12 [overflow-wrap:anywhere] sm:px-6 sm:pt-16", stage === "choose" ? "justify-center" : "justify-start sm:pt-[12vh]")}>
         {/* popLayout takes the leaving screen out of flow, so the next one lays out at once and
             the picked card's shell (CardShell) can grow straight into the wizard card's place.
             `custom` tells the leaving choice which card was picked. */}
@@ -427,7 +433,7 @@ function Wizard({
       initial="hidden"
       animate="shown"
       exit="exit"
-      className={cn("w-full max-w-[600px] pb-12", !present && "z-10")}
+      className={cn("w-full max-w-[600px]", !present && "z-10")}
     >
       {/* Kept in layout (invisible, so not focusable) once done, so the card doesn't jump. */}
       <Button
