@@ -391,7 +391,7 @@ export function SourceOverview() {
 export function PublishDialog() {
   const ws = useWorkspace();
   const [check, setCheck] = useState(0);
-  const [reviewer, setReviewer] = useState("marcos");
+  const [reviewer, setReviewer] = useState("maria");
   const [tried, setTried] = useState(false);
   const open = ws.publishOpen;
   const returnFocus = useRef<HTMLElement | null>(null);

@@ -245,7 +245,7 @@ function HumanActionItem() {
               </>
             }
             actions={
-              <Button variant="outline" size="xs" onClick={() => (ws.setHumanAction(false), toast.success("gh-cli checked", { description: "Signed in as marcos." }))}>
+              <Button variant="outline" size="xs" onClick={() => (ws.setHumanAction(false), toast.success("gh-cli checked", { description: "Signed in as maria." }))}>
                 Check again
               </Button>
             }
@@ -1255,7 +1255,7 @@ export function TunnelView() {
                 {up ? (startedHere || ws.justJoined ? "Connected just now" : "Connected for 3 h 12 min") : "Stopped"}
               </span>
             </SettingRow>
-            <SettingRow title="Host">marcos@atlas.local</SettingRow>
+            <SettingRow title="Host">maria@atlas.local</SettingRow>
             <SettingRow title="Forwarding">
               <Mono className="text-foreground">127.0.0.1:17342 → atlas:17342</Mono>
             </SettingRow>

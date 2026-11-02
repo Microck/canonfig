@@ -888,7 +888,7 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
   const [pasteTried, setPasteTried] = useState(false);
   const [tunnel, setTunnel] = useState(true);
   const [sshHost, setSshHost] = useState("atlas.local");
-  const [sshUser, setSshUser] = useState("marcos");
+  const [sshUser, setSshUser] = useState("maria");
   const [hostKey, setHostKey] = useState("./source-host-key.pub");
   const [advanced, setAdvanced] = useState(false);
   const [trusted, setTrusted] = useState(false);
