@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
@@ -7,12 +8,16 @@ const DEMO_URL = "https://canonfig.micr.dev/";
 const DEMO_TITLE = "Canonfig: interactive demo";
 const DEMO_DESCRIPTION =
   "Try Canonfig's browser workspace with made-up data. Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.";
+// The share image, rendered from scripts/og-image.html. The docs at /docs point their og:image at the same URL.
+const OG_IMAGE = "og-image.png";
+const OG_IMAGE_URL = `${DEMO_URL}${OG_IMAGE}`;
+const OG_IMAGE_ALT = "The Canonfig chest beside the wordmark canonfig and the line: One-way sync for AI agent configuration.";
 
 /**
- * The public demo at canonfig.micr.dev (`vite build --mode demo`, GitHub Pages). It adds indexable meta to the
- * page and writes 404.html as a copy of index.html: Pages serves 404.html for unknown paths, so deep links such
- * as /follower/sync still boot the SPA, whose router reads the URL. The production build that `canonfig ui`
- * will serve gets neither and keeps the plain title from index.html.
+ * The public demo at canonfig.micr.dev (`vite build --mode demo`, GitHub Pages). It adds indexable and share
+ * meta to the page, emits the share image, and writes 404.html as a copy of index.html: Pages serves 404.html
+ * for unknown paths, so deep links such as /follower/sync still boot the SPA, whose router reads the URL. The
+ * production build that `canonfig ui` will serve gets none of these and keeps the plain title from index.html.
  */
 function demoSite(): Plugin {
   return {
@@ -31,10 +36,15 @@ function demoSite(): Plugin {
           { tag: "meta", attrs: { property: "og:title", content: DEMO_TITLE }, injectTo: "head" },
           { tag: "meta", attrs: { property: "og:description", content: DEMO_DESCRIPTION }, injectTo: "head" },
           { tag: "meta", attrs: { property: "og:url", content: DEMO_URL }, injectTo: "head" },
-          // No share image exists yet, so the small card; switch to summary_large_image with og:image once one does.
-          { tag: "meta", attrs: { name: "twitter:card", content: "summary" }, injectTo: "head" },
+          { tag: "meta", attrs: { property: "og:image", content: OG_IMAGE_URL }, injectTo: "head" },
+          { tag: "meta", attrs: { property: "og:image:width", content: "1200" }, injectTo: "head" },
+          { tag: "meta", attrs: { property: "og:image:height", content: "630" }, injectTo: "head" },
+          { tag: "meta", attrs: { property: "og:image:alt", content: OG_IMAGE_ALT }, injectTo: "head" },
+          { tag: "meta", attrs: { name: "twitter:card", content: "summary_large_image" }, injectTo: "head" },
           { tag: "meta", attrs: { name: "twitter:title", content: DEMO_TITLE }, injectTo: "head" },
           { tag: "meta", attrs: { name: "twitter:description", content: DEMO_DESCRIPTION }, injectTo: "head" },
+          { tag: "meta", attrs: { name: "twitter:image", content: OG_IMAGE_URL }, injectTo: "head" },
+          { tag: "meta", attrs: { name: "twitter:image:alt", content: OG_IMAGE_ALT }, injectTo: "head" },
         ],
       };
     },
@@ -44,6 +54,8 @@ function demoSite(): Plugin {
       const index = bundle["index.html"];
       if (index?.type !== "asset") throw new Error("demo build: index.html missing from the bundle");
       this.emitFile({ type: "asset", fileName: "404.html", source: index.source });
+      // Not in public/, which both builds copy: only the demo has a public URL to share.
+      this.emitFile({ type: "asset", fileName: OG_IMAGE, source: readFileSync(path.resolve(import.meta.dirname, "scripts", OG_IMAGE)) });
     },
   };
 }

@@ -8,6 +8,7 @@ import {
 } from "fumadocs-ui/layouts/docs/page";
 
 import { getMDXComponents } from "@/mdx-components";
+import { shareImage } from "@/lib/site";
 import { source } from "@/lib/source";
 
 interface PageProperties {
@@ -57,6 +58,7 @@ export async function generateMetadata({
       title: page.data.title,
       description: page.data.description,
       url: page.url,
+      images: [shareImage],
     },
   };
 }

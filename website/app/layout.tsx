@@ -5,7 +5,7 @@ import "fumadocs-ui/style.css";
 import "./global.css";
 
 import { baseOptions } from "@/lib/layout";
-import { basePath, siteUrl } from "@/lib/site";
+import { basePath, shareImage, siteUrl } from "@/lib/site";
 import { source } from "@/lib/source";
 
 export const metadata: Metadata = {
@@ -24,6 +24,15 @@ export const metadata: Metadata = {
     "Machine Profile",
     "Follower Machine",
   ],
+  // Every docs page replaces openGraph with its own (app/[[...slug]]/page.tsx),
+  // so it repeats the image there. No page sets twitter, so this one applies.
+  openGraph: {
+    images: [shareImage],
+  },
+  twitter: {
+    card: "summary_large_image",
+    images: [shareImage],
+  },
 };
 
 // Dark only, like the app. The browser bar takes --color-fd-background from app/ender-chest.css (dark).

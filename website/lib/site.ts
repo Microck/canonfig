@@ -15,3 +15,13 @@ export function absoluteDocsUrl(route: string): string {
   const path = route.endsWith("/") ? route : `${route}/`;
   return new URL(`${siteUrl.pathname.replace(/\/$/, "")}${path}`, siteUrl).href;
 }
+
+// The share image for og:image and twitter:image. The demo build at the site
+// root emits it (ui/vite.config.ts), so the docs point at the domain root, not
+// at their own base path.
+export const shareImage = {
+  url: new URL("/og-image.png", siteUrl).href,
+  width: 1200,
+  height: 630,
+  alt: "The Canonfig chest beside the wordmark canonfig and the line: One-way sync for AI agent configuration.",
+};
