@@ -1,18 +1,18 @@
 ---
-title: "How-to: upgrade to Canonfig 4.2.0"
-description: Move the Source Machine and every Follower Machine to Canonfig 4.2.0 without breaking synchronization.
+title: "How-to: upgrade to Canonfig 5.0.0"
+description: Move the Source Machine and every Follower Machine to Canonfig 5.0.0 without breaking synchronization.
 ---
 
-When you finish, the Source Machine and every Follower Machine run 4.2.0 and
+When you finish, the Source Machine and every Follower Machine run 5.0.0 and
 sync again. Existing enrollments, revisions, credentials, and schedules carry
-over when you upgrade from 4.0.x or 4.1.x. From 3.2.x you set up a separate
-4.2.0 fleet instead.
+over when you upgrade from 4.x. From 3.2.x you set up a separate
+5.0.0 fleet instead.
 
 ## Upgrade the whole fleet together
 
 A Source Machine and a Follower Machine must run the same `major.minor`
-release. A 4.2.0 Source Machine refuses a 4.1.x follower, and a 4.2.0 follower
-refuses a 4.1.x Source Machine. Synchronization stops between any two machines
+release. A 5.0.0 Source Machine refuses a 4.x follower, and a 5.0.0 follower
+refuses a 4.x Source Machine. Synchronization stops between any two machines
 on different lines until both are upgraded, so plan one maintenance window for
 the whole fleet:
 
@@ -21,9 +21,9 @@ the whole fleet:
 3. Upgrade each Follower Machine.
 4. Resume the schedules.
 
-Patch releases within one line (for example 4.2.0 and 4.2.1) work together.
+Patch releases within one line (for example 5.0.0 and 5.0.1) work together.
 
-## Upgrade from 4.0.x or 4.1.x
+## Upgrade from 4.x
 
 Before you start:
 
@@ -48,11 +48,11 @@ Write down the schedule `status` reports so you can set it again in step 4.
 
 ### 2. Upgrade the Source Machine
 
-Install 4.2.0 into the same npm prefix as the existing installation, then
+Install 5.0.0 into the same npm prefix as the existing installation, then
 check it:
 
 ```bash
-npm install --global @microck/canonfig@4.2.0
+npm install --global @microck/canonfig@5.0.0
 canonfig --version
 canonfig doctor --no-input
 ```
@@ -80,7 +80,7 @@ The output reports `running` and `serving: true`.
 On each Follower Machine, install into the same prefix and preview a sync:
 
 ```bash
-npm install --global @microck/canonfig@4.2.0
+npm install --global @microck/canonfig@5.0.0
 canonfig --version
 canonfig doctor --no-input
 canonfig sync --plan
@@ -110,14 +110,14 @@ Keep the backup until every machine reports `Converged`.
 
 You cannot upgrade a 3.2.x installation in place, and nothing migrates from
 it: the signed revision format changed, so revisions, enrollments, credentials,
-and schedules do not carry over. Instead, you build a separate 4.2.0 fleet and
+and schedules do not carry over. Instead, you build a separate 5.0.0 fleet and
 leave the 3.2.x installation untouched.
 
 <Callout type="warn">
-  Do not install 4.2.0 into the npm prefix of a 3.2.x installation, and do not
+  Do not install 5.0.0 into the npm prefix of a 3.2.x installation, and do not
   point it at the 3.2.x state directory. Doing so replaces the package the old
   installation runs. Leave the existing package, state directory, service,
-  schedules, and credential items untouched while setting up 4.2.0.
+  schedules, and credential items untouched while setting up 5.0.0.
 </Callout>
 
 1. On each 3.2.x machine, record the installed version, role, profile, and
@@ -131,7 +131,7 @@ leave the 3.2.x installation untouched.
    On Linux or macOS, as the new account:
 
    ```bash
-   npm install --global --prefix "$HOME/.local" @microck/canonfig@4.2.0
+   npm install --global --prefix "$HOME/.local" @microck/canonfig@5.0.0
    export PATH="$HOME/.local/bin:$PATH"
    canonfig --version
    ```
@@ -149,15 +149,15 @@ leave the 3.2.x installation untouched.
 
 ## If something fails
 
-**Sync or enrollment fails with `source/follower version mismatch: source 4.1.3 vs follower 4.2.0`.**
+**Sync or enrollment fails with `source/follower version mismatch: source 4.2.0 vs follower 5.0.0`.**
 The two machines run different `major.minor` releases. The message names both
 versions. Upgrade the machine on the older line.
 
-**A command fails with `run <id> was created by canonfig 4.1.3 ... finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`.**
+**A command fails with `run <id> was created by canonfig 4.2.0 ... finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`.**
 The machine has an unfinished run from the previous build. Reinstall the
 version the message names, run `canonfig recover`, then upgrade again. Set
 `CANONFIG_ACCEPT_FOREIGN_BUILD=1` only if you cannot reinstall that build and
-accept that 4.2.0 finishes a run it did not start.
+accept that 5.0.0 finishes a run it did not start.
 
 **Sync fails with `a revision published by an earlier canonfig release cannot be served; publish the profile again on the Source Machine`.**
 The Source Machine holds a revision the upgraded release cannot serve. On the
