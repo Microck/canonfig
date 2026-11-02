@@ -706,7 +706,7 @@ describe("agent resolution", () => {
       return recording.invocations[0]?.arguments;
     };
     expect(await argumentsFor({ harness: "codex", model: "gpt-5-codex" }))
-      .toEqual(["--model", "gpt-5-codex", "exec", "--json", "--sandbox", "read-only", "-"]);
+      .toEqual(["--model", "gpt-5-codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-"]);
     expect(await argumentsFor({ harness: "claude", model: "opus" }))
       .toEqual(["--model", "opus", "--print", "--permission-mode", "plan", "--output-format", "json"]);
     expect(await argumentsFor({ harness: "claude" }))
