@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import "fumadocs-ui/style.css";
@@ -24,6 +24,12 @@ export const metadata: Metadata = {
     "Machine Profile",
     "Follower Machine",
   ],
+};
+
+// Dark only, like the app. The browser bar takes --color-fd-background from app/ender-chest.css (dark).
+export const viewport: Viewport = {
+  colorScheme: "dark",
+  themeColor: "#0b0f10",
 };
 
 export default function RootLayout({

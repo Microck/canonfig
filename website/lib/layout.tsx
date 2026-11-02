@@ -15,6 +15,8 @@ export const baseOptions: BaseLayoutProps = {
     ),
     url: "/",
   },
+  // The docs are dark only (app/layout.tsx disables the theme provider), so a theme toggle would do nothing.
+  themeSwitch: { enabled: false },
   links: [
     {
       text: "CLI reference",
