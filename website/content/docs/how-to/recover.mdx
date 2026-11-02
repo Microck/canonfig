@@ -1,157 +1,238 @@
 ---
-title: "How-to: recover drift and human-action cases"
-description: Resume an interrupted synchronization or resolve non-converged outcomes without overwriting follower-owned work.
+title: "How-to: recover from a failed or blocked sync"
+description: Find the error you see, learn what caused it, and bring a Follower Machine back to Convergence without losing follower-owned work.
 ---
 
-Canonfig records the complete Synchronization Plan before mutation and journals each action. **Follower Drift** and **Human Action Required** are deliberate outcomes that preserve the reason Canonfig did not proceed.
-
-## What one run changes, and what it rolls back
-
-A Synchronization Run is one transaction for filesystem and configuration
-changes. If any deterministic action fails, for example because a target is
-not writable, Canonfig restores every file, directory, and config it had
-already changed in that run, in reverse order, including resources that do not
-depend on the failed one. Resources that depend on the failed one are not
-written. The run ends `Failed` (exit 7), and apply, `status`, and the
-completion receipt name the resource and its target, for example
-`resource claude-settings could not be applied to ~/.claude/settings.json:
-atomically write file failed: EACCES: permission denied`.
-
-Two things are outside that transaction:
-
-- **Tool installs are not rolled back.** A package that an installer already
-  installed stays installed; the next run's verification finds it in place.
-- **Human Action Required and Follower Drift stop the run without rolling
-  back.** Actions run in plan order. When one reaches a resource that needs a
-  login, a local credential, a repair of an unparseable follower config file,
-  or a drift decision, the actions before it that already verified stay
-  applied, the blocked resource is left unchanged, and every later action is
-  skipped, not run. `sync --plan` lists the blocked resource, as
-  `human-action` with its reason or as `drift-conflict`.
-
-Fix the reported cause, then run `canonfig sync --apply` again. The next run
-reapplies everything that was rolled back or skipped.
-
-## Resume an interrupted run
-
-A run is interrupted when the process stops during apply: a crash, a kill, a
-reboot, or a full disk. Inspect it first:
+Find the message or exit code you see below. Each entry gives the cause and
+the fix. Before you change anything, collect the current state:
 
 ```bash
 canonfig status
+canonfig doctor --no-input
 ```
 
-While a run is open, `converged` is not reached, and status shows the open run
-with each planned action's journaled state, how many actions finished, and the
-next step. Then resume it:
+`status` shows the recorded Synchronization Run and any resource that is
+blocked. `doctor` checks this machine; see [Diagnostics](/reference/diagnostics).
+
+<Callout title="Keep the evidence" type="warning">
+  Do not delete Canonfig's database, cache, or run journal to clear an error.
+  Those records are what `canonfig recover` uses to restore your files.
+</Callout>
+
+## What one run changes, and what it rolls back
+
+A Synchronization Run changes files and configuration as one unit:
+
+- **An apply failure (exit 7) rolls back.** Canonfig restores every file,
+  directory and config it changed in that run, then reports the resource and
+  target, for example `resource claude-settings could not be applied to
+  ~/.claude/settings.json: atomically write file failed: EACCES: permission
+  denied`. Fix the cause and run `canonfig sync --apply` again.
+- **Human Action Required (exit 3) and Follower Drift (exit 4) stop the run
+  without rolling back.** Resources applied before the blocked one stay
+  applied, the blocked resource is unchanged, and later resources are skipped.
+  `canonfig sync --plan` lists the blocked resource as `human-action` or
+  `drift-conflict`.
+- **Tool installs are never rolled back.** A package an installer already
+  installed stays installed, and the next run finds it in place.
+
+After you fix the cause, `canonfig sync --apply` reapplies everything that was
+rolled back or skipped.
+
+## The run was interrupted
+
+**Symptom:** the process stopped during apply (crash, kill, reboot, full disk).
+`status` shows an open run, which actions finished, and the next step. A new
+sync stops with:
+
+> follower `<name>` has a run still open; run 'canonfig recover' first, or
+> 'canonfig abandon' to close it without rollback when it cannot be recovered
+
+(exit 4)
+
+**Fix:**
 
 ```bash
 canonfig recover
 ```
 
-Recovery uses the persisted action journal and rollback snapshots; it does not
-guess from partial filesystem changes. If there is no recoverable run, the
-command returns a usage error rather than inventing work. It also removes
-Canonfig's own temporary files (`.cf-<12 hex>.tmp`) next to the run's targets.
+`recover` finishes or rolls back the open run from its journal and removes
+Canonfig's temporary files (`.cf-<12 hex>.tmp`) next to its targets. It
+restores file permissions it recorded before the run: POSIX modes on Linux and
+macOS; owner, group and access rules on Windows. It does not restore Windows
+audit rules.
 
-Recovery never races a live run. `sync --apply`, `recover`, and `abandon` take
-an exclusive run lock. While another Canonfig process holds it, they stop with
-exit 4: "another canonfig process (PID N) has been running `<operation>` for
-this follower since `<time>`; wait for it to finish, then retry". A lock left by
-a killed process is taken over automatically.
+If there is no open run, `recover` exits with code 2:
+`follower <name> has no run to recover`.
 
 ### A file was edited after the interruption
 
-Before it restores anything, recovery compares the current bytes of every
-target with the content from before the run and with what the run was writing.
-If a target matches neither, someone edited it after the interruption.
-Recovery then stops with Human Action Required (exit 3), names the file,
-changes nothing, and keeps both the file and the snapshot. Either:
+**Message** (exit 3):
 
-1. keep your edit somewhere else, or restore one of the two versions, then run
-   `canonfig recover` again; or
-2. run `canonfig abandon` to keep the files exactly as they are.
+> `<path>` changed after run `<run>` was interrupted: the current content
+> matches neither the content before the run nor what the run was writing, so
+> recovery stopped without changing anything.
+
+**Cause:** someone edited a target after the run stopped. Canonfig keeps both
+the file and its copy from before the run.
+
+**Fix:** pick one:
+
+1. Save your edit elsewhere, or restore one of the two versions, then run
+   `canonfig recover` again.
+2. Keep the files exactly as they are: run `canonfig abandon`.
 
 ### Close a run that cannot be recovered
+
+<Callout title="abandon does not roll back" type="warning">
+  Whatever the run already applied stays applied. The next sync treats it like
+  any other state on the follower.
+</Callout>
 
 ```bash
 canonfig abandon
 ```
 
-`abandon` is the terminal close for a run `recover` cannot resolve, such as one
-whose revision is no longer authorized or whose follower now selects another
-profile. It is not a rollback: whatever the run already applied stays applied,
-and the next run reconciles it like any other follower state.
+Use this when `recover` cannot finish the run, for example because its Profile
+Revision is no longer authorized or the follower now selects another Machine
+Profile.
 
-Recover an open run with the release and state that created it. Recovery after
-an in-place upgrade from 3.2.x to 4.2.0 is unsupported and unverified; see
-[the fresh-install guide](/how-to/upgrade) before replacing any installation.
+### The run was created by another Canonfig build
 
-Before changing an existing file or managed directory, Canonfig captures its permissions in the rollback journal. Rollback restores POSIX modes on Linux and macOS. On Windows it also restores the owner, group, and discretionary access rules, including inheritance flags. It does not capture Windows audit rules. Directory permissions are restored after their children so restrictive permissions do not block recovery.
+**Message** (exit 4): `run <run> was created by canonfig <version> ...; finish
+the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to
+accept the upgrade`
 
-If Windows refuses to restore a captured owner or access rule, recovery remains failed and retains the journal and backups. Resolve the reported permission error before retrying recovery. A numeric mode alone is not a complete Windows permission backup.
+**Cause:** you upgraded Canonfig while a run was open.
+
+**Fix:** reinstall the version named in the message, run `canonfig recover`,
+then upgrade. Set `CANONFIG_ACCEPT_FOREIGN_BUILD=1` only if you accept that the
+newer build recovers a run it did not create. See [Upgrade](/how-to/upgrade).
+
+### Restoring Windows permissions failed
+
+**Cause:** Windows refused to restore an owner or access rule that Canonfig
+recorded. The run stays failed, and the journal and backups stay in place.
+
+**Fix:** resolve the permission error in the message, then run
+`canonfig recover` again.
+
+## Another Canonfig process is running
+
+**Message** (exit 4):
+
+> another canonfig process (PID 48211) has been running 'sync --apply' for this
+> follower since `<time>`; wait for it to finish, then retry. If PID 48211 is
+> not a canonfig process, delete `<lock path>` and retry
+
+**Cause:** `sync --apply`, `recover` and `abandon` run one at a time. A lock
+left by a process that no longer exists is taken over automatically.
+
+**Fix:** wait for the other run to finish, for example a scheduled run.
+
+<Callout title="Check the PID before you delete the lock" type="warning">
+  Delete the lock file only if that PID is not a Canonfig process. Removing the
+  lock of a live run lets two runs change the same files.
+</Callout>
 
 ## Not enough disk space
 
-Before a run is recorded, and again before content downloads, Canonfig checks
-free space on the filesystem of each target and of its cache. When space is
-short it stops with exit 7, "the filesystem holding `<path>` needs N bytes free
-but only M are available; nothing was changed". No run is opened, so there is
-nothing to recover: free space and run the command again.
+**Message** (exit 7):
+
+> the filesystem holding `<path>` needs N bytes (M MiB) free but only N bytes
+> (M MiB) are available; nothing was changed. Free space there, then retry
+
+**Cause:** Canonfig checks free space before it records a run and before it
+downloads content. No run was opened, so there is nothing to recover.
+
+**Fix:** free space on that filesystem, then run `canonfig sync --apply`.
 
 ## Resolve Follower Drift
 
-Drift applies to resources whose policy protects local edits: skills
-(`replace-if-unmodified`) and the Source section of `append-local` files. For
-each managed file, Canonfig compares three digests: the target, the desired
-content, and what it last applied. (A `replace` file is Source-owned: a local
-edit to it is replaced by the next apply.)
+**Symptom:** exit 4, and `status` or `sync --plan` shows a resource as
+`drift-conflict`.
 
-When the observed file differs both from the desired content and from what
-Canonfig last applied, someone changed it on the follower. Canonfig marks it as
-**Follower Drift** (exit 4) and keeps the follower's content. It never merges
-or overwrites a locally modified skill.
+**Cause:** a file whose Apply Policy protects local edits changed on this
+follower since Canonfig last applied it. This covers skills
+(`replace-if-unmodified`) and the Source section of `append-local` files.
+Canonfig keeps the follower's content and never merges or overwrites it. Files
+with the `replace` policy belong to the Source Machine; the next apply replaces
+local edits to them without reporting drift.
 
-1. Find the drifted resource:
-   ```bash
-   canonfig status
-   ```
-2. Decide which version to keep:
-   - **Keep the Source version:** move the local copy aside (or delete it) and
-     run `canonfig sync --apply`. A missing target is reinstalled.
-   - **Keep the local change for everyone:** copy it to the Source, publish a
-     new revision there, and sync.
-   - **Keep the local change on this follower only:** for a `config` key, claim
-     it with a Local Overlay (`canonfig overlay set <resource-id> --target
-     <path> --key <config.path>`). Files and skills cannot move into a Local
-     Overlay.
-3. Run synchronization again.
+**Fix:** decide which version to keep, then sync again:
 
-## Complete Human Action Required
+- **The Source Machine's version:** move the local copy aside, then run
+  `canonfig sync --apply`. Canonfig reinstalls a missing target.
+- **Your local change, for every follower:** copy it to the Source Machine,
+  publish a new Profile Revision there, then sync.
+- **Your local change, on this follower only:** for a config key, claim it as
+  a Local Overlay with `canonfig overlay set claude-settings --target
+  ~/.claude/settings.json --key permissions.defaultMode`. Files and skills
+  cannot become a Local Overlay.
 
-Canonfig records **Human Action Required** (exit 3) when a person must complete a step before the desired state can be verified, such as:
+## Human Action Required
 
-- a login that cannot be completed noninteractively
-- a locked or unavailable credential store (the message names the store and the command to run)
-- a follower config file that does not parse (the message names the file, line, and column)
-- an agent policy forbidding a required capability (elevation, restart, reboot)
-- an ambiguous action under `deterministic-only`
+**Symptom:** exit 3, and a message that names the step only you can take.
+Common causes:
+
+| Cause | What the message gives you |
+| --- | --- |
+| A login that cannot finish without you | the command to log in |
+| A locked or unreachable credential store | the store and the command to unlock it |
+| A follower config file that does not parse | the file, line and column |
+| An agent policy that forbids a needed capability (elevation, restart, reboot) | the capability |
+| An action that needs a decision under `deterministic-only` | the resource and the choice |
 
 <Callout title="Do not bypass the boundary" type="error">
-  Do not put a token on the command line, disable certificate pinning, broaden an allowlist to an entire home directory, or switch to agent apply merely to clear an outcome.
+  Do not put a token on the command line, turn off certificate pinning, widen an
+  allowlist to your whole home directory, or switch to agent apply to clear the
+  outcome.
 </Callout>
 
-After completing the exact instructions provided by Canonfig:
+**Fix:** do exactly what the message says, then:
 
-1. Check diagnostics:
-   ```bash
-   canonfig doctor --no-input
-   ```
-2. Build a new plan to re-evaluate the state:
-   ```bash
-   canonfig sync --plan
-   ```
-3. Apply the plan to verify the machine state and record Convergence:
-   ```bash
-   canonfig sync --apply
-   ```
+```bash
+canonfig doctor --no-input
+canonfig sync --plan
+canonfig sync --apply
+```
+
+### The credential store did not answer
+
+**Message** (exit 3): `this machine's credential store could not return the
+follower credential, so no Source request was made: ...`
+
+**Cause:** the keyring or Keychain is locked, or this session cannot reach it.
+The Follower Identity is not revoked.
+
+**Fix:** unlock the store in this session. For scheduled runs on Linux and
+macOS, see [Run Canonfig unattended](/how-to/run-unattended).
+
+## The Source cannot be reached (exit 6)
+
+| Message | Fix |
+| --- | --- |
+| "nothing answered at the Source endpoint `<host>` (ECONNREFUSED)" | Start the Source Machine's service, or run `canonfig tunnel start` if you reach it through the managed tunnel. |
+| "the Source is unreachable because the managed tunnel `<endpoint>` is down" or "is stopped" | `canonfig tunnel start` |
+
+For every tunnel and service message, see
+[Run Canonfig unattended](/how-to/run-unattended#if-something-fails).
+
+## Authentication failed (exit 5)
+
+| Message | Fix |
+| --- | --- |
+| "this follower's credential has been revoked" | Ask for a new invitation on the Source Machine and enroll again. |
+| "the follower credential is invalid" | Enroll again with a new invitation. |
+| "the invitation has expired; ask the Source Machine for a new one" | Create a new invitation. |
+| "the invitation was already used; ask the Source Machine for a new one" | Create a new invitation. |
+| "source TLS pin validation failed" (from `doctor`) | The Source Machine's certificate no longer matches the one this follower pinned. Canonfig never resets trust on its own; enroll again with a new invitation. |
+
+## Configuration errors (exit 2)
+
+| Message | Fix |
+| --- | --- |
+| "source/follower version mismatch: source `<a>` vs follower `<b>`. install the same major.minor canonfig release on the Source Machine and on every follower" | Install one release line everywhere; see [Upgrade](/how-to/upgrade). |
+| "this machine is not enrolled; run 'canonfig follower enroll' first" | Enroll the follower. |
+| "the gemini agent harness was removed in 5.0.0; run 'canonfig agent harness codex\|claude\|custom ...' to replace it" | Pick another harness, for example `canonfig agent harness claude --executable /usr/local/bin/claude`. See [Configure agent policies](/how-to/configure-agent-policies). |
+| "`<path>` needs N characters including Canonfig's staging names, but this machine accepts file paths of at most 260 characters because Windows long paths are not enabled" | See [Windows path length](/reference/cross-platform#windows-path-length-and-symbolic-links). |

@@ -1,50 +1,52 @@
 ---
 title: Canonfig
-description: A deterministic, one-way configuration synchronizer with bounded AI assistance.
+description: Keep Claude Code, Codex, and other agent configuration identical across your machines, published from one machine you control.
 ---
 
-Canonfig keeps declared AI agent configuration aligned across machines. One
-**Source Machine** publishes immutable, authenticated **Profile Revisions**.
-Each **Follower Machine** plans, applies, and verifies the revision selected for
-its **Machine Profile** and **Follower Groups**.
+Canonfig copies your AI agent configuration (instruction files, settings keys,
+MCP servers, skills, and tools) from one machine to others. You declare what to
+share in a **Machine Profile** on the **Source Machine** and publish it as a
+signed **Profile Revision**. Each **Follower Machine** checks that revision,
+applies it, and verifies the result; followers never send changes back.
 
-<Callout title="The authority boundary" type="info">
-  Followers never publish upstream state. Discovery and Configuration Agent
-  output become Profile Change Proposals; publication is always explicit.
-</Callout>
+To see the commands and their output before you install anything, try the
+[interactive demo](https://canonfig.micr.dev). It runs on simulated data.
 
-## Start here
+## What do you want to do?
 
 <Cards>
-  <Card title="Tutorial: sync Claude Code and Codex from machine A to machine B" href="/tutorials/first-sync">
+  <Card title="Set up your first Source Machine and Follower Machine" href="/tutorials/first-sync">
     Publish your setup from one machine, enroll a second one, and keep it in sync on a schedule.
   </Card>
-  <Card title="How-to: Update and republish a profile" href="/how-to/publish-profile-changes">
-    Change what followers receive, add or remove resources, pin tools, and roll content back.
+  <Card title="Add another Follower Machine" href="/tutorials/first-sync#7-invite-machine-b">
+    Issue an invitation on the Source Machine and enroll the new machine with it.
   </Card>
-  <Card title="How-to: Manage schedules" href="/how-to/manage-schedules">
-    Install and inspect native daily or weekly follower synchronization.
+  <Card title="Publish a change" href="/how-to/publish-profile-changes">
+    Change what followers receive, add or remove resources, or roll content back.
   </Card>
-  <Card title="How-to: Run Canonfig unattended" href="/how-to/run-unattended">
-    Keep the Source serving and followers syncing after logout, reboot, or a tunnel outage.
+  <Card title="Sync on a schedule" href="/how-to/manage-schedules">
+    Install, inspect, or remove a daily or weekly synchronization.
   </Card>
-  <Card title="How-to: Recover drift" href="/how-to/recover">
-    Resume an interrupted synchronization or resolve non-converged outcomes.
+  <Card title="Keep machines syncing after logout or reboot" href="/how-to/run-unattended">
+    Keep the Source Machine serving and followers syncing without you logged in.
   </Card>
-  <Card title="How-to: Upgrade to Canonfig 4.2.0" href="/how-to/upgrade">
-    Update 4.0.x/4.1.x safely, or preserve a 3.2.x installation before setting up 4.2.0 separately.
+  <Card title="Recover from a failed or interrupted sync" href="/how-to/recover">
+    Resume an interrupted synchronization or resolve a result that did not converge.
   </Card>
-  <Card title="Explanation: Architecture" href="/explanation/architecture">
-    Understand the authority model, determinism, credentials, and rollback.
+  <Card title="Upgrade Canonfig" href="/how-to/upgrade">
+    Move every machine to a new release without breaking synchronization.
   </Card>
-  <Card title="Reference: CLI" href="/reference/cli">
-    Complete CLI command surface, platform behavior, diagnostics, and security.
+  <Card title="Look up a command" href="/reference/cli">
+    Every command, flag, exit code, and platform difference.
   </Card>
 </Cards>
 
-## Non-goals
+## What Canonfig does not do
 
-Canonfig does not provide bidirectional synchronization, automatic credential
-copying, silent conflict resolution for modified skills, whole-home-directory
-backup, or a hosted fleet control plane. It also does not guarantee rollback
-for third-party installers.
+- It does not sync in both directions. Changes made on a Follower Machine stay there or are overwritten, depending on the resource.
+- It does not copy credentials, logins, or the trust decisions each client asks you to make.
+- It does not back up your home directory.
+- It does not run a hosted service: your Source Machine serves the revisions.
+- It does not guarantee that a third-party installer can be rolled back.
+
+To learn how the pieces fit together, read [Architecture](/explanation/architecture).

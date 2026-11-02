@@ -1,65 +1,148 @@
 ---
-title: "Explanation: architecture, authority, determinism, credentials, and rollback"
-description: Understand Canonfig's authority model, determinism, credentials, transaction boundary, and rollback guarantees.
+title: "How Canonfig works: authority, sync, and rollback"
+description: What the Source Machine and Follower Machines own, what syncs and when, what stays local, where Canonfig keeps its files, and what one run changes or rolls back.
 ---
 
-Canonfig has exactly one **Source Machine** per installation. The Source Machine owns canonical configuration; **Follower Machines** consume it without becoming additional authorities.
+Canonfig keeps AI agent configuration aligned across your machines. One
+**Source Machine** owns the desired configuration. Every other machine is a
+**Follower Machine**: it receives that configuration and never sends changes
+back. This page explains the behavior you need to plan around.
 
-## System shape
+## Who owns what
 
-```text
-authored profile file ─┐
-                       ├→ ProfileCatalog → signed Profile Revision
-tool scan → proposal ──┘     (explicit review)      ↓ pinned HTTPS
-CLI or native schedule → Synchronization → MachineState
-                              ↘ StateRepository
-                               ↘ AgentResolution, only when eligible
-```
+| Owned by the Source Machine | Owned by each Follower Machine |
+| --- | --- |
+| The Machine Profile you author and every Profile Revision you publish | Its Follower Identity (a credential only that machine holds) |
+| The signing key and HTTPS certificate followers trust | Its Local Overlay: config keys it claims as its own |
+| The list of enrolled followers and their Follower Groups | Its Synchronization Schedule |
+| Shared secrets, when you opt in | Its agent policy, agent harness, and installer bindings |
+| | Text below the marker in an `append-local` file |
 
-You author file, directory, config, and skill resources in a profile file.
-`source scan` is tool discovery only: it proposes `tool` resources from evidence
-in the files you name and never proposes anything else. Publication validates
-the profile, resolves each `source` path inside the profile's directory,
-computes content digests, checks pinned installer versions, and signs one
-immutable revision.
+A follower never publishes. When you want a change on every machine, you
+change the profile file on the Source Machine and run `canonfig source publish`.
+When you want a change on one machine only, you claim it on that machine with a
+Local Overlay or keep it out of the profile.
 
-## Authority and credentials
+## What syncs and when
 
-Canonfig separates profile authority, transport trust, follower authentication, and local credentials.
+1. You author a profile file and publish it on the Source Machine. Publishing
+   validates the profile, reads every `source` file it names, and signs an
+   immutable **Profile Revision** with the next sequence number.
+2. A follower fetches the latest revision of its selected profile only when you
+   run `canonfig sync`, or when its native schedule runs `canonfig sync --apply
+   --no-input --scheduled`. Canonfig does not push changes and does not poll in
+   the background.
+3. `canonfig sync --plan` (the default) downloads the revision and compares it
+   with the machine. It changes nothing. `canonfig sync --apply` applies the
+   plan and verifies every resource.
 
-The Source Machine signs canonical Profile Revision payloads. Followers verify the signing fingerprint pinned at enrollment and verify every content digest. Profile Revisions are immutable after publication; republishing earlier content creates a new revision with the next sequence number.
+A revision never changes after you publish it. To roll a profile back,
+republish the earlier content; it becomes the next revision.
 
-Transport trust relies on pinning the source HTTPS certificate fingerprint at enrollment. Later synchronization rejects unexpected TLS certificates, invalid signatures, digest mismatches, or revoked credentials. The Source serves loopback only; a follower on another host reaches it through the managed SSH tunnel, which pins the SSH host key as well.
+Followers download only files they do not already hold. Before a run starts,
+Canonfig checks free disk space on each target's filesystem and on its cache,
+and refuses the run when either is too small.
 
-Each follower has its own revocable credential in its native credential store, and the Source keeps its keys in its own store, named per state directory. Profile credential resources remain local references and are never copied into revisions. Operators may separately opt a follower into shared-secret transfer by enrolling it with the `canonfig:secrets` group. Those values travel only over the existing authenticated, certificate-pinned HTTPS channel, are written directly to platform secret storage (Linux Secret Service, macOS Keychain, Windows Credential Manager) and read back to confirm the exact bytes, and are never written to the ordinary state database or JSON manifest. Secrets received from a source are not re-shared by followers. See [Security and credentials](/reference/security).
+The Source Machine serves revisions on a loopback address only. A follower on
+another host reaches it through `canonfig tunnel`, an SSH tunnel Canonfig
+manages. See [Security and credentials](/reference/security#transport-trust).
 
-## Determinism and agents
+## What stays local
 
-Canonfig evaluates four kinds of action:
+- **Credentials.** A `credential` resource carries a reference, not a value.
+  Each follower must already hold the credential; otherwise the resource needs
+  Human Action Required. Shared secrets are a separate, opt-in channel; see
+  [Opt-in shared secrets](/reference/security#opt-in-shared-secrets).
+- **Local Overlay keys.** Keys you claim with `canonfig overlay set` stay as you
+  wrote them, and are never sent to the Source Machine.
+- **Local text in `append-local` files.** Canonfig replaces only the marked
+  Source section of the file.
+- **Files the profile does not declare.** Canonfig changes only the targets and
+  keys a profile declares. A `directory` resource with the default
+  `mirror-owned` policy removes only entries Canonfig wrote earlier.
+- **Applied files after you leave.** `canonfig follower unenroll` leaves every
+  applied file in place.
 
-1. **Deterministic**: Canonfig chooses one safe action from declared facts. Runs before any agent work.
-2. **Agent proposal**: A Configuration Agent suggests a bounded resolution. Never changes a published revision.
-3. **Agent apply**: A pre-authorized harness executes within explicit bounds. Completion requires independent verification.
-4. **Human Action Required**: A required human-only step (like login, or unlocking a credential store) is missing. Canonfig records exact instructions and stops that resource.
+## What happens when a follower changed a managed file
 
-An agent statement is not proof. Canonfig captures process output and changed paths, then runs the Profile Resource's independent verification. Only that verification establishes Convergence.
+Canonfig records what it last applied to each resource. On the next run it
+compares the machine with that record:
 
-## Incremental transfer
+- A `config` resource rewrites only the keys the profile declares. Other keys,
+  comments, and layout in the file stay.
+- A `skill` resource (policy `replace-if-unmodified`) that you edited on the
+  follower is **Follower Drift**. Canonfig keeps your edit, reports the
+  resource as `drift-conflict` in the plan, and stops the run with exit 4. Move
+  the change to the Source Machine and publish it, or discard it on the
+  follower, then run `canonfig sync --apply` again.
+- A `file` resource with the default `replace` policy is overwritten with the
+  profile's content. Use `append-local` when a follower needs its own text in
+  the same file.
 
-Profile Revisions and their blobs are immutable and content-addressed. Follower transfer is incremental: cached blobs are reused after digest verification. Free disk space is checked on each target's filesystem and on the cache before a run is recorded or a blob is downloaded.
+The policies are described in
+[Profiles, revisions, resources, and policies](/reference/profile-schema#apply-policies).
+
+## How Canonfig decides what to do
+
+For every resource, Canonfig first looks for one safe action it can take from
+the profile alone, such as writing a file or running a pinned installer. If
+none exists, the outcome depends on the follower's agent policy:
+
+| Agent policy | What happens |
+| --- | --- |
+| `deterministic-only` | The resource needs Human Action Required, with instructions. |
+| `agent-propose` | A Configuration Agent suggests a fix. The suggestion never changes a published revision. |
+| `agent-apply` | A Configuration Agent runs inside the paths, programs, origins, and capabilities you allowed. |
+
+**Human Action Required** means a step only a person can complete, such as
+signing in to a tool or unlocking a credential store. Canonfig stops that
+resource and prints what to do.
+
+An agent's own report is never proof. After any change, Canonfig runs the
+resource's declared verification, and only that verification counts. See
+[Configure agent policies](/how-to/configure-agent-policies).
 
 ## The transaction boundary
 
-Canonfig records the complete Synchronization Plan before mutation and journals each action before and after execution. One run is one transaction for filesystem and configuration changes:
+Before `canonfig sync --apply` changes anything, Canonfig records the full plan.
+It then records each action before and after it runs. One run behaves as one
+transaction for file, directory, and config changes:
 
-- **A failed deterministic action rolls back the whole run.** Canonfig restores every file, directory, and config it already changed in that run, in reverse order, including resources that do not depend on the failed one. It uses the recorded rollback material, sibling temporary files, durability synchronization, and atomic rename, then restores the prior ownership records. The run ends `Failed` (exit 7) and names what failed: "resource `<id>` could not be applied to `<target>`: `<cause>`".
-- **Tool installs are not rolled back.** Package installation, login, and arbitrary agent commands cannot promise rollback. Canonfig records their evidence, and the next run's verification finds an installed tool in place.
-- **Human Action Required and Follower Drift stop the run without rolling back.** Actions run in plan order. When one reaches a resource that needs a login, a local credential, a repair of an unparseable follower config file, or a drift decision, the actions before it that already verified stay applied, the blocked resource is left unchanged, and every later action is skipped rather than run. `sync --plan` already lists the blocked resource, as `human-action` with its reason or as `drift-conflict`. Repair the cause, then run `sync --apply` again to apply the skipped resources.
+- **A failed action rolls back the whole run.** Canonfig restores every file,
+  directory, and config it changed in that run, including resources unrelated
+  to the failure. The run fails with exit 7 and names the cause:
+  "resource `<id>` could not be applied to `<target>`: `<cause>`". Fix the
+  cause and run `canonfig sync --apply` again.
+- **Tool installs are not rolled back.** Canonfig cannot reverse a package
+  manager, a login, or an agent's commands. The next run's verification finds
+  an installed tool and leaves it in place.
+- **Human Action Required and Follower Drift stop the run without rolling
+  back.** Resources that already applied and verified stay applied. The blocked
+  resource is left as it is, and every later action is skipped. `canonfig sync
+  --plan` lists the blocked resource in advance. Fix the cause, then run
+  `canonfig sync --apply` again to apply the rest.
 
-A failed run is all-or-nothing on purpose: a half-applied profile, where one config key arrived and a related hook did not, is harder to reason about than either state. After you fix the reported cause, the next `sync --apply` reapplies everything that was rolled back or skipped.
+A run that stops part-way (a crash, a killed process, a reboot, or a full disk)
+stays open. `canonfig recover` resumes it or rolls it back. When a file was
+edited after the run wrote it, recovery stops and keeps both your file and the
+saved copy instead of choosing for you. See [Recover](/how-to/recover).
 
-An interrupted run (a crash, kill, reboot, or full disk) stays open until `canonfig recover` resumes or rolls it back, or `canonfig abandon` closes it. Recovery compares each target with both the pre-run and the intended bytes and stops, keeping both the file and the snapshot, when a later local edit matches neither. See [Recover](/how-to/recover).
+## Where Canonfig keeps its files
 
-<Callout title="External installers are not rolled back" type="info">
-  Canonfig records installer evidence and reruns idempotent verification, but does not claim third-party installers are reversed.
-</Callout>
+| Path | Contents |
+| --- | --- |
+| `~/.canonfig/state.sqlite` | Enrollment, published revisions (Source), run records, and Applied Resource Records |
+| `~/.canonfig/cache/` | Downloaded revision files, reused across runs |
+| `~/.canonfig/canonfig.log` | Command log: command name, time, duration, exit code |
+| `~/.canonfig/setup.json` | The `canonfig setup` plan, approval, and progress |
+| `~/.canonfig/tunnel/` | The managed SSH tunnel record |
+| `~/.canonfig/installers/` | Installer bindings for this machine |
+| Native credential store | Source keys, the Follower Identity, and shared secrets |
+| User cache directory, under `canonfig/rollback/<run-id>/` | Copies kept to roll back a run; removed after a successful run |
+
+The user cache directory is `~/.cache` (or `$XDG_CACHE_HOME`) on Linux,
+`~/Library/Caches` on macOS, and `%LOCALAPPDATA%` on Windows.
+
+Canonfig never deletes or resets its state database by itself. If the database
+is unreadable, commands fail with exit 3; check the directory's permissions, or
+restore a known good copy of `state.sqlite`.

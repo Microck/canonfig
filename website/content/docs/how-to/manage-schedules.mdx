@@ -1,194 +1,233 @@
 ---
-title: "How-to: manage schedules"
-description: Install, inspect, and repair native daily or weekly follower synchronization, including time zone and daylight-saving behavior.
+title: Sync a Follower on a schedule
+description: Make a Follower Machine apply the latest Profile Revision daily or weekly, check that the job runs, and handle time zones, daylight saving, and missed runs.
 ---
 
-Canonfig uses the operating system's user scheduler: a systemd user timer on
-Linux, a launchd user agent on macOS, and Task Scheduler on Windows. There is no
-resident Follower Machine daemon. Every native job runs:
+A Synchronization Schedule makes a Follower Machine apply the latest Profile
+Revision at a fixed time, daily or on chosen weekdays, with no one at the
+keyboard. Canonfig installs a job in the operating system's own scheduler: a
+systemd user timer on Linux, a launchd agent on macOS, and a Task Scheduler
+task on Windows. Each run does the same as `canonfig sync --apply --no-input`.
 
-```text
-canonfig sync --apply --no-input --scheduled
-```
+A Follower has no schedule until you choose one on that Follower. Publishing a
+profile or running `sync` never installs one.
 
-A follower has no schedule until you choose one on that follower. Applying a
-profile never installs, re-enables, or recreates a scheduled job.
+## Before you start
 
-## Set a schedule
+- The Follower is enrolled and has applied its profile at least once. On a
+  machine that is not enrolled, `schedule set` fails with "canonfig schedule
+  set needs an enrolled follower; enroll, then apply the selected profile
+  first".
+- Run `schedule set` from the Canonfig installation you use every day. The job
+  records that installation's location and the Node.js it runs on.
+- The job runs only while you are logged in, except on Linux with lingering
+  turned on. See [Keep the job running while you are logged
+  out](#keep-the-job-running-while-you-are-logged-out).
 
-Synchronize every day at 09:00 in this machine's time zone:
+## Schedule a daily or weekly sync
+
+On the Follower, sync every day at 09:00 in the machine's time zone:
 
 ```bash
 canonfig schedule set daily@09:00
 ```
 
-On Linux, synchronize on chosen weekdays in a named IANA time zone:
+Or sync on chosen weekdays:
 
 ```bash
-canonfig schedule set weekly:Mon@12:30 --timezone Europe/Paris
 canonfig schedule set weekly:Mon,Thu@12:30
 ```
 
-Selecting a calendar requires an enrolled follower, including an explicit daily
-or weekly calendar. A fresh machine or Source-only installation is refused
-before any native job is installed. Pending enrollment, including credential
-rotation that retained an older calendar, must be finalized first; status reports
-`enrollment-pending` and doctor does not treat that calendar as ready.
+Weekdays are `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, and `Sun`. The time is
+24-hour `HH:mm`. Cron expressions are not accepted.
 
-Only Linux supports `--timezone`. Named IANA zones are canonicalized (for example,
-`europe/berlin` becomes `Europe/Berlin`); numeric offsets such as `+05:30` are
-rejected before saving the schedule choice. macOS and Windows reject an explicit named
-zone because their native calendar jobs cannot preserve that binding.
-Use a daily or weekly schedule without `--timezone` on those platforms.
-It follows the machine's local time zone.
+`schedule set` prints the time zone it used, the next run time in UTC
+(`nextRun`), and any warnings. If that time has already passed today, the
+first run is the next occurrence; `schedule set` does not start a run now.
+Running the same command again changes nothing.
 
-Weekdays are `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, and `Sun`; the time is
-24-hour `HH:mm`. Cron and platform-native expressions are not accepted.
+To change the schedule, run `schedule set` with the new calendar. It replaces
+the old one.
 
-`schedule set` prints the resolved `timezone`, the `nextRun` time in UTC, and any
-`warnings`. Setting the same schedule again is idempotent.
+## Use the profile's suggested schedule
 
-If the scheduler must run a specific Canonfig installation, pass it:
+A Machine Profile can suggest a schedule with `scheduleDefault` (see the
+[profile reference](/reference/profile-schema)). Sync never installs it. When
+the Follower has no schedule, `sync --plan`, `sync --apply`, and
+`schedule status` tell you about it:
 
-```bash
-canonfig schedule set daily@09:00 --executable /opt/canonfig
-```
+> schedule available: the profile suggests daily@04:30 in this machine's time
+> zone; run `canonfig schedule set --default` to install it
 
-Otherwise the job runs the Node.js runtime and entrypoint of the Canonfig you
-ran. On macOS with Homebrew Node, the job uses the stable
-`<brew prefix>/opt/<formula>/bin/node` link rather than a version-specific
-Cellar path, so a Node upgrade does not break it.
-
-## Accept the profile's suggested schedule
-
-A Machine Profile may carry a `scheduleDefault`. It is only a suggestion: sync
-never installs it. When the follower has made no schedule decision, `sync
---plan`, `sync --apply`, and `schedule status` report it, for example
-"schedule available: the profile suggests daily@04:30 in this machine's time
-zone; run `canonfig schedule set --default` to install it". To accept it:
+To accept it:
 
 ```bash
 canonfig schedule set --default
 ```
 
-`--default` takes no calendar, `--timezone`, or `--executable`. It fails with a
-usage error when the selected profile has no default or nothing has been
-applied yet.
+The Follower then follows the profile: when a later revision changes the
+suggested schedule, the next apply updates the job. If a revision drops the
+suggestion, the next apply removes the job and says so; run
+`canonfig schedule set daily@09:00` (or another calendar) to keep one.
 
-## Time zones, daylight saving, and missed runs
+## Pin the schedule to a time zone (Linux only)
 
-- **Local time follows the machine.** Without `--timezone`, the job runs at that
-  wall-clock time in the machine's current time zone. On Linux, `--timezone`
-  binds that time to the named zone instead. macOS and Windows use local time
-  and reject `--timezone`; they do not silently discard it.
-- **A time that has already passed today** does not run now. The next run is the
-  next occurrence. (Earlier releases started a catch-up run immediately.)
-- **Missed runs.** On Linux, a run missed while the machine was off or the user
-  manager was not running starts once when the timer starts again, not once per
-  missed day. launchd and Task Scheduler do not catch up when you run
-  `schedule set`.
-- **System time zone changes.** systemd recomputes the next run. If the new
-  zone's occurrence falls between the last run and now, it runs once
-  immediately. This is native systemd behavior; the apply it starts is
-  idempotent.
-- **macOS time zone changes during a login session.** launchd may keep the
-  previous zone even if you reinstall the job. Canonfig reports
-  `timezone-changed` instead of a predicted next run and refuses `schedule set`
-  until you reboot the Mac and sign in again. The selected calendar remains
-  recorded; check `schedule status` after the reboot. This does not describe
-  daylight-saving clock changes within the same time zone.
-- **Accuracy.** systemd timers use its default accuracy of one minute, so a run
-  can start up to a minute after the scheduled time.
-- **Daylight-saving gaps.** A local time can be missing on the day clocks move
-  forward, for example 02:30 in Europe/Madrid on 2027-03-28, or 00:00 in
-  America/Santiago on the first Sunday of September. `schedule set` scans the
-  next 12 months of your scheduled days and warns: "`<HH:mm>` does not exist in
-  `<zone>` on `<dates>` (daylight-saving change)". It also says what the native
-  scheduler does:
-  - systemd skips the run on those days and runs again on the next scheduled day;
-  - launchd does not document this case, so the run may be skipped or start after the clock change;
-  - Task Scheduler leaves this case unspecified, so the run may be skipped or start after the clock change.
+On Linux, you can run at a time in a named IANA time zone instead of the
+machine's own:
 
-  Choose a time outside the change window, such as 04:00 or later, to run on
-  every scheduled day.
-- **Repeated hours** on the day clocks move back are not checked or warned
-  about, and Canonfig makes no claim about how each native scheduler handles
-  them.
+```bash
+canonfig schedule set weekly:Mon@12:30 --timezone Europe/Paris
+```
 
-## Make sure the job can run
+Canonfig corrects the capitalization of zone names, so `europe/paris` becomes
+`Europe/Paris`. Numeric offsets such as `+05:30` are refused.
+
+On macOS and Windows, the native scheduler always uses the machine's time
+zone, so `--timezone` is refused there. Run the command again without it.
+
+## Keep the job running while you are logged out
 
 | Platform | Runs while logged in | Runs while logged out |
 | --- | --- | --- |
-| Linux | yes | only with lingering: `loginctl enable-linger "$USER"` |
-| macOS | yes, in the desktop session with the login Keychain unlocked | no |
-| Windows | yes | no |
+| Linux | Yes | Only with lingering turned on: `loginctl enable-linger "$USER"` |
+| macOS | Yes, in the desktop session with the login Keychain unlocked | No |
+| Windows | Yes | No. A run due while you are logged off or the machine is off is skipped. |
 
-On Linux, `doctor` and `status` warn when lingering is off: "the systemd user
-manager stops when you log out (Linger=no), so the job only runs while you are
-logged in; run `loginctl enable-linger <user>` to run it while logged out".
+`canonfig status` and `canonfig doctor` warn you about this. On Linux without
+lingering:
 
-On Windows, the task uses an interactive logon, and `doctor` and `status` always
-warn: "the Task Scheduler task uses an interactive logon, so it only runs while
-you are logged on to Windows; a run due while you are logged off or the machine
-is off is skipped, not caught up". When the most recent due run did not start,
-they add a warning naming it: "the scheduled run at `<time>` did not start
-(last start `<time>`): the cause is not established from task history". The state stays `current` because the task is still
-armed for its next run. Run `canonfig sync --apply` to catch up by hand.
+> the systemd user manager stops when you log out (Linger=no), so the job only
+> runs while you are logged in; run `loginctl enable-linger alex` to run it
+> while logged out
 
-Windows tasks can start on battery, and unplugging AC power does not stop an
-active sync. Existing tasks with restrictive battery settings are reported as
-drifted; run `canonfig sync --apply` manually to repair the definition. This does
-not prevent sleep or shutdown and does not remove the interactive-logon requirement.
+On Windows, always:
 
-A follower that reaches its Source through a managed tunnel also needs that
-tunnel. A scheduled run restarts a tunnel that went down once before fetching.
-See [Run Canonfig unattended](/how-to/run-unattended).
+> the Task Scheduler task uses an interactive logon, so it only runs while you
+> are logged on to Windows; a run due while you are logged off or the machine
+> is off is skipped, not caught up
 
-## Inspect a schedule
+When a Windows run was due and did not start, they add a warning that names
+it, starting "the scheduled run at `<time>` did not start". Run
+`canonfig sync --apply` to catch up by hand.
+
+On Windows, the task starts on battery power and keeps running when you unplug
+the machine. It does not stop the machine from sleeping or shutting down.
+
+If the Follower reaches its Source through a managed SSH tunnel, a scheduled
+run restarts the tunnel once if it is down before it fetches. See
+[Run Canonfig unattended](/how-to/run-unattended).
+
+## Check that the schedule works
 
 ```bash
 canonfig schedule status
 ```
 
-Status reads the effective native state (for systemd, `systemctl --user show`,
-including drop-ins), not only the files Canonfig wrote. It reports the
-`timezone`, `nextRun`, the last fire, and one of these states:
+Status reports what the operating system will actually run, including changes
+you made to the job yourself. It shows the time zone, the next run, the last
+run, and one of these states:
 
 | State | Meaning | What to do |
 | --- | --- | --- |
-| `not-selected` | No schedule decision on this follower | `schedule set <calendar>` or `schedule set --default` |
-| `current` | The native job matches the chosen schedule | nothing |
-| `drifted` | The calendar or the runtime binding differs | `schedule set <calendar>`; binding-only drift after an upgrade is re-rendered by the next `sync --apply` |
-| `timezone-changed` | macOS changed zones since boot; launchd may keep the previous zone | reboot, sign in to the desktop session, then check `schedule status` |
-| `overridden` | A native override (such as a systemd drop-in) changes the job | remove the override and run `systemctl --user daemon-reload`, or `schedule remove` and manage the job yourself |
-| `disabled`, `inactive`, `not-installed` | The job was disabled, stopped, or deleted outside Canonfig | see below |
-| `unmanaged` | A native job remains without an active follower decision, including after unenrollment | If unenrolled, enroll and apply a profile first, or use `schedule remove`. An enrolled follower can use `schedule set --default` or `schedule set <calendar>` |
+| `current` | The job matches your schedule. | Nothing. |
+| `not-selected` | No schedule is chosen on this Follower. | `canonfig schedule set <calendar>` or `canonfig schedule set --default`. |
+| `drifted` | The job's calendar, or the Canonfig or Node.js it runs, differs from what you chose. This happens after you move or reinstall Canonfig or Node.js. | Run `canonfig sync --apply` from your current installation; it rewrites the job. |
+| `disabled`, `inactive`, `not-installed` | Someone disabled, stopped, or deleted the job outside Canonfig. | See [Turn the schedule back on, or off for good](#turn-the-schedule-back-on-or-off-for-good). |
+| `overridden` | An override, such as a systemd drop-in file, changes the job. | Remove the override and run `systemctl --user daemon-reload`, or run `canonfig schedule remove` and manage the job yourself. |
+| `timezone-changed` | macOS: the time zone changed since the Mac started, and launchd may still use the old one. | Restart the Mac, sign in to the desktop, then run `canonfig schedule status` again. |
+| `enrollment-pending` | Enrollment did not finish. | Finish enrollment first. |
+| `unmanaged` | A Canonfig job exists, but this Follower has no schedule chosen, for example after `follower unenroll`. | On an enrolled Follower, run `canonfig schedule set --default` or `canonfig schedule set <calendar>`. Otherwise run `canonfig schedule remove`. |
 
-`doctor` fails the scheduler probe for every state that means the job will not
-run as chosen, and reports the last unattended run: "the last unattended run
-failed at `<time>`: `<reason>`; the last completed one was at `<time>`". The
-status completion receipt uses the same text, so a failed scheduled run is
-visible without reading scheduler logs.
+`canonfig doctor` fails its scheduler check in every state where the job will
+not run as chosen. Both `doctor` and `status` report the last unattended run,
+for example:
 
-## Disabled or deleted outside Canonfig
+> the last unattended run failed at 2026-11-02T09:00:04.512Z: `<reason>`; the
+> last completed one was at 2026-11-01T09:00:03.977Z
 
-Canonfig respects an out-of-band disable. If you disable, stop, or delete the
-native job yourself, status and doctor say "automation disabled outside
-Canonfig" and name the cause. Sync leaves the job as it is. Then either:
+so you can see a failed scheduled run without reading scheduler logs.
+
+## Turn the schedule back on, or off for good
+
+If you disable, stop, or delete the job yourself, Canonfig leaves it that way.
+`status` and `doctor` report "automation disabled outside Canonfig" and the
+cause. Sync does not put the job back.
+
+To turn it back on:
 
 ```bash
 canonfig schedule set daily@09:00
-canonfig schedule remove
 ```
 
-`schedule set` restores the job. `schedule remove` confirms manual operation and
-records that decision, so later applies keep it removed. `schedule set` refuses
-while a native override exists.
-
-## Remove a schedule
+To turn scheduled sync off on this Follower:
 
 ```bash
 canonfig schedule remove
 ```
 
-Removing a schedule that is already absent is an unchanged result.
+`schedule remove` deletes the job and records your choice, so later applies
+do not reinstall it, even when the profile suggests a schedule. Removing a
+schedule that is already gone changes nothing.
+
+## Time zones, daylight saving, and missed runs
+
+- **Time zone.** Without `--timezone`, the job runs at that clock time in the
+  machine's current time zone.
+- **Missed runs on Linux.** A run missed while the machine was off or you were
+  logged out without lingering starts once when the timer starts again, not
+  once per missed day.
+- **Missed runs on macOS.** launchd runs a job missed while the Mac slept once
+  when it wakes. A run missed while the Mac was off or you were logged out is
+  not caught up.
+- **Missed runs on Windows.** They are skipped, not caught up.
+- **Time zone change on Linux.** systemd recalculates the next run. If the new
+  zone's run time falls between the last run and now, the job runs once right
+  away.
+- **Time zone change on macOS.** launchd may keep using the old zone until you
+  restart. Status reports `timezone-changed`, and `schedule set` refuses to
+  install until you restart the Mac and sign in again. This does not apply to
+  daylight-saving changes within one time zone.
+- **Start time.** On Linux, a run can start up to one minute after the
+  scheduled time.
+- **Times that do not exist.** On the day clocks move forward, some local times
+  do not exist, for example 02:30 in Europe/Madrid on 2027-03-28. `schedule
+  set` checks the next 12 months of your scheduled days and warns, for example:
+
+  > 02:30 does not exist in Europe/Madrid on 2027-03-28 (daylight-saving
+  > change); systemd skips the run on those days and runs again on the next
+  > scheduled day. Choose a time outside the change window to run on every
+  > scheduled day.
+
+  On macOS and Windows, the warning says the run on those days may be skipped
+  or start after the clock change. Choose 04:00 or later to run on every
+  scheduled day.
+- **Times that occur twice.** On the day clocks move back, Canonfig gives no
+  warning and makes no promise about how often the job runs.
+
+## Run a specific Canonfig installation
+
+By default the job runs the Canonfig you ran `schedule set` with. To run
+another installation, pass its absolute path:
+
+```bash
+canonfig schedule set daily@09:00 --executable /usr/local/bin/canonfig
+```
+
+Canonfig first checks that the command starts with the limited `PATH` the
+scheduler uses. If it does not, `schedule set` stops with Human Action
+Required (exit 3), names the command and the `PATH`, and suggests running
+again without `--executable`.
+
+## If `schedule set` fails
+
+| Message | Exit | Cause and fix |
+| --- | --- | --- |
+| "canonfig schedule set needs an enrolled follower; enroll, then apply the selected profile first" | 2 | Enroll this machine and run `canonfig sync --apply` first. |
+| "follower enrollment is pending; finish or resume enrollment before selecting a schedule" | 2 | Finish enrollment, then set the schedule. |
+| "the selected profile declares no scheduleDefault (or no revision has been applied yet); ..." | 2 | `--default` needs a suggestion. Run `canonfig sync --apply`, or choose a calendar yourself. |
+| "Invalid schedule calendar: daily@9:00" | 2 | Write the time as `HH:mm`, for example `daily@09:00`. |
+| "unsupported IANA timezone: +05:30" | 2 | Use a zone name such as `Asia/Kolkata`. |
+| "canonfig schedule set --default takes no calendar, --timezone, or --executable: ..." | 2 | Run `canonfig schedule set --default` on its own. |
+| "use the macOS follower timezone for scheduled sync: ..." or "use the Windows follower timezone for scheduled sync: ..." | 3 | Run the command again without `--timezone`. |
+| "install the Canonfig scheduled synchronization: a native override changes the Canonfig job ..." | 3 | Remove the override named in the message, or run `canonfig schedule remove` and manage the job yourself. |
+| "arm the macOS schedule after a timezone change: ..." | 3 | Restart the Mac, sign in to the desktop, and run the command again. |

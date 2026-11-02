@@ -1,48 +1,47 @@
 ---
 title: "Tutorial: sync Claude Code and Codex from machine A to machine B"
-description: Publish your Claude Code and Codex setup from one machine and keep a second machine in sync automatically.
+description: Publish your Claude Code and Codex setup from one machine and keep a second machine in sync on a schedule.
 ---
 
-This tutorial takes you from "Claude Code and Codex are set up the way I like
-on machine A" to "machine B receives that setup and keeps it current on its
-own". Machine A becomes the **Source Machine**. Machine B becomes a
-**Follower Machine**.
+At the end of this tutorial, machine A publishes your Claude Code and Codex
+setup and machine B applies it on its own every day. Machine A becomes the
+**Source Machine**. Machine B becomes a **Follower Machine**.
 
-You will sync:
+You sync:
 
-| On machine A | Kind | What machine B gets |
-| --- | --- | --- |
-| `~/.claude/CLAUDE.md` | file | the same file |
-| `~/.codex/AGENTS.md` | file | the same file |
-| a few keys in `~/.claude/settings.json` | config | those keys, merged; B's other settings stay |
-| one MCP server in `~/.claude.json` | config | that server entry; B's account data stays |
-| two keys in `~/.codex/config.toml` | config | those keys, merged; B's other settings stay |
-| the skill `~/.claude/skills/code-review` | skill | the skill for Claude Code and for Codex |
-
-The commands use a POSIX shell (Linux or macOS). Allow about 20 minutes.
+| On machine A | What machine B gets |
+| --- | --- |
+| `~/.claude/CLAUDE.md` | the same file |
+| `~/.codex/AGENTS.md` | the same file |
+| two keys in `~/.claude/settings.json` | those keys; B's other settings stay |
+| one MCP server in `~/.claude.json` | that server entry; B's account data stays |
+| two keys in `~/.codex/config.toml` | those keys; B's other settings stay |
+| the skill `~/.claude/skills/code-review` | the skill, for Claude Code and for Codex |
 
 ## Before you start
 
-On both machines you need Node.js 24 or newer, npm, and the same user account
-you run Claude Code and Codex under. If A and B are different hosts, B also
-needs SSH access to A.
+- **Node.js 24 or newer and npm** on both machines, installed for the user
+  account you run Claude Code and Codex under. Get Node.js from
+  [nodejs.org](https://nodejs.org/en/download) or your package manager.
+- **Linux or macOS with a POSIX shell.** The commands below use one. Canonfig
+  also runs on Windows; see [Cross-platform behavior](/reference/cross-platform)
+  for the differences.
+- **SSH from B to A.** The Source Machine listens only on its own loopback
+  address, so B reaches it through an SSH tunnel that Canonfig manages. You
+  need an SSH login on A and its SSH host public key. If A and B are the same
+  host (two user accounts), you need no SSH.
+- **Claude Code and Codex installed on B.** Canonfig manages their
+  configuration; it does not install the clients.
+- **The same Canonfig release on both machines.** A Source Machine and a
+  Follower Machine on different `major.minor` releases refuse to talk to each
+  other.
 
-If Node.js is missing, install it from [nodejs.org](https://nodejs.org/en/download)
-or your package manager. Without administrator rights, unpack the official
-binary archive into your home directory, add its `bin` directory (Windows: the
-unpacked folder) to your user `PATH`, and point npm at a user-writable prefix
-with `npm config set prefix ~/.local` on Linux or macOS. On Windows the default
-`%APPDATA%\npm` prefix is already user-writable.
+The examples use `a.example` and `b.example` as host names and `maria` as the
+SSH user on A. Replace them with your own.
 
-Canonfig manages your client's configuration; it does not install the client.
-Install Claude Code or Codex on each machine yourself before you check that a
-machine is client-functional.
+## 1. Install Canonfig on both machines
 
-This tutorial starts from new 4.2.0 installations. If either account already
-uses 3.2.x, preserve that installation and follow the
-[fresh-install guide](/how-to/upgrade) on separate machines or OS accounts.
-
-Install Canonfig on both machines:
+Run on A and on B:
 
 ```bash
 npm install --global @microck/canonfig@4.2.0
@@ -50,43 +49,31 @@ canonfig --version
 canonfig doctor --no-input
 ```
 
-`doctor` reports each probe on one line. Read the `credentials` line: Canonfig
-keeps its keys in the native credential store (Secret Service on Linux,
-Keychain on macOS, Credential Manager on Windows). If it says storage is
-unavailable, follow the recovery text it prints, or see
-[Run Canonfig unattended](/how-to/run-unattended), before you continue.
+`doctor` prints one line per check. Look at the `credentials` line: Canonfig
+keeps its keys in the system credential store (Secret Service on Linux,
+Keychain on macOS). If that line reports a problem, follow the fix it prints,
+or see [Run Canonfig unattended](/how-to/run-unattended), before you continue.
 
-## 1. Make machine A the Source
+## 2. Make machine A the Source Machine
+
+On A:
 
 ```bash
 canonfig source init
 ```
 
-This creates the Source signing key and TLS certificate. It publishes nothing
-yet. Run it once per machine; it refuses to replace an existing Source
-identity.
+This creates A's signing key and TLS certificate. It publishes nothing. Run it
+once: it refuses to replace an existing Source Machine identity.
 
-## 2. Know what scan does, and what it does not do
-
-`source scan` is **tool discovery**. It reads the files you name and proposes
-`tool` resources, such as the npm package behind an MCP server command:
-
-```bash
-canonfig source scan --file ~/.codex/config.toml --file ~/.claude.json
-```
-
-Scan never proposes file, config, or skill resources, and it never copies your
-settings. You declare those yourself in a profile file, which is the next step.
-
-## 3. Write the profile
+## 3. Write the Machine Profile
 
 A **Machine Profile** is a JSONC file that lists each **Profile Resource**:
 what to manage (`kind`), where it goes on the follower (`target`), where its
 content comes from (`spec`), and how to check it (`verify`).
 
-Create `~/canonfig.profile.jsonc` on machine A. Placing it in your home
-directory lets each `source` path point at the real file, so editing
-`~/.claude/CLAUDE.md` and publishing again is all an update takes.
+Create `~/canonfig.profile.jsonc` on A. Because the file sits in your home
+directory, each `source` path points at the real file, so after you edit
+`~/.claude/CLAUDE.md` you only need to publish again.
 
 ```jsonc title="~/canonfig.profile.jsonc"
 {
@@ -199,240 +186,249 @@ directory lets each `source` path point at the real file, so editing
 }
 ```
 
-A few rules the example follows:
+The example follows these rules:
 
 - `"verify": { "method": "digest" }` without a `digest` value tells Canonfig to
-  compute the digest from the exact content it publishes. If you do write a
-  digest, publication refuses a value that does not match.
-- A `source` path is relative to the profile file's directory, has no `..`,
-  and must resolve (after following symlinks) inside that directory.
+  compute the digest from the content it publishes. If you write a digest
+  yourself, publishing fails when it does not match.
+- A `source` path is relative to the profile file's directory, contains no
+  `..`, and must stay inside that directory after symlinks are followed.
 - A `config` key such as `mcpServers.memory` owns the whole value at that path.
-  Canonfig writes it on B and removes it again if you drop it from the profile.
-  Everything else in the file belongs to B.
-- Replace the example values with your own. Leave secrets out: a token belongs
-  in the client's own login, or in a [shared secret](/reference/security#opt-in-shared-secrets).
+  Canonfig writes it on B, and removes it if you later drop it from the
+  profile. The rest of the file belongs to B.
+- Leave secrets out. A token belongs in the client's own login, or in a
+  [shared secret](/reference/security#opt-in-shared-secrets).
 
 The [profile reference](/reference/profile-schema) lists every field.
 
 ## 4. Check the profile
 
+On A:
+
 ```bash
 canonfig source digest --profile-file ~/canonfig.profile.jsonc
 ```
 
-This reads the profile the same way publication does, including every `source`
-file, and prints each resource's content digest. It signs and publishes
-nothing. A missing source file, a path outside the profile directory, or an
-invalid value fails here with the resource ID and the reason.
+The output lists each resource with its content digest. Nothing is published.
+A missing `source` file, a path outside the profile directory, or an invalid
+value fails here with the resource ID and the reason. Fix the profile and run
+the command again.
 
 ## 5. Publish
+
+On A:
 
 ```bash
 canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer "$USER"
 ```
 
 The output names the profile, the revision sequence, and each resource.
-Publishing the same content again returns the same revision; changed content
-becomes the next sequence. A profile with no resources is refused.
+Publishing unchanged content again returns the same revision; changed content
+becomes the next sequence.
 
-## 6. Keep the Source serving
+## 6. Keep the Source Machine serving
 
-Followers fetch revisions from the Source's loopback HTTPS endpoint, so the
-Source must be serving whenever a follower syncs. Install it as a native user
-service that restarts it on failure:
+B fetches revisions from A, so A must be serving whenever B syncs. On A,
+install the native user service:
 
 ```bash
 canonfig source service install
 canonfig source service status
 ```
 
-`install` waits until the endpoint answers with this Source's pinned identity.
-`status` reports `running` when it does. The service is a systemd user unit
-(`canonfig-source.service`) on Linux, a LaunchAgent (`dev.canonfig.source`) on
-macOS, and a Task Scheduler logon task (`Canonfig\canonfig-source`) on
-Windows. These managers run the service while you are logged in. On Linux,
-lingering (`loginctl enable-linger "$USER"`) also starts the user manager at boot
-and keeps it after logout; `install` does not enable it. The Source must still
-load its signing and TLS credentials when it starts. Linger does not unlock an
-encrypted login keyring, so check `serving` in the intended operating mode.
-On macOS, run `install` from the desktop session, not over SSH.
-
-To try things out first, you can run the server in the foreground instead and
-leave the terminal open:
-
-```bash
-canonfig source serve --host 127.0.0.1 --port 17342
-```
+`install` returns once A answers on `https://127.0.0.1:17342`. `status` reports
+`running`. The service is a systemd user unit (`canonfig-source.service`) on
+Linux and a LaunchAgent (`dev.canonfig.source`) on macOS, and it runs while you
+are logged in. On macOS, run `install` from the desktop session, not over SSH.
+To keep A serving after logout or reboot, see
+[Run Canonfig unattended](/how-to/run-unattended).
 
 ## 7. Invite machine B
+
+On A:
 
 ```bash
 canonfig source invite --endpoint https://127.0.0.1:17342 --output ~/canonfig-invite --expires 1h
 ```
 
-The invitation is a single-use, mode-`0600` file that expires. It carries the
-Source's TLS and signing fingerprints so B can pin them. Treat it like a
-password until B has enrolled. Copy it to B over an authenticated channel,
-for example:
+The invitation file works once and expires after one hour (the default is 15
+minutes; the maximum is 24 hours). Treat it like a password until B has
+enrolled. Copy it to B, together with A's SSH host public key read from A's own
+disk:
 
 ```bash
 scp ~/canonfig-invite b.example:canonfig-invite
-```
-
-If A and B are different hosts, B reaches A through an SSH tunnel that
-Canonfig manages. Copy A's SSH host public key to B as well. Read it on A
-itself, not from the network, so it is the verified key:
-
-```bash
 scp /etc/ssh/ssh_host_ed25519_key.pub b.example:source-host-key.pub
 ```
 
 ## 8. Enroll machine B
 
-On machine B, if A is another host, start the tunnel first. Use your SSH user
-on A and A's host name:
+On B, start the tunnel to A:
 
 ```bash
-canonfig tunnel start --invitation ./canonfig-invite --ssh-host a.example --ssh-user you --ssh-host-key-file ./source-host-key.pub
+canonfig tunnel start --invitation ./canonfig-invite --ssh-host a.example --ssh-user maria --ssh-host-key-file ./source-host-key.pub
 ```
 
-The tunnel forwards B's `127.0.0.1:17342` to A's server over SSH, pinning the
-SSH host key, the TLS certificate, and the Source signing key separately. Start
-it after the Source is serving. Later restarts need no invitation:
-`canonfig tunnel start` alone restarts the recorded tunnel.
+The tunnel forwards B's `127.0.0.1:17342` to A over SSH, and checks A's SSH
+host key, TLS certificate, and signing key against the values you supplied.
+Canonfig records the tunnel, so later you restart it with `canonfig tunnel start`
+alone. Skip this command if A and B are the same host.
 
-Now enroll. The invitation goes through a pipe, never as an argument:
+Enroll B and delete the invitation. The invitation goes through a pipe, never
+as an argument:
 
 ```bash
 cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
 rm ./canonfig-invite
 ```
 
-Enrollment pins the Source identities, stores B's own revocable credential in
-B's native credential store, and selects the `workstation` profile.
+B now trusts only the Source Machine named in the invitation, stores its own
+credential in its credential store, and follows the `workstation` profile.
+`canonfig status` shows the trusted signing and TLS fingerprints.
 
-## 9. Plan, then apply
+## 9. Preview, then apply
+
+On B:
 
 ```bash
 canonfig sync --plan
 ```
 
 The plan lists one action per resource, for example `write-file` for
-`~/.claude/CLAUDE.md` and `write-config` with the keys it will set. Nothing on
-B changes yet. When the plan looks right:
+`~/.claude/CLAUDE.md` and `write-config` with the keys it sets. Nothing on B
+changes yet. When the plan matches what you expect:
 
 ```bash
 canonfig sync --apply
 ```
 
-Apply journals every action, then verifies each resource independently. The
-result is `Converged` when every resource matches. If anything fails, Canonfig
-rolls the run back and names the resource and the reason. See
-[Recover](/how-to/recover) for what each outcome means.
+Canonfig applies every action, then checks each resource. The result is
+`Converged` when every resource matches. If a resource fails, Canonfig rolls
+the run back and names the resource and the reason; see
+[Recover](/how-to/recover).
 
-Run `canonfig sync --apply` a second time: it should report `Converged` with no
+Run `canonfig sync --apply` a second time. It reports `Converged` with no
 changes.
 
-## 10. Let each client trust what it received
+## 10. Accept the configuration in each client
 
-`Converged` means the files are in place and verified. It does not mean every
-client has accepted them. Clients guard new configuration with their own trust
-steps, and Canonfig never copies trust decisions from A to B:
+`Converged` means the files are in place and verified. Each client still asks
+you to trust some of what it receives, and Canonfig does not copy those
+decisions from A:
 
-- **Claude Code.** Restart Claude Code on B. It reads hooks when it starts;
-  if it reports that hooks changed outside the app, open `/hooks` and review
-  them. Run `/mcp` to see the `memory` server. The first time you open a
-  project folder, Claude Code asks whether you trust it.
+- **Claude Code.** Restart Claude Code on B. If it reports that hooks changed
+  outside the app, open `/hooks` and review them. Run `/mcp` to see the
+  `memory` server. Claude Code asks whether you trust each project folder the
+  first time you open it.
 - **Codex.** Run `codex mcp list` to see the `memory` server. Codex asks you to
-  trust each project directory the first time. If your profile syncs Codex
-  hooks (`~/.codex/hooks.json`), Codex loads them in a review state and does
-  not run them until you open `/hooks` in Codex and trust each one.
-- **Antigravity CLI.** Start `agy` in B's project and invoke a managed MCP
-  tool to confirm that the projected server loaded. The written config alone
-  does not prove that the client accepted it.
+  trust each project directory the first time. Codex stores that decision in
+  `~/.codex/config.toml`; Canonfig leaves keys it does not manage alone, so the
+  decision survives later syncs.
 
-Codex keeps its own project trust record, for example
-`projects.<path>.trust_level` in `~/.codex/config.toml`. Canonfig leaves keys it
-does not own alone, so that record survives later syncs.
+When an apply writes Codex hooks, the output ends with "still to do in each
+client" and names the review you need to do.
 
-`canonfig status` on B keeps `clientLoaded` at `not-verified` until the profile
-declares a verification that proves a client loaded the resource (see
-[Verification](/reference/profile-schema#verification)). Canonfig cannot see
-inside a client; checking each client is your job. After an apply that writes
-`~/.codex/hooks.json` (or `hooks` keys in `~/.codex/config.toml`) or
-`mcpServers` in `.agents/mcp_config.json`, the human output ends with "still to
-do in each client" naming the Codex `/hooks` review or the Antigravity MCP
-invocation, the JSON output carries them as `clientSteps`, and the `clientLoaded`
-detail in `status` repeats them. A download that takes longer than a second
-prints progress lines on stderr in human mode.
+## 11. Sync B every day
 
-## 11. Keep B in sync automatically
-
-Install a native schedule on B:
+On B:
 
 ```bash
 canonfig schedule set daily@09:00
 canonfig schedule status
 ```
 
-The job is a systemd user timer on Linux, a launchd agent on macOS, or a
-Task Scheduler task on Windows. It runs `canonfig sync --apply --no-input
---scheduled` at that local time; no Canonfig process stays running in between.
-`schedule set` prints the time zone it resolved and the next run time.
+`schedule set` prints the time zone it used and the next run time. At that time
+each day, a systemd user timer (Linux) or launchd agent (macOS) runs
+`canonfig sync --apply --no-input --scheduled`. No Canonfig process runs in
+between.
 
-The machine must be able to run the job:
+The schedule runs only when the machine can run it:
 
-- **Linux:** the systemd user manager runs only while you are logged in unless
-  lingering is on. To sync while logged out, run `loginctl enable-linger "$USER"`.
-- **macOS:** the job runs in your logged-in desktop session and needs the login
-  Keychain unlocked, so a Mac that nobody is logged in to does not sync.
-- **Windows:** the task runs while you are logged on.
+- **Linux:** while you are logged in, unless you turn on lingering with
+  `loginctl enable-linger "$USER"`.
+- **macOS:** while you are logged in to the desktop with the login Keychain
+  unlocked.
 
-[Run Canonfig unattended](/how-to/run-unattended) covers the Source service,
-the tunnel after a reboot, and headless credential storage.
-[Manage schedules](/how-to/manage-schedules) explains time zones, daylight
-saving time, and missed runs.
+[Manage schedules](/how-to/manage-schedules) covers time zones, daylight saving
+time, and missed runs.
 
-## 12. Confirm it worked unattended
-
-After the scheduled time passes, check on B:
+After the first scheduled run, check B:
 
 ```bash
 canonfig status
 ```
 
-In the completion receipt, `applied` and `independentlyVerified` should be
-`verified`, and `scheduled` becomes `verified` once a real scheduled run has
-completed. If the last unattended run failed, status and doctor show its reason.
+`applied` and `independentlyVerified` read `verified`, and `scheduled` reads
+`verified` once a scheduled run has completed. If the last scheduled run
+failed, `status` shows the reason.
 
-## 13. Change something and watch it arrive
+## 12. Change something and watch it arrive
 
-On A, edit `~/.claude/CLAUDE.md`, then publish again with the same command:
+On A, edit `~/.claude/CLAUDE.md`, then publish again:
 
 ```bash
 canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer "$USER"
 ```
 
 The output shows the next sequence number. B applies it at its next scheduled
-run. To apply it right away, run `canonfig sync --apply` on B.
+run, or right away when you run `canonfig sync --apply` on B.
 
-To add another file, config key, or skill, add a resource to the profile,
-check it with `canonfig source digest`, and publish. To stop managing
-something, remove its resource and publish: B removes the file, keys, or skill
-Canonfig wrote, as long as they still match what it last applied. A copy that
-was changed on B is left in place. Installed tools and local credentials are
-never removed automatically.
+To stop managing something, remove its resource and publish. B removes the
+file, keys, or skill Canonfig wrote, as long as they still match what Canonfig
+last applied; a copy someone changed on B stays. Canonfig never removes
+installed tools or local credentials.
 
-A local edit on B to a `file` resource is overwritten by the next apply, because
-the file is Source-owned. A local edit to a skill is kept and reported as Follower
-Drift instead. To change a shared file, change it on A.
+On B, a local edit to a `file` resource is overwritten at the next apply. A
+local edit to a skill is kept and reported as Follower Drift. To change shared
+content, change it on A.
 
-## What you built
+## If a step fails
 
-- A is the only authority. It signs immutable revisions; B never publishes back.
-- B verifies every revision against the fingerprints it pinned at enrollment.
-- B's own settings, account files, and client trust records stay B's.
-- B checks for new revisions on its schedule, with no resident daemon.
+**`canonfig source invite` fails with `Invitation duration must not exceed 24h`.**
+`--expires` accepts values such as `15m`, `1h`, or `24h`. Pick a value up to
+`24h`.
 
-Next: [update and republish a profile](/how-to/publish-profile-changes),
-[upgrade Canonfig](/how-to/upgrade), or [revoke or remove a follower](/reference/security#follower-credentials).
+**Enrollment fails with `the invitation has expired; ask the Source Machine for a new one`.**
+B used the invitation after its `--expires` time. Run `canonfig source invite`
+on A again, copy the new file, and enroll with it.
+
+**Enrollment fails with `the invitation was already used; ask the Source Machine for a new one`.**
+Each invitation enrolls one machine once. Issue a new one on A.
+
+**Enrollment fails with `the Source Machine's certificate fingerprint does not match the invitation`.**
+B reached a server whose TLS certificate is not the one named in the
+invitation: usually a different Source Machine on the same port, or an
+invitation from an earlier `canonfig source init`. On A, run
+`canonfig source service status` to confirm which Source Machine is serving,
+then issue a new invitation from it. Do not enroll until the fingerprints
+match.
+
+**`canonfig tunnel start` fails with `SSH host identity for a.example did not match its pin`.**
+The host key file does not belong to the host you connected to. Copy
+`/etc/ssh/ssh_host_ed25519_key.pub` from A again, reading it on A itself, and
+check that `--ssh-host` names A.
+
+**Enrollment or sync reports `nothing answered at the Source endpoint`.**
+Nothing is listening on `127.0.0.1:17342`: A is not serving, or the tunnel is
+down. On A, run `canonfig source service status` and expect `running`. On B, run
+`canonfig tunnel status`, then `canonfig tunnel start` to restart a recorded
+tunnel. If A serves on another port, use the same port in `--endpoint` and in
+`tunnel start --local-port`.
+
+**Enrollment or sync fails with `source/follower version mismatch`.**
+A and B run different `major.minor` releases. The message names both versions.
+Install the same release on both machines, as in step 1, then try again. See
+[Upgrade Canonfig](/how-to/upgrade).
+
+**Enrollment fails with `the follower identity is already enrolled`.**
+A machine named `laptop` is already enrolled. Pick another `--name`, or revoke
+the old one on A first; see [Follower credentials](/reference/security#follower-credentials).
+
+For other errors, run `canonfig doctor --no-input` on the machine that failed;
+[Diagnostics](/reference/diagnostics) lists every check.
+
+## Next steps
+
+- [Publish a change](/how-to/publish-profile-changes)
+- [Upgrade Canonfig](/how-to/upgrade)
+- [Revoke or remove a follower](/reference/security#follower-credentials)
