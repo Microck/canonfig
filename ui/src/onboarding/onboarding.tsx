@@ -333,7 +333,7 @@ function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (
 }
 
 /**
- * One role card: just its title, with what the role means behind a "?" hint. Hover brightens
+ * One role card: just its title, with what the role means behind a "?" hint in its top-right corner. Hover brightens
  * its border and fill and nudges its arrow, and a press sinks it to 0.98 (choice-card in
  * index.css). The pick button covers the whole card; the hint is a sibling layered above it,
  * because a button can't contain another button. Only the picked card keeps its shared shell
@@ -349,15 +349,15 @@ function Choice({ role, returning, title, description, onPick }: { role: Role; r
       <button
         type="button"
         onClick={() => onPick(role)}
-        className="choice-card group relative isolate flex min-h-[112px] min-w-0 items-center rounded-xl p-5 pr-14 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+        className="choice-card group relative isolate flex min-h-[112px] min-w-0 items-center rounded-xl p-5 pr-5 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
       >
         <CardShell role={role} side="choose" shared={present || leavingTo === role} className="choice-shell" />
         <motion.span variants={variants?.content} className="flex w-full items-center justify-between gap-3">
-          <span className="text-lg leading-snug font-medium text-pretty">{title}</span>
+          <span className="text-xl leading-snug font-medium tracking-[-0.01em] text-pretty">{title}</span>
           <ArrowRight aria-hidden className="choice-arrow size-4 shrink-0 text-faint" />
         </motion.span>
       </button>
-      <motion.span variants={variants?.content} className="absolute top-1/2 right-2 z-10 -translate-y-1/2">
+      <motion.span variants={variants?.content} className="absolute top-2 right-1 z-10">
         <Hint label={title}>{description}</Hint>
       </motion.span>
     </motion.div>
