@@ -183,14 +183,14 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
 
   return (
     <OnboardingShell hostname={machine.hostname} backdrop={<SetupBackdrop job={job} />}>
-      {/* In the demo, md:pb-52 clears the fixed demo panel (215px wide and about 122px tall, 12px
-          from the left and 80px above the bottom) at the end of the scroll, where the cards can
+      {/* In the demo, md:pb-40 clears the fixed demo panel (220px wide and about 122px tall, 12px
+          from the left and from the bottom, App.tsx) at the end of the scroll, where the cards can
           reach under it. From xl the cards start right of it, so normal padding returns and a
           card that fits the window doesn't scroll. Below md the panel is a button in the header
           (kit.tsx), so only normal padding remains, as in production. Every screen is centred vertically, where the
           backdrop's rings meet; a step that changes height grows the card evenly up and down
           (the height tween keeps that smooth). A card taller than the window just scrolls. */}
-      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 xl:pb-16 [overflow-wrap:anywhere] justify-center sm:px-6 sm:pt-16", DEMO && "md:pb-52")}>
+      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 xl:pb-16 [overflow-wrap:anywhere] justify-center sm:px-6 sm:pt-16", DEMO && "md:pb-40")}>
         {/* popLayout takes the leaving screen out of flow, so the next one lays out at once and
             the picked card's shell (CardShell) can grow straight into the wizard card's place.
             `custom` tells the leaving choice which card was picked. */}

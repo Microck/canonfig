@@ -78,7 +78,7 @@ export default function App() {
           <DemoSwitcher
             role={route.kind === "setup" ? "unconfigured" : null}
             compact
-            className="fixed z-40 max-md:top-0.5 max-md:right-16 md:bottom-[80px] md:left-[12px]"
+            className="fixed z-40 max-md:top-0.5 max-md:right-16 md:bottom-[12px] md:left-[12px] md:w-[220px]"
           />
         )}
       </TooltipProvider>
