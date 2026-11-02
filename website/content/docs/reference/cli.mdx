@@ -1,6 +1,6 @@
 ---
-title: "Reference: complete CLI reference"
-description: Every canonfig command, option, default, and exit code, in the order canonfig --help lists them.
+title: CLI reference
+description: Look up every canonfig command, option, default, and exit code, in the order canonfig --help lists them.
 ---
 
 Canonfig needs Node.js 24 or newer. Commands appear here in the order
@@ -34,10 +34,10 @@ use `--json` for the full value and in scripts.
 | ---: | --- |
 | `0` | Success |
 | `1` | Internal defect: a failure Canonfig has no explanation for |
-| `2` | Usage or configuration, including a Source and follower on different `major.minor` releases |
+| `2` | Usage or configuration, including a Source Machine and a Follower Machine on different `major.minor` releases |
 | `3` | Human Action Required, including a locked or unavailable local credential store |
 | `4` | Conflict or Follower Drift |
-| `5` | Authentication or revocation: the Source Machine rejected or revoked this follower |
+| `5` | Authentication or revocation: the Source Machine rejected or revoked this Follower Machine |
 | `6` | Transport: the Source Machine could not be reached |
 | `7` | Verification or apply failure |
 | `130` | Interrupted by `SIGINT` (Ctrl-C) |
@@ -71,7 +71,7 @@ Minor and major upgrades stay manual; see [Upgrade Canonfig](/how-to/upgrade).
 | `auto` | Without `--apply`, previews once. `--apply` keeps running in the foreground and checks every `--interval <seconds>` (default 86400, from 60 to 604800). `--once` runs one pass, for an external scheduler. |
 
 A running command or an unfinished sync blocks activation. After activating,
-`auto` exits; start it again under the new version. See the
+`auto` exits; start it again under the activated version. See the
 [self-update guide](https://github.com/Microck/canonfig/blob/main/docs/self-update.md).
 
 ## Source Machine
@@ -83,8 +83,8 @@ canonfig source init
 ```
 
 Creates the Source Machine's signing key and HTTPS certificate in the native
-credential store. On an initialized Source it creates nothing and checks that
-the stored keys still match; see [Source keys](/reference/security#source-keys).
+credential store. On an initialized Source Machine it creates nothing and
+checks that the stored keys still match; see [Source keys](/reference/security#source-keys).
 
 ### `source scan`
 
@@ -94,7 +94,7 @@ canonfig source scan --file ~/.codex/AGENTS.md --file ~/.claude.json
 
 Proposes `tool` resources from evidence in the named files. At least one
 `--file` is required. It runs nothing and never proposes other kinds; see
-[Tool discovery](/explanation/tools-and-recipes).
+[How Canonfig installs and verifies tools](/explanation/tools-and-recipes).
 
 ### `source reconcile-skills`
 
@@ -108,7 +108,7 @@ Removes `skill` resources from the profile file when you deleted their skill
 directory on the Source Machine. Without `--apply` it previews. `--watch`
 needs `--apply` and repeats every `--interval` seconds (default 5, from 1 to
 86400). It never publishes and never deletes a skill directory. A conflict
-exits 4. See [Reconcile source skills](/how-to/reconcile-source-skills).
+exits 4. See [Remove deleted skills from the profile](/how-to/reconcile-source-skills).
 
 ### `source digest`
 
@@ -138,9 +138,10 @@ canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer dana 
 | `--reviewer <name>` | Required. Recorded with the revision. |
 | `--allow-empty` | Publish a revision with no resources. |
 
-Signs a new revision. Content equal to the latest revision returns that
-revision. Any other content, including an older revision's, becomes the next
-sequence number; republishing old content is how you roll back.
+Signs the next Profile Revision. Content equal to the latest Profile Revision
+returns that Profile Revision. Any other content, including an older Profile
+Revision's, becomes the next sequence number; publishing old content again is
+how you roll back.
 
 Publication fails with exit 2, before signing, when:
 
@@ -152,7 +153,7 @@ Publication fails with exit 2, before signing, when:
 - the revision's metadata exceeds 1 MiB;
 - there are no resources and `--allow-empty` is not set.
 
-See [Profiles, revisions, resources, and policies](/reference/profile-schema).
+See [Profile file reference](/reference/profile-schema).
 
 ### `source serve` and `source service`
 
@@ -179,10 +180,10 @@ lingering. On macOS, run it from the logged-in desktop session, not over SSH.
 
 | State | Exit | Meaning |
 | --- | ---: | --- |
-| `running` | 0 | Installed and serving this Source. |
+| `running` | 0 | Installed and serving this Source Machine. |
 | `not-installed` | 0 | No service. |
 | `not-running` | 3 | Installed but stopped. |
-| `not-serving` | 3 | Running but not answering as this Source. |
+| `not-serving` | 3 | Running but not answering as this Source Machine. |
 | `drifted` | 4 | The service definition changed. Run `source service install` again. |
 
 `source service remove` stops and deletes the service. See
@@ -202,7 +203,8 @@ canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-in
 | `--group <name>` | Follower Group to grant. Repeat for more. `canonfig:secrets` enables shared secrets. |
 | `--timeout-ms <ms>` | Default 10000, at most 60000. |
 
-The invitation is single-use. Move it to the follower over a private channel.
+The invitation is single-use. Move it to the Follower Machine over a private
+channel.
 
 ### `source revoke`
 
@@ -225,7 +227,7 @@ canonfig follower unenroll
 | Option | Value |
 | --- | --- |
 | `--stdin` | Required. The invitation is read from standard input only, never as an argument. |
-| `--name <name>` | Required. This follower's name. |
+| `--name <name>` | Required. This Follower Machine's name. |
 | `--profile <id>` | Required. The Machine Profile to follow. |
 | `--replace` | Replace this machine's existing enrollment under a different name. |
 | `--timeout-ms <ms>` | Limit for each network step. Default 10000, at most 300000. Kept for later requests, including scheduled syncs. |
@@ -238,7 +240,7 @@ machine can store a credential before it uses the invitation.
 | --- | --- |
 | The name is already enrolled | Refused: "the follower identity is already enrolled". Run `canonfig source revoke <name>` on the Source Machine first. Re-enrolling a revoked name keeps this machine's local settings. |
 | This machine is enrolled under another name | Exit 4: "this machine is already enrolled as `<name>` (`<id>`); pass --replace to enroll it as `<new name>` instead". |
-| `--replace` | Enrolls the new identity, then revokes the old one. Lists every reset setting (agent policy, harness and secret bindings, schedule, Local Overlay). If the old identity could not be revoked, prints the `canonfig source revoke` command to run. |
+| `--replace` | Enrolls the identity under the other name, then revokes the old one. Lists every reset setting (agent policy, harness and secret bindings, schedule, Local Overlay). If the old identity could not be revoked, prints the `canonfig source revoke` command to run. |
 | Enrollment fails or you cancel it | The credentials it created are removed on both machines. |
 
 ### `follower unenroll`
@@ -280,8 +282,8 @@ installs are not rolled back. Human Action Required (exit 3) and Follower Drift
 [the transaction boundary](/explanation/architecture#the-transaction-boundary).
 
 After a successful apply, Canonfig also copies shared secrets when the
-follower is in the `canonfig:secrets` group. If that copy fails, the command
-reports one error that says the files were applied.
+Follower Machine is in the `canonfig:secrets` group. If that copy fails, the
+command reports one error that says the files were applied.
 
 When the profile suggests a schedule and you have not chosen one, the output
 says "schedule available" and names `canonfig schedule set --default`. Sync
@@ -303,7 +305,7 @@ canonfig abandon
 `--no-input`, and needs that run's revision to still be authorized. `abandon`
 closes a run `recover` cannot finish; it does not undo anything, and the next
 run reconciles what was applied. Both exit 4 while another Canonfig process
-holds the run, and print its process ID. See [Recover](/how-to/recover).
+holds the run, and print its process ID. See [Recover from a failed or blocked sync](/how-to/recover).
 
 ## Status
 
@@ -313,10 +315,11 @@ canonfig status --json
 canonfig status --follower laptop-dana
 ```
 
-On a follower, `status` reports the enrollment, the applied revision, the
-schedule, and the result of the last run. `converged` is false while a run is
-open or interrupted, or when the last run did not converge. On the Source
-Machine, `--follower <id>` reports that follower's enrollment.
+On a Follower Machine, `status` reports the enrollment, the applied Profile
+Revision, the schedule, and the result of the last run. `converged` is false
+while a run is open or interrupted, or when the last run did not converge. On
+the Source Machine, `--follower <id>` reports that Follower Machine's
+enrollment.
 
 `status --json` includes `completionReceipt`, which separates: signed
 publication, apply result, client-load evidence, native scheduling, and journal
@@ -332,7 +335,8 @@ canonfig overlay set claude-settings --target ~/.claude/settings.json --key perm
 canonfig overlay remove claude-settings
 ```
 
-A Local Overlay claims keys of a `config` resource's target for this follower.
+A Local Overlay claims keys of a `config` resource's target for this Follower
+Machine.
 `set` needs one resource ID, `--target`, and at least one `--key` (repeatable).
 A claimed key that the profile drops is kept instead of removed. A claimed key
 that overlaps a key the profile still declares is Human Action Required until
@@ -346,9 +350,9 @@ backslash. See
 canonfig doctor --no-input --timeout-ms 5000
 ```
 
-Runs independent checks of this machine and its Source connection.
-`--timeout-ms` limits each check (default 5000, at most 300000). See
-[Diagnostics](/reference/diagnostics).
+Runs independent checks of this machine and its connection to the Source
+Machine. `--timeout-ms` limits each check (default 5000, at most 300000). See
+[Doctor probes and exit codes](/reference/diagnostics).
 
 ## Managed SSH tunnel
 
@@ -367,7 +371,7 @@ Start the Source Machine's endpoint first, then the tunnel.
 | `--invitation <path>` | Required on first start. |
 | `--ssh-host <host>` | Required. Hostname, IPv4, or IPv6 address without brackets. |
 | `--ssh-user <user>` | Required. |
-| `--ssh-host-key-file <path>` | Required. The Source host's verified SSH public key. |
+| `--ssh-host-key-file <path>` | Required. The verified SSH public key of the Source Machine's host. |
 | `--ssh-port <port>` | Default 22. |
 | `--local-host <host>` | `127.0.0.1` (default) or `::1`. |
 | `--local-port <port>` | Default 17342. |
@@ -398,8 +402,8 @@ canonfig profile show 7f3c9a2e
 canonfig profile select workstation
 ```
 
-`list` shows profiles, `show` shows one revision by ID, and `select` changes
-which profile this follower follows.
+`list` shows profiles, `show` shows one Profile Revision by ID, and `select`
+changes which profile this Follower Machine follows.
 
 ## Agent policy
 
@@ -430,14 +434,14 @@ canonfig agent harness custom --executable /opt/review-agent/bin/agent --argumen
 | `--allow-capability <capability>` | `elevation`, `login`, `restart`, or `reboot`. Repeatable. |
 | `--maximum-input-bytes <bytes>` | Default and maximum 1048576. |
 
-A secret bound with `--bind-secret` is read when the harness starts, so a new
-value takes effect on the next start. Only the variable name and secret name
-are saved.
+A secret bound with `--bind-secret` is read when the harness starts, so a
+changed value takes effect on the next start. Only the variable name and
+secret name are saved.
 
-A follower that still has a `gemini` harness stored fails with exit 2: "the
-gemini agent harness was removed in 5.0.0; run 'canonfig agent harness
+A Follower Machine that still has a `gemini` harness stored fails with exit 2:
+"the gemini agent harness was removed in 5.0.0; run 'canonfig agent harness
 codex|claude|custom ...' to replace it". Run `canonfig agent harness` with a
-supported kind. See [Configure agent policies](/how-to/configure-agent-policies).
+supported kind. See [Let a Configuration Agent resolve work](/how-to/configure-agent-policies#replace-a-gemini-harness).
 
 ## Journaled setup
 
@@ -457,8 +461,8 @@ canonfig setup status
 | `--mode <simple\|advanced>` | Records the interview depth. Does not change the plan; kept by later plans. |
 | `--intent <text>` | A note recorded with the plan. |
 
-`setup plan` changes nothing. A `full` Source plan fails early when the
-credential store cannot hold the Source keys. `setup approve` approves the
+`setup plan` changes nothing. A `full` plan for the Source Machine fails early
+when the credential store cannot hold the Source Machine's keys. `setup approve` approves the
 current plan, including the exact content of every `--file`. `setup apply`
 runs the next stages; run it again to continue. If a discovery file changed
 after approval, apply clears the approval without running anything: plan and
@@ -486,7 +490,7 @@ profile's suggested schedule and takes no other option. `set` prints the zone,
 the next run, and a warning when the time does not exist on a daylight-saving
 day; it never starts a run for a time already past today. `set` refuses while a
 native override of the job exists. See
-[Manage schedules](/how-to/manage-schedules).
+[Sync on a schedule](/how-to/manage-schedules).
 
 ## Shared secrets
 
@@ -503,7 +507,7 @@ canonfig secrets bootstrap
 | --- | --- |
 | `set <name>` | Stores a value read from standard input. |
 | `list` | Lists names and where each came from. Never values. |
-| `remove <name>` | Deletes a stored secret. Removing a name the Source Machine owns discards that value on this follower. |
+| `remove <name>` | Deletes a stored secret. Removing a name the Source Machine owns discards that value on this Follower Machine. |
 | `sync` | Fetches authorized secrets from the Source Machine. `sync --apply` already does this. |
 | `bootstrap` | Checks the credential store end to end and reports the storage it selected. |
 
@@ -560,7 +564,7 @@ Records where a skill came from and updates it from that Git repository.
 | Option | Value |
 | --- | --- |
 | `--root <path>` | Directory holding the installed skills. Default: the current directory. |
-| `--config <path>` | Source list, relative to `--root`. Default `.canonfig/skills-sources.json`. |
+| `--config <path>` | The list of skill sources, relative to `--root`. Default `.canonfig/skills-sources.json`. |
 | `--name <id>` | Skill name. `track` needs exactly one; `check`, `update`, and `auto` accept several (default: all). |
 | `--path`, `--source`, `--ref` | `track` only, all required: installed directory, public HTTPS Git URL or local repository, and branch, tag, or commit. |
 | `--subdir <path>` | `track` only. Skill directory inside the repository. Default `.`. |
@@ -656,7 +660,7 @@ canonfig installer check npm
 canonfig installer remove npm
 ```
 
-A binding tells this follower exactly how to start a package manager. It is
+A binding tells this Follower Machine exactly how to start a package manager. It is
 local and never comes from the Source Machine. Methods are `apt`, `brew`,
 `bun`, `cargo`, `npm`, `pnpm`, `uv`, and `winget`.
 

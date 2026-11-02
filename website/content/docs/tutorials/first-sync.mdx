@@ -1,10 +1,10 @@
 ---
-title: "Tutorial: sync Claude Code and Codex from machine A to machine B"
-description: Publish your Claude Code and Codex setup from one machine and keep a second machine in sync on a schedule.
+title: Sync your first two machines
+description: Publish your Claude Code and Codex setup from one machine and keep a second machine in sync with it every day.
 ---
 
 At the end of this tutorial, machine A publishes your Claude Code and Codex
-setup and machine B applies it on its own every day. Machine A becomes the
+setup, and machine B applies it on its own every day. Machine A becomes the
 **Source Machine**. Machine B becomes a **Follower Machine**.
 
 You sync:
@@ -23,15 +23,14 @@ You sync:
 - **Node.js 24 or newer and npm** on both machines, installed for the user
   account you run Claude Code and Codex under. Get Node.js from
   [nodejs.org](https://nodejs.org/en/download) or your package manager.
-- **Linux or macOS with a POSIX shell.** The commands below use one. Canonfig
-  also runs on Windows; see [Cross-platform behavior](/reference/cross-platform)
-  for the differences.
+- **Linux or macOS with a POSIX shell.** The commands below use one. For
+  Windows, see [Platform differences](/reference/cross-platform).
 - **SSH from B to A.** The Source Machine listens only on its own loopback
   address, so B reaches it through an SSH tunnel that Canonfig manages. You
-  need an SSH login on A and its SSH host public key. If A and B are the same
-  host (two user accounts), you need no SSH.
+  need an SSH login on A and A's SSH host public key. If A and B are two user
+  accounts on one host, you need no SSH.
 - **Claude Code and Codex installed on B.** Canonfig manages their
-  configuration; it does not install the clients.
+  configuration. It does not install the clients.
 - **The same Canonfig release on both machines.** A Source Machine and a
   Follower Machine on different `major.minor` releases refuse to talk to each
   other.
@@ -49,10 +48,11 @@ canonfig --version
 canonfig doctor --no-input
 ```
 
-`doctor` prints one line per check. Look at the `credentials` line: Canonfig
-keeps its keys in the system credential store (Secret Service on Linux,
-Keychain on macOS). If that line reports a problem, follow the fix it prints,
-or see [Run Canonfig unattended](/how-to/run-unattended), before you continue.
+`canonfig --version` prints `5.0.0`. `doctor` prints one line per check. Look
+at the `credentials` line: Canonfig keeps its keys in the system credential
+store (Secret Service on Linux, Keychain on macOS). If that line reports a
+problem, follow the fix it prints, or see
+[Run Canonfig unattended](/how-to/run-unattended), before you continue.
 
 ## 2. Make machine A the Source Machine
 
@@ -62,14 +62,15 @@ On A:
 canonfig source init
 ```
 
-This creates A's signing key and TLS certificate. It publishes nothing. Run it
-once: it refuses to replace an existing Source Machine identity.
+The output starts with `source.init completed` and lists the signing key and
+TLS fingerprints. Nothing is published yet. Running the command again creates
+nothing; it checks that the stored keys still match.
 
 ## 3. Write the Machine Profile
 
 A **Machine Profile** is a JSONC file that lists each **Profile Resource**:
-what to manage (`kind`), where it goes on the follower (`target`), where its
-content comes from (`spec`), and how to check it (`verify`).
+what to manage (`kind`), where it goes on the Follower Machine (`target`),
+where its content comes from (`spec`), and how to check it (`verify`).
 
 Create `~/canonfig.profile.jsonc` on A. Because the file sits in your home
 directory, each `source` path points at the real file, so after you edit
@@ -196,10 +197,10 @@ The example follows these rules:
 - A `config` key such as `mcpServers.memory` owns the whole value at that path.
   Canonfig writes it on B, and removes it if you later drop it from the
   profile. The rest of the file belongs to B.
-- Leave secrets out. A token belongs in the client's own login, or in a
-  [shared secret](/reference/security#opt-in-shared-secrets).
+- Secrets stay out of the profile. A token belongs in the client's own login,
+  or in a [shared secret](/reference/security#opt-in-shared-secrets).
 
-The [profile reference](/reference/profile-schema) lists every field.
+The [profile file reference](/reference/profile-schema) lists every field.
 
 ## 4. Check the profile
 
@@ -209,10 +210,10 @@ On A:
 canonfig source digest --profile-file ~/canonfig.profile.jsonc
 ```
 
-The output lists each resource with its content digest. Nothing is published.
-A missing `source` file, a path outside the profile directory, or an invalid
-value fails here with the resource ID and the reason. Fix the profile and run
-the command again.
+The output starts with `source.digest completed` and lists each resource with
+its content digest. Nothing is published. A missing `source` file, a path
+outside the profile directory, or an invalid value fails here with the
+resource ID and the reason. Fix the profile and run the command again.
 
 ## 5. Publish
 
@@ -222,25 +223,26 @@ On A:
 canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer "$USER"
 ```
 
-The output names the profile, the revision sequence, and each resource.
-Publishing unchanged content again returns the same revision; changed content
-becomes the next sequence.
+The output starts with `source.publish completed`, then names the profile, the
+sequence number (`sequence 1`), and each resource. Publishing unchanged
+content again returns the same Profile Revision. Changed content becomes the
+next sequence number.
 
 ## 6. Keep the Source Machine serving
 
-B fetches revisions from A, so A must be serving whenever B syncs. On A,
-install the native user service:
+B fetches Profile Revisions from A, so A must be serving whenever B syncs. On
+A, install the user service:
 
 ```bash
 canonfig source service install
 canonfig source service status
 ```
 
-`install` returns once A answers on `https://127.0.0.1:17342`. `status` reports
-`running`. The service is a systemd user unit (`canonfig-source.service`) on
-Linux and a LaunchAgent (`dev.canonfig.source`) on macOS, and it runs while you
-are logged in. On macOS, run `install` from the desktop session, not over SSH.
-To keep A serving after logout or reboot, see
+`install` returns once A answers on `https://127.0.0.1:17342`. `status`
+reports `running`. The service is a systemd user unit
+(`canonfig-source.service`) on Linux and a LaunchAgent (`dev.canonfig.source`)
+on macOS, and it runs while you are logged in. On macOS, run `install` from the
+desktop session, not over SSH. To keep A serving after logout or reboot, see
 [Run Canonfig unattended](/how-to/run-unattended).
 
 ## 7. Invite machine B
@@ -251,10 +253,10 @@ On A:
 canonfig source invite --endpoint https://127.0.0.1:17342 --output ~/canonfig-invite --expires 1h
 ```
 
-The invitation file works once and expires after one hour (the default is 15
-minutes; the maximum is 24 hours). Treat it like a password until B has
-enrolled. Copy it to B, together with A's SSH host public key read from A's own
-disk:
+The command writes `~/canonfig-invite`. The invitation works once and expires
+after one hour (without `--expires`, after 15 minutes; at most 24 hours).
+Treat it like a password until B has enrolled. Copy it to B, together with
+A's SSH host public key read from A's own disk:
 
 ```bash
 scp ~/canonfig-invite b.example:canonfig-invite
@@ -263,7 +265,7 @@ scp /etc/ssh/ssh_host_ed25519_key.pub b.example:source-host-key.pub
 
 ## 8. Enroll machine B
 
-On B, start the tunnel to A:
+On B, start the tunnel to A. Skip this command if A and B are the same host.
 
 ```bash
 canonfig tunnel start --invitation ./canonfig-invite --ssh-host a.example --ssh-user maria --ssh-host-key-file ./source-host-key.pub
@@ -271,18 +273,18 @@ canonfig tunnel start --invitation ./canonfig-invite --ssh-host a.example --ssh-
 
 The tunnel forwards B's `127.0.0.1:17342` to A over SSH, and checks A's SSH
 host key, TLS certificate, and signing key against the values you supplied.
-Canonfig records the tunnel, so later you restart it with `canonfig tunnel start`
-alone. Skip this command if A and B are the same host.
+Canonfig records the tunnel, so later you restart it with
+`canonfig tunnel start` alone.
 
-Enroll B and delete the invitation. The invitation goes through a pipe, never
-as an argument:
+Enroll B, then delete the invitation. The invitation goes through a pipe,
+never as an argument:
 
 ```bash
 cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
 rm ./canonfig-invite
 ```
 
-B now trusts only the Source Machine named in the invitation, stores its own
+B trusts only the Source Machine named in the invitation, stores its own
 credential in its credential store, and follows the `workstation` profile.
 `canonfig status` shows the trusted signing and TLS fingerprints.
 
@@ -296,7 +298,7 @@ canonfig sync --plan
 
 The plan lists one action per resource, for example `write-file` for
 `~/.claude/CLAUDE.md` and `write-config` with the keys it sets. Nothing on B
-changes yet. When the plan matches what you expect:
+changes. When the plan matches what you expect, apply it:
 
 ```bash
 canonfig sync --apply
@@ -305,7 +307,7 @@ canonfig sync --apply
 Canonfig applies every action, then checks each resource. The result is
 `Converged` when every resource matches. If a resource fails, Canonfig rolls
 the run back and names the resource and the reason; see
-[Recover](/how-to/recover).
+[Recover from a failed or blocked sync](/how-to/recover).
 
 Run `canonfig sync --apply` a second time. It reports `Converged` with no
 changes.
@@ -322,8 +324,8 @@ decisions from A:
   first time you open it.
 - **Codex.** Run `codex mcp list` to see the `memory` server. Codex asks you to
   trust each project directory the first time. Codex stores that decision in
-  `~/.codex/config.toml`; Canonfig leaves keys it does not manage alone, so the
-  decision survives later syncs.
+  `~/.codex/config.toml`. Canonfig leaves keys it does not manage alone, so
+  the decision survives later syncs.
 
 When an apply writes Codex hooks, the output ends with "still to do in each
 client" and names the review you need to do.
@@ -337,8 +339,9 @@ canonfig schedule set daily@09:00
 canonfig schedule status
 ```
 
-`schedule set` prints the time zone it used and the next run time. At that time
-each day, a systemd user timer (Linux) or launchd agent (macOS) runs
+`schedule set` prints the time zone it used and the next run time.
+`schedule status` reports `current`. At 09:00 each day, a systemd user timer
+(Linux) or launchd agent (macOS) runs
 `canonfig sync --apply --no-input --scheduled`. No Canonfig process runs in
 between.
 
@@ -349,8 +352,8 @@ The schedule runs only when the machine can run it:
 - **macOS:** while you are logged in to the desktop with the login Keychain
   unlocked.
 
-[Manage schedules](/how-to/manage-schedules) covers time zones, daylight saving
-time, and missed runs.
+[Sync on a schedule](/how-to/manage-schedules) covers time zones, daylight
+saving time, and missed runs.
 
 After the first scheduled run, check B:
 
@@ -370,8 +373,8 @@ On A, edit `~/.claude/CLAUDE.md`, then publish again:
 canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer "$USER"
 ```
 
-The output shows the next sequence number. B applies it at its next scheduled
-run, or right away when you run `canonfig sync --apply` on B.
+The output shows `sequence 2`. B applies it at its next scheduled run, or
+immediately when you run `canonfig sync --apply` on B.
 
 To stop managing something, remove its resource and publish. B removes the
 file, keys, or skill Canonfig wrote, as long as they still match what Canonfig
@@ -384,51 +387,22 @@ content, change it on A.
 
 ## If a step fails
 
-**`canonfig source invite` fails with `Invitation duration must not exceed 24h`.**
-`--expires` accepts values such as `15m`, `1h`, or `24h`. Pick a value up to
-`24h`.
+| Message | Cause | Fix |
+| --- | --- | --- |
+| "Invitation duration must not exceed 24h" (`source invite`, exit 2) | `--expires` is longer than 24 hours. | Pick a value such as `15m`, `1h`, or `24h`. |
+| "the invitation has expired; ask the Source Machine for a new one" (exit 5) | B used the invitation after its `--expires` time. | Run `canonfig source invite` on A again, copy the file, and enroll with it. |
+| "the invitation was already used; ask the Source Machine for a new one" (exit 5) | Each invitation enrolls one machine once. | Issue another invitation on A. |
+| "the Source Machine's certificate fingerprint does not match the invitation" | B reached a server whose TLS certificate is not the one in the invitation: another Source Machine on the same port, or an invitation from an earlier `canonfig source init`. | On A, run `canonfig source service status` to confirm which Source Machine is serving, then issue an invitation from it. Do not enroll until the fingerprints match. |
+| "SSH host identity for a.example did not match its pin" (`tunnel start`) | The host key file does not belong to the host you connected to. | Copy `/etc/ssh/ssh_host_ed25519_key.pub` from A again, reading it on A itself, and check that `--ssh-host` names A. |
+| "nothing answered at the Source endpoint" (exit 6) | Nothing listens on `127.0.0.1:17342`: A is not serving, or the tunnel is down. | On A, run `canonfig source service status` and expect `running`. On B, run `canonfig tunnel status`, then `canonfig tunnel start`. If A serves on another port, use that port in `--endpoint` and in `tunnel start --local-port`. |
+| "source/follower version mismatch" (exit 2) | A and B run different `major.minor` releases. The message names both. | Install the same release on both machines, as in step 1. See [Upgrade Canonfig](/how-to/upgrade). |
+| "the follower identity is already enrolled" | A Follower Machine named `laptop` is already enrolled. | Pick another `--name`, or revoke the old one on A first; see [Follower credentials](/reference/security#follower-credentials). |
 
-**Enrollment fails with `the invitation has expired; ask the Source Machine for a new one`.**
-B used the invitation after its `--expires` time. Run `canonfig source invite`
-on A again, copy the new file, and enroll with it.
-
-**Enrollment fails with `the invitation was already used; ask the Source Machine for a new one`.**
-Each invitation enrolls one machine once. Issue a new one on A.
-
-**Enrollment fails with `the Source Machine's certificate fingerprint does not match the invitation`.**
-B reached a server whose TLS certificate is not the one named in the
-invitation: usually a different Source Machine on the same port, or an
-invitation from an earlier `canonfig source init`. On A, run
-`canonfig source service status` to confirm which Source Machine is serving,
-then issue a new invitation from it. Do not enroll until the fingerprints
-match.
-
-**`canonfig tunnel start` fails with `SSH host identity for a.example did not match its pin`.**
-The host key file does not belong to the host you connected to. Copy
-`/etc/ssh/ssh_host_ed25519_key.pub` from A again, reading it on A itself, and
-check that `--ssh-host` names A.
-
-**Enrollment or sync reports `nothing answered at the Source endpoint`.**
-Nothing is listening on `127.0.0.1:17342`: A is not serving, or the tunnel is
-down. On A, run `canonfig source service status` and expect `running`. On B, run
-`canonfig tunnel status`, then `canonfig tunnel start` to restart a recorded
-tunnel. If A serves on another port, use the same port in `--endpoint` and in
-`tunnel start --local-port`.
-
-**Enrollment or sync fails with `source/follower version mismatch`.**
-A and B run different `major.minor` releases. The message names both versions.
-Install the same release on both machines, as in step 1, then try again. See
-[Upgrade Canonfig](/how-to/upgrade).
-
-**Enrollment fails with `the follower identity is already enrolled`.**
-A machine named `laptop` is already enrolled. Pick another `--name`, or revoke
-the old one on A first; see [Follower credentials](/reference/security#follower-credentials).
-
-For other errors, run `canonfig doctor --no-input` on the machine that failed;
-[Diagnostics](/reference/diagnostics) lists every check.
+For other errors, run `canonfig doctor --no-input` on the machine that failed.
+[Doctor probes and exit codes](/reference/diagnostics) lists every check.
 
 ## Next steps
 
-- [Publish a change](/how-to/publish-profile-changes)
+- [Publish a change to your Follower Machines](/how-to/publish-profile-changes)
 - [Upgrade Canonfig](/how-to/upgrade)
-- [Revoke or remove a follower](/reference/security#follower-credentials)
+- [Revoke or remove a Follower Machine](/reference/security#follower-credentials)

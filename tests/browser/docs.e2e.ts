@@ -39,7 +39,7 @@ test("search finds the documented CLI and mobile home stays within the viewport"
   expect(await browser.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   await screen.getByRole("button", "Open Search").tap();
   await screen.getByPlaceholder("Search").pressSequentially("CLI reference");
-  await screen.getByRole("button", /^Canonfig Reference Reference: complete CLI reference$/).tap();
+  await screen.getByRole("button", /^Canonfig Reference CLI reference$/).tap();
   await expect(browser).toHaveURL(exported("/reference/cli"));
-  await expect(screen.getByRole("heading", { name: "Reference: complete CLI reference", exact: true })).toBeVisible();
+  await expect(screen.getByRole("heading", { name: "CLI reference", exact: true })).toBeVisible();
 });

@@ -1,19 +1,18 @@
 ---
-title: Cross-platform behavior
-description: How Canonfig behaves on Linux, macOS, and Windows, and where the platforms differ in paths, tools, credentials, and unattended runs.
+title: Platform differences
+description: Look up how Canonfig differs on Linux, macOS, and Windows in paths, tools, credentials, schedules, and unattended runs.
 ---
 
-Linux, macOS, and Windows are all supported as Source Machine and Follower
-Machine platforms. A Machine Profile describes the same outcome on each
-platform, but paths, package managers, credential stores and schedulers
-differ.
+Linux, macOS, and Windows can each run a Source Machine or a Follower Machine.
+A Machine Profile describes the same outcome on each platform, but paths,
+package managers, credential stores, and schedulers differ.
 
 ## What Canonfig uses on each platform
 
 | Capability | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| Follower schedule | systemd user timer | launchd user agent | Task Scheduler task |
-| Source service | systemd user unit `canonfig-source.service` | LaunchAgent `dev.canonfig.source` | Task Scheduler task `Canonfig\canonfig-source`, started at logon |
+| Follower Machine schedule | systemd user timer | launchd user agent | Task Scheduler task |
+| Source Machine service | systemd user unit `canonfig-source.service` | LaunchAgent `dev.canonfig.source` | Task Scheduler task `Canonfig\canonfig-source`, started at logon |
 | Credential store | Secret Service (for example GNOME Keyring) | login Keychain | Credential Manager |
 | Typical installers | apt, npm, uv, cargo, source | Homebrew, npm, uv, cargo, source | winget, npm, uv, cargo, source |
 | Path syntax | POSIX | POSIX | Windows |
@@ -22,10 +21,10 @@ differ.
 
 A target path cannot contain `..`, a null byte, or a glob. Where a target
 differs between platforms, map it per platform in the Machine Profile; do not
-publish the Source Machine's absolute path as if it fit every follower.
+publish the Source Machine's absolute path as if it fit every Follower Machine.
 
-Agent harness allowlists belong to each follower. Use Windows paths on Windows
-and POSIX paths on Linux and macOS.
+Agent harness allowlists belong to each Follower Machine. Use Windows paths on
+Windows and POSIX paths on Linux and macOS.
 
 Canonfig writes each file to a temporary sibling named `.cf-<12 hex>.tmp`,
 then renames it over the target, so a target is never left half written.
@@ -43,7 +42,7 @@ before they change anything:
 > paths are not enabled (MAX_PATH is 260). Nothing was changed.
 
 To fix it, shorten the target, or enable long paths from an administrator
-PowerShell and open a new session:
+PowerShell and open another session:
 
 ```powershell
 Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1
@@ -63,15 +62,15 @@ symbolic links" user right. Without either, the action fails with:
 
 ## Installation Recipes
 
-Each platform has its own recipe. A tool can install with apt on Linux,
-Homebrew on macOS and winget on Windows. An npm, uv, cargo or source recipe
-covers several platforms only when it was verified on each of them.
+Each platform has its own Installation Recipe. A tool can install with apt on
+Linux, Homebrew on macOS, and winget on Windows. An npm, uv, cargo, or source
+recipe covers several platforms only when it was verified on each of them.
 
 To verify a bare command such as `ruff`, Canonfig looks first in the
 directories where that recipe's installer puts executables, then on `PATH`.
 On Windows these include `%APPDATA%\npm` and
 `%LOCALAPPDATA%\Microsoft\WinGet\Links`. See
-[Tool discovery and Installation Recipes](/explanation/tools-and-recipes).
+[How Canonfig installs and verifies tools](/explanation/tools-and-recipes).
 
 ## Windows package managers
 
@@ -94,9 +93,8 @@ canonfig installer check npm
 Both paths must be absolute and exist. They depend on where Node.js is
 installed; nvm-windows and Volta use other directories. For pnpm, use
 `pnpm.cjs` as the `--arg`. `canonfig installer list` shows the same command
-under `suggestions`. This binding has not been verified on a live Windows
-machine; `canonfig installer check` confirms that it starts. See
-[Installer bindings](/reference/cli#installer-bindings).
+under `suggestions`, and `canonfig installer check` confirms that the binding
+starts. See [Installer bindings](/reference/cli#installer-bindings).
 
 ## Schedules
 
@@ -108,8 +106,8 @@ canonfig schedule set daily@09:00 --timezone Europe/Paris
 canonfig schedule status
 ```
 
-Missed runs and daylight-saving changes follow each platform's scheduler; see
-[Manage schedules](/how-to/manage-schedules).
+`--timezone` works on Linux only. Missed runs and daylight-saving changes
+follow each platform's scheduler; see [Sync on a schedule](/how-to/manage-schedules).
 
 ## Unattended runs
 
@@ -120,9 +118,9 @@ canonfig sync --apply --no-input --scheduled
 ```
 
 A scheduled run never waits for a prompt. A missing credential store, login,
-elevation or other step only a person can take ends as Human Action Required.
+elevation, or other step only a person can take ends as Human Action Required.
 
-The Source service and scheduled runs work under these conditions:
+The Source Machine's service and scheduled runs work under these conditions:
 
 | Platform | While logged in | While logged out |
 | --- | --- | --- |
@@ -135,8 +133,8 @@ See [Run Canonfig unattended](/how-to/run-unattended).
 ## Reaching the Source Machine
 
 On every platform, the Source Machine listens on a loopback address only.
-Canonfig does not support a public listener. A follower on another host
-connects through the managed SSH tunnel, which pins the SSH host key, the
+Canonfig does not support a public listener. A Follower Machine on another
+host connects through the managed SSH tunnel, which pins the SSH host key, the
 Source Machine's TLS certificate, and its signing key, and refuses options
 that skip host-key checks or add forwards.
 

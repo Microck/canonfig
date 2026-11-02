@@ -1,12 +1,13 @@
 ---
-title: Profiles, revisions, resources, and policies
-description: Every field of the Machine Profile file, the resource kinds, Apply Policies, verification methods, and the rules publication enforces.
+title: Profile file reference
+description: Look up every Machine Profile field, resource kind, Apply Policy, and verification method, and the rules publishing enforces.
 ---
 
 A **Machine Profile** is the JSONC file you write on the Source Machine to
-declare the configuration followers should have. `canonfig source publish
---profile-file <file>` validates it and signs an immutable **Profile Revision**.
-Comments and layout in the file do not change the revision's digest.
+declare the configuration Follower Machines should have. `canonfig source
+publish --profile-file <file>` validates it and signs a **Profile Revision**,
+which never changes after publication. Comments and layout in the file do not
+change the Profile Revision's digest.
 
 ## Profile file
 
@@ -26,7 +27,7 @@ Comments and layout in the file do not change the revision's digest.
 | Field | Required | Value |
 | --- | --- | --- |
 | `version` | No | Always `2`. The file format version, not a revision number. |
-| `id` | Yes | Profile ID that followers select with `--profile`. |
+| `id` | Yes | Profile ID that Follower Machines select with `--profile`. |
 | `name` | Yes | Display name. |
 | `groups` | No | Follower Groups: `{ "name", "description"? }`. Resources can target only declared groups. |
 | `resources` | No | Profile Resources. Publishing an empty profile needs `--allow-empty`. |
@@ -40,8 +41,8 @@ equal to the latest revision returns that revision unchanged.
 
 ### Suggested schedule
 
-`scheduleDefault` is a suggestion. Sync never installs it. A follower that has
-not chosen a schedule sees "schedule available" and accepts it with
+`scheduleDefault` is a suggestion. Sync never installs it. A Follower Machine
+that has no schedule set sees "schedule available" and accepts it with
 `canonfig schedule set --default`.
 
 | Shape | Example |
@@ -49,9 +50,10 @@ not chosen a schedule sees "schedule available" and accepts it with
 | Daily | `{ "type": "daily", "at": "04:30", "timezone": "local" }` |
 | Weekly | `{ "type": "weekly", "days": ["Mon", "Thu"], "at": "12:30", "timezone": "local" }` |
 
-`timezone` must be `"local"`: each follower runs at that time in its own time
-zone. A follower that needs a named time zone sets its own schedule with
-`canonfig schedule set --timezone`. See [Manage schedules](/how-to/manage-schedules).
+`timezone` must be `"local"`: each Follower Machine runs at that time in its
+own time zone. A Follower Machine that needs a named time zone sets its own
+schedule with `canonfig schedule set --timezone`. See
+[Sync on a schedule](/how-to/manage-schedules).
 
 ## Resource fields
 
@@ -59,9 +61,9 @@ zone. A follower that needs a named time zone sets its own schedule with
 | --- | --- | --- |
 | `id` | Yes | Unique within the profile. |
 | `kind` | Yes | `file`, `directory`, `config`, `skill`, `tool`, or `credential`. |
-| `target` | Yes | Path on the follower (`~` is the follower's home), or the command name for a `tool`. No `..` segments or glob characters. |
+| `target` | Yes | Path on the Follower Machine (`~` is the Follower Machine's home directory), or the command name for a `tool`. No `..` segments or glob characters. |
 | `policy` | No | Apply Policy. Defaults by kind; see below. |
-| `groups` | No | Apply only on followers in one of these groups. |
+| `groups` | No | Apply only on Follower Machines in one of these Follower Groups. |
 | `dependsOn` | No | Resource IDs that must apply first. No cycles. |
 | `spec` | Yes | Kind-specific content. Its `kind` matches the resource `kind`. |
 | `verify` | Yes | How Canonfig checks the result; see [Verification](#verification). |
@@ -72,7 +74,7 @@ kind does not allow.
 
 ## Resource kinds and defaults
 
-| Kind | What a follower gets | Default policy | Other allowed policies |
+| Kind | What a Follower Machine gets | Default policy | Other allowed policies |
 | --- | --- | --- | --- |
 | `file` | One file with exact content and mode, or a symlink | `replace` | `replace-if-unmodified`, `append-local` |
 | `directory` | A tree of files and directories | `mirror-owned` | `replace` |
@@ -84,7 +86,7 @@ kind does not allow.
 ## Author file, config, and skill resources
 
 `canonfig source scan` proposes only `tool` resources. Write every other
-resource in the profile file. The [first sync tutorial](/tutorials/first-sync)
+resource in the profile file. [Sync your first two machines](/tutorials/first-sync)
 builds a complete Claude Code and Codex profile from these shapes.
 
 ### `file`
@@ -195,7 +197,7 @@ relative to the link.
 ### `tool` and `credential`
 
 A `tool` spec has `toolId`, `recipes`, and optional `login` and `agentInstall`.
-See [Tool discovery and Installation Recipes](/explanation/tools-and-recipes).
+See [How Canonfig installs and verifies tools](/explanation/tools-and-recipes).
 
 `agentInstall` lets a Configuration Agent install the tool when no recipe fits:
 
@@ -211,7 +213,8 @@ HTTPS origins it may download from. Without `agentInstall`, a tool with no
 usable recipe needs Human Action Required.
 
 A `credential` spec has one field, `reference`: the name of a credential each
-follower must already hold. The value never leaves the follower.
+Follower Machine must already hold. The value never leaves the Follower
+Machine.
 
 ### Source paths
 
@@ -225,7 +228,7 @@ the directory is published as a symlink. For a link that points elsewhere, use
 
 If the profile file sits in your home directory, sources can point at the real
 files, and an edit followed by `canonfig source publish` is the whole update.
-See [Publish profile changes](/how-to/publish-profile-changes).
+See [Publish a change to your Follower Machines](/how-to/publish-profile-changes).
 
 ### Size limit
 
@@ -242,7 +245,7 @@ profile with exit 2. Split large resources across separate profiles.
 | `mirror-owned` | Adds and updates desired files, and removes only files Canonfig wrote earlier and nobody changed. Other entries stay. |
 | `merge` | Writes declared keys and keeps everything else in the file, including the Local Overlay. Removes a key Canonfig owned that the profile dropped, unless a Local Overlay claims it. |
 | `replace-if-unmodified` | Writes only when the target still matches what Canonfig last applied, or already matches the profile. A missing target is recreated. A changed target is Follower Drift: kept, reported, and the run stops with exit 4. |
-| `append-local` | Keeps Source text in a marked section at the top of the file and follower text below it. |
+| `append-local` | Keeps the Source Machine's text in a marked section at the top of the file and the Follower Machine's text below it. |
 | `ensure` | Installs and verifies a tool. Never removes other software. |
 | `require-local` | Checks that a local credential exists. Otherwise Human Action Required. |
 
@@ -251,10 +254,11 @@ does not list them. They never count as drift.
 
 ### Keep local instructions with `append-local`
 
-Use `append-local` on a `file` such as `AGENTS.md` when each follower adds its
-own instructions. The file must use inline `content` (not `source`), must not
-be executable or a symlink, and the content must not contain the markers below
-or NUL characters. The follower file looks like this:
+Use `append-local` on a `file` such as `AGENTS.md` when each Follower Machine
+adds its own instructions. The file must use inline `content` (not `source`),
+must not be executable or a symlink, and the content must not contain the
+markers below or NUL characters. The file on the Follower Machine looks like
+this:
 
 ```md title="Follower AGENTS.md"
 <!-- canonfig:source:start -->
@@ -265,19 +269,20 @@ Follower-local instructions
 ```
 
 - Write local instructions below the closing marker. Later syncs replace only
-  the Source section and keep local text exactly, including whitespace and line
-  endings.
+  the Source Machine's section and keep local text exactly, including
+  whitespace and line endings.
 - **On first adoption, the whole existing file becomes local text**, even if it
-  matches the Source text. The follower then holds the Source section plus its
-  old copy. Canonfig does not guess which old lines to drop. Back up the file
-  before you publish the policy.
-- Editing or deleting the Source section is Follower Drift. Move the edit below
-  the closing marker. Repeated or broken markers need manual repair. Deleting
-  the whole file lets Canonfig recreate it.
+  matches the Source Machine's text. The Follower Machine then holds the Source
+  Machine's section plus its old copy. Canonfig does not guess which old lines
+  to drop. Back up the file before you publish the policy.
+- Editing or deleting the Source Machine's section is Follower Drift. Move the
+  edit below the closing marker. Repeated or broken markers need manual
+  repair. Deleting the whole file lets Canonfig recreate it.
 - Removing the resource from the profile removes only an unchanged Source
-  section and leaves local text.
+  Machine section and leaves local text.
 
-To see exactly what first adoption will write, run this on the follower:
+To see exactly what first adoption will write, run this on the Follower
+Machine:
 
 ```bash
 canonfig sync --plan --review-local
@@ -285,12 +290,12 @@ canonfig sync --plan --review-local
 
 It writes a JSON review for each first adoption to an `adoption-review-<id>`
 directory under the user data directory's `canonfig` folder, readable only by
-you. `sourceAddition` is the Source text, `retainedLocal` is the local text, and
+you. `sourceAddition` is the Source Machine's text, `retainedLocal` is the local text, and
 `proposedText` is the complete file apply will write. If either file changes
 before you apply, review again.
 
 <Callout title="Reviews can contain secrets" type="warn">
-  A review holds the follower's local text. Do not paste it into chat or bug
+  A review holds the Follower Machine's local text. Do not paste it into chat or bug
   reports. Delete the review directory after you read it.
 </Callout>
 
@@ -353,11 +358,11 @@ evidence separately:
 
 ## Applied Resource Records
 
-After applying a resource, the follower records exactly what it wrote: the
-revision, digest, modes, symlink targets, and files it owns. Canonfig compares
-the follower with this record to detect Follower Drift and to decide which
-files `mirror-owned` may remove. The record never gives the follower authority
-over the profile.
+After applying a resource, the Follower Machine records exactly what it wrote:
+the Profile Revision, digest, modes, symlink targets, and files it owns.
+Canonfig compares the Follower Machine with this record to detect Follower
+Drift and to decide which files `mirror-owned` may remove. The record never
+gives the Follower Machine authority over the profile.
 
 ## Structured configuration ownership
 
@@ -386,7 +391,7 @@ backslash is itself escaped, so the key `amp.mcpServers` → `docs` is:
 
 Any other backslash is rejected by publication and by `canonfig overlay set`.
 
-### How follower files are edited
+### How Canonfig edits files on the Follower Machine
 
 - JSON targets may contain `//` and `/* */` comments and trailing commas.
   Canonfig edits only the owned keys, so comments and layout elsewhere stay.
@@ -401,12 +406,12 @@ Any other backslash is rejected by publication and by `canonfig overlay set`.
 - If a change cannot be written without changing values outside the owned keys
   (for example a key under a shared YAML anchor), the action fails and the file
   is unchanged.
-- A follower file that does not parse blocks the resources that target it.
+- A file on the Follower Machine that does not parse blocks the resources that target it.
   `canonfig sync --plan` shows each as `human-action` with the file, line, and
   column. Repair the file, then run `canonfig sync --apply`.
 
 When you narrow ownership from an object to some of its keys, the other keys
-stay in the follower file. When you widen ownership to the parent, the profile
+stay in the file on the Follower Machine. When you widen ownership to the parent, the profile
 value replaces the whole object. The plan lists kept values under `retains`.
 
 ## Compile a profile from code

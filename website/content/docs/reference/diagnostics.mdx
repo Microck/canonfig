@@ -1,6 +1,6 @@
 ---
-title: Diagnostics
-description: What each canonfig doctor probe checks, what its result proves, and how exit codes map to failure categories.
+title: Doctor probes and exit codes
+description: Look up what each canonfig doctor probe checks, what its result proves, and which exit code each failure category returns.
 ---
 
 `canonfig doctor` checks this machine with seven probes. Each probe has its own
@@ -41,11 +41,11 @@ A probe that runs past `--timeout-ms` fails with `<probe> probe timed out`.
 | Probe | Checks |
 | --- | --- |
 | `runtime` | Node.js version, Canonfig version, platform, and architecture |
-| `state` | That Canonfig's state database is valid, migrated, readable and writable |
+| `state` | That Canonfig's state database is valid, migrated, readable, and writable |
 | `credentials` | The credential store and how much access this session proved |
-| `source` | That this follower can load its credential, reach the Source Machine, match its pinned certificate, and authenticate |
+| `source` | That this Follower Machine can load its credential, reach the Source Machine, match its pinned certificate, and authenticate |
 | `scheduler` | The installed native job, its next run, and the last unattended run |
-| `package-managers` | Which of apt, brew, bun, cargo, npm, pnpm, uv and winget Canonfig can start |
+| `package-managers` | Which of apt, brew, bun, cargo, npm, pnpm, uv, and winget Canonfig can start |
 | `agent-adapter` | The agent policy and whether the configured harness executable exists |
 
 ### runtime
@@ -68,16 +68,16 @@ A probe that runs past `--timeout-ms` fails with `<probe> probe timed out`.
 
 | Result | `verification` | Meaning |
 | --- | --- | --- |
-| pass | `session-probe` | Canonfig wrote, read and deleted a test item in this session (macOS Keychain). |
+| pass | `session-probe` | Canonfig wrote, read, and deleted a test item in this session (macOS Keychain). |
 | pass | `credential-load` | The `source` probe read the follower credential from the store in this session. Write access is not proven. |
 | warning | `provider-presence` | The store exists. Write access and access from a scheduled run are not proven. |
 | warning | `configuration` | The local-file policy is in use; credentials are stored unencrypted. |
 | warning | `not-verified` | `noninteractive credential storage is unavailable: <what to do>`. The same text is in `details.recovery`. |
 | fail, Human Action Required | | `credential capability check failed: <detail>` |
 
-On a Source Machine, or a follower whose `source` probe cannot read the
-credential, a working keyring on Linux or Windows reports `provider-presence`,
-so the report is `degraded`, not `healthy`.
+On a Source Machine, or on a Follower Machine whose `source` probe cannot read
+the credential, a working keyring on Linux or Windows reports
+`provider-presence`, so the report is `degraded`, not `healthy`.
 
 ### source
 
@@ -87,33 +87,33 @@ only after that succeeds.
 | Result | Message | Meaning |
 | --- | --- | --- |
 | pass | `source is reachable, TLS-pinned, and authenticated` | |
-| skipped | | No Source is configured, for example on the Source Machine itself. |
+| skipped | | No Source Machine is configured, for example on the Source Machine itself. |
 | fail, Human Action Required | `this machine's credential store could not return the follower credential, so no Source request was made: <detail>` | The store is locked or unreachable. The Follower Identity is not revoked. |
 | fail, Human Action Required | `this machine's credential store did not return the follower credential within <ms> ms, so no Source request was made; ...` | A locked keyring or Keychain may be waiting for an unlock prompt this session cannot show. `details.stage` is `credential-load`. |
 | fail, transport | `configured source is unreachable` | No connection. |
 | fail, transport | `configured source is unreachable because the managed tunnel <endpoint> is down: <detail>` (or `stopped`) | The managed tunnel is not running. Run `canonfig tunnel start`. |
 | fail, authentication | `source TLS pin validation failed` | The Source Machine's certificate differs from the pinned one. |
-| fail, authentication | `source authentication failed` | The Source Machine rejected the credential, for example because it revoked this follower. |
-| fail, configuration | `source probe configuration is invalid` | The recorded Source endpoint cannot be used. |
+| fail, authentication | `source authentication failed` | The Source Machine rejected the credential, for example because it revoked this Follower Machine. |
+| fail, configuration | `source probe configuration is invalid` | The recorded Source Machine endpoint cannot be used. |
 
-When the follower reaches the Source Machine through the managed tunnel,
-`details.tunnel` holds the tunnel state.
+When the Follower Machine reaches the Source Machine through the managed
+tunnel, `details.tunnel` holds the tunnel state.
 
 ### scheduler
 
 The probe reads what the operating system has installed, not only what
 Canonfig wrote. `details` includes `state`, `timezone`, `nextRun`, and after
-the first run `lastFiredAt`, `lastFiredOutcome` and `lastFiredReason`.
+the first run `lastFiredAt`, `lastFiredOutcome`, and `lastFiredReason`.
 
 | Result | When |
 | --- | --- |
 | pass | The job is `current` and the native scheduler has run it. |
-| warning | The job is `current`, but one of these applies: no run has been observed yet; the last unattended run failed (`the last unattended run failed at <time>: <reason>; ...`); a run started and recorded no outcome; Linux lingering is off; the Windows task runs only while you are logged on; a Windows run did not start; the installed job points at an older Canonfig binary that still works; or a job is installed with no schedule decision on this follower. |
-| fail, apply failure | The job will not run as you chose: `requested scheduler definition is <state>: <detail>`, where state is for example `disabled`, `inactive`, `not-installed` or `overridden`; or `installed scheduler runtime or entrypoint is unavailable: <detail>`. |
-| skipped | This follower has no schedule and no installed job. |
+| warning | The job is `current`, but one of these applies: no run has been observed yet; the last unattended run failed (`the last unattended run failed at <time>: <reason>; ...`); a run started and recorded no outcome; Linux lingering is off; the Windows task runs only while you are logged on; a Windows run did not start; the installed job points at an older Canonfig binary that still works; or a job is installed with no schedule decision on this Follower Machine. |
+| fail, apply failure | The job will not run as you chose: `requested scheduler definition is <state>: <detail>`, where state is for example `disabled`, `inactive`, `not-installed`, or `overridden`; or `installed scheduler runtime or entrypoint is unavailable: <detail>`. |
+| skipped | This Follower Machine has no schedule and no installed job. |
 
 For each schedule state and its fix, see
-[Manage schedules](/how-to/manage-schedules).
+[Sync on a schedule](/how-to/manage-schedules).
 
 ### package-managers
 
@@ -132,11 +132,11 @@ The probe honors installer bindings set with `canonfig installer set`.
 | pass | `configured agent adapter executable is available` |
 | skipped | `agent policy and adapter are not configured` |
 | fail, configuration | `configured agent policy requires an adapter`: the policy is `agent-propose` or `agent-apply` and no harness is set. |
-| fail, configuration | `configured agent adapter is unsupported`: the harness is not `codex`, `claude` or `custom`. |
+| fail, configuration | `configured agent adapter is unsupported`: the harness is not `codex`, `claude`, or `custom`. |
 | fail, configuration | `configured agent adapter executable is unavailable` |
 
 Set the harness with `canonfig agent harness`; see
-[Configure agent policies](/how-to/configure-agent-policies).
+[Let a Configuration Agent resolve work](/how-to/configure-agent-policies).
 
 ## Exit codes
 
@@ -146,7 +146,7 @@ Every Canonfig command uses these exit codes:
 | ---: | --- | --- |
 | 0 | | Success. |
 | 1 | internal | A defect in Canonfig. Report it with the message. |
-| 2 | usage or configuration | A wrong option, a missing setup step, or a release mismatch between the Source Machine and a follower. |
+| 2 | usage or configuration | A wrong option, a missing setup step, or a release mismatch between the Source Machine and a Follower Machine. |
 | 3 | Human Action Required | A step only a person can take, such as a login or unlocking a credential store. |
 | 4 | conflict or drift | Follower Drift, an open run, another running Canonfig process, or a changed service definition. |
 | 5 | authentication or revocation | A revoked or invalid credential, a certificate mismatch, or an expired or used invitation. |
