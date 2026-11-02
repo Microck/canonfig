@@ -318,7 +318,7 @@ function starTimeSoFar(): number | null {
 
 /**
  * Asks for a GitHub star once someone has had the workspace on screen for STAR_AFTER_MS in
- * total, across visits. Only time with the tab visible counts. Every way of closing the toast
+ * total, across visits. Only time with the tab visible and focused counts. Every way of closing the toast
  * saves the dismissal, so it is asked for at most once per page load until then and never after.
  * Storage that can't be read or written could not keep a dismissal, so it then never asks.
  * It waits while other guidance (tour, tour offer, page tip) or a dialog has the person's
@@ -342,7 +342,8 @@ export function StarPrompt() {
   useEffect(() => {
     if (stage !== "counting") return;
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return;
+      // Only the focused tab counts, so two open tabs never add the same minute twice.
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
       try {
         // Re-read every tick: other open tabs add to the same total, and may have dismissed it.
         const before = starTimeSoFar();
