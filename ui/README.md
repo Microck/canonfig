@@ -2,7 +2,7 @@
 
 The browser frontend lives in `ui/`. Workspace screens are in `src/workspace/`, shared components and demo data in `src/shared/`, and first-run setup in `src/onboarding/`. See [the architecture decision](../docs/adr/0001-local-browser-gui.md).
 
-Machine operations still use simulated data. The Demo switcher selects a Source, Follower or new machine; it does not connect to a real machine. CLI serving and backend integration are not implemented yet, so this frontend is not included in the published CLI package.
+Machine operations still use simulated data in every build. The Demo panel selects a Source, Follower or new machine; it does not connect to a real machine. CLI serving and backend integration are not implemented yet, so this frontend is not included in the published CLI package.
 
 Run from the repository root:
 
@@ -11,7 +11,25 @@ npm --prefix ui ci
 npm run ui:dev
 ```
 
-Open `http://localhost:5317/source/overview`. The independent frontend lockfile stays in `ui/package-lock.json`. Root scripts `ui:typecheck`, `ui:lint` and `ui:build` delegate to this package. The frontend build writes `ui/dist/`; production CLI packaging remains separate.
+Open `http://localhost:5317/source/overview`. The independent frontend lockfile stays in `ui/package-lock.json`. Root scripts `ui:typecheck`, `ui:lint` and `ui:build` delegate to this package. Production CLI packaging remains separate.
+
+## Builds
+
+| Command | Output | Use |
+| --- | --- | --- |
+| `npm --prefix ui run build` | `ui/dist/` | The app `canonfig ui` will serve on loopback |
+| `npm --prefix ui run build:demo` | `ui/dist-demo/` | The public demo at https://canonfig.micr.dev/, published to GitHub Pages with the docs under `/docs/` |
+
+`DEMO` in `src/shared/data.ts` is true for the demo build (Vite mode `demo`) and the dev server, and false for the production build, which drops the code it gates. It gates only demo chrome:
+
+- the Demo panel (`src/shared/demo-switcher.tsx`): an "Interactive demo with made-up data" note, the role links, and links to the docs, the install tutorial and the GitHub repository. It sits in the desktop sidebar, at the bottom-left of setup and not-found pages from 768px, and behind a Demo button in the mobile top bar and setup header;
+- copy that describes the demo itself, such as "Saved in this demo workspace" and "This demo discards it";
+- the simulated first-visit page load (`SIMULATED_LOAD_MS`), which imitates the real fetch; production shows each page at once;
+- the `?star=1` preview.
+
+Both builds still run on the simulated data in `src/shared/data.ts` and `src/workspace/store.tsx` until the loopback backend lands; the production build has no real data path yet. Simulated actions such as Check for updates keep their short waits in both builds.
+
+The demo build also replaces the page title and adds a description, canonical URL, Open Graph and Twitter card tags and a theme colour to `index.html`, and writes `404.html` as a copy of it, so GitHub Pages boots the app on deep links such as `/follower/sync`. `vite.config.ts` holds this in its `demoSite` plugin. There is no share image yet. The site assembly (`scripts/build-pages.mjs`) adds the docs, `robots.txt` and the domain files.
 
 ## Browser routes
 
@@ -45,11 +63,11 @@ First-run setup is `/setup`. Retired role and variant query parameters are not r
 
 Guidance lives in `src/workspace/guide.tsx`, with the spotlight component in `src/tour/`. It has three parts, remembered per role in localStorage: a four-stop tour offered on the first visit, a Get started list on Overview, and one tip on the first visit to a complex page. Take the tour, in the sidebar or the command palette, opens a picker with that short tour and one chapter of three to five stops per area (`src/workspace/tour-steps.tsx`). Selecting a chapter previews its steps and the pages it visits, numbered in order on a copy of the sidebar, so each chapter's `pages` list must match where its steps go. Finished chapters get a tick, can run again, and end with a button to the next chapter. Append `?tour=1` to start the short tour; reopen a page tip from its "?" button.
 
-After 15 minutes with the workspace on screen, counted across visits and only while its tab is visible and focused, a toast asks for a GitHub star (`StarPrompt` in `src/workspace/guide.tsx`). It waits while the tour, its offer, a page tip or a dialog is open. Any way of closing it stops it for good. Append `?star=1` to show it straight away.
+After 15 minutes with the workspace on screen, counted across visits and only while its tab is visible and focused, a toast asks for a GitHub star (`StarPrompt` in `src/workspace/guide.tsx`). It waits while the tour, its offer, a page tip or a dialog is open. Any way of closing it stops it for good. In the demo, append `?star=1` to show it straight away.
 
-Workspace pages pretend to fetch their data from the local Canonfig service, as the real GUI will. The first visit to each page (each Profile and Machines tab counts as its own) in a page load waits `SIMULATED_LOAD_MS` (700ms, in `src/workspace/store.tsx`) and shows a loading skeleton over the page body and the detail panel's body and footer; page headers, the sidebar and dialogs never load. Sync's Check for updates and the Follower's Update secrets show it again while they run. Pages a tour opens, or that are open while the tour or its picker is, don't load, and a page's first-visit tip waits until its content is revealed. Skeletons come from [skullet](https://github.com/lochie/skullet) (MIT), pinned at 0.0.3: `Body` in `src/workspace/kit.tsx` measures them from the real content, so nothing moves on reveal, and `App.tsx` themes them to the palette. The highlight sweep and fades stop under reduced motion. Mark decorative art with `skullet-ignore` so it draws no placeholder.
+In the demo, workspace pages pretend to fetch their data from the local Canonfig service, as the real GUI will. The first visit to each page (each Profile and Machines tab counts as its own) in a page load waits `SIMULATED_LOAD_MS` (700ms, in `src/workspace/store.tsx`) and shows a loading skeleton over the page body and the detail panel's body and footer; page headers, the sidebar and dialogs never load. Sync's Check for updates and the Follower's Update secrets show it again while they run, in both builds. Pages a tour opens, or that are open while the tour or its picker is, don't load, and a page's first-visit tip waits until its content is revealed. Skeletons come from [skullet](https://github.com/lochie/skullet) (MIT), pinned at 0.0.3: `Body` in `src/workspace/kit.tsx` measures them from the real content, so nothing moves on reveal, and `App.tsx` themes them to the palette. The highlight sweep and fades stop under reduced motion. Mark decorative art with `skullet-ignore` so it draws no placeholder.
 
-The machine map in `src/shared/machine-map/` also runs alone at `/map-demo.html?role=source|follower`, with `&publishing=1`, `&syncing=<follower ids>` and `&customize=<id>`. This separate component demo and `/break.html` are development-only entrypoints, not application routes.
+The machine map in `src/shared/machine-map/` also runs alone at `/map-demo.html?role=source|follower`, with `&publishing=1`, `&syncing=<follower ids>` and `&customize=<id>`. This separate component demo and `/break.html` are development-only entrypoints served by `vite`, not application routes; neither build includes them.
 
 The spotlight uses separate blur panels and a rounded dimming cutout. The card, cutout and blur switch targets together without a trailing animation. Tour and map controls have 40px minimum hit targets, increasing to 44px for coarse pointers. Map customization lives in the selected machine's unscaled toolbar.
 
@@ -63,11 +81,11 @@ Settings and form columns share an 880px maximum width and left alignment. Block
 
 Use `variant="primary"` for at most one gold commit/create action per view. Default and secondary buttons are neutral; outline buttons are for toolbar and row actions, ghost buttons for unobtrusive controls, and destructive buttons use red text and a faint red tint. Disabled buttons use dashed borders, muted text and a not-allowed cursor, with no hover or press treatment. Green is not a button fill.
 
-Below 768px, a navigation sheet replaces the sidebar. It traps focus and closes on Escape or any navigation link, including the current page. The desktop sidebar scrolls independently in short windows. Its Demo switcher stays in the sidebar flow; mobile workspace screens keep it inside the navigation sheet. Setup and not-found pages use a compact 44px Demo disclosure button in the header on mobile and keep the full switcher at the bottom-left on desktop.
+Below 768px, a navigation sheet replaces the sidebar. It traps focus and closes on Escape or any navigation link, including the current page. The desktop sidebar scrolls independently in short windows. Its Demo panel stays in the sidebar flow. Below 768px, workspace screens show a compact 44px Demo disclosure button at the right of the top bar, and setup and not-found pages show it in the header; from 768px setup and not-found pages keep the full panel at the bottom-left.
 
 Profile settings edits include unfinished key rows: adding a blank key enables Save and Discard. Save reports empty or duplicate key names without changing the saved item, focuses the first invalid field, and associates each key error with its input. Discard restores the saved fields and key rows.
 
-Leaving any form with an unsaved draft asks before discarding it: the item editor, Profile defaults, new group, Agent policy, new harness project, Source secret, Follower schedule, local settings and profile choice. This covers closing a panel, choosing another row, in-app navigation and Demo switcher changes, but not browser Back/Forward or reload. Each form's own Save, Cancel or remove never asks.
+Leaving any form with an unsaved draft asks before discarding it: the item editor, Profile defaults, new group, Agent policy, new harness project, Source secret, Follower schedule, local settings and profile choice. This covers closing a panel, choosing another row, in-app navigation and Demo panel role changes, but not browser Back/Forward or reload. Each form's own Save, Cancel or remove never asks.
 
 Detail panels fill the screen below 768px, focus their close button on opening and trap Tab/Shift+Tab while the page behind is inert. Narrow screens start with the list, not an automatically opened panel; selecting a row or following an explicit `?focus` link opens details. Desktop panels remain non-modal beside the list, with default selection retained in Sync and Harness. Closing a panel restores its opener when available. The desktop resize edge takes keyboard focus: arrow keys resize in 16px steps, and Home/End jump to the minimum and maximum width. Machine map links are reachable with Tab and show the same explanation on focus as on hover; Escape hides it.
 
