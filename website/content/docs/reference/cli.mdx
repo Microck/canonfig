@@ -423,7 +423,7 @@ canonfig agent harness custom --executable /opt/review-agent/bin/agent --argumen
 | `--executable <path>` | Required. |
 | `--model <name>` | `codex` and `claude` only. |
 | `--argument <arg>` | `custom` only. Passed as is; repeat for each argument. |
-| `--allow-path <path>` | A path the agent may write. Repeatable. |
+| `--allow-path <path>` | A path the agent may write. Saved as an absolute path, with `~` as your home directory. Repeatable. |
 | `--allow-leaf-executable <name>` | A program the agent may run. Repeatable. Programs that start other commands are refused. |
 | `--bind-secret <ENV=secret-name>` | Put a stored shared secret in the agent's environment as `ENV`. Repeatable. |
 | `--allow-origin <https-origin>` | An exact HTTPS origin the agent may reach. Repeatable. |

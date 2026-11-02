@@ -1741,36 +1741,46 @@ const followerCommandsLayer = (
           Effect.map(payload),
         ),
       // Reads without the stored harness, so this command can replace a removed kind.
-      setAgentHarness: (agentHarness) =>
-        mapFailure(repository.getFollowerSynchronizationConfiguration({ replacingAgentHarness: true })).pipe(
-          Effect.flatMap((configuration) => {
-            if (configuration === undefined) {
-              return Effect.fail(new CliCommandFailure({
-                category: "usage-or-configuration",
-                message: "follower synchronization configuration is not enrolled",
-              }));
-            }
-            return mapFailure(repository.loadState(configuration.follower.id)).pipe(
-              Effect.flatMap((state) =>
-                state.sourceIdentity === undefined
-                  ? Effect.fail(new CliCommandFailure({
+      //
+      // A shell expands `--allow-path ~/x` before Canonfig sees it, but a
+      // quoted `~` or a relative path arrives as written. Each path is stored
+      // resolved the way this machine resolves profile targets, so the bounds
+      // hold the same absolute paths a synchronization run gives Agent Tasks.
+      setAgentHarness: (requested) =>
+        Effect.forEach(requested.allowedPaths, (path) => mapFailure(machine.normalizePath({ path }))).pipe(
+          Effect.map((paths) => ({ ...requested, allowedPaths: paths.map((path) => path.absolute) })),
+          Effect.flatMap((agentHarness) =>
+            mapFailure(repository.getFollowerSynchronizationConfiguration({ replacingAgentHarness: true })).pipe(
+              Effect.flatMap((configuration) => {
+                if (configuration === undefined) {
+                  return Effect.fail(new CliCommandFailure({
                     category: "usage-or-configuration",
-                    message: "follower source identity is not configured",
-                  }))
-                  : mapFailure(
-                    repository.saveFollowerSynchronizationConfiguration({
-                      sourceIdentity: state.sourceIdentity,
-                      configuration: {
-                        ...configuration,
-                        agentHarness,
-                        updatedAt: new Date().toISOString(),
-                      },
-                    }),
-                  )
-              ),
-              Effect.as(payload(agentHarness)),
-            );
-          }),
+                    message: "follower synchronization configuration is not enrolled",
+                  }));
+                }
+                return mapFailure(repository.loadState(configuration.follower.id)).pipe(
+                  Effect.flatMap((state) =>
+                    state.sourceIdentity === undefined
+                      ? Effect.fail(new CliCommandFailure({
+                        category: "usage-or-configuration",
+                        message: "follower source identity is not configured",
+                      }))
+                      : mapFailure(
+                        repository.saveFollowerSynchronizationConfiguration({
+                          sourceIdentity: state.sourceIdentity,
+                          configuration: {
+                            ...configuration,
+                            agentHarness,
+                            updatedAt: new Date().toISOString(),
+                          },
+                        }),
+                      )
+                  ),
+                  Effect.as(payload(agentHarness)),
+                );
+              }),
+            )
+          ),
         ),
       getAgentHarness: () =>
         mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(

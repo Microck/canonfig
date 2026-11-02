@@ -125,7 +125,7 @@ Repeat each option to add more entries.
 
 | Option | What it allows |
 | --- | --- |
-| `--allow-path <path>` | Paths an action may write, including everything below them. |
+| `--allow-path <path>` | Paths an action may write, including everything below them. Canonfig stores each one as an absolute path: `~` is your home directory on this Follower, and a relative path starts from the current directory. |
 | `--allow-leaf-executable <name>` | A program an action may run directly, such as `npm`. |
 | `--allow-origin <https-origin>` | A download source. It must be an exact HTTPS origin with no path, such as `https://registry.npmjs.org`. |
 | `--allow-capability <capability>` | `elevation`, `login`, `restart`, or `reboot`. |
@@ -136,6 +136,12 @@ An agent gets only what both the Agent Task and these limits allow. A limit
 never widens a task: every Agent Task Canonfig creates forbids `elevation`,
 `login`, `restart`, and `reboot`, so `--allow-capability` does not give an
 agent those rights for them.
+
+An Agent Task's paths come from the tool's `agentInstall.paths` in the
+profile. There, too, `~` is the Follower's home directory, so
+`--allow-path ~/.local/bin` covers an `agentInstall` path of
+`~/.local/bin/review-cli`. Paths match whole directory names: `~/.local/bin`
+does not cover `~/.local/bin2`. On Windows the match ignores case.
 
 Canonfig refuses programs that can start other commands, because a path
 allowlist cannot limit what they start. Examples are `xargs`, `env`, `ssh`,

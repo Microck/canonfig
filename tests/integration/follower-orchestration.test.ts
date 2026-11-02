@@ -329,6 +329,128 @@ if (args[0] === "tool" && args[1] === "list") {
     }
   });
 
+  // A profile's `agentInstall.paths` is written once for every follower, so it
+  // uses `~`. The follower's `--allow-path` reaches Canonfig already expanded
+  // by the shell. Both have to mean the same directory, or the agent is
+  // refused a path the profile and the operator both allowed.
+  it("lets a bounded agent install into a `~` agentInstall path the harness allows by its absolute path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-agent-home-path-"));
+    directories.push(root);
+    const followerRoot = join(root, "follower");
+    const followerDatabase = join(root, "follower.sqlite");
+    const vendor = join(followerRoot, "vendor");
+    const localBin = join(followerRoot, "home", ".local", "bin");
+    const installed = join(localBin, "agent-tool");
+    await mkdir(vendor, { recursive: true });
+    await mkdir(localBin, { recursive: true });
+    // A copy that installs itself. Only the harness PATH reaches it, so the
+    // follower observes the tool as absent and plans an Agent Task; the task
+    // may run only the tool itself.
+    await writeFile(
+      join(vendor, "agent-tool"),
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "agent-tool 1.0"; exit 0; fi\ncp "$0" ${JSON.stringify(installed)}\nchmod 755 ${JSON.stringify(installed)}\n`,
+      { mode: 0o755 },
+    );
+    const agent = join(followerRoot, "agent");
+    await writeFile(agent, `#!${process.execPath}
+process.stdin.resume();
+process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringify({
+      summary: "Install agent-tool into ~/.local/bin",
+      actions: [{
+        kind: "process",
+        executable: "agent-tool",
+        arguments: ["install"],
+        paths: [installed],
+        origins: [],
+        capabilities: [],
+      }],
+    }))}));
+`, { mode: 0o755 });
+    const sourceLayer = EnrollmentLive.pipe(
+      Layer.provideMerge(stateRepositoryLayer(join(root, "source.sqlite"))),
+      Layer.provideMerge(machineLayer(join(root, "source"))),
+    );
+    const sourceRuntime = ManagedRuntime.make(sourceLayer);
+    runtimes.push(sourceRuntime);
+    const profileId = decode(ProfileId)("agent-home-path");
+    await sourceRuntime.runPromise(Effect.gen(function*() {
+      const source = yield* (yield* Enrollment).initializeSource();
+      const privateKey = createPrivateKey(Redacted.value(yield* (yield* MachineState).loadCredential({ reference: source.signingKeyReference })));
+      const compiled = compileProfileCandidate({
+        id: profileId, version: 2, name: "Agent home path", groups: [],
+        resources: [{
+          id: "agent-tool", target: "agent-tool", kind: "tool", policy: "ensure", dependsOn: [],
+          verify: { method: "executable-present", executable: "agent-tool" },
+          spec: {
+            kind: "tool", toolId: "agent-tool",
+            recipes: [],
+            agentInstall: { paths: ["~/.local/bin"], origins: ["https://packages.example.test"] },
+          },
+        }],
+      });
+      const unsigned = {
+        id: decode(ProfileRevisionId)(`${profileId}:${compiled.digest}`), profileId, sequence: 1,
+        canonicalBytes: compiled.canonicalBytes, digest: compiled.digest, publishedAt: "2026-11-02T00:00:00Z",
+        groups: [], signingKeyId: source.source.keyId, resources: compiled.resources,
+      };
+      yield* (yield* StateRepository).publishRevision({
+        revision: { ...unsigned, signature: decode(SourceSignature)(`ed25519:${sign(null, Buffer.from(revisionSigningPayload(unsigned)), privateKey).toString("base64url")}`) },
+        blobs: compiled.blobs,
+      });
+    }));
+    const server = await sourceRuntime.runPromise(startSourceServer().pipe(Effect.provide(sourceLayer)));
+    servers.push(server);
+    const invitation = await sourceRuntime.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.createInvitation({
+      endpoint: server.endpoint, expiresInMilliseconds: 60_000,
+    })));
+    // The operator's PATH holds ~/.local/bin, so the follower's own check
+    // finds the tool once the agent has installed it there.
+    const followerMachine = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(followerRoot, "home") },
+        { name: "PATH", value: `${join(followerRoot, "bin")}:${localBin}` },
+      ],
+      credentialPolicy: { kind: "local-file", path: join(followerRoot, "credentials") },
+    });
+    const enrolled = await Effect.runPromise(enrollFollower({ invitation, followerName: "Agent follower" }).pipe(Effect.provide(followerMachine)));
+    const followerRepository = stateRepositoryLayer(followerDatabase);
+    await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.saveFollowerSynchronizationConfiguration({
+      sourceIdentity: enrolled.source,
+      configuration: {
+        schemaVersion: 1, follower: { ...enrolled.follower, credentialReference: enrolled.credentialReference },
+        selectedProfile: profileId,
+        source: { endpoint: server.endpoint, tlsFingerprint: enrolled.tlsFingerprint, signingFingerprint: enrolled.source.publicKeyFingerprint },
+        credentialReference: enrolled.credentialReference,
+        cacheDirectory: join(root, "cache"), stateLocation: followerDatabase,
+        agentPolicy: "agent-apply",
+        agentHarness: {
+          kind: "custom",
+          executable: agent,
+          environment: [{ name: "PATH", value: `${vendor}:/usr/bin:/bin` }],
+          maximumInputBytes: 65_536,
+          // What `--allow-path ~/.local/bin` stores after the shell expands it.
+          allowedPaths: [localBin],
+          allowedExecutables: ["agent-tool"],
+          executableAuthorizations: [{ executable: "agent-tool", behavior: "leaf" }],
+          allowedOrigins: ["https://packages.example.test"],
+          allowedCapabilities: [],
+        },
+        scheduledInvocation: defaultScheduledInvocation, updatedAt: "2026-11-02T00:00:00Z",
+      },
+    })).pipe(Effect.provide(followerRepository)));
+    const application = Layer.mergeAll(followerRepository, followerMachine, AgentResolutionLive,
+      SynchronizationLive.pipe(Layer.provide(Layer.merge(followerRepository, followerMachine))));
+
+    const planned = await Effect.runPromise(synchronizeFollower(followerDatabase, "plan").pipe(Effect.provide(application)));
+    expect(planned.agentResolutions).toEqual([
+      expect.objectContaining({ outcome: "proposed", task: expect.objectContaining({ allowedPaths: [localBin] }) }),
+    ]);
+
+    const applied = await Effect.runPromise(synchronizeFollower(followerDatabase, "apply").pipe(Effect.provide(application)));
+    expect(applied.outcome, JSON.stringify(applied.outcome)).toMatchObject({ outcome: "Converged" });
+    expect(await readFile(installed, "utf8")).toContain("agent-tool 1.0");
+  });
+
   it.each(["rename", "same-content rename", "alias rename", "directory", "directory rename", "deleted file", "local edit"])("safely hands an existing target to a new resource: %s", async (change) => {
     const root = mkdtempSync(join(tmpdir(), "canonfig-handover-"));
     directories.push(root);

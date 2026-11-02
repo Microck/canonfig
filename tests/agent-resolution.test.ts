@@ -40,6 +40,7 @@ import {
 import {
   authorizeAction,
   isNestedCommandLauncher,
+  pathWithin,
 } from "../src/agent/agent-resolution.service.ts";
 import type {
   AgentActionProposal,
@@ -230,6 +231,20 @@ describe("agent resolution", () => {
 
   afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
+  });
+
+  // The follower narrows an Agent Task's paths to its harness bounds with
+  // this, after both sides are resolved to absolute paths.
+  it.each([
+    ["the root itself", "/home/maria/.local/bin", "/home/maria/.local/bin", true],
+    ["a path below the root", "/home/maria/.local/bin/tool", "/home/maria/.local/bin", true],
+    ["a root with a trailing slash", "/home/maria/.local/bin/tool", "/home/maria/.local/bin/", true],
+    ["a sibling sharing the root's prefix", "/home/maria/.local/bin2", "/home/maria/.local/bin", false],
+    ["a path that climbs out of the root", "/home/maria/.local/bin/../lib", "/home/maria/.local/bin", false],
+    ["a Windows path in another case and separator", "c:/users/maria/.local/bin/tool", "C:\\Users\\Maria\\.local\\bin", true],
+    ["a Windows sibling sharing the root's prefix", "C:\\Users\\Maria\\.local\\bin2", "C:\\Users\\Maria\\.local\\bin", false],
+  ] as const)("path bounds: %s", (_case, path, root, expected) => {
+    expect(pathWithin(path, root)).toBe(expected);
   });
 
   it.each([

@@ -67,10 +67,13 @@ it("explains a stored removed agent harness and lets agent harness replace it", 
     // Reads report the removed kind; they never rewrite it.
     expect(readStored()).toBe(storedJson);
 
-    const replaced = run(["agent", "harness", "claude", "--executable", process.execPath, "--allow-path", home]);
+    // No shell runs here, so `~` arrives as written, as it does when quoted.
+    const replaced = run(["agent", "harness", "claude", "--executable", process.execPath, "--allow-path", "~/.local/bin"]);
     expect(replaced.status, replaced.stdout + replaced.stderr).toBe(0);
     const harness = run(["agent", "harness"]);
     expect(harness.status, harness.stdout + harness.stderr).toBe(0);
-    expect(JSON.parse(harness.stdout).data).toMatchObject({ kind: "claude", executable: process.execPath });
+    expect(JSON.parse(harness.stdout).data).toMatchObject({
+      kind: "claude", executable: process.execPath, allowedPaths: [join(home, ".local", "bin")],
+    });
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 120_000);

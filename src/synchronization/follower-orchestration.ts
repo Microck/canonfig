@@ -7,6 +7,7 @@ import {
   AgentResolution,
   executableAllowed,
   isNestedCommandLauncher,
+  pathWithin,
 } from "../agent/agent-resolution.service.ts";
 import type { AgentResolutionOutcome } from "../agent/agent-resolution.types.ts";
 import {
@@ -958,9 +959,25 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
     ]));
     for (const entry of decoded) {
       const hydration = desiredFor(entry.spec, entry.content, entry.resource.verify);
+      const tool = hydration.desired.kind === "tool" ? hydration.desired : undefined;
+      // `agentInstall.paths` are authored like targets, once for every
+      // follower, so `~` means this follower's home. Resolving them here, as
+      // targets are, gives the Agent Task, the harness bounds check and the
+      // agent itself the absolute paths the follower's `--allow-path` values
+      // are stored as.
       desired.push({
         resource: entry.resource.id,
-        desired: hydration.desired,
+        desired: tool?.agentInstall === undefined ? hydration.desired : {
+          ...tool,
+          agentInstall: {
+            ...tool.agentInstall,
+            paths: yield* Effect.forEach(tool.agentInstall.paths, (path) =>
+              machine.normalizePath({ path }).pipe(Effect.map((normalized) => normalized.absolute))
+            ).pipe(Effect.mapError(() =>
+              configurationError("invalid-profile", `Cannot resolve agentInstall paths for ${entry.resource.id}`)
+            )),
+          },
+        },
         verification: entry.resource.verify,
       });
       observations.push({
@@ -1075,16 +1092,6 @@ const persistableRevision = (
   scheduleDefault: revision.scheduleDefault,
 });
 
-const pathWithinHarnessBounds = (
-  path: string,
-  configuration: FollowerAgentHarnessConfiguration,
-): boolean => configuration.allowedPaths.some((root) => {
-  const normalizedRoot = root.replaceAll("\\", "/").replace(/\/+$/u, "");
-  const normalizedPath = path.replaceAll("\\", "/");
-  return normalizedPath === normalizedRoot
-    || normalizedPath.startsWith(`${normalizedRoot}/`);
-});
-
 const originWithinHarnessBounds = (
   origin: string,
   configuration: FollowerAgentHarnessConfiguration,
@@ -1176,7 +1183,7 @@ const boundedTask = (
     return {
       ...task,
       allowedPaths: task.allowedPaths.filter((path) =>
-        pathWithinHarnessBounds(path, configuration)
+        configuration.allowedPaths.some((root) => pathWithin(path, root))
       ),
       allowedExecutables,
       executableAuthorizations: boundedAuthorizations,
