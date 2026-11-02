@@ -1,12 +1,11 @@
 ---
-title: "How-to: run Canonfig unattended"
-description: Keep the Source Machine serving and Follower Machines syncing without anyone at the keyboard, including after a reboot.
+title: Run Canonfig unattended
+description: Keep the Source Machine serving and Follower Machines syncing with nobody at the keyboard, including after a reboot.
 ---
 
-When you finish this page, the Source Machine serves Profile Revisions from a
-user service that restarts on failure, and each Follower Machine applies them
-on its Synchronization Schedule, with nobody logged in where the platform
-allows it.
+After these steps, the Source Machine serves Profile Revisions from a user
+service that restarts on failure, and each Follower Machine applies them on its
+Synchronization Schedule, with nobody logged in where the platform allows it.
 
 ## Before you start
 
@@ -15,7 +14,7 @@ allows it.
 - Canonfig installs per-user jobs only. It never installs a system service and
   never runs `sudo` for you.
 - A scheduled run cannot answer a prompt. The credential store, and SSH to the
-  Source host if you use the managed tunnel, must work without one.
+  Source Machine's host if you use the managed tunnel, must work without one.
 
 What each platform supports:
 
@@ -25,7 +24,7 @@ What each platform supports:
 | macOS | in the logged-in desktop session, with the login Keychain unlocked | no |
 | Windows | from logon, while you stay logged on | no |
 
-## Keep the Source serving
+## Keep the Source Machine serving
 
 On the Source Machine:
 
@@ -35,9 +34,10 @@ canonfig source service status
 ```
 
 `install` takes the same `--host` and `--port` as `canonfig source serve`
-(default `127.0.0.1` and `17342`). It then waits up to 20 seconds for the
-endpoint to answer with this Source's identity. If it does not, `install` exits
-with code 7 and leaves the service installed so you can read its logs.
+(default `127.0.0.1` and `17342`), then waits up to 20 seconds for the
+endpoint to answer with this Source Machine's identity. `status` reports
+`running`. If the endpoint does not answer, `install` exits 7 and leaves the
+service installed so you can read its logs.
 
 | Platform | What `install` creates | Restarts after a failed exit | Logs |
 | --- | --- | --- | --- |
@@ -49,17 +49,17 @@ Platform requirements:
 
 - **Linux.** The service starts with your systemd user manager, which stops
   when you log out unless lingering is on (see
-  [Headless Linux credential storage](#headless-linux-credential-storage)). The service gets a
-  fixed `PATH`: the Node.js directory, `/usr/local/bin`, `/usr/bin` and
-  `/bin`. A helper installed only under `~/.local/bin`, such as `secret-tool`,
-  is not found. Install it with the system package manager (`libsecret-tools`),
-  then run `canonfig source service install` again.
+  [Headless Linux credential storage](#headless-linux-credential-storage)). The
+  service gets a fixed `PATH`: the Node.js directory, `/usr/local/bin`,
+  `/usr/bin`, and `/bin`. A helper installed only under `~/.local/bin`, such as
+  `secret-tool`, is not found. Install it with the system package manager
+  (`libsecret-tools`), then run `canonfig source service install` again.
 - **macOS.** Run `install` from a terminal in the logged-in desktop session,
-  not over SSH. The service reads the Source keys from the login Keychain of
-  that session.
+  not over SSH. The service reads the Source Machine's keys from the login
+  Keychain of that session.
 - **Windows.** A scheduled task does not inherit variables from your shell. If
   `CANONFIG_LOCAL_CREDENTIAL_ROOT` is set only in the current shell, `install`
-  refuses. Make it permanent, open a new terminal, and run `install` again:
+  refuses. Make it permanent, open another terminal, and run `install` again:
 
   ```text
   setx CANONFIG_LOCAL_CREDENTIAL_ROOT "C:\Users\maria\.canonfig\credentials"
@@ -69,19 +69,19 @@ Platform requirements:
 
 | `state` | Meaning | Exit | What to do |
 | --- | --- | ---: | --- |
-| `running` | The service runs and answers with this Source's identity | 0 | nothing |
-| `not-installed` | No Source service on this machine | 0 | `canonfig source service install` |
-| `not-running` | Installed, but the service manager does not run it | 3 | read the logs, fix the cause, run `install` again |
-| `not-serving` | Running, but the endpoint does not answer with this Source's identity | 3 | read the logs, fix the cause, run `install` again |
-| `drifted` | The installed definition differs from what `install` writes now, for example after Node.js or Canonfig moved | 4 | `canonfig source service install` |
+| `running` | The service runs and answers with this Source Machine's identity. | 0 | Nothing. |
+| `not-installed` | No Source Machine service on this machine. | 0 | `canonfig source service install` |
+| `not-running` | Installed, but the service manager does not run it. | 3 | Read the logs, fix the cause, run `install` again. |
+| `not-serving` | Running, but the endpoint does not answer with this Source Machine's identity. | 3 | Read the logs, fix the cause, run `install` again. |
+| `drifted` | The installed definition differs from what `install` writes, for example after Node.js or Canonfig moved. | 4 | `canonfig source service install` |
 
 The output also shows `serving`, the log location, and on Linux whether
 lingering is on.
 
-To stop supervising the Source, run `canonfig source service remove`. It stops
-the service and deletes its definition.
+To stop supervising the Source Machine, run `canonfig source service remove`.
+It stops the service and deletes its definition.
 
-## Schedule each follower
+## Schedule each Follower Machine
 
 On each Follower Machine:
 
@@ -90,15 +90,15 @@ canonfig schedule set daily@09:00
 canonfig schedule status
 ```
 
-`schedule status` reports `current` when the native job matches your schedule.
-Every scheduled run executes `canonfig sync --apply --no-input --scheduled`.
-For calendars, time zones and the other states, see
-[Manage schedules](/how-to/manage-schedules).
+`schedule status` reports `current` when the native job matches your
+schedule. Every scheduled run executes
+`canonfig sync --apply --no-input --scheduled`. For calendars, time zones, and
+the other states, see [Sync on a schedule](/how-to/manage-schedules).
 
 ## Headless Linux credential storage
 
-Skip this on macOS and Windows. On Linux, the Source service and the follower
-schedule both stop when you log out unless lingering is on:
+Skip this on macOS and Windows. On Linux, the Source Machine's service and the
+Follower Machine's schedule both stop when you log out unless lingering is on:
 
 ```bash
 loginctl enable-linger "$USER"
@@ -117,8 +117,8 @@ env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="/run/user/$(id -u)" canonfig s
 
 This runs with the environment a scheduled job has. If it fails:
 
-- `/run/user/<uid>/bus` does not exist: no user manager runs for you right now.
-  Turn lingering on and try again.
+- `/run/user/<uid>/bus` does not exist: no user manager runs for you. Turn
+  lingering on and try again.
 - The keyring is locked: it unlocks when you log in with your password. A
   machine that reboots and stays logged out keeps it locked.
 
@@ -144,39 +144,39 @@ unencrypted.
   enroll` as well. Enrollment records the policy, so scheduled runs use it
   without the variable.
 - **Source Machine:** Canonfig reads the variable on every command. Export it
-  in your shell profile so `source init`, `source publish` and
+  in your shell profile so `source init`, `source publish`, and
   `source service install` see it; `install` copies it into the service.
 
-## Bring a remote Source back after a reboot
+## Reconnect to a remote Source Machine after a reboot
 
-Skip this if the follower and the Source run on the same machine. A follower on
-another host reaches the Source through the managed SSH tunnel it set up during
-enrollment. Canonfig recorded that tunnel, so you do not need the invitation
-again.
+Skip this if the Follower Machine and the Source Machine are the same host. A
+Follower Machine on another host reaches the Source Machine through the
+managed SSH tunnel it set up during enrollment. Canonfig recorded that tunnel,
+so you do not need the invitation again.
 
-Start the Source first, then the tunnel. On the Source Machine:
+1. On the Source Machine, check that it serves:
 
-```bash
-canonfig source service status
-```
+   ```bash
+   canonfig source service status
+   ```
 
-Then on the follower:
+2. On the Follower Machine, start the tunnel:
 
-```bash
-canonfig tunnel start
-canonfig tunnel status
-```
+   ```bash
+   canonfig tunnel start
+   canonfig tunnel status
+   ```
 
-`tunnel status` reports `running`, `down` (recorded as running, but the process
-is gone), `stopped`, or `not-configured`.
+   `tunnel status` reports `running`, `down` (recorded as running, but the
+   process is gone), `stopped`, or `not-configured`.
 
 A scheduled run restarts a `down` tunnel once before it fetches. A manual
 `canonfig sync` does not, and nothing restarts a tunnel you stopped with
 `canonfig tunnel stop`. On Linux, the restarted tunnel runs as its own systemd
 user service, which needs `systemd-run` and a reachable user manager.
 
-The tunnel runs SSH in batch mode, so SSH to the Source host must authenticate
-without a passphrase prompt.
+The tunnel runs SSH in batch mode, so SSH to the Source Machine's host must
+authenticate without a passphrase prompt.
 
 On Windows, a tunnel started from a remote SSH session ends when that session
 ends. Run `canonfig tunnel start` from a terminal in your desktop session.
@@ -193,27 +193,27 @@ On each Follower Machine:
 
 - `canonfig schedule status` reports `current`, with the `timezone` and
   `nextRun` you expect.
-- With a remote Source, `canonfig tunnel status` reports `running`.
+- With a remote Source Machine, `canonfig tunnel status` reports `running`.
 - After the scheduled time, `canonfig doctor --no-input` shows no failed probe,
-  and its `scheduler` line says the native scheduler has fired the job.
-
-If a check fails, see [Recover from a failed or blocked sync](/how-to/recover)
-for the error you see, and [Diagnostics](/reference/diagnostics) for each
-`doctor` probe.
+  and its `scheduler` line says the native scheduler has run the job.
 
 ## If something fails
 
 | Message | Cause | Fix |
 | --- | --- | --- |
-| "the systemd user manager stops when you log out (Linger=no), so the job only runs while you are logged in" | Lingering is off (warning). | See [Headless Linux credential storage](#headless-linux-credential-storage). |
+| "the systemd user manager stops when you log out (Linger=no), so the job only runs while you are logged in" (warning) | Lingering is off. | See [Headless Linux credential storage](#headless-linux-credential-storage). |
 | "the systemd user manager is not reachable: this session has no user session bus" (exit 3) | You ran the command from a session without a user bus, for example `su` or a bare SSH command. | Run it from a login session of that user, or turn lingering on and retry. |
 | "a Source is already answering at `<endpoint>` outside the service manager" | A `canonfig source serve` you started by hand holds the port. | Stop it, then run `canonfig source service install`. |
-| "CANONFIG_LOCAL_CREDENTIAL_ROOT is set in this shell only" | Windows only; see [Keep the Source serving](#keep-the-source-serving). | Run the `setx` command it prints, open a new terminal, retry. |
+| "CANONFIG_LOCAL_CREDENTIAL_ROOT is set in this shell only" | Windows only: a scheduled task cannot see a variable set in your shell. | Run the `setx` command it prints, open another terminal, and retry. See [Keep the Source Machine serving](#keep-the-source-machine-serving). |
 | "The login Keychain is locked in this SSH or background session" | macOS over SSH. | `security unlock-keychain ~/Library/Keychains/login.keychain-db` unlocks it for that SSH session only. Install services and schedules from the desktop session. |
-| "the Task Scheduler task uses an interactive logon, so it only runs while you are logged on to Windows" | Windows limit (warning). | Stay logged on. |
-| "the scheduled run at `<time>` did not start" | Windows: nobody was logged on, the machine was off, or task conditions blocked it. Skipped runs are not caught up. | Run `canonfig sync --apply` now and stay logged on at the scheduled time. |
-| "the Source is unreachable because the managed tunnel `<endpoint>` is down" or "is stopped" (exit 6) | The tunnel is not running. | `canonfig tunnel start` |
-| "the Source is reached through the managed tunnel `<endpoint>`, which is down (...), and restarting it failed" | A scheduled run tried to restart the tunnel. | Fix the cause it names, then run `canonfig tunnel start`. |
-| "SSH to `<user@host>` is connected, but the Source at `<host:port>` on that host is not answering through the tunnel" | SSH works; the Source is not serving. | On the Source Machine, check `canonfig source service status`, then run `canonfig tunnel start` on the follower. |
+| "the Task Scheduler task uses an interactive logon, so it only runs while you are logged on to Windows" (warning) | A Windows limit. | Stay logged on. |
+| "the scheduled run at `<time>` did not start" | Windows: nobody was logged on, the machine was off, or task conditions blocked it. Skipped runs are not caught up. | Run `canonfig sync --apply` and stay logged on at the scheduled time. |
+| "the Source is unreachable because the managed tunnel `<endpoint>` is down" or "is stopped" (exit 6) | The tunnel is not running. | Run `canonfig tunnel start`. |
+| "the Source is reached through the managed tunnel `<endpoint>`, which is down (...), and restarting it failed" | A scheduled run tried to restart the tunnel and failed. | Fix the cause it names, then run `canonfig tunnel start`. |
+| "SSH to `<user@host>` is connected, but the Source at `<host:port>` on that host is not answering through the tunnel" | SSH works; the Source Machine is not serving. | On the Source Machine, check `canonfig source service status`, then run `canonfig tunnel start` on the Follower Machine. |
 | "the SSH process for `<user@host>` exited before the tunnel was ready" | SSH failed. The message ends with the SSH log. | Fix the SSH error, for example a missing key or a changed host key. |
 | "SSH to `<user@host>` did not open the forward at `<endpoint>` within N ms" | SSH connected, but the forward did not open in time. | Retry with a longer `canonfig tunnel start --timeout-ms 60000`. |
+
+For errors from a sync itself, see
+[Recover from a failed or blocked sync](/how-to/recover). For each `doctor`
+probe, see [Doctor probes and exit codes](/reference/diagnostics).

@@ -1,13 +1,12 @@
 ---
-title: Tool discovery and Installation Recipes
-description: How Canonfig finds tools, installs a pinned version on each platform, decides whether a tool is already present, and verifies it.
+title: How Canonfig installs and verifies tools
+description: Understand how Canonfig finds, installs, and verifies tools, so your Installation Recipes behave the same on every Follower Machine.
 ---
 
-A `tool` resource tells every follower which command-line tool it needs and how
-to install it on each platform. Canonfig installs the exact version you pin,
-leaves a correct installation alone, and checks the result with the
-verification you declare. This page explains those decisions so you can write
-recipes that behave the same on every follower.
+A `tool` resource tells every Follower Machine which command-line tool it needs
+and how to install it on each platform. Canonfig installs the exact version you
+pin, leaves a correct installation alone, and checks the result with the
+verification you declare.
 
 Tool installs are not rolled back. A package that a run installed stays
 installed even when a later action in the same run fails. See
@@ -47,11 +46,12 @@ the evidence is not enough, the scan marks the tool `needs-review` and says why:
 servers get `executable-present` verification, so checking one never starts the
 server.
 
-Review the proposal, then publish it with `canonfig source publish --proposal`.
+Review the Profile Change Proposal, then publish it with
+`canonfig source publish --proposal`.
 
 ## Write a recipe for each platform
 
-A tool resource lists one recipe per platform it supports:
+A tool resource lists one Installation Recipe per platform it supports:
 
 ```jsonc
 {
@@ -82,13 +82,13 @@ name as an apt package.
 
 Every automatic method (`npm`, `pnpm`, `bun`, `brew`, `apt`, `winget`, `uv`,
 `cargo`) needs an exact `version`. Publishing refuses a recipe without one, so
-you find the mistake on the Source Machine instead of on each follower:
+you find the mistake on the Source Machine instead of on each Follower Machine:
 
 > installer uv requires an exact "version" so every follower installs the same build
 
-A follower with no recipe for its platform cannot install the tool. The
-resource needs Human Action Required, unless the tool declares `agentInstall`
-and the follower's agent policy is `agent-apply`; see
+A Follower Machine with no recipe for its platform cannot install the tool.
+The resource needs Human Action Required, unless the tool declares
+`agentInstall` and the Follower Machine's agent policy is `agent-apply`; see
 [Resource kinds](/reference/profile-schema#resource-kinds-and-defaults).
 
 ## When Canonfig installs, replaces, or leaves a tool
@@ -97,7 +97,7 @@ and the follower's agent policy is `agent-apply`; see
 file. Planning checks that target, not the first word of the verification
 command, which can be a shared runtime such as `node` or `python`.
 
-| What the follower has | What the plan does |
+| What the Follower Machine has | What the plan does |
 | --- | --- |
 | The tool is missing | `install-tool` with the pinned version |
 | The tool is present, and its installer reports the pinned version | Leaves it in place |
@@ -146,7 +146,7 @@ not found, verification fails and lists every directory it searched:
 ## `uv` recipes
 
 - `uv` never downloads a Python interpreter for Canonfig, even when your
-  environment allows it. Install Python on the follower first.
+  environment allows it. Install Python on the Follower Machine first.
 - Canonfig uses `https://pypi.org/simple` unless the recipe declares an
   `indexPolicy` with a full HTTPS simple-index URL (no credentials in it), plus
   `reviewedBy` and `reviewedAt`.
@@ -181,13 +181,13 @@ A recipe can declare that the tool needs a login, with instructions:
 ```
 
 Canonfig never copies login credentials from the Source Machine and never
-treats a login as something it can complete. When the follower has no usable
-local credential, the resource needs Human Action Required and shows your
-`howTo` text.
+treats a login as something it can complete. When the Follower Machine has no
+usable local credential, the resource needs Human Action Required and shows
+your `howTo` text.
 
 <Callout title="Never put credentials in a recipe" type="error">
   Recipe arguments, verification commands, and profile content are published
-  to every follower. Keep tokens, passwords, private keys, cookies, and
+  to every Follower Machine. Keep tokens, passwords, private keys, cookies, and
   invitation files out of them. Use a `credential` resource or opt-in shared
   secrets instead.
 </Callout>
@@ -198,15 +198,15 @@ When the evidence does not select one safe recipe, discovery creates an Agent
 Task with the upstream URL and the evidence. A Configuration Agent can propose
 a recipe, but cannot publish it. You review and publish the change yourself.
 
-## Troubleshooting
+## If something fails
 
 | Message | Cause | Fix |
 | --- | --- | --- |
-| installer `<method>` requires an exact "version" so every follower installs the same build | A recipe has no `version`. | Add the exact version and publish again. |
-| installer `<method>` exited with `<code>`; its last output lines: … | The package manager failed. Up to 20 lines of its output follow, with secrets removed. | Fix the cause the output names, then run `canonfig sync --apply` again. |
-| installer `<method>` exited successfully but reports `<package>` `<installed>` installed, not the pinned `<version>` | The package manager installed a different version. | Check that the pinned version exists for that package manager. |
-| verification executable `<name>` was not found (searched: …) | The tool is not in any searched directory. | Check the recipe's install location, or verify with an absolute path. |
-| run `rustup default stable` | rustup has no default toolchain, so `cargo` cannot run. | Run `rustup default stable`, then run `canonfig setup apply` again. |
+| "installer `<method>` requires an exact "version" so every follower installs the same build" | A recipe has no `version`. | Add the exact version and publish again. |
+| "installer `<method>` exited with `<code>`; its last output lines: …" | The package manager failed. Up to 20 lines of its output follow, with secrets removed. | Fix the cause the output names, then run `canonfig sync --apply` again. |
+| "installer `<method>` exited successfully but reports `<package>` `<installed>` installed, not the pinned `<version>`" | The package manager installed a different version. | Check that the pinned version exists for that package manager. |
+| "verification executable `<name>` was not found (searched: …)" | The tool is not in any searched directory. | Check the recipe's install location, or verify with an absolute path. |
+| "run `rustup default stable`" | rustup has no default toolchain, so `cargo` cannot run. | Run `rustup default stable`, then run `canonfig setup apply` again. |
 
 On Windows, `.cmd` and `.bat` shims such as `npm.cmd` cannot run without a
 shell. Bind the package manager to its JavaScript entry point with

@@ -1,13 +1,14 @@
 ---
 title: Canonfig
-description: Keep Claude Code, Codex, and other agent configuration identical across your machines, published from one machine you control.
+description: Keep Claude Code, Codex, and other AI agent configuration the same on every machine you use, published from one machine you control.
 ---
 
 Canonfig copies your AI agent configuration (instruction files, settings keys,
 MCP servers, skills, and tools) from one machine to others. You declare what to
 share in a **Machine Profile** on the **Source Machine** and publish it as a
-signed **Profile Revision**. Each **Follower Machine** checks that revision,
-applies it, and verifies the result; followers never send changes back.
+signed **Profile Revision**. Each **Follower Machine** checks that Profile
+Revision, applies it, and verifies the result. Follower Machines never send
+changes back.
 
 To see the commands and their output before you install anything, try the
 [interactive demo](https://canonfig.micr.dev). It runs on simulated data.
@@ -15,38 +16,39 @@ To see the commands and their output before you install anything, try the
 ## What do you want to do?
 
 <Cards>
-  <Card title="Set up your first Source Machine and Follower Machine" href="/tutorials/first-sync">
+  <Card title="Sync your first two machines" href="/tutorials/first-sync">
     Publish your setup from one machine, enroll a second one, and keep it in sync on a schedule.
   </Card>
   <Card title="Add another Follower Machine" href="/tutorials/first-sync#7-invite-machine-b">
-    Issue an invitation on the Source Machine and enroll the new machine with it.
+    Issue an invitation on the Source Machine and enroll the other machine with it.
   </Card>
   <Card title="Publish a change" href="/how-to/publish-profile-changes">
-    Change what followers receive, add or remove resources, or roll content back.
+    Change what Follower Machines receive, add or remove resources, or roll content back.
   </Card>
   <Card title="Sync on a schedule" href="/how-to/manage-schedules">
-    Install, inspect, or remove a daily or weekly synchronization.
+    Set, check, or remove a daily or weekly sync.
   </Card>
-  <Card title="Keep machines syncing after logout or reboot" href="/how-to/run-unattended">
-    Keep the Source Machine serving and followers syncing without you logged in.
+  <Card title="Run Canonfig unattended" href="/how-to/run-unattended">
+    Keep the Source Machine serving and Follower Machines syncing after logout or reboot.
   </Card>
-  <Card title="Recover from a failed or interrupted sync" href="/how-to/recover">
-    Resume an interrupted synchronization or resolve a result that did not converge.
+  <Card title="Recover from a failed or blocked sync" href="/how-to/recover">
+    Find the message you see and bring the Follower Machine back to Convergence.
   </Card>
   <Card title="Upgrade Canonfig" href="/how-to/upgrade">
-    Move every machine to a new release without breaking synchronization.
+    Move every machine to another release without breaking synchronization.
   </Card>
   <Card title="Look up a command" href="/reference/cli">
-    Every command, flag, exit code, and platform difference.
+    Every command, option, default, and exit code.
   </Card>
 </Cards>
 
 ## What Canonfig does not do
 
-- It does not sync in both directions. Changes made on a Follower Machine stay there or are overwritten, depending on the resource.
+- It does not sync in both directions. A change made on a Follower Machine stays there or is overwritten, depending on the resource.
 - It does not copy credentials, logins, or the trust decisions each client asks you to make.
 - It does not back up your home directory.
-- It does not run a hosted service: your Source Machine serves the revisions.
+- It does not run a hosted service. Your Source Machine serves the Profile Revisions.
 - It does not guarantee that a third-party installer can be rolled back.
 
-To learn how the pieces fit together, read [Architecture](/explanation/architecture).
+To learn which machine owns what and what one run can roll back, read
+[How Canonfig works](/explanation/architecture).

@@ -1,48 +1,45 @@
 ---
 title: Security and credentials
-description: What Canonfig signs and encrypts, what leaves each machine, where credentials are stored on each OS, and how to revoke a follower.
+description: Look up what Canonfig signs and sends between machines, where it stores credentials on each platform, and how to revoke a Follower Machine.
 ---
-
-This page lists what Canonfig protects, what it sends between machines, and
-where it keeps credentials, so you can decide what to put in a profile and how
-to secure each machine.
 
 ## What leaves each machine
 
 | Data | Where it goes | How it travels |
 | --- | --- | --- |
-| Profile Revisions and the files they name | Source Machine to followers | HTTPS pinned at enrollment, signed by the Source Machine |
-| Shared secrets (opt-in only) | Source Machine to followers in the `canonfig:secrets` group | The same pinned HTTPS connection |
-| Follower status and run results | Stay on the follower | Not sent |
-| Local Overlay keys and local `append-local` text | Stay on the follower | Not sent |
+| Profile Revisions and the files they name | Source Machine to Follower Machines | HTTPS pinned at enrollment, signed by the Source Machine |
+| Shared secrets (opt-in only) | Source Machine to Follower Machines in the `canonfig:secrets` group | The same pinned HTTPS connection |
+| Follower Machine status and run results | Stay on the Follower Machine | Not sent |
+| Local Overlay keys and local `append-local` text | Stay on the Follower Machine | Not sent |
 | `credential` resource values | Never sent; the profile holds only a reference | Not sent |
 | Command log | Stays on the machine | Not sent |
 
 Everything in a profile, including inline `content` and every `source` file,
-is published to every follower that selects the profile. Do not put tokens,
-passwords, private keys, or cookies in profile content.
+is published to every Follower Machine that selects the profile. Do not put
+tokens, passwords, private keys, or cookies in profile content.
 
-Canonfig signs revisions and pins the connection; it does not encrypt profile
-content at rest. Followers write applied files with the modes the profile
-declares (`0600` by default).
+Canonfig signs Profile Revisions and pins the connection; it does not encrypt
+profile content at rest. Follower Machines write applied files with the modes
+the profile declares (`0600` by default).
 
 ## Source keys
 
 `canonfig source init` creates the Source Machine's signing key, HTTPS private
 key, and certificate, and stores them in the native credential store. Anyone
 who can read them, or copy `~/.canonfig/state.sqlite` together with them, can
-publish revisions your followers accept. Protect the Source Machine's user
-account accordingly.
+publish Profile Revisions your Follower Machines accept. Protect the Source
+Machine's user account accordingly.
 
-Each Canonfig state directory has its own key names, so two Sources under one
-OS account do not overwrite each other's keys.
+Each Canonfig state directory has its own key names, so two Source Machines
+under one OS account do not overwrite each other's keys.
 
 Releases before 3.2.1 used account-wide key names. Reusing 3.2.x keys or state
 is not a supported migration to 5.0.0. Do not point 5.0.0 at a 3.2.x state
-directory or copy its credential items into a new Source; set up a separate
-fleet instead (see [Upgrade](/how-to/upgrade#move-from-32x)).
+directory or copy its credential items into another Source Machine; set up a
+separate Source Machine instead (see
+[Move from 3.2.x](/how-to/upgrade#move-from-32x)).
 
-Running `canonfig source init` again never creates a new identity. It checks
+Running `canonfig source init` again never creates another identity. It checks
 that the stored keys match the fingerprints recorded at initialization. If they
 do not, Canonfig signs and serves nothing and fails with exit 4:
 
@@ -55,35 +52,36 @@ do not, Canonfig signs and serves nothing and fails with exit 4:
 ## Transport trust
 
 `canonfig source serve` listens on a loopback address only (`127.0.0.1` or
-`::1`). A follower on another host connects through the managed SSH tunnel,
-`canonfig tunnel start`.
+`::1`). A Follower Machine on another host connects through the managed SSH
+tunnel, `canonfig tunnel start`.
 
-Trust is established on first use, at enrollment. The invitation file carries
-the Source Machine's HTTPS certificate fingerprint and signing key fingerprint,
-and the follower pins both. Treat the invitation file as a secret: anyone who
-holds it before it expires can enroll one machine. It is single-use, valid for
-15 minutes unless you pass `--expires` (at most 24 hours), and written with
-mode `0600`. Move it over a private channel.
+Trust is set on first use, at enrollment. The invitation file carries the
+Source Machine's HTTPS certificate fingerprint and signing key fingerprint,
+and the Follower Machine pins both. Treat the invitation file as a secret:
+anyone who holds it before it expires can enroll one machine. It is
+single-use, valid for 15 minutes unless you pass `--expires` (at most 24
+hours), and written with mode `0600`. Move it over a private channel.
 
-After enrollment, the follower rejects:
+After enrollment, the Follower Machine rejects:
 
 - a different HTTPS certificate;
-- a revision with an invalid signature or a file whose digest does not match;
+- a Profile Revision with an invalid signature, or a file whose digest does not
+  match;
 - a reused invitation;
 - a revoked Follower Identity (exit 5).
 
 The tunnel also pins the SSH host key you pass with `--ssh-host-key-file`, and
 refuses options that turn off host key checking or add forwards.
 
-Source and follower must run the same `major.minor` release. A mismatch fails
-with a "source/follower version mismatch" error (exit 2), never a signature
-error. See [Upgrade Canonfig](/how-to/upgrade).
+The Source Machine and each Follower Machine must run the same `major.minor`
+release. A mismatch fails with a "source/follower version mismatch" error
+(exit 2), never a signature error. See [Upgrade Canonfig](/how-to/upgrade).
 
 ## Follower credentials
 
-Each Follower Machine gets its own credential at enrollment, stored in its
-native credential store. Followers never share a token, so revoking one
-follower does not affect the others.
+Each Follower Machine gets its own credential at enrollment, its Follower
+Identity, stored in its native credential store. Follower Machines never share
+a token, so revoking one does not affect the others.
 
 | OS | Credential store |
 | --- | --- |
@@ -94,8 +92,8 @@ follower does not affect the others.
 
 Canonfig never falls back to a plaintext file on its own. When no secure store
 is usable, enrollment fails with Human Action Required, before it uses up the
-invitation. The store a follower enrolled with is recorded and used by later
-runs, including scheduled ones.
+invitation. The store a Follower Machine enrolled with is recorded and used by
+later runs, including scheduled ones.
 
 ### Credential lifecycle
 
@@ -103,9 +101,9 @@ runs, including scheduled ones.
 | --- | --- |
 | Enrollment fails or you cancel it | The credentials it created are removed on both machines. |
 | You enroll a name that is already active | Refused with "the follower identity is already enrolled". The existing credential is unchanged. Revoke the name on the Source Machine first. |
-| `canonfig follower enroll --replace` with a different name | The new identity is enrolled first, then the old one is revoked and its local credential deleted. The output lists every local setting that was reset. |
-| `canonfig source revoke <follower-id>` on the Source Machine | The follower is revoked. Its next request fails with exit 5. |
-| `canonfig follower unenroll` on the follower | The identity is revoked on the Source Machine, then the local credential, received shared secrets, and enrollment record are deleted. |
+| `canonfig follower enroll --replace` with a different name | The identity under the other name is enrolled first, then the old one is revoked and its local credential deleted. The output lists every local setting that was reset. |
+| `canonfig source revoke <follower-id>` on the Source Machine | The Follower Machine is revoked. Its next request fails with exit 5. |
+| `canonfig follower unenroll` on the Follower Machine | The identity is revoked on the Source Machine, then the local credential, received shared secrets, and enrollment record are deleted. |
 
 `canonfig follower unenroll` deletes the local credential even when the Source
 Machine is unreachable. The output then shows `sourceRevoked: false` and the
@@ -132,7 +130,7 @@ session manager is running; `sudo loginctl enable-linger <user>` starts one.
 The login keyring must also be unlocked, which a password login does. A private
 `dbus-run-session` bus does not work. Run `canonfig secrets bootstrap` to check
 the store end to end; see
-[headless Linux credential storage](/how-to/run-unattended#headless-linux-credential-storage).
+[Headless Linux credential storage](/how-to/run-unattended#headless-linux-credential-storage).
 
 **macOS.** Over SSH or in the background, the login Keychain is often locked:
 
@@ -150,8 +148,8 @@ path.
 
 ## Opt-in shared secrets
 
-Canonfig sends secret values to a follower only when you enroll it with the
-`canonfig:secrets` group:
+Canonfig sends secret values to a Follower Machine only when you enroll it with
+the `canonfig:secrets` group:
 
 ```bash
 canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --group canonfig:secrets
@@ -165,17 +163,18 @@ printf '%s' "$GITHUB_TOKEN" | canonfig secrets set github-token
 ```
 
 A successful `canonfig sync --apply` then copies the authorized secrets to the
-follower. `canonfig secrets sync` retries the copy on its own.
+Follower Machine. `canonfig secrets sync` retries the copy on its own.
 
 - Values travel only over the pinned HTTPS connection and are written straight
-  to the follower's native credential store. The state database, profile
-  revisions, and `canonfig secrets list` hold only names and origins.
+  to the Follower Machine's native credential store. The state database,
+  Profile Revisions, and `canonfig secrets list` hold only names and origins.
 - Canonfig reads every stored value back and compares it before reporting
   success. If the store returns different bytes, Canonfig deletes the item and
   fails with exit 3.
-- Followers never pass Source secrets on to other machines.
-- When you remove a secret on the Source Machine, followers delete their copy
-  on the next apply.
+- Follower Machines never pass the Source Machine's secrets on to other
+  machines.
+- When you remove a secret on the Source Machine, Follower Machines delete
+  their copy on the next apply.
 - `canonfig secrets set` and secret transfer require a secure store. A
   plaintext `CANONFIG_LOCAL_CREDENTIAL_ROOT` file is not accepted for shared
   secrets.
@@ -190,13 +189,13 @@ follower. `canonfig secrets sync` retries the copy on its own.
 
 ### Secret ownership
 
-On a follower, `canonfig secrets set` refuses to overwrite a name the Source
-Machine owns. Change the value on the Source Machine, or pick another local
-name.
+On a Follower Machine, `canonfig secrets set` refuses to overwrite a name the
+Source Machine owns. Change the value on the Source Machine, or pick another
+local name.
 
 If another Canonfig process is changing secrets, the command fails with exit 3
-before changing anything; a follower fetch from a busy Source Machine fails
-with exit 6. Wait for the other process to finish and retry.
+before changing anything; a Follower Machine's fetch from a busy Source Machine
+fails with exit 6. Wait for the other process to finish and retry.
 
 ## Secrets in output and logs
 
@@ -220,7 +219,7 @@ A Configuration Agent runs only inside the paths, programs, HTTPS origins, and
 capabilities you allow with `canonfig agent harness`. Canonfig starts programs
 directly, without a shell. An agent's report never counts as success; the
 resource's own verification does. See
-[Configure agent policies](/how-to/configure-agent-policies).
+[Let a Configuration Agent resolve work](/how-to/configure-agent-policies).
 
 ## Audit a machine
 
@@ -230,6 +229,6 @@ canonfig status --json
 canonfig secrets list --json
 ```
 
-`doctor` checks the credential store and the Source connection, `status` shows
-the applied revision and the last run, and `secrets list` shows secret names
-and where each came from.
+`doctor` checks the credential store and the connection to the Source
+Machine, `status` shows the applied Profile Revision and the last run, and
+`secrets list` shows secret names and where each came from.

@@ -1,5 +1,5 @@
 ---
-title: Let a Configuration Agent resolve work on a Follower
+title: Let a Configuration Agent resolve work
 description: Choose whether a Configuration Agent may propose or apply work on a Follower Machine, and set up the codex, claude, or custom agent harness and its limits.
 ---
 
@@ -7,33 +7,33 @@ Canonfig applies every Profile Resource it has a fixed action for. Work it
 cannot do on its own becomes an **Agent Task**. For example, a `tool` resource
 that has no Installation Recipe for the Follower Machine's platform but
 declares an `agentInstall` block becomes an Agent Task there. By default, an
-Agent Task stops the run with Human Action Required. This page shows how to
-let a Configuration Agent propose a fix, or apply it within limits you set.
+Agent Task stops the run with Human Action Required. You can instead let a
+**Configuration Agent** propose a fix, or apply it within limits you set.
 
 ## Before you start
 
 - Run every command on the Follower Machine, after it is enrolled. On a
   machine that is not enrolled, `canonfig agent harness` fails with "follower
   synchronization configuration is not enrolled".
-- Install the agent CLI on the Follower and sign in to it: Codex CLI for
-  `codex`, Claude Code for `claude`, or your own program for `custom`.
-- The policy and harness belong to this Follower only. `canonfig follower
-  enroll --replace` resets them: the policy returns to `deterministic-only`
-  and the harness is removed.
+- Install the agent CLI on the Follower Machine and sign in to it: Codex CLI
+  for `codex`, Claude Code for `claude`, or your own program for `custom`.
+- The agent policy and harness belong to this Follower Machine only.
+  `canonfig follower enroll --replace` resets them: the policy returns to
+  `deterministic-only` and the harness is removed.
 
-## Choose a policy
+## Choose an agent policy
 
 | Policy | During `sync --apply` |
 | --- | --- |
 | `deterministic-only` (default) | No agent runs. Each Agent Task stops the run with Human Action Required. |
-| `agent-propose` | The agent runs and returns a proposal. Canonfig checks it and records it, runs none of its actions, and stops at that task with Human Action Required. |
+| `agent-propose` | The agent runs and returns a proposal. Canonfig checks and records it, runs none of its actions, and stops at that task with Human Action Required. |
 | `agent-apply` | The agent runs and returns a proposal. Canonfig runs only the actions inside the limits, then checks the result itself. |
 
 With `agent-propose` or `agent-apply`, `sync --plan` also runs the agent and
 shows its proposal under "agent resolutions" without running anything. Use
 that to see what the agent would do before you allow it.
 
-Check the current policy, then change it:
+Check the policy, then change it:
 
 ```bash
 canonfig agent policy
@@ -43,7 +43,7 @@ canonfig agent policy agent-propose
 Start with `agent-propose`. Move to `agent-apply` only after you have reviewed
 proposals and the limits below.
 
-Scheduled runs never wait for input: they follow the same policy, so with
+Scheduled runs never wait for input. They follow the same policy, so with
 `agent-apply` the agent can act while you are away.
 
 ## Set up Codex or Claude Code
@@ -62,11 +62,11 @@ For Codex, use `codex` and its path instead of `claude`.
   contain spaces or start with `-`.
 - Canonfig always starts the agent in read-only mode: Codex with a read-only
   sandbox, Claude Code in plan mode. The agent only proposes; Canonfig runs
-  the actions. Because of this, `codex` and `claude` take no other arguments.
+  the actions. For this reason, `codex` and `claude` take no other arguments.
 - The agent does not need to run inside a Git repository.
 
 Each `canonfig agent harness` command replaces the whole harness setting, so
-repeat every option you want to keep. To see the current setting:
+repeat every option you want to keep. To see the setting:
 
 ```bash
 canonfig agent harness
@@ -125,7 +125,7 @@ Repeat each option to add more entries.
 
 | Option | What it allows |
 | --- | --- |
-| `--allow-path <path>` | Paths an action may write, including everything below them. Canonfig stores each one as an absolute path: `~` is your home directory on this Follower, and a relative path starts from the current directory. |
+| `--allow-path <path>` | Paths an action may write, including everything below them. Canonfig stores each one as an absolute path: `~` is your home directory on this Follower Machine, and a relative path starts from the working directory. |
 | `--allow-leaf-executable <name>` | A program an action may run directly, such as `npm`. |
 | `--allow-origin <https-origin>` | A download source. It must be an exact HTTPS origin with no path, such as `https://registry.npmjs.org`. |
 | `--allow-capability <capability>` | `elevation`, `login`, `restart`, or `reboot`. |
@@ -138,7 +138,7 @@ never widens a task: every Agent Task Canonfig creates forbids `elevation`,
 agent those rights for them.
 
 An Agent Task's paths come from the tool's `agentInstall.paths` in the
-profile. There, too, `~` is the Follower's home directory, so
+profile. There, too, `~` is the Follower Machine's home directory, so
 `--allow-path ~/.local/bin` covers an `agentInstall` path of
 `~/.local/bin/review-cli`. Paths match whole directory names: `~/.local/bin`
 does not cover `~/.local/bin2`. On Windows the match ignores case.
@@ -172,21 +172,22 @@ Resources applied before that task stay applied. Later ones wait until you
 resolve the task and run `canonfig sync --apply` again.
 
 With `agent-apply`, Canonfig then checks the resource itself with the `verify`
-method the profile declares. If that check fails, the run
-fails with "verification failed for agent task `<resource>`" (exit 7). See
+method the profile declares. The agent's own report never counts. If the
+check fails, the run fails with "verification failed for agent task
+`<resource>`" (exit 7). See
 [Recover from a failed or blocked sync](/how-to/recover).
 
-## Replace a removed gemini harness
+## Replace a gemini harness
 
-Canonfig 5.0.0 removed the `gemini` harness. On a Follower that still has it,
-commands that read the Follower's settings, including `sync`, `status`,
-`doctor`, and `agent policy`, stop with exit 2:
+Canonfig has no `gemini` harness. On a Follower Machine that still has one
+configured, commands that read the Follower Machine's settings, including
+`sync`, `status`, `doctor`, and `agent policy`, stop with exit 2:
 
 > the gemini agent harness was removed in 5.0.0; run 'canonfig agent harness
 > codex|claude|custom ...' to replace it
 
-Canonfig does not convert it for you. Set a new harness, which replaces the
-old one and keeps your policy:
+Canonfig does not convert it for you. Set another harness, which replaces the
+`gemini` one and keeps your agent policy:
 
 ```bash
 canonfig agent harness claude --executable /home/alex/.local/bin/claude --allow-path /home/alex/.local/share/canonfig/tools
@@ -194,26 +195,26 @@ canonfig agent harness claude --executable /home/alex/.local/bin/claude --allow-
 
 To stop using an agent instead, set a harness first, then run
 `canonfig agent policy deterministic-only`. `agent policy` cannot run until the
-gemini harness is replaced.
+`gemini` harness is replaced.
 
 ## If something fails
 
-| Message | Exit | Cause and fix |
+| Message | Cause | Fix |
 | --- | --- | --- |
-| "Bounded agent task requires an apply-authorized harness: `<task>`" (in the sync result) | 3 | The policy is `deterministic-only`, or it is `agent-apply` and no harness is set. Do the work yourself, or choose a policy and set a harness. |
-| "Agent proposal requires human review: `<summary>`" (in the sync result) | 3 | The policy is `agent-propose`. Review the proposal under "agent resolutions" and do the work yourself, or switch to `agent-apply`. |
-| "Agent harness is not configured for `<task>`" (in the sync result) | 3 | The policy is `agent-propose`, or you ran `sync --plan`, and no harness is set. Set one, or run `canonfig agent policy deterministic-only`. |
-| "Configured agent harness could not safely resolve the task: `<reason>`" (in the sync result) | 3 | With `agent-propose` or `sync --plan`: the agent's proposal broke the limits, the agent timed out or printed too much, or its output was not a proposal. The reason says which. |
-| "Agent did not apply the requested task: `<task>`" (in the sync result) | 3 | With `agent-apply`: the agent's proposal was refused or its actions did not complete. Review the agent resolution in the sync result, then do the work yourself or adjust the limits. |
-| "verification failed for agent task `<resource>`" | 7 | The actions ran but the resource does not pass its `verify` check. See [Recover from a failed or blocked sync](/how-to/recover). |
-| "configured agent policy requires an adapter" (`doctor`) | 2 | The policy is `agent-propose` or `agent-apply` and no harness is set. |
-| "configured agent adapter executable is unavailable" (`doctor`) | 2 | The `--executable` path does not exist on this machine. Set the harness again with the correct path. |
-| "agent harness is not configured" | 2 | `canonfig agent harness` shows nothing because no harness is set. |
-| "--model applies to codex and claude; pass a custom harness's model with --argument" | 2 | Remove `--model` from a `custom` harness. |
-| "--argument applies only to the custom harness; codex and claude get Canonfig's read-only flags" | 2 | Remove `--argument` from a `codex` or `claude` harness. |
-| "Agent harness origin must be an exact HTTPS origin: https://registry.npmjs.org/" | 2 | Remove the path, including a trailing `/`. |
-| "Invalid agent harness maximum input bytes: 2000000" | 2 | Use a value from 1 to 1048576. |
-| "Missing required option: --executable" | 2 | Add `--executable` with the agent's absolute path. |
-| "Invalid secret binding; expected ENV_NAME=shared-secret-name" | 2 | Write `--bind-secret` as `OPENAI_API_KEY=openai-key`. |
-| "Invalid agent harness configuration" | 2 | The harness kind is not `codex`, `claude`, or `custom`, a `--model` name contains a space, or `--allow-capability` is not `elevation`, `login`, `restart`, or `reboot`. |
-| "the gemini agent harness was removed in 5.0.0; ..." | 2 | See [Replace a removed gemini harness](#replace-a-removed-gemini-harness). |
+| "Bounded agent task requires an apply-authorized harness: `<task>`" (in the sync result, exit 3) | The policy is `deterministic-only`, or it is `agent-apply` and no harness is set. | Do the work yourself, or choose a policy and set a harness. |
+| "Agent proposal requires human review: `<summary>`" (in the sync result, exit 3) | The policy is `agent-propose`. | Review the proposal under "agent resolutions" and do the work yourself, or switch to `agent-apply`. |
+| "Agent harness is not configured for `<task>`" (in the sync result, exit 3) | The policy is `agent-propose`, or you ran `sync --plan`, and no harness is set. | Set a harness, or run `canonfig agent policy deterministic-only`. |
+| "Configured agent harness could not safely resolve the task: `<reason>`" (in the sync result, exit 3) | With `agent-propose` or `sync --plan`: the proposal broke the limits, the agent timed out or printed too much, or its output was not a proposal. The reason says which. | Fix what the reason names, for example widen a limit you intend to allow, or do the work yourself. |
+| "Agent did not apply the requested task: `<task>`" (in the sync result, exit 3) | With `agent-apply`: the proposal was refused, or its actions did not complete. | Review the agent resolution in the sync result, then do the work yourself or adjust the limits. |
+| "verification failed for agent task `<resource>`" (exit 7) | The actions ran, but the resource does not pass its `verify` check. | See [Recover from a failed or blocked sync](/how-to/recover). |
+| "configured agent policy requires an adapter" (`doctor`, exit 2) | The policy is `agent-propose` or `agent-apply` and no harness is set. | Set a harness with `canonfig agent harness`. |
+| "configured agent adapter executable is unavailable" (`doctor`, exit 2) | The `--executable` path does not exist on this machine. | Set the harness again with the correct path. |
+| "agent harness is not configured" (exit 2) | `canonfig agent harness` has nothing to show. | Set a harness. |
+| "--model applies to codex and claude; pass a custom harness's model with --argument" (exit 2) | `--model` was given to a `custom` harness. | Remove `--model` and pass the model in `--argument`. |
+| "--argument applies only to the custom harness; codex and claude get Canonfig's read-only flags" (exit 2) | `--argument` was given to a `codex` or `claude` harness. | Remove `--argument`. |
+| "Agent harness origin must be an exact HTTPS origin: https://registry.npmjs.org/" (exit 2) | The origin has a path, here a trailing `/`. | Remove the path. |
+| "Invalid agent harness maximum input bytes: 2000000" (exit 2) | The value is above the maximum. | Use a value from 1 to 1048576. |
+| "Missing required option: --executable" (exit 2) | `--executable` is required. | Add `--executable` with the agent's absolute path. |
+| "Invalid secret binding; expected ENV_NAME=shared-secret-name" (exit 2) | `--bind-secret` is not written as `ENV=secret-name`. | Write it as `OPENAI_API_KEY=openai-key`. |
+| "Invalid agent harness configuration" (exit 2) | The harness kind is not `codex`, `claude`, or `custom`, a `--model` name contains a space, or `--allow-capability` is not `elevation`, `login`, `restart`, or `reboot`. | Correct the option. |
+| "the gemini agent harness was removed in 5.0.0; ..." (exit 2) | A `gemini` harness is configured. | See [Replace a gemini harness](#replace-a-gemini-harness). |
