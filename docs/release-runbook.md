@@ -110,6 +110,38 @@ Confirm the npm version and provenance, GitHub tag, release notes,
 documentation deployment, and `main` CI. The release tag must resolve to the
 validated release commit.
 
+## Demo and documentation site
+
+https://canonfig.micr.dev serves the UI demo at `/` and the documentation at
+`/docs`. The `Publish site` workflow (`.github/workflows/pages.yml`) runs after
+each successful `Publish release` run on `main`. It checks out the released
+commit, confirms that tag `vX.Y.Z` points at it, runs
+`node scripts/build-pages.mjs`, and deploys the resulting `_site/` directory to
+GitHub Pages. To rebuild the current `main` without a release, run the workflow
+manually from the Actions tab.
+
+The workflow follows the release run instead of the `release: published`
+event. `release.yml` creates the GitHub release with the workflow's
+`GITHUB_TOKEN`, and
+[events caused by that token start no new workflow runs](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).
+
+To build the site locally, install dependencies with `npm ci` and
+`npm ci --prefix ui`, then run `node scripts/build-pages.mjs`.
+
+Configure once:
+
+1. In the repository's Settings > Pages, set the source to GitHub Actions.
+2. In the same page, set the custom domain to `canonfig.micr.dev` and enable
+   Enforce HTTPS once the certificate is issued. The site carries no `CNAME`
+   file because
+   [a custom Actions workflow takes the domain from these settings and ignores CNAME](https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site/managing-a-custom-domain-for-your-github-pages-site).
+   It carries no `.nojekyll` either, because
+   [a custom workflow deploys its artifact as built](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site#publishing-with-a-custom-github-actions-workflow)
+   and Jekyll never runs.
+3. In Cloudflare DNS for `micr.dev`, add a `CNAME` record `canonfig` pointing
+   to `microck.github.io` with proxy status DNS only (grey cloud), so GitHub can
+   issue the HTTPS certificate.
+
 ## Failure handling
 
 Do not move or delete a published tag. If npm returns `ENEEDAUTH`, confirm the
