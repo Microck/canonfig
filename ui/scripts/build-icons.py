@@ -74,6 +74,7 @@ ICONS = {
     "Sparkle": "stars-minimalistic",
     "SquaresFour": "widget",
     "Stack": "layers",
+    "Star": "star",
     "Stethoscope": "stethoscope",
     "TreeStructure": "structure",
     "UserPlus": "user-plus",

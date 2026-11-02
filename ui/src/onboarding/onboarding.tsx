@@ -14,6 +14,7 @@ import { RadioGroup } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { machine, profile } from "@/shared/data";
 import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import { DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
@@ -333,33 +334,42 @@ function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (
 }
 
 /**
- * One role card: just its title, with what the role means behind a "?" hint in its top-right corner. Hover brightens
- * its border and fill and nudges its arrow, and a press sinks it to 0.98 (choice-card in
- * index.css). The pick button covers the whole card; the hint is a sibling layered above it,
- * because a button can't contain another button. Only the picked card keeps its shared shell
- * while the choice leaves; the other drops its layoutId, so it never hands off a stale position later.
+ * One role card: just its title. What the role means shows in a tooltip while the card is
+ * hovered or keyboard-focused, and stays linked to the button as its description for screen
+ * readers. Hover brightens its border and fill and nudges its arrow, and a press sinks it to
+ * 0.98 (choice-card in index.css). Only the picked card keeps its shared shell while the choice
+ * leaves; the other drops its layoutId, so it never hands off a stale position later.
  */
 function Choice({ role, returning, title, description, onPick }: { role: Role; returning: boolean; title: string; description: string; onPick: (role: Role) => void }) {
   const reduced = useReducedMotion();
   const present = useIsPresent();
   const leavingTo = usePresenceData() as Stage | undefined;
   const variants = reduced ? undefined : choiceVariants(role, returning);
+  const descriptionId = useId();
   return (
-    <motion.div variants={variants?.card} className="relative grid">
-      <button
-        type="button"
-        onClick={() => onPick(role)}
-        className="choice-card group relative isolate flex min-h-[112px] min-w-0 items-center rounded-xl p-5 pr-5 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
-      >
-        <CardShell role={role} side="choose" shared={present || leavingTo === role} className="choice-shell" />
-        <motion.span variants={variants?.content} className="flex w-full items-center justify-between gap-3">
-          <span className="text-xl leading-snug font-medium tracking-[-0.01em] text-pretty">{title}</span>
-          <ArrowRight aria-hidden className="choice-arrow size-4 shrink-0 text-faint" />
-        </motion.span>
-      </button>
-      <motion.span variants={variants?.content} className="absolute top-2 right-1 z-10">
-        <Hint label={title}>{description}</Hint>
-      </motion.span>
+    <motion.div variants={variants?.card} className="grid">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => onPick(role)}
+            aria-describedby={descriptionId}
+            className="choice-card group relative isolate flex min-h-[112px] min-w-0 items-center rounded-xl p-5 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+          >
+            <CardShell role={role} side="choose" shared={present || leavingTo === role} className="choice-shell" />
+            <motion.span variants={variants?.content} className="flex w-full items-center justify-between gap-3">
+              <span className="text-xl leading-snug font-medium tracking-[-0.01em] text-pretty">{title}</span>
+              <ArrowRight aria-hidden className="choice-arrow size-4 shrink-0 text-faint" />
+            </motion.span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-72 text-sm leading-relaxed">
+          {description}
+        </TooltipContent>
+      </Tooltip>
+      <span id={descriptionId} hidden>
+        {description}
+      </span>
     </motion.div>
   );
 }
