@@ -255,7 +255,12 @@ const portableBasename = (value: string): string =>
 const isWindowsPath = (value: string): boolean =>
   /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith("\\\\");
 
-const pathWithin = (path: string, root: string): boolean => {
+/**
+ * Whether `path` is `root` or below it, compared per path segment (so `bin2`
+ * is not inside `bin`) and case-insensitively for Windows paths. The follower
+ * also narrows Agent Task paths to its harness bounds with this.
+ */
+export const pathWithin = (path: string, root: string): boolean => {
   const windows = isWindowsPath(path) || isWindowsPath(root);
   const difference = windows
     ? win32.relative(win32.resolve(root), win32.resolve(path))
