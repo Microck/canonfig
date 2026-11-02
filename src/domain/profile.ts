@@ -1071,7 +1071,7 @@ interface ResourceTargetClaim {
   readonly isDirectory: boolean;
 }
 
-const normalizedTargetPath = (value: string, platform: Platform = "windows"): string => {
+export const normalizedTargetPath = (value: string, platform: Platform = "windows"): string => {
   const slashSeparated = value.replaceAll("\\", "/");
   const drive = /^([A-Za-z]):(?=\/|$)/u.exec(slashSeparated);
   const prefix = drive === null

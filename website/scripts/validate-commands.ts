@@ -2,9 +2,12 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { parseReconciliationArguments } from "../../src/profile/skill-reconciliation-cli.ts";
+import { parseSelfUpdateArguments } from "../../src/runtime/self-update/cli.ts";
+import { parseSkillsArguments } from "../../src/harness-configuration/skills/cli.ts";
 import { evaluateCli } from "../../src/cli/cli.ts";
 import { parseHarnessArguments } from "../../src/harness-configuration/cli-arguments.ts";
-import { installerArguments } from "../../src/runtime/command-routing.ts";
+import { isSourceSkillReconciliation, sourceSkillReconciliationArguments, installerArguments } from "../../src/runtime/command-routing.ts";
 import { parseInstallerArguments } from "../../src/runtime/installer-cli.ts";
 import {
   isPrivateEnrollmentCommand,
@@ -157,6 +160,14 @@ export const validateDocumentation = async (
         if (!validSecretsCommand(arguments_)) {
           throw new Error(`${path} contains an invalid CLI example: ${example}`);
         }
+      } else if (isSourceSkillReconciliation(arguments_)) {
+        try { parseReconciliationArguments(sourceSkillReconciliationArguments(arguments_)); }
+        catch { throw new Error(`${path} contains an invalid CLI example: ${example}`); }
+      } else if (arguments_[0] === "self-update") {
+        parseSelfUpdateArguments(arguments_.slice(1));
+      } else if (arguments_[0] === "skills") {
+        try { parseSkillsArguments(arguments_.slice(1)); }
+        catch { throw new Error(`${path} contains an invalid CLI example: ${example}`); }
       } else if (arguments_[0] === "harness") {
         if (!validHarnessCommand(arguments_)) {
           throw new Error(`${path} contains an invalid CLI example: ${example}`);

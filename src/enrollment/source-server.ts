@@ -1,9 +1,11 @@
+import { defaultMaximumMetadataBytes } from "../domain/transport-limits.ts";
 import type { ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import { isIP } from "node:net";
 import type { AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
 
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Exit, Redacted, Schema, Scope } from "effect";
 
 import { MachineState } from "../machine/machine-state.service.ts";
 import { CredentialStorageError } from "../machine/machine-state.errors.ts";
@@ -54,7 +56,7 @@ import {
 import { buildIdentity } from "../runtime/build-identity.ts";
 
 const maximumRequestBytes = 64 * 1024;
-const defaultMaximumMetadataBytes = 1024 * 1024;
+
 const defaultMaximumBlobBytes = 8 * 1024 * 1024;
 const AddressInfoSchema = Schema.Struct({
   address: Schema.String,
@@ -185,14 +187,6 @@ const readBody = (
     request.on("error", rejectBody);
   });
 
-const runRequestEffect = async <Value>(
-  effect: Effect.Effect<Value, EnrollmentError>,
-): Promise<Value> => {
-  const result = await Effect.runPromise(Effect.result(effect));
-  if (result._tag === "Failure") throw result.failure;
-  return result.success;
-};
-
 export const asEnrollmentError = (error: Error): EnrollmentError => {
   if (
     error instanceof CredentialStorageError
@@ -220,14 +214,24 @@ export const asEnrollmentError = (error: Error): EnrollmentError => {
   });
 };
 
-export const startSourceServer = (
-  input: StartSourceServerInput = {},
+const startSourceServerScoped = (
+  input: StartSourceServerInput,
+  scope: Scope.Closeable,
 ): Effect.Effect<
   SourceServerHandle,
   EnrollmentConfigurationError | CredentialStorageError | SourceCredentialMismatchError,
-  Enrollment | MachineState
+  Enrollment | MachineState | Scope.Scope
 > =>
   Effect.gen(function*() {
+    const maximumMetadataBytes = input.maximumMetadataBytes ?? defaultMaximumMetadataBytes;
+    // Publication admits against the protocol default. A smaller Source limit
+    // would strand otherwise valid stored revisions after successful publication.
+    if (!Number.isSafeInteger(maximumMetadataBytes) || maximumMetadataBytes < defaultMaximumMetadataBytes) {
+      return yield* new EnrollmentConfigurationError({
+        operation: "start enrollment server",
+        message: `maximumMetadataBytes must be a safe integer of at least ${defaultMaximumMetadataBytes} bytes, matching publication admission.`,
+      });
+    }
     const enrollment = yield* Enrollment;
     const machine = yield* MachineState;
     // The TLS key and certificate are checked against the recorded
@@ -261,10 +265,25 @@ export const startSourceServer = (
         message: "the source server host must be an unambiguous loopback address",
       });
     }
-    const maximumMetadataBytes = input.maximumMetadataBytes
-      ?? defaultMaximumMetadataBytes;
+    yield* enrollment.startServerSession().pipe(Effect.mapError((error) =>
+      error instanceof EnrollmentConfigurationError ? error : new EnrollmentConfigurationError({
+        operation: "start source session", message: "Pending enrollment recovery failed; the Source server was not started.",
+      })));
     const maximumBlobBytes = input.maximumBlobBytes ?? defaultMaximumBlobBytes;
     let blobRequests = 0;
+    const connections = new Set<Duplex>();
+    let closing = false;
+    const requestEffects = new Set<Promise<unknown>>();
+    const runRequestEffect = async <Value>(effect: Effect.Effect<Value, EnrollmentError>): Promise<Value> => {
+      if (closing) throw new EnrollmentConfigurationError({ operation: "serve enrollment request", message: "the Source server is shutting down" });
+      const pending = Effect.runPromise(Effect.result(effect));
+      requestEffects.add(pending);
+      try {
+        const result = await pending;
+        if (result._tag === "Failure") throw result.failure;
+        return result.success;
+      } finally { requestEffects.delete(pending); }
+    };
     const server = createServer(
       {
         key: Redacted.value(key),
@@ -524,11 +543,15 @@ export const startSourceServer = (
         });
       },
     );
+    server.on("connection", (socket) => {
+      connections.add(socket);
+      socket.once("close", () => connections.delete(socket));
+    });
     server.requestTimeout = 10_000;
     server.headersTimeout = 10_000;
     server.keepAliveTimeout = 1_000;
 
-    const address = yield* Effect.tryPromise({
+    const address = yield* Effect.acquireRelease(Effect.tryPromise({
       try: () =>
         new Promise<AddressInfo>((resolveAddress, rejectAddress) => {
           const onError = (cause: Error): void => rejectAddress(cause);
@@ -546,7 +569,29 @@ export const startSourceServer = (
           operation: "start enrollment server",
           message: "the loopback HTTPS server could not start",
         }),
-    });
+    }), () => Effect.promise(async () => {
+      closing = true;
+      try {
+        await new Promise<void>((resolveClose, rejectClose) => {
+          const fallback = setTimeout(() => {
+            server.closeAllConnections();
+            // Also close peers that connected but never completed TLS/HTTP setup.
+            for (const socket of connections) socket.destroy();
+          }, 1_000);
+          fallback.unref();
+          server.close((cause) => {
+            clearTimeout(fallback);
+            if (cause === undefined) resolveClose();
+            else rejectClose(cause);
+          });
+          server.closeIdleConnections();
+        });
+      } finally {
+        // Socket closure does not cancel detached effects or credential writes.
+        // Keep the exclusive Source lease until every admitted effect settles.
+        await Promise.allSettled(requestEffects);
+      }
+    }));
     const host = address.family === "IPv6"
       ? `[${address.address}]`
       : address.address;
@@ -554,12 +599,18 @@ export const startSourceServer = (
       endpoint: `https://${host}:${address.port}`,
       fingerprint: source.tlsFingerprint,
       blobRequests: () => blobRequests,
-      close: () =>
-        new Promise<void>((resolveClose, rejectClose) => {
-          server.close((cause) => {
-            if (cause === undefined) resolveClose();
-            else rejectClose(cause);
-          });
-        }),
+      close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
     };
   });
+
+export const startSourceServer = (
+  input: StartSourceServerInput = {},
+): Effect.Effect<SourceServerHandle,
+  EnrollmentConfigurationError | CredentialStorageError | SourceCredentialMismatchError,
+  Enrollment | MachineState> => Effect.gen(function*() {
+  const scope = yield* Scope.make();
+  return yield* startSourceServerScoped(input, scope).pipe(
+    Scope.provide(scope),
+    Effect.onExit((exit) => Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void),
+  );
+});

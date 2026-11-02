@@ -67,6 +67,13 @@ export function configuredTargets(config: CanonfigConfig): TargetId[] {
   return TARGET_IDS.filter((id) => targetMap[id]?.enabled === true);
 }
 
+/** Explicitly disabled targets retire only during an unfiltered project apply. */
+export function disabledTargets(config: CanonfigConfig): TargetId[] {
+  if (Array.isArray(config.targets)) return [];
+  const targets = config.targets;
+  return TARGET_IDS.filter((id) => targets[id]?.enabled === false);
+}
+
 export function targetOptions(config: CanonfigConfig, target: TargetId): Record<string, unknown> {
   const targetMap = config.targets as Partial<Record<TargetId, { options: Record<string, unknown> }>>;
   const direct = Array.isArray(config.targets) ? {} : (targetMap[target]?.options ?? {});

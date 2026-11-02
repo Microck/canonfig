@@ -15,6 +15,10 @@ export interface ParsedHarnessArguments {
   readonly force: boolean;
   readonly all: boolean;
   readonly dryRun: boolean;
+  readonly interval?: number | undefined;
+  readonly output?: string | undefined;
+  readonly includeSource?: boolean | undefined;
+  readonly sourceOnly?: boolean | undefined;
   readonly targets?: ReadonlyArray<TargetId> | undefined;
 }
 
@@ -29,16 +33,22 @@ Commands:
   plan       Show native files that would change
   apply      Apply the current plan atomically
   sync       Alias for apply
+  watch      Continuously apply stable canonical changes; stop on conflicts
   status     Report pending changes, conflicts, and diagnostics
   diff       Print a unified-style diff for pending changes
   clean      Remove only configuration currently owned by Canonfig
   doctor     Probe selected harness executables
+  export     Package canonical sources and/or selected harness projections
 
 Options:
+  --interval <seconds>  Watch polling interval: 1..3600 (default 1)
   --root <path>         Repository root or descendant working directory
   --target <id>         Select one target; repeatable
   --targets <ids>       Select comma-separated targets
   --format <format>     Configuration format for init: yaml or json
+  --output <path>       Export archive (.zip or .tar.gz); never overwritten
+  --include-source      Include canonical configuration alongside targets
+  --source-only         Export canonical configuration without native targets
   --strict              Reject shim, lossy, and unsupported mappings
   --force               Take ownership of explicit collisions or managed edits
   --all                 Include unchanged files in plan output
@@ -50,28 +60,34 @@ Options:
 export const parseHarnessArguments = (
   arguments_: ReadonlyArray<string>,
 ): ParsedHarnessArguments => {
-  // The first argument is the command only when it is not an option. Taking it
-  // unconditionally made `canonfig harness --help` report `--help` as an
-  // unknown harness command, while `canonfig harness` alone and
-  // `canonfig harness plan --help` both printed help. Leaving a leading option
-  // in the option list lets the loop below handle it, so `--help` still wins
-  // and flags such as `--json` are not swallowed with it.
-  const leadsWithOption = arguments_[0]?.startsWith("-") ?? false;
-  const command = leadsWithOption ? "help" : arguments_[0] ?? "help";
-  const rest = leadsWithOption ? arguments_ : arguments_.slice(1);
+  // JSON is global and can precede either the group or its command.
+  const explicitHelp = arguments_.includes("--help") || arguments_.includes("-h")
+    || arguments_.filter((argument) => argument !== "--json")[0] === "help";
+  const positional = arguments_.filter((argument) => argument !== "--json"
+    && !(explicitHelp && (argument === "--version" || argument === "-V")));
+  const leadsWithOption = positional[0]?.startsWith("-") ?? false;
+  const command = leadsWithOption ? "help" : positional[0] ?? "help";
+  const rest = leadsWithOption ? positional : positional.slice(1);
   let root = process.cwd();
-  let json = false;
+  const json = arguments_.includes("--json");
   let format: HarnessConfigFormat = "yaml";
   let strict = false;
   let force = false;
   let all = false;
   let dryRun = false;
+  let interval = 1;
+  let intervalSeen = false;
   const requestedTargets: string[] = [];
+  let output: string | undefined;
+  let includeSource = false;
+  let sourceOnly = false;
 
   for (let index = 0; index < rest.length; index += 1) {
     const argument = rest[index]!;
-    if (argument === "--json") {
-      json = true;
+    if (argument === "--include-source" || argument === "--source-only") {
+      if (command !== "export") throw new CanonfigError("ARCHIVE_OPTION_NOT_ALLOWED", `${argument} requires export`);
+      if (argument === "--include-source") includeSource = true;
+      else sourceOnly = true;
       continue;
     }
     if (argument === "--strict") {
@@ -104,7 +120,9 @@ export const parseHarnessArguments = (
       };
     }
     if (
-      argument === "--root"
+      argument === "--interval"
+      || argument === "--output"
+      || argument === "--root"
       || argument === "--cwd"
       || argument === "--target"
       || argument === "--targets"
@@ -118,7 +136,14 @@ export const parseHarnessArguments = (
         );
       }
       index += 1;
-      if (argument === "--root" || argument === "--cwd") {
+      if (argument === "--interval") {
+        if (command !== "watch" || intervalSeen) throw new CanonfigError("HARNESS_INTERVAL_NOT_ALLOWED", "--interval is allowed once, only with watch");
+        intervalSeen = true; interval = Number(value);
+        if (!/^\d+$/u.test(value) || !Number.isInteger(interval) || interval < 1 || interval > 3600) throw new CanonfigError("HARNESS_INTERVAL_INVALID", "Watch interval must be whole seconds from 1 to 3600");
+      } else if (argument === "--output") {
+        if (command !== "export") throw new CanonfigError("ARCHIVE_OPTION_NOT_ALLOWED", "--output requires export");
+        output = path.resolve(value);
+      } else if (argument === "--root" || argument === "--cwd") {
         root = path.resolve(value);
       } else if (argument === "--format") {
         if (command !== "init") {
@@ -145,6 +170,7 @@ export const parseHarnessArguments = (
     );
   }
 
+  if (command === "watch" && force) throw new CanonfigError("HARNESS_FORCE_NOT_ALLOWED", "watch never forces ownership; resolve conflicts with an explicit one-shot apply first");
   const targets = requestedTargets.length === 0
     ? undefined
     : parseTargetList(requestedTargets.join(","));
@@ -157,6 +183,7 @@ export const parseHarnessArguments = (
     force,
     all,
     dryRun,
-    ...(targets === undefined ? {} : { targets }),
+    output, includeSource, sourceOnly, interval,
+    targets,
   };
 };

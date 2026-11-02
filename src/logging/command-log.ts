@@ -1,3 +1,5 @@
+import { groupHelpRequested } from "../runtime/command-routing.ts";
+import { isPublicEnrollmentCommand } from "../runtime/enrollment-input.ts";
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
@@ -10,6 +12,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
+  ["self-update", new Set(["enable", "disable", "status", "check", "apply", "auto"])],
   ["agent", new Set(["harness", "policy"])],
   ["follower", new Set(["enroll"])],
   [
@@ -41,8 +44,11 @@ const SINGLE_COMMANDS = new Set([
   "sync",
 ]);
 const HELP_OPTIONS = new Set(["--help", "-h", "--json"]);
-const WINDOWS_ACL_SCRIPT = [
+export const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
+  // Node can inherit PowerShell 7 module paths before launching Windows PowerShell.
+  // This subprocess needs only its own bundled modules, never user modules.
+  '$env:PSModulePath = "$PSHOME\\Modules"',
   "$path = [Environment]::GetEnvironmentVariable('CANONFIG_LOG_ACL_PATH')",
   "$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
   "$acl = New-Object System.Security.AccessControl.FileSecurity",
@@ -129,12 +135,18 @@ const nodeFileOperations: CommandLogFileOperations = {
 };
 
 const commandName = (arguments_: ReadonlyArray<string>): string => {
-  const first = arguments_[0];
-  if (first === undefined || first === "--help" || first === "-h") return "help";
-  if (first === "--version" || first === "-V" || first === "-v") return "version";
+  const positional = arguments_.filter((argument) => argument !== "--json");
+  const first = positional[0];
+  const second = positional[1];
+  const exposedInvitation = isPublicEnrollmentCommand(arguments_);
+  if (!exposedInvitation && groupHelpRequested(arguments_)) {
+    return first !== undefined && COMMAND_ACTIONS.get(first)?.has("help") === true ? `${first}.help` : "help";
+  }
+  if ((positional.includes("--version") || positional.includes("-V")) && !exposedInvitation) return "version";
+  if (first === undefined) return arguments_.length === 0 ? "help" : "unknown";
+  if (first === "-v") return "version";
   if (SINGLE_COMMANDS.has(first)) return first;
   const actions = COMMAND_ACTIONS.get(first);
-  const second = arguments_[1];
   if (second !== undefined && actions?.has(second) === true) {
     return `${first}.${second}`;
   }

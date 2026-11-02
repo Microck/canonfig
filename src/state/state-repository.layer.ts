@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { open } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, Schema } from "effect";
@@ -336,6 +336,19 @@ const makeRepository = Effect.gen(function*() {
       })
     ),
   );
+
+  const databaseFile = Effect.fn("StateRepository.databaseFile")(function*() {
+    const rows = yield* sql`PRAGMA database_list`.pipe(Effect.mapError(sqlError("resolve state database")));
+    const decoded = yield* decodeRows(Schema.Struct({ name: Schema.String, file: Schema.String }), rows, "database", "main");
+    const file = decoded.find((row) => row.name === "main")?.file;
+    if (file === undefined || file.length === 0) {
+      return yield* new RepositorySqlError({ operation: "resolve state database", message: "Source serving requires a file-backed state database" });
+    }
+    return yield* Effect.tryPromise({
+      try: () => realpath(file),
+      catch: () => new RepositorySqlError({ operation: "resolve state database", message: "The state database path could not be resolved safely" }),
+    });
+  });
 
   const saveSourceIdentity = Effect.fn("StateRepository.saveSourceIdentity")(
     function*(identity: SourceIdentity): Effect.fn.Return<void, StateRepositoryError> {
@@ -819,6 +832,22 @@ const makeRepository = Effect.gen(function*() {
           message: "the invitation nonce is invalid",
         });
       }
+      // Enforce identity exclusivity in the transaction as well as at the
+      // service boundary, including concurrent invitations for the same name.
+      const activeIdentityCount = yield* statusCount(sql, sql`
+        SELECT count(*) AS count FROM followers
+        WHERE id = ${input.follower.id} AND revoked = 0
+      `, "active follower identity", input.follower.id);
+      const pendingIdentityCount = yield* statusCount(sql, sql`
+        SELECT count(*) AS count FROM pending_enrollments
+        WHERE follower_id = ${input.follower.id}
+      `, "pending follower identity", input.follower.id);
+      if (activeIdentityCount > 0 || pendingIdentityCount > 0) {
+        return yield* new EnrollmentStateConflictError({
+          reason: "follower-identity-conflict",
+          message: "the follower identity is already enrolled or pending enrollment",
+        });
+      }
       const pendingRows = yield* sql`
         SELECT count(*) AS count
         FROM pending_enrollments
@@ -967,8 +996,12 @@ const makeRepository = Effect.gen(function*() {
           "follower identity",
           input.follower,
         );
-        // An active identity is rotated: its credential digest and reference
-        // are replaced below, which retires the previous credential.
+        if (identities[0]?.revoked === 0) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "follower-identity-conflict",
+            message: "the follower identity is already enrolled",
+          });
+        }
         const invitationRows = yield* sql`
           SELECT used_at, expires_at
           FROM enrollment_invitations
@@ -1864,14 +1897,16 @@ const makeRepository = Effect.gen(function*() {
               sequence,
               state,
               recorded_at,
-              attempt
+              attempt,
+              rollback_reference
             ) VALUES (
               ${input.id},
               ${action.id},
               ${ordinal},
               'pending',
               ${input.startedAt},
-              0
+              0,
+              ${input.pendingRollbackReferences?.get(action.id) ?? null}
             )
           `;
         }
@@ -2709,6 +2744,7 @@ const makeRepository = Effect.gen(function*() {
   );
 
   return StateRepository.of({
+    databaseFile,
     saveSourceIdentity,
     registerFollower,
     saveFollowerSynchronizationConfiguration,

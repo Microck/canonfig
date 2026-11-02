@@ -1,3 +1,4 @@
+import { parse as parseToml } from "smol-toml";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { HarnessConfigurationCompiler } from "../src/harness-configuration/core/compiler.ts";
-import { applyPlan } from "../src/harness-configuration/core/planner.ts";
+import { applyPlan, createPlan } from "../src/harness-configuration/core/planner.ts";
 import type { TargetId } from "../src/harness-configuration/core/types.ts";
 
 const roots: string[] = [];
@@ -120,6 +121,46 @@ afterEach(async () => {
   })));
 });
 
+describe("native Claude and Droid hook events", () => {
+  it.each([
+    ["claude-code", "before_agent"], ["claude-code", "after_agent"],
+    ["factory-droid", "before_agent"], ["factory-droid", "after_agent"],
+    ["factory-droid", "after_compact"], ["factory-droid", "subagent_start"],
+  ] as const)("rejects unsupported %s event %s in strict mode", async (target, event) => {
+    const root = await fixture([target], false);
+    const configPath = path.join(root, ".canonfig/harness.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.hooks = [{ ...config.hooks[0], event }];
+    await writeFile(configPath, JSON.stringify(config));
+    const compiler = new HarnessConfigurationCompiler();
+    const plan = await compiler.plan({ root });
+    expect(plan.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "HOOK_EVENT_UNSUPPORTED", target, level: "warning" }),
+    ]));
+    expect(plan.entries.find((entry) => entry.path === (target === "claude-code" ? ".claude/settings.json" : ".factory/hooks.json"))).toBeUndefined();
+    const strict = await compiler.plan({ root, strict: true });
+    expect(strict.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "HOOK_EVENT_UNSUPPORTED", target, level: "error" }),
+    ]));
+    await expect(applyPlan(strict)).rejects.toThrow();
+  });
+
+  it("writes Droid hooks at the documented root and preserves user hooks during cleanup", async () => {
+    const root = await fixture(["factory-droid"], false);
+    const native = { Notification: [{ matcher: ".*", hooks: [{ type: "command", command: "echo user" }] }] };
+    await write(root, ".factory/hooks.json", JSON.stringify(native));
+    const compiler = new HarnessConfigurationCompiler();
+    await applyPlan(await compiler.plan({ root }));
+    const generated = JSON.parse(await readFile(path.join(root, ".factory/hooks.json"), "utf8"));
+    expect(generated.hooks).toBeUndefined();
+    expect(generated.Notification).toEqual(native.Notification);
+    expect(generated.PreToolUse[0].hooks[0].command).toContain('$FACTORY_PROJECT_DIR/.canonfig/.runtime/hook-runner.mjs');
+    expect((await compiler.plan({ root })).entries.filter((entry) => entry.action !== "unchanged")).toEqual([]);
+    await applyPlan(await createPlan(root, ["factory-droid"], []));
+    expect(JSON.parse(await readFile(path.join(root, ".factory/hooks.json"), "utf8"))).toEqual(native);
+  });
+});
+
 describe("Kimi, Kilo, Hermes, and Qwen harness adapters", () => {
   it("projects the researched native equivalents and remains idempotent", async () => {
     const root = await fixture(["kimi", "kilo", "hermes", "qwen"]);
@@ -226,5 +267,81 @@ describe("OpenCode hook execution", () => {
     expect(child.status).toBe(0);
     await expect(readFile(path.join(root, ".canonfig/hook-hit"), "utf8"))
       .resolves.toBe("hit\n");
+  });
+});
+
+
+describe("native MCP environment references", () => {
+  async function referenceFixture(alias = false) {
+    const targets: TargetId[] = ["codex", "cursor", "opencode", "kilo"];
+    const root = await fixture(targets);
+    await write(root, ".canonfig/harness.json", JSON.stringify({
+      version: 1, targets: Object.fromEntries(targets.map((id) => [id, { enabled: true }])),
+      instructions: { root: "instructions/AGENTS.md" },
+      mcp: { servers: {
+        local: { transport: "stdio", command: "fixture-tool", env: {
+          API_KEY: { fromEnv: alias ? "OTHER_API_KEY" : "API_KEY" }, PLAIN_SETTING: "safe-value",
+        } },
+        docs: { transport: "streamable-http", url: "https://example.invalid/mcp", headers: {
+          Authorization: { fromEnv: "DOCS_MCP_TOKEN" }, "X-Static": "safe-value",
+        } },
+      } },
+    }));
+    return root;
+  }
+
+  it("writes each client's documented reference syntax without resolving secrets", async () => {
+    const root = await referenceFixture();
+    const plan = await new HarnessConfigurationCompiler().plan({ root, targets: ["codex", "cursor", "opencode"], strict: true });
+    expect(plan.diagnostics.filter((item) => item.level === "error")).toEqual([]);
+    await applyPlan(plan);
+    const codex = await readFile(path.join(root, ".codex/config.toml"), "utf8");
+    expect(parseToml(codex)).toMatchObject({ mcp_servers: {
+      local: { env_vars: ["API_KEY"], env: { PLAIN_SETTING: "safe-value" } },
+      docs: { env_http_headers: { Authorization: "DOCS_MCP_TOKEN" }, http_headers: { "X-Static": "safe-value" } },
+    } });
+    expect(codex).not.toContain("${");
+    const cursor = JSON.parse(await readFile(path.join(root, ".cursor/mcp.json"), "utf8"));
+    expect(cursor.mcpServers.local.env.API_KEY).toBe("${env:API_KEY}");
+    expect(cursor.mcpServers.docs.headers.Authorization).toBe("${env:DOCS_MCP_TOKEN}");
+    for (const file of ["opencode.json"]) {
+      const native = JSON.parse(await readFile(path.join(root, file), "utf8"));
+      expect(native.mcp.local.environment.API_KEY).toBe("{env:API_KEY}");
+      expect(native.mcp.docs.headers.Authorization).toBe("{env:DOCS_MCP_TOKEN}");
+    }
+  });
+
+  it.each([false, true])("warns and rejects Kilo project references (literal syntax: %s)", async (literal) => {
+    const root = await referenceFixture();
+    if (literal) {
+      const source = JSON.parse(await readFile(path.join(root, ".canonfig/harness.json"), "utf8"));
+      source.mcp.servers.local.env.API_KEY = "{env:API_KEY}";
+      source.mcp.servers.docs.headers.Authorization = "{env:DOCS_MCP_TOKEN}";
+      await write(root, ".canonfig/harness.json", JSON.stringify(source));
+    }
+    const compiler = new HarnessConfigurationCompiler();
+    const ordinary = await compiler.plan({ root, targets: ["kilo"] });
+    expect(ordinary.diagnostics.filter((item) => item.code === "MCP_ENV_PROJECT_UNSUPPORTED"))
+      .toHaveLength(2);
+    const strict = await compiler.plan({ root, targets: ["kilo"], strict: true });
+    expect(strict.diagnostics.filter((item) => item.code === "MCP_ENV_PROJECT_UNSUPPORTED")
+      .every((item) => item.level === "error")).toBe(true);
+    await expect(applyPlan(strict)).rejects.toThrow();
+    await expect(readFile(path.join(root, "kilo.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects unsupported Codex environment renaming in strict mode", async () => {
+    const root = await referenceFixture(true);
+    const compiler = new HarnessConfigurationCompiler();
+    const ordinary = await compiler.plan({ root, targets: ["codex"] });
+    expect(ordinary.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "MCP_ENV_RENAME_UNSUPPORTED", target: "codex", level: "warning" }),
+    ]));
+    const strict = await compiler.plan({ root, targets: ["codex"], strict: true });
+    expect(strict.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "MCP_ENV_RENAME_UNSUPPORTED", target: "codex", level: "error" }),
+    ]));
+    await expect(applyPlan(strict)).rejects.toThrow();
+    await expect(readFile(path.join(root, ".codex/config.toml"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

@@ -89,6 +89,7 @@ export interface StartSourceServerInput {
    */
   readonly hostname?: string | undefined;
   readonly port?: number | undefined;
+  /** Source limit must be a safe integer >= the 1 MiB publication limit. */
   readonly maximumMetadataBytes?: number | undefined;
   readonly maximumBlobBytes?: number | undefined;
 }

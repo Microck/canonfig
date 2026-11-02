@@ -1,6 +1,6 @@
 ---
 title: "Reference: complete CLI reference"
-description: Canonfig 4.0.0 commands, output formats, shared secrets, logging controls, and exit codes.
+description: Canonfig 4.2.0 commands, output formats, shared secrets, logging controls, and exit codes.
 ---
 
 Canonfig requires Node.js 24 or newer. This page follows the command groups in
@@ -69,6 +69,15 @@ declaredDigest?, matches? }] }`. It exits 0 even when a declared digest does not
 match, so you can use it to find the value to write. An unknown `--resource`
 fails with "profile `<id>` in `<file>` declares no resource `<r>`"; a `tool` or
 `credential` resource has no content digest.
+
+Both `source digest` and `source publish` reject expanded revision metadata that
+exceeds the default 1 MiB transport budget, reserving space for the signing
+envelope. This measures the full resource projection, not just the authored
+JSON file size; a directory with many small entries can exceed it. Publication
+also checks actual revision/signing fields before storing anything. The error
+is usage/configuration (exit 2), not a retryable follower transport failure.
+Split oversized resources across separate profiles. File content carried in
+separate blobs does not count toward this metadata budget.
 
 **`source publish`** signs a new immutable revision. Publishing content equal
 to the latest revision returns that revision unchanged. Any other content,
@@ -139,12 +148,12 @@ identity preserves the configured transport timeout unless a new value is given.
 
 One machine holds one enrollment:
 
-- **Same name, new invitation.** The credential rotates and the identity stays.
-  Agent policy, agent harness and secret bindings, schedule choice, local
-  overlays, and local execution settings are kept. The old credential keeps
-  working until the new one is finalized; then the Source retires it and the
-  follower deletes the old local item. The result reports `rotated: true` and an
-  empty `resets` list. `--profile` selects the profile you name.
+- **Same name, new invitation.** An active or pending name is rejected with
+  "the follower identity is already enrolled". An invitation alone is not proof
+  that the caller owns the existing identity. Its credential and groups remain
+  unchanged, and the rejected invitation can still enroll a different name.
+  To re-enroll an existing name, explicitly revoke that identity on the Source
+  first. Re-enrolling the revoked identity keeps this machine's local settings.
 - **Different name.** Without `--replace` enrollment fails with exit 4: "this
   machine is already enrolled as `<name>` (`<id>`); pass --replace to enroll it
   as `<new name>` instead". With `--replace` the new identity is enrolled first,
@@ -374,6 +383,10 @@ Installing a tool does not change these authoring fingerprints.
 Apply runs only structured native argv recipes and journals evidence and
 qualified provenance. Re-running apply resumes the next eligible stage.
 An unavailable optional integration excludes only its dependent branch.
+Human `setup apply` and `setup status` include the stored reason beneath failed
+or skipped items. `setup status --json` exposes that reason as item `evidence`
+when it matches the current verdict; stale success evidence is not reused for a
+new dependency skip. Normal output redaction applies to these reasons.
 
 The journal (`~/.canonfig/setup.json`) is the setup decision record, and
 `setup status` shows it:
@@ -384,7 +397,9 @@ The journal (`~/.canonfig/setup.json`) is the setup decision record, and
   interview depth only: it is not part of the plan digest, so switching modes
   keeps approvals;
 - `discoveryPaths`: the normalized `--file` paths discovery read. A file that
-  is missing or too large is listed under `exclusions` instead;
+  is missing or too large is listed under `exclusions` instead. A directory,
+  invalid path, or unreadable discovery file is a usage/configuration error
+  (exit 2), not an internal journal defect;
 - `discoveryInputs`: the paths and SHA-256 fingerprints of discovery files.
   These bind approval to authoring bytes, not to whether installation has
   since made the tool available;
@@ -484,6 +499,13 @@ restart followed by the same command. The result reports local-file storage as
 unencrypted and does not claim that a provider collection is encrypted when the
 provider cannot attest it.
 
+The secrets runtime uses the same selected credential policy as the main CLI:
+an enrolled follower's saved policy takes precedence over the environment.
+Before enrollment, `CANONFIG_LOCAL_CREDENTIAL_ROOT` explicitly selects local-file
+storage. Bootstrap can verify that plaintext local-file policy, but this does not
+make it suitable for shared-secret storage: `secrets set` and shared-secret
+transfer still require secure noninteractive storage.
+
 ### Bind a secret to an agent harness
 
 ```bash
@@ -498,6 +520,21 @@ on the next launch. MCP projections that use `{ "fromEnv": "MCP_TOKEN" }`
 consume the same binding for environment-backed headers; unrelated secret
 names are not loaded.
 
+## Upstream skills
+
+`canonfig skills track|list|check|update` manages explicit provenance for existing
+skills. `track` requires `--name`, `--path`, `--source` and `--ref`; `--subdir`
+selects the skill within its upstream repository. `--root` and root-relative
+`--config` choose the installed scope and source configuration. `--name` is
+repeatable for check/update. Update previews by default; `--apply` is required
+to write and local edits block the selected update. Public HTTPS/local Git
+sources are supported; private/SSH sources and automatic merges are not.
+
+Updates transfer complete skill directories without executing their code.
+Source/Follower installations should update canonical skills on the Source
+Machine, then review and publish normally, not update follower-owned copies.
+
+
 ## Harness configuration
 
 ```bash
@@ -508,12 +545,43 @@ canonfig harness targets
 canonfig harness plan
 canonfig harness plan --strict
 canonfig harness apply
+canonfig harness watch --targets codex,oh-my-pi
 canonfig harness status
 canonfig harness diff
 canonfig harness clean
 canonfig harness doctor
 canonfig harness --help
 ```
+
+Harness apply records ownership of existing generated files and managed blocks
+only when their content matches the current canonical output. This lets a fresh
+clone adopt checked-in output before later source edits. Different unowned text
+still conflicts. Git's LF/CRLF conversion alone is not a generated-text edit;
+other edits remain protected. Binary skill files keep exact-byte ownership checks
+during updates and cleanup, without UTF-8 decoding.
+
+An unfiltered harness apply retires owned output for targets explicitly set to
+`enabled: false`, preserving output still needed by enabled targets. Disabling
+the last applied target also retires shared generated output. Local edits still
+conflict rather than being erased. An explicit `--target` apply only updates its
+selected targets and does not retire other targets based on the project config.
+
+Skill-source symlinks may refer to files or directories inside the repository,
+including a vendored skill outside `.canonfig`. Generated output is a regular
+copy with executable intent preserved. Dangling links, directory cycles, and
+links outside the repository produce a blocking `SKILL_SOURCE_INVALID`
+diagnostic rather than silently dropping skills or reading external files.
+
+Merging native JSON/JSONC configuration changes only affected properties and
+array items. Unrelated comments, values, and formatting remain in place through
+apply, re-render, and cleanup. Canonfig still rejects invalid JSON/JSONC rather
+than rewriting it as a fresh document.
+
+An existing `CLAUDE.md` symlink resolving to the repository's `AGENTS.md`
+already supplies the instruction bridge. Apply preserves it without taking
+ownership, and cleanup leaves it intact. Other native-output symlinks are reported
+as conflicts rather than silently replaced, including with `--force`; resolve
+the link explicitly if you want Canonfig to own a regular file there.
 
 YAML is the default scaffold. `--format json` creates strict, pretty-printed
 `.canonfig/harness.json` and is valid only with `harness init`. YAML and JSON
@@ -522,7 +590,15 @@ than one supported harness configuration file.
 
 `--strict` turns every lossy, coerced, or unsupported MCP and hook mapping into
 an error (for example `MCP_OPTION_COERCED` or `HOOK_TIMEOUT_ROUNDED`). Without
-it those mappings are warnings.
+it those mappings are warnings. Claude Code and Factory Droid do not map
+`before_agent` or `after_agent`; Droid also does not map `after_compact` or
+`subagent_start`. These produce `HOOK_EVENT_UNSUPPORTED`, not inert native event
+names. Droid uses its own supported event set and an unwrapped event map in
+`.factory/hooks.json`, with project-relative scripts anchored to
+`FACTORY_PROJECT_DIR`.
+
+Event references: [Claude Code](https://code.claude.com/docs/en/hooks) and
+[Factory Droid](https://docs.factory.com/harness/hooks).
 
 ## Installer bindings
 
@@ -571,7 +647,14 @@ Secret-like fields are recursively redacted before human or JSON rendering.
 Structured failures are written to standard error; structured successes are
 written to standard output. Usage errors arrive in the requested format: with
 `--json`, a `canonfig.cli/v1` envelope with `status` `"error"` and `exitCode`
-`2`.
+`2`. The `secrets` group uses this same schema for successes and failures.
+
+`sync --apply` waits for automatic shared-secret synchronization before emitting
+its result. If files were applied successfully but secret synchronization fails,
+the one final `sync.apply` error explains that distinction and its `exitCode`
+matches the process. It does not first print a contradictory success envelope.
+
+An inaccessible state directory or an invalid state database is reported as human action required (exit `3`), including failures before the command runtime starts. JSON mode emits one error envelope on standard error, not a stack trace on standard output. Check directory permissions and preserve the existing state; restore a known-good database backup if it is corrupt. Canonfig does not delete or reset the database automatically.
 
 ## Exit codes
 
@@ -599,3 +682,44 @@ the Source rejected the credential or revoked the follower. A version mismatch
 between the Source and a follower is exit 2, never a signature or digest
 failure. The command log records the same status as the process exit, including
 143 for `SIGTERM`.
+
+### Opt-in runtime diagnostics
+
+Set `CANONFIG_DEBUG=1` when diagnosing an unexpected internal failure (exit 1).
+The normal error message remains fixed; the same result envelope includes a
+`data.diagnostic` cause/stack string, processed by the normal credential
+redactor. JSON mode still emits one document. Diagnostics are absent by default
+and are not added to expected state-storage failures. Review diagnostic text
+before sharing it: paths and other contextual information can remain sensitive.
+
+## Harness archives
+
+`canonfig harness export --source-only --output source.zip` packages canonical
+configuration. Select one or multiple projected harnesses with repeatable
+`--target`, optionally adding `--include-source`. `.zip` and `.tar.gz` output
+are supported. `--dry-run` lists contents without writing; `--strict` rejects
+lossy projections. Existing archives are never overwritten.
+
+This exports declared project sources and fresh projections, not credentials,
+sessions, unowned native edits, or a full machine backup. Review literal values
+and executable scripts before sharing or using the archive. External services
+and dependencies must be installed separately.
+
+Harness `watch` is an opt-in foreground worker. It applies after two matching
+plans, stops on conflicts/errors, and never accepts `--force`. Use `--dry-run`
+for continuous preview and `--interval 1` for the default one-second polling.
+It does not install a service or reload running harnesses. See the harness
+configuration guide for ownership, cancellation and concurrent-writer limits.
+
+## Self-update
+
+`canonfig self-update enable|disable|status|check|apply|auto` provides opt-in stable
+patch updates for user-private global npm installations. Every mutation requires
+`--apply`; first enable additionally requires `--confirm-idle` and an explicit
+`--npm-cli` path after stopping older processes and schedules. Automatic mode is
+foreground or `--once` for an external scheduler, not an implicit service.
+
+Active Sources/watchers defer activation, unfinished syncs block it, and
+major/minor fleet upgrades remain manual. Successful activation retains the old
+package and exits the worker. See the [self-update operational guide](https://github.com/Microck/canonfig/blob/main/docs/self-update.md)
+for supported prefixes, restart requirements, staging and interruption recovery.

@@ -1,3 +1,4 @@
+import { renewWindowsTaskRegistration } from "../../src/machine/windows.layer.ts";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -31,6 +32,7 @@ class RecordingScheduler implements SchedulerBackend {
   installs = 0;
   removals = 0;
   timezoneChangedSinceBoot = false;
+  native: string | undefined;
 
   readonly inspect = (
     expected: RenderedSchedulerJob,
@@ -66,6 +68,7 @@ class RecordingScheduler implements SchedulerBackend {
         schedulePresent: true,
         service: this.definition.service,
         schedule: this.definition.schedule,
+        native: this.native,
       });
 
   readonly install = (
@@ -101,6 +104,9 @@ class RecordingScheduler implements SchedulerBackend {
         service: snapshot.service ?? "",
         schedule: snapshot.schedule ?? "",
       };
+      if (snapshot.native !== undefined && expected.platform === "windows") {
+        this.native = Buffer.from(renewWindowsTaskRegistration(Buffer.from(snapshot.native, "base64").toString("utf8"), "2026-10-21T00:00:00Z", "c".repeat(32))).toString("base64");
+      }
       this.enabled = snapshot.enabled;
       this.active = snapshot.enabled;
     });
@@ -436,6 +442,26 @@ export const scheduleManagerContract = (
           }),
         ),
       ).resolves.toEqual(absent);
+    });
+
+    it.skipIf(adapter.platform !== "windows")("restores Windows settings while renewing native registration identity", async () => {
+      const scheduler = new RecordingScheduler();
+      const layer = managerLayer(adapter, scheduler);
+      const input = { executable: adapter.executable, schedule: { kind: "daily", localTime: "01:15" } as const };
+      scheduler.native = Buffer.from('<Task><RegistrationInfo><Date>2026-09-01T00:00:00Z</Date><Description>keep</Description></RegistrationInfo><Actions><Exec><Command>keep.exe</Command></Exec></Actions></Task>').toString("base64");
+      await runWith(layer, Effect.gen(function*() {
+        const manager = yield* ScheduleManager;
+        yield* manager.install(input);
+        const prior = yield* manager.snapshot(input);
+        yield* manager.restore(input, prior);
+        const restored = yield* manager.snapshot(input);
+        expect(prior.state).toBe("present");
+        expect(restored.state).toBe("present");
+        if (prior.state === "present" && restored.state === "present") {
+          expect(restored.native).not.toBe(prior.native);
+          expect(Buffer.from(restored.native!, "base64").toString("utf8")).toContain("keep.exe");
+        }
+      }));
     });
 
     it("rejects malformed times and timezone names", async () => {

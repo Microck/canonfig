@@ -1,3 +1,4 @@
+import { machinePathKey } from "../../src/synchronization/resource-executors.ts";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -47,7 +48,7 @@ import {
   abandonFollowerRun,
   recoverFollower,
 } from "../../src/synchronization/follower-orchestration.ts";
-import { runLockPath, withRunLock } from "../../src/synchronization/run-lock.ts";
+import { acquireRunLockScoped, runLockPath, withRunLock } from "../../src/synchronization/run-lock.ts";
 import {
   followerConvergence,
   openRunReport,
@@ -362,6 +363,69 @@ const runRows = (value: Fixture) => {
   database.close();
   return rows;
 };
+
+describe("rollback projection path identity", () => {
+  it("folds Windows case aliases but preserves case on POSIX", () => {
+    const first = machinePathKey({ platform: "windows", absolute: String.raw`C:\Users\Follower\Settings.json` });
+    const successor = machinePathKey({ platform: "windows", absolute: String.raw`c:\users\follower\settings.JSON` });
+    const projection = new Map([[successor, "validated successor preimage"]]);
+    expect(projection.get(first)).toBe("validated successor preimage");
+    expect(machinePathKey({ platform: "linux", absolute: "/home/Settings.json" }))
+      .not.toBe(machinePathKey({ platform: "linux", absolute: "/home/settings.json" }));
+  });
+});
+
+describe("interrupted ownership handover", () => {
+  it.each(["running", "succeeded", "rollback interruption", "rollback local edit", "local edit"] as const)("recovers successor state %s without deleting its writes", async (state) => {
+    const base = fixture(temporaryDirectory());
+    const oldId = decode(ResourceId)("old-settings");
+    const oldDigest = sha256Hex("previous content");
+    const oldResource = { ...base.revision.resources[0]!, id: oldId };
+    const previous = { resource: oldId, revision: "old", digest: oldDigest, appliedAt: "2026-08-14T00:00:00Z",
+      kind: "file" as const, policy: "replace" as const, target: base.target, executable: false };
+    const revision: PlanningProfileRevision = { ...base.revision,
+      resources: [...base.revision.resources, oldResource], removedResources: [oldId],
+      desired: [...base.revision.desired, { resource: oldId,
+        desired: { kind: "file", digest: oldDigest, executable: false }, verification: { method: "digest", digest: oldDigest } }],
+    };
+    const value: Fixture = { ...base, revision, recovery: { ...base.recovery, revision } };
+    const plan = Effect.runSync(planSynchronization({ revision, follower: follower.id,
+      observedState: { platform: "linux", availableBlobs: [], resources: revision.resources.map((resource) => ({
+        resource: resource.id, observed: { state: "present" as const, digest: oldDigest, executable: false },
+      })) }, localOverlay: [], appliedResources: [previous],
+    }));
+    await Effect.runPromise(Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower });
+      yield* repository.publishRevision({ revision: base.revision });
+      yield* repository.startRun({ id: decode(RunId)("run-recovery"), follower: follower.id, revision: revision.id,
+        plan, startedAt: "2026-08-15T00:01:00Z" });
+    }).pipe(Effect.provide(stateRepositoryLayer(value.database))));
+    const removal = plan.actions.find((action) => action.resource === oldId)!;
+    const successor = plan.actions.find((action) => action.resource !== oldId)!;
+    const oldReference = rollbackReference(value, removal.id, "previous content");
+    const newReference = writeRollbackPayload(value, successor.id, { path: value.target, state: "absent" });
+    mkdirSync(dirname(value.target), { recursive: true });
+    writeFileSync(value.target, state.includes("local edit") ? "later local edit" : state.startsWith("rollback") ? "previous content" : "canonical content");
+    await journal(value, removal.id, "running", oldReference);
+    await journal(value, removal.id, "succeeded", oldReference, { removedResource: oldId, removedResourceRecord: previous });
+    await journal(value, successor.id, "running", newReference);
+    if (state === "succeeded" || state.startsWith("rollback")) await journal(value, successor.id, "succeeded", newReference);
+    if (state.startsWith("rollback")) await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.journalAction({
+      run: decode(RunId)("run-recovery"), action: successor.id, state: "failed", attempt: 1,
+      recordedAt: "2026-08-15T00:02:30Z", rollbackReference: newReference,
+      verification: { status: "not-run", method: "run-rolled-back" },
+    })).pipe(Effect.provide(stateRepositoryLayer(value.database))));
+    await interruptRun(value);
+    if (state.includes("local edit")) {
+      await expect(recover(value)).rejects.toMatchObject({ _tag: "RecoveryLocalEditError" });
+      expect(readFileSync(value.target, "utf8")).toBe("later local edit");
+    } else {
+      expect(await recover(value)).toMatchObject({ outcome: "Converged" });
+      expect(readFileSync(value.target, "utf8")).toBe("canonical content");
+    }
+  });
+});
 
 describe("synchronization crash recovery", () => {
   it.each([
@@ -1563,6 +1627,23 @@ describe("open run ownership and status", () => {
 
     release?.();
     await owner;
+    expect(existsSync(runLockPath(value.database))).toBe(false);
+  });
+
+  it("reclaims a scoped lease whose PID was recycled, but records this process birth identity", async () => {
+    const value = fixture(temporaryDirectory());
+    writeFileSync(runLockPath(value.database), JSON.stringify({
+      pid: process.pid, operation: "serve source", since: "2000-01-01T00:00:00Z",
+      token: "previous-process", processIdentity: "previous-boot-and-process-start",
+    }));
+    const holder = await Effect.runPromise(Effect.gen(function*() {
+      yield* acquireRunLockScoped(value.database, "serve source");
+      return Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({
+        pid: Schema.Number, processIdentity: Schema.NonEmptyString,
+      })))(readFileSync(runLockPath(value.database), "utf8"));
+    }).pipe(Effect.scoped));
+    expect(holder.pid).toBe(process.pid);
+    expect(holder.processIdentity).not.toBe("previous-boot-and-process-start");
     expect(existsSync(runLockPath(value.database))).toBe(false);
   });
 

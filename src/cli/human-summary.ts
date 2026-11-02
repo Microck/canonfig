@@ -518,9 +518,8 @@ const summarizeSetup = (data: PayloadRecord, outline: Outline): boolean => {
   for (const approval of approvals) {
     outline.lines.push(`approved by ${textOf(approval.approver) ?? "?"} at ${textOf(approval.approvedAt) ?? "?"}`);
   }
-  const statuses = new Map(
-    recordsOf(data.records).map((record) => [textOf(record.id), textOf(record.status)]),
-  );
+  const records = new Map(recordsOf(data.records).map((record) => [textOf(record.id), record]));
+  const statuses = new Map([...records].map(([id, record]) => [id, textOf(record.status)]));
   const items = recordsOf(data.items);
   outline.lines.push(`items (${items.length}):`);
   for (const item of items) {
@@ -529,6 +528,11 @@ const summarizeSetup = (data: PayloadRecord, outline: Outline): boolean => {
     outline.lines.push(
       `  ${column(status, 10)} ${id ?? "item"}${item.optional === true ? " (optional)" : ""}`,
     );
+    const record = records.get(id);
+    const evidence = textOf(item.evidence) ?? (textOf(record?.status) === status ? textOf(record?.evidence) : undefined);
+    if ((status === "failed" || status === "skipped") && evidence !== undefined) {
+      outline.lines.push(`    ${clip(evidence.replace(/\s+/gu, " ").trim(), outline)}`);
+    }
   }
   const exclusions = data.exclusions;
   if (isList(exclusions)) outlineValue(outline, "", "exclusions: ", exclusions, 1);

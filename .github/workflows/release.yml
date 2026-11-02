@@ -30,6 +30,8 @@ jobs:
       (github.event_name == 'workflow_dispatch' ||
       startsWith(github.event.head_commit.message, 'chore(release): prepare v'))
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
     steps:
       - name: Check out main
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -128,22 +130,25 @@ jobs:
             --notes-file RELEASE_NOTES.md \
             --fail-on-no-commits
 
-      - name: Verify published package
+
+  verify:
+    name: Verify published package
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+
+      - name: Wait for registry visibility and verify a fresh install
         env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          for attempt in 1 2 3 4 5; do
-            published="$(npm view "@microck/canonfig@${RELEASE_VERSION}" version 2>/dev/null || true)"
-            if [ "${published}" = "${RELEASE_VERSION}" ]; then
-              break
-            fi
-            if [ "${attempt}" = 5 ]; then
-              echo "published package did not become visible" >&2
-              exit 1
-            fi
-            sleep 5
-          done
-          root="$(mktemp -d)"
-          npm install --prefix "${root}" --no-save "@microck/canonfig@${RELEASE_VERSION}"
-          actual="$("${root}/node_modules/.bin/canonfig" --version)"
-          test "${actual}" = "${RELEASE_VERSION}"
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: node tools/release/verify-published.mjs "$RELEASE_VERSION"

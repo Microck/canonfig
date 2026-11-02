@@ -152,6 +152,7 @@ export type CleanupInstruction =
 export interface ArtifactState {
   owner: ArtifactOwner;
   hash: string;
+  textHash?: string;
   existedBefore: boolean;
   mode?: number;
   cleanup: CleanupInstruction[];
@@ -162,6 +163,7 @@ export interface CanonfigState {
   generatedAt: string;
   canonfigVersion: string;
   artifacts: Record<string, ArtifactState>;
+  appliedTargets?: TargetId[];
 }
 
 export type PlanAction = "create" | "update" | "delete" | "unchanged" | "conflict";

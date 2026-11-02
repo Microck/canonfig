@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { decodeMachineProfileJsonc } from "../src/domain/profile.ts";
+import { assertProfileMetadataBudget } from "../src/profile/metadata-budget.ts";
 
 import {
   compileProfile,
   compileProfileJsonc,
+  profileContentDigests,
 } from "../src/profile/compiler.ts";
 
 const profile = `{
@@ -101,4 +104,40 @@ describe("public profile compiler", () => {
       "windows",
     ]);
   });
+});
+
+describe("transportable revision metadata", () => {
+  const directoryProfile = (count: number) => ({ version: 2, id: "metadata-fixture", name: "Metadata fixture", groups: [], resources: [{
+    id: "notes", kind: "directory", target: "~/notes", spec: { kind: "directory", files: Array.from({ length: count }, (_, index) => ({ path: `note-${index}.txt`, content: "fixture" })) },
+    verify: { method: "digest" },
+  }] });
+
+  it("refuses expanded directory metadata rather than compiling an unservable revision", () => {
+    expect(() => compileProfileJsonc(JSON.stringify(directoryProfile(12000))))
+      .toThrow(/metadata.*transport limit/i);
+  });
+
+  it("continues to compile ordinary directory resources", () => {
+    expect(compileProfileJsonc(JSON.stringify(directoryProfile(10))).resources).toHaveLength(1);
+  });
+});
+
+
+it("applies the metadata limit to digest inspection too", () => {
+  const input = decodeMachineProfileJsonc(JSON.stringify({ version: 2, id: "digest-metadata", name: "Digest metadata", resources: [{
+    id: "notes", kind: "directory", target: "~/notes", spec: { kind: "directory", files: Array.from({ length: 12000 }, (_, index) => ({ path: `note-${index}.txt`, content: "fixture" })) }, verify: { method: "digest" },
+  }] }));
+  expect(() => profileContentDigests(input)).toThrow(/metadata.*transport limit/i);
+});
+
+it("does not count separately transported file bytes as revision metadata", () => {
+  const compiled = compileProfileJsonc(JSON.stringify({ version: 2, id: "large-blob", name: "Large blob", resources: [{
+    id: "file", kind: "file", target: "~/large-file", spec: { kind: "file", content: "x".repeat(2 * 1024 * 1024) }, verify: { method: "digest" },
+  }] }));
+  expect(compiled.resources).toHaveLength(1);
+});
+
+it("accounts for long actual signing fields and UTF-8 bytes", () => {
+  expect(() => assertProfileMetadataBudget({ profileId: "fixture", resources: [], signingKeyId: "x".repeat(1024 * 1024) })).toThrow(/transport limit/);
+  expect(() => assertProfileMetadataBudget({ profileId: "fixture", resources: [], sourceSignature: "😀".repeat(300000) })).toThrow(/transport limit/);
 });

@@ -1,4 +1,10 @@
-import { Schema } from "effect";
+import { chmod, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { observeFollowerResource } from "../../src/synchronization/follower-orchestration.ts";
+import { selectToolRecipe } from "../../src/synchronization/resource-plans.ts";
+import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { ProfileRevisionId, ResourceId } from "../../src/domain/brand.ts";
@@ -146,4 +152,41 @@ describe("MCP qualification", () => {
       : changed.desired;
     expect(planResource({ ...changed, desired })[0]?.kind).toBe("install-tool");
   });
+});
+
+
+it.skipIf(process.platform === "win32").each([false, true])("observes the same qualified recipe as planning (reverse order: %s)", async (reverse) => {
+  const root = await mkdtemp(join(tmpdir(), "canonfig-recipe-observation-"));
+  try {
+    const npmEntry = join(root, "npm-entry"), uvEntry = join(root, "uv-entry");
+    await writeFile(npmEntry, "fixture", { mode: 0o755 }); await chmod(npmEntry, 0o755);
+    const npmRecipe = { ...recipe, entrypoint: npmEntry };
+    const uvRecipe = { ...recipe, method: "uv" as const, entrypoint: uvEntry };
+    const desired = { kind: "tool" as const, toolId: "example-mcp", loginRequired: false, qualification,
+      recipes: reverse ? [npmRecipe, uvRecipe] : [uvRecipe, npmRecipe] };
+    const selected = selectToolRecipe(desired, "linux");
+    expect(selected?.entrypoint).toBe(npmEntry);
+    const directories = ["home", "bin", "config", "data", "cache"];
+    for (const directory of directories) await mkdir(join(root, directory));
+    const machine = linuxMachineStateLayer({
+      environment: [
+        { name: "HOME", value: join(root, "home") }, { name: "PATH", value: join(root, "bin") },
+        { name: "XDG_CONFIG_HOME", value: join(root, "config") }, { name: "XDG_DATA_HOME", value: join(root, "data") },
+        { name: "XDG_CACHE_HOME", value: join(root, "cache") },
+      ], credentialPolicy: { kind: "local-file", path: join(root, "credentials") },
+    });
+    const base = context(undefined);
+    const observe = () => Effect.runPromise(observeFollowerResource({ resource: base.resource }, desired, qualification).pipe(Effect.provide(machine)));
+    const observed = await observe();
+    expect(observed.state).toBe("present");
+    const installed = installerRecipeProvenance({ ...npmRecipe, compatibility: qualification.compatibility, target: qualification.target });
+    const applied = { resource: base.resource.id, revision: Schema.decodeUnknownSync(ProfileRevisionId)("revision-1"),
+      digest: installed.fingerprint, appliedAt: "2026-09-12T00:00:00Z", kind: "tool" as const,
+      policy: "ensure" as const, target: base.resource.target, installerRecipe: installed };
+    expect(planResource({ ...base, desired, observed, applied })[0]?.kind).toBe("no-op");
+    await unlink(npmEntry); await writeFile(uvEntry, "fixture", { mode: 0o755 }); await chmod(uvEntry, 0o755);
+    const missing = await observe();
+    expect(missing.state).toBe("absent");
+    expect(planResource({ ...base, desired, observed: missing, applied })[0]?.kind).toBe("install-tool");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

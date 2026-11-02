@@ -1,3 +1,6 @@
+import { runtimeCredentialPolicy } from "./credential-policy.ts";
+import { runtimeStateLayer } from "./state-layer.ts";
+import { ProfileMetadataBudgetError } from "../profile/metadata-budget.ts";
 import {
   createPrivateKey,
   createPublicKey,
@@ -6,7 +9,6 @@ import {
 } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -48,7 +50,6 @@ import {
   type MachineProfile,
 } from "../domain/profile.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import type { CredentialPolicy } from "../machine/machine-state.types.ts";
 import { linuxMachineStateLayer } from "../machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../machine/windows.layer.ts";
@@ -79,11 +80,10 @@ import {
   syncScheduleFromDefault,
   unmanagedScheduleDetail,
 } from "../schedule/schedule-manager.types.ts";
-import { describeUnattendedRuns } from "./readiness.ts";
-import { scheduleManagerLayer } from "../schedule/schedule-manager.layer.ts";
+import { scheduleManagerLayer, validateSchedule } from "../schedule/schedule-manager.layer.ts";
+import { describeUnattendedRuns, currentScheduleFires } from "./readiness.ts";
 import { setupCommandsLayer } from "../setup/setup.layer.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
-import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
 import { SynchronizationLive } from "../synchronization/synchronization.layer.ts";
 import { Synchronization } from "../synchronization/synchronization.service.ts";
 import { runLockHolder } from "../synchronization/run-lock.ts";
@@ -342,10 +342,12 @@ const mapFailure = <Success, Failure extends TaggedRuntimeError, Requirements>(
  * The follower's own decision about the native synchronization job, written to
  * its configuration so it outlives a run.
  *
- * A no-op on a machine that is not enrolled: there is nowhere durable to record
- * it, and the schedule commands still act on the native job directly.
+ * A selected job requires a finalized follower configuration. Disabling an
+ * existing native job remains possible when no follower is configured.
  */
 export interface ScheduleFireRecord {
+  readonly generation?: string | undefined;
+  readonly startedAt?: string | undefined;
   readonly at: string;
   readonly outcome: string;
   /** For `failed`: the failure category, message, and run reason, bounded. */
@@ -392,6 +394,8 @@ const recordScheduleFire = (
   statePath: string,
   outcome: string,
   reason?: string,
+  generation?: string,
+  startedAt?: string,
 ): Effect.Effect<void, never> =>
   Effect.tryPromise({
     try: async () => {
@@ -401,6 +405,8 @@ const recordScheduleFire = (
         at: new Date().toISOString(),
         outcome,
         reason,
+        generation,
+        startedAt,
       }];
       await mkdir(dirname(path), { recursive: true });
       await writeFile(
@@ -415,7 +421,9 @@ const recordScheduleFire = (
 const unscheduledDetail = (
   configuration: FollowerSynchronizationConfiguration | undefined,
 ): string => {
-  if (configuration?.scheduleOverride?.kind === "disabled") {
+  if (configuration === undefined) return "no follower is enrolled; enroll and apply a profile before selecting a schedule";
+  if (configuration.enrollmentPending === true) return "follower enrollment is pending; finish or resume enrollment before selecting a schedule";
+  if (configuration.scheduleOverride?.kind === "disabled") {
     return "scheduled synchronization is off on this follower (`canonfig schedule remove`); run `canonfig schedule set` to turn it on";
   }
   return configuration?.scheduleDefault === undefined
@@ -429,10 +437,21 @@ const persistScheduleOverride = (
 ): Effect.Effect<void, CliCommandFailure> =>
   mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
     Effect.flatMap((configuration) => {
-      if (configuration === undefined) return Effect.void;
+      const unavailable = () => scheduleOverride?.kind === "disabled" ? Effect.void
+        : Effect.fail(new CliCommandFailure({
+          category: "usage-or-configuration",
+          message: "canonfig schedule set needs an enrolled follower; enroll, then apply the selected profile first",
+        }));
+      if (configuration === undefined) return unavailable();
+      if (configuration.enrollmentPending === true && scheduleOverride?.kind !== "disabled") {
+        return Effect.fail(new CliCommandFailure({
+          category: "usage-or-configuration",
+          message: "follower enrollment is pending; finish or resume enrollment before selecting a schedule",
+        }));
+      }
       return mapFailure(repository.loadState(configuration.follower.id)).pipe(
         Effect.flatMap((state) =>
-          state.sourceIdentity === undefined ? Effect.void : mapFailure(
+          state.sourceIdentity === undefined ? unavailable() : mapFailure(
             repository.saveFollowerSynchronizationConfiguration({
               sourceIdentity: state.sourceIdentity,
               configuration: {
@@ -453,16 +472,15 @@ const persistScheduleOverride = (
  * post-apply reconciler share it, so none of them compares the installed job
  * against a built-in constant or against a different notion of drift.
  */
+const finalizedScheduleInput = (configuration: FollowerSynchronizationConfiguration | undefined): ResolvedScheduleInput | undefined =>
+  configuration?.enrollmentPending === true ? undefined
+    : desiredScheduleInput(configuration?.scheduleOverride, configuration?.scheduleDefault);
+
 const effectiveScheduleInput = (
   repository: StateRepository["Service"],
 ): Effect.Effect<ResolvedScheduleInput | undefined, CliCommandFailure> =>
   mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-    Effect.map((configuration) =>
-      desiredScheduleInput(
-        configuration?.scheduleOverride,
-        configuration?.scheduleDefault,
-      )
-    ),
+    Effect.map(finalizedScheduleInput),
   );
 
 /** How the Source can run unattended; appended where its keys are unreachable. */
@@ -582,6 +600,8 @@ const sourceCommandsLayer: Layer.Layer<
             catch: (cause) =>
               cause instanceof ProfileContractError
                 ? invalidResourcesFailure(cause.errors)
+                : cause instanceof ProfileMetadataBudgetError
+                ? new CliCommandFailure({ category: "usage-or-configuration", message: cause.message })
                 : new CliCommandFailure({
                   category: "internal",
                   message: `resource digests could not be computed: ${String(cause)}`,
@@ -1040,10 +1060,7 @@ const followerCommandsLayer = (
             .filter((method) => method.startsWith("client-load:")) ?? []),
           ...qualifiedClientMethods,
         ];
-        const scheduleInput = desiredScheduleInput(
-          configuration.scheduleOverride,
-          configuration.scheduleDefault,
-        );
+        const scheduleInput = finalizedScheduleInput(configuration);
         const scheduled = scheduleInput === undefined
           ? { status: "not-selected" as const, detail: unscheduledDetail(configuration) }
           : yield* schedules.status(scheduleInput).pipe(
@@ -1053,8 +1070,8 @@ const followerCommandsLayer = (
                 detail: error.message,
               }),
               onSuccess: (status) => {
-                const runs = describeUnattendedRuns(readScheduleFires(statePath));
-                const verified = status.state === "current" && runs.completed;
+                const runs = describeUnattendedRuns(currentScheduleFires(status, readScheduleFires(statePath)));
+                const verified = status.state === "current" && status.bindingUsable === true && runs.completed;
                 return {
                   status: verified ? "verified" as const : "pending" as const,
                   detail: status.state === "current"
@@ -1460,8 +1477,11 @@ const followerCommandsLayer = (
         // Only the rendered native job passes --scheduled, so the fire
         // record is evidence the real scheduler started this process.
         const scheduled = input.scheduled === true;
-        const record = (outcome: string, reason?: string) =>
-          scheduled ? recordScheduleFire(statePath, outcome, reason) : Effect.void;
+        const startedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
+        const installedGeneration = scheduled ? schedules.status().pipe(
+          Effect.map((status) => status.generation),
+          Effect.catch(() => Effect.succeed(undefined)),
+        ) : Effect.succeed(undefined);
         const run: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(synchronizeFollower(
           statePath,
           input.mode,
@@ -1475,32 +1495,36 @@ const followerCommandsLayer = (
           Effect.provideService(AgentResolution, agentResolution),
           Effect.provideService(ScheduleManager, schedules),
         )).pipe(Effect.flatMap(outcomePayload));
-        return record("started").pipe(
-          // A scheduled run restarts a down managed tunnel once, and a
-          // transport failure while the tunnel is down reports the tunnel.
-          Effect.andThen(repository.getFollowerSynchronizationConfiguration().pipe(
-            Effect.catch(() => Effect.succeed(undefined)),
-            Effect.flatMap((configuration) =>
-              withManagedTunnel(
-                {
-                  stateDirectory: join(dirname(statePath), "tunnel"),
-                  sourceEndpoint: configuration?.source.endpoint,
-                  restart: scheduled,
-                },
-                (failure: CliCommandFailure) => failure.category === "transport",
-                run,
-              )
+        return installedGeneration.pipe(Effect.flatMap((generation) => {
+          const record = (outcome: string, reason?: string) => scheduled
+            ? recordScheduleFire(statePath, outcome, reason, generation, startedAt) : Effect.void;
+          return record("started").pipe(
+            // A scheduled run restarts a down managed tunnel once, and a
+            // transport failure while the tunnel is down reports the tunnel.
+            Effect.andThen(repository.getFollowerSynchronizationConfiguration().pipe(
+              Effect.catch(() => Effect.succeed(undefined)),
+              Effect.flatMap((configuration) =>
+                withManagedTunnel(
+                  {
+                    stateDirectory: join(dirname(statePath), "tunnel"),
+                    sourceEndpoint: configuration?.source.endpoint,
+                    restart: scheduled,
+                  },
+                  (failure: CliCommandFailure) => failure.category === "transport",
+                  run,
+                )
+              ),
+              Effect.provideService(Tunnel, tunnel),
+              Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
+            )),
+            Effect.flatMap((result) =>
+              record("completed").pipe(Effect.as(result))
             ),
-            Effect.provideService(Tunnel, tunnel),
-            Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
-          )),
-          Effect.flatMap((result) =>
-            record("completed").pipe(Effect.as(result))
-          ),
-          Effect.catch((error) =>
-            record("failed", fireFailureReason(error)).pipe(Effect.flatMap(() => Effect.fail(error)))
-          ),
-        );
+            Effect.catch((error) =>
+              record("failed", fireFailureReason(error)).pipe(Effect.flatMap(() => Effect.fail(error)))
+            ),
+          );
+        }));
       },
       abandon: () =>
         mapFailure(abandonFollowerRun(statePath).pipe(
@@ -1814,43 +1838,49 @@ const followerCommandsLayer = (
         "profileDefault" in input
           ? mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
             Effect.flatMap((configuration) =>
-              configuration?.scheduleDefault === undefined
+              configuration?.enrollmentPending === true
+                ? Effect.fail(new CliCommandFailure({ category: "usage-or-configuration",
+                  message: "follower enrollment is pending; finish or resume enrollment before selecting a schedule" }))
+                : configuration?.scheduleDefault === undefined
                 ? Effect.fail(new CliCommandFailure({
                   category: "usage-or-configuration",
                   message: configuration === undefined
                     ? "canonfig schedule set --default needs an enrolled follower; enroll, then apply the selected profile first"
                     : "the selected profile declares no scheduleDefault (or no revision has been applied yet); run `canonfig sync --apply`, or choose a calendar with `canonfig schedule set <calendar>`",
                 }))
-                : persistScheduleOverride(repository, { kind: "inherit" }).pipe(
-                  Effect.andThen(mapFailure(schedules.update({
-                    schedule: syncScheduleFromDefault(configuration.scheduleDefault),
-                  }))),
-                  Effect.map(payload),
+                : mapFailure(validateSchedule(syncScheduleFromDefault(configuration.scheduleDefault))).pipe(
+                  Effect.flatMap((schedule) => persistScheduleOverride(repository, { kind: "inherit" }).pipe(
+                    Effect.andThen(mapFailure(schedules.update({ schedule }))),
+                    Effect.map(payload),
+                  )),
                 )
             ),
           )
-          : persistScheduleOverride(repository, {
-            kind: "schedule",
-            schedule: input.schedule,
-            executable: input.executable,
-          }).pipe(
-            Effect.andThen(mapFailure(schedules.update(input))),
-            Effect.map(payload),
+          : mapFailure(validateSchedule(input.schedule)).pipe(
+            Effect.flatMap((schedule) => persistScheduleOverride(repository, {
+              kind: "schedule", schedule, executable: input.executable,
+            }).pipe(
+              Effect.andThen(mapFailure(schedules.update({ ...input, schedule }))),
+              Effect.map(payload),
+            )),
           ),
       scheduleStatus: () =>
         mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
           Effect.flatMap((configuration) => {
-            const input = desiredScheduleInput(
-              configuration?.scheduleOverride,
-              configuration?.scheduleDefault,
-            );
+            if (configuration?.enrollmentPending === true) return Effect.succeed(payload({
+              state: "enrollment-pending",
+              detail: `${unscheduledDetail(configuration)}. A native job may remain installed; remove it with \`canonfig schedule remove\` if it is no longer wanted`,
+            }));
+            const input = finalizedScheduleInput(configuration);
             if (input === undefined) {
               // No decision; a job an earlier release installed may still run.
               return mapFailure(schedules.status()).pipe(
                 Effect.map((native) =>
                   payload(native.state === "not-installed"
                     ? { state: "not-selected", detail: unscheduledDetail(configuration) }
-                    : { state: "unmanaged", detail: unmanagedScheduleDetail, nativeState: native.state })
+                    : { state: "unmanaged", detail: configuration === undefined || configuration.enrollmentPending === true
+                      ? `${unscheduledDetail(configuration)}. A native job remains installed; remove it with \`canonfig schedule remove\` if it is no longer wanted`
+                      : unmanagedScheduleDetail, nativeState: native.state })
                 ),
               );
             }
@@ -1859,8 +1889,8 @@ const followerCommandsLayer = (
               Effect.map((status) =>
                 payload({
                   ...status,
-                  lastFire: fires.at(-1),
-                  unattendedRuns: describeUnattendedRuns(fires).text,
+                  lastFire: currentScheduleFires(status, fires).at(-1),
+                  unattendedRuns: describeUnattendedRuns(currentScheduleFires(status, fires)).text,
                 })
               ),
             );
@@ -1959,9 +1989,7 @@ const followerCommandsLayer = (
               agentPolicy: configuration?.agentPolicy,
               schedule,
               fires: readScheduleFires(statePath),
-              unscheduledDetail: configuration === undefined
-                ? undefined
-                : unscheduledDetail(configuration),
+              unscheduledDetail: unscheduledDetail(configuration),
               source,
               tunnel: tunnelReport !== undefined
                   && tunnelCarriesSource(tunnelReport, source?.endpoint)
@@ -1995,67 +2023,9 @@ const followerCommandsLayer = (
   }),
 );
 
-const credentialPolicyFromEnvironment = (): CredentialPolicy | undefined => {
-  const root = process.env.CANONFIG_LOCAL_CREDENTIAL_ROOT;
-  return root === undefined
-    ? undefined
-    : { kind: "local-file", path: root };
-};
-
-/**
- * The credential policy this follower enrolled under, read from its own state.
- *
- * The policy used to be selected only by `CANONFIG_LOCAL_CREDENTIAL_ROOT` in
- * the environment, and a native scheduled job carries no environment, so a
- * follower enrolled under the local-file policy had no credential during a
- * scheduled run and every fire failed. The enrolled configuration is the
- * authority; the environment variable is enrollment input, not a runtime one.
- *
- * Read directly rather than through StateRepository because the machine layer
- * is built before that service exists, and this is one row of one table.
- */
-const enrolledCredentialPolicy = (
-  statePath: string,
-): CredentialPolicy | undefined => {
-  try {
-    const database = new DatabaseSync(statePath, { readOnly: true });
-    try {
-      const row = database
-        .prepare(
-          "SELECT configuration_json FROM follower_sync_configuration WHERE singleton = 1",
-        )
-        .get();
-      const parsedRow = Schema.decodeUnknownOption(
-        Schema.Struct({ configuration_json: Schema.String }),
-      )(row);
-      if (Option.isNone(parsedRow)) return undefined;
-      const decoded = Schema.decodeUnknownOption(
-        Schema.Struct({
-          credentialPolicy: Schema.optional(Schema.Union([
-            Schema.Struct({ kind: Schema.Literal("secure-store") }),
-            Schema.Struct({
-              kind: Schema.Literal("local-file"),
-              path: Schema.NonEmptyString,
-            }),
-          ])),
-        }),
-      )(JSON.parse(parsedRow.value.configuration_json));
-      return Option.isNone(decoded) ? undefined : decoded.value.credentialPolicy;
-    } finally {
-      database.close();
-    }
-  } catch {
-    // No state yet, an unreadable database, or a schema older than the field.
-    // Enrollment is what records the policy, so an unenrolled machine falls
-    // back to the environment below.
-    return undefined;
-  }
-};
-
 const machineLayer = (statePath: string): Layer.Layer<MachineState> => {
   // The enrolled policy wins: it is what a scheduled run has to rely on.
-  const credentialPolicy = enrolledCredentialPolicy(statePath)
-    ?? credentialPolicyFromEnvironment();
+  const credentialPolicy = runtimeCredentialPolicy(statePath);
   const base = (() => {
     switch (process.platform) {
       case "darwin":
@@ -2087,11 +2057,7 @@ export const runtimeLayer = (
 ) => {
   const root = join(homedir(), ".canonfig");
   const statePath = options.statePath ?? join(root, "state.sqlite");
-  const state = Layer.unwrap(
-    Effect.promise(() => mkdir(dirname(statePath), { recursive: true, mode: 0o700 })).pipe(
-      Effect.as(stateRepositoryLayer(statePath)),
-    ),
-  );
+  const state = runtimeStateLayer(statePath);
   const machine = machineLayer(statePath);
   const enrollment = EnrollmentLive.pipe(Layer.provide(Layer.merge(state, machine)));
   const profiles = runtimeProfileCatalogLayer.pipe(

@@ -205,6 +205,23 @@ const plannerInput = (
 const runPlan = (input: SynchronizationPlannerInput) =>
   Effect.runSync(planSynchronization(input));
 
+describe("absent retired target handover", () => {
+  it.each(["directory", "skill"] as const)("does not block an absent retired %s", (kind) => {
+    const policy = kind === "skill" ? "replace-if-unmodified" : "mirror-owned";
+    const old = resource("old", kind, policy);
+    const next = { ...resource("next", "file", "replace"), target: old.target };
+    const input = plannerInput([old, next], { applied: [{
+      resource: old.id, revision: "previous", digest: digestA,
+      appliedAt: "2026-08-15T00:00:00Z", kind, policy, target: old.target,
+    }] });
+    const plan = runPlan({ ...input, revision: { ...input.revision, removedResources: [old.id] } });
+    expect(plan.actions.some((action) => action.kind === "human-action")).toBe(false);
+    expect(plan.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resource: next.id, kind: "write-file" }),
+    ]));
+  });
+});
+
 describe("resource and Apply Policy coverage", () => {
   const cases: ReadonlyArray<{
     readonly kind: ResourceKind;
@@ -323,6 +340,20 @@ describe("resource and Apply Policy coverage", () => {
     expect(plan.actions.map((action) => action.kind)).toEqual(["no-op"]);
   });
 
+  it.each(["symlink", "directory"] as const)("blocks merging into a %s without blocking unrelated files", (objectKind) => {
+    const plan = runPlan(plannerInput([
+      resource("before", "file", "replace"),
+      resource("settings", "config", "merge"),
+      resource("after", "file", "replace"),
+    ], { observed: [
+      { state: "absent" },
+      { state: "present", digest: digestB, executable: false, objectKind },
+      { state: "absent" },
+    ] }));
+    expect(plan.actions.filter((action) => action.resource === "settings").map((action) => action.kind)).toEqual(["human-action"]);
+    expect(plan.actions.filter((action) => action.kind === "write-file")).toHaveLength(2);
+  });
+
   it("preserves an unverifiable directory observation as drift", () => {
     const subject = resource("mixed-error", "directory", "mirror-owned");
     const plan = runPlan(plannerInput([subject], {
@@ -334,6 +365,25 @@ describe("resource and Apply Policy coverage", () => {
 
     expect(plan.actions.map((action) => action.kind)).toEqual(["drift-conflict"]);
   });
+
+  it.each(["replace", "mirror-owned", "replace-if-unmodified"] as const)(
+    "blocks non-directory ancestors and declared directories under %s", (policy) => {
+      const kind = policy === "replace-if-unmodified" ? "skill" : "directory";
+      const plan = runPlan(plannerInput([resource("tree", kind, policy)], {
+        desired: [{ kind, mode: 0o700,
+          directories: [{ path: "d", mode: 0o700 }],
+          files: [{ path: "d/f", digest: digestA }, { path: "e/g", digest: digestA }] }],
+        observed: [{ state: "directory", files: [
+          { path: "d", digest: digestB, objectKind: "symlink", symlinkTo: "../outside-d" },
+          { path: "e", digest: digestB, objectKind: "regular" },
+        ] }],
+      }));
+      expect(plan.actions.map((action) => action.kind)).toEqual(["human-action"]);
+      expect(plan.actions[0]?.detail).toMatchObject({
+        reason: expect.stringContaining("d, e"),
+      });
+    },
+  );
 
   it("plans a non-directory root as drift instead of applying a mirror", () => {
     const desired: DesiredResource = {
@@ -1199,6 +1249,17 @@ describe("transfer and apply separation", () => {
     });
     const error = Effect.runSync(Effect.flip(planSynchronization(base)));
     expect(error._tag).toBe(expectedTag);
+  });
+
+  it("rejects authored traversal even when a resolved observation hides it", () => {
+    const subject = { ...resource("file", "file", "replace", [], [blobA]), target: "~/../escape" };
+    const base = plannerInput([subject]);
+    const input = { ...base, observedState: { ...base.observedState,
+      resources: base.observedState.resources.map((entry) => ({ ...entry, resolvedTarget: "/home/escape" })),
+    } };
+    const result = Effect.runSync(Effect.result(planSynchronization(input)));
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(result.failure._tag).toBe("PlannerInvalidResourcePathError");
   });
 
   it("uses the follower platform case rules before planning a mirror", () => {

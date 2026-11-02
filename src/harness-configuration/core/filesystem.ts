@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { assertRealPathInside } from "./path.ts";
 import { CanonfigError } from "./errors.ts";
 
 let temporarySequence = 0;
@@ -88,21 +89,27 @@ export async function readOptionalFile(filePath: string): Promise<Uint8Array | u
   }
 }
 
-export async function walkFiles(root: string): Promise<string[]> {
+export async function walkFiles(root: string, boundary = root): Promise<string[]> {
+  if (await lstatOptional(root) === undefined) return [];
   const result: string[] = [];
-  async function visit(directory: string): Promise<void> {
+  async function visit(directory: string, ancestors: ReadonlySet<string>): Promise<void> {
+    await assertRealPathInside(boundary, directory);
+    const real = await fs.realpath(directory);
+    if (ancestors.has(real)) throw new CanonfigError("SKILL_SYMLINK_CYCLE", `Skill source contains a directory symlink cycle: ${directory}`);
+    const chain = new Set([...ancestors, real]);
     const entries = await fs.readdir(directory, { withFileTypes: true });
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const absolute = path.join(directory, entry.name);
-      if (entry.isDirectory()) await visit(absolute);
-      else if (entry.isFile()) result.push(path.relative(root, absolute));
+      await assertRealPathInside(boundary, absolute);
+      const kind = entry.isSymbolicLink() ? await fs.stat(absolute).catch(() => {
+        throw new CanonfigError("SKILL_SOURCE_INVALID", `Skill source link cannot be read: ${absolute}`);
+      }) : entry;
+      if (kind.isDirectory()) await visit(absolute, chain);
+      else if (kind.isFile()) result.push(path.relative(root, absolute));
+      else throw new CanonfigError("SKILL_SOURCE_INVALID", `Skill source is not a regular file or directory: ${absolute}`);
     }
   }
-  try {
-    await visit(root);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  await visit(root, new Set());
   return result;
 }
 
@@ -117,11 +124,16 @@ export async function atomicWrite(
   let temporary: string | undefined;
   try {
     if (root !== undefined) await assertNoSymlinkPathComponents(root, path.dirname(filePath));
-    const opened = await openExclusiveTemporary(filePath, mode);
+    // A merge does not declare a new mode. Preserve the existing regular
+    // file's permissions rather than replacing them with process defaults.
+    // lstat intentionally does not take permissions from a symlink target.
+    const existing = mode === undefined ? await lstatOptional(filePath) : undefined;
+    const writeMode = mode ?? (existing?.isFile() ? Number(existing.mode) & 0o777 : undefined);
+    const opened = await openExclusiveTemporary(filePath, writeMode);
     temporary = opened.temporary;
     try {
       await opened.handle.writeFile(content);
-      if (mode !== undefined) await opened.handle.chmod(mode);
+      if (writeMode !== undefined) await opened.handle.chmod(writeMode);
     } finally {
       await opened.handle.close();
     }

@@ -69,6 +69,7 @@ import {
 } from "./follower-sync-config.ts";
 import { planSynchronization } from "./planner.ts";
 import {
+  cleanupRollbackSnapshots,
   defaultSynchronizationExecutionLimits,
   preflightPathLengths,
   removeRunTemporaryEntries,
@@ -76,7 +77,7 @@ import {
 import { withRunLock } from "./run-lock.ts";
 import { installerRefusals, toolInstallMethods } from "./installer-bindings.ts";
 import { installedToolVersion } from "./installed-tool-version.ts";
-import { selectToolRecipe } from "./resource-plans.ts";
+import { relativePathAncestors, selectToolRecipe } from "./resource-plans.ts";
 import { clientReviewSteps, plannedFileChanges } from "./client-review.ts";
 import type {
   AvailableBlob,
@@ -577,7 +578,7 @@ const observeConfig = (
     ),
   );
 
-const observe = (
+export const observeFollowerResource = (
   decoded: {
     // `policy` is read so a `replace` directory can be listed in full; the
     // other policies observe only owned and desired paths.
@@ -641,7 +642,13 @@ const observe = (
             ),
           )
           : [];
+        const ancestors = [...relativePathAncestors([
+          ...desired.files.map((entry) => entry.path),
+          ...desired.directories.map((entry) => entry.path),
+          ...(applied?.ownedFiles ?? []).map((entry) => entry.path),
+        ])].sort((left, right) => left.split("/").length - right.split("/").length);
         const candidates = [...new Map([
+          ...ancestors.map((path) => ({ path })),
           ...foreign,
           ...(applied?.ownedFiles ?? []).map((file) => ({
             ...file,
@@ -656,8 +663,12 @@ const observe = (
             objectKind: "directory" as const,
           })),
         ].map((file) => [file.path, file])).values()];
+        const blockedAncestors = new Set<string>();
         const files = yield* Effect.forEach(candidates, (file) =>
           Effect.gen(function*() {
+            if ([...relativePathAncestors([file.path])].some((ancestor) => blockedAncestors.has(ancestor))) {
+              return { path: file.path, state: "absent" } as const;
+            }
             const path = yield* machine.normalizePath({ path: file.path, base: root });
             const kind = yield* machine.inspectPath(path).pipe(
               Effect.catchTag("MachineFilesystemError", (error) =>
@@ -667,8 +678,10 @@ const observe = (
               ),
             );
             if (kind === undefined) {
+              blockedAncestors.add(file.path);
               return { path: file.path, state: "absent" } as const;
             }
+            if (kind.kind !== "directory") blockedAncestors.add(file.path);
             if (kind.kind === "directory") {
               const permissions = yield* machine.permissions(path);
               return {
@@ -734,9 +747,7 @@ const observe = (
         const platform = (yield* machine.userDirectories()).home.platform;
         const qualifiedEntrypoint = desired.qualification === undefined
           ? undefined
-          : desired.recipes.find((recipe) =>
-            recipe.platform === platform && recipe.architecture === process.arch
-          )?.entrypoint;
+          : selectToolRecipe(desired, platform)?.entrypoint;
         const executable = qualifiedEntrypoint
           ?? (verification.method === "executable-present"
             ? verification.executable
@@ -918,6 +929,7 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
     {
       readonly revision: PlanningProfileRevision;
       readonly observations: ReadonlyArray<{
+        readonly resolvedTarget?: string | undefined;
         readonly resource: typeof ResourceId.Type;
         readonly observed: ObservedResourceState;
       }>;
@@ -927,6 +939,13 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
     MachineState
   > {
     const decoded = yield* decodeSpecs(fetched);
+    const machine = yield* MachineState;
+    const resolveTarget = (resource: ProfileRevision["resources"][number]) =>
+      resource.kind === "tool" || resource.kind === "credential" ? Effect.succeed(undefined)
+        : machine.normalizePath({ path: resource.target }).pipe(
+          Effect.map((path) => path.absolute),
+          Effect.mapError(() => configurationError("invalid-profile", `Cannot resolve target for ${resource.id}`)),
+        );
     const desired: Array<DesiredResourceEntry> = [];
     const observations = [];
     const artifacts: Array<SynchronizationArtifact> = [];
@@ -945,8 +964,9 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
         verification: entry.resource.verify,
       });
       observations.push({
+        resolvedTarget: yield* resolveTarget(entry.resource),
         resource: entry.resource.id,
-        observed: yield* observe(
+        observed: yield* observeFollowerResource(
           entry,
           hydration.desired,
           entry.resource.verify,
@@ -983,8 +1003,9 @@ const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
         verification: removedVerification,
       });
       observations.push({
+        resolvedTarget: yield* resolveTarget(removed.resource),
         resource: removed.resource.id,
-        observed: yield* observe(
+        observed: yield* observeFollowerResource(
           { resource: removed.resource },
           removed.desired,
           removedVerification,
@@ -1705,6 +1726,14 @@ export const abandonFollowerRun = Effect.fn(
   // run does not see them as foreign content. A failure here leaves the run
   // open with its evidence.
   yield* removeRunTemporaryEntries(recovery.run.plan.actions, recovery.run.id);
+  // Abandon explicitly discards recovery, including credential-bearing
+  // preimages. Keep the run open if cleanup fails so abandon can be retried.
+  yield* cleanupRollbackSnapshots(
+    recovery.run.id,
+    recovery.run.plan.actions.map((action) => action.id),
+    [],
+    recovery.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]),
+  );
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
   );

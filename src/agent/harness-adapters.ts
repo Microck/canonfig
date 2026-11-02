@@ -57,7 +57,9 @@ const harnessArguments = (
   const model = configuration.model === undefined ? [] : ["--model", configuration.model];
   switch (configuration.harness) {
     case "codex":
-      return [...model, "exec", "--json", "--sandbox", "read-only", "-"];
+      // Synchronization tasks target machine paths, not a Git working tree.
+      // Keep Codex read-only; Canonfig separately authorizes proposed actions.
+      return [...model, "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-"];
     case "claude":
       return [...model, "--print", "--permission-mode", "plan", "--output-format", "json"];
     case "custom":

@@ -213,6 +213,10 @@ export const failureTaxonomy = {
     (error) =>
       `stored ${text(error.entity)} ${text(error.id)} could not be decoded`,
   ),
+  StateInitializationError: declared(
+    "human-action-required",
+    (error) => declaredMessage(error) ?? "the local state storage is unavailable; preserve it and check permissions or restore a known-good backup",
+  ),
   RepositorySqlError: declared(
     "internal",
     (error) => `the local database failed during ${text(error.operation)}`,
@@ -643,7 +647,7 @@ export const failureTaxonomy = {
   ),
   DuplicateFollowerIdentityError: declared(
     "conflict-or-drift",
-    () => "this machine is already enrolled",
+    () => "the follower identity is already enrolled",
   ),
   EnrollmentStateConflictError: declared(
     "conflict-or-drift",

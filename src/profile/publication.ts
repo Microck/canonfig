@@ -1,3 +1,4 @@
+import { assertProfileMetadataBudget } from "./metadata-budget.ts";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, readlink, realpath } from "node:fs/promises";
@@ -600,6 +601,20 @@ export const makePublication = (
       });
       const canonicalBytes = encoded.canonicalBytes;
       const digest = encoded.digest;
+      const transportResources = encoded.resources.map((resource, index) => ({
+        ...resource, verify: encoded.profile.resources[index]!.verify,
+      }));
+      const validateMetadata = (revision: ProfileRevision) => Effect.try({
+        try: () => assertProfileMetadataBudget({
+          id: revision.id, profileId: revision.profileId, sequence: revision.sequence,
+          publishedAt: revision.publishedAt, resources: transportResources,
+          scheduleDefault: revision.scheduleDefault, signingKeyId: signer.keyId,
+          sourceSignature: revision.signature,
+        }),
+        catch: (cause) => new InvalidPublicationInputError({
+          reason: cause instanceof Error ? cause.message : "revision metadata exceeds its transport budget",
+        }),
+      });
 
       // Publishing the content that is already latest is idempotent. Storing
       // its blobs again repairs a Source that lost blob rows.
@@ -611,6 +626,7 @@ export const makePublication = (
             message: "the latest revision digest names different content",
           });
         }
+        yield* validateMetadata(latest);
         yield* repository.publishRevision({
           revision: latest,
           blobs: encoded.blobs,
@@ -677,6 +693,7 @@ export const makePublication = (
         groups: unsigned.groups,
         scheduleDefault: unsigned.scheduleDefault,
       };
+      yield* validateMetadata(revision);
       yield* repository.publishRevision({
         revision,
         blobs: encoded.blobs,

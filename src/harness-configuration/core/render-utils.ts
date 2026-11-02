@@ -1,3 +1,4 @@
+import { applyEdits, modify, parseTree, type Node } from "jsonc-parser";
 import type { JsonPath, ManagedTextArtifact } from "./types.ts";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -93,12 +94,29 @@ function removeTrailingCommas(text: string): string {
   return output;
 }
 
+const duplicateProperties = (node: Node | undefined): boolean => {
+  if (node === undefined) return false;
+  if (node.type === "object") {
+    const names = new Set<string>();
+    for (const property of node.children ?? []) {
+      const name = String(property.children?.[0]?.value);
+      if (names.has(name)) return true;
+      names.add(name);
+    }
+  }
+  return node.children?.some(duplicateProperties) ?? false;
+};
+
 export function parseJsonDocument(
   text: string,
   conflicts: string[],
 ): Record<string, unknown> {
   try {
     const parsed = JSON.parse(removeTrailingCommas(stripJsonComments(text))) as unknown;
+    if (duplicateProperties(parseTree(text, [], { allowTrailingComma: true }))) {
+      conflicts.push("Duplicate JSON/JSONC properties are ambiguous; resolve them before applying or cleaning.");
+      return {};
+    }
     if (!isRecord(parsed)) {
       conflicts.push("JSON/JSONC root must be an object.");
       return {};
@@ -112,8 +130,30 @@ export function parseJsonDocument(
   }
 }
 
-export function serializeJsonDocument(document: Record<string, unknown>): string {
-  return `${JSON.stringify(document, undefined, 2)}\n`;
+export function serializeJsonDocument(document: Record<string, unknown>, previousText?: string): string {
+  if (previousText === undefined || previousText.trim() === "") return `${JSON.stringify(document, undefined, 2)}\n`;
+  const errors: string[] = [];
+  const previous = parseJsonDocument(previousText, errors);
+  if (errors.length > 0) return previousText;
+  let text = previousText;
+  const set = (path: (string | number)[], value: unknown) => {
+    // Formatting options reformat whole affected lines, including unrelated
+    // compact properties. Preserve operator formatting; fresh documents above
+    // already use two-space indentation.
+    text = applyEdits(text, modify(text, path, value, {}));
+  };
+  const update = (before: unknown, after: unknown, path: (string | number)[]): void => {
+    if (deepEqual(before, after)) return;
+    if (isRecord(before) && isRecord(after)) {
+      for (const key of Object.keys(before)) if (!Object.hasOwn(after, key)) set([...path, key], undefined);
+      for (const [key, value] of Object.entries(after)) update(before[key], value, [...path, key]);
+    } else if (Array.isArray(before) && Array.isArray(after)) {
+      for (let index = before.length - 1; index >= after.length; index--) set([...path, index], undefined);
+      for (let index = 0; index < after.length; index++) update(before[index], after[index], [...path, index]);
+    } else set(path, after);
+  };
+  update(previous, document, []);
+  return text;
 }
 
 export function getAtPath(root: unknown, path: JsonPath): unknown {

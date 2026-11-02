@@ -1,3 +1,5 @@
+import { evaluateCli } from "../src/cli/cli.ts";
+import { scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +13,7 @@ import type { SchedulerBackend, SchedulerInspection } from "../src/machine/machi
 import { windowsMachineStateLayer } from "../src/machine/windows.layer.ts";
 import { scheduleManagerContract } from "./contract/schedule-manager.contract.ts";
 import { ScheduleHumanActionRequiredError } from "../src/schedule/schedule-manager.errors.ts";
-import { scheduleManagerLayer } from "../src/schedule/schedule-manager.layer.ts";
+import { scheduleManagerLayer, validateSchedule } from "../src/schedule/schedule-manager.layer.ts";
 import { ScheduleManager } from "../src/schedule/schedule-manager.service.ts";
 import {
   desiredScheduleInput,
@@ -159,6 +161,27 @@ describe("schedule calendar semantics", () => {
       .toBe("2026-09-02T05:30:00.000Z");
   });
 
+  it.each([
+    ["Europe/Berlin", "02:30", "2026-10-24T12:00:00Z", "2026-10-25T00:30:00.000Z"],
+    ["Australia/Lord_Howe", "01:45", "2027-04-03T00:00:00Z", "2027-04-03T14:45:00.000Z"],
+    ["America/New_York", "01:30", "2026-10-31T12:00:00Z", "2026-11-01T05:30:00.000Z"],
+  ])("selects the first repeated wall-clock occurrence in %s", (timezone, localTime, before, first) => {
+    const schedule = { kind: "daily" as const, localTime, timezone };
+    expect(nextScheduledRun(schedule, Date.parse(before!))).toBe(first);
+    expect(previousScheduledRun(schedule, Date.parse(first!))).toBe(first);
+    expect(previousScheduledRun(schedule, Date.parse(first!) + 15 * 60_000)).toBe(first);
+  });
+
+  it("does not schedule the second occurrence after the first has elapsed", () => {
+    const schedule = { kind: "daily" as const, localTime: "02:30", timezone: "Europe/Berlin" };
+    expect(nextScheduledRun(schedule, Date.parse("2026-10-25T00:45:00Z")))
+      .toBe("2026-10-26T01:30:00.000Z");
+    expect(nextScheduledRun({ ...schedule, kind: "weekly", weekdays: ["Sun"] }, Date.parse("2026-10-25T00:45:00Z")))
+      .toBe("2026-11-01T01:30:00.000Z");
+    expect(nextScheduledRun(schedule, Date.parse("2027-03-27T12:00:00Z")))
+      .toBe("2027-03-29T00:30:00.000Z");
+  });
+
   it("finds the most recent start already due, across weekly gaps", () => {
     expect(previousScheduledRun({ kind: "daily", localTime: "11:30", timezone: "UTC" }, now))
       .toBe("2026-09-01T11:30:00.000Z");
@@ -228,6 +251,7 @@ describe("Windows logged-on-only task status", () => {
     expect(status.warnings[0]).toContain("only runs while you are logged on");
     expect(status.warnings[1]).toContain(`the scheduled run at ${due} did not start`);
     expect(status.warnings[1]).toContain("no user was logged on");
+    expect(status.warnings[1]).toContain("cause is not established");
   });
 
   it("only states the logged-on limitation when the last due run started", async () => {
@@ -344,7 +368,75 @@ exit 0
     ) => Effect.runPromise(Effect.flatMap(ScheduleManager, effect).pipe(Effect.provide(layer)));
     return { home, state, run };
   };
-  const input = { schedule: { kind: "daily", localTime: "04:00" } } as const;
+  const input = { executable: linuxFixture, schedule: { kind: "daily", localTime: "04:00" } } as const;
+
+  it("keeps a matching complex wrapper installed but unverified", async () => {
+    const host = await simulatedHost();
+    const executable = join(host.state, "complex-wrapper");
+    await writeFile(executable, `#!/usr/bin/env -S '${process.execPath}'\n`, { mode: 0o755 });
+    await chmod(executable, 0o755);
+    const selected = { ...input, executable };
+    const installed = await host.run((manager) => manager.install(selected));
+    expect(installed.status.state).toBe("current");
+    expect(installed.status.bindingUsable).toBeUndefined();
+    const status = await host.run((manager) => manager.status(selected));
+    expect(status.state).toBe("current");
+    expect(status.bindingUsable).toBeUndefined();
+    expect(scheduledDefinitionReadiness(status).status).toBe("warning");
+    await unlink(executable);
+    expect(await host.run((manager) => manager.status(selected))).toMatchObject({ state: "drifted", bindingUsable: false });
+  });
+
+  it.each(["runtime", "entrypoint"])("fails a deleted installed %s without waiting for scheduled self-repair", async (missing) => {
+    const host = await simulatedHost();
+    await host.run((manager) => manager.install(input));
+    const runtime = join(host.state, "old node");
+    const entrypoint = join(host.state, "old main.js");
+    await writeFile(runtime, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await chmod(runtime, 0o755);
+    await writeFile(entrypoint, "export {};\n");
+    const path = join(host.home, ".config", "systemd", "user", "canonfig-sync.service");
+    const stored = (await readFile(path, "utf8")).replace(/^ExecStart=.*$/mu,
+      `ExecStart=${JSON.stringify(runtime)} ${JSON.stringify(entrypoint)} "sync" "--apply" "--scheduled"`);
+    await writeFile(path, stored);
+    const available = await host.run((manager) => manager.status(input));
+    expect(available).toMatchObject({ state: "drifted", drift: "binding", bindingUsable: true });
+    expect(scheduledDefinitionReadiness(available).status).toBe("warning");
+    await unlink(missing === "runtime" ? runtime : entrypoint);
+    const broken = await host.run((manager) => manager.status(input));
+    expect(broken).toMatchObject({ state: "drifted", drift: "binding", bindingUsable: false });
+    expect(broken.detail).toContain(missing === "runtime" ? "runtime is missing" : "entrypoint is missing");
+    expect(broken.detail).toContain("Manually run");
+    // The desired custom executable is still valid. Repair the installed job,
+    // not the user's selection, even though the installed runtime is missing.
+    expect(broken.detail).toContain("`canonfig sync --apply`");
+    expect(broken.detail).not.toContain("clears the stale custom executable");
+    expect(broken.detail).not.toContain("keeps its calendar");
+    expect(scheduledDefinitionReadiness(broken).status).toBe("fail");
+    expect(await readFile(path, "utf8")).toBe(stored);
+    expect((await host.run((manager) => manager.install(input))).status).toMatchObject({ state: "current", bindingUsable: true });
+  });
+
+  it.each([
+    { kind: "daily", localTime: "04:00" },
+    { kind: "weekly", weekdays: ["Mon", "Fri"], localTime: "03:00", timezone: "UTC" },
+  ] as const)("provides a valid $kind repair when the selected executable is deleted", async (schedule) => {
+    const host = await simulatedHost();
+    const runtime = join(host.state, "custom-canonfig");
+    await writeFile(runtime, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await chmod(runtime, 0o755);
+    const selected = { executable: runtime, schedule };
+    expect((await host.run((manager) => manager.install(selected))).status.state).toBe("current");
+    await unlink(runtime);
+    const broken = await host.run((manager) => manager.status(selected));
+    expect(broken).toMatchObject({ state: "drifted", drift: "binding", bindingUsable: false });
+    expect(scheduledDefinitionReadiness(broken).status).toBe("fail");
+    expect(broken.detail).toContain("clears the stale custom executable");
+    const suggested = /`canonfig ([^`]+)`/u.exec(broken.detail)?.[1];
+    const parsed = evaluateCli(suggested!.split(" "));
+    expect(parsed).toMatchObject({ _tag: "Command", command: { _tag: "ScheduleSet", schedule: selected.schedule } });
+    if (parsed._tag === "Command" && parsed.command._tag === "ScheduleSet") expect(parsed.command.executable).toBeUndefined();
+  });
 
   it("reports a timer stopped outside Canonfig as inactive and restarts it on set", async () => {
     // CF-44: inspection queried only `is-enabled`, so a stopped timer that
@@ -397,5 +489,25 @@ exit 0
     const status = (await host.run((manager) => manager.install(input))).status;
     expect(status.lingering).toBe(false);
     expect(status.warnings.join("\n")).toContain("loginctl enable-linger");
+  });
+});
+
+
+describe("canonical named scheduler timezones", () => {
+  it.each(["europe/berlin", "EUROPE/BERLIN", "Europe/Berlin"])("canonicalizes %s before persistence and rendering", async (timezone) => {
+    for (const schedule of [
+      { kind: "daily" as const, localTime: "02:30", timezone },
+      { kind: "weekly" as const, weekdays: ["Mon" as const], localTime: "02:30", timezone },
+      { kind: "custom" as const, expression: "*-*-* 02:30:00", timezone },
+    ]) {
+      expect(await Effect.runPromise(validateSchedule(schedule))).toMatchObject({ timezone: "Europe/Berlin" });
+    }
+  });
+  it.each(["+05:30", "-08:00", "+0530", "Europe/Berlin\n", "no-such-zone"])("rejects unsupported zone %s", async (timezone) => {
+    await expect(Effect.runPromise(validateSchedule({ kind: "daily", localTime: "02:30", timezone }))).rejects.toThrow();
+  });
+  it.each(["Etc/GMT+5", "US/Pacific", "Europe/Kyiv", "UTC"])("retains supported named-zone semantics for %s", async (timezone) => {
+    const normalized = await Effect.runPromise(validateSchedule({ kind: "daily", localTime: "02:30", timezone }));
+    expect(normalized.timezone).toBe(new Intl.DateTimeFormat("en-US", { timeZone: timezone }).resolvedOptions().timeZone);
   });
 });

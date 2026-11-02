@@ -1,3 +1,4 @@
+import { installedBindingProblem, type InstalledSchedulerCommand } from "../machine/installed-scheduler-command.ts";
 import { userInfo } from "node:os";
 import { dirname } from "node:path";
 import { Effect, Layer } from "effect";
@@ -41,7 +42,7 @@ import { scheduleCommand } from "./schedule-command.ts";
 
 const validLocalTime = /^([01]\d|2[0-3]):[0-5]\d$/u;
 
-const validateSchedule = (
+export const validateSchedule = (
   schedule: SyncSchedule,
 ): Effect.Effect<NormalizedSyncSchedule, InvalidScheduleError> => {
   schedule = normalizeSyncSchedule(schedule);
@@ -68,14 +69,15 @@ const validateSchedule = (
       }));
     }
     try {
-      new Intl.DateTimeFormat("en-US", { timeZone: schedule.timezone }).format();
+      const timezone = new Intl.DateTimeFormat("en-US", { timeZone: schedule.timezone }).resolvedOptions().timeZone;
+      if (/^[+-]/u.test(timezone)) throw new RangeError("numeric offsets are not IANA timezone names");
+      return Effect.succeed({ ...schedule, timezone });
     } catch {
       return Effect.fail(new InvalidScheduleError({
         field: "timezone",
         message: `unsupported IANA timezone: ${schedule.timezone}`,
       }));
     }
-    return Effect.succeed(schedule);
   }
   if (!validLocalTime.test(schedule.localTime)) {
     return Effect.fail(new InvalidScheduleError({
@@ -101,14 +103,15 @@ const validateSchedule = (
     }));
   }
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone: schedule.timezone }).format();
+    const timezone = new Intl.DateTimeFormat("en-US", { timeZone: schedule.timezone }).resolvedOptions().timeZone;
+      if (/^[+-]/u.test(timezone)) throw new RangeError("numeric offsets are not IANA timezone names");
+      return Effect.succeed({ ...schedule, timezone });
   } catch {
     return Effect.fail(new InvalidScheduleError({
       field: "timezone",
       message: `unsupported IANA timezone: ${schedule.timezone}`,
     }));
   }
-  return Effect.succeed(schedule);
 };
 
 const calendarFor = (
@@ -179,15 +182,32 @@ const missedLoggedOnRun = (
   return Date.parse(due) > Math.max(...known) ? due : undefined;
 };
 
+const bindingRepair = (schedule: NormalizedSyncSchedule, customExecutable: boolean): string => {
+  if (!customExecutable) return "Manually run `canonfig sync --apply` from the current installation to repair it; do not wait for the scheduled job to repair itself";
+  if (schedule.kind === "custom") return "Manually choose a supported daily or weekly calendar with `canonfig schedule set <calendar>` and omit --executable to clear the stale custom binding; the CLI cannot recreate a custom calendar";
+  const calendar = schedule.kind === "daily" ? `daily@${schedule.localTime}`
+    : `weekly:${schedule.weekdays.join(",")}@${schedule.localTime}`;
+  const timezone = schedule.timezone === undefined ? "" : ` --timezone ${schedule.timezone}`;
+  return `The selected custom executable is also unavailable. Restore it, or manually run \`canonfig schedule set ${calendar}${timezone}\` from the current installation, without --executable. This keeps the selected calendar and clears the stale custom executable; sync --apply alone would reuse it`;
+};
+
 /** The effective state of the native job with what it means for the user. */
 const statusFrom = (
   schedule: NormalizedSyncSchedule,
   definition: RenderedSchedulerJob,
   inspection: SchedulerInspection,
-): ScheduleStatus => {
-  const state = stateOf(inspection);
+  customCommand?: InstalledSchedulerCommand,
+): Effect.Effect<ScheduleStatus> => Effect.gen(function*() {
+  const bindingChecked = inspection.installed && inspection.bindingInspected === true;
+  const bindingProblem = bindingChecked
+    ? yield* Effect.promise(() => installedBindingProblem(inspection.installedCommand)) : undefined;
+  const customProblem = customCommand === undefined ? undefined
+    : yield* Effect.promise(() => installedBindingProblem(customCommand));
+  const nativeState = stateOf(inspection);
+  const state = bindingProblem?.kind === "missing" && (nativeState === "current" || nativeState === "drifted")
+    ? "drifted" : nativeState;
   const drift = state === "drifted"
-    ? inspection.calendarMatches === true ? "binding" as const : "calendar" as const
+    ? bindingProblem?.kind === "missing" || inspection.calendarMatches === true ? "binding" as const : "calendar" as const
     : undefined;
   const nextRun = state === "current"
     ? nextScheduledRun(schedule) ?? inspection.nextElapse
@@ -207,7 +227,9 @@ const statusFrom = (
         return macosTimezoneRecovery;
       case "drifted":
         return drift === "binding"
-          ? "the native job keeps its calendar but was rendered by a different Canonfig build (runtime or entrypoint); the next `canonfig sync --apply` re-renders it"
+          ? `${bindingProblem?.message ?? (bindingChecked
+            ? "the calendar is unchanged and the installed runtime/entrypoint files are available, but the binding differs from this Canonfig build"
+            : "the installed binding differs and its runtime/entrypoint availability is unverified")}. ${bindingRepair(schedule, customProblem?.kind === "missing")}`
           : "the native job was changed outside Canonfig; the next `canonfig sync --apply` or `canonfig schedule set` restores the selected calendar";
       case "current":
         return nextRun === undefined
@@ -218,6 +240,7 @@ const statusFrom = (
   const gap = daylightSavingGapWarning(schedule, definition.platform);
   const missedRun = state === "current" ? missedLoggedOnRun(schedule, inspection) : undefined;
   const warnings = [
+    ...(bindingProblem?.kind === "unverified" ? [bindingProblem.message] : []),
     ...(gap === undefined ? [] : [gap]),
     ...(definition.platform === "linux" && inspection.lingering === false
       ? [`the systemd user manager stops when you log out (Linger=no), so the job only runs while you are logged in; run \`loginctl enable-linger ${lingerUser()}\` to run it while logged out`]
@@ -227,13 +250,16 @@ const statusFrom = (
       : []),
     ...(missedRun === undefined
       ? []
-      : [`the scheduled run at ${missedRun} did not start (last start ${inspection.lastStartedAt ?? "never"}): Task Scheduler skipped it because no user was logged on or the machine was off, and it does not catch up skipped runs. Run \`canonfig sync --apply\` now, and stay logged on at the scheduled time`]),
+      : [`the scheduled run at ${missedRun} did not start (last start ${inspection.lastStartedAt ?? "never"}): the cause is not established from task history. It may have been skipped because no user was logged on, the machine was off, or native task conditions prevented it; skipped runs are not caught up. Run \`canonfig sync --apply\` now, and stay logged on at the scheduled time`]),
     ...(inspection.timezoneChangedSinceBoot && state !== "timezone-changed"
       ? [macosTimezoneRecovery]
       : []),
   ];
   return {
     state,
+    bindingUsable: !bindingChecked || bindingProblem?.kind === "unverified" ? undefined : bindingProblem === undefined,
+    generation: inspection.generation,
+    installedAt: inspection.installedAt,
     platform: definition.platform,
     schedule,
     definition,
@@ -249,12 +275,29 @@ const statusFrom = (
     missedRun,
     warnings,
   };
-};
+});
 
-const snapshotsEqual = (
+export const snapshotsEqual = (
   left: ScheduleSnapshot,
   right: ScheduleSnapshot,
-): boolean => JSON.stringify(left) === JSON.stringify(right);
+): boolean => {
+  const comparable = (snapshot: ScheduleSnapshot): ScheduleSnapshot => {
+    if (snapshot.platform !== "windows" || snapshot.state !== "present" || snapshot.native === undefined) return snapshot;
+    const xml = Buffer.from(snapshot.native, "base64").toString("utf8");
+    // Registration is intentionally renewed on restore. Ignore only its date
+    // and our public nonce; execution settings and operator metadata stay exact.
+    const native = xml.replace(/<RegistrationInfo(?:\s[^>]*)?>([\s\S]*?)<\/RegistrationInfo>/u, (registration: string, body: string) => {
+      const source = /<Source(?:\s[^>]*)?>([\s\S]*?)<\/Source>/u.exec(body)?.[1] ?? "Canonfig";
+      const stableSource = source.replace(/\s*\[canonfig-generation:[a-f0-9]+\]/gu, "").trim();
+      const stableBody = body.replace(/<(Date|Source)(?:\s[^>]*)?>[\s\S]*?<\/\1>/gu, "")
+        .replace(/<(?:Date|Source)\s*\/>/gu, "").replace(/>\s+</gu, "><").trim();
+      const opening = registration.slice(0, registration.indexOf(">") + 1);
+      return `${opening}${stableBody}<Source>${stableSource}</Source></RegistrationInfo>`;
+    });
+    return { ...snapshot, native };
+  };
+  return JSON.stringify(comparable(left)) === JSON.stringify(comparable(right));
+};
 
 export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineState> =
   Layer.effect(
@@ -306,6 +349,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           {
             readonly schedule: NormalizedSyncSchedule;
             readonly definition: RenderedSchedulerJob;
+            readonly command: InstalledSchedulerCommand;
           },
           ScheduleManagerError
         > {
@@ -320,7 +364,9 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
             arguments: command.arguments,
             calendar,
           });
-          return { schedule, definition: rendered };
+          return { schedule, definition: rendered, command: { ...command, executable: executable.absolute,
+            searchPath: [dirname(executable.absolute), "/usr/local/bin", "/usr/bin", "/bin"],
+          } };
         },
       );
 
@@ -331,7 +377,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
         > {
           const desired = yield* definition(input);
           const inspection = yield* machine.inspectSchedulerJob(desired.definition);
-          return statusFrom(desired.schedule, desired.definition, inspection);
+          return yield* statusFrom(desired.schedule, desired.definition, inspection, input.executable === undefined ? undefined : desired.command);
         },
       );
 
@@ -384,7 +430,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           }
           const desired = yield* definition(input);
           const inspection = yield* machine.inspectSchedulerJob(desired.definition);
-          const before = statusFrom(desired.schedule, desired.definition, inspection);
+          const before = yield* statusFrom(desired.schedule, desired.definition, inspection, input.executable === undefined ? undefined : desired.command);
           if (inspection.timezoneChangedSinceBoot) {
             return yield* new ScheduleHumanActionRequiredError({
               action: "arm the macOS schedule after a timezone change",
@@ -403,10 +449,11 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
           // A stopped, disabled, or deleted job is restored here: an explicit
           // install is the user's decision, unlike the post-apply reconciler.
           yield* machine.installSchedulerJob(desired.definition);
-          const after = statusFrom(
+          const after = yield* statusFrom(
             desired.schedule,
             desired.definition,
             yield* machine.inspectSchedulerJob(desired.definition),
+            input.executable === undefined ? undefined : desired.command,
           );
           if (after.state !== "current") {
             return yield* new ScheduleVerificationError({

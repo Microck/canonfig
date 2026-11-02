@@ -45,7 +45,11 @@ export async function validateProject(root: string, config: CanonfigConfig): Pro
   for (const rootRelative of config.skills.roots) {
     const safeRoot = assertSafeRelativePath(rootRelative);
     const absoluteRoot = path.join(canonfigDir, safeRoot);
-    if (!await exists(absoluteRoot)) {
+    const sourceEntry = await fs.lstat(absoluteRoot).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (sourceEntry === undefined) {
       diagnostics.push({
         level: "info",
         code: "SKILL_ROOT_MISSING",
@@ -55,7 +59,14 @@ export async function validateProject(root: string, config: CanonfigConfig): Pro
       continue;
     }
 
-    const manifests = (await walkFiles(absoluteRoot)).filter((file) => path.basename(file) === "SKILL.md");
+    let files: string[];
+    try { files = await walkFiles(absoluteRoot, root); }
+    catch (error) {
+      diagnostics.push({ level: "error", code: "SKILL_SOURCE_INVALID", path: `.canonfig/${safeRoot}`,
+        message: `Cannot read skill sources safely: ${error instanceof Error ? error.message : String(error)}` });
+      continue;
+    }
+    const manifests = files.filter((file) => path.basename(file) === "SKILL.md");
     for (const manifest of manifests.sort()) {
       const relative = `.canonfig/${safeRoot}/${manifest}`;
       try {

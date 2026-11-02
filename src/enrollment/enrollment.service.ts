@@ -1,4 +1,4 @@
-import { Context, type Effect } from "effect";
+import { Context, type Effect, type Scope } from "effect";
 
 import type { FollowerId, GroupName } from "../domain/brand.ts";
 import type { FollowerIdentity } from "../domain/identity.ts";
@@ -18,6 +18,8 @@ import type {
 } from "./enrollment.types.ts";
 
 export class Enrollment extends Context.Service<Enrollment, {
+  /** Exclusively own Source serving and recover abandoned prepares until scope close. */
+  readonly startServerSession: () => Effect.Effect<void, EnrollmentError, Scope.Scope>;
   readonly initializeSource: (
   ) => Effect.Effect<SourceEnrollmentMaterial, EnrollmentError>;
   readonly source: (

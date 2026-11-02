@@ -63,19 +63,26 @@ const instantAt = (
   timezone: string,
 ): number | undefined => {
   const naive = Date.UTC(date.year, date.month - 1, date.day, hour, minute);
-  let instant = naive;
-  // Two correction passes settle the zone offset on either side of a change.
-  for (let pass = 0; pass < 2; pass += 1) {
-    const seen = wallClock(instant, timezone);
-    const offset = Date.UTC(seen.year, seen.month - 1, seen.day, seen.hour, seen.minute)
-      - Math.floor(instant / 60_000) * 60_000;
-    instant = naive - offset;
+  // Collect offsets on both sides of the requested local date. Starting only
+  // at naive UTC biases repeated times toward the later occurrence east of UTC.
+  // Validate every candidate against the wall clock, then choose the first one.
+  const offsets = new Set<number>();
+  for (const distance of [-36, 0, 36]) {
+    const sample = naive + distance * 60 * 60 * 1000;
+    const seen = wallClock(sample, timezone);
+    offsets.add(Date.UTC(seen.year, seen.month - 1, seen.day, seen.hour, seen.minute)
+      - Math.floor(sample / 60_000) * 60_000);
   }
-  const seen = wallClock(instant, timezone);
-  return seen.year === date.year && seen.month === date.month && seen.day === date.day
-      && seen.hour === hour && seen.minute === minute
-    ? instant
-    : undefined;
+  let first: number | undefined;
+  for (const offset of offsets) {
+    const instant = naive - offset;
+    const seen = wallClock(instant, timezone);
+    if (seen.year === date.year && seen.month === date.month && seen.day === date.day
+      && seen.hour === hour && seen.minute === minute) {
+      first = first === undefined ? instant : Math.min(first, instant);
+    }
+  }
+  return first;
 };
 
 /** The zone a schedule's local time is read in. */

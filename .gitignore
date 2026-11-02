@@ -10,3 +10,5 @@ website/.source/
 .vercel/
 website/out/
 /_site/
+.e2e/
+.crabbox/

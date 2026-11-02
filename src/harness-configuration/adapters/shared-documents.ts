@@ -23,17 +23,11 @@ export async function copyDirectoryArtifacts(
   owner: ArtifactOwner,
 ): Promise<DesiredArtifact[]> {
   const source = resolveInside(context.canonfigDir, assertSafeRelativePath(sourceRelative));
-  try {
-    await assertRealPathInside(context.canonfigDir, source);
-    await fs.access(source);
-  } catch {
-    return [];
-  }
-
-  const files = await walkFiles(source);
+  const files = await walkFiles(source, context.root);
   const artifacts: DesiredArtifact[] = [];
   for (const file of files.sort()) {
     const absolute = path.join(source, file);
+    await assertRealPathInside(context.root, absolute);
     const [content, stat] = await Promise.all([fs.readFile(absolute), fs.stat(absolute)]);
     const executable = (stat.mode & 0o111) !== 0;
     artifacts.push({

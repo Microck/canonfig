@@ -32,6 +32,7 @@ import {
   type PublishedResource,
 } from "../../src/domain/profile.ts";
 import {
+  EnrollmentConfigurationError,
   RevokedFollowerCredentialError,
   EnrollmentTransportError,
   LegacyRevisionFormatError,
@@ -1152,8 +1153,11 @@ describe("Source upgraded from a release before 3.2.1", () => {
 });
 
 describe("Source/follower version handshake", () => {
-  it("accepts the 4.0 release line but rejects a 3.2.x peer", () => {
-    expect(peerVersionCompatible("4.0.1")).toBe(true);
+  it("accepts the 4.2 release line but rejects mismatched minor and major peers", () => {
+    expect(peerVersionCompatible("4.2.0")).toBe(true);
+    expect(peerVersionCompatible("4.2.1")).toBe(true);
+    expect(peerVersionCompatible("4.0.2")).toBe(false);
+    expect(peerVersionCompatible("4.1.0")).toBe(false);
     expect(peerVersionCompatible("3.2.2")).toBe(false);
   });
 
@@ -1240,4 +1244,26 @@ describe("Source/follower version handshake", () => {
       await new Promise<void>((resolve) => oldSource.close(() => resolve()));
     }
   });
+});
+
+
+it.each([32, 1048575, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1048576.5])(
+  "rejects a Source metadata limit incompatible with publication: %s", async (maximumMetadataBytes) => {
+    const setup = fixture();
+    const failure = await setup.runtime.runPromise(Effect.flip(startSourceServer({ maximumMetadataBytes })));
+    expect(failure).toBeInstanceOf(EnrollmentConfigurationError);
+    expect(failure.message).toContain("at least 1048576");
+  },
+);
+
+it("serves admitted revisions with an explicitly increased Source metadata limit", async () => {
+  const setup = fixture();
+  const published = await publishFixtureRevision(setup);
+  const server = await setup.runtime.runPromise(startSourceServer({ maximumMetadataBytes: 2 * 1024 * 1024 }));
+  openServers.push(server);
+  const enrolled = await enroll(setup, server);
+  const metadata = await runFollower(setup, getRevisionMetadata({
+    ...transportInput(server, enrolled), revisionId: published.revision.id,
+  }));
+  expect(metadata.id).toBe(published.revision.id);
 });

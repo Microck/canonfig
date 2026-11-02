@@ -1,3 +1,5 @@
+import { installedWindowsCommand } from "./installed-scheduler-command.ts";
+import { registeredSchedulerIdentity } from "./scheduler-identity.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
   access,
@@ -407,7 +409,7 @@ const renderTaskSchedulerJob = (
         `$Action = New-ScheduledTaskAction -Execute ${powershellLiteral(executable.absolute)} `
           + `-Argument ${powershellLiteral(commandLine)}`,
         `$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive`,
-        `$Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1)`,
+        `$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 1)`,
         `$Settings.Priority = ${windowsTaskPriority}`,
       ].join("\r\n"),
       schedule: [
@@ -482,10 +484,29 @@ const xmlElement = (xml: string, name: string): string | undefined => {
   return match === null ? undefined : decodeXml(match[1]!.trim());
 };
 
+/** Every registration, including snapshot restore, gets a fresh public identity. */
+export const renewWindowsTaskRegistration = (xml: string, at: string, nonce: string): string => {
+  const registration = /<RegistrationInfo(?:\s[^>]*)?>([\s\S]*?)<\/RegistrationInfo>/u.exec(xml);
+  const current = registration?.[1] ?? "";
+  const source = (xmlElement(current, "Source") ?? "Canonfig")
+    .replace(/\s*\[canonfig-generation:[a-f0-9]+\]/gu, "").trim();
+  const metadata = current.replace(/<(?:Date|Source)(?:\s[^>]*)?>[\s\S]*?<\/(?:Date|Source)>/gu, "")
+    .replace(/<(?:Date|Source)\s*\/>/gu, "")
+    + `<Date>${escapeXml(at)}</Date><Source>${escapeXml(`${source} [canonfig-generation:${nonce}]`)}</Source>`;
+  const replacement = `<RegistrationInfo>${metadata}</RegistrationInfo>`;
+  return registration === null ? xml.replace(/<Task\b[^>]*>/u, (root) => `${root}${replacement}`)
+    : xml.replace(registration[0], replacement);
+};
+
 export const windowsRecurrenceIntervalMatches = (
   schedule: string,
   recurrence: "daily" | "weekly",
 ): boolean => xmlElement(schedule, recurrence === "daily" ? "DaysInterval" : "WeeksInterval") === "1";
+
+/** Missing settings use Task Scheduler's battery-restrictive defaults. */
+export const windowsTaskBatteryPolicyMatches = (settings: string): boolean =>
+  xmlElement(settings, "DisallowStartIfOnBatteries") === "false"
+  && xmlElement(settings, "StopIfGoingOnBatteries") === "false";
 
 export const windowsTaskTriggerEnabled = (trigger: string): boolean =>
   xmlElement(trigger, "Enabled") !== "false";
@@ -545,8 +566,8 @@ const windowsTaskXml = (
     `<Principals><Principal id="Author"><UserId>${escapeXml(principal)}</UserId>`,
     "<LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>",
     "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
-    "<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>",
-    "<StopIfGoingOnBatteries>true</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate>",
+    "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+    "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate>",
     `<Enabled>true</Enabled><ExecutionTimeLimit>PT1H</ExecutionTimeLimit><Priority>${windowsTaskPriority}</Priority></Settings>`,
     `<Actions Context="Author"><Exec><Command>${escapeXml(definition.executable)}</Command>`,
     `<Arguments>${escapeXml(definition.arguments)}</Arguments></Exec></Actions></Task>`,
@@ -1254,7 +1275,7 @@ export const windowsMachineStateLayer = (
       ): Effect.Effect<void, MachineStateError> => {
         const path = taskXmlPath();
         return Effect.tryPromise({
-          try: () => writeFile(path, Buffer.from(`\ufeff${xml}`, "utf16le")),
+          try: () => writeFile(path, Buffer.from(`\ufeff${renewWindowsTaskRegistration(xml, new Date().toISOString(), randomBytes(16).toString("hex"))}`, "utf16le")),
           catch: (cause) => filesystemFailure("write Task Scheduler XML", path, cause),
         }).pipe(
           Effect.andThen(runSchedulerCommand([
@@ -1371,16 +1392,22 @@ export const windowsMachineStateLayer = (
                 && intervalMatches
                 && weekdaysMatch;
               const registration = windowsTaskRegistration(xml);
+              const identity = registeredSchedulerIdentity(xml, registration.registeredAt);
               return taskRuntimeState(expected.serviceName).pipe(
                 Effect.map((runtime): SchedulerInspection => ({
                   installed: true,
+                  generation: identity?.generation,
+                  installedAt: identity?.installedAt,
                   enabled: xmlElement(settings, "Enabled") !== "false",
                   matches: xmlElement(xml, "Description") === desired.description
                     && command === desired.executable
                     && xmlElement(xml, "Arguments") === desired.arguments
                     && xmlElement(settings, "Priority") === String(windowsTaskPriority)
+                    && windowsTaskBatteryPolicyMatches(settings)
                     && calendarMatches,
                   calendarMatches,
+                  bindingInspected: true,
+                  installedCommand: installedWindowsCommand(command, xmlElement(xml, "Arguments")),
                   // A disabled trigger or task never fires even when its
                   // definition matches; Task Scheduler state 1 is Disabled.
                   active: windowsTaskTriggerEnabled(trigger) && runtime?.state !== 1,

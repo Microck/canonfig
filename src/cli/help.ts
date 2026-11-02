@@ -7,7 +7,7 @@ import { CliExitCode } from "./exit-codes.ts";
 
 export const programName = "canonfig";
 export const programDisplayName = "Canonfig";
-export const programVersion = "4.0.0";
+export const programVersion = "4.2.0";
 
 const helpHeader = `${programDisplayName} ${programVersion}`;
 
@@ -34,11 +34,18 @@ export interface HelpGroup {
 
 export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
+    title: "Self-update",
+    areas: ["self-update"],
+    usage: ["self-update enable|disable|status|check|apply|auto [--apply]"],
+    notes: ["Opt-in stable patch updates for user-private global npm installations; see self-update --help.", "Active commands and unfinished syncs block activation. Major/minor fleet upgrades remain manual."],
+  },
+  {
     title: "Source Machine",
     areas: ["source"],
     usage: [
       "source init",
       "source scan --file <path> [--file <path>...]",
+      "source reconcile-skills --profile-file <profile.jsonc> [--apply] [--watch] [--interval <seconds>]",
       "source digest --profile-file <profile.jsonc> [--resource <id>]",
       "source publish --profile-file <profile.jsonc> --reviewer <name> [--proposal <path>] [--allow-empty]",
       "source publish --proposal <path> --profile <id> --name <name> --reviewer <name> [--allow-empty]",
@@ -74,8 +81,9 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "Pipe the invitation envelope: cat ./canonfig-invite | canonfig follower enroll --stdin ...",
       "The invitation is never accepted as an argument.",
       "--timeout-ms bounds each enrollment network phase (default 10000; maximum 300000).",
-      "Enrolling again under the same name with a new invitation rotates the credential and",
-      "keeps local settings. --replace enrolls a new identity, revokes the old one, and",
+      "An active follower name cannot be enrolled again; revoke it on the Source first.",
+      "Re-enrolling a revoked name keeps local settings. --replace enrolls a new identity,",
+      "revokes the old one, and",
       "lists what it reset (agent policy, harness and secret bindings, schedule, overlays).",
       "unenroll revokes this identity on the Source, deletes its local credential and",
       "received shared secrets, and leaves applied files in place.",
@@ -216,10 +224,16 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     ],
   },
   {
+    title: "Upstream skills (details: canonfig skills --help)",
+    areas: ["skills"],
+    usage: ["skills track|list|check|update [--root <path>] [--name <id>...] [--apply]", "skills auto [--root <path>] [--name <id>...] [--apply] [--once] [--interval <seconds>]"],
+  },
+  {
     title: "Harness configuration (details: canonfig harness --help)",
     areas: ["harness"],
     usage: [
       "harness init [--format yaml|json]",
+      "harness export --output <archive.zip|archive.tar.gz> [--target <id>...] [--include-source|--source-only]",
       "harness validate|targets|plan|apply|status|diff|clean|doctor [--target <id>...] [--strict]",
     ],
   },

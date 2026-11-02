@@ -1,3 +1,5 @@
+import { installedLaunchdCommand } from "./installed-scheduler-command.ts";
+import { fileSchedulerIdentity } from "./scheduler-identity.ts";
 import { createHash } from "node:crypto";
 import { access, lstat, readFile } from "node:fs/promises";
 import { homedir, uptime } from "node:os";
@@ -412,6 +414,7 @@ export const macosMachineStateLayer = (
             if (stored === undefined) {
               return { installed: false, enabled: false, matches: false, timezoneChangedSinceBoot: timezoneChanged };
             }
+            const identity = yield* Effect.promise(() => fileSchedulerIdentity([path], [stored]));
             const label = expected.serviceName.slice(0, -".plist".length);
             const service = yield* queryLaunchctlService(
               label,
@@ -424,8 +427,12 @@ export const macosMachineStateLayer = (
             const exitCode = /^\s*last exit code = (\d+)/mu.exec(service.output)?.[1];
             return {
               installed: true,
+              generation: identity?.generation,
+              installedAt: identity?.installedAt,
               enabled: !disabled,
               matches: stored === expected.schedule,
+              bindingInspected: true,
+              installedCommand: installedLaunchdCommand(stored),
               calendarMatches: storedCalendar !== undefined
                 && storedCalendar === calendarLine.exec(expected.schedule)?.[0],
               // Booted out (or never bootstrapped) outside Canonfig: the plist

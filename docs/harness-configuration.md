@@ -157,3 +157,90 @@ The canonical model intentionally carries semantic features rather than raw
 native file shapes. When a harness changes, its adapter and fixtures can be
 updated without changing the loader, planner, ownership model, or other
 adapters.
+
+
+## MCP environment references
+
+`fromEnv` remains symbolic when Canonfig writes native files; Canonfig does not
+read the environment value into generated configuration.
+
+- Codex forwards same-name stdio variables with `env_vars`. It uses
+  `env_http_headers` for environment-sourced HTTP header values, and keeps
+  literal values in `env` / `http_headers`.
+- Codex cannot rename a stdio environment variable through `env_vars`.
+  A binding such as `API_KEY: { fromEnv: OTHER_KEY }` is omitted with
+  `MCP_ENV_RENAME_UNSUPPORTED`; `--strict` rejects the plan. Use the same name
+  or an explicitly reviewed wrapper instead.
+- OpenCode uses `{env:NAME}` references. Kilo uses that syntax only in trusted configuration; project-level references are diagnosed and blocked under `--strict` (see below).
+- Cursor uses `${env:NAME}` references.
+
+A `fromEnv` header supplies the entire header value. For example, the environment
+value for an Authorization header must include its required scheme; Canonfig
+does not infer or prepend `Bearer`. Native client trust and environment setup
+still apply. Applying a configuration does not verify a live MCP connection.
+
+Vendor references checked on 2026-10-20:
+[Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
+[OpenCode config variables](https://docs.opencode.ai/docs/config/),
+[Kilo MCP](https://kilo.ai/docs/automate/mcp/using-in-kilo-code), and
+[Cursor config interpolation](https://cursor.com/docs/mcp#config-interpolation).
+
+### Kilo project trust limitation
+
+Kilo resolves `{env:NAME}` only in trusted global, explicitly selected, or organization-managed configuration, not a project `kilo.json`. Canonfig emits `MCP_ENV_PROJECT_UNSUPPORTED` for project MCP environment/header references, including explicit symbolic strings, and `--strict` blocks their application. Non-strict plans retain the mapping with a warning; they do not make it functional or expand project trust. Configure the binding yourself in trusted Kilo configuration.
+
+Source: https://kilo.ai/docs/code-with-ai/platforms/cli#environment-variables
+
+## Deleted generated files
+
+If a generated native file is deleted, the next apply recreates it and clean
+forgets its ownership record without recreating it. Removing managed markers
+inside a file that still exists remains a conflict, protecting outside edits.
+
+## Portable archives
+
+Use `canonfig harness export --source-only --output source.zip` to package
+canonical configuration, or select native harnesses with repeatable `--target`
+and optionally `--include-source`. See [archive selection and safety](harness-archives.md).
+
+## Live local projection
+
+Run an opt-in foreground watcher when `.canonfig/` is your source of truth:
+
+```sh
+canonfig harness watch
+canonfig harness watch --targets codex,oh-my-pi
+canonfig harness watch --dry-run --interval 2
+```
+
+Watch polls the full compiler/planner once per second by default, including
+configured instructions, skills, MCPs and other supported inputs. It waits for
+two consecutive matching plans before applying, coalescing ordinary editor
+saves. Slow compilation delays the next poll; passes never overlap. Generated
+outputs do not create an event feedback loop, and idle passes do not rewrite
+files or ownership state. Deleted generated files are recreated through the
+normal planner. Managed source removals use the normal ownership-aware cleanup.
+
+`--dry-run` continuously previews without writing. `--interval` accepts whole
+seconds from 1 to 3600 and is only valid with watch. `--strict` and target
+selection retain their normal meanings. `--force` is rejected: resolve initial
+ownership conflicts with an inspected one-shot apply before starting the watcher.
+Conflicts, invalid input (including an incomplete save), unsupported features,
+and apply failures stop it. Fix the issue and restart. JSON emits one envelope
+for a changed stable plan, initial ready state, or blocking result, not every poll.
+
+Keep the process running; Ctrl+C/SIGTERM finishes any in-flight apply and releases
+the watcher lock. An interrupted process can leave `.canonfig/.harness-watch.lock`:
+verify no watcher remains before manually removing it. The lock excludes another
+writing watcher, not external editors or other Canonfig commands. Do not run
+one-shot apply/clean or another writer against generated files while watching.
+The existing planner/atomic-write protections are retained, not strengthened
+into a filesystem transaction against non-cooperating writers.
+
+This generates project-local files on this machine. It does not install an OS
+service, publish/fetch revisions, run upstream skill updates, transfer credentials,
+launch MCP servers, or reload a running harness. A harness may require its own
+reload/restart to consume changed files. For Followers, run this separately in
+the project receiving canonical sources; ordinary `sync --apply` still does not
+implicitly project harness configuration. No authentication/global harness
+configuration is recreated by this watcher.

@@ -231,5 +231,5 @@ export function applyJsonArtifact(
       pathExisted: existingValue !== undefined,
     });
   }
-  return { text: serializeJsonDocument(document), cleanup };
+  return { text: serializeJsonDocument(document, input), cleanup };
 }

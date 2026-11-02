@@ -202,6 +202,8 @@ export interface StartRunInput {
   readonly revision: ProfileRevisionId;
   readonly plan: SynchronizationPlan;
   readonly startedAt: string;
+  /** Cleanup locations recorded before preparation; not yet usable rollback snapshots. */
+  readonly pendingRollbackReferences?: ReadonlyMap<ActionId, string> | undefined;
 }
 
 export type ActionJournalState =

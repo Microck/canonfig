@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { basename, delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -51,6 +52,7 @@ import {
   executeControlledProcess,
 } from "../src/agent/controlled-executor.ts";
 import {
+  adaptHarnessInvocation,
   encodeAgentTask,
   extractHarnessResponse,
 } from "../src/agent/harness-adapters.ts";
@@ -617,7 +619,7 @@ describe("agent resolution", () => {
       })));
       await Promise.all([
         writeFile(systemctl, `#!/bin/sh\nprintf spawned > '${marker}'\n`),
-        writeFile(harnessExecutable, `#!/bin/sh\ncat >/dev/null\nprintf '%s' '${proposed}'\n`),
+        writeFile(harnessExecutable, `#!/bin/sh\nwhile IFS= read -r line; do :; done\nprintf '%s' '${proposed}'\n`),
       ]);
       await Promise.all([
         chmod(systemctl, 0o755),
@@ -652,6 +654,26 @@ describe("agent resolution", () => {
       task: { id: "agent:test" },
       responseContract: { selfReportIsProof: false },
     });
+  });
+
+  it("allows the Codex proposal invocation outside Git without relaxing its sandbox", async () => {
+    const invocation = adaptHarnessInvocation(harness(directory), task(directory));
+    expect(invocation.arguments).toEqual(["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-"]);
+    const recorder = join(directory, "codex-argv-fixture.cjs");
+    await writeFile(recorder, [
+      "const fs = require('node:fs');",
+      "if (fs.existsSync('.git')) process.exit(21);",
+      "const args = process.argv.slice(2);",
+      "if (!args.includes('--skip-git-repo-check')) process.exit(22);",
+      "if (args[args.indexOf('--sandbox') + 1] !== 'read-only') process.exit(23);",
+      "const input = JSON.parse(fs.readFileSync(0, 'utf8'));",
+      "if (input.schema !== 'canonfig.agent-task/v1') process.exit(24);",
+      "console.log('proposal-only contract accepted outside Git');",
+    ].join("\n"));
+    const result = execFileSync(process.execPath, [recorder, ...invocation.arguments], {
+      cwd: directory, input: invocation.input, encoding: "utf8", timeout: 5_000,
+    });
+    expect(result).toContain("accepted outside Git");
   });
 
   it("extracts machine-readable responses from every supported harness", () => {
@@ -3057,6 +3079,36 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       await expect(access(join(root, "pip-requirements-marker"))).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, 23])("survives an early stdin close from an exit-%s child", (exitCode) => {
+    const moduleUrl = new URL("../src/agent/controlled-executor.ts", import.meta.url).href;
+    const script = `
+      import { Effect } from "effect";
+      import { executeControlledProcess } from ${JSON.stringify(moduleUrl)};
+      const result = await Effect.runPromise(executeControlledProcess({
+        executable: process.execPath,
+        arguments: ["-e", ${JSON.stringify(`console.error("early exit"); process.exit(${exitCode});`)}],
+        standardInput: new Uint8Array(2 * 1024 * 1024),
+        maximumInputBytes: 3 * 1024 * 1024,
+        maximumOutputBytes: 1024,
+        timeoutMilliseconds: 5000,
+        secrets: [],
+      }).pipe(Effect.match({
+        onSuccess: value => ({ ok: true, ...value }),
+        onFailure: error => ({ ok: false, tag: error._tag, message: error.message }),
+      })));
+      console.log(JSON.stringify(result));
+    `;
+    const output = execFileSync(process.execPath,
+      ["--import", "tsx", "--input-type=module", "-e", script],
+      { encoding: "utf8", timeout: 15000 });
+    const result = JSON.parse(output);
+    if (exitCode === 0) {
+      expect(result).toMatchObject({ ok: false, tag: "AgentProcessError" });
+    } else {
+      expect(result).toMatchObject({ ok: true, exitCode, stderr: "early exit\n" });
     }
   });
 

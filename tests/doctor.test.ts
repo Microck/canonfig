@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { HumanActionRequiredError } from "../src/machine/machine-state.errors.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
-import { doctorProbeNames, runDoctorProbes } from "../src/runtime/doctor.ts";
+import { doctorProbeNames, runDoctorProbes, schedulerProbe } from "../src/runtime/doctor.ts";
 import { credentialReadiness, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { scheduleManagerLayer } from "../src/schedule/schedule-manager.layer.ts";
 import type { ScheduleStatus } from "../src/schedule/schedule-manager.types.ts";
@@ -373,13 +373,27 @@ describe("readiness evidence", () => {
     state: ScheduleStatus["state"],
     extra: Partial<ScheduleStatus> = {},
   ): ScheduleStatus => ({
+    generation: "fixture-generation", installedAt: "2026-09-01T00:00:00Z",
     state, platform: "linux", schedule: { kind: "daily", localTime: "04:00" },
     definition: {
       platform: "linux", mechanism: "systemd-user-timer",
       serviceName: "canonfig", service: "fixture", schedule: "fixture",
     },
-    detail: `fixture ${state}`, timezone: "UTC", warnings: [],
+    bindingUsable: true, detail: `fixture ${state}`, timezone: "UTC", warnings: [],
     ...extra,
+  });
+
+  it.each([
+    "no follower is enrolled; enroll and apply a profile before selecting a schedule",
+    "follower enrollment is pending; finish or resume enrollment before selecting a schedule",
+  ])("preserves enrollment recovery for an installed unmanaged job: %s", async (detail) => {
+    const result = await Effect.runPromise(schedulerProbe({
+      status: () => Effect.succeed(scheduleStatus("current")),
+    }, { unscheduledDetail: detail }));
+    expect(result.status).toBe("warning");
+    expect(result.message).toContain(detail);
+    expect(result.message).toContain("canonfig schedule remove");
+    expect(result.message).not.toContain("canonfig schedule set");
   });
 
   it.each(["current", "not-installed", "disabled", "inactive", "overridden", "drifted"] as const)(
@@ -395,18 +409,34 @@ describe("readiness evidence", () => {
     },
   );
 
+  it.each(["current", "drifted"] as const)("fails %s readiness when the installed runtime or entrypoint is unavailable", (state) => {
+    const result = scheduledDefinitionReadiness(scheduleStatus(state, { drift: "binding", bindingUsable: false }));
+    expect(result.status).toBe("fail");
+    expect(result.category).toBe("verification-or-apply-failure");
+  });
+
   it("warns instead of failing when only another build's binding differs", () => {
-    // After an upgrade the old unit keeps firing on the same calendar until
-    // the next apply re-renders it (CF-59).
-    const result = scheduledDefinitionReadiness(scheduleStatus("drifted", { drift: "binding" }));
+    // Binding-only drift is advisory only when the installed files were checked.
+    const result = scheduledDefinitionReadiness(scheduleStatus("drifted", { drift: "binding", bindingUsable: true }));
     expect(result.status).toBe("warning");
+  });
+
+  it.each(["previous-generation", "legacy", "started-before-reinstall"])("does not credit %s fire evidence to the current job", (kind) => {
+    const result = scheduledDefinitionReadiness(scheduleStatus("current"), [{
+      at: "2026-09-12T04:00:05Z", outcome: "completed",
+      generation: kind === "legacy" ? undefined : kind === "previous-generation" ? "old-generation" : "fixture-generation",
+      startedAt: kind === "started-before-reinstall" ? "2026-08-31T23:59:00Z" : "2026-09-12T03:59:00Z",
+    }]);
+    expect(result.status).toBe("warning");
+    expect(result.details?.scheduledExecutionVerified).toBe(false);
+    expect(result.details?.lastFiredAt).toBeUndefined();
   });
 
   it("marks current schedules verified only by a completed unattended run", () => {
     const status = scheduleStatus("current");
     const fired = scheduledDefinitionReadiness(status, [
-      { at: "2026-09-12T04:00:00Z", outcome: "started" },
-      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
+      { generation: "fixture-generation", startedAt: "2026-09-12T03:59:00Z", at: "2026-09-12T04:00:00Z", outcome: "started" },
+      { generation: "fixture-generation", startedAt: "2026-09-12T03:59:00Z", at: "2026-09-12T04:00:05Z", outcome: "completed" },
     ]);
     expect(fired.status).toBe("pass");
     expect(fired.details).toMatchObject({
@@ -417,8 +447,8 @@ describe("readiness evidence", () => {
     // The scheduler fired the job, but the run failed: doctor says so, with
     // the reason and the last success, instead of passing (CF-48).
     const failedFire = scheduledDefinitionReadiness(status, [
-      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
-      { at: "2026-09-13T04:00:03Z", outcome: "failed", reason: "human-action-required: keychain locked" },
+      { generation: "fixture-generation", startedAt: "2026-09-12T03:59:00Z", at: "2026-09-12T04:00:05Z", outcome: "completed" },
+      { generation: "fixture-generation", startedAt: "2026-09-12T03:59:00Z", at: "2026-09-13T04:00:03Z", outcome: "failed", reason: "human-action-required: keychain locked" },
     ]);
     expect(failedFire.status).toBe("warning");
     expect(failedFire.details?.scheduledExecutionVerified).toBe(true);
@@ -426,10 +456,19 @@ describe("readiness evidence", () => {
     expect(failedFire.message).toContain("2026-09-12T04:00:05Z");
   });
 
+  it("does not promote unknown bindings to verified using old fire evidence", () => {
+    const result = scheduledDefinitionReadiness(scheduleStatus("current", { bindingUsable: undefined }), [
+      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
+    ]);
+    expect(result.status).toBe("warning");
+    expect(result.message).toContain("unverified");
+    expect(result.details).toMatchObject({ definitionVerified: false, scheduledExecutionVerified: false });
+  });
+
   it("warns when the job cannot run while the user is logged out", () => {
     const status = scheduleStatus("current", { warnings: ["linger fixture"] });
     const result = scheduledDefinitionReadiness(status, [
-      { at: "2026-09-12T04:00:05Z", outcome: "completed" },
+      { generation: "fixture-generation", startedAt: "2026-09-12T03:59:00Z", at: "2026-09-12T04:00:05Z", outcome: "completed" },
     ]);
     expect(result.status).toBe("warning");
     expect(result.message).toContain("linger fixture");

@@ -424,6 +424,23 @@ describe("portable safe-root mutation", () => {
 });
 
 describe("systemd unit rendering", () => {
+  it("canonicalizes IANA timezone spelling and rejects numeric offsets", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-systemd-timezone-"));
+    try {
+      const render = (timezone: string) => Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        return yield* machine.renderSchedulerJob({
+          name: "canonfig-sync", description: "timezone fixture",
+          executable: { platform: "linux", absolute: "/usr/bin/node" }, arguments: ["sync"],
+          calendar: { kind: "daily", localTime: "02:30", timezone },
+        });
+      }).pipe(Effect.provide(linuxMachineStateLayer({ environment: environment(root) }))));
+      expect((await render("europe/berlin")).schedule).toContain("OnCalendar=*-*-* 02:30:00 Europe/Berlin");
+      expect((await render("EUROPE/BERLIN")).schedule).toContain("OnCalendar=*-*-* 02:30:00 Europe/Berlin");
+      await expect(render("+05:30")).rejects.toThrow("timezone");
+      await expect(render("-08:00")).rejects.toThrow("timezone");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   // Checked against systemd 249 with a real user unit: "%%" collapses to "%" at
   // load time and "$$" to "$" at start time, inside double quotes too, while a
   // bare "%h" or "${HOME}" expands to the home directory. The program path is

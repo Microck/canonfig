@@ -80,12 +80,26 @@ export const credentialReadiness = (
 };
 
 export interface ScheduleFireEvidence {
+  readonly generation?: string | undefined;
+  readonly startedAt?: string | undefined;
   readonly at: string;
   /** `started`, then `completed` or `failed`; a trailing `started` never finished. */
   readonly outcome: string;
   /** Why a `failed` run failed: its failure category and message. */
   readonly reason?: string | undefined;
 }
+
+/** Historical or unbound receipts cannot prove that this installation fired. */
+export const currentScheduleFires = (
+  status: Pick<ScheduleStatus, "generation" | "installedAt">,
+  fires: ReadonlyArray<ScheduleFireEvidence>,
+): ReadonlyArray<ScheduleFireEvidence> => {
+  if (status.generation === undefined || status.installedAt === undefined) return [];
+  const installedAt = Date.parse(status.installedAt);
+  if (!Number.isFinite(installedAt)) return [];
+  return fires.filter((fire) => fire.generation === status.generation && fire.startedAt !== undefined
+    && Date.parse(fire.startedAt) > installedAt);
+};
 
 /** The last unattended run in words, and whether it completed. */
 export interface UnattendedRunSummary {
@@ -138,7 +152,8 @@ export const scheduledDefinitionReadiness = (
   status: ScheduleStatus,
   fires: ReadonlyArray<ScheduleFireEvidence> = [],
 ): DoctorProbe => {
-  const lastFire = fires.at(-1);
+  const matchingFires = currentScheduleFires(status, fires);
+  const lastFire = matchingFires.at(-1);
   const nextRun: Record<string, string> = {};
   if (status.nextRun !== undefined) nextRun.nextRun = status.nextRun;
   const details = {
@@ -147,24 +162,32 @@ export const scheduledDefinitionReadiness = (
     mechanism: status.definition.mechanism,
     timezone: status.timezone,
     ...nextRun,
-    definitionVerified: status.state === "current",
-    scheduledExecutionVerified: status.state === "current" && lastFire !== undefined,
+    definitionVerified: status.state === "current" && status.bindingUsable === true,
+    bindingUsable: status.bindingUsable ?? "unverified",
+    scheduledExecutionVerified: status.state === "current" && status.bindingUsable === true && lastFire !== undefined,
     ...lastFireDetails(lastFire),
   };
-  if (status.state !== "current") {
-    // A job rendered by another Canonfig build (an upgrade) keeps firing on
-    // the same calendar until the next apply re-renders it: not a failure.
-    return status.state === "drifted" && status.drift === "binding"
+  if (status.state !== "current" || status.bindingUsable === false) {
+    // Binding-only drift is advisory only after checking the installed files.
+    // A deleted runtime cannot launch a scheduled run to repair itself.
+    return status.state === "drifted" && status.drift === "binding" && status.bindingUsable === true
       ? { name: "scheduler", status: "warning", message: status.detail, details }
       : {
         name: "scheduler",
         status: "fail",
         category: "verification-or-apply-failure",
-        message: `requested scheduler definition is ${status.state}: ${status.detail}`,
+        message: status.bindingUsable === false
+          ? `installed scheduler runtime or entrypoint is unavailable: ${status.detail}`
+          : `requested scheduler definition is ${status.state}: ${status.detail}`,
         details,
       };
   }
-  const runs = describeUnattendedRuns(fires);
+  if (status.bindingUsable === undefined) return {
+    name: "scheduler", status: "warning",
+    message: `scheduler binding remains unverified: ${[status.detail, ...status.warnings].join("; ")}`,
+    details,
+  };
+  const runs = describeUnattendedRuns(matchingFires);
   const problems = [...(runs.completed ? [] : [runs.text]), ...status.warnings];
   return problems.length === 0
     ? {

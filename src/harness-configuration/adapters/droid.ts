@@ -4,6 +4,7 @@ import {
   agentDocuments,
   agentMarkdown,
   claudeStyleHooks,
+  DROID_EVENT_MAP,
   commandDocuments,
   commandMarkdown,
   enabledHooks,
@@ -31,12 +32,12 @@ export const droidAdapter: HarnessAdapter = {
       artifacts.push(jsonMcpArtifact(".factory/mcp.json", "factory-droid", context));
     }
     if (enabledHooks(context).length > 0) {
-      const compiled = claudeStyleHooks(context);
+      const compiled = claudeStyleHooks(context, DROID_EVENT_MAP);
       diagnostics.push(...compiled.diagnostics);
       if (Object.keys(compiled.hooks).length > 0) {
         artifacts.push({
           kind: "json", path: ".factory/hooks.json", owner: "factory-droid",
-          operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
+          operations: [{ kind: "managed-hooks", path: [], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
         });
       }
     }

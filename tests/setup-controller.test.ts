@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
-import { establishSetupScope, probeTools, runSetupPreflight } from "../src/setup/setup.controller.ts";
+import { establishSetupScope, probeTools, runSetupPreflight, setupStatus } from "../src/setup/setup.controller.ts";
 
 import {
   nextEligibleSetupStage,
@@ -356,6 +356,53 @@ process.exit(2);
         },
       ],
     }))).toBe("complete");
+  });
+});
+
+describe("setup diagnostic evidence", () => {
+  it("retains failure evidence in status without attaching stale evidence to a dependency skip", async () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-setup-evidence-"));
+    const path = join(home, "setup.json");
+    try {
+      const fixtureItems = [items[0]!, { ...items[1]!, dependsOn: [items[0]!.id] }];
+      writeFileSync(path, JSON.stringify(journal({ items: fixtureItems, records: [
+        { id: items[0]!.id, status: "failed", evidence: "pnpm executable is unavailable; configure an installer binding", updatedAt: "2026-08-17T00:01:00.000Z" },
+        { id: items[1]!.id, status: "completed", evidence: "stale success", updatedAt: "2026-08-17T00:01:00.000Z" },
+      ] })));
+      const status = await Effect.runPromise(setupStatus(path).pipe(Effect.provide(linuxMachineStateLayer())));
+      expect(status.items[0]).toMatchObject({ status: "failed", evidence: "pnpm executable is unavailable; configure an installer binding" });
+      expect(status.items[1]).toMatchObject({ status: "skipped" });
+      expect(status.items[1]?.evidence).toBeUndefined();
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it("classifies a directory discovery input as operator usage, not an internal defect", () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-setup-directory-"));
+    try {
+      const result = spawnSync(process.execPath, ["--import", "tsx", "src/runtime/main.ts", "setup", "plan", "--role", "follower", "--scope", "cli-only", "--file", home, "--json"], {
+        cwd: resolve(import.meta.dirname, ".."), encoding: "utf8", timeout: 60_000,
+        env: { ...process.env, HOME: home, USERPROFILE: home, CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, "credentials"), CANONFIG_LOG: "off" },
+      });
+      expect(result.status, result.stderr || result.stdout).toBe(2);
+      expect(result.stdout + result.stderr).toContain("discovery file");
+      expect(result.stdout + result.stderr).not.toContain("internal-defect");
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("classifies an unreadable discovery file as operator usage, not an internal defect", () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-setup-unreadable-"));
+    const input = join(home, "unreadable.json");
+    writeFileSync(input, "{}");
+    chmodSync(input, 0);
+    try {
+      const result = spawnSync(process.execPath, ["--import", "tsx", "src/runtime/main.ts", "setup", "plan", "--role", "follower", "--scope", "cli-only", "--file", input, "--json"], {
+        cwd: resolve(import.meta.dirname, ".."), encoding: "utf8", timeout: 60_000,
+        env: { ...process.env, HOME: home, USERPROFILE: home, CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, "credentials"), CANONFIG_LOG: "off" },
+      });
+      expect(result.status, result.stderr || result.stdout).toBe(2);
+      expect(result.stdout + result.stderr).toContain("discovery file");
+      expect(result.stdout + result.stderr).not.toContain("internal-defect");
+    } finally { chmodSync(input, 0o600); rmSync(home, { recursive: true, force: true }); }
   });
 });
 

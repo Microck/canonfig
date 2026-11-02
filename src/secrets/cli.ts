@@ -1,10 +1,13 @@
 import type { Readable } from "node:stream";
 
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 
 import type { CliIo } from "../cli/cli.ts";
+import { renderCliResult } from "../cli/render.ts";
 import {
   CliExitCode,
+  exitCodeForFailure,
+  type CliFailureCategory,
   type CliExitCode as CliExitCodeValue,
 } from "../cli/exit-codes.ts";
 import { resolveLinuxSessionBus } from "../machine/linux.layer.ts";
@@ -53,21 +56,18 @@ Bootstrap stores only disposable probes, removes them, and reports the
 selected credential policy with backup-encryption and persistence evidence.
 `;
 
-export const secretExitCode = (
-  error: SecretTransferError,
-): CliExitCodeValue => {
+export const secretFailureCategory = (error: SecretTransferError): CliFailureCategory => {
   switch (error.category) {
     case "usage":
-    case "state":
-      return CliExitCode.usageOrConfiguration;
-    case "storage":
-      return CliExitCode.humanActionRequired;
-    case "authentication":
-      return CliExitCode.authenticationOrRevocation;
-    case "transport":
-      return CliExitCode.transport;
+    case "state": return "usage-or-configuration";
+    case "storage": return "human-action-required";
+    case "authentication": return "authentication-or-revocation";
+    case "transport": return "transport";
   }
 };
+
+export const secretExitCode = (error: SecretTransferError): CliExitCodeValue =>
+  exitCodeForFailure(secretFailureCategory(error));
 
 const usageError = (message: string): SecretTransferError =>
   new SecretTransferError({
@@ -368,12 +368,10 @@ const writeSuccess = (
   human: string,
 ): void => {
   if (json) {
-    io.writeStdout(`${JSON.stringify({
-      schema: "canonfig.secrets/v1",
-      ok: true,
-      command,
-      data,
-    })}\n`);
+    const payload = "secrets" in data
+      ? { ...data, secrets: data.secrets.map((secret) => Predicate.isString(secret) ? secret : { ...secret }) }
+      : { ...data };
+    io.writeStdout(renderCliResult({ command, message: `${command} completed`, data: payload, exitCode: CliExitCode.success }, "json"));
   } else {
     io.writeStdout(human);
   }
@@ -387,21 +385,12 @@ const writeFailure = (
   error: SecretTransferError,
 ): void => {
   const exitCode = secretExitCode(error);
-  if (json) {
-    io.writeStderr(`${JSON.stringify({
-      schema: "canonfig.secrets/v1",
-      ok: false,
-      command,
-      error: {
-        category: error.category,
-        operation: error.operation,
-        message: error.message,
-      },
-      exitCode,
-    })}\n`);
-  } else {
-    io.writeStderr(`${error.message}\n`);
-  }
+  io.writeStderr(renderCliResult({
+    command,
+    message: error.message,
+    data: { category: error.category, operation: error.operation },
+    exitCode,
+  }, json ? "json" : "human"));
   io.setExitCode(exitCode);
 };
 

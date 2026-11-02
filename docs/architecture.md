@@ -5,7 +5,7 @@ Canonfig is a one-way configuration synchronizer for AI-assisted development mac
 The Configuration Agent is part of the product contract, but it is not the source of truth. Deterministic code owns discovery evidence, policy, execution, verification, and history. The agent resolves work only when Canonfig cannot select one safe action from declared facts.
 
 > [!IMPORTANT]
-> This document defines the accepted v2 architecture. See the [implementation map](./implementation-map.md) for its dependency order and verification.
+> This document defines the accepted v2 architecture.
 
 ## Product invariants
 

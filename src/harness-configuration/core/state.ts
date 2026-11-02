@@ -1,14 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CANONFIG_DIR, STATE_FILENAME } from "./config.ts";
-import type { CanonfigState } from "./types.ts";
+import { TARGET_IDS, type CanonfigState } from "./types.ts";
 import { CanonfigError } from "./errors.ts";
 import { assertNoSymlinkPathComponents, atomicWrite } from "./filesystem.ts";
 
 export const HARNESS_CONFIGURATION_VERSION = "1";
 
 export function emptyState(): CanonfigState {
-  return { version: 1, generatedAt: new Date(0).toISOString(), canonfigVersion: HARNESS_CONFIGURATION_VERSION, artifacts: {} };
+  return { version: 1, generatedAt: new Date(0).toISOString(), canonfigVersion: HARNESS_CONFIGURATION_VERSION, artifacts: {}, appliedTargets: [] };
 }
 
 export async function loadState(root: string): Promise<CanonfigState> {
@@ -18,6 +18,10 @@ export async function loadState(root: string): Promise<CanonfigState> {
     const parsed = JSON.parse(raw) as Partial<CanonfigState>;
     if (parsed.version !== 1 || !parsed.artifacts || typeof parsed.artifacts !== "object") {
       throw new CanonfigError("STATE_INVALID", `Unsupported state file: ${path.relative(root, statePath)}`);
+    }
+    if (parsed.appliedTargets !== undefined && (!Array.isArray(parsed.appliedTargets)
+      || !parsed.appliedTargets.every((value) => TARGET_IDS.some((target) => target === value)))) {
+      throw new CanonfigError("STATE_INVALID", "Invalid applied harness targets in state file");
     }
     return parsed as CanonfigState;
   } catch (error) {
