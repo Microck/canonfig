@@ -33,7 +33,7 @@ The demo build also replaces the page title and adds a description, canonical UR
 
 ### Share image
 
-The demo build also emits `og-image.png` at the site root and points `og:image` and `twitter:image` at `https://canonfig.micr.dev/og-image.png`; the docs use the same URL (`website/app/layout.tsx`). The file lives in `scripts/`, not `public/`, so the production build does not ship it. `scripts/og-image.html` is its source: the chest, the wordmark, the README tagline and a `DitherBlock`-style green ramp, drawn with the fonts in `public/fonts`. After changing it, render and compress it from `ui/`:
+The demo build also emits `og-image.png` at the site root and points `og:image` and `twitter:image` at `https://canonfig.micr.dev/og-image.png`; the docs use the same URL (`website/app/layout.tsx`). The file lives in `scripts/`, not `public/`, so the production build does not ship it. `scripts/og-image.html` is its source: the demo's machine map (`scripts/og-image-map.png`, a capture of `/source/machines` at 880x650 CSS pixels and 2x scale with reduced motion, the default layout and toasts hidden), cropped under the chest, the wordmark and the onboarding line, with the fonts in `public/fonts`. Recapture the map after the map's look changes; after changing either file, render and compress the image from `ui/`:
 
 ```bash
 npx playwright@1.58.2 screenshot --viewport-size=1200,630 --wait-for-timeout=500 "file://$PWD/scripts/og-image.html" scripts/og-image.png

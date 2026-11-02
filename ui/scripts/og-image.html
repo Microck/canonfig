@@ -1,120 +1,130 @@
 <!doctype html>
-<!--
-  Source of scripts/og-image.png, the 1200x630 share image of the demo and the docs (README "Share image").
-  Render it from ui/:
-    npx playwright@1.58.2 screenshot --viewport-size=1200,630 --wait-for-timeout=500 "file://$PWD/scripts/og-image.html" scripts/og-image.png
-    optipng -o7 -strip all scripts/og-image.png
-  Colours are the :root tokens in src/index.css, written out because this page loads no app CSS; keep them in step.
--->
+<!-- The share image (scripts/og-image.png, see ui/README.md "Share image"): the demo's /source/machines map pane
+     (og-image-map.png, captured at 880x650 CSS px and 2x, default layout, zoom 1, reduced motion, toasts hidden). The crop keeps the Source, its four followers and their
+     sync edges in the lower half and uses the pane's own empty dot grid above them for the onboarding line. -->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <style>
-      @font-face {
-        font-family: "Manrope";
-        src: url("../public/fonts/Manrope.woff2") format("woff2");
-        font-weight: 200 800;
-      }
-      @font-face {
-        font-family: "Ioskeley Mono";
-        src: url("../public/fonts/IoskeleyMono-Regular.woff2") format("woff2");
-        font-weight: 400;
-      }
-      :root {
-        --canvas: #080b0c;
-        --foreground: #e5eee9;
-        --muted-foreground: oklch(0.78 0.026 177.3);
-        --faint: oklch(0.64 0.031 179.5);
-        --dither-color-green: #7aae7a;
-      }
-      * {
-        margin: 0;
-        box-sizing: border-box;
-      }
-      html,
-      body {
-        width: 1200px;
-        height: 630px;
-        overflow: hidden;
-        background: var(--canvas);
-        font-family: "Manrope", sans-serif;
-        -webkit-font-smoothing: antialiased;
-      }
-      /* The lockup: the chest beside the wordmark and tagline, centred as one group above the dither. */
-      .lockup {
+/* Shared by the og-*.html concepts: the app's two faces and its :root tokens (ui/src/index.css), written out
+   because these pages load no app CSS. Keep them in step with index.css. */
+@font-face {
+  font-family: "Manrope";
+  src: url("../public/fonts/Manrope.woff2") format("woff2");
+  font-weight: 200 800;
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  src: url("../public/fonts/IoskeleyMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  src: url("../public/fonts/IoskeleyMono-Medium.woff2") format("woff2");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  src: url("../public/fonts/IoskeleyMono-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+}
+:root {
+  --canvas: #080b0c;
+  --background: #0b0f10;
+  --panel: #0d1213;
+  --raised: #121a1b;
+  --foreground: #e5eee9;
+  --muted-foreground: oklch(0.78 0.026 177.3);
+  --faint: oklch(0.64 0.031 179.5);
+  --border: color-mix(in oklab, #334646 62%, transparent);
+  --border-strong: #334646;
+  --ok: oklch(0.74 0.093 144.5);
+  --warn: #f1c332;
+  --act: #f0975a;
+  --bad: oklch(0.72 0.164 22.3);
+  --gold: #f1c332;
+  --ring: #c4b5fd;
+  --dither-color-green: #7aae7a;
+  --dither-color-grey: #4d6460;
+  --dither-color-purple: #a78bfa;
+}
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+html,
+body {
+  width: 1200px;
+  height: 630px;
+  overflow: hidden;
+  background: var(--canvas);
+  color: var(--foreground);
+  font-family: "Manrope", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+body {
+  position: relative;
+}
+.mono {
+  font-family: "Ioskeley Mono", monospace;
+}
+/* The lockup used across concepts: the chest at pixel-art scale beside the lowercase wordmark, as in the README. */
+.mark {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+.mark img {
+  image-rendering: auto;
+}
+
+</style>
+    <style>
+      /* Crop window: CSS (316,212) of the capture at scale --s; the nodes span x 368..1628, y 518..858. */
+      .map {
         position: absolute;
-        inset: 0 0 160px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 44px;
+        inset: 0;
+        overflow: hidden;
       }
-      .lockup img {
-        width: 240px;
-        height: 240px;
+      .map img {
+        position: absolute;
+        width: calc(1760px * var(--s));
+        left: calc(-316px * var(--s));
+        top: calc(-212px * var(--s));
+      }
+      .copy {
+        position: absolute;
+        left: 64px;
+        top: 56px;
+        right: 64px;
+      }
+      .mark {
+        font-size: 30px;
+        gap: 12px;
+      }
+      .mark img {
+        width: 36px;
+        height: 36px;
       }
       h1 {
-        font-size: 124px;
+        margin-top: 28px;
+        max-width: 1040px;
+        font-size: 42px;
         font-weight: 600;
-        line-height: 1;
-        letter-spacing: -0.035em;
-        color: var(--foreground);
-      }
-      p {
-        margin-top: 18px;
-        font-size: 36px;
-        font-weight: 500;
-        line-height: 1.25;
-        color: var(--muted-foreground);
-      }
-      canvas {
-        position: absolute;
-        left: 0;
-        bottom: 0;
+        line-height: 1.14;
+        letter-spacing: -0.025em;
       }
     </style>
   </head>
   <body>
-    <div class="lockup">
-      <img src="../public/favicon.png" alt="" />
-      <div>
-        <h1>canonfig</h1>
-        <p>One-way sync for AI agent configuration.</p>
-      </div>
+    <div class="map" style="--s: 0.88"><img src="og-image-map.png" alt="" /></div>
+    <div class="copy">
+      <div class="mark"><img src="../public/favicon.png" alt="" />canonfig</div>
+      <h1>Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.</h1>
     </div>
-    <canvas id="dither" width="1200" height="240"></canvas>
-    <script>
-      // The DitherBlock fill (edge="bottom", tone "ok"): an ordered-dither ramp, solid at the bottom edge and
-      // thinning to a sparse floor. Same rule as ditherRamp in src/lib/dither/style.ts and the bayer4 ranks in
-      // matrices.ts; cells are 6px instead of the app's 2px so the pattern survives the downscale of a link preview.
-      const CELL = 6;
-      const FADE = 40; // cells from the dense edge to the empty top
-      const FROM = 0.9;
-      const TO = 0;
-      const SIZE = 4;
-      const rank = (x, y) => {
-        let r = 0;
-        for (let bit = 1; bit < SIZE; bit *= 2) {
-          const xBit = Math.floor(x / bit) % 2;
-          const yBit = Math.floor(y / bit) % 2;
-          r = r * 4 + 2 * ((xBit + yBit) % 2) + yBit;
-        }
-        return r;
-      };
-      const canvas = document.getElementById("dither");
-      const ctx = canvas.getContext("2d");
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--dither-color-green");
-      const cols = canvas.width / CELL;
-      const rows = canvas.height / CELL;
-      for (let row = 0; row < rows; row += 1) {
-        const step = rows - 1 - row;
-        const level = step >= FADE ? TO : TO + (FROM - TO) * (1 - (step + 0.5) / FADE) ** 2;
-        for (let col = 0; col < cols; col += 1) {
-          if (level > (rank(col % SIZE, row % SIZE) + 0.5) / (SIZE * SIZE)) {
-            ctx.fillRect(col * CELL, row * CELL, CELL, CELL);
-          }
-        }
-      }
-    </script>
   </body>
 </html>
