@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AnimatedNumber, DitherProgress, Hint, Mono, Term } from "@/shared/shared";
-import { KIND_LABEL, PLAIN, POLICY_HINT, POLICY_TITLE, SECRETS_GROUP, profile, type Resource, type ResourceKind } from "@/shared/data";
+import { DEMO, KIND_LABEL, PLAIN, POLICY_HINT, POLICY_TITLE, SECRETS_GROUP, profile, type Resource, type ResourceKind } from "@/shared/data";
 import { SCANNED_TOOLS, toolFromScan, useSharedState, useWorkspace } from "./store";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 import {
@@ -289,8 +289,8 @@ export function ProfileView() {
               {ws.profileFile}
             </button>
             <Hint label="the profile file">
-              The file on disk is the source of truth. Edits here are written into it in place and keep your comments. Hand edits show up here too. In this demo, edits stay in
-              this browser session and no file is written.
+              The file on disk is the source of truth. Edits here are written into it in place and keep your comments. Hand edits show up here too.
+              {DEMO && " In this demo, edits stay in this browser session and no file is written."}
             </Hint>
           </span>
         }
@@ -479,7 +479,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
       ? ` ${renamedDependents.map((r) => r.id).join(", ")} now ${renamedDependents.length === 1 ? "depends" : "depend"} on ${id}.`
       : "";
     toast.success(isNew ? `Added ${id}` : `Saved ${id}`, {
-      description: `Goes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${updated} Saved in this demo workspace.`,
+      description: `Goes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${updated}${DEMO ? " Saved in this demo workspace." : ""}`,
     });
     setDraft(next);
     setRows(keyRowsOf(next));
@@ -940,7 +940,7 @@ function GroupsTab() {
               // A group is profile content, so it waits for the next revision like an item edit.
               ws.markProfileEdit({ area: "group", id: trimmed, change: "added" });
               setOpen(false);
-              toast.success(`Added group ${trimmed}`, { description: `Goes out with revision ${ws.nextSequence}. Saved in this demo workspace.` });
+              toast.success(`Added group ${trimmed}`, { description: `Goes out with revision ${ws.nextSequence}.${DEMO ? " Saved in this demo workspace." : ""}` });
             }}
           >
             <DialogHeader>
@@ -1078,7 +1078,7 @@ function DefaultsTab() {
             : unpublished
               ? ` Goes out with revision ${ws.nextSequence}.`
               : ` Back to the published values, so the defaults no longer wait for revision ${ws.nextSequence}.`;
-          toast.success("Defaults saved", { description: `${scheduleSummary(schedule, "")}.${note} Saved in this demo workspace.` });
+          toast.success("Defaults saved", { description: `${scheduleSummary(schedule, "")}.${note}${DEMO ? " Saved in this demo workspace." : ""}` });
         }}
       >
         <SectionLabel>Profile</SectionLabel>
@@ -1115,8 +1115,8 @@ function DefaultsTab() {
                 .join(", ")} }`}
             </pre>
             <p className="text-sm text-pretty text-faint">
-              Canonfig writes this into the profile file when you save; this demo keeps it in the browser session and writes no file. A machine follows it while its
-              Schedule page is set to follow the Source's default.
+              Canonfig writes this into the profile file when you save{DEMO && "; this demo keeps it in the browser session and writes no file"}. A machine follows it
+              while its Schedule page is set to follow the Source's default.
             </p>
           </div>
         )}
@@ -1185,8 +1185,8 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
           <DialogTitle>Discover tools</DialogTitle>
           <DialogDescription className="text-base text-pretty">
             Canonfig reads only <span className="font-mono text-sm text-foreground">{SCAN_FILES[0]}</span> and{" "}
-            <span className="font-mono text-sm text-foreground">{SCAN_FILES[1]}</span>, and proposes a tool for each command it finds there. It runs nothing. This demo
-            reads no files and shows example results.
+            <span className="font-mono text-sm text-foreground">{SCAN_FILES[1]}</span>, and proposes a tool for each command it finds there. It runs nothing.
+            {DEMO && " This demo reads no files and shows example results."}
           </DialogDescription>
         </DialogHeader>
         {!done ? (

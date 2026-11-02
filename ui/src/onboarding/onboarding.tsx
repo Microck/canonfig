@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { machine, profile } from "@/shared/data";
+import { DEMO, machine, profile } from "@/shared/data";
 import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import { DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
 
@@ -183,14 +183,14 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
 
   return (
     <OnboardingShell hostname={machine.hostname} backdrop={<SetupBackdrop job={job} />}>
-      {/* md:pb-44 clears the fixed demo switcher (215px wide and about 70px tall, 12px from
-          the left and 80px above the bottom) at the end of the scroll, where the cards can
+      {/* In the demo, md:pb-52 clears the fixed demo panel (215px wide and about 122px tall, 12px
+          from the left and 80px above the bottom) at the end of the scroll, where the cards can
           reach under it. From xl the cards start right of it, so normal padding returns and a
-          card that fits the window doesn't scroll. Below md the switcher lives in the header
-          (kit.tsx), so only normal padding remains. Every screen is centred vertically, where the
+          card that fits the window doesn't scroll. Below md the panel is a button in the header
+          (kit.tsx), so only normal padding remains, as in production. Every screen is centred vertically, where the
           backdrop's rings meet; a step that changes height grows the card evenly up and down
           (the height tween keeps that smooth). A card taller than the window just scrolls. */}
-      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 md:pb-44 xl:pb-16 [overflow-wrap:anywhere] justify-center sm:px-6 sm:pt-16")}>
+      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 xl:pb-16 [overflow-wrap:anywhere] justify-center sm:px-6 sm:pt-16", DEMO && "md:pb-52")}>
         {/* popLayout takes the leaving screen out of flow, so the next one lays out at once and
             the picked card's shell (CardShell) can grow straight into the wizard card's place.
             `custom` tells the leaving choice which card was picked. */}
@@ -761,8 +761,8 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
               )
             }
           >
-            Your <Term term="Machine Profile" /> is <Mono className="text-foreground">{file.trim()}</Mono> in this demo workspace. The demo doesn't create or read that file; edit the profile
-            here.
+            Your <Term term="Machine Profile" /> is <Mono className="text-foreground">{file.trim()}</Mono>
+            {DEMO ? " in this demo workspace. The demo doesn't create or read that file; edit the profile here." : "."}
           </Finished>
         ) : undefined
       }
@@ -971,7 +971,7 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
                 <Field
                   label="Invitation contents"
                   htmlFor="ob-paste"
-                  error={pasteTried && !pasteValid ? "That isn't the example invitation. In this demo, pasted invitations start with canonfig-invite-v1:" : null}
+                  error={pasteTried && !pasteValid ? `That isn't the example invitation.${DEMO ? " In this demo, pasted invitations start with canonfig-invite-v1:" : ""}` : null}
                 >
                   <Textarea
                     id="ob-paste"
@@ -1004,7 +1004,7 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
                 <div className={cn("flex flex-col items-center rounded-lg border border-dashed px-6 py-8 text-center", shown("invite") ? "border-bad/60" : "border-border-strong")}>
                   <FileArrowUp className="size-5 text-muted-foreground" />
                   <p className="mt-3 font-medium">Add the invitation file</p>
-                  <p className="mt-1 text-sm text-muted-foreground">Usually named canonfig-invite. This demo uses an example file.</p>
+                  <p className="mt-1 text-sm text-muted-foreground">Usually named canonfig-invite.{DEMO && " This demo uses an example file."}</p>
                   <div className="mt-4 flex flex-wrap justify-center gap-2">
                     <Button type="button" variant="outline" size="sm" onClick={() => setInvite("~/Downloads/canonfig-invite")}>
                       Use the example file

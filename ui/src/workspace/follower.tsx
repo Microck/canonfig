@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AnimatedNumber, DitherProgress, Mono, StateBand, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
-import { PLAIN, POLICY_TITLE, SECRETS_GROUP, configKeysFor, machine, resources, secrets as seedSecrets } from "@/shared/data";
+import { DEMO, PLAIN, POLICY_TITLE, SECRETS_GROUP, configKeysFor, machine, resources, secrets as seedSecrets } from "@/shared/data";
 import { FOLLOWER_PLAN, JOINED_PLAN, LOCAL_VALUES, conflictsIn, useSharedReader, useSharedState, useWorkspace, type Overlay, type PlanAction, type PlanItem } from "./store";
 import { FOLLOWER_PROFILES, followerProfile, profilePlan } from "./profiles";
 import { GetStarted } from "./guide";
@@ -819,7 +819,7 @@ export function ScheduleView() {
             onClick={() =>
               (setSaved(draft),
               ws.reach("schedule"),
-              toast.success("Schedule saved", { description: `${scheduleSummary(draft, `Same as the Source: ${defaultLabel}`)}. Saved in this demo workspace.` }))
+              toast.success("Schedule saved", { description: `${scheduleSummary(draft, `Same as the Source: ${defaultLabel}`)}.${DEMO ? " Saved in this demo workspace." : ""}` }))
             }
           >
             Save schedule
@@ -1154,7 +1154,7 @@ export function FollowerSecretsView() {
                 }
                 // A clock time, unlike "just now", stays true when the page is opened again later.
                 setRefresh({ busy: false, updated: `today at ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` });
-                toast.success("Secrets updated", { description: "Checked in this demo workspace: 2 secrets, no changes." });
+                toast.success("Secrets updated", { description: `${DEMO ? "Checked in this demo workspace: " : ""}2 secrets, no changes.` });
               }, 900);
             }}
           >
@@ -1203,7 +1203,7 @@ export function TunnelView() {
       if (next) setStartedHere(true);
       setBusy(false);
       // Like the Source service: a completed start is a success; stopping is neutral, as removals are.
-      if (next) toast.success("Tunnel started", { description: `In this demo workspace: forwarding 127.0.0.1:17342 to ${SOURCE}.` });
+      if (next) toast.success("Tunnel started", { description: `${DEMO ? "In this demo workspace: forwarding" : "Forwarding"} 127.0.0.1:17342 to ${SOURCE}.` });
       else toast("Tunnel stopped", { description: "Applying changes, checking for updates and updating secrets wait until you start it again." });
     }, 700);
   };

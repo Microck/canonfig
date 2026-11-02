@@ -13,6 +13,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import {
+  DEMO,
   followers as seedFollowers,
   configKeysFor,
   followerSelf,
@@ -229,7 +230,8 @@ const JOINED_REVISION = 7;
 /**
  * The demo's stand-in for reading a page's data from the local Canonfig service, which the real GUI will
  * fetch over loopback. 700ms sits at the slow end of a cold read, so the skeleton is seen and its reveal
- * plays (skullet holds a skeleton back for its first 150ms), without making every first visit drag.
+ * plays (skullet holds a skeleton back for its first 150ms), without making every first visit drag. Demo
+ * only: the production build reads the same simulated data with no wait until the backend exists.
  */
 const SIMULATED_LOAD_MS = 700;
 
@@ -283,8 +285,9 @@ export interface Workspace {
   tourPickerOpen: boolean;
   setTourPickerOpen: (open: boolean) => void;
   /**
-   * The first visit to each page in a page load waits SIMULATED_LOAD_MS for its data, showing a skeleton
-   * (Body in kit.tsx). Never while a tour runs or its picker is open: tours spotlight the pages they open.
+   * In the demo, the first visit to each page in a page load waits SIMULATED_LOAD_MS for its data, showing a
+   * skeleton (Body in kit.tsx). Never while a tour runs or its picker is open: tours spotlight the pages they
+   * open. Always false in production, which has no fake delay.
    */
   pageLoading: boolean;
   tourFinished: (id: string) => boolean;
@@ -427,7 +430,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const [shownPage, setShownPage] = useState<string | null>(null);
   if (shownPage !== pageKey) {
     setShownPage(pageKey);
-    setLoadingPage(guided || loadedPages.has(pageKey) ? null : pageKey);
+    setLoadingPage(!DEMO || guided || loadedPages.has(pageKey) ? null : pageKey);
   } else if (guided && loadingPage !== null) {
     loadedPages.add(loadingPage);
     setLoadingPage(null);
@@ -517,7 +520,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
         setPublishing(false);
         onDone();
         toast.success(`Published revision ${seq}`, {
-          description: "Saved in this demo workspace. Reachable machines receive it next and apply it on their next check.",
+          description: `${DEMO ? "Saved in this demo workspace. " : ""}Reachable machines receive it next and apply it on their next check.`,
         });
         // Every reachable machine fetches the revision, simulated here one after another.
         // Items paused by a local edit or waiting for a person stay that way; the revision still arrives.

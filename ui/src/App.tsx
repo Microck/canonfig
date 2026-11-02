@@ -1,8 +1,9 @@
-// The GUI currently uses simulated machine data and actions. ?tour=1 replays the tour.
+// The GUI currently uses simulated machine data and actions in both builds; DEMO adds the demo panel. ?tour=1 replays the tour.
 import { SkulletProvider } from "skullet/react";
 import type { SkulletTheme } from "skullet";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { DEMO } from "@/shared/data";
 import { DemoSwitcher } from "@/shared/demo-switcher";
 import { WorkspaceApp } from "@/workspace/workspace";
 import { useAppRoute } from "@/workspace/routes";
@@ -23,7 +24,6 @@ const SKELETON_THEME: SkulletTheme = {
 
 export default function App() {
   const route = useAppRoute();
-  const role = route.kind === "workspace" ? route.role : route.kind === "setup" ? "unconfigured" : null;
 
   return (
     <SkulletProvider mode="dark" theme={SKELETON_THEME}>
@@ -41,11 +41,13 @@ export default function App() {
           offset={{ right: 8, bottom: "calc(8px + var(--toast-lift, 0px))" }}
           mobileOffset={{ bottom: "calc(8px + var(--toast-lift, 0px))" }}
         />
-        {route.kind !== "workspace" && (
-          // Below md the compact switcher is one button in the reserved slot of the setup header (kit.tsx).
-          <aside aria-label="Demo" className="fixed z-40 max-md:top-0.5 max-md:right-16 md:bottom-[80px] md:left-[12px]">
-            <DemoSwitcher role={role} compact />
-          </aside>
+        {DEMO && route.kind !== "workspace" && (
+          // Below md the compact panel is one button in the reserved slot of the setup header (onboarding/kit.tsx).
+          <DemoSwitcher
+            role={route.kind === "setup" ? "unconfigured" : null}
+            compact
+            className="fixed z-40 max-md:top-0.5 max-md:right-16 md:bottom-[80px] md:left-[12px]"
+          />
         )}
       </TooltipProvider>
     </SkulletProvider>

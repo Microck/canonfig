@@ -8,7 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
-import { PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/data";
+import { DEMO, PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/data";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
 import { GetStarted } from "./guide";
 import { whyBehind } from "./machines";
@@ -471,8 +471,9 @@ export function PublishDialog() {
             </div>
             <DitherProgress value={ws.publishing ? 100 : check} running={!checked || ws.publishing} tone="ok" label="File check" />
             <p className="text-sm text-pretty text-faint">
-              Canonfig reads every file in this change and records a fingerprint of it, so each machine can confirm it got exactly these files. This demo reads no files: the
-              check is a short wait, and the fingerprint is a stand-in made from the revision number and change list. Publish unlocks when the check finishes.
+              Canonfig reads every file in this change and records a fingerprint of it, so each machine can confirm it got exactly these files.
+              {DEMO && " This demo reads no files: the check is a short wait, and the fingerprint is a stand-in made from the revision number and change list."} Publish
+              unlocks when the check finishes.
             </p>
           </section>
 
@@ -591,8 +592,8 @@ function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose:
             <span className="inline-flex items-center gap-1">
               Fingerprint{" "}
               <Hint label="Fingerprint">
-                The digest of everything in this revision. Each machine checks it, so it knows the files weren't changed on the way. In this demo it is a stand-in value,
-                and no machine checks it.
+                The digest of everything in this revision. Each machine checks it, so it knows the files weren't changed on the way.
+                {DEMO && " In this demo it is a stand-in value, and no machine checks it."}
               </Hint>
             </span>
           }
@@ -673,7 +674,7 @@ export function SecretsView() {
             <span className="lowercase">{PLAIN.secretsGroup}</span>
           </Term>{" "}
           (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>): {receivers.length ? receivers.map((f) => f.name).join(", ") : "none yet"}. A value can't be viewed
-          again after you set it. This demo keeps only each secret's name and discards the value.
+          again after you set it.{DEMO && " This demo keeps only each secret's name and discards the value."}
         </p>
         {ws.secrets.length === 0 ? (
           <EmptyState
@@ -743,7 +744,7 @@ export function SecretsView() {
               }
               ws.setSecrets((p) => (editing ? p.map((s) => (s.name === editing ? { ...s, updated: "Today" } : s)) : [...p, { name: trimmed, updated: "Today", sharedWith: receivers.length }]));
               setOpen(false);
-              toast.success(editing ? `Replaced ${editing}` : `Saved ${trimmed}`, { description: "Saved in this demo workspace." });
+              toast.success(editing ? `Replaced ${editing}` : `Saved ${trimmed}`, { description: DEMO ? "Saved in this demo workspace." : undefined });
             }}
           >
             <DialogHeader>
@@ -771,7 +772,7 @@ export function SecretsView() {
               <Field
                 label="Value"
                 htmlFor="sec-value"
-                description="Canonfig keeps it in the credential store, never in the profile file. This demo discards it."
+                description={`Canonfig keeps it in the credential store, never in the profile file.${DEMO ? " This demo discards it." : ""}`}
                 error={valueError}
               >
                 <Input
@@ -804,7 +805,7 @@ export function SecretsView() {
             <DialogTitle>Remove {removing}?</DialogTitle>
             <DialogDescription className="text-base text-pretty">
               Canonfig deletes it from this machine's credential store, and machines delete their copy on their next update. Tools that read it stop working until you set it again.
-              This demo only removes the name from the list.
+              {DEMO && " This demo only removes the name from the list."}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -815,7 +816,7 @@ export function SecretsView() {
               variant="destructive"
               onClick={() => {
                 ws.setSecrets((p) => p.filter((s) => s.name !== removing));
-                toast(`Removed ${removing}`, { description: "Removed from this demo workspace." });
+                toast(`Removed ${removing}`, { description: DEMO ? "Removed from this demo workspace." : undefined });
                 setRemoving(null);
               }}
             >

@@ -2,6 +2,17 @@
 // status, doctor, and schedule outputs for the simulated GUI.
 // Nothing here talks to a real machine.
 
+/**
+ * True in the public demo build (`npm run build:demo`, Vite mode "demo") and on the dev server; false in the
+ * production build that `canonfig ui` will serve. It gates demo chrome only: the Demo panel (role switcher,
+ * docs and GitHub links), copy that describes the demo itself, and the simulated first-visit page load.
+ * Vite replaces `import.meta.env` at build time, so production drops the demo-only code.
+ *
+ * Both builds still run on the simulated data in this module. The loopback backend in
+ * docs/adr/0001-local-browser-gui.md isn't implemented, so production has no real data path yet.
+ */
+export const DEMO = import.meta.env.DEV || import.meta.env.MODE === "demo";
+
 export type Role = "source" | "follower" | "unconfigured";
 
 export type ResourceKind = "file" | "directory" | "config" | "skill" | "tool" | "credential";

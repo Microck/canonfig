@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { fillStyle } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DEMO } from "@/shared/data";
 import { DitherBlock, DitherProgress, StatusMark } from "@/shared/shared";
 import { Tour, type TourStep } from "@/tour/tour";
 import { PAGE_TIPS } from "./page-tips";
@@ -322,14 +323,14 @@ function starTimeSoFar(): number | null {
  * saves the dismissal, so it is asked for at most once per page load until then and never after.
  * Storage that can't be read or written could not keep a dismissal, so it then never asks.
  * It waits while other guidance (tour, tour offer, page tip) or a dialog has the person's
- * attention. `?star=1` asks straight away, to preview it in the demo.
+ * attention. In the demo, `?star=1` asks straight away to preview it.
  */
 export function StarPrompt() {
   const ws = useWorkspace();
   const busy = ws.tourOpen || ws.tourPickerOpen || ws.tourOffered || ws.activeTip !== null || ws.paletteOpen || ws.publishOpen || ws.inviteOpen;
   // "off": dismissed, or storage unusable. "counting": still adding up visible time. "due": ask.
   const [stage, setStage] = useState<"off" | "counting" | "due">(() => {
-    if (new URLSearchParams(location.search).get("star") === "1") return "due";
+    if (DEMO && new URLSearchParams(location.search).get("star") === "1") return "due";
     try {
       const used = starTimeSoFar();
       if (used === null) return "off";

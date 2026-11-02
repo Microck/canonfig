@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AnimatedNumber, Hint, Mono, StateLabel, Term } from "@/shared/shared";
-import { PLAIN, SECRETS_GROUP, followers as seedFollowers, followerSelf, machine, profile, type Follower } from "@/shared/data";
+import { DEMO, PLAIN, SECRETS_GROUP, followers as seedFollowers, followerSelf, machine, profile, type Follower } from "@/shared/data";
 import { SOURCE_ID } from "@/shared/machine-map/model";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace, type Invitation } from "./store";
@@ -780,8 +780,9 @@ export function InviteDialog() {
             <DialogHeader>
               <DialogTitle>Invitation ready</DialogTitle>
               <DialogDescription className="text-base text-pretty">
-                Saved in this demo workspace as <Mono className="break-all text-sm text-foreground">{result.file}</Mono>; no file was written. A real invitation works once and expires{" "}
-                {EXPIRY[result.expiry].at}. Anyone holding it can join a machine, so move it privately.
+                Saved {DEMO && "in this demo workspace "}as <Mono className="break-all text-sm text-foreground">{result.file}</Mono>
+                {DEMO ? "; no file was written. A real invitation works" : ". It works"} once and expires {EXPIRY[result.expiry].at}. Anyone holding it can join a
+                machine, so move it privately.
               </DialogDescription>
             </DialogHeader>
             <Steps>
@@ -952,8 +953,8 @@ export function ChangeGroupsDialog() {
             <DialogHeader>
               <DialogTitle>Re-join {f.name} with its new groups</DialogTitle>
               <DialogDescription className="text-base text-pretty">
-                Saved in this demo workspace as <Mono className="break-all text-sm text-foreground">{file}</Mono>; no file was written. A real invitation works once and expires in 1 hour. Until{" "}
-                {f.name} re-joins, it keeps its old groups.
+                Saved {DEMO && "in this demo workspace "}as <Mono className="break-all text-sm text-foreground">{file}</Mono>
+                {DEMO ? "; no file was written. A real invitation works" : ". It works"} once and expires in 1 hour. Until {f.name} re-joins, it keeps its old groups.
               </DialogDescription>
             </DialogHeader>
             <Steps>

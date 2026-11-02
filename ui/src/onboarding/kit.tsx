@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { CollapsibleTrigger } from "@/components/ui/collapsible";
 import { RadioGroupItem } from "@/components/ui/radio-group";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { DEMO } from "@/shared/data";
 import { GLOSSARY, Logo } from "@/shared/shared";
 
 /**
@@ -118,8 +119,8 @@ export function OnboardingShell({ hostname, backdrop, children }: { hostname: st
     <div className="flex h-svh flex-col bg-canvas text-foreground">
       <Sheet>
         <header className="flex h-12 shrink-0 items-center justify-between px-4">
-          {/* max-md:mr-24 reserves the slot for the compact Demo button that App.tsx fixes into this header. */}
-          <div className="flex min-w-0 items-center gap-2.5 max-md:mr-24">
+          {/* In the demo, max-md:mr-24 reserves the slot for the compact Demo button that App.tsx fixes into this header. */}
+          <div className={cn("flex min-w-0 items-center gap-2.5", DEMO && "max-md:mr-24")}>
             <Logo />
             <span className="text-[13px] font-semibold tracking-[-0.01em]">canonfig</span>
             <span aria-hidden className="mx-1 h-4 w-px bg-border" />

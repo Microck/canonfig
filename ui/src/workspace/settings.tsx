@@ -10,11 +10,13 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
-import { agentPolicy, doctor, harnessProject, installers } from "@/shared/data";
+import { DEMO, agentPolicy, doctor, harnessProject, installers } from "@/shared/data";
 import { useSharedState, useWorkspace } from "./store";
 import { Body, CommandBox, DetailPanel, Field, ListHead, ListRow, PageHeader, Prop, SectionLabel, SettingRow, settingsGroup, useLeaveGuard } from "./kit";
 
 const LINGER_FIX = "sudo loginctl enable-linger ubuntu";
+/** Ends the toasts below, which report simulated work; only the demo says where it happened. */
+const IN_DEMO = DEMO ? " in this demo workspace" : "";
 
 /**
  * Absolute (`/`), home (`~` or `~/`) or explicitly relative (`./`), on one line. A shape check only:
@@ -138,7 +140,7 @@ export function ServiceView() {
         crumbs={["Settings", "Source service"]}
         actions={
           !installed ? (
-            <Button size="sm" variant="primary" disabled={!!busy} onClick={() => act(true, "install", "Source service installed in this demo workspace")}>
+            <Button size="sm" variant="primary" disabled={!!busy} onClick={() => act(true, "install", `Source service installed${IN_DEMO}`)}>
               {busy === "install" ? "Installing…" : "Install service"}
             </Button>
           ) : undefined
@@ -184,7 +186,7 @@ export function ServiceView() {
           </div>
           {installed && (
             <div className="mt-4 flex items-center gap-2">
-              <Button variant="outline" size="sm" disabled={!!busy} onClick={() => act(true, "restart", "Source service restarted in this demo workspace")}>
+              <Button variant="outline" size="sm" disabled={!!busy} onClick={() => act(true, "restart", `Source service restarted${IN_DEMO}`)}>
                 {busy === "restart" && <HourglassMedium />} {busy === "restart" ? "Restarting…" : "Restart"}
               </Button>
               <Button variant="destructive" size="sm" className="ml-4" disabled={!!busy} onClick={() => setConfirm(true)}>
@@ -200,7 +202,7 @@ export function ServiceView() {
         title="Remove the source service?"
         body="Your other machines can't fetch new revisions until you install it again. Your profile, revisions and machine identities are kept."
         confirm="Remove service"
-        onConfirm={() => act(false, "remove", "Source service removed from this demo workspace")}
+        onConfirm={() => act(false, "remove", `Source service removed${DEMO ? " from this demo workspace" : ""}`)}
       />
     </>
   );
@@ -368,7 +370,7 @@ export function AgentPolicyView() {
       setSaved({ mode, harness, model: custom ? "" : modelTyped, executable: executable.trim(), args: custom ? (args ?? []) : [], paths, maxKb: kb });
     }
     setTried(false);
-    toast.success("Agent policy saved in this demo workspace");
+    toast.success(`Agent policy saved${IN_DEMO}`);
   };
   const addPath = () => {
     if (!pathPending) return;
@@ -667,7 +669,7 @@ export function HarnessView() {
               // Creating settles the draft, so opening the new project must not ask about it.
               leaveWithoutAsking(() => ws.go("harness", path));
               setInitOpen(false);
-              toast.success(`Added ${path} to this demo workspace`);
+              toast.success(`Added ${path}${DEMO ? " to this demo workspace" : ""}`);
             }}
           >
             <DialogHeader>
@@ -715,7 +717,7 @@ function HarnessDetail({ project, onClose, onChange }: { project: Project; onClo
       onClose={onClose}
       footer={
         <>
-          <Button variant="ghost" size="sm" onClick={() => (setValidated(true), toast.success(`${harnessProject.file} is valid in this demo workspace`))}>
+          <Button variant="ghost" size="sm" onClick={() => (setValidated(true), toast.success(`${harnessProject.file} is valid${IN_DEMO}`))}>
             Validate
           </Button>
           <Button variant="outline" size="sm" onClick={() => setPlanned(true)}>
@@ -729,7 +731,7 @@ function HarnessDetail({ project, onClose, onChange }: { project: Project; onClo
             onClick={() => {
               onChange({ ...project, pending: 0, status: "applied" });
               setPlanned(false);
-              toast.success(`Updated ${plan.length} agent files for ${project.path} in this demo workspace`);
+              toast.success(`Updated ${plan.length} agent files for ${project.path}${IN_DEMO}`);
             }}
           >
             Apply
@@ -800,7 +802,7 @@ export function InstallersView() {
                   setChecking(r.name);
                   ws.later(() => {
                     setChecking(null);
-                    toast.success(`${r.name} check passed in this demo workspace`, { description: r.path });
+                    toast.success(`${r.name} check passed${IN_DEMO}`, { description: r.path });
                   }, 600);
                 }}
               >
@@ -885,8 +887,8 @@ export function SetupView() {
       <Body>
         <Column>
           <Lede>
-            The setup command writes each step to a journal before running it, so an interrupted setup resumes where it stopped. In this demo, progress carries on while you
-            visit other pages, and is lost on reload or when you switch roles.
+            The setup command writes each step to a journal before running it, so an interrupted setup resumes where it stopped.
+            {DEMO && " In this demo, progress carries on while you visit other pages, and is lost on reload or when you switch roles."}
           </Lede>
           <SectionLabel action={<span className="text-xs text-faint tabular-nums">Journal #3</span>}>
             {phase === "planned" ? "Plan" : phase === "complete" ? "Done" : "Approved plan"}
@@ -941,7 +943,7 @@ export function SetupView() {
                   onClick={() => {
                     setJournal({ phase: "complete", at: last });
                     setLingerMarked(true);
-                    toast.success("Setup complete in this demo workspace", { description: "You marked the linger step done. Canonfig didn't check it." });
+                    toast.success(`Setup complete${IN_DEMO}`, { description: "You marked the linger step done. Canonfig didn't check it." });
                   }}
                 >
                   I ran it, resume setup

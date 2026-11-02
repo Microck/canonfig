@@ -39,7 +39,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
 import { AnimatedNumber, Logo, StatusMark } from "@/shared/shared";
-import { PLAIN, machine } from "@/shared/data";
+import { DEMO, PLAIN, machine } from "@/shared/data";
 import { DemoSwitcher } from "@/shared/demo-switcher";
 import { useSharedState, useWorkspace, type View } from "./store";
 import { copy } from "./kit";
@@ -242,10 +242,9 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
         </Collapsible>
       </LayoutGroup>
 
-      {/* Keep demo controls in flow so short windows never place them over navigation links. */}
-      <div className="mt-auto pt-3">
-        <DemoSwitcher role={role} />
-      </div>
+      {/* mt-auto keeps the footer at the bottom. The demo panel stays in flow so short windows never place it over
+          navigation links; below md the mobile bar's Demo button (workspace.tsx) replaces it in the sheet. */}
+      <div className="mt-auto">{DEMO && <DemoSwitcher role={role} className="pt-3 max-md:hidden" />}</div>
 
       {/* Footer icons and dots line up with the nav icons (x20) and their text with the nav labels (x40). */}
       <div className="grid gap-0.5 px-[8px] pt-3">

@@ -3,6 +3,8 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { List, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { DEMO } from "@/shared/data";
+import { DemoSwitcher } from "@/shared/demo-switcher";
 import { Logo } from "@/shared/shared";
 import { StarPrompt, TipHost, TourHost, TourOffer, TourPicker } from "./guide";
 import { focusPageHeading, followLink, navigate, workspaceHref, type AppRoute } from "./routes";
@@ -114,7 +116,10 @@ function Frame() {
   );
 }
 
-/** Mobile-only top bar whose menu opens the same Sidebar in a Sheet. Navigating closes the Sheet. */
+/**
+ * Mobile-only top bar whose menu opens the same Sidebar in a Sheet. Navigating closes the Sheet. In the demo,
+ * its right end holds the compact Demo button, so the demo panel stays one tap away on every page.
+ */
 function MobileNav() {
   const ws = useWorkspace();
   const [open, setOpen] = useState(false);
@@ -184,6 +189,7 @@ function MobileNav() {
         <span className="truncate font-semibold">{ws.machineName}</span>
         <span className="shrink-0 text-sm text-muted-foreground">{ws.role === "source" ? "Source" : "Follower"}</span>
       </span>
+      {DEMO && <DemoSwitcher role={ws.role} compact className="ml-auto shrink-0 pr-1" />}
     </div>
   );
 }
