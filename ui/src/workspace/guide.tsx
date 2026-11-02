@@ -13,7 +13,7 @@
 //      re-openable from that page's "?" button.
 import { useEffect, useRef, useState, type Ref } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowRight, Check, FoldedMap, X } from "@/components/icons";
+import { ArrowRight, Check, FoldedMap, Star, X } from "@/components/icons";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { fillStyle } from "@/lib/dither";
@@ -289,6 +289,100 @@ export function TourOffer() {
       )}
     </AnimatePresence>
   );
+}
+
+const REPOSITORY_URL = "https://github.com/Microck/canonfig";
+// Two keys, like T3 Code's star prompt, so a time count written by another tab can never undo a dismissal.
+const STAR_USED_KEY = "canonfig-ui:star:used-ms";
+const STAR_DISMISSED_KEY = "canonfig-ui:star:dismissed";
+/** Time with the workspace on screen before asking for a star. */
+const STAR_AFTER_MS = 15 * 60_000;
+/** How often visible time is added to the stored total; a closed tab loses at most this much. */
+const STAR_TICK_MS = 30_000;
+// Once per page load at most, even if the toast is closed without saving the dismissal.
+let starAskedThisLoad = false;
+
+function dismissStarPrompt() {
+  try {
+    localStorage.setItem(STAR_DISMISSED_KEY, "1");
+  } catch {
+    // Nothing to keep it in; starAskedThisLoad still stops a second ask on this page load.
+  }
+}
+
+/** Stored visible time in ms, or null once dismissed. Throws when storage is unusable. */
+function starTimeSoFar(): number | null {
+  if (localStorage.getItem(STAR_DISMISSED_KEY) !== null) return null;
+  return Number(localStorage.getItem(STAR_USED_KEY)) || 0;
+}
+
+/**
+ * Asks for a GitHub star once someone has had the workspace on screen for STAR_AFTER_MS in
+ * total, across visits. Only time with the tab visible counts. Every way of closing the toast
+ * saves the dismissal, so it is asked for at most once per page load until then and never after.
+ * Storage that can't be read or written could not keep a dismissal, so it then never asks.
+ * It waits while other guidance (tour, tour offer, page tip) or a dialog has the person's
+ * attention. `?star=1` asks straight away, to preview it in the demo.
+ */
+export function StarPrompt() {
+  const ws = useWorkspace();
+  const busy = ws.tourOpen || ws.tourPickerOpen || ws.tourOffered || ws.activeTip !== null || ws.paletteOpen || ws.publishOpen || ws.inviteOpen;
+  // "off": dismissed, or storage unusable. "counting": still adding up visible time. "due": ask.
+  const [stage, setStage] = useState<"off" | "counting" | "due">(() => {
+    if (new URLSearchParams(location.search).get("star") === "1") return "due";
+    try {
+      const used = starTimeSoFar();
+      if (used === null) return "off";
+      return used >= STAR_AFTER_MS ? "due" : "counting";
+    } catch {
+      return "off";
+    }
+  });
+  const due = stage === "due";
+  useEffect(() => {
+    if (stage !== "counting") return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        // Re-read every tick: other open tabs add to the same total, and may have dismissed it.
+        const before = starTimeSoFar();
+        if (before === null) return setStage("off");
+        const used = before + STAR_TICK_MS;
+        localStorage.setItem(STAR_USED_KEY, String(used));
+        if (used >= STAR_AFTER_MS) setStage("due");
+      } catch {
+        setStage("off");
+      }
+    }, STAR_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [stage]);
+  useEffect(() => {
+    if (!due || busy || starAskedThisLoad) return;
+    // Arrive after the page settles, not with it.
+    const t = window.setTimeout(() => {
+      starAskedThisLoad = true;
+      toast("Enjoying Canonfig?", {
+        description: "A star on GitHub helps other people find it.",
+        icon: <Star bold className="size-4 text-warn" />,
+        duration: Infinity,
+        // Buttons drop to their own row, right-aligned, so the description keeps the toast's width.
+        // Sonner's stylesheet sets flex: 1 1 0% on the content, so the basis needs !important.
+        classNames: { toast: "flex-wrap", content: "basis-[calc(100%-30px)]!", icon: "self-start mt-0.5", cancelButton: "ml-auto", actionButton: "ml-2!" },
+        // Sonner runs neither onDismiss nor onAutoClose for its action and cancel buttons, so each saves the dismissal too.
+        action: {
+          label: "Star on GitHub",
+          onClick: () => {
+            dismissStarPrompt();
+            window.open(REPOSITORY_URL, "_blank", "noopener,noreferrer");
+          },
+        },
+        cancel: { label: "Dismiss", onClick: dismissStarPrompt },
+        onDismiss: dismissStarPrompt,
+      });
+    }, 1500);
+    return () => window.clearTimeout(t);
+  }, [due, busy]);
+  return null;
 }
 
 /**

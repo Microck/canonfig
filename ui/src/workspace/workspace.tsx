@@ -4,7 +4,7 @@ import { List, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Logo } from "@/shared/shared";
-import { TipHost, TourHost, TourOffer, TourPicker } from "./guide";
+import { StarPrompt, TipHost, TourHost, TourOffer, TourPicker } from "./guide";
 import { focusPageHeading, followLink, navigate, workspaceHref, type AppRoute } from "./routes";
 import { Palette, Sidebar } from "./frame";
 import { ChangeGroupsDialog, InviteDialog, MachinesView } from "./machines";
@@ -98,6 +98,7 @@ function Frame() {
       <TourPicker />
       <TourOffer />
       <TipHost />
+      <StarPrompt />
       {ws.role === "source" ? (
         <>
           <PublishDialog />
