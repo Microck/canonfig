@@ -715,7 +715,9 @@ export function TipHost() {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
   const tip = PAGE_TIPS[role][ws.view];
-  const busy = ws.tourOpen || ws.tourPickerOpen || ws.tourOffered || ws.paletteOpen || ws.publishOpen || ws.inviteOpen || ws.changeGroups !== null;
+  // A loading page is busy too: the tip measures its targets, so it waits for the content, and its own
+  // delay below then covers skullet's reveal.
+  const busy = ws.pageLoading || ws.tourOpen || ws.tourPickerOpen || ws.tourOffered || ws.paletteOpen || ws.publishOpen || ws.inviteOpen || ws.changeGroups !== null;
   const { openTip, withdrawTip, activeTip, view } = ws;
   const seen = ws.tipSeen(view);
   const detailOpen = useDetailPanelOpen();

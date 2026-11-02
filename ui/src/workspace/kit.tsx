@@ -1,7 +1,8 @@
 // Workspace layout components: page headers, dense rows, and detail panels.
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { AnimatePresence, motion, usePresence, useReducedMotion, type Transition } from "motion/react";
+import { Skeleton } from "skullet/react";
 import { Check, Copy, FileText, Folder, Key, Question, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type IconComponent } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -395,6 +396,7 @@ export function DetailPanel({
   children: ReactNode;
   footer?: ReactNode;
 }) {
+  const loading = useContext(PageLoading);
   const panel = useRef<HTMLElement>(null);
   const separator = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; w: number } | null>(null);
@@ -582,12 +584,18 @@ export function DetailPanel({
           </TooltipContent>
         </Tooltip>
       </div>
+      {/* Header stays: the title comes from the row the person picked. Body and footer are page data, so they
+          load with the page (Body). Each Skeleton sits inside its part so swapPanel still finds the parts. */}
       <div data-panel-part className="min-h-0 flex-1 overflow-y-auto">
-        {children}
+        <Skeleton loading={loading} label="Loading details">
+          <Unwalked content={children} />
+        </Skeleton>
       </div>
       {footer && (
-        <div data-panel-part className="flex shrink-0 items-center gap-2 border-t border-border px-4 py-2.5">
-          {footer}
+        <div data-panel-part className="shrink-0 border-t border-border px-4 py-2.5">
+          <Skeleton loading={loading}>
+            <Unwalked content={<div className="flex items-center gap-2">{footer}</div>} />
+          </Skeleton>
         </div>
       )}
     </aside>
@@ -903,23 +911,50 @@ export function SettingRow({
   );
 }
 
+/** Whether the page around a component is loading its data; Body provides it, DetailPanel reads it. */
+const PageLoading = createContext(false);
+
+/**
+ * Hands content to a skullet Skeleton as a prop rather than as children. While loading, skullet 0.0.3 walks
+ * the element tree it is given to swap in components' static `Skeleton` hints, rebuilding each element's
+ * children with React.Children.map, which turns a single child into an array; every Radix `asChild` slot
+ * (Tooltip and Dialog triggers) then throws, since it needs exactly one child. The walk follows only
+ * `children` props, so this component boundary ends it. The app uses no static hints, so nothing is lost.
+ * Delete it once skullet keeps a single child single.
+ */
+function Unwalked({ content }: { content: ReactNode }) {
+  return content;
+}
+
 /**
  * Page body: a scrolling main column and an optional detail panel.
  * The column is a size container, so page layouts follow its width (narrowed by the panel), not the window's.
  * It is a flex column so a child can `grow` into the leftover height (EmptyState anchors its dither to the
  * bottom that way); `*:shrink-0` keeps every child at its content height, as block flow did, so a tall page
- * scrolls instead of squeezing overflow-hidden children.
+ * scrolls instead of squeezing overflow-hidden children. Skullet's wrappers carry that column on
+ * (`.skeleton-column` in index.css).
  * The detail panel sits in one AnimatePresence slot with a fixed key, so it can play a closing animation
  * when `detail` goes empty, while a row change (pages key their panel by row) stays a plain remount.
+ *
+ * While the page's data loads (the first visit, `ws.pageLoading`) or `reloading` is set by an action that
+ * fetches it again, the column and the detail panel's body show a skeleton measured from the real content,
+ * so nothing moves when it is revealed. Skullet mounts the content afresh on reveal, so local state inside
+ * `children` starts over; the pages that pass `reloading` (Sync, Follower secrets) keep none worth keeping.
  */
-export function Body({ children, detail }: { children: ReactNode; detail?: ReactNode }) {
+export function Body({ children, detail, reloading = false }: { children: ReactNode; detail?: ReactNode; reloading?: boolean }) {
+  const ws = useWorkspace();
+  const loading = ws.pageLoading || reloading;
   return (
-    <div className="flex min-h-0 flex-1">
-      <div className="@container flex min-w-0 flex-1 flex-col overflow-y-auto *:shrink-0">
-        {children}
+    <PageLoading.Provider value={loading}>
+      <div className="flex min-h-0 flex-1">
+        <div className="@container flex min-w-0 flex-1 flex-col overflow-y-auto *:shrink-0">
+          <Skeleton loading={loading} label="Loading page" className="skeleton-column">
+            <Unwalked content={children} />
+          </Skeleton>
+        </div>
+        <AnimatePresence>{detail ? <Fragment key="detail">{detail}</Fragment> : null}</AnimatePresence>
       </div>
-      <AnimatePresence>{detail ? <Fragment key="detail">{detail}</Fragment> : null}</AnimatePresence>
-    </div>
+    </PageLoading.Provider>
   );
 }
 

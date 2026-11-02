@@ -342,11 +342,12 @@ const BAND_RUNNING = { speed: 1.6, fps: 20, stillTime: 2, uniforms: { ...CALM, s
  * A dithered band behind a machine-state header. Each tone moves in its own
  * way while `idle` (see BAND_MOTION); `running` replaces that with a sweep.
  * Reduced motion shows one still frame per state. One WebGL context.
+ * Decoration, so a loading skeleton draws nothing for it (`skullet-ignore`) and shows the header's text.
  */
 export function StateBand({ tone = "ok", mode = "idle", className }: { tone?: keyof typeof BAND_MOTION; mode?: "idle" | "running"; className?: string }) {
   const band = mode === "running" ? BAND_RUNNING : BAND_MOTION[tone];
   return (
-    <div className={cn("pointer-events-none absolute inset-0 overflow-hidden", className)} aria-hidden>
+    <div skullet-ignore="" className={cn("pointer-events-none absolute inset-0 overflow-hidden", className)} aria-hidden>
       <DitherShader
         field={HORIZON_FIELD}
         uniforms={band.uniforms}
@@ -362,10 +363,10 @@ export function StateBand({ tone = "ok", mode = "idle", className }: { tone?: ke
   );
 }
 
-/** Empty-state art: a dotted block that fades in from one edge, revealed once on mount (600ms). */
+/** Empty-state art: a dotted block that fades in from one edge, revealed once on mount (600ms). Decoration, so a loading skeleton skips it. */
 export function DitherBlock({ tone = "muted", edge = "bottom", className }: { tone?: keyof typeof TONE_DITHER; edge?: "top" | "bottom" | "left" | "right"; className?: string }) {
   return (
-    <div aria-hidden data-edge={edge} className={cn("dither-reveal pointer-events-none relative", className)}>
+    <div skullet-ignore="" aria-hidden data-edge={edge} className={cn("dither-reveal pointer-events-none relative", className)}>
       <div className="absolute inset-0" style={fillStyle("gradient", { color: TONE_DITHER[tone], edge, length: 20, to: 0.04, cell: 2 })} />
     </div>
   );

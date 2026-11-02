@@ -226,6 +226,19 @@ export type Secret = (typeof seedSecrets)[number];
 const DEMO_TARGET_REVISION = 8;
 const JOINED_REVISION = 7;
 
+/**
+ * The demo's stand-in for reading a page's data from the local Canonfig service, which the real GUI will
+ * fetch over loopback. 700ms sits at the slow end of a cold read, so the skeleton is seen and its reveal
+ * plays (skullet holds a skeleton back for its first 150ms), without making every first visit drag.
+ */
+const SIMULATED_LOAD_MS = 700;
+
+/**
+ * Pages whose data has loaded since the browser loaded the app, keyed like `pageKey` below. Module scope,
+ * like a fetch cache, so it outlives a Demo role switch; a page left before its load finished loads again.
+ */
+const loadedPages = new Set<string>();
+
 /** Everything a workspace screen can read or do. */
 export interface Workspace {
   role: WorkspaceRole;
@@ -269,6 +282,11 @@ export interface Workspace {
   closeTour: (finished: boolean) => void;
   tourPickerOpen: boolean;
   setTourPickerOpen: (open: boolean) => void;
+  /**
+   * The first visit to each page in a page load waits SIMULATED_LOAD_MS for its data, showing a skeleton
+   * (Body in kit.tsx). Never while a tour runs or its picker is open: tours spotlight the pages they open.
+   */
+  pageLoading: boolean;
   tourFinished: (id: string) => boolean;
   /** The page whose tip is showing, if any. Leaving that page closes it. */
   activeTip: View | null;
@@ -398,6 +416,30 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     if (open) dismissTourOffer();
     setPickerOpen(open);
   };
+  // Each page tab is its own fetch (Profile items and groups), so the key includes them; outside Profile and
+  // Machines those parts stay at their defaults. A tour, or its picker about to start one, settles the load at
+  // once, and pages it opens never start one.
+  const pageKey = `${role}:${view}:${profileTab}:${machinesMode}`;
+  const guided = tour !== null || tourPickerOpen;
+  const [loadingPage, setLoadingPage] = useState<string | null>(null);
+  // Started during render, like the tip reset below, so a page's first frame (the app's first one too) is
+  // already its skeleton.
+  const [shownPage, setShownPage] = useState<string | null>(null);
+  if (shownPage !== pageKey) {
+    setShownPage(pageKey);
+    setLoadingPage(guided || loadedPages.has(pageKey) ? null : pageKey);
+  } else if (guided && loadingPage !== null) {
+    loadedPages.add(loadingPage);
+    setLoadingPage(null);
+  }
+  useEffect(() => {
+    if (loadingPage === null) return;
+    const t = window.setTimeout(() => {
+      loadedPages.add(loadingPage);
+      setLoadingPage(null);
+    }, SIMULATED_LOAD_MS);
+    return () => window.clearTimeout(t);
+  }, [loadingPage]);
   const [activeTip, setActiveTip] = useState<View | null>(null);
   const [seenTips, setSeenTips] = useState<ReadonlySet<string>>(
     () => new Set(guidePrefs.keys().filter((k) => k.startsWith(seenKey("tip:"))).map((k) => k.slice(seenKey("tip:").length))),
@@ -643,6 +685,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     closeTour,
     tourPickerOpen,
     setTourPickerOpen,
+    pageLoading: loadingPage === pageKey,
     tourFinished,
     activeTip,
     openTip,

@@ -434,6 +434,26 @@
   to { transform: translateX(100%); }
 }
 
+/* Body (workspace/kit.tsx) is a flex column whose children may `grow` into the leftover height (EmptyState).
+   Skullet nests the page in reveal > pane > loading > ghost divs, so each carries that column on. Each wrapper
+   is as tall as its content or more, so nothing inside is squeezed and Body's `*:shrink-0` needn't follow
+   them down. Skullet positions the reveal and loading divs itself; only display and flex change here. */
+.skeleton-column,
+.skeleton-column > [skullet-pane],
+.skeleton-column > [skullet-pane] > [skullet-loading],
+.skeleton-column > [skullet-pane] > [skullet-loading] > [skullet-ghost] {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+}
+
+/* Skullet draws every SVG as one block at its box. The machine map's dot grid and edge layer each span the
+   whole canvas, so while it loads they are taken out of the unseen copy it measures, leaving bones for the
+   machine cards. Both are absolutely placed, so the cards don't move. */
+[skullet-ghost] :is(.react-flow__background, .react-flow__edges) {
+  display: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

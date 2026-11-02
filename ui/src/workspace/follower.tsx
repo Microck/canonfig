@@ -574,6 +574,8 @@ export function SyncView() {
         }
       />
       <Body
+        // Checking asks the Source for its latest revision, which rebuilds the plan below.
+        reloading={checking}
         detail={
           current?.action === "decide" ? (
             <ConflictPanel step={current} onClose={() => setSelected(null)} />
@@ -1178,7 +1180,7 @@ export function FollowerSecretsView() {
           </Button>
         }
       />
-      <Body>
+      <Body reloading={refresh.busy}>
         <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           This machine{" "}
           <Term term="Follower Group">
