@@ -315,12 +315,6 @@ function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (
           returning={returnedFrom === "source"}
           title="Make this the Source"
           description="For the machine where you edit your setup. Other machines copy from it, and only this one publishes changes."
-          facts={[
-            <>
-              Creates <Mono>{machine.profileFile}</Mono>
-            </>,
-            "Runs a small service other machines connect to",
-          ]}
           onPick={onPick}
         />
         <Choice
@@ -328,7 +322,6 @@ function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (
           returning={returnedFrom === "follower"}
           title="Copy the setup from another machine"
           description="For a machine that should get its setup from your Source."
-          facts={["Needs an invitation file from the Source", "Gets updates on a schedule you choose", "Settings you mark as local stay as they are"]}
           onPick={onPick}
         />
       </div>
@@ -340,38 +333,33 @@ function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (
 }
 
 /**
- * One role card. Hover brightens its border and fill and nudges its arrow, and a press sinks
- * it to 0.98 (choice-card in index.css). Only the picked card keeps its shared shell while the
- * choice leaves; the other drops its layoutId, so it never hands off a stale position later.
+ * One role card: just its title, with what the role means behind a "?" hint. Hover brightens
+ * its border and fill and nudges its arrow, and a press sinks it to 0.98 (choice-card in
+ * index.css). The pick button covers the whole card; the hint is a sibling layered above it,
+ * because a button can't contain another button. Only the picked card keeps its shared shell
+ * while the choice leaves; the other drops its layoutId, so it never hands off a stale position later.
  */
-function Choice({ role, returning, title, description, facts, onPick }: { role: Role; returning: boolean; title: string; description: string; facts: ReactNode[]; onPick: (role: Role) => void }) {
+function Choice({ role, returning, title, description, onPick }: { role: Role; returning: boolean; title: string; description: string; onPick: (role: Role) => void }) {
   const reduced = useReducedMotion();
   const present = useIsPresent();
   const leavingTo = usePresenceData() as Stage | undefined;
   const variants = reduced ? undefined : choiceVariants(role, returning);
   return (
-    <motion.div variants={variants?.card} className="grid">
+    <motion.div variants={variants?.card} className="relative grid">
       <button
         type="button"
         onClick={() => onPick(role)}
-        className="choice-card group relative isolate flex min-w-0 flex-col rounded-xl p-5 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
+        className="choice-card group relative isolate flex min-h-[112px] min-w-0 items-center rounded-xl p-5 pr-14 text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
       >
         <CardShell role={role} side="choose" shared={present || leavingTo === role} className="choice-shell" />
-        <motion.span variants={variants?.content} className="flex flex-col">
-          <span className="flex items-center justify-between gap-3 text-[15px] font-medium">
-            {title}
-            <ArrowRight aria-hidden className="choice-arrow size-4 shrink-0 text-faint" />
-          </span>
-          <span className="mt-1.5 leading-relaxed text-muted-foreground">{description}</span>
-          <span className="mt-4 block space-y-1.5 border-t border-border pt-4 text-sm text-muted-foreground">
-            {facts.map((fact, i) => (
-              <span key={i} className="block">
-                {fact}
-              </span>
-            ))}
-          </span>
+        <motion.span variants={variants?.content} className="flex w-full items-center justify-between gap-3">
+          <span className="text-lg leading-snug font-medium text-pretty">{title}</span>
+          <ArrowRight aria-hidden className="choice-arrow size-4 shrink-0 text-faint" />
         </motion.span>
       </button>
+      <motion.span variants={variants?.content} className="absolute top-1/2 right-2 z-10 -translate-y-1/2">
+        <Hint label={title}>{description}</Hint>
+      </motion.span>
     </motion.div>
   );
 }
