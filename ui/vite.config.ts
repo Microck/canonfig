@@ -25,8 +25,6 @@ function demoSite(): Plugin {
         html: html.replace(title, `<title>${DEMO_TITLE}</title>`),
         tags: [
           { tag: "meta", attrs: { name: "description", content: DEMO_DESCRIPTION }, injectTo: "head" },
-          // --canvas in src/index.css, the colour behind the app frame.
-          { tag: "meta", attrs: { name: "theme-color", content: "#080b0c" }, injectTo: "head" },
           { tag: "link", attrs: { rel: "canonical", href: DEMO_URL }, injectTo: "head" },
           { tag: "meta", attrs: { property: "og:type", content: "website" }, injectTo: "head" },
           { tag: "meta", attrs: { property: "og:site_name", content: "Canonfig" }, injectTo: "head" },

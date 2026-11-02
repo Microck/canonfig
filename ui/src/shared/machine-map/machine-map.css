@@ -52,10 +52,12 @@
   background: transparent;
   font-size: var(--text-xs);
 }
+/* Faint at full strength: it is a link, so it keeps faint's 4.5:1 on the panel. */
 .cf-map .react-flow__attribution a {
   color: var(--faint);
-  opacity: 0.6;
 }
-.cf-map .react-flow__attribution a:hover {
-  opacity: 1;
+@media (hover: hover) and (pointer: fine) {
+  .cf-map .react-flow__attribution a:hover {
+    color: var(--muted-foreground);
+  }
 }

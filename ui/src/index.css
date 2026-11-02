@@ -234,6 +234,23 @@
     -moz-osx-font-smoothing: grayscale;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
+    /* The app is a fixed-height shell (h-svh) with its own scrollers, so scrolling past an end must not
+       rubber-band the page or trigger Android's pull-to-refresh. */
+    overscroll-behavior: none;
+  }
+  /* Taps fire at once, without the double-tap-zoom wait; long-pressing a control doesn't select its label. */
+  button,
+  a,
+  input,
+  select,
+  textarea,
+  [role="button"] {
+    touch-action: manipulation;
+  }
+  button,
+  [role="button"] {
+    user-select: none;
+    -webkit-user-select: none;
   }
   /* Code text keeps the font's default features. */
   .font-mono,
@@ -258,6 +275,16 @@
   }
   ::selection {
     background: color-mix(in oklab, var(--primary) 35%, transparent);
+  }
+}
+
+/* iOS zooms the page into any field under 16px and never zooms back. Interface text is 12-13px, so touch
+   screens get 16px fields. Unlayered, so it beats the text-* utilities on Input, Textarea and the palette. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
   }
 }
 

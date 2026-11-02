@@ -5,7 +5,10 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="preload" href="/fonts/Manrope.woff2" as="font" type="font/woff2" crossorigin />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- interactive-widget: Android's keyboard shrinks the layout like iOS's, so the h-svh shell and its footers stay above it. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+    <!-- --canvas in src/index.css, the colour behind the app frame. -->
+    <meta name="theme-color" content="#080b0c" />
     <title>Canonfig</title>
   </head>
   <body>

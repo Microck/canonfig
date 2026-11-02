@@ -29,7 +29,7 @@ Open `http://localhost:5317/source/overview`. The independent frontend lockfile 
 
 Both builds still run on the simulated data in `src/shared/data.ts` and `src/workspace/store.tsx` until the loopback backend lands; the production build has no real data path yet. Simulated actions such as Check for updates keep their short waits in both builds.
 
-The demo build also replaces the page title and adds a description, canonical URL, Open Graph and Twitter card tags and a theme colour to `index.html`, and writes `404.html` as a copy of it, so GitHub Pages boots the app on deep links such as `/follower/sync`. `vite.config.ts` holds this in its `demoSite` plugin. There is no share image yet. The site assembly (`scripts/build-pages.mjs`) adds the docs, `robots.txt` and the domain files.
+The demo build also replaces the page title and adds a description, canonical URL, and Open Graph and Twitter card tags to `index.html`, and writes `404.html` as a copy of it, so GitHub Pages boots the app on deep links such as `/follower/sync`. `vite.config.ts` holds this in its `demoSite` plugin. There is no share image yet. The theme colour and viewport tags sit in `index.html` itself, so both builds have them. The site assembly (`scripts/build-pages.mjs`) adds the docs and `robots.txt`.
 
 ## Browser routes
 
