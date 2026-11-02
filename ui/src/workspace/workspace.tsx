@@ -195,10 +195,19 @@ function MobileNav() {
   );
 }
 
+/** Top-level docs sections, which lived at the domain root before the docs moved under /docs/ (website/content/docs). */
+const RETIRED_DOCS_ROOT = /^\/(tutorials|how-to|explanation|reference)(\/|$)/;
+
 function NotFound() {
   // GitHub Pages answers every unknown path on the demo's domain with this app's 404.html, mistyped or retired
   // docs links under /docs/ included, so the demo sends those back to the docs (a plain link: they are another site).
-  const docs = DEMO && window.location.pathname.startsWith("/docs/");
+  const { pathname, search, hash } = window.location;
+  const docs = DEMO && pathname.startsWith("/docs/");
+  // Links from before the move (e.g. /reference/cli) go to the same page under /docs/. Never matches a /docs/ path, so it can't loop.
+  if (DEMO && RETIRED_DOCS_ROOT.test(pathname)) {
+    window.location.replace(`/docs${pathname.endsWith("/") ? pathname : `${pathname}/`}${search}${hash}`);
+    return null;
+  }
   return (
     <main className="flex min-h-svh flex-col items-center justify-center gap-4 bg-canvas px-6 text-center text-foreground">
       <h1 className="text-xl font-semibold">Page not found</h1>
