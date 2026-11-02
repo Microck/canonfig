@@ -17,12 +17,10 @@ import { AnimatedNumber, DitherProgress, Hint, Mono, Term } from "@/shared/share
 import { KIND_LABEL, PLAIN, POLICY_HINT, POLICY_TITLE, SECRETS_GROUP, profile, type Resource, type ResourceKind } from "@/shared/data";
 import { SCANNED_TOOLS, toolFromScan, useSharedState, useWorkspace } from "./store";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
-import { shq } from "@/shared/shell";
 import {
   AnimatedRow,
   Body,
   ChangeMark,
-  Cli,
   DetailPanel,
   EmptyState,
   Field,
@@ -1117,10 +1115,9 @@ function DefaultsTab() {
                 .join(", ")} }`}
             </pre>
             <p className="text-sm text-pretty text-faint">
-              Canonfig writes this into the profile file when you save; this demo keeps it in the browser session and writes no file. A machine follows the default once
-              this runs on it:
+              Canonfig writes this into the profile file when you save; this demo keeps it in the browser session and writes no file. A machine follows it while its
+              Schedule page is set to follow the Source's default.
             </p>
-            <Cli>canonfig schedule set --default</Cli>
           </div>
         )}
         {/* Same pattern as the item editor: nothing to save or discard until the form differs from what was saved. */}
@@ -1221,7 +1218,6 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
           </>
         )}
         <DialogFooter className="items-center sm:justify-between">
-          <Cli className="flex-1">{`canonfig source scan${SCAN_FILES.map((f) => ` --file ${shq(f)}`).join("")}`}</Cli>
           <div className="flex shrink-0 gap-2">
             <Button variant="ghost" onClick={() => onOpenChange(false)}>
               Cancel

@@ -11,9 +11,8 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
 import { agentPolicy, doctor, harnessProject, installers } from "@/shared/data";
-import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace } from "./store";
-import { Body, Cli, CommandBox, DetailPanel, Field, ListHead, ListRow, PageHeader, Prop, SectionLabel, SettingRow, settingsGroup, useLeaveGuard } from "./kit";
+import { Body, CommandBox, DetailPanel, Field, ListHead, ListRow, PageHeader, Prop, SectionLabel, SettingRow, settingsGroup, useLeaveGuard } from "./kit";
 
 const LINGER_FIX = "sudo loginctl enable-linger ubuntu";
 
@@ -63,7 +62,6 @@ function ConfirmDialog({
   body,
   confirm,
   onConfirm,
-  cli,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -71,7 +69,6 @@ function ConfirmDialog({
   body: React.ReactNode;
   confirm: string;
   onConfirm: () => void;
-  cli?: string;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -80,7 +77,6 @@ function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription className="text-base text-pretty">{body}</DialogDescription>
         </DialogHeader>
-        {cli && <Cli>{cli}</Cli>}
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
@@ -196,9 +192,6 @@ export function ServiceView() {
               </Button>
             </div>
           )}
-          <div className="mt-8">
-            <Cli>{installed ? "canonfig source service status" : installCommand(ws.endpoint)}</Cli>
-          </div>
         </Column>
       </Body>
       <ConfirmDialog
@@ -207,7 +200,6 @@ export function ServiceView() {
         title="Remove the source service?"
         body="Your other machines can't fetch new revisions until you install it again. Your profile, revisions and machine identities are kept."
         confirm="Remove service"
-        cli="canonfig source service remove"
         onConfirm={() => act(false, "remove", "Source service removed from this demo workspace")}
       />
     </>
@@ -280,17 +272,6 @@ function splitArguments(text: string): string[] | null {
 /** Inverse of splitArguments: entries with spaces get double quotes. */
 function joinArguments(args: string[]): string {
   return args.map((a) => (/\s/u.test(a) ? `"${a}"` : a)).join(" ");
-}
-
-/** The full `canonfig agent harness` command for a draft policy, every bound on the page included. */
-function harnessCommand(p: Pick<SavedPolicy, "harness" | "model" | "executable" | "args" | "paths" | "maxKb">): string {
-  const parts = ["canonfig agent harness", p.harness, "--executable", shq(p.executable || p.harness)];
-  if (p.harness !== "custom" && p.model) parts.push("--model", shq(p.model));
-  if (p.harness === "custom") for (const a of p.args) parts.push("--argument", shq(a));
-  for (const path of p.paths) parts.push("--allow-path", shq(path));
-  for (const origin of agentPolicy.origins) parts.push("--allow-origin", origin);
-  if (p.maxKb >= 1 && p.maxKb <= MAX_EVIDENCE_KB) parts.push("--maximum-input-bytes", String(p.maxKb * 1024));
-  return parts.join(" ");
 }
 
 /** The saved agent policy. Health check and Overview read it so their summaries match this page. */
@@ -578,10 +559,6 @@ export function AgentPolicyView() {
               </div>
             </Field>
           </div>
-          <div className="mt-6 grid gap-1">
-            <Cli>{`canonfig agent policy ${mode}`}</Cli>
-            {!off && <Cli wrap>{harnessCommand({ harness, model: modelTyped, executable: executable.trim(), args: args ?? [], paths, maxKb: kb })}</Cli>}
-          </div>
         </Column>
       </Body>
       {leaveDialog}
@@ -710,7 +687,6 @@ export function HarnessView() {
                 className="font-mono text-sm"
               />
             </Field>
-            <Cli>{`cd ${path ? shq(path) : "<folder>"} && canonfig harness init`}</Cli>
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => setInitOpen(false)}>
                 Cancel
@@ -784,10 +760,6 @@ function HarnessDetail({ project, onClose, onChange }: { project: Project; onClo
             ))}
           </div>
         )}
-        <div className="grid gap-1 pb-4">
-          <Cli>{`cd ${shq(project.path)} && canonfig harness plan`}</Cli>
-          <Cli>{`cd ${shq(project.path)} && canonfig harness apply`}</Cli>
-        </div>
       </div>
     </DetailPanel>
   );

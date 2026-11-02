@@ -9,7 +9,6 @@ import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
 import { PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/data";
-import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
 import { GetStarted } from "./guide";
 import { whyBehind } from "./machines";
@@ -19,7 +18,6 @@ import {
   AnimatedRow,
   Body,
   ChangeMark,
-  Cli,
   DetailPanel,
   EmptyState,
   Field,
@@ -496,8 +494,6 @@ export function PublishDialog() {
             />
           </Field>
 
-          {/* The command gets its own full-width row; sharing the footer with the buttons cut it to a few words. */}
-          <Cli wrap>{`canonfig source publish --profile-file ${shq(ws.profileFile)} --reviewer ${reviewer.trim() ? shq(reviewer.trim()) : "<name>"}`}</Cli>
 
           <DialogFooter>
             <div className="flex shrink-0 gap-2">
@@ -790,7 +786,6 @@ export function SecretsView() {
                 />
               </Field>
             </div>
-            <Cli>{`printf '%s' "$VALUE" | canonfig secrets set ${(editing ?? trimmed) ? shq(editing ?? trimmed) : "<name>"}`}</Cli>
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
                 Cancel
@@ -812,7 +807,6 @@ export function SecretsView() {
               This demo only removes the name from the list.
             </DialogDescription>
           </DialogHeader>
-          <Cli>{`canonfig secrets remove ${removing ? shq(removing) : "<name>"}`}</Cli>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRemoving(null)}>
               Cancel

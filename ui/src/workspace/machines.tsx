@@ -503,7 +503,6 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
               {ws.invitations.some((inv) => inv.replaces === f.id) && " Its waiting group-change invitation is cancelled too."}
             </DialogDescription>
           </DialogHeader>
-          <Cli wrap>{`canonfig source revoke ${shq(f.id)}`}</Cli>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRevokeOpen(false)}>
               Cancel
@@ -766,7 +765,6 @@ export function InviteDialog() {
               </Collapsible>
             </div>
             <DialogFooter className="flex-col items-stretch gap-3 sm:flex-col">
-              <Cli wrap>{`canonfig source invite --endpoint ${shq(endpoint.trim())} --output ${shq(file)} --expires ${expiry}${groups.map((g) => ` --group ${shq(g)}`).join("")}`}</Cli>
               <div className="flex justify-end gap-2">
                 <Button type="button" variant="ghost" onClick={() => ws.setInviteOpen(false)}>
                   Cancel
@@ -939,7 +937,6 @@ export function ChangeGroupsDialog() {
               {added.includes(SECRETS_GROUP) && " It gets the shared secrets on its next update."}
             </p>
             <DialogFooter className="flex-col items-stretch gap-3 sm:flex-col">
-              <Cli wrap>{`canonfig source invite --endpoint ${shq(ws.endpoint)} --output ${shq(out)} --expires 1h${groups.map((g) => ` --group ${shq(g)}`).join("")}`}</Cli>
               <div className="flex justify-end gap-2">
                 <Button type="button" variant="ghost" onClick={close}>
                   Cancel

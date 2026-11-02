@@ -706,7 +706,7 @@ export function Field({
   );
 }
 
-/** A quiet CLI equivalent with a copy button. */
+/** A command the person runs on another machine (invitation steps), with a copy button. The GUI shows no CLI equivalents of its own actions. */
 // `wrap` breaks long commands across lines (e.g. inside dialogs) instead of truncating them to one line.
 // Matching margins reserve the copy target's 40px (44px coarse) hit area without enlarging its icon.
 export function Cli({ children, className, wrap = false }: { children: string; className?: string; wrap?: boolean }) {
@@ -721,8 +721,8 @@ export function Cli({ children, className, wrap = false }: { children: string; c
       </span>
       <button
         type="button"
-        aria-label="Copy the CLI equivalent"
-        title="Copy the CLI equivalent"
+        aria-label="Copy command"
+        title="Copy command"
         onClick={async () => {
           if (await copy(children, "Command copied")) flash();
         }}

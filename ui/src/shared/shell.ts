@@ -1,6 +1,6 @@
-// Quoting for the CLI lines the GUI shows and copies. A line is only an honest
-// "command line equivalent" if pasting it into a POSIX shell passes each value
-// as the single argument the GUI meant (`--reviewer "Jane Doe"`, not two words).
+// Quoting for the commands the GUI shows for running on another machine (invitation
+// steps). Pasting one into a POSIX shell must pass each value as the single argument
+// the GUI meant (`--name "Jane Doe"`, not two words).
 
 const SAFE = /^[A-Za-z0-9_@%+=:,./-]+$/;
 

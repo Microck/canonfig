@@ -11,14 +11,12 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AnimatedNumber, DitherProgress, Mono, StateBand, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import { PLAIN, POLICY_TITLE, SECRETS_GROUP, configKeysFor, machine, resources, secrets as seedSecrets } from "@/shared/data";
-import { shq } from "@/shared/shell";
 import { FOLLOWER_PLAN, JOINED_PLAN, LOCAL_VALUES, conflictsIn, useSharedReader, useSharedState, useWorkspace, type Overlay, type PlanAction, type PlanItem } from "./store";
 import { FOLLOWER_PROFILES, followerProfile, profilePlan } from "./profiles";
 import { GetStarted } from "./guide";
 import {
   AnimatedRow,
   Body,
-  Cli,
   CommandBox,
   DetailPanel,
   EmptyState,
@@ -36,7 +34,7 @@ import {
   useLeaveGuard,
 } from "./kit";
 import { Column, ConfirmDialog, Lede } from "./settings";
-import { ScheduleFields, nextCheck, scheduleArg, scheduleError, scheduleSummary, type Schedule } from "./schedule";
+import { ScheduleFields, nextCheck, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 
 /** "decide" is never stored: Sync derives it from the plan and the kept keys (see `useSteps`). */
 type Shown = PlanAction | "decide";
@@ -219,7 +217,6 @@ function InterruptedNotice() {
         title="Recover update #41?"
         body="Canonfig runs the 2 remaining steps from the run's journal and writes them to this machine. The 3 finished steps stay as they are."
         confirm="Recover"
-        cli="canonfig recover"
         onConfirm={ws.recover}
       />
       <ConfirmDialog
@@ -228,7 +225,6 @@ function InterruptedNotice() {
         title="Abandon update #41?"
         body="3 finished steps stay; nothing is rolled back. The remaining 2 don't run."
         confirm="Abandon"
-        cli="canonfig abandon"
         onConfirm={ws.abandon}
       />
     </>
@@ -722,11 +718,6 @@ function ConflictPanel({ step, onClose }: { step: Step; onClose: () => void }) {
           This stops keeping {step.conflict.length === 1 ? "it" : "them"} here. To keep this machine's value instead, {SOURCE} has to stop setting{" "}
           {step.conflict.length === 1 ? "it" : "them"} in the profile; the file stays paused until then.
         </p>
-        <Cli>
-          {rest.length
-            ? `canonfig overlay set ${shq(step.resource)} --target ${shq(step.target)}${rest.map((k) => ` --key ${shq(k)}`).join("")}`
-            : `canonfig overlay remove ${shq(step.resource)}`}
-        </Cli>
       </div>
     </DetailPanel>
   );
@@ -799,7 +790,6 @@ function DriftPanel({ item, onClose }: { item: PlanItem; onClose: () => void }) 
             ? `The last update skipped this file. Keep my edit settles it at once, with nothing to apply. Use revision ${rev} reopens the update so you can apply it.`
             : "Takes effect when you apply the changes."}
         </p>
-        <Cli>canonfig sync --plan --review-local</Cli>
       </div>
     </DetailPanel>
   );
@@ -853,12 +843,6 @@ export function ScheduleView() {
             </SettingRow>
             <SettingRow title="If asleep">Runs when it wakes up</SettingRow>
           </div>
-          {/* `daily@` or `weekly:@09:00` isn't a command the CLI takes, so an incomplete schedule shows no line to copy. */}
-          {error === null && (
-            <div className="mt-6">
-              <Cli>{`canonfig schedule set ${scheduleArg(draft)}`}</Cli>
-            </div>
-          )}
         </Column>
       </Body>
       {leaveDialog}
@@ -1130,7 +1114,6 @@ function OverlayEditor({
             ))}
           </div>
         )}
-        <Cli>{`canonfig overlay set ${shq(result.resource)} --target ${shq(result.target)}${result.keys.length ? result.keys.map((k) => ` --key ${shq(k)}`).join("") : " --key <config.path>"}`}</Cli>
       </div>
       <ConfirmDialog
         open={confirmRemove}
@@ -1138,7 +1121,6 @@ function OverlayEditor({
         title={`Stop keeping keys in ${o.resource}?`}
         body="Canonfig manages these keys again from the next update. Keys the profile sets go back to the Source's value."
         confirm="Stop keeping them"
-        cli={`canonfig overlay remove ${shq(o.resource)}`}
         onConfirm={() => leaveWithoutAsking(onRemove)}
       />
       {leaveDialog}
@@ -1284,7 +1266,6 @@ export function UnenrollDialog() {
       title={`Stop syncing ${ws.machineName}?`}
       body={`This machine stops getting revisions, an update in progress stops, its schedule is removed, and its identity is deleted. Files Canonfig placed stay as they are but aren't managed any more. Joining again needs a new invitation from ${SOURCE}.`}
       confirm={PLAIN.unenroll}
-      cli="canonfig follower unenroll"
       onConfirm={() => {
         ws.unenroll();
         setSchedule(null);
@@ -1356,7 +1337,6 @@ export function MachineView() {
                 </Button>
               </div>
             </Field>
-            <Cli className="mt-3">{`canonfig profile select ${shq(prof)}`}</Cli>
           </div>
 
           <SectionLabel className="mt-10">{PLAIN.unenroll}</SectionLabel>

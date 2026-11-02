@@ -46,13 +46,6 @@ export function scheduleError(s: Schedule): string | null {
 const DAYS_ERROR = "Pick at least one day.";
 const TIME_ERROR = "Enter a complete time, like 09:00.";
 
-/** The schedule argument the CLI takes, e.g. `weekly:Mon,Tue,Wed,Thu,Fri@08:00`. */
-export function scheduleArg(s: Schedule) {
-  if (s.cadence === "default") return "--default";
-  if (s.cadence === "daily") return `daily@${s.time}`;
-  return `weekly:${daysOf(s).join(",")}@${s.time}`;
-}
-
 export function scheduleSummary(s: Schedule, defaultLabel: string) {
   if (s.cadence === "default") return defaultLabel;
   if (s.cadence === "daily") return `Every day at ${s.time}`;
