@@ -8,3 +8,5 @@ website/.source/
 /build-receipt.json
 .DS_Store
 .vercel/
+website/out/
+/_site/
