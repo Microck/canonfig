@@ -187,8 +187,10 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
           the left and 80px above the bottom) at the end of the scroll, where the cards can
           reach under it. From xl the cards start right of it, so normal padding returns and a
           card that fits the window doesn't scroll. Below md the switcher lives in the header
-          (kit.tsx), so only normal padding remains. */}
-      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 md:pb-44 xl:pb-12 [overflow-wrap:anywhere] sm:px-6 sm:pt-16", stage === "choose" ? "justify-center" : "justify-start sm:pt-[12vh]")}>
+          (kit.tsx), so only normal padding remains. Every screen is centred vertically, where the
+          backdrop's rings meet; a step that changes height grows the card evenly up and down
+          (the height tween keeps that smooth). A card taller than the window just scrolls. */}
+      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 md:pb-44 xl:pb-16 [overflow-wrap:anywhere] justify-center sm:px-6 sm:pt-16")}>
         {/* popLayout takes the leaving screen out of flow, so the next one lays out at once and
             the picked card's shell (CardShell) can grow straight into the wizard card's place.
             `custom` tells the leaving choice which card was picked. */}
@@ -335,7 +337,7 @@ function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (
 
 /**
  * One role card: just its title. What the role means shows in a tooltip while the card is
- * hovered or keyboard-focused, and stays linked to the button as its description for screen
+ * hovered or keyboard-focused (on touch screens, which can't hover, as a line under the title), and stays linked to the button as its description for screen
  * readers. Hover brightens its border and fill and nudges its arrow, and a press sinks it to
  * 0.98 (choice-card in index.css). Only the picked card keeps its shared shell while the choice
  * leaves; the other drops its layoutId, so it never hands off a stale position later.
@@ -358,7 +360,14 @@ function Choice({ role, returning, title, description, onPick }: { role: Role; r
           >
             <CardShell role={role} side="choose" shared={present || leavingTo === role} className="choice-shell" />
             <motion.span variants={variants?.content} className="flex w-full items-center justify-between gap-3">
-              <span className="text-xl leading-snug font-medium tracking-[-0.01em] text-pretty">{title}</span>
+              <span className="flex flex-col gap-1.5">
+                <span className="text-xl leading-snug font-medium tracking-[-0.01em] text-pretty">{title}</span>
+                {/* Touch screens can't hover, so they see the description on the card; aria-hidden
+                    because the button already reads it through aria-describedby. */}
+                <span aria-hidden className="hidden text-sm leading-relaxed text-muted-foreground pointer-coarse:block">
+                  {description}
+                </span>
+              </span>
               <ArrowRight aria-hidden className="choice-arrow size-4 shrink-0 text-faint" />
             </motion.span>
           </button>
