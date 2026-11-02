@@ -1220,6 +1220,8 @@ const agentConfigurationFor = (
     : {
       harness: configuration.agentHarness.kind,
       executable: configuration.agentHarness.executable,
+      model: configuration.agentHarness.model,
+      arguments: configuration.agentHarness.arguments,
       environment: configuration.agentHarness.environment,
       secretBindings: configuration.agentHarness.secretBindings,
       maximumInputBytes: configuration.agentHarness.maximumInputBytes,
@@ -1376,6 +1378,8 @@ export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTa
         harness: {
           harness: harness.kind,
           executable: harness.executable,
+          model: harness.model,
+          arguments: harness.arguments,
           environment: harness.environment,
           secretBindings: harness.secretBindings,
           maximumInputBytes: harness.maximumInputBytes,

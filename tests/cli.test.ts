@@ -314,6 +314,24 @@ describe("typed CLI command boundary", () => {
     }]);
   });
 
+  it("passes a built-in model and a custom harness command line through unchanged", async () => {
+    const builtIn = await execute(["agent", "harness", "claude", "--executable", "/opt/claude", "--model", "opus"]);
+    expect(builtIn.invocations[0]?.input).toMatchObject({ kind: "claude", model: "opus", arguments: undefined });
+
+    // Flag-shaped values, `--json` included, belong to the custom command, not to Canonfig.
+    const custom = await execute([
+      "agent", "harness", "custom", "--executable", "/opt/my-agent",
+      "--argument", "run", "--argument", "--json", "--argument", "--model=local",
+    ]);
+    expect(custom.exitCode).toBe(CliExitCode.success);
+    expect(custom.invocations[0]?.input).toMatchObject({
+      kind: "custom",
+      executable: "/opt/my-agent",
+      arguments: ["run", "--json", "--model=local"],
+      model: undefined,
+    });
+  });
+
   it("decodes schedule, identifiers, and enrollment invitation before dispatch", async () => {
     const schedule = await execute([
       "schedule",
@@ -557,6 +575,10 @@ describe("typed CLI command boundary", () => {
       ["schedule", "set", "--default", "--timezone", "Europe/Paris"],
       ["source", "invite", "--endpoint", "http://example.test"],
       ["agent", "harness", "unsupported", "--executable", "agent"],
+      ["agent", "harness", "gemini", "--executable", "gemini"],
+      ["agent", "harness", "custom", "--executable", "agent", "--model", "opus"],
+      ["agent", "harness", "codex", "--executable", "codex", "--argument", "--yolo"],
+      ["agent", "harness", "claude", "--executable", "claude", "--model", "two words"],
       [
         "agent",
         "harness",

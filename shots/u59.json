@@ -1,0 +1,991 @@
+{
+ "routes": {
+  "1920x1": [
+   {
+    "r": "/follower/local-settings",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/machines",
+    "n": 2,
+    "kinds": [
+     "ok",
+     "warn"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/machines/list",
+    "n": 2,
+    "kinds": [
+     "ok",
+     "warn"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/overview",
+    "n": 4,
+    "kinds": [
+     "ok",
+     "bad",
+     "warn"
+    ],
+    "maxDy": 0.08,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/follower/schedule",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/secrets",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/agent",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/enrollment",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/harness",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/health",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/tunnel",
+    "n": 2,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.08,
+    "nullDy": 0,
+    "minC": 8.5,
+    "errors": []
+   },
+   {
+    "r": "/follower/sync",
+    "n": 3,
+    "kinds": [
+     "ok",
+     "bad",
+     "warn"
+    ],
+    "maxDy": 0.06,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/setup",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/machines",
+    "n": 5,
+    "kinds": [
+     "ok",
+     "warn",
+     "act",
+     "offline"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 6.61,
+    "errors": []
+   },
+   {
+    "r": "/source/machines/list",
+    "n": 5,
+    "kinds": [
+     "ok",
+     "warn",
+     "act",
+     "offline"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/source/overview",
+    "n": 6,
+    "kinds": [
+     "ok",
+     "warn",
+     "act",
+     "offline"
+    ],
+    "maxDy": 0.07,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/source/profile",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/profile/defaults",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/profile/groups",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/revisions",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/secrets",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/agent",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/harness",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/health",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/installers",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/service",
+    "n": 2,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.08,
+    "nullDy": 0,
+    "minC": 8.32,
+    "errors": []
+   }
+  ],
+  "1920x2": [
+   {
+    "r": "/follower/local-settings",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/machines",
+    "n": 2,
+    "kinds": [
+     "ok",
+     "warn"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/machines/list",
+    "n": 2,
+    "kinds": [
+     "ok",
+     "warn"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/overview",
+    "n": 4,
+    "kinds": [
+     "ok",
+     "bad",
+     "warn"
+    ],
+    "maxDy": 0.08,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/follower/schedule",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/secrets",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/agent",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/enrollment",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/harness",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/health",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/tunnel",
+    "n": 2,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.08,
+    "nullDy": 0,
+    "minC": 8.5,
+    "errors": []
+   },
+   {
+    "r": "/follower/sync",
+    "n": 3,
+    "kinds": [
+     "ok",
+     "bad",
+     "warn"
+    ],
+    "maxDy": 0.06,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/setup",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/machines",
+    "n": 5,
+    "kinds": [
+     "ok",
+     "warn",
+     "act",
+     "offline"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 6.61,
+    "errors": []
+   },
+   {
+    "r": "/source/machines/list",
+    "n": 5,
+    "kinds": [
+     "ok",
+     "warn",
+     "act",
+     "offline"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/source/overview",
+    "n": 6,
+    "kinds": [
+     "ok",
+     "warn",
+     "act",
+     "offline"
+    ],
+    "maxDy": 0.07,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/source/profile",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/profile/defaults",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/profile/groups",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/revisions",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/secrets",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/agent",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/harness",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/health",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/installers",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.02,
+    "nullDy": 0,
+    "minC": 8.9,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/service",
+    "n": 2,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.08,
+    "nullDy": 0,
+    "minC": 8.32,
+    "errors": []
+   }
+  ],
+  "390x2": [
+   {
+    "r": "/follower/local-settings",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/follower/machines",
+    "n": 1,
+    "kinds": [
+     "warn"
+    ],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 10.59,
+    "errors": []
+   },
+   {
+    "r": "/follower/machines/list",
+    "n": 1,
+    "kinds": [
+     "warn"
+    ],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 11.31,
+    "errors": []
+   },
+   {
+    "r": "/follower/overview",
+    "n": 3,
+    "kinds": [
+     "bad",
+     "warn",
+     "ok"
+    ],
+    "maxDy": 0.08,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/follower/schedule",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/follower/secrets",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/agent",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/enrollment",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/harness",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/health",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/follower/settings/tunnel",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.08,
+    "nullDy": 0,
+    "minC": 8.5,
+    "errors": []
+   },
+   {
+    "r": "/follower/sync",
+    "n": 1,
+    "kinds": [
+     "bad"
+    ],
+    "maxDy": 0.06,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/setup",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/machines",
+    "n": 4,
+    "kinds": [
+     "ok",
+     "warn",
+     "act",
+     "offline"
+    ],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 6.61,
+    "errors": []
+   },
+   {
+    "r": "/source/machines/list",
+    "n": 4,
+    "kinds": [
+     "ok",
+     "warn",
+     "act",
+     "offline"
+    ],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/source/overview",
+    "n": 5,
+    "kinds": [
+     "warn",
+     "act",
+     "offline",
+     "ok"
+    ],
+    "maxDy": 0.07,
+    "nullDy": 0,
+    "minC": 7.06,
+    "errors": []
+   },
+   {
+    "r": "/source/profile",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/profile/defaults",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/profile/groups",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/revisions",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/secrets",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/agent",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/harness",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/health",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/installers",
+    "n": 0,
+    "kinds": [],
+    "maxDy": 0,
+    "nullDy": 0,
+    "minC": 99,
+    "errors": []
+   },
+   {
+    "r": "/source/settings/service",
+    "n": 1,
+    "kinds": [
+     "ok"
+    ],
+    "maxDy": 0.08,
+    "nullDy": 0,
+    "minC": 8.32,
+    "errors": []
+   }
+  ]
+ },
+ "html": {
+  "ok": "<svg aria-hidden=\"true\" width=\"14\" height=\"14\" viewBox=\"0 0 14 14\" fill=\"none\" data-status-mark=\"ok\" class=\"shrink-0 text-ok\"><circle cx=\"7\" cy=\"7\" r=\"6\" fill=\"currentColor\"></circle><path d=\"M4.4 7.2 6.2 9 9.6 5.3\" stroke=\"var(--background)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"></path></svg>",
+  "warn": "<svg aria-hidden=\"true\" width=\"14\" height=\"14\" viewBox=\"0 0 14 14\" fill=\"none\" data-status-mark=\"warn\" class=\"shrink-0 text-warn\"><circle cx=\"7\" cy=\"7\" r=\"5.25\" stroke=\"currentColor\" stroke-width=\"1.5\"></circle><path d=\"M7 3.5a3.5 3.5 0 0 1 0 7z\" fill=\"currentColor\"></path></svg>",
+  "bad": "<svg aria-hidden=\"true\" width=\"14\" height=\"14\" viewBox=\"0 0 14 14\" fill=\"none\" data-status-mark=\"bad\" class=\"shrink-0 text-bad\"><circle cx=\"7\" cy=\"7\" r=\"6\" fill=\"currentColor\"></circle><path d=\"m4.8 4.8 4.4 4.4m0-4.4-4.4 4.4\" stroke=\"var(--background)\" stroke-width=\"1.6\" stroke-linecap=\"round\"></path></svg>",
+  "act": "<svg aria-hidden=\"true\" width=\"14\" height=\"14\" viewBox=\"0 0 14 14\" fill=\"none\" data-status-mark=\"act\" class=\"shrink-0 text-act\"><circle cx=\"7\" cy=\"7\" r=\"5.25\" stroke=\"currentColor\" stroke-width=\"1.5\"></circle><path d=\"M7 7V3.5a3.5 3.5 0 1 1-3.5 3.5z\" fill=\"currentColor\"></path></svg>",
+  "offline": "<svg aria-hidden=\"true\" width=\"14\" height=\"14\" viewBox=\"0 0 14 14\" fill=\"none\" data-status-mark=\"offline\" class=\"shrink-0 text-bad\"><circle cx=\"7\" cy=\"7\" r=\"5.25\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-dasharray=\"2.2 2\"></circle></svg>"
+ },
+ "missing": [
+  "off"
+ ],
+ "grey": {
+  "ink": [
+   429,
+   325,
+   360,
+   412,
+   126,
+   0
+  ],
+  "lum": [
+   0.623,
+   0.657,
+   0.574,
+   0.51,
+   0.466,
+   0.056
+  ],
+  "pairs": [
+   {
+    "i": 0,
+    "j": 1,
+    "xor": 146,
+    "dl": 0.034
+   },
+   {
+    "i": 0,
+    "j": 2,
+    "xor": 151,
+    "dl": 0.049
+   },
+   {
+    "i": 0,
+    "j": 3,
+    "xor": 67,
+    "dl": 0.113
+   },
+   {
+    "i": 0,
+    "j": 4,
+    "xor": 303,
+    "dl": 0.157
+   },
+   {
+    "i": 0,
+    "j": 5,
+    "xor": 429,
+    "dl": 0.567
+   },
+   {
+    "i": 1,
+    "j": 2,
+    "xor": 47,
+    "dl": 0.083
+   },
+   {
+    "i": 1,
+    "j": 3,
+    "xor": 147,
+    "dl": 0.147
+   },
+   {
+    "i": 1,
+    "j": 4,
+    "xor": 199,
+    "dl": 0.19
+   },
+   {
+    "i": 1,
+    "j": 5,
+    "xor": 325,
+    "dl": 0.601
+   },
+   {
+    "i": 2,
+    "j": 3,
+    "xor": 142,
+    "dl": 0.064
+   },
+   {
+    "i": 2,
+    "j": 4,
+    "xor": 234,
+    "dl": 0.107
+   },
+   {
+    "i": 2,
+    "j": 5,
+    "xor": 360,
+    "dl": 0.518
+   },
+   {
+    "i": 3,
+    "j": 4,
+    "xor": 286,
+    "dl": 0.043
+   },
+   {
+    "i": 3,
+    "j": 5,
+    "xor": 412,
+    "dl": 0.454
+   },
+   {
+    "i": 4,
+    "j": 5,
+    "xor": 126,
+    "dl": 0.411
+   }
+  ]
+ }
+}

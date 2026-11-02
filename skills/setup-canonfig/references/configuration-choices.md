@@ -96,7 +96,7 @@ cannot move into a Local Overlay.
 | Shared-secret authority / names / recipients | Separately grants sensitive values to followers | Keep disabled; review explicitly required names and recipients; defer |
 | Invitation groups / lifetime / delivery | Limits enrollment scope and exposure | Minimal declared groups; 15m proposed expiry or another supported expiry; local private delivery |
 | Agent policy | Separates deterministic work, proposals, and execution | deterministic-only; agent-propose; agent-apply with separate approval |
-| Agent harness kind / executable | Selects the actual local executor | Existing configured adapter; verified codex/claude/gemini executable; none |
+| Agent harness kind / executable | Selects the actual local executor | Existing configured adapter; verified codex/claude executable with optional model; custom executable and arguments; none |
 | Path / executable / HTTPS origin allowlists | Bounds agent actions | Keep minimal valid set; select task-required entries; none/deny |
 | Elevation / login / restart / reboot | Changes privileged or disruptive behavior | Denied; explicitly scoped human decision; defer |
 | Maximum input bytes | Limits material passed to an agent | Keep verified bound; tighter supported bound; validated custom integer |

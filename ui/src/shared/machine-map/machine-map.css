@@ -1,0 +1,63 @@
+/* Machine map: React Flow's base.css restyled to the Canonfig dark tokens. */
+.cf-map .react-flow {
+  --xy-background-color: transparent;
+  --xy-node-border-radius: 8px;
+  font: inherit;
+  color: inherit;
+}
+
+.cf-map .react-flow__pane {
+  cursor: default;
+}
+.cf-map .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+/* The wrapper is the focusable element, so its outline must follow the card's radius. */
+.cf-map .react-flow__node {
+  border-radius: 8px;
+}
+.cf-map .react-flow__node:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.cf-map .react-flow__node.dragging {
+  cursor: grabbing;
+}
+
+/* Handles only anchor edges; nothing is connectable. */
+.cf-map .react-flow__handle {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.cf-map .react-flow__edge {
+  cursor: default;
+}
+
+/* Edges aren't selectable (so React Flow marks them inactive), but they still explain themselves on hover. */
+.cf-map .react-flow__edge-interaction {
+  pointer-events: stroke;
+}
+
+/* React Flow is MIT and asks for its attribution; keep it, quietly. */
+.cf-map .react-flow__attribution {
+  margin: 12px;
+  padding: 0;
+  background: transparent;
+  font-size: var(--text-xs);
+}
+/* Faint at full strength: it is a link, so it keeps faint's 4.5:1 on the panel. */
+.cf-map .react-flow__attribution a {
+  color: var(--faint);
+}
+@media (hover: hover) and (pointer: fine) {
+  .cf-map .react-flow__attribution a:hover {
+    color: var(--muted-foreground);
+  }
+}

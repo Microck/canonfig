@@ -43,6 +43,7 @@ import {
 } from "../src/agent/agent-resolution.service.ts";
 import type {
   AgentActionProposal,
+  AgentHarnessConfiguration,
   CapturedProcess,
   ControlledProcessInput,
   ProposedProcessAction,
@@ -688,10 +689,31 @@ describe("agent resolution", () => {
       "claude",
       JSON.stringify({ type: "result", result: response }),
     )).toBe(response);
-    expect(extractHarnessResponse(
-      "gemini",
-      JSON.stringify({ response }),
-    )).toBe(response);
+    expect(extractHarnessResponse("custom", response)).toBe(response);
+  });
+
+  it("adds --model only to built-ins and gives a custom harness exactly its own arguments", async () => {
+    const argumentsFor = async (overrides: Partial<AgentHarnessConfiguration>) => {
+      const recording = new RecordingExecutor(proposal(action()));
+      await Effect.runPromise(Effect.gen(function*() {
+        const service = yield* AgentResolution;
+        return yield* service.resolve({
+          policy: "agent-propose",
+          task: task(directory),
+          harness: { ...harness(directory), ...overrides },
+        });
+      }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
+      return recording.invocations[0]?.arguments;
+    };
+    expect(await argumentsFor({ harness: "codex", model: "gpt-5-codex" }))
+      .toEqual(["--model", "gpt-5-codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-"]);
+    expect(await argumentsFor({ harness: "claude", model: "opus" }))
+      .toEqual(["--model", "opus", "--print", "--permission-mode", "plan", "--output-format", "json"]);
+    expect(await argumentsFor({ harness: "claude" }))
+      .toEqual(["--print", "--permission-mode", "plan", "--output-format", "json"]);
+    expect(await argumentsFor({ harness: "custom", arguments: ["run", "--plan"] }))
+      .toEqual(["run", "--plan"]);
+    expect(await argumentsFor({ harness: "custom" })).toEqual([]);
   });
 
   it("never invokes a harness under deterministic-only policy", async () => {
@@ -781,7 +803,7 @@ describe("agent resolution", () => {
       return yield* service.resolve({
         policy: "agent-apply",
         task: task(directory),
-        harness: { ...harness(directory), harness: "gemini" },
+        harness: { ...harness(directory), harness: "custom" },
       });
     }).pipe(Effect.provide(makeAgentResolutionLayer(recording.execute))));
     expect(result.outcome).toBe("applied");
@@ -2149,6 +2171,8 @@ process.exit(
         }),
         harness: {
           ...harness(directory, allowedExecutables),
+          // A script that prints the proposal itself is a custom harness.
+          harness: "custom" as const,
           executable: process.execPath,
           arguments: [harnessScript],
           environment: [
@@ -2389,6 +2413,8 @@ process.exit(
         }),
         harness: {
           ...harness(directory, allowedExecutables),
+          // A script that prints the proposal itself is a custom harness.
+          harness: "custom" as const,
           executable: process.execPath,
           arguments: [harnessScript],
         },
@@ -2460,6 +2486,8 @@ process.exit(
         }),
         harness: {
           ...harness(directory, allowedExecutables),
+          // A script that prints the proposal itself is a custom harness.
+          harness: "custom" as const,
           executable: process.execPath,
           arguments: [harnessScript],
           executableAuthorizations,
@@ -2498,6 +2526,8 @@ process.exit(
         task: task(directory, { allowedExecutables }),
         harness: {
           ...harness(directory, allowedExecutables),
+          // A script that prints the proposal itself is a custom harness.
+          harness: "custom" as const,
           executable: process.execPath,
           arguments: [harnessScript],
         },
@@ -2674,6 +2704,46 @@ process.exit(
 });
 
 describe("real controlled subprocess", () => {
+  it("runs a custom harness with its own argv, the task on stdin, and its stdout as the proposal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-custom-harness-"));
+    try {
+      const proposed = JSON.stringify(proposal(action()));
+      // Answers only when called with exactly `run --plan` and given a v1 task document.
+      const agent = join(root, "my-agent");
+      await writeFile(agent, [
+        "#!/bin/sh",
+        // The harness PATH is the sandbox root, so the agent names `cat` absolutely.
+        "input=$(/bin/cat)",
+        `[ "$#" = 2 ] && [ "$1" = run ] && [ "$2" = --plan ] || { echo bad-argv; exit 0; }`,
+        `case "$input" in *canonfig.agent-task/v1*) printf '%s' '${proposed}' ;; *) echo no-task ;; esac`,
+        "",
+      ].join("\n"));
+      // Proposals are checked against the bounds even when only proposed, so the task's
+      // `tool` and `verify` must resolve inside the sandbox.
+      await Promise.all(["tool", "verify"].map((name) => writeFile(join(root, name), "#!/bin/sh\n")));
+      await Promise.all(["my-agent", "tool", "verify"].map((name) => chmod(join(root, name), 0o755)));
+      const resolve = (args: ReadonlyArray<string>) => Effect.runPromise(Effect.gen(function*() {
+        const service = yield* AgentResolution;
+        return yield* service.resolve({
+          policy: "agent-propose",
+          task: task(root),
+          harness: { ...harness(root), harness: "custom", executable: agent, arguments: args },
+        });
+      }).pipe(
+        Effect.provide(AgentResolutionLive),
+        Effect.match({ onFailure: (error) => ({ outcome: "error", error }), onSuccess: (outcome) => outcome }),
+      ));
+
+      const ok = await resolve(["run", "--plan"]);
+      expect(ok).toMatchObject({ outcome: "proposed", proposal: { summary: "bounded resolution" } });
+      // Output that is not a proposal never becomes one.
+      const wrong = await resolve(["run"]);
+      expect(wrong.outcome).not.toBe("proposed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a package operation without an authorized registry", async () => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-registry-"));
     try {

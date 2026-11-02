@@ -1,0 +1,278 @@
+// Schedule picker shared by the follower's Schedule and the profile's default.
+// Mirrors `canonfig schedule set <daily@HH:mm|weekly:Day[,Day...]@HH:mm>` and `--default`.
+import { useRef, useState } from "react";
+import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Field, settingsGroup } from "./kit";
+
+export const WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+export type Day = (typeof WEEK)[number];
+const WEEKDAYS: Day[] = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+const FULL: Record<Day, string> = { Mon: "Monday", Tue: "Tuesday", Wed: "Wednesday", Thu: "Thursday", Fri: "Friday", Sat: "Saturday", Sun: "Sunday" };
+
+/** "default" follows the profile's schedule; "days" is any set of weekdays. */
+export type Cadence = "default" | "daily" | "weekdays" | "days";
+
+export interface Schedule {
+  cadence: Cadence;
+  days: Day[];
+  time: string;
+}
+
+function daysOf(s: Schedule): Day[] {
+  if (s.cadence === "weekdays") return WEEKDAYS;
+  if (s.cadence === "days") return WEEK.filter((d) => s.days.includes(d));
+  return [...WEEK];
+}
+
+/** `HH:mm` on a 24-hour clock, the only time form `canonfig schedule set` accepts. */
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/**
+ * Why the schedule can't be saved, or null when it can. A browser time input
+ * reports "" while any part is blank, so an incomplete time fails here too.
+ * Callers disable Save and hide the CLI line while this is non-null, since
+ * `daily@` or `weekly:@09:00` isn't a command the CLI accepts.
+ */
+export function scheduleError(s: Schedule): string | null {
+  if (s.cadence === "default") return null;
+  if (s.cadence === "days" && s.days.length === 0) return DAYS_ERROR;
+  if (!TIME.test(s.time)) return TIME_ERROR;
+  return null;
+}
+const DAYS_ERROR = "Pick at least one day.";
+const TIME_ERROR = "Enter a complete time, like 09:00.";
+
+export function scheduleSummary(s: Schedule, defaultLabel: string) {
+  if (s.cadence === "default") return defaultLabel;
+  if (s.cadence === "daily") return `Every day at ${s.time}`;
+  if (s.cadence === "weekdays") return `Weekdays at ${s.time}`;
+  const days = daysOf(s);
+  if (days.length === 0) return "No days picked";
+  return `${days.length === 1 ? `Every ${FULL[days[0]]}` : days.join(", ")} at ${s.time}`;
+}
+
+const NO_CHECK = "None until the schedule is complete";
+
+/** The next scheduled check after now, in this browser's local time, as the follower's scheduler would run it. */
+export function nextCheck(s: Schedule, defaultTime: string) {
+  // An incomplete schedule never runs, so there is no next check to promise.
+  if (scheduleError(s)) return NO_CHECK;
+  const days = daysOf(s);
+  const time = s.cadence === "default" ? defaultTime : s.time;
+  const now = new Date();
+  // getDay() counts from Sunday; WEEK starts on Monday.
+  const today = (now.getDay() + 6) % 7;
+  const [hours, minutes] = time.split(":").map(Number);
+  // Today still counts while its check time is ahead.
+  const first = now.getHours() * 60 + now.getMinutes() < hours * 60 + minutes ? 0 : 1;
+  for (let i = first; i <= 7; i += 1) {
+    const d = WEEK[(today + i) % 7];
+    if (!days.includes(d)) continue;
+    if (i === 0) return `Today at ${time}`;
+    if (i === 1) return `Tomorrow at ${time}`;
+    return `${i === 7 ? "Next " : ""}${FULL[d]} at ${time}`;
+  }
+  return NO_CHECK;
+}
+
+const OPTIONS: { value: Cadence; label: string }[] = [
+  { value: "daily", label: "Every day" },
+  { value: "weekdays", label: "Weekdays" },
+  { value: "days", label: "Pick days" },
+];
+
+export function ScheduleFields({
+  idPrefix,
+  value,
+  onChange,
+  defaultLabel,
+}: {
+  idPrefix: string;
+  value: Schedule;
+  onChange: (s: Schedule) => void;
+  /** Offer "use the profile's default" first, labelled with what that default is. */
+  defaultLabel?: string;
+}) {
+  // A half-typed time ("10:") is not a mistake yet, so its error waits until the field loses focus. Both forms
+  // disable Save while the schedule is incomplete, so no Save attempt has to reveal it sooner.
+  const [timeBlurred, setTimeBlurred] = useState(false);
+  const options = defaultLabel ? [{ value: "default" as const, label: `Same as the Source (${defaultLabel})` }, ...OPTIONS] : OPTIONS;
+  const shownDays = daysOf(value);
+  const custom = value.cadence !== "default";
+  // Both problems can hold at once, so each shows under its own control.
+  const daysError = value.cadence === "days" && value.days.length === 0 ? DAYS_ERROR : null;
+  const timeError = timeBlurred && custom && !TIME.test(value.time) ? TIME_ERROR : null;
+  const toggle = (d: Day) => {
+    const next = shownDays.includes(d) ? shownDays.filter((x) => x !== d) : WEEK.filter((x) => x === d || shownDays.includes(x));
+    // Changing weekdays turns it into a custom set; selecting all seven uses the daily cadence.
+    onChange({ ...value, cadence: next.length === 5 && WEEKDAYS.every((d) => next.includes(d)) ? "weekdays" : next.length === 7 ? "daily" : "days", days: next });
+  };
+  return (
+    <div className="grid gap-4">
+      <Field label="When">
+        <RadioGroup
+          value={value.cadence}
+          onValueChange={(c: Cadence) => onChange({ ...value, cadence: c, days: c === "days" && value.days.length === 0 ? WEEKDAYS : value.days })}
+          aria-label="When"
+          // Spotlit by both the Profile defaults and the Follower Schedule tour chapters.
+          data-tour="schedule-when"
+          className={settingsGroup}
+        >
+          {options.map((o) => (
+            <Label key={o.value} htmlFor={`${idPrefix}-${o.value}`} className="flex min-h-9 cursor-pointer items-center gap-2 px-4 py-2 text-base font-normal hover:bg-raised/40">
+              <RadioGroupItem id={`${idPrefix}-${o.value}`} value={o.value} />
+              {o.label}
+            </Label>
+          ))}
+        </RadioGroup>
+      </Field>
+      {custom && (
+        <div className="flex flex-wrap items-start gap-4">
+          {value.cadence !== "daily" && (
+            <Field label="Days" error={daysError}>
+              <div className="flex flex-wrap gap-1" role="group" aria-label="Days">
+                {WEEK.map((d) => {
+                  const on = shownDays.includes(d);
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      aria-pressed={on}
+                      aria-label={FULL[d]}
+                      onClick={() => toggle(d)}
+                      className={cn(
+                        "h-9 w-10 rounded-md border text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+                        on ? "border-border-strong bg-raised text-foreground" : "border-border text-faint hover:text-muted-foreground",
+                      )}
+                    >
+                      {d}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
+          <Field label="Time" htmlFor={`${idPrefix}-time`} error={timeError}>
+            <div className="flex items-center gap-2">
+              <TimeField
+                id={`${idPrefix}-time`}
+                value={value.time}
+                onChange={(time) => onChange({ ...value, time })}
+                onBlur={() => setTimeBlurred(true)}
+                invalid={!!timeError}
+                describedBy={timeError ? `${idPrefix}-time-note` : undefined}
+              />
+              <span className="text-sm text-faint">local time</span>
+            </div>
+          </Field>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Every half hour of the day, the list offered under the time field. */
+const SLOTS = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).padStart(2, "0")}:${i % 2 ? "30" : "00"}`);
+
+/**
+ * A typed HH:mm field with a half-hour list underneath, the Google Calendar pattern.
+ * Replaces `<input type="time">`, whose picker the browser draws in its own light,
+ * unstyleable colours, and whose segment editing many people find fiddly. Typing stays
+ * the fast path and allows any minute; the list shows the format and covers the usual
+ * choices with one click. ArrowDown moves into the list, arrows walk it, Enter picks,
+ * Escape closes and keeps focus in the field.
+ */
+export function TimeField({ id, value, onChange, onBlur, invalid, describedBy }: { id: string; value: string; onChange: (time: string) => void; onBlur?: () => void; invalid: boolean; describedBy?: string }) {
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const pick = (time: string) => {
+    onChange(time);
+    setOpen(false);
+    inputRef.current?.focus();
+  };
+  const focusSlot = (i: number) => listRef.current?.querySelectorAll<HTMLButtonElement>("button")[Math.max(0, Math.min(SLOTS.length - 1, i))]?.focus();
+  // The nearest slot at or before the typed time, so the list opens where the user is.
+  const current = Math.max(0, SLOTS.findLastIndex((s) => s <= value));
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverAnchor asChild>
+        <Input
+          ref={inputRef}
+          id={id}
+          type="text"
+          inputMode="numeric"
+          autoComplete="off"
+          placeholder="09:00"
+          maxLength={5}
+          value={value}
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={`${id}-list`}
+          aria-invalid={invalid || undefined}
+          aria-describedby={describedBy}
+          onChange={(e) => onChange(e.target.value)}
+          // Moving into the field's own slot list is still picking a time, not leaving the field.
+          onBlur={(e) => !listRef.current?.contains(e.relatedTarget) && onBlur?.()}
+          onClick={() => setOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setOpen(true);
+              requestAnimationFrame(() => focusSlot(current));
+            } else if (e.key === "Escape" && open) {
+              e.stopPropagation();
+              setOpen(false);
+            }
+          }}
+          className="w-24 font-mono text-sm tabular-nums"
+        />
+      </PopoverAnchor>
+      <PopoverContent
+        align="start"
+        className="w-24 gap-0 p-1"
+        // Keep typing in the field; the list only takes focus via ArrowDown.
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          requestAnimationFrame(() => listRef.current?.querySelectorAll("button")[current]?.scrollIntoView({ block: "center" }));
+        }}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        onInteractOutside={(e) => e.target === inputRef.current && e.preventDefault()}
+      >
+        <div ref={listRef} id={`${id}-list`} role="listbox" aria-label="Times" className="max-h-56 overflow-y-auto">
+          {SLOTS.map((slot, i) => (
+            <button
+              key={slot}
+              type="button"
+              role="option"
+              aria-selected={slot === value}
+              tabIndex={-1}
+              onClick={() => pick(slot)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  focusSlot(i + (e.key === "ArrowDown" ? 1 : -1));
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setOpen(false);
+                  inputRef.current?.focus();
+                }
+              }}
+              className={cn(
+                "flex h-8 w-full items-center rounded-md px-2 font-mono text-sm tabular-nums outline-none hover:bg-raised focus-visible:bg-raised focus-visible:text-foreground",
+                slot === value ? "text-foreground" : "text-muted-foreground",
+              )}
+            >
+              {slot}
+              {slot === value && <span aria-hidden className="ml-auto size-1.5 rounded-full bg-primary" />}
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}

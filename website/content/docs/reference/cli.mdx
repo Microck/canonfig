@@ -1,180 +1,255 @@
 ---
 title: "Reference: complete CLI reference"
-description: Canonfig 4.2.0 commands, output formats, shared secrets, logging controls, and exit codes.
+description: Every canonfig command, option, default, and exit code, in the order canonfig --help lists them.
 ---
 
-Canonfig requires Node.js 24 or newer. This page follows the command groups in
-the order `canonfig --help` lists them.
+Canonfig needs Node.js 24 or newer. Commands appear here in the order
+`canonfig --help` lists them. Run `canonfig <group> --help` for any group's
+usage and notes.
 
 ## Global options and output
 
+| Option | Effect |
+| --- | --- |
+| `-h`, `--help` | Show help. After a command group, show that group's help. |
+| `-V`, `--version` | Show the version. With `--json`, also show the build identity. |
+| `--json` | Print the `canonfig.cli/v1` [JSON envelope](#json-envelope). Allowed anywhere in the command. |
+
+Human output starts with a one-line message, then one line per action,
+resource, or check. A failure ends with a line such as
+`exit 3: Human Action Required`. When human output shortens a value it says so;
+use `--json` for the full value and in scripts.
+
+| Environment variable | Effect |
+| --- | --- |
+| `CANONFIG_LOG=off` | Turn off the command log at `~/.canonfig/canonfig.log`. |
+| `CANONFIG_LOG_FILE` | Write the command log to another path. |
+| `CANONFIG_DEBUG=1` | Add error details to internal failures (exit 1). |
+| `CANONFIG_LOCAL_CREDENTIAL_ROOT` | Store credentials in plaintext files under this directory instead of the OS credential store. |
+| `CANONFIG_POWERSHELL` | Path to PowerShell 7 on Windows 10 ARM64. |
+
+## Exit codes
+
+| Code | Meaning |
+| ---: | --- |
+| `0` | Success |
+| `1` | Internal defect: a failure Canonfig has no explanation for |
+| `2` | Usage or configuration, including a Source and follower on different `major.minor` releases |
+| `3` | Human Action Required, including a locked or unavailable local credential store |
+| `4` | Conflict or Follower Drift |
+| `5` | Authentication or revocation: the Source Machine rejected or revoked this follower |
+| `6` | Transport: the Source Machine could not be reached |
+| `7` | Verification or apply failure |
+| `130` | Interrupted by `SIGINT` (Ctrl-C) |
+| `143` | Terminated by `SIGTERM` |
+
+Every failure Canonfig can explain uses a code other than 1, so a script can
+tell a refusal from a crash.
+
+## Self-update
+
 ```bash
-canonfig --help
-canonfig --version
-canonfig source --help
-canonfig tunnel --help
+canonfig self-update status
+canonfig self-update check
+canonfig self-update enable --apply --confirm-idle --npm-cli /home/operator/.npm-global/lib/node_modules/npm/bin/npm-cli.js
+canonfig self-update apply --apply
+canonfig self-update auto --apply --once
+canonfig self-update disable --apply
 ```
 
-`-h` and `-V` are the short forms. `--help` after a command group prints that
-group's usage and notes. Every group has one, including `secrets`, `harness`,
-and `installer`. `--json` can appear anywhere in a command.
+Opt-in updates to the latest stable patch release of the installed
+`major.minor` line, for a global npm installation under your home directory.
+Minor and major upgrades stay manual; see [Upgrade Canonfig](/how-to/upgrade).
 
-Human output is a short summary. The message comes first, then one line per
-action, resource, or probe. A failure ends with a line such as
-`exit 3: Human Action Required`. When a summary has to shorten a long value it
-says so and points at `--json`.
+| Command | Options |
+| --- | --- |
+| `enable` | `--apply`, `--confirm-idle`, and `--npm-cli <absolute path to npm-cli.js>`, all required. Stop every Canonfig process and schedule first. |
+| `disable` | `--apply` required. |
+| `status` | Prints settings and any interrupted update. Read-only. |
+| `check` | Asks the npm registry for a newer patch. Read-only. |
+| `apply` | `--apply` required. Installs, verifies, and activates the patch only when Canonfig is idle. |
+| `auto` | Without `--apply`, previews once. `--apply` keeps running in the foreground and checks every `--interval <seconds>` (default 86400, from 60 to 604800). `--once` runs one pass, for an external scheduler. |
 
-`--json` emits the `canonfig.cli/v1` envelope described
-[below](#json-envelope). Its shape did not change when the human output did, so
-scripts should use `--json`.
-
-Canonfig writes privacy-safe JSON Lines command lifecycle records to
-`~/.canonfig/canonfig.log`. Use `CANONFIG_LOG=off` to disable them or
-`CANONFIG_LOG_FILE` to select another path. Arguments and command output are
-never recorded.
+A running command or an unfinished sync blocks activation. After activating,
+`auto` exits; start it again under the new version. See the
+[self-update guide](https://github.com/Microck/canonfig/blob/main/docs/self-update.md).
 
 ## Source Machine
 
+### `source init`
+
 ```bash
 canonfig source init
-canonfig source scan --file ~/.codex/config.toml --file ~/.claude.json
+```
+
+Creates the Source Machine's signing key and HTTPS certificate in the native
+credential store. On an initialized Source it creates nothing and checks that
+the stored keys still match; see [Source keys](/reference/security#source-keys).
+
+### `source scan`
+
+```bash
+canonfig source scan --file ~/.codex/AGENTS.md --file ~/.claude.json
+```
+
+Proposes `tool` resources from evidence in the named files. At least one
+`--file` is required. It runs nothing and never proposes other kinds; see
+[Tool discovery](/explanation/tools-and-recipes).
+
+### `source reconcile-skills`
+
+```bash
+canonfig source reconcile-skills --profile-file ~/canonfig.profile.jsonc
+canonfig source reconcile-skills --profile-file ~/canonfig.profile.jsonc --apply
+canonfig source reconcile-skills --profile-file ~/canonfig.profile.jsonc --apply --watch --interval 30
+```
+
+Removes `skill` resources from the profile file when you deleted their skill
+directory on the Source Machine. Without `--apply` it previews. `--watch`
+needs `--apply` and repeats every `--interval` seconds (default 5, from 1 to
+86400). It never publishes and never deletes a skill directory. A conflict
+exits 4. See [Reconcile source skills](/how-to/reconcile-source-skills).
+
+### `source digest`
+
+```bash
 canonfig source digest --profile-file ~/canonfig.profile.jsonc
-canonfig source digest --profile-file ~/canonfig.profile.jsonc --resource claude-settings
-canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer operator
-canonfig source publish --proposal ./proposal.json --profile workstation --name Workstation --reviewer operator
-canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer operator --allow-empty
+canonfig source digest --profile-file ~/canonfig.profile.jsonc --resource codex-config
+```
+
+Validates a profile and prints each resource's content digest, without
+publishing. `--resource <id>` limits output to one resource. It exits 0 even
+when a declared digest differs. `tool` and `credential` resources have no
+content digest. An unknown resource fails with "profile `<id>` in `<file>`
+declares no resource `<r>`".
+
+### `source publish`
+
+```bash
+canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer dana
+canonfig source publish --proposal ./proposal.json --profile workstation --name Workstation --reviewer dana
+canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer dana --allow-empty
+```
+
+| Option | Value |
+| --- | --- |
+| `--profile-file <path>` | The profile file. Required unless `--proposal` is given. |
+| `--proposal <path>` | A `source scan` proposal to accept. Without `--profile-file`, also pass `--profile <id>` and `--name <name>`. |
+| `--reviewer <name>` | Required. Recorded with the revision. |
+| `--allow-empty` | Publish a revision with no resources. |
+
+Signs a new revision. Content equal to the latest revision returns that
+revision. Any other content, including an older revision's, becomes the next
+sequence number; republishing old content is how you roll back.
+
+Publication fails with exit 2, before signing, when:
+
+- a declared `verify.digest` does not match (the message prints the right one);
+- a `source` path is absolute, contains `..`, or resolves outside the profile
+  file's directory;
+- a number is too large to carry exactly, or is not finite;
+- an automatic installer recipe has no exact `version`;
+- the revision's metadata exceeds 1 MiB;
+- there are no resources and `--allow-empty` is not set.
+
+See [Profiles, revisions, resources, and policies](/reference/profile-schema).
+
+### `source serve` and `source service`
+
+```bash
 canonfig source serve --host 127.0.0.1 --port 17342
 canonfig source service install --host 127.0.0.1 --port 17342
 canonfig source service status
 canonfig source service remove
-canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m --group developers
-canonfig source revoke follower-one
 ```
 
-**`source init`** creates the Source signing key and TLS certificate in the
-native credential store. On an initialized Source it never generates a new
-identity. It checks that the stored keys still match the recorded fingerprints
-instead (see [Source keys](/reference/security#source-keys)).
+`source serve` runs the Source Machine's HTTPS endpoint in the foreground.
+`--host` is `127.0.0.1` (default) or `::1`; `--port` defaults to `17342`.
 
-**`source scan`** is tool discovery only. It reads the named files and proposes
-`tool` resources from the evidence it finds. It runs no processes and never
-proposes file, config, directory, or skill resources; author those in a profile
-file.
+`source service install` runs `source serve` as a user service: a systemd user
+unit `canonfig-source.service` on Linux, a LaunchAgent `dev.canonfig.source` on
+macOS, or a Task Scheduler at-logon task `Canonfig\canonfig-source` on Windows.
+It takes the same `--host` and `--port`. It needs `source init` first, refuses
+when another `source serve` already answers on the port, and waits up to 20
+seconds for the endpoint. If the endpoint does not answer, it exits 7 and
+leaves the service installed so you can inspect it. On Linux it does not enable
+lingering. On macOS, run it from the logged-in desktop session, not over SSH.
 
-**`source digest`** validates a profile file, resolves each `source` path the
-same way publication does, and prints every resource's computed content digest.
-It never signs or publishes. `--resource` limits the output to one resource.
-With `--json` the data is `{ profile, resources: [{ id, kind, verify, digest,
-declaredDigest?, matches? }] }`. It exits 0 even when a declared digest does not
-match, so you can use it to find the value to write. An unknown `--resource`
-fails with "profile `<id>` in `<file>` declares no resource `<r>`"; a `tool` or
-`credential` resource has no content digest.
+`source service status` reports one of:
 
-Both `source digest` and `source publish` reject expanded revision metadata that
-exceeds the default 1 MiB transport budget, reserving space for the signing
-envelope. This measures the full resource projection, not just the authored
-JSON file size; a directory with many small entries can exceed it. Publication
-also checks actual revision/signing fields before storing anything. The error
-is usage/configuration (exit 2), not a retryable follower transport failure.
-Split oversized resources across separate profiles. File content carried in
-separate blobs does not count toward this metadata budget.
+| State | Exit | Meaning |
+| --- | ---: | --- |
+| `running` | 0 | Installed and serving this Source. |
+| `not-installed` | 0 | No service. |
+| `not-running` | 3 | Installed but stopped. |
+| `not-serving` | 3 | Running but not answering as this Source. |
+| `drifted` | 4 | The service definition changed. Run `source service install` again. |
 
-**`source publish`** signs a new immutable revision. Publishing content equal
-to the latest revision returns that revision unchanged. Any other content,
-including an earlier revision's, becomes the next sequence number, so
-republishing old content is the supported way to roll a profile back.
-Publication fails with exit 2 before signing when:
+`source service remove` stops and deletes the service. See
+[Run Canonfig unattended](/how-to/run-unattended).
 
-- a declared `verify.digest` does not match the published content (the message
-  prints the computed digest);
-- a `source` path is absolute, contains `..`, or resolves outside the profile
-  file's directory;
-- a number cannot be carried exactly (outside the safe integer range, or not
-  finite);
-- an automatic installer recipe has no exact `version`;
-- the profile declares no resources and the proposal found nothing to accept.
-  Pass `--allow-empty` to publish an empty revision on purpose.
+### `source invite`
 
-**`source serve`** runs the Source's loopback HTTPS endpoint in the foreground.
-It defaults to `127.0.0.1:17342` and accepts only loopback hosts.
+```bash
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m --group developers
+```
 
-**`source service`** supervises `source serve` as a native user service: a
-systemd user unit (`canonfig-source.service`) on Linux, a LaunchAgent
-(`dev.canonfig.source`) on macOS, and a Task Scheduler at-logon task
-(`Canonfig\canonfig-source`) on Windows. `install` requires `source init`,
-refuses when another `source serve` already answers on the port, and waits up
-to 20 seconds for the endpoint to answer with this Source's pinned identity. If
-it does not, `install` fails with exit 7 and leaves the service installed so you
-can inspect it. On Linux `install` does not enable lingering; on macOS run it
-from the logged-in desktop session, not over SSH.
+| Option | Value |
+| --- | --- |
+| `--endpoint <https-url>` | Required. An `https://` URL on `127.0.0.1` or `::1`. |
+| `--output <path>` | Required. Written with mode `0600`. |
+| `--expires <duration>` | A whole number plus `ms`, `s`, `m`, or `h`. Default `15m`, at most `24h`. |
+| `--group <name>` | Follower Group to grant. Repeat for more. `canonfig:secrets` enables shared secrets. |
+| `--timeout-ms <ms>` | Default 10000, at most 60000. |
 
-`service status` reports one of `running`, `not-installed`, `not-running`,
-`not-serving`, or `drifted`, plus the manager state, whether the endpoint
-serves the pinned identity, the supported modes, lingering on Linux, and where
-the logs are. It exits 0 for `running` and `not-installed`, 3 for `not-running`
-and `not-serving`, and 4 for `drifted` (run `install` again). `service remove`
-stops and deletes the service and its host and port record. See
-[Run Canonfig unattended](/how-to/run-unattended) for the modes each platform
-supports.
+The invitation is single-use. Move it to the follower over a private channel.
 
-**`source invite`** requires an output path, writes a mode-`0600` single-use
-envelope with an explicit EOF marker, and reports only its path and non-secret
-metadata. Duration is a positive integer plus `ms`, `s`, `m`, or `h`, at most 24
-hours. Repeat `--group` to add Follower Groups.
+### `source revoke`
 
-**`source revoke`** revokes one Follower Identity and deletes the Source's copy
-of its credential.
+```bash
+canonfig source revoke laptop-dana
+```
+
+Revokes one Follower Identity. Its next request fails with exit 5.
 
 ## Follower enrollment
 
 ```bash
-cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
-cat ./canonfig-invite | canonfig follower enroll --stdin --name desk --profile workstation --replace
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop-dana --profile workstation
+cat ./canonfig-invite | canonfig follower enroll --stdin --name desk-dana --profile workstation --replace
 canonfig follower unenroll
 ```
 
-`enroll` reads the invitation from standard input only: exactly the envelope
-line followed by the `CANONFIG-INVITE-EOF` line, at most 16384 bytes, reaching
-end of input within 10 seconds. It refuses a terminal on stdin and refuses an
-invitation passed as an argument. It checks that this machine can store a
-credential before it spends the invitation.
+### `follower enroll`
 
-`--timeout-ms` bounds each enrollment network phase (default 10000,
-maximum 300000 milliseconds) and persists as this follower's timeout for
-subsequent Source transport requests, including scheduled sync. It does not
-extend the 10-second stdin envelope read. Use a longer timeout when the Source
-is slow to answer, including under software emulation. Re-enrolling the same
-identity preserves the configured transport timeout unless a new value is given.
+| Option | Value |
+| --- | --- |
+| `--stdin` | Required. The invitation is read from standard input only, never as an argument. |
+| `--name <name>` | Required. This follower's name. |
+| `--profile <id>` | Required. The Machine Profile to follow. |
+| `--replace` | Replace this machine's existing enrollment under a different name. |
+| `--timeout-ms <ms>` | Limit for each network step. Default 10000, at most 300000. Kept for later requests, including scheduled syncs. |
 
-One machine holds one enrollment:
+Standard input must be the invitation file, at most 16384 bytes, ending within
+10 seconds. A terminal on standard input is refused. Canonfig checks that this
+machine can store a credential before it uses the invitation.
 
-- **Same name, new invitation.** An active or pending name is rejected with
-  "the follower identity is already enrolled". An invitation alone is not proof
-  that the caller owns the existing identity. Its credential and groups remain
-  unchanged, and the rejected invitation can still enroll a different name.
-  To re-enroll an existing name, explicitly revoke that identity on the Source
-  first. Re-enrolling the revoked identity keeps this machine's local settings.
-- **Different name.** Without `--replace` enrollment fails with exit 4: "this
-  machine is already enrolled as `<name>` (`<id>`); pass --replace to enroll it
-  as `<new name>` instead". With `--replace` the new identity is enrolled first,
-  then the old one is revoked on its Source and its local credential deleted. A
-  failed replacement therefore keeps the working identity. `resets` lists every
-  setting that was reset, one sentence each, for example "3 local overlay
-  entries removed". If the old identity could not be revoked, the result names
-  the `canonfig source revoke` command to run on the Source.
-- **Failed or cancelled enrollment** removes the credentials it created, on the
-  Source and on the follower.
+| Situation | Result |
+| --- | --- |
+| The name is already enrolled | Refused: "the follower identity is already enrolled". Run `canonfig source revoke <name>` on the Source Machine first. Re-enrolling a revoked name keeps this machine's local settings. |
+| This machine is enrolled under another name | Exit 4: "this machine is already enrolled as `<name>` (`<id>`); pass --replace to enroll it as `<new name>` instead". |
+| `--replace` | Enrolls the new identity, then revokes the old one. Lists every reset setting (agent policy, harness and secret bindings, schedule, Local Overlay). If the old identity could not be revoked, prints the `canonfig source revoke` command to run. |
+| Enrollment fails or you cancel it | The credentials it created are removed on both machines. |
 
-`unenroll` takes no arguments. It revokes this machine's identity on the Source,
-then deletes the local follower credential, the shared secrets received from
-the Source, and the enrollment record. When the Source cannot be reached the
-local removal still happens; the result reports `sourceRevoked: false` and
-names the `canonfig source revoke <id>` command to run on the Source. A locked
-credential store fails with exit 3 and keeps the record so you can retry. On a
-machine that is not enrolled it exits 0.
+### `follower unenroll`
 
-`unenroll` leaves applied files, Applied Resource Records, the native schedule,
-and the managed tunnel record in place. Remove the last two yourself:
+Revokes this machine on the Source Machine, then deletes the local credential,
+received shared secrets, and the enrollment record. It leaves applied files,
+the schedule, and the tunnel record. When the Source Machine is unreachable,
+local removal still happens and the output shows `sourceRevoked: false` plus
+the `canonfig source revoke <id>` command to run. A locked credential store
+exits 3 and keeps the record so you can retry. On a machine that is not
+enrolled, it exits 0.
 
 ```bash
 canonfig schedule remove
@@ -185,30 +260,36 @@ canonfig tunnel stop --forget
 
 ```bash
 canonfig sync --plan
+canonfig sync --plan --review-local
 canonfig sync --apply
 canonfig sync --apply --no-input
 ```
 
-`--plan` and `--apply` are mutually exclusive; with neither, `sync` plans.
-`--plan` downloads and compares without changing the machine. `--apply`
-journals every action and verifies each resource independently. `--no-input`
-never prompts. Native schedules run `sync --apply --no-input --scheduled`; only
-the native job passes `--scheduled`, which is what marks a run as unattended.
+| Option | Effect |
+| --- | --- |
+| `--plan` | Default. Downloads and compares; changes nothing. |
+| `--apply` | Applies the plan and verifies every resource. Cannot be combined with `--plan`. |
+| `--no-input` | Never prompts. |
+| `--review-local` | With an interactive `--plan`, writes private reviews of first `append-local` adoptions. See [`append-local`](/reference/profile-schema#keep-local-instructions-with-append-local). |
+| `--scheduled` | Set only by the native schedule, which runs `sync --apply --no-input --scheduled`. |
 
-A failed deterministic action rolls back the file, directory, and config
-changes of the whole run and fails with exit 7, naming the resource and target:
-"resource `<id>` could not be applied to `<target>`: `<cause>`". Tool installs
-are not rolled back, and a resource that needs Human Action Required does not
-roll back the others. See [Recover](/how-to/recover#what-one-run-changes-and-what-it-rolls-back).
+A failed action rolls back the run's file, directory, and config changes and
+exits 7: "resource `<id>` could not be applied to `<target>`: `<cause>`". Tool
+installs are not rolled back. Human Action Required (exit 3) and Follower Drift
+(exit 4) stop the run without rolling back. See
+[the transaction boundary](/explanation/architecture#the-transaction-boundary).
 
-A successful apply also synchronizes shared secrets when the follower has the
-`canonfig:secrets` group. When the profile suggests a schedule and the follower
-has made no schedule decision, the output says "schedule available" and names
-`canonfig schedule set --default`; sync never installs a schedule.
+After a successful apply, Canonfig also copies shared secrets when the
+follower is in the `canonfig:secrets` group. If that copy fails, the command
+reports one error that says the files were applied.
 
-A scheduled run restarts a managed tunnel that is down once before fetching.
-When the Source is unreachable because the tunnel is down or stopped, the run
-fails with exit 6 and says to run `canonfig tunnel start`.
+When the profile suggests a schedule and you have not chosen one, the output
+says "schedule available" and names `canonfig schedule set --default`. Sync
+never installs a schedule.
+
+A scheduled run restarts a managed tunnel that is down, once, before fetching.
+If the Source Machine is still unreachable, the run exits 6 and says to run
+`canonfig tunnel start`.
 
 ## Recovery
 
@@ -218,38 +299,30 @@ canonfig recover --no-input
 canonfig abandon
 ```
 
-`recover` resumes or rolls back an interrupted run from its journal, which needs
-that run's revision to still be authorized. `abandon` closes a run that
-`recover` cannot resolve. It is not a rollback: whatever the run already applied
-stays applied, and the next run reconciles it. Both refuse with exit 4 while
-another process holds the run lock, and report that process's PID.
-`recover` accepts only `--no-input`. See [Recover](/how-to/recover).
+`recover` resumes or rolls back an interrupted run. It accepts only
+`--no-input`, and needs that run's revision to still be authorized. `abandon`
+closes a run `recover` cannot finish; it does not undo anything, and the next
+run reconciles what was applied. Both exit 4 while another Canonfig process
+holds the run, and print its process ID. See [Recover](/how-to/recover).
 
 ## Status
 
 ```bash
 canonfig status
 canonfig status --json
-canonfig status --follower follower-one
+canonfig status --follower laptop-dana
 ```
 
 On a follower, `status` reports the enrollment, the applied revision, the
-schedule, and the completion receipt. On the Source, `--follower <id>` reports
-that follower's enrollment. `converged` is false while a run is open or
-interrupted, or when the last run did not end `Converged` (for example Follower
-Drift); an open run is shown
-with each planned action's latest journal state.
+schedule, and the result of the last run. `converged` is false while a run is
+open or interrupted, or when the last run did not converge. On the Source
+Machine, `--follower <id>` reports that follower's enrollment.
 
-`status --json` includes a `completionReceipt` after enrollment. It reports the
-exact applied revision and separates signed publication, apply outcome,
-explicit client-load evidence, native scheduling, and independent journal
+`status --json` includes `completionReceipt`, which separates: signed
+publication, apply result, client-load evidence, native scheduling, and journal
 verification. `secondRunNoOp` is true only when the latest converged run
-performed no filesystem, configuration, removal, or tool-install mutation.
-`scheduled` stays `pending` until the native job is current and a real
-scheduled run has completed; when the last unattended run failed, the receipt
-gives its time and reason. If the Source and this follower run different
-`major.minor` releases, `status` reports the Source unreachable with the
-version mismatch message (see [Upgrade Canonfig](/how-to/upgrade)).
+changed nothing. `scheduled` stays `pending` until a scheduled run has
+completed; after a failed scheduled run it gives the time and reason.
 
 ## Local overlays
 
@@ -259,13 +332,12 @@ canonfig overlay set claude-settings --target ~/.claude/settings.json --key perm
 canonfig overlay remove claude-settings
 ```
 
-A Local Overlay claims keys of a `config` resource's target as this follower's
-own. A key the profile used to own and later drops is kept when the overlay
-claims it, instead of being removed. A claimed key that overlaps a key the
-profile still declares is Human Action Required until you remove or rename the
-overlay entry.
-Key paths use `.` between segments; write `\.` for a literal dot and `\\` for a
-literal backslash inside a segment. Any other backslash is rejected. See
+A Local Overlay claims keys of a `config` resource's target for this follower.
+`set` needs one resource ID, `--target`, and at least one `--key` (repeatable).
+A claimed key that the profile drops is kept instead of removed. A claimed key
+that overlaps a key the profile still declares is Human Action Required until
+you change the overlay. In a key, write `\.` for a literal dot and `\\` for a
+backslash. See
 [Structured configuration ownership](/reference/profile-schema#structured-configuration-ownership).
 
 ## Diagnostics
@@ -274,156 +346,147 @@ literal backslash inside a segment. Any other backslash is rejected. See
 canonfig doctor --no-input --timeout-ms 5000
 ```
 
-`doctor` runs seven isolated, bounded probes. See
+Runs independent checks of this machine and its Source connection.
+`--timeout-ms` limits each check (default 5000, at most 300000). See
 [Diagnostics](/reference/diagnostics).
 
 ## Managed SSH tunnel
 
 ```bash
-canonfig tunnel start --invitation ./canonfig-invite --ssh-host a.example --ssh-user you --ssh-host-key-file ./source-host-key.pub
+canonfig tunnel start --invitation ./canonfig-invite --ssh-host source.example.net --ssh-user dana --ssh-host-key-file ./source-host-key.pub
 canonfig tunnel start
 canonfig tunnel status
 canonfig tunnel stop
 canonfig tunnel stop --forget
 ```
 
-Start the Source first, then the tunnel. The first `tunnel start` needs the
-invitation, the SSH host, user, and the Source host's verified SSH public key.
-It records everything needed to restart (SSH endpoint, pinned host key,
-forward, TLS and signing pins) in `~/.canonfig/tunnel/tunnel-config.json`, mode
-`0600`, so the invitation does not need to be kept. `tunnel start` without
-`--invitation` restarts from that record and accepts only `--timeout-ms`.
-Without a record it fails with exit 2 and names the first-start command.
+Start the Source Machine's endpoint first, then the tunnel.
 
-`--ssh-host` accepts a hostname, IPv4 address, or unbracketed IPv6 address;
-specify its port separately with `--ssh-port`. Repeat `--ssh-argument` for each
-literal OpenSSH argument, including flags beginning with `-`. For a reviewed
-non-default identity file, add
-`--ssh-argument -i --ssh-argument ~/.ssh/source_ed25519` to the first-start
-command. These arguments do not permit host-key bypass or extra forwards.
-IPv6 loopback forwards are bracketed for OpenSSH without changing the pins.
-IPv6 HTTPS connections verify the actual peer certificate's IP SAN as well as
-the trusted certificate and pinned Source identities.
+| `tunnel start` option | Value |
+| --- | --- |
+| `--invitation <path>` | Required on first start. |
+| `--ssh-host <host>` | Required. Hostname, IPv4, or IPv6 address without brackets. |
+| `--ssh-user <user>` | Required. |
+| `--ssh-host-key-file <path>` | Required. The Source host's verified SSH public key. |
+| `--ssh-port <port>` | Default 22. |
+| `--local-host <host>` | `127.0.0.1` (default) or `::1`. |
+| `--local-port <port>` | Default 17342. |
+| `--ssh-executable <path>` | OpenSSH client to run. |
+| `--ssh-argument <arg>` | One extra OpenSSH argument; repeat for each. Options that disable host key checks or add forwards are refused. |
+| `--timeout-ms <ms>` | Default 30000, at most 300000. |
 
-`tunnel stop` stops the SSH process and keeps the record marked stopped, so
-nothing restarts it automatically. `tunnel stop --forget` also deletes the
-record. `tunnel status` reports `running`, `down`, `stopped`, or
-`not-configured`, whether the tunnel is restartable, and the command to run.
+The first start saves everything needed to restart in
+`~/.canonfig/tunnel/tunnel-config.json` (mode `0600`), so you need not keep the
+invitation. `tunnel start` without `--invitation` restarts from that record and
+accepts only `--timeout-ms`; without a record it exits 2 and names the
+first-start command. To use a specific SSH key, add
+`--ssh-argument -i --ssh-argument ~/.ssh/source_ed25519` to the first start.
 
-The tunnel accepts only a verified SSH host public key and a loopback forward.
-It rejects host-key bypass and extra-forwarding flags. Readiness requires the
-invitation's TLS fingerprint and Source signing fingerprint, and reports three
-cases separately: SSH exited, SSH never opened the forward, or SSH is connected
-but the Source on that host is not answering. A stale PID that does not match
-the recorded SSH command is never signaled.
+`tunnel status` reports `running`, `down`, `stopped`, or `not-configured`, and
+the command to run. When the tunnel does not come up, the error says which of
+three things happened: SSH exited, SSH never opened the forward, or SSH
+connected but the Source Machine is not answering.
+
+`tunnel stop` stops the tunnel and keeps the record, so nothing restarts it.
+`tunnel stop --forget` also deletes the record.
 
 ## Profiles
 
 ```bash
 canonfig profile list
-canonfig profile show revision-one
+canonfig profile show 7f3c9a2e
 canonfig profile select workstation
 ```
+
+`list` shows profiles, `show` shows one revision by ID, and `select` changes
+which profile this follower follows.
 
 ## Agent policy
 
 ```bash
 canonfig agent policy
-canonfig agent policy deterministic-only
 canonfig agent policy agent-propose
-canonfig agent policy agent-apply
 canonfig agent harness
-canonfig agent harness codex --executable /opt/codex --allow-path /home/operator/.canonfig --allow-leaf-executable npm --allow-origin https://registry.npmjs.org --allow-capability restart --maximum-input-bytes 4096
+canonfig agent harness codex --executable /usr/local/bin/codex --model gpt-5-codex --allow-path /home/dana/.canonfig --allow-leaf-executable npm --allow-origin https://registry.npmjs.org --allow-capability restart
+canonfig agent harness claude --executable /usr/local/bin/claude --model sonnet
+canonfig agent harness custom --executable /opt/review-agent/bin/agent --argument --read-only
 ```
 
-Harness kinds are `codex`, `claude`, and `gemini`. Capabilities are
-`elevation`, `login`, `restart`, and `reboot`. Allow origins must be exact
-HTTPS origins. See [Configure agent policies](/how-to/configure-agent-policies).
+`agent policy` without an argument prints the policy. Policies are
+`deterministic-only`, `agent-propose`, and `agent-apply`.
+
+`agent harness` without arguments prints the configured harness. To set one:
+
+| Option | Value |
+| --- | --- |
+| `codex`, `claude`, or `custom` | Harness kind. |
+| `--executable <path>` | Required. |
+| `--model <name>` | `codex` and `claude` only. |
+| `--argument <arg>` | `custom` only. Passed as is; repeat for each argument. |
+| `--allow-path <path>` | A path the agent may write. Repeatable. |
+| `--allow-leaf-executable <name>` | A program the agent may run. Repeatable. Programs that start other commands are refused. |
+| `--bind-secret <ENV=secret-name>` | Put a stored shared secret in the agent's environment as `ENV`. Repeatable. |
+| `--allow-origin <https-origin>` | An exact HTTPS origin the agent may reach. Repeatable. |
+| `--allow-capability <capability>` | `elevation`, `login`, `restart`, or `reboot`. Repeatable. |
+| `--maximum-input-bytes <bytes>` | Default and maximum 1048576. |
+
+A secret bound with `--bind-secret` is read when the harness starts, so a new
+value takes effect on the next start. Only the variable name and secret name
+are saved.
+
+A follower that still has a `gemini` harness stored fails with exit 2: "the
+gemini agent harness was removed in 5.0.0; run 'canonfig agent harness
+codex|claude|custom ...' to replace it". Run `canonfig agent harness` with a
+supported kind. See [Configure agent policies](/how-to/configure-agent-policies).
 
 ## Journaled setup
 
 ```bash
-canonfig setup plan --role source --file AGENTS.md --file package.json --mode advanced --intent "prepare source"
+canonfig setup plan --role source --file ~/.codex/AGENTS.md --mode advanced --intent "prepare the Source Machine"
 canonfig setup plan --role follower
-canonfig setup approve --approver operator
+canonfig setup approve --approver dana
 canonfig setup apply
 canonfig setup status
 ```
 
-`setup plan` requires the machine role before any role-specific inspection.
-It records a bounded OS, account, loopback transport, Node runtime, native
-installer, and discovery inventory. `--file` bounds tool discovery only; the
-published profile decides which files are synced. Planning has no side effects:
-installer probes run with Corepack downloads and rustup auto-install disabled,
-and a rustup proxy is not run until rustup has been configured, so such a tool
-is reported unverified. A full Source plan fails before initialization when
-signing and TLS key storage is unavailable. When the native provider is only
-known to be present (Linux Secret Service, Windows Credential Manager), the
-full Source plan proves access first: it stores, reads back, and deletes a
-disposable non-secret item, and fails with the prerequisite if the provider
-is not running or not unlocked. `--scope cli-only` verifies only
-that the CLI runs (no identities, schedules, or remote connections);
-`--scope project-only` also installs accepted recipes for missing executables
-but creates no identity. Disabled declarations do not enter the plan. An
-executable already found on PATH is preserved without scheduling a reinstall;
-its presence alone does not record package verification or qualified provenance.
-A missing tool's `recipe-install` step includes its verifier and depends on
-verification of the selected native installer.
+| `setup plan` option | Value |
+| --- | --- |
+| `--role <source\|follower>` | Required. |
+| `--scope <scope>` | `full` (default), `cli-only` (checks only that the CLI runs), or `project-only` (also installs accepted tools, creates no identity). |
+| `--file <path>` | A file for tool discovery. Repeatable. It does not choose which files sync. |
+| `--mode <simple\|advanced>` | Records the interview depth. Does not change the plan; kept by later plans. |
+| `--intent <text>` | A note recorded with the plan. |
 
-Approval binds the plan digest, including fingerprints of the bounded discovery
-files' exact bytes. Apply checks those files before executing any item. If a
-file changed, disappeared, exceeded the bound, or cannot be read, apply clears
-the stale approval without executing the plan. Run `setup plan` with the selected
-role, scope, and files again, review the changed graph, then approve it.
-Older journals without these fingerprints also require a new plan and approval.
-Installing a tool does not change these authoring fingerprints.
+`setup plan` changes nothing. A `full` Source plan fails early when the
+credential store cannot hold the Source keys. `setup approve` approves the
+current plan, including the exact content of every `--file`. `setup apply`
+runs the next stages; run it again to continue. If a discovery file changed
+after approval, apply clears the approval without running anything: plan and
+approve again.
 
-Apply runs only structured native argv recipes and journals evidence and
-qualified provenance. Re-running apply resumes the next eligible stage.
-An unavailable optional integration excludes only its dependent branch.
-Human `setup apply` and `setup status` include the stored reason beneath failed
-or skipped items. `setup status --json` exposes that reason as item `evidence`
-when it matches the current verdict; stale success evidence is not reused for a
-new dependency skip. Normal output redaction applies to these reasons.
-
-The journal (`~/.canonfig/setup.json`) is the setup decision record, and
-`setup status` shows it:
-
-- `role`, `scope`, and `intent`;
-- `mode`: `simple` or `advanced`, recorded from `setup plan --mode` once
-  chosen. A later plan without `--mode` keeps it. The mode is a record of the
-  interview depth only: it is not part of the plan digest, so switching modes
-  keeps approvals;
-- `discoveryPaths`: the normalized `--file` paths discovery read. A file that
-  is missing or too large is listed under `exclusions` instead. A directory,
-  invalid path, or unreadable discovery file is a usage/configuration error
-  (exit 2), not an internal journal defect;
-- `discoveryInputs`: the paths and SHA-256 fingerprints of discovery files.
-  These bind approval to authoring bytes, not to whether installation has
-  since made the tool available;
-- `approvals`: approver and time for the current plan digest only;
-- `stages`: each completed stage (`role`, `preflight`, `inventory`, `plan`,
-  `approve`, `apply`) with its digest and `completedAt` time. `stage` names the
-  next eligible one.
+`setup status` shows the role, scope, mode, intent, discovery files, approval,
+completed stages, and the reason for each failed or skipped item. The record is
+`~/.canonfig/setup.json`.
 
 ## Scheduling
 
 ```bash
 canonfig schedule set daily@09:00
 canonfig schedule set weekly:Mon,Thu@12:30 --timezone Europe/Paris
-canonfig schedule set daily@09:00 --executable /opt/canonfig
+canonfig schedule set daily@09:00 --executable /usr/local/bin/canonfig
 canonfig schedule set --default
 canonfig schedule status
 canonfig schedule remove
 ```
 
-The schedule CLI accepts daily and weekly calendars only. Times are local to
-`--timezone`, or to this machine's zone. `set` and `status` print the resolved
-zone, the next run, and any daylight-saving warning; `set` never starts a run
-for a time that already passed today. `--default` installs the profile's
-suggested schedule and takes no other argument. `set` refuses while a native
-override of the job exists. See [Manage schedules](/how-to/manage-schedules)
-for states, missed runs, and jobs disabled outside Canonfig.
+Calendars are `daily@HH:mm` or `weekly:Day[,Day...]@HH:mm`, with days `Mon`
+to `Sun`. Times are in `--timezone` (an IANA name) or this machine's zone.
+`--executable` sets the `canonfig` the job runs. `--default` installs the
+profile's suggested schedule and takes no other option. `set` prints the zone,
+the next run, and a warning when the time does not exist on a daylight-saving
+day; it never starts a run for a time already past today. `set` refuses while a
+native override of the job exists. See
+[Manage schedules](/how-to/manage-schedules).
 
 ## Shared secrets
 
@@ -434,104 +497,81 @@ canonfig secrets list
 canonfig secrets sync
 canonfig secrets remove github-token
 canonfig secrets bootstrap
-canonfig secrets --help
 ```
 
-`secrets set` never takes the value as an argument. It reads it from standard
-input:
+| Command | Effect |
+| --- | --- |
+| `set <name>` | Stores a value read from standard input. |
+| `list` | Lists names and where each came from. Never values. |
+| `remove <name>` | Deletes a stored secret. Removing a name the Source Machine owns discards that value on this follower. |
+| `sync` | Fetches authorized secrets from the Source Machine. `sync --apply` already does this. |
+| `bootstrap` | Checks the credential store end to end and reports the storage it selected. |
 
-- **Piped input** is stored byte for byte. A trailing newline is part of the
-  value, so use `printf '%s'` rather than `echo`. The pipe must reach end of
-  input within 10 seconds, or the command fails with "secrets set timed out
-  after 10 s waiting for end of input on stdin".
-- **At a terminal**, Canonfig prompts `Secret for <name> (input hidden): ` on
-  standard error. Only the Enter that ends the entry is dropped. Ctrl-D on an
-  empty entry cancels with exit 2, and Ctrl-C exits 130.
-- **Both** require a non-empty value of valid UTF-8, with no NUL byte, of at
-  most 16384 bytes. A larger value fails with "the secret on stdin exceeds the
-  16384 byte limit".
+`secrets set` never takes the value as an argument:
 
-The name is validated before stdin is read. Values are never printed or
-written to JSON. `secrets sync` is an explicit retry; a successful
-`sync --apply` synchronizes secrets automatically. A native credential-store
-failure in `secrets set`, `secrets sync`, or a binding fails with exit 3 and
-carries the store's recovery text. [Opt-in shared
-secrets](/reference/security#opt-in-shared-secrets) covers storage and limits.
+- **Piped input** is stored exactly, including a trailing newline; use
+  `printf '%s'`, not `echo`. If the pipe does not end within 10 seconds, it
+  fails with "secrets set timed out after 10 s waiting for end of input on
+  stdin".
+- **At a terminal**, it prompts `Secret for <name> (input hidden): ` and drops
+  only the final Enter. Ctrl-D on an empty entry exits 2; Ctrl-C exits 130.
+- The value must be non-empty valid UTF-8 with no NUL byte, at most 16384
+  bytes: "the secret on stdin exceeds the 16384 byte limit".
+
+A credential-store failure exits 3 with the store's recovery text. See
+[Opt-in shared secrets](/reference/security#opt-in-shared-secrets).
 
 ### Headless Linux storage
 
-`secrets bootstrap` verifies the native credential store end to end with
-disposable probes and reports the selected `secure-store` or `local-file`
-policy. It runs as the current user and never invokes `sudo`. Install
-`libsecret-tools` and a Secret Service provider such as `gnome-keyring` first
-when they are absent.
-
-Canonfig finds the session bus through `DBUS_SESSION_BUS_ADDRESS`, or else the
-socket at `$XDG_RUNTIME_DIR/bus`. A background shell that has neither can point
-at the user's bus:
+`secrets bootstrap` runs as you, never uses `sudo`, and stores only test items
+it removes again. Install `libsecret-tools` and a Secret Service provider such
+as `gnome-keyring` first. From a background shell, point it at your session bus:
 
 ```bash
 env -i HOME=$HOME PATH=$PATH XDG_RUNTIME_DIR=/run/user/$(id -u) canonfig secrets bootstrap
 ```
 
-If `/run/user/<uid>/bus` does not exist, no user manager is running for you;
-`sudo loginctl enable-linger <user>` starts one without a login. The login
-keyring must also be unlocked, which happens at a password login. A private
-`dbus-run-session` bus does not work: it starts an empty keyring that waits for
-a graphical prompt. See [Run Canonfig
-unattended](/how-to/run-unattended#headless-linux-credential-storage).
+If `/run/user/<uid>/bus` does not exist, run `sudo loginctl enable-linger
+<user>`. The login keyring must be unlocked, which a password login does. When
+it cannot prove storage survives a logout without disturbing your session, the
+result says `manual`: restart, then run the same command.
 
-An intentionally unencrypted local file is an explicit choice for a machine
-with no Secret Service where a mode-`0600` plaintext file is acceptable:
+On a machine without Secret Service, you can choose unencrypted files with
+mode `0600` instead. Shared secrets still require a secure store.
 
 ```bash
 CANONFIG_LOCAL_CREDENTIAL_ROOT="$HOME/.canonfig/credentials" canonfig secrets bootstrap
 ```
 
-The secure path checks `secret-tool`, starts an installed user-session provider
-when required, waits for D-Bus registration, and uses disposable credentials to
-verify storage, lookup, and owned-provider restart. Canonfig never replaces a
-provider it did not start. When logout or reboot persistence cannot be proven
-without disrupting the current session, the result says `manual` and asks for a
-restart followed by the same command. The result reports local-file storage as
-unencrypted and does not claim that a provider collection is encrypted when the
-provider cannot attest it.
-
-The secrets runtime uses the same selected credential policy as the main CLI:
-an enrolled follower's saved policy takes precedence over the environment.
-Before enrollment, `CANONFIG_LOCAL_CREDENTIAL_ROOT` explicitly selects local-file
-storage. Bootstrap can verify that plaintext local-file policy, but this does not
-make it suitable for shared-secret storage: `secrets set` and shared-secret
-transfer still require secure noninteractive storage.
-
-### Bind a secret to an agent harness
-
-```bash
-canonfig agent harness codex --executable /opt/codex --bind-secret MCP_TOKEN=shared-mcp-token
-```
-
-Canonfig persists only `MCP_TOKEN` and `shared-mcp-token`. It resolves the
-current native-store reference immediately before spawning the harness, adds
-the value only to that process environment, and includes it in output
-redaction. Rotating the stored `shared-mcp-token` value therefore takes effect
-on the next launch. MCP projections that use `{ "fromEnv": "MCP_TOKEN" }`
-consume the same binding for environment-backed headers; unrelated secret
-names are not loaded.
+See [Run Canonfig unattended](/how-to/run-unattended#headless-linux-credential-storage).
 
 ## Upstream skills
 
-`canonfig skills track|list|check|update` manages explicit provenance for existing
-skills. `track` requires `--name`, `--path`, `--source` and `--ref`; `--subdir`
-selects the skill within its upstream repository. `--root` and root-relative
-`--config` choose the installed scope and source configuration. `--name` is
-repeatable for check/update. Update previews by default; `--apply` is required
-to write and local edits block the selected update. Public HTTPS/local Git
-sources are supported; private/SSH sources and automatic merges are not.
+```bash
+canonfig skills track --name code-review --path skills/code-review --source https://github.com/acme/agent-skills --ref v1.4.0 --subdir skills/code-review
+canonfig skills list
+canonfig skills check --name code-review
+canonfig skills update --name code-review --apply
+canonfig skills auto --apply --once
+```
 
-Updates transfer complete skill directories without executing their code.
-Source/Follower installations should update canonical skills on the Source
-Machine, then review and publish normally, not update follower-owned copies.
+Records where a skill came from and updates it from that Git repository.
 
+| Option | Value |
+| --- | --- |
+| `--root <path>` | Directory holding the installed skills. Default: the current directory. |
+| `--config <path>` | Source list, relative to `--root`. Default `.canonfig/skills-sources.json`. |
+| `--name <id>` | Skill name. `track` needs exactly one; `check`, `update`, and `auto` accept several (default: all). |
+| `--path`, `--source`, `--ref` | `track` only, all required: installed directory, public HTTPS Git URL or local repository, and branch, tag, or commit. |
+| `--subdir <path>` | `track` only. Skill directory inside the repository. Default `.`. |
+| `--apply` | `update` and `auto` only. Without it they preview. |
+| `--dry-run` | `update` and `auto` only. Preview explicitly. |
+| `--interval <seconds>` | `auto` only. Default 86400, from 60 to 604800. |
+| `--once` | `auto` only. One pass. |
+
+A local edit to a skill blocks its update; nothing is overwritten by force.
+Private and SSH repositories are not supported. Updates copy files and never
+run them. With a Source Machine, update skills there, then publish.
 
 ## Harness configuration
 
@@ -540,93 +580,95 @@ canonfig harness init
 canonfig harness init --format json
 canonfig harness validate
 canonfig harness targets
-canonfig harness plan
 canonfig harness plan --strict
 canonfig harness apply
-canonfig harness watch --targets codex,oh-my-pi
+canonfig harness watch --targets codex,claude-code
 canonfig harness status
 canonfig harness diff
-canonfig harness clean
+canonfig harness clean --dry-run
 canonfig harness doctor
-canonfig harness --help
+canonfig harness export --source-only --output ./harness-source.zip
 ```
 
-Harness apply records ownership of existing generated files and managed blocks
-only when their content matches the current canonical output. This lets a fresh
-clone adopt checked-in output before later source edits. Different unowned text
-still conflicts. Git's LF/CRLF conversion alone is not a generated-text edit;
-other edits remain protected. Binary skill files keep exact-byte ownership checks
-during updates and cleanup, without UTF-8 decoding.
+Writes each agent tool's native configuration files in a repository from one
+file, `.canonfig/harness.yaml` (or `harness.json`).
 
-An unfiltered harness apply retires owned output for targets explicitly set to
-`enabled: false`, preserving output still needed by enabled targets. Disabling
-the last applied target also retires shared generated output. Local edits still
-conflict rather than being erased. An explicit `--target` apply only updates its
-selected targets and does not retire other targets based on the project config.
+| Command | Effect |
+| --- | --- |
+| `init` | Creates the configuration file. `--format yaml` (default) or `json`. |
+| `validate` | Checks the configuration and each target's translation. |
+| `targets` | Lists supported agent tools and their support level. |
+| `plan` | Shows which native files would change. `--all` also lists unchanged files. |
+| `apply` (alias `sync`) | Writes the plan. |
+| `watch` | Applies stable changes until stopped; stops on a conflict. |
+| `status` | Reports pending changes, conflicts, and diagnostics. |
+| `diff` | Prints the pending changes. |
+| `clean` | Removes only files Canonfig wrote and nobody changed. |
+| `doctor` | Checks the selected tools' executables. |
+| `export` | Writes an archive of the configuration and/or the generated files. |
 
-Skill-source symlinks may refer to files or directories inside the repository,
-including a vendored skill outside `.canonfig`. Generated output is a regular
-copy with executable intent preserved. Dangling links, directory cycles, and
-links outside the repository produce a blocking `SKILL_SOURCE_INVALID`
-diagnostic rather than silently dropping skills or reading external files.
+| Option | Value |
+| --- | --- |
+| `--root <path>` | Repository root or a directory inside it. Default: the current directory. |
+| `--target <id>`, `--targets <ids>` | Limit to some targets (repeatable, or comma-separated). |
+| `--strict` | Treat lossy or unsupported translations as errors. |
+| `--force` | Take ownership of files that conflict. Not allowed with `watch`. |
+| `--dry-run` | Do not write, for `apply`, `clean`, `watch`, and `export`. |
+| `--interval <seconds>` | `watch` only. Default 1, from 1 to 3600. |
+| `--output <path>` | `export` only. A `.zip` or `.tar.gz` path; never overwritten. |
+| `--include-source`, `--source-only` | `export` only. Add the configuration, or export only it. |
 
-Merging native JSON/JSONC configuration changes only affected properties and
-array items. Unrelated comments, values, and formatting remain in place through
-apply, re-render, and cleanup. Canonfig still rejects invalid JSON/JSONC rather
-than rewriting it as a fresh document.
+Behavior you can rely on:
 
-An existing `CLAUDE.md` symlink resolving to the repository's `AGENTS.md`
-already supplies the instruction bridge. Apply preserves it without taking
-ownership, and cleanup leaves it intact. Other native-output symlinks are reported
-as conflicts rather than silently replaced, including with `--force`; resolve
-the link explicitly if you want Canonfig to own a regular file there.
+- Apply takes over an existing generated file only when its content already
+  matches. Different text you wrote is a conflict, not overwritten. Line-ending
+  changes alone do not count as edits.
+- Edits to JSON and JSONC files change only the affected properties; comments
+  and formatting elsewhere stay. Invalid JSON is refused, not rewritten.
+- A `CLAUDE.md` symlink to the repository's `AGENTS.md` is kept as is. Other
+  symlinks in generated locations are conflicts, even with `--force`.
+- Setting a target to `enabled: false` and running an unfiltered apply removes
+  its generated files, except files other targets still need. Apply with
+  `--target` changes only the selected targets.
+- A skill source symlink that dangles, loops, or points outside the repository
+  fails with `SKILL_SOURCE_INVALID`.
+- Hook events a target cannot express fail with `HOOK_EVENT_UNSUPPORTED` under
+  `--strict`, and warn without it. Claude Code and Factory Droid have no
+  `before_agent` or `after_agent`; Droid also has no `after_compact` or
+  `subagent_start`.
+- A project with more than one harness configuration file is refused.
+- `export` does not include credentials, sessions, or files Canonfig does not
+  own. Review literal values and scripts in an archive before you share it.
+- `watch` runs in the foreground, does not install a service, and does not
+  reload running agent tools.
 
-YAML is the default scaffold. `--format json` creates strict, pretty-printed
-`.canonfig/harness.json` and is valid only with `harness init`. YAML and JSON
-use the same schema and compiler. Canonfig rejects a project that contains more
-than one supported harness configuration file.
-
-`--strict` turns every lossy, coerced, or unsupported MCP and hook mapping into
-an error (for example `MCP_OPTION_COERCED` or `HOOK_TIMEOUT_ROUNDED`). Without
-it those mappings are warnings. Claude Code and Factory Droid do not map
-`before_agent` or `after_agent`; Droid also does not map `after_compact` or
-`subagent_start`. These produce `HOOK_EVENT_UNSUPPORTED`, not inert native event
-names. Droid uses its own supported event set and an unwrapped event map in
-`.factory/hooks.json`, with project-relative scripts anchored to
-`FACTORY_PROJECT_DIR`.
-
-Event references: [Claude Code](https://code.claude.com/docs/en/hooks) and
-[Factory Droid](https://docs.factory.com/harness/hooks).
+See [Claude Code hooks](https://code.claude.com/docs/en/hooks) and
+[Factory Droid hooks](https://docs.factory.com/harness/hooks) for event names,
+and the [harness configuration guide](https://github.com/Microck/canonfig/blob/main/docs/harness-configuration.md).
 
 ## Installer bindings
 
 ```bash
 canonfig installer list
-canonfig installer set uv --executable /home/operator/.local/bin/uv
+canonfig installer set uv --executable /home/dana/.local/bin/uv
 canonfig installer set npm --executable /usr/local/bin/node --arg /usr/local/lib/node_modules/npm/bin/npm-cli.js
 canonfig installer check npm
 canonfig installer remove npm
-canonfig installer --help
 ```
 
-A binding tells this follower how to start a package manager. It is local, is
-never transferred from the Source, and cannot add options, environment values,
-or a shell. `set` takes one absolute `--executable` and at most one absolute
-`--arg` entry point, verifies them with a bounded `--version` call, and stores
-the binding in `~/.canonfig/installers/<method>.json`. `check` runs that check
-again in the current process. `remove` records an explicit removal, after
-which installs fail with Human Action Required instead of falling back to
-`PATH`. Methods are `apt`, `brew`, `bun`, `cargo`, `npm`, `pnpm`, `uv`, and
-`winget`.
+A binding tells this follower exactly how to start a package manager. It is
+local and never comes from the Source Machine. Methods are `apt`, `brew`,
+`bun`, `cargo`, `npm`, `pnpm`, `uv`, and `winget`.
 
-Bind npm to `node.exe` plus `npm-cli.js` on Windows (see
-[Cross-platform behavior](/reference/cross-platform#windows-package-managers)).
-For bare npm/pnpm tool verifiers, an approved Node binding also launches the
-installed Node script: the scheduled job does not need that Node directory in
-`PATH`. Canonfig resolves POSIX bin symlinks and decodes standard Windows Node
-command-shim entrypoints without enabling a shell or modifying `PATH`.
-Unsupported shims fail explicitly; absolute verification commands keep their
-declared executable.
+`set` takes one absolute `--executable` and at most one absolute `--arg` entry
+point, checks them by running `--version`, and saves the binding in
+`~/.canonfig/installers/<method>.json`. A binding cannot add options,
+environment variables, or a shell. `check` runs that check again. `remove`
+records that the method is not allowed; installs with it then need Human
+Action Required instead of using `PATH`.
+
+On Windows, bind npm to `node.exe` plus `npm-cli.js`; see
+[Windows package managers](/reference/cross-platform#windows-package-managers).
 
 ## JSON envelope
 
@@ -641,83 +683,9 @@ declared executable.
 }
 ```
 
-Secret-like fields are recursively redacted before human or JSON rendering.
-Structured failures are written to standard error; structured successes are
-written to standard output. Usage errors arrive in the requested format: with
-`--json`, a `canonfig.cli/v1` envelope with `status` `"error"` and `exitCode`
-`2`. The `secrets` group uses this same schema for successes and failures.
-
-`sync --apply` waits for automatic shared-secret synchronization before emitting
-its result. If files were applied successfully but secret synchronization fails,
-the one final `sync.apply` error explains that distinction and its `exitCode`
-matches the process. It does not first print a contradictory success envelope.
-
-An inaccessible state directory or an invalid state database is reported as human action required (exit `3`), including failures before the command runtime starts. JSON mode emits one error envelope on standard error, not a stack trace on standard output. Check directory permissions and preserve the existing state; restore a known-good database backup if it is corrupt. Canonfig does not delete or reset the database automatically.
-
-## Exit codes
-
-| Code | Meaning |
-| ---: | --- |
-| `0` | Success |
-| `1` | Internal defect |
-| `2` | Usage or configuration |
-| `3` | Human Action Required |
-| `4` | Conflict or Follower Drift |
-| `5` | Authentication or revocation |
-| `6` | Transport |
-| `7` | Verification or apply failure |
-| `130` | Interrupted by `SIGINT` |
-| `143` | Terminated by `SIGTERM` |
-
-Code `1` is reserved for defects: an unexpected failure Canonfig has no
-classification for. Every refusal Canonfig explains carries one of the other
-codes, so a script can tell a deliberate refusal from a crash.
-
-A failure of this machine's own credential store, such as a locked keyring or
-Keychain, is exit 3 with the store's recovery text. That includes reading the
-follower credential during `sync`, `status`, or `secrets sync`. Exit 5 means
-the Source rejected the credential or revoked the follower. A version mismatch
-between the Source and a follower is exit 2, never a signature or digest
-failure. The command log records the same status as the process exit, including
-143 for `SIGTERM`.
-
-### Opt-in runtime diagnostics
-
-Set `CANONFIG_DEBUG=1` when diagnosing an unexpected internal failure (exit 1).
-The normal error message remains fixed; the same result envelope includes a
-`data.diagnostic` cause/stack string, processed by the normal credential
-redactor. JSON mode still emits one document. Diagnostics are absent by default
-and are not added to expected state-storage failures. Review diagnostic text
-before sharing it: paths and other contextual information can remain sensitive.
-
-## Harness archives
-
-`canonfig harness export --source-only --output source.zip` packages canonical
-configuration. Select one or multiple projected harnesses with repeatable
-`--target`, optionally adding `--include-source`. `.zip` and `.tar.gz` output
-are supported. `--dry-run` lists contents without writing; `--strict` rejects
-lossy projections. Existing archives are never overwritten.
-
-This exports declared project sources and fresh projections, not credentials,
-sessions, unowned native edits, or a full machine backup. Review literal values
-and executable scripts before sharing or using the archive. External services
-and dependencies must be installed separately.
-
-Harness `watch` is an opt-in foreground worker. It applies after two matching
-plans, stops on conflicts/errors, and never accepts `--force`. Use `--dry-run`
-for continuous preview and `--interval 1` for the default one-second polling.
-It does not install a service or reload running harnesses. See the harness
-configuration guide for ownership, cancellation and concurrent-writer limits.
-
-## Self-update
-
-`canonfig self-update enable|disable|status|check|apply|auto` provides opt-in stable
-patch updates for user-private global npm installations. Every mutation requires
-`--apply`; first enable additionally requires `--confirm-idle` and an explicit
-`--npm-cli` path after stopping older processes and schedules. Automatic mode is
-foreground or `--once` for an external scheduler, not an implicit service.
-
-Active Sources/watchers defer activation, unfinished syncs block it, and
-major/minor fleet upgrades remain manual. Successful activation retains the old
-package and exits the worker. See the [self-update operational guide](https://github.com/Microck/canonfig/blob/main/docs/self-update.md)
-for supported prefixes, restart requirements, staging and interruption recovery.
+Successes go to standard output and failures to standard error. A usage error
+with `--json` is an envelope with `status` `"error"` and `exitCode` `2`. Every
+command group, including `secrets`, uses this schema. Secret-like fields are
+removed from `data` before printing. With `CANONFIG_DEBUG=1`, an internal
+failure adds `data.diagnostic`; review it before you share it, because it can
+contain paths.

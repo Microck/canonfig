@@ -66,7 +66,13 @@ export class StateRepository extends Context.Service<StateRepository, {
   ) => Effect.Effect<void, StateRepositoryError>;
   readonly listLocalOverlays: (
   ) => Effect.Effect<ReadonlyArray<LocalOverlayEntry>, StateRepositoryError>;
+  /**
+   * Fails with RemovedAgentHarnessError for a stored harness of a removed kind.
+   * `replacingAgentHarness` omits the stored harness, for the command that
+   * overwrites it.
+   */
   readonly getFollowerSynchronizationConfiguration: (
+    options?: { readonly replacingAgentHarness?: boolean },
   ) => Effect.Effect<
     FollowerSynchronizationConfiguration | undefined,
     StateRepositoryError

@@ -16,8 +16,14 @@ import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 export const SupportedAgentHarness = Schema.Literals([
   "codex",
   "claude",
-  "gemini",
+  "custom",
 ]);
+
+/**
+ * Harness kinds an earlier release could store and 5.0.0 removed (ADR 0002).
+ * A stored one is reported with its recovery command, never migrated.
+ */
+export const RemovedAgentHarness = Schema.Literals(["gemini"]);
 
 export const AgentHarnessCapability = Schema.Literals([
   "elevation",
@@ -29,6 +35,10 @@ export const AgentHarnessCapability = Schema.Literals([
 export const FollowerAgentHarnessConfiguration = Schema.Struct({
   kind: SupportedAgentHarness,
   executable: Schema.NonEmptyString,
+  /** codex/claude only: passed as `--model`. Absent means the agent's own default. */
+  model: Schema.optional(Schema.NonEmptyString),
+  /** custom only: the complete argument list, run without a shell (ADR 0002). */
+  arguments: Schema.optional(Schema.Array(Schema.String)),
   environment: Schema.optional(Schema.Array(Schema.Struct({
     name: Schema.NonEmptyString,
     value: Schema.String,

@@ -18,6 +18,14 @@ export class RepositoryDecodeError extends TaggedError<RepositoryDecodeError>()(
   },
 ) {}
 
+/** The stored follower agent harness has a kind this release removed (ADR 0002). */
+export class RemovedAgentHarnessError extends TaggedError<RemovedAgentHarnessError>()(
+  "RemovedAgentHarnessError",
+  {
+    kind: Schema.String,
+  },
+) {}
+
 export class RevisionImmutableError extends TaggedError<RevisionImmutableError>()(
   "RevisionImmutableError",
   {
@@ -107,6 +115,7 @@ export class EnrollmentStateConflictError extends TaggedError<EnrollmentStateCon
 export type StateRepositoryError =
   | RepositorySqlError
   | RepositoryDecodeError
+  | RemovedAgentHarnessError
   | RevisionImmutableError
   | ActiveRunExistsError
   | UpgradeGateError

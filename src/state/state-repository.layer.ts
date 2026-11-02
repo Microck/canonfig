@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { open, realpath } from "node:fs/promises";
 
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
@@ -41,6 +41,7 @@ import {
 import {
   FollowerSynchronizationConfiguration,
   LocalOverlayEntrySchema,
+  RemovedAgentHarness,
 } from "../synchronization/follower-sync-config.ts";
 import {
   ActionNotInPlanError,
@@ -48,6 +49,7 @@ import {
   EnrollmentStateConflictError,
   FollowerNotFoundError,
   InvalidRunTransitionError,
+  RemovedAgentHarnessError,
   RepositoryDecodeError,
   RepositorySqlError,
   RevisionImmutableError,
@@ -476,9 +478,17 @@ const makeRepository = Effect.gen(function*() {
     );
   });
 
+  /**
+   * A stored harness of a removed kind (ADR 0002) fails with its recovery
+   * command instead of a decode error. `replacingAgentHarness` skips the stored
+   * harness entirely, so `agent harness <kind>` can overwrite one; that explicit
+   * command is the only writer, and nothing is rewritten on read.
+   */
   const getFollowerSynchronizationConfiguration = Effect.fn(
     "StateRepository.getFollowerSynchronizationConfiguration",
-  )(function*(): Effect.fn.Return<
+  )(function*(
+    options?: { readonly replacingAgentHarness?: boolean },
+  ): Effect.fn.Return<
     FollowerSynchronizationConfiguration | undefined,
     StateRepositoryError
   > {
@@ -495,12 +505,22 @@ const makeRepository = Effect.gen(function*() {
     );
     const row = decoded[0];
     if (row === undefined) return undefined;
-    return yield* parseJson(
-      FollowerSynchronizationConfiguration,
+    const stored = yield* parseJson(
+      Schema.Record(Schema.String, Schema.Unknown),
       row.configuration_json,
       "follower synchronization configuration",
       "1",
     );
+    const { agentHarness, ...withoutAgentHarness } = stored;
+    const removed = Schema.decodeUnknownOption(
+      Schema.Struct({ kind: RemovedAgentHarness }),
+    )(agentHarness);
+    if (!options?.replacingAgentHarness && Option.isSome(removed)) {
+      return yield* new RemovedAgentHarnessError({ kind: removed.value.kind });
+    }
+    return yield* Schema.decodeUnknownEffect(FollowerSynchronizationConfiguration)(
+      options?.replacingAgentHarness ? withoutAgentHarness : stored,
+    ).pipe(Effect.mapError(decodeError("follower synchronization configuration", "1")));
   });
 
   const removeFollowerSynchronizationConfiguration = Effect.fn(

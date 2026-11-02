@@ -1740,8 +1740,9 @@ const followerCommandsLayer = (
           ),
           Effect.map(payload),
         ),
+      // Reads without the stored harness, so this command can replace a removed kind.
       setAgentHarness: (agentHarness) =>
-        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+        mapFailure(repository.getFollowerSynchronizationConfiguration({ replacingAgentHarness: true })).pipe(
           Effect.flatMap((configuration) => {
             if (configuration === undefined) {
               return Effect.fail(new CliCommandFailure({

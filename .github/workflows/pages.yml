@@ -1,0 +1,88 @@
+name: Publish site
+
+# Publishes https://canonfig.micr.dev: the UI demo at the root and the docs
+# under /docs, built by scripts/build-pages.mjs.
+#
+# It follows the release workflow instead of listening for `release:
+# published`. release.yml creates the GitHub release with the workflow's
+# GITHUB_TOKEN, and GitHub starts no workflows from events that token causes.
+# Following the run also keeps the deployment on the main ref, which the
+# github-pages environment accepts by default; a tag ref would be refused.
+on:
+  workflow_run:
+    workflows:
+      - Publish release
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # A release run that skipped or failed published nothing to show.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the released commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      # release.yml tags the commit it published as v<package.json version>.
+      # Without that tag the run released nothing, so there is nothing to deploy.
+      - name: Confirm the commit is a published release
+        if: github.event_name == 'workflow_run'
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          tagged="$(git ls-remote origin "refs/tags/v${version}" | cut -f1)"
+          if [ "${tagged}" != "${RELEASE_SHA}" ]; then
+            echo "::error::tag v${version} points at '${tagged}', not the released commit ${RELEASE_SHA}"
+            exit 1
+          fi
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+
+      # The root lockfile covers the website workspace; ui/ has its own.
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm ci --prefix ui
+
+      - name: Build the site
+        run: node scripts/build-pages.mjs
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -16,33 +16,30 @@ function pages(directory = root): { route: string; title: string }[] {
     return [{ route, title }];
   });
 }
+
+// The site exports statically under /docs with trailing slashes (website/next.config.mjs),
+// and website/scripts/serve-export.mjs serves it the way GitHub Pages does.
+const exported = (route: string) => `/docs${route.replace(/\/?$/, "/")}`;
+
 for (const page of pages()) {
   test(`documentation route ${page.route}`, async ({ app, browser, screen }) => {
-    await app.open(page.route);
+    await app.open(exported(page.route));
     await expect(screen.getByRole("heading", { name: page.title, exact: true })).toBeVisible();
     const canonical = await browser.evaluate(() => document.querySelector('link[rel="canonical"]')?.getAttribute("href"));
     expect(new URL(canonical!).origin).toBe(new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000").origin);
-    expect(new URL(canonical!).pathname).toBe(page.route);
+    expect(new URL(canonical!).pathname).toBe(exported(page.route));
   });
 }
 
-test("legacy docs links redirect to the current CLI reference", async ({ app, browser, screen }) => {
-  await app.open("/docs/reference/cli");
-  await expect(browser).toHaveURL("/reference/cli");
-  await expect(screen.getByRole("heading", "Reference: complete CLI reference")).toBeVisible();
-});
-
+// Search runs in the browser against the static index, so it is exercised through the search dialog.
 test("search finds the documented CLI and mobile home stays within the viewport", async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
-  await app.open("/");
+  await app.open(exported("/"));
   await expect(screen.getByRole("heading", { name: "Canonfig", exact: true })).toBeVisible();
-  const search = await browser.evaluate(async () => {
-    const response = await fetch("/api/search?query=CLI");
-    return { status: response.status, results: await response.json() };
-  });
-  expect(search.status).toBe(200);
-  expect(Array.isArray(search.results) && search.results.some((entry: {url:string}) =>
-    new URL(entry.url, "https://canonfig.micr.dev").pathname === "/reference/cli"
-  )).toBe(true);
   expect(await browser.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await screen.getByRole("button", "Open Search").tap();
+  await screen.getByPlaceholder("Search").pressSequentially("CLI reference");
+  await screen.getByRole("button", /^Canonfig Reference Reference: complete CLI reference$/).tap();
+  await expect(browser).toHaveURL(exported("/reference/cli"));
+  await expect(screen.getByRole("heading", { name: "Reference: complete CLI reference", exact: true })).toBeVisible();
 });

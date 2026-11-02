@@ -1,0 +1,582 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/*
+ * UI text: Manrope (Mikhail Sharanda, OFL), a variable font on the weight axis,
+ * self-hosted as one Latin woff2 from google/fonts. Code text: Ioskeley Mono
+ * 2.2.0 (Ahmed Hatem, OFL), an Iosevka build. Licences sit next to the files in
+ * public/fonts.
+ */
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("/fonts/Manrope.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IoskeleyMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IoskeleyMono-Italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/IoskeleyMono-Medium.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/IoskeleyMono-SemiBold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Ioskeley Mono";
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/IoskeleyMono-Bold.woff2") format("woff2");
+}
+
+/*
+ * Canonfig's Ender palette (website/app/ender-chest.css, dark)
+ * mapped onto shadcn tokens, tuned toward Linear's density: hairline borders
+ * at low alpha, 13px interface text, small radii. Dark only (ADR 0001).
+ */
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Manrope", -apple-system, system-ui, sans-serif;
+  --font-mono: "Ioskeley Mono", ui-monospace, monospace;
+  /* Static faces exist only at 400/500/600/700. Linear's in-between weights
+     (510/590/680) would make the browser jump to the next heavier file. */
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --font-heading: var(--font-sans);
+
+  /*
+   * Interface text sizes. The root stays at the browser's 16px so rem spacing keeps
+   * Tailwind's scale (gap-2 is 8px, size-3.5 is 14px); body text is set to 13px below.
+   * Use text-xs/sm/base/lg/xl/2xl for the 11/12/13/15/20/28px scale.
+   * Metadata uses xs/sm, interface copy base, and headings lg through 2xl.
+   */
+  --text-xs: 11px;
+  --text-xs--line-height: 1.45;
+  --text-sm: 12px;
+  --text-sm--line-height: 1.5;
+  --text-base: 13px;
+  --text-base--line-height: 1.55;
+  --text-lg: 15px;
+  --text-lg--line-height: 1.4;
+  --text-xl: 20px;
+  --text-xl--line-height: 1.25;
+  --text-2xl: 28px;
+  --text-2xl--line-height: 1.2;
+
+  /*
+   * The one easing curve for motion that clarifies a change: ~150ms state
+   * changes, ~200ms popovers and tooltips, ~300ms overlays. Everything else
+   * is instant.
+   */
+  --ease-snap: cubic-bezier(0.175, 0.885, 0.32, 1.1);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-gold: var(--gold);
+  --color-gold-hover: var(--gold-hover);
+  --color-gold-foreground: var(--gold-foreground);
+  --color-portal: var(--portal);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-act: var(--act);
+  --color-bad: var(--bad);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --radius-2xl: 12px;
+
+  --color-dither-ink: var(--dither-ink);
+  --color-dither-paper: var(--dither-paper);
+  --color-dither-blue: var(--dither-color-blue);
+  --color-dither-purple: var(--dither-color-purple);
+  --color-dither-green: var(--dither-color-green);
+  --color-dither-pink: var(--dither-color-pink);
+  --color-dither-orange: var(--dither-color-orange);
+  --color-dither-red: var(--dither-color-red);
+  --color-dither-grey: var(--dither-color-grey);
+}
+
+:root {
+  /* Surfaces: canvas sits behind the inset panel, like Linear's app frame. */
+  --canvas: #080b0c;
+  --background: #0b0f10;
+  --panel: #0d1213;
+  --raised: #121a1b;
+  --card: #121e1f;
+  --card-foreground: #e5eee9;
+  --popover: #142122;
+  --popover-foreground: #e5eee9;
+
+  --foreground: #e5eee9;
+  /*
+   * Text tiers. Contrast fixes moved L only (oklch), keeping hue and chroma:
+   * muted-foreground was #9ab0aa (APCA Lc 56 on panel, under the 60 floor for
+   * secondary text); faint was #66807a (WCAG 4.43:1 on panel, 3.6:1 on muted).
+   */
+  --muted-foreground: oklch(0.78 0.026 177.3);
+  --faint: oklch(0.64 0.031 179.5);
+
+  --primary: #7aae7a;
+  --primary-foreground: #0b1510;
+  --secondary: #1f2e2f;
+  --secondary-foreground: #dce8df;
+  --muted: #182728;
+  --accent: #213a2e;
+  --accent-foreground: #a7dda0;
+
+  /* #334646 at reduced strength reads as Linear's hairlines. */
+  --border: color-mix(in oklab, #334646 62%, transparent);
+  --border-strong: #334646;
+  --input: color-mix(in oklab, #334646 80%, transparent);
+  /* Focus rings stay in the Ender portal violet (agreed theme), lightened so the
+     /50 and /60 alphas the primitives use still clear 3:1 on the panel (3.4:1, 4.4:1). */
+  --ring: #c4b5fd;
+
+  --gold: #f1c332;
+  --gold-hover: #f9e37a;
+  --gold-foreground: #201b08;
+  --portal: #8b5cf6;
+
+  /* Machine state colours. ok and bad were raised in L so 12px status labels read
+     (APCA Lc 51 and 45 before); ok is a lighter step of the primary green. */
+  --ok: oklch(0.74 0.093 144.5);
+  --warn: #f1c332;
+  --act: #f0975a;
+  --bad: oklch(0.72 0.164 22.3);
+  --destructive: var(--bad);
+
+  --sidebar: #080b0c;
+  --sidebar-foreground: #c9d6cf;
+  --sidebar-accent: #152021;
+  --sidebar-accent-foreground: #e5eee9;
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+
+  --radius: 0.5rem;
+
+  --dither-ink: var(--primary);
+  --dither-paper: var(--background);
+  --dither-cell: 2px;
+  --dither-bloom: 0.7;
+  --dither-color-blue: oklch(0.72 0.12 240);
+  --dither-color-purple: #a78bfa;
+  --dither-color-green: #7aae7a;
+  --dither-color-pink: oklch(0.74 0.15 354);
+  --dither-color-orange: #f0975a;
+  --dither-color-red: #ef6b6b;
+  --dither-color-grey: #4d6460;
+  --dither-color-gold: #f1c332;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    @apply font-sans;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    /* The app is a fixed-height shell (h-svh) with its own scrollers, so scrolling past an end must not
+       rubber-band the page or trigger Android's pull-to-refresh. */
+    overscroll-behavior: none;
+  }
+  /* Taps fire at once, without the double-tap-zoom wait; long-pressing a control doesn't select its label. */
+  button,
+  a,
+  input,
+  select,
+  textarea,
+  [role="button"] {
+    touch-action: manipulation;
+  }
+  button,
+  [role="button"] {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  /* Code text keeps the font's default features. */
+  .font-mono,
+  code,
+  pre,
+  kbd {
+    font-feature-settings: normal;
+  }
+  /* Interface text is 13px at normal tracking; the root keeps 16px for rem geometry. */
+  body {
+    @apply bg-canvas text-base text-foreground;
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  /* Keyboard focus for every control that doesn't draw its own ring. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 35%, transparent);
+  }
+}
+
+/* iOS zooms the page into any field under 16px and never zooms back. Interface text is 12-13px, so touch
+   screens get 16px fields. Unlayered, so it beats the text-* utilities on Input, Textarea and the palette. */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* DitherProgress while running: a dotted highlight sweeps toward the leading
+   edge. Only mask-position moves; the dot grain stays put. */
+.dither-shimmer {
+  background: color-mix(in oklab, white 55%, transparent);
+  --shimmer-sweep: linear-gradient(90deg, transparent 35%, #000 50%, transparent 65%);
+  -webkit-mask-image: var(--shimmer-dots), var(--shimmer-sweep);
+  mask-image: var(--shimmer-dots), var(--shimmer-sweep);
+  -webkit-mask-size: var(--shimmer-tile), 250% 100%;
+  mask-size: var(--shimmer-tile), 250% 100%;
+  -webkit-mask-repeat: repeat, no-repeat;
+  mask-repeat: repeat, no-repeat;
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+  animation: dither-shimmer 1.4s linear infinite;
+}
+@keyframes dither-shimmer {
+  from {
+    -webkit-mask-position: 0 0, 100% 0;
+    mask-position: 0 0, 100% 0;
+  }
+  to {
+    -webkit-mask-position: 0 0, 0% 0;
+    mask-position: 0 0, 0% 0;
+  }
+}
+
+/* DitherBlock: revealed once on mount, growing away from its dense edge.
+   --ease-snap overshoots (~3%), so the mask briefly travels past --reveal-to. Ending at
+   100% would push the no-repeat mask image off the dense edge and leave its last rows
+   unmasked (a dark seam under the band, visible for ~half the reveal). Each --reveal-to
+   therefore stops 10% short: the mask's solid 40% still covers the whole block there,
+   and the overshoot runs into solid mask instead of past the image. */
+.dither-reveal {
+  -webkit-mask-image: var(--reveal-mask);
+  mask-image: var(--reveal-mask);
+  -webkit-mask-size: var(--reveal-size);
+  mask-size: var(--reveal-size);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  animation: dither-reveal 600ms var(--ease-snap) both;
+}
+.dither-reveal[data-edge="bottom"] {
+  --reveal-mask: linear-gradient(to top, #000 40%, transparent 60%);
+  --reveal-size: 100% 300%;
+  --reveal-from: 0 0%;
+  --reveal-to: 0 90%;
+}
+.dither-reveal[data-edge="top"] {
+  --reveal-mask: linear-gradient(to bottom, #000 40%, transparent 60%);
+  --reveal-size: 100% 300%;
+  --reveal-from: 0 100%;
+  --reveal-to: 0 10%;
+}
+.dither-reveal[data-edge="left"] {
+  --reveal-mask: linear-gradient(to right, #000 40%, transparent 60%);
+  --reveal-size: 300% 100%;
+  --reveal-from: 100% 0;
+  --reveal-to: 10% 0;
+}
+.dither-reveal[data-edge="right"] {
+  --reveal-mask: linear-gradient(to left, #000 40%, transparent 60%);
+  --reveal-size: 300% 100%;
+  --reveal-from: 0% 0;
+  --reveal-to: 90% 0;
+}
+@keyframes dither-reveal {
+  from {
+    -webkit-mask-position: var(--reveal-from);
+    mask-position: var(--reveal-from);
+  }
+  to {
+    -webkit-mask-position: var(--reveal-to);
+    mask-position: var(--reveal-to);
+  }
+}
+
+/* Guided tour (tour/tour.tsx). The overlay fades in; the card grows from 0.96 at its own
+   centre; on each step the title and body fade up 4px so the change reads without a jump.
+   All on --ease-snap, inside the 200-300ms overlay band. Transform and opacity only. */
+.tour-in {
+  animation: tour-fade 200ms var(--ease-snap) both;
+}
+.tour-card-in {
+  animation: tour-card 240ms var(--ease-snap) both;
+}
+.tour-step-in {
+  animation: tour-step 220ms var(--ease-snap) both;
+}
+@keyframes tour-fade {
+  from { opacity: 0; }
+}
+@keyframes tour-card {
+  from { opacity: 0; transform: scale(0.96); }
+}
+@keyframes tour-step {
+  from { opacity: 0; transform: translateY(4px); }
+}
+
+/* First-run setup (onboarding/). Seen once per machine, so it gets more motion than screens
+   people visit daily; still --ease-snap (except the progress-like sweep below), and
+   transform, opacity or clip-path. The entrances and the choice-to-wizard hand-off run in
+   motion and WAAPI (onboarding.tsx); these are the CSS-only parts.
+   Delays are set inline, so entrances fill backwards (hidden until their turn) and leave no
+   transform behind once done.
+   choice-card: a role card on the first question. Hover (fine pointers only: touch fires
+     hover on tap) nudges its arrow 2px toward the wizard and brightens its shell's border
+     and fill with a faint green glow from the background's palette, at 150ms; the card
+     itself stays put. A press sinks it to 0.98 in 100ms, so the pick registers before the
+     hand-off.
+   rise-in: the finished screen's text arrives in a short stagger.
+   check-draw: a check is uncovered left to right, the way its stroke runs (it only moves
+     right), so it reads as drawn. It starts at 25%, the stroke's first point.
+   field-error-in: an inline error drops 4px into place, so it reads as new without a jump.
+   finish-sweep: once, when setup completes, the progress bar's green dither crosses the card.
+     Linear, like DitherProgress's own shimmer: it carries the progress motion on, and progress
+     doesn't ease. On --ease-snap it crossed the card in the first ~150ms and spent the rest
+     off the edge. */
+.choice-card {
+  transition: transform 150ms var(--ease-snap);
+}
+.choice-card:active {
+  transform: scale(0.98);
+  transition-duration: 100ms;
+}
+.choice-shell {
+  transition:
+    border-color 150ms var(--ease-snap),
+    background-color 150ms var(--ease-snap),
+    box-shadow 150ms var(--ease-snap);
+}
+.choice-arrow {
+  transition:
+    transform 150ms var(--ease-snap),
+    color 150ms var(--ease-snap);
+}
+@media (hover: hover) and (pointer: fine) {
+  .choice-card:hover .choice-shell {
+    border-color: var(--border-strong);
+    background-color: var(--raised);
+    box-shadow: 0 12px 32px -18px color-mix(in oklab, var(--ok) 45%, transparent);
+  }
+  .choice-card:hover .choice-arrow {
+    transform: translateX(2px);
+    color: var(--foreground);
+  }
+}
+.rise-in {
+  animation: rise-in 300ms var(--ease-snap) backwards;
+}
+.check-draw {
+  animation: check-draw 200ms var(--ease-snap) backwards;
+}
+.field-error-in {
+  animation: field-error-in 150ms var(--ease-snap);
+}
+.finish-sweep {
+  animation: finish-sweep 800ms linear both;
+}
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(8px); }
+}
+@keyframes check-draw {
+  from { clip-path: inset(0 75% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+@keyframes field-error-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+@keyframes finish-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+/* Body (workspace/kit.tsx) is a flex column whose children may `grow` into the leftover height (EmptyState).
+   Skullet nests the page in reveal > pane > loading > ghost divs, so each carries that column on. Each wrapper
+   is as tall as its content or more, so nothing inside is squeezed and Body's `*:shrink-0` needn't follow
+   them down. Skullet positions the reveal and loading divs itself; only display and flex change here. */
+.skeleton-column,
+.skeleton-column > [skullet-pane],
+.skeleton-column > [skullet-pane] > [skullet-loading],
+.skeleton-column > [skullet-pane] > [skullet-loading] > [skullet-ghost] {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+}
+
+/* Skullet draws every SVG as one block at its box. The machine map's dot grid and edge layer each span the
+   whole canvas, so while it loads they are taken out of the unseen copy it measures, leaving bones for the
+   machine cards. Both are absolutely placed, so the cards don't move. */
+[skullet-ghost] :is(.react-flow__background, .react-flow__edges) {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+  /* Finished-looking still frames: no sweep, the block fully shown. */
+  .dither-shimmer {
+    display: none;
+  }
+  .dither-reveal {
+    animation: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  /* The rule above zeroes durations but keeps delays, which would hold staggered items
+     hidden for a moment: show them at once instead. The sweep is decoration only. Role
+     cards keep their colour change on hover but don't move. */
+  .rise-in,
+  .check-draw,
+  .field-error-in {
+    animation: none;
+  }
+  .choice-card,
+  .choice-card .choice-arrow {
+    transform: none !important;
+  }
+  .finish-sweep {
+    display: none;
+  }
+}
+
+/* Collapsible (components/ui/collapsible.tsx): height runs from 0 to the height Radix
+   measures into --radix-collapsible-content-height, with a fade so the clipped content
+   does not read as a hard wipe. 200ms on open (popover band), 150ms on close (exits are
+   quicker). overflow sits inside the keyframes, so content is clipped only while it
+   animates; once open, focus rings at the content's edges are not cut off. It is clip, not
+   hidden: hidden would make the content a scroll container, so a scrollIntoView on an item
+   mid-animation (the tour opening Settings to spotlight one entry) would scroll it inside
+   the clipped box. Reduced motion: the global rule above drops the duration to 0, so it
+   opens instantly. */
+@keyframes collapsible-open {
+  from { height: 0; opacity: 0; overflow: clip; }
+  to { height: var(--radix-collapsible-content-height); opacity: 1; overflow: clip; }
+}
+@keyframes collapsible-close {
+  from { height: var(--radix-collapsible-content-height); opacity: 1; overflow: clip; }
+  to { height: 0; opacity: 0; overflow: clip; }
+}
+
+/* Custom accent picker (shared/machine-map/customize-sheet.tsx): react-colorful's area and hue
+   slider redrawn for the popover. Each selector starts with .accent-picker so it outranks the
+   defaults react-colorful injects at runtime. Handles are white rings with a dark edge so they
+   read on any colour; keyboard focus adds the app's ring rather than react-colorful's 1.1x
+   scale, which moved the handle off the value it marks. */
+.accent-picker.react-colorful {
+  width: 100%;
+  height: auto;
+  gap: 12px;
+}
+.accent-picker .react-colorful__saturation {
+  flex: none;
+  height: 144px;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.08);
+}
+.accent-picker .react-colorful__hue,
+.accent-picker .react-colorful__last-control {
+  height: 12px;
+  border-radius: 9999px;
+}
+.accent-picker .react-colorful__pointer {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px oklch(0 0 0 / 0.45), 0 1px 3px oklch(0 0 0 / 0.5);
+}
+.accent-picker .react-colorful__interactive:focus .react-colorful__pointer {
+  transform: translate(-50%, -50%);
+}
+.accent-picker .react-colorful__interactive:focus-visible .react-colorful__pointer {
+  box-shadow: 0 0 0 1px oklch(0 0 0 / 0.45), 0 0 0 4px color-mix(in oklab, var(--ring) 60%, transparent);
+}
+/* Touch: a taller slider and bigger handles, so a fingertip lands on them at phone width. */
+@media (pointer: coarse) {
+  .accent-picker .react-colorful__saturation {
+    height: 160px;
+  }
+  .accent-picker .react-colorful__hue,
+  .accent-picker .react-colorful__last-control {
+    height: 20px;
+  }
+  .accent-picker .react-colorful__pointer {
+    width: 24px;
+    height: 24px;
+  }
+}

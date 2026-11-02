@@ -1,11 +1,11 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import "fumadocs-ui/style.css";
 import "./global.css";
 
 import { baseOptions } from "@/lib/layout";
-import { siteUrl } from "@/lib/site";
+import { basePath, siteUrl } from "@/lib/site";
 import { source } from "@/lib/source";
 
 export const metadata: Metadata = {
@@ -26,6 +26,12 @@ export const metadata: Metadata = {
   ],
 };
 
+// Dark only, like the app. The browser bar takes --color-fd-background from app/ender-chest.css (dark).
+export const viewport: Viewport = {
+  colorScheme: "dark",
+  themeColor: "#0b0f10",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
@@ -35,7 +41,12 @@ export default function RootLayout({
         <a className="skip-link" href="#main-content">
           Skip to content
         </a>
-        <RootProvider theme={{ enabled: false }}>
+        <RootProvider
+          theme={{ enabled: false }}
+          // Next does not add the base path to fetch() URLs, so the static
+          // search index path spells it out (see app/api/search/route.ts).
+          search={{ options: { type: "static", api: `${basePath}/api/search` } }}
+        >
           <DocsLayout tree={source.pageTree} {...baseOptions}>
             {children}
           </DocsLayout>

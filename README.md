@@ -213,6 +213,12 @@ CI cancels superseded pull-request runs but validates every push to `main`.
 The CLI-only platform and uv jobs use `npm ci --workspaces=false`; repository
 validation, browser checks, and release validation keep the full workspace install.
 
+## browser interface
+
+the frontend lives in [`ui/`](ui/README.md). from this checkout, run `npm --prefix ui ci` and `npm run ui:dev`, then open `http://localhost:5317/source/overview`. screens have separate routes, including `/source/profile`, `/source/machines`, `/follower/sync` and `/setup`.
+
+the frontend currently uses demo data and simulated operations. it is not yet connected to the CLI services or shipped as a `canonfig ui` command.
+
 ## documentation
 
 - [first sync](website/content/docs/tutorials/first-sync.mdx) · [profiles](website/content/docs/reference/profile-schema.mdx)
