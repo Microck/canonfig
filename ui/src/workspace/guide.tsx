@@ -279,9 +279,11 @@ export function TourOffer() {
               <FoldedMap className="size-4 text-dither-purple" />
               Find your way around
             </h2>
-            <p className="mt-1 text-sm text-pretty text-muted-foreground">Your Source, what syncs, your machines, and what to do next. About a minute.</p>
-            <Button size="sm" variant="secondary" className="mt-3 w-full" onClick={() => ws.startTour("quick")}>
-              Start the tour <ArrowRight />
+            <p className="mt-1 text-sm text-pretty text-muted-foreground">A one-minute quick tour, plus a chapter for each area.</p>
+            {/* Opens the same picker as the sidebar's Take the tour, with the quick tour selected while it isn't done,
+                so the chapters are discoverable from the first offer, not only the quick tour. */}
+            <Button size="sm" variant="secondary" className="mt-3 w-full" onClick={() => ws.setTourPickerOpen(true)}>
+              Take the tour <ArrowRight />
             </Button>
           </div>
         </motion.aside>

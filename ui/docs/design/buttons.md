@@ -10,7 +10,7 @@ Variants: `primary`, `secondary`, `outline`, `ghost`, `destructive`. These five 
 - `destructive`: red text on a faint red tint. Every irreversible action (Stop syncing, Remove, Abandon) and the confirm button of its dialog.
 - `outline`: toolbar, header and row actions that are not the primary one (Discover tools, Stop tunnel, Resume).
 - `ghost`: Cancel, Discard, Keep editing, and every icon-only button.
-- `secondary`: any other standalone action, typically inside a panel footer or a card ("Add a machine…", "Start the tour").
+- `secondary`: any other standalone action, typically inside a panel footer or a card ("Add a machine…", "Take the tour").
 
 Never restyle a button's fill, text colour or border with `className`. Layout classes (`ml-auto`, `w-full`, `justify-self-start`) are fine. Green is never a button fill.
 

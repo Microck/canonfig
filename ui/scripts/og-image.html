@@ -1,0 +1,120 @@
+<!doctype html>
+<!--
+  Source of scripts/og-image.png, the 1200x630 share image of the demo and the docs (README "Share image").
+  Render it from ui/:
+    npx playwright@1.58.2 screenshot --viewport-size=1200,630 --wait-for-timeout=500 "file://$PWD/scripts/og-image.html" scripts/og-image.png
+    optipng -o7 -strip all scripts/og-image.png
+  Colours are the :root tokens in src/index.css, written out because this page loads no app CSS; keep them in step.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      @font-face {
+        font-family: "Manrope";
+        src: url("../public/fonts/Manrope.woff2") format("woff2");
+        font-weight: 200 800;
+      }
+      @font-face {
+        font-family: "Ioskeley Mono";
+        src: url("../public/fonts/IoskeleyMono-Regular.woff2") format("woff2");
+        font-weight: 400;
+      }
+      :root {
+        --canvas: #080b0c;
+        --foreground: #e5eee9;
+        --muted-foreground: oklch(0.78 0.026 177.3);
+        --faint: oklch(0.64 0.031 179.5);
+        --dither-color-green: #7aae7a;
+      }
+      * {
+        margin: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1200px;
+        height: 630px;
+        overflow: hidden;
+        background: var(--canvas);
+        font-family: "Manrope", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      /* The lockup: the chest beside the wordmark and tagline, centred as one group above the dither. */
+      .lockup {
+        position: absolute;
+        inset: 0 0 160px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 44px;
+      }
+      .lockup img {
+        width: 240px;
+        height: 240px;
+      }
+      h1 {
+        font-size: 124px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: -0.035em;
+        color: var(--foreground);
+      }
+      p {
+        margin-top: 18px;
+        font-size: 36px;
+        font-weight: 500;
+        line-height: 1.25;
+        color: var(--muted-foreground);
+      }
+      canvas {
+        position: absolute;
+        left: 0;
+        bottom: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="lockup">
+      <img src="../public/favicon.png" alt="" />
+      <div>
+        <h1>canonfig</h1>
+        <p>One-way sync for AI agent configuration.</p>
+      </div>
+    </div>
+    <canvas id="dither" width="1200" height="240"></canvas>
+    <script>
+      // The DitherBlock fill (edge="bottom", tone "ok"): an ordered-dither ramp, solid at the bottom edge and
+      // thinning to a sparse floor. Same rule as ditherRamp in src/lib/dither/style.ts and the bayer4 ranks in
+      // matrices.ts; cells are 6px instead of the app's 2px so the pattern survives the downscale of a link preview.
+      const CELL = 6;
+      const FADE = 40; // cells from the dense edge to the empty top
+      const FROM = 0.9;
+      const TO = 0;
+      const SIZE = 4;
+      const rank = (x, y) => {
+        let r = 0;
+        for (let bit = 1; bit < SIZE; bit *= 2) {
+          const xBit = Math.floor(x / bit) % 2;
+          const yBit = Math.floor(y / bit) % 2;
+          r = r * 4 + 2 * ((xBit + yBit) % 2) + yBit;
+        }
+        return r;
+      };
+      const canvas = document.getElementById("dither");
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--dither-color-green");
+      const cols = canvas.width / CELL;
+      const rows = canvas.height / CELL;
+      for (let row = 0; row < rows; row += 1) {
+        const step = rows - 1 - row;
+        const level = step >= FADE ? TO : TO + (FROM - TO) * (1 - (step + 0.5) / FADE) ** 2;
+        for (let col = 0; col < cols; col += 1) {
+          if (level > (rank(col % SIZE, row % SIZE) + 0.5) / (SIZE * SIZE)) {
+            ctx.fillRect(col * CELL, row * CELL, CELL, CELL);
+          }
+        }
+      }
+    </script>
+  </body>
+</html>

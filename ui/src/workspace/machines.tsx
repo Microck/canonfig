@@ -802,7 +802,7 @@ export function InviteDialog() {
                   />
                   <Step
                     title={<>Still on {host}, start the SSH tunnel to {ws.machineName}:</>}
-                    command={`canonfig tunnel start --invitation ${shq(`~/${resultFileName}`)} --ssh-host ${shq(sshHost)} --ssh-user marcos --ssh-host-key-file ./source-host-key.pub`}
+                    command={`canonfig tunnel start --invitation ${shq(`~/${resultFileName}`)} --ssh-host ${shq(sshHost)} --ssh-user maria --ssh-host-key-file ./source-host-key.pub`}
                     note={tunnelNote(result.url)}
                   />
                 </>

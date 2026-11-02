@@ -2,8 +2,9 @@
 // changing the backend, and links to the docs and the repository. Callers mount it only when DEMO is set
 // (src/shared/data.ts), so the production build carries none of it.
 import { useState } from "react";
+import { motion, useReducedMotion } from "motion/react";
 import { ArrowSquareOut, CaretDown } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, SNAP } from "@/lib/utils";
 import type { Role } from "./data";
 import { focusPageHeading, followLink, roleHref } from "@/workspace/routes";
 
@@ -77,10 +78,18 @@ const PANEL = "rounded-lg border border-sidebar-border bg-sidebar p-1 text-xs le
  */
 export function DemoSwitcher({ role, compact = false, className }: { role: Role | null; compact?: boolean; className?: string }) {
   const [open, setOpen] = useState(false);
+  const reduced = useReducedMotion();
+  // One layoutId for every full panel: switching to or from New machine unmounts the sidebar's panel and mounts the
+  // floating one on setup (App.tsx) in the same commit, so the panel glides between the two places instead of
+  // jumping. Both are 220px wide, so only position animates. Reduced motion moves it at once.
   const full = (
-    <div className={cn("grid gap-1", PANEL, compact && "max-md:hidden")}>
+    <motion.div
+      layoutId="demo-panel"
+      transition={{ layout: reduced ? { duration: 0 } : { duration: 0.3, ease: SNAP } }}
+      className={cn("grid gap-1", PANEL, compact && "max-md:hidden")}
+    >
       <DemoInfo role={role} />
-    </div>
+    </motion.div>
   );
   return (
     <aside aria-label="Demo" className={className}>

@@ -290,10 +290,10 @@ export const followers: Follower[] = [
 ];
 
 export const revisions: Revision[] = [
-  { sequence: 7, digest: "sha256:4f1c…a09e", publishedAt: "Today 08:41", reviewer: "marcos", changes: "+1 tool, 1 file changed" },
-  { sequence: 6, digest: "sha256:91de…77b2", publishedAt: "Oct 24", reviewer: "marcos", changes: "claude-review-skill updated" },
-  { sequence: 5, digest: "sha256:0b3a…c4d1", publishedAt: "Oct 19", reviewer: "marcos", changes: "+gpu group, +cuda-toolkit" },
-  { sequence: 4, digest: "sha256:e27f…1180", publishedAt: "Oct 11", reviewer: "marcos", changes: "codex-config keys" },
+  { sequence: 7, digest: "sha256:4f1c…a09e", publishedAt: "Today 08:41", reviewer: "maria", changes: "+1 tool, 1 file changed" },
+  { sequence: 6, digest: "sha256:91de…77b2", publishedAt: "Oct 24", reviewer: "maria", changes: "claude-review-skill updated" },
+  { sequence: 5, digest: "sha256:0b3a…c4d1", publishedAt: "Oct 19", reviewer: "maria", changes: "+gpu group, +cuda-toolkit" },
+  { sequence: 4, digest: "sha256:e27f…1180", publishedAt: "Oct 11", reviewer: "maria", changes: "codex-config keys" },
 ];
 
 export const pendingChanges = resources.filter((r) => r.change);

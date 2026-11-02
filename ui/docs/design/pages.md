@@ -11,7 +11,7 @@ Every workspace page is a fragment of `PageHeader`, then `Body`, then any dialog
       <Lede>This machine reaches the <Term term="Source Machine">Source</Term> through an SSH tunnel…</Lede>
       <SectionLabel>Status</SectionLabel>
       <div className={cn("mt-1", settingsGroup)}>
-        <SettingRow title="Host">marcos@atlas.local</SettingRow>
+        <SettingRow title="Host">maria@atlas.local</SettingRow>
       </div>
     </Column>
   </Body>

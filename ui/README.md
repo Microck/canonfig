@@ -29,7 +29,18 @@ Open `http://localhost:5317/source/overview`. The independent frontend lockfile 
 
 Both builds still run on the simulated data in `src/shared/data.ts` and `src/workspace/store.tsx` until the loopback backend lands; the production build has no real data path yet. Simulated actions such as Check for updates keep their short waits in both builds.
 
-The demo build also replaces the page title and adds a description, canonical URL, and Open Graph and Twitter card tags to `index.html`, and writes `404.html` as a copy of it, so GitHub Pages boots the app on deep links such as `/follower/sync`. `vite.config.ts` holds this in its `demoSite` plugin. There is no share image yet. The theme colour and viewport tags sit in `index.html` itself, so both builds have them. The site assembly (`scripts/build-pages.mjs`) adds the docs and `robots.txt`.
+The demo build also replaces the page title and adds a description, canonical URL, and Open Graph and Twitter card tags to `index.html`, and writes `404.html` as a copy of it, so GitHub Pages boots the app on deep links such as `/follower/sync`. `vite.config.ts` holds this in its `demoSite` plugin. The theme colour and viewport tags sit in `index.html` itself, so both builds have them. The site assembly (`scripts/build-pages.mjs`) adds the docs and `robots.txt`.
+
+### Share image
+
+The demo build also emits `og-image.png` at the site root and points `og:image` and `twitter:image` at `https://canonfig.micr.dev/og-image.png`; the docs use the same URL (`website/app/layout.tsx`). The file lives in `scripts/`, not `public/`, so the production build does not ship it. `scripts/og-image.html` is its source: the chest, the wordmark, the README tagline and a `DitherBlock`-style green ramp, drawn with the fonts in `public/fonts`. After changing it, render and compress it from `ui/`:
+
+```bash
+npx playwright@1.58.2 screenshot --viewport-size=1200,630 --wait-for-timeout=500 "file://$PWD/scripts/og-image.html" scripts/og-image.png
+optipng -o7 -strip all scripts/og-image.png
+```
+
+Keep the wordmark and tagline inside the central 1200x600: X and Slack crop the image to about 2:1.
 
 ## Browser routes
 
@@ -61,7 +72,7 @@ First-run setup is `/setup`. Retired role and variant query parameters are not r
 
 ## Guidance and presentation
 
-Guidance lives in `src/workspace/guide.tsx`, with the spotlight component in `src/tour/`. It has three parts, remembered per role in localStorage: a four-stop tour offered on the first visit, a Get started list on Overview, and one tip on the first visit to a complex page. Take the tour, in the sidebar or the command palette, opens a picker with that short tour and one chapter of three to five stops per area (`src/workspace/tour-steps.tsx`). Selecting a chapter previews its steps and the pages it visits, numbered in order on a copy of the sidebar, so each chapter's `pages` list must match where its steps go. Finished chapters get a tick, can run again, and end with a button to the next chapter. Append `?tour=1` to start the short tour; reopen a page tip from its "?" button.
+Guidance lives in `src/workspace/guide.tsx`, with the spotlight component in `src/tour/`. It has three parts, remembered per role in localStorage: a tour offer on the first visit that opens the tour picker (a four-stop quick tour, then one chapter per area), a Get started list on Overview, and one tip on the first visit to a complex page. Take the tour, in the sidebar or the command palette, opens a picker with that short tour and one chapter of three to five stops per area (`src/workspace/tour-steps.tsx`). Selecting a chapter previews its steps and the pages it visits, numbered in order on a copy of the sidebar, so each chapter's `pages` list must match where its steps go. Finished chapters get a tick, can run again, and end with a button to the next chapter. Append `?tour=1` to start the short tour; reopen a page tip from its "?" button.
 
 After 15 minutes with the workspace on screen, counted across visits and only while its tab is visible and focused, a toast asks for a GitHub star (`StarPrompt` in `src/workspace/guide.tsx`). It waits while the tour, its offer, a page tip or a dialog is open. Any way of closing it stops it for good. In the demo, append `?star=1` to show it straight away.
 
