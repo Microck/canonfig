@@ -395,7 +395,7 @@ try {
   validateProfileCompiler(installRoot);
 
   const repositoryRoots = [
-    "CONTEXT.md",
+    "GLOSSARY.md",
     "README.md",
     "package.json",
     "package-lock.json",
