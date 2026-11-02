@@ -72,7 +72,7 @@ function SheetContent({
           <SheetPrimitive.Close data-slot="sheet-close" asChild>
             <Button
               variant="ghost"
-              className="absolute top-3 right-3"
+              className="absolute top-3 right-3 pointer-coarse:after:absolute pointer-coarse:after:-inset-2"
               size="icon-sm"
             >
               <X />

@@ -21,7 +21,7 @@ const LINKS = [
 ];
 
 const ITEM = "flex min-h-11 min-w-11 flex-auto items-center justify-center gap-1 rounded-md px-2 whitespace-nowrap md:min-h-10";
-const ITEM_HOVER = "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground";
+const ITEM_INTERACTIVE = "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:bg-sidebar-accent active:text-sidebar-accent-foreground";
 
 function RoleLinks({ role }: { role: Role | null }) {
   return (
@@ -37,7 +37,8 @@ function RoleLinks({ role }: { role: Role | null }) {
             // unmounts, leaving focus on body. Wait for the new role to render, then focus its h1.
             if (event.defaultPrevented) requestAnimationFrame(() => requestAnimationFrame(focusPageHeading));
           }}
-          className={cn(ITEM, r.key === role ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : ITEM_HOVER)}
+          // The current role reads by its fill and colour only: a heavier weight would widen it and nudge its neighbours.
+          className={cn(ITEM, r.key === role ? "bg-sidebar-accent text-sidebar-accent-foreground" : ITEM_INTERACTIVE)}
         >
           {r.label}
         </a>
@@ -56,7 +57,7 @@ function DemoInfo({ role }: { role: Role | null }) {
       <RoleLinks role={role} />
       <div className="flex gap-0.5 border-t border-sidebar-border pt-1 text-muted-foreground">
         {LINKS.map((link) => (
-          <a key={link.href} href={link.href} className={cn(ITEM, ITEM_HOVER)}>
+          <a key={link.href} href={link.href} className={cn(ITEM, ITEM_INTERACTIVE)}>
             {link.label}
             {link.external && <ArrowSquareOut className="size-3" />}
           </a>

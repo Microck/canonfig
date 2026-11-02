@@ -19,7 +19,7 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import { ArrowCounterClockwise, CornersOut, EyeSlash, MagnifyingGlassMinus, MagnifyingGlassPlus } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, SNAP } from "@/lib/utils";
 import { usePrefersReducedMotion } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -97,7 +97,7 @@ const ZOOM_DONE = 0.003;
 /** A pinch moves zoom a few percent per event and applies at once; a larger Ctrl + scroll step eases instead. */
 const SMOOTH_ABOVE = Math.log(1.08);
 /** The app's --ease-snap curve, for fit, reset and focus pans. */
-const VIEW_EASE = cubicBezier(0.175, 0.885, 0.32, 1.1);
+const VIEW_EASE = cubicBezier(...SNAP);
 /** React Flow multiplies Ctrl + wheel deltas by 10 on macOS, where a trackpad pinch arrives as Ctrl + wheel. */
 const IS_MAC = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
 

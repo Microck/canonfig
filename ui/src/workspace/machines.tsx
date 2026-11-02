@@ -3,7 +3,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { toast } from "sonner";
 import { CaretRight, ListBullets, TreeStructure } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, isCoarsePointer } from "@/lib/utils";
 import { workspaceHref } from "./routes";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -688,7 +688,9 @@ export function InviteDialog() {
           event.preventDefault();
           const active = document.activeElement;
           if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
-          document.getElementById("inv-name")?.focus();
+          // On touch, focus the dialog itself rather than raise the keyboard for an optional name.
+          if (isCoarsePointer()) (event.target as HTMLElement).focus();
+          else document.getElementById("inv-name")?.focus();
         }}
         onCloseAutoFocus={(event) => {
           event.preventDefault();

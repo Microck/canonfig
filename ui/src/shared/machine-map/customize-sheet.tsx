@@ -4,7 +4,7 @@ import { motion } from "motion/react";
 import { RadioGroup } from "radix-ui";
 import { HexColorPicker } from "react-colorful";
 import { ArrowCounterClockwise, FileArrowUp, Plus, X } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, isCoarsePointer, SNAP } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Label } from "@/components/ui/label";
@@ -27,7 +27,6 @@ import {
   type ResolvedLook,
 } from "./model";
 
-const SNAP = [0.175, 0.885, 0.32, 1.1] as const;
 const HEX_INPUT = /^#?[0-9a-f]{6}$/i;
 /** What the hex field accepts while typing: a "#" and up to six hex digits. Anything else is flagged at once. */
 const HEX_PARTIAL = /^#?[0-9a-f]{0,6}$/i;
@@ -101,6 +100,8 @@ export interface CustomizeSheetProps {
 
 export function CustomizeSheet({ id, hostname, saved, look, onClose }: CustomizeSheetProps) {
   const uid = useId();
+  // Read once per open: autoFocus only matters on mount, and the sheet re-renders on every keystroke and colour drag.
+  const [focusName] = useState(() => !isCoarsePointer());
   // Reduced motion keeps the fade (a state change) and drops the slide.
   const slide = usePrefersReducedMotion() ? 0 : 12;
   const set = (patch: Look) => mapStore.setLook(id, patch);
@@ -205,7 +206,7 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
           <Label htmlFor={`${uid}-name`}>Name</Label>
           <Input
             id={`${uid}-name`}
-            autoFocus
+            autoFocus={focusName}
             maxLength={32}
             value={saved?.name ?? ""}
             placeholder={hostname}

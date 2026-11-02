@@ -16,7 +16,7 @@ import {
   UserPlus,
   UsersThree,
 } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, SNAP } from "@/lib/utils";
 import {
   Command,
   CommandDialog,
@@ -73,8 +73,9 @@ function NavButton({ item, active, badge, onNavigate }: { item: NavItem; active:
       })}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "relative isolate flex h-[28px] w-full items-center gap-[5px] rounded-lg pr-[9px] pl-[7px] text-base font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
-        active ? "text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
+        // 44px rows for touch (DESIGN.md rule 13); active gives touch a press state, since it has no hover.
+        "relative isolate flex h-[28px] w-full items-center gap-[5px] rounded-lg pr-[9px] pl-[7px] text-base font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11",
+        active ? "text-sidebar-accent-foreground" : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground active:bg-sidebar-accent/60 active:text-foreground",
       )}
     >
       {active && (
@@ -82,7 +83,7 @@ function NavButton({ item, active, badge, onNavigate }: { item: NavItem; active:
           layoutId="nav-active"
           aria-hidden
           className="absolute inset-0 -z-10 rounded-lg bg-sidebar-accent"
-          transition={reduce ? { duration: 0 } : { duration: 0.15, ease: [0.175, 0.885, 0.32, 1.1] }}
+          transition={reduce ? { duration: 0 } : { duration: 0.15, ease: SNAP }}
         />
       )}
       <Icon bold={active} className="size-4 shrink-0" />
@@ -156,7 +157,7 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
           <button
             type="button"
             data-tour="machine"
-            className="flex h-[28px] items-center gap-2 rounded-lg px-[8px] text-left outline-none hover:bg-sidebar-accent/60 focus-visible:ring-2 focus-visible:ring-ring/60"
+            className="flex h-[28px] items-center gap-2 rounded-lg px-[8px] text-left outline-none hover:bg-sidebar-accent/60 focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11"
           >
             <Logo />
             <span className="flex min-w-0 items-baseline gap-1.5 text-base">
@@ -211,7 +212,7 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
         type="button"
         data-tour="search"
         onClick={() => ws.setPaletteOpen(true)}
-        className="mt-[8px] flex h-[28px] items-center gap-[6px] rounded-lg border border-border bg-panel/60 px-[7px] text-sm text-muted-foreground outline-none hover:border-border-strong hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+        className="mt-[8px] flex h-[28px] items-center gap-[6px] rounded-lg border border-border bg-panel/60 px-[7px] text-sm text-muted-foreground outline-none hover:border-border-strong hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 active:border-border-strong active:text-foreground pointer-coarse:h-11"
       >
         <MagnifyingGlass className="size-3.5 shrink-0" />
         <span className="min-w-0 truncate whitespace-nowrap">Search or jump to…</span>
@@ -229,7 +230,7 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
         <Collapsible open={open} onOpenChange={setOpen} className="mt-5">
           <CollapsibleTrigger
             data-tour="settings"
-            className="flex h-6 w-full items-center gap-1 rounded-md px-[8px] text-xs font-medium text-faint outline-none hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+            className="flex h-6 w-full items-center gap-1 rounded-md px-[8px] text-xs font-medium text-faint outline-none hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11"
           >
             Settings
             <CaretRight className={cn("size-3 transition-transform duration-150 ease-snap", open && "rotate-90")} />
@@ -252,18 +253,18 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
           type="button"
           data-tour="tour"
           onClick={onOpenTours ?? (() => ws.setTourPickerOpen(true))}
-          className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+          className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11"
         >
           <FoldedMap className="size-3.5" />
           Take the tour
         </button>
         {role === "source" ? (
-          <button type="button" onClick={() => ws.setView("service")} className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
+          <button type="button" onClick={() => ws.setView("service")} className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11">
             <StatusMark kind={serviceInstalled ? "ok" : "off"} />
             <span>{serviceInstalled ? "Source service running" : "Source service not installed"}</span>
           </button>
         ) : (
-          <button type="button" onClick={() => ws.setView("tunnel")} className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
+          <button type="button" onClick={() => ws.setView("tunnel")} className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11">
             <StatusMark kind={!ws.tunnelConfigured ? "off" : tunnelUp ? "ok" : "offline"} />
             <span>{!ws.tunnelConfigured ? "No SSH tunnel set up" : tunnelUp ? "Tunnel connected to atlas" : "Tunnel stopped"}</span>
           </button>

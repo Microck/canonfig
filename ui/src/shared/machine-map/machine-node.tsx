@@ -3,7 +3,7 @@ import { memo, use, type ComponentProps } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Handle, NodeToolbar, Position, type Node, type NodeProps } from "@xyflow/react";
 import { ArrowSquareOut, PaintBrush, Plus } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, SNAP } from "@/lib/utils";
 import { DitherShader, fillStyle, usePrefersReducedMotion } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -126,7 +126,7 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
             initial={{ opacity: 0 }}
             animate={{ opacity: 0.8 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: reduced ? 0 : 0.6, ease: [0.175, 0.885, 0.32, 1.1] }}
+            transition={{ duration: reduced ? 0 : 0.6, ease: SNAP }}
           >
             <DitherShader field={GLOW_FIELD} palette={GLOW_PALETTE} cell={2} fps={16} stillTime={4} className="size-full" />
           </motion.div>

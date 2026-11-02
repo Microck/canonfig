@@ -15,7 +15,7 @@ import { useEffect, useRef, useState, type Ref } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { ArrowRight, Check, FoldedMap, Star, X } from "@/components/icons";
 import { toast } from "sonner";
-import { cn } from "@/lib/utils";
+import { cn, SNAP } from "@/lib/utils";
 import { fillStyle } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -25,10 +25,8 @@ import { Tour, type TourStep } from "@/tour/tour";
 import { PAGE_TIPS } from "./page-tips";
 import { tourChapters, type TourChapter } from "./tour-steps";
 import { useWorkspace, type View, type Workspace } from "./store";
-import { NAV, type NavItem } from "./nav";
+import { NAV, navItem, type NavItem } from "./nav";
 import { focusPageHeading } from "./routes";
-
-const SNAP = [0.175, 0.885, 0.32, 1.1] as const;
 
 export interface GetStartedItem {
   id: string;
@@ -594,9 +592,9 @@ function ChapterMark({ done, next }: { done: boolean; next: boolean }) {
  * pages (below md), what it covers, its steps and the one button that starts it.
  */
 function ChapterPreview({ chapter, done, onChoose, ref }: { chapter: TourChapter; done: boolean; onChoose: (id: string) => void; ref: Ref<HTMLElement> }) {
-  const nav = NAV[useWorkspace().role];
-  const items = [...nav.main, ...nav.settings];
-  const route = chapter.pages.map((view) => items.find((item) => item.view === view)!);
+  const role = useWorkspace().role;
+  const nav = NAV[role];
+  const route = chapter.pages.map((view) => navItem(role, view)!);
   return (
     <section ref={ref} aria-label={`Preview: ${chapter.title}`} className="grid overflow-hidden rounded-lg border border-border bg-panel md:grid-cols-[12rem_minmax(0,1fr)]">
       <RouteSidebar main={nav.main} settings={nav.settings} pages={chapter.pages} />

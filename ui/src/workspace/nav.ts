@@ -67,3 +67,7 @@ export const NAV: Record<WorkspaceRole, { main: NavItem[]; settings: NavItem[] }
   source: { main: SOURCE_NAV, settings: SOURCE_SETTINGS },
   follower: { main: FOLLOWER_NAV, settings: FOLLOWER_SETTINGS },
 };
+
+/** The sidebar entry for a role's page, if it has one (the not-found view has none). */
+export const navItem = (role: WorkspaceRole, view: View): NavItem | undefined =>
+  NAV[role].main.find((n) => n.view === view) ?? NAV[role].settings.find((n) => n.view === view);

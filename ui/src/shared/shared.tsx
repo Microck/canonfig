@@ -8,7 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { STATE_META, type FollowerState } from "./data";
 
 /**
- * Glossary terms from GLOSSARY.md. `plain` is the everyday word the UI shows;
+ * Glossary terms from the Language section of CONTEXT.md. `plain` is the everyday word the UI shows;
  * the Canonfig term stays one hover away. `meaning` is written for someone who
  * has never read the docs.
  */
@@ -122,7 +122,7 @@ export function Hint({ label, children, className }: { label: string; children: 
 }
 
 const TONE_TEXT = { ok: "text-ok", warn: "text-warn", act: "text-act", bad: "text-bad", muted: "text-faint" } as const;
-const TONE_DITHER = { ok: "green", warn: "#f1c332", act: "orange", bad: "red", muted: "grey", purple: "purple" } as const;
+const TONE_DITHER = { ok: "green", warn: "--warn", act: "orange", bad: "red", muted: "grey", purple: "purple" } as const;
 
 /**
  * Every state a status marker shows. `bad` and `offline` share a colour, so shape

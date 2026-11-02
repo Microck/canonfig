@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { isCoarsePointer } from "@/lib/utils";
 import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
 import { DEMO, PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/data";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
@@ -409,12 +410,14 @@ export function PublishDialog() {
   return (
     <Dialog open={open} onOpenChange={(o) => !ws.publishing && ws.setPublishOpen(o)}>
       <DialogContent
-        className="grid-cols-[minmax(0,1fr)] gap-5 sm:max-w-[540px]"
+        className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[540px]"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
           const active = document.activeElement;
           if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
-          document.getElementById("pub-reviewer")?.focus();
+          // On touch, focus the dialog itself: the reviewer is filled in, and focusing it would raise the keyboard.
+          if (isCoarsePointer()) (e.target as HTMLElement).focus();
+          else document.getElementById("pub-reviewer")?.focus();
         }}
         onCloseAutoFocus={(e) => {
           e.preventDefault();
@@ -556,7 +559,7 @@ export function RevisionsView() {
                     <span className="font-medium tabular-nums">{r.sequence}</span>
                     <span className="truncate">{r.changes}</span>
                     <Mono className="truncate">{r.digest}</Mono>
-                    <span className="text-sm text-muted-foreground">{r.reviewer}</span>
+                    <span className="truncate text-sm text-muted-foreground">{r.reviewer}</span>
                     <span className="text-sm text-muted-foreground tabular-nums">{r.publishedAt}</span>
                   </ListRow>
                 </AnimatedRow>

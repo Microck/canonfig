@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { AnimatePresence, motion, usePresence, useReducedMotion, type Transition } from "motion/react";
 import { Skeleton } from "skullet/react";
 import { Check, Copy, FileText, Folder, Key, Question, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type IconComponent } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, SNAP, SNAP_EASING } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
@@ -24,9 +24,6 @@ export const KIND_ICON: Record<ResourceKind, IconComponent> = {
   tool: Wrench,
   credential: Key,
 };
-
-/** The motion spec's one curve (index.css `--ease-snap`). */
-const SNAP = [0.175, 0.885, 0.32, 1.1] as const;
 
 /** 150ms state change, or nothing at all under reduced motion. */
 function useStateTransition(): Transition {
@@ -118,7 +115,7 @@ export function WithCode({ text }: { text: string }) {
                 type="button"
                 aria-label={`Copy ${part}`}
                 onClick={() => void copy(part, "Command copied")}
-                className="mx-0.5 rounded-[4px] border border-border bg-secondary/70 px-1 py-px font-mono text-xs whitespace-nowrap text-foreground transition-colors duration-150 outline-none [box-decoration-break:clone] hover:border-border-strong hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring/60"
+                className="mx-0.5 rounded-[4px] border border-border bg-secondary/70 px-1 py-px font-mono text-xs whitespace-nowrap text-foreground transition-colors duration-150 ease-snap outline-none [box-decoration-break:clone] hover:border-border-strong hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring/60"
               >
                 {part}
               </button>
@@ -294,7 +291,8 @@ export function ListRow({
     "relative isolate grid h-[44px] items-center gap-3 text-left text-base",
     LIST_INSET,
     ROW_FILL,
-    selected ? "before:bg-raised" : onClick && "hover:before:bg-raised/50",
+    // active: touch has no hover and Tailwind's preflight removes the tap flash, so a press shows the hover fill.
+    selected ? "before:bg-raised" : onClick && "hover:before:bg-raised/50 active:before:bg-raised/50",
     className,
   );
   if (!onClick) return <div data-tour={tour} className={base} style={style}>{children}</div>;
@@ -346,7 +344,6 @@ let panelJustClosed = false;
 // closing is quicker than opening. Only transform and opacity move, on the repo's one curve; nothing
 // moves under reduced motion. It runs through WAAPI from layout effects, so the first frame is already
 // the start pose (no flash) and no React state changes per frame.
-const SNAP_CSS = "cubic-bezier(0.175, 0.885, 0.32, 1.1)";
 
 // Where the last press landed. Safari doesn't focus a clicked button, so focus alone can't say which
 // row opened the panel; a keyboard open still prefers the focused row (see openPanel).
@@ -364,13 +361,13 @@ function openPanel(panel: HTMLElement): Animation[] {
   }
   const overlay = window.matchMedia("(max-width: 767.98px)").matches;
   panel.style.transformOrigin = `${overlay ? "50%" : "0"} ${(openerY ?? rect.top + rect.height / 2) - rect.top}px`;
-  return [panel.animate({ opacity: [0, 1], transform: ["scale(0.96)", "none"] }, { duration: 220, easing: SNAP_CSS })];
+  return [panel.animate({ opacity: [0, 1], transform: ["scale(0.96)", "none"] }, { duration: 220, easing: SNAP_EASING })];
 }
 
 /** Another row replaced the panel's contents: fade its header, body and footer in. */
 function swapPanel(panel: HTMLElement): Animation[] {
   return [...panel.querySelectorAll<HTMLElement>(":scope > [data-panel-part]")].map((part) =>
-    part.animate({ opacity: [0, 1] }, { duration: 120, easing: SNAP_CSS, fill: "backwards" }),
+    part.animate({ opacity: [0, 1] }, { duration: 120, easing: SNAP_EASING, fill: "backwards" }),
   );
 }
 
@@ -422,7 +419,7 @@ export function DetailPanel({
     if (isPresent) return;
     const anims = window.matchMedia("(prefers-reduced-motion: reduce)").matches
       ? []
-      : [panel.current!.animate({ opacity: [1, 0], transform: ["none", "scale(0.98)"] }, { duration: 120, easing: SNAP_CSS, fill: "forwards" })];
+      : [panel.current!.animate({ opacity: [1, 0], transform: ["none", "scale(0.98)"] }, { duration: 120, easing: SNAP_EASING, fill: "forwards" })];
     // `finished` rejects when the cleanup cancels a reopened panel's exit; that panel stays.
     Promise.all(anims.map((a) => a.finished)).then(() => safeToRemove?.(), () => {});
     return () => {
@@ -550,7 +547,7 @@ export function DetailPanel({
         aria-label="Resize details"
         aria-valuemin={PANEL_MIN}
         aria-valuemax={PANEL_MAX}
-        className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1 after:w-px hover:after:bg-ring/60 focus-visible:after:w-0.5 focus-visible:after:bg-ring max-md:hidden"
+        className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize touch-none outline-none after:absolute after:inset-y-0 after:left-1 after:w-px hover:after:bg-ring/60 focus-visible:after:w-0.5 focus-visible:after:bg-ring max-md:hidden"
         onKeyDown={(e) => {
           const w = panel.current?.offsetWidth ?? 380;
           const next = e.key === "ArrowLeft" ? w + PANEL_STEP : e.key === "ArrowRight" ? w - PANEL_STEP : e.key === "Home" ? PANEL_MIN : e.key === "End" ? PANEL_MAX : null;
@@ -574,7 +571,7 @@ export function DetailPanel({
         {subtitle && <div className="shrink-0 truncate text-sm text-muted-foreground">{subtitle}</div>}
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button data-panel-close variant="ghost" size="icon-sm" className="ml-auto text-muted-foreground" onClick={onClose} aria-label="Close details">
+            <Button data-panel-close variant="ghost" size="icon-sm" className="relative ml-auto text-muted-foreground pointer-coarse:after:absolute pointer-coarse:after:-inset-2" onClick={onClose} aria-label="Close details">
               <X />
             </Button>
           </TooltipTrigger>

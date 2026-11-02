@@ -26,18 +26,22 @@ const PACKET_OFFSET = (-4 * PACKET_CELL) / 2;
 const TIP_OFFSET = 14;
 const TIP_MARGIN = 8;
 
-/** Below-right of the pointer; flips to the other side on an axis where that overflows, then clamps into the viewport. */
-function placeTip(pointer: { x: number; y: number }, w: number, h: number) {
+/**
+ * Moves the tooltip below-right of the pointer; flips it to the other side on an axis where that overflows, then
+ * clamps it into the viewport. It needs the tooltip's rendered size, so it writes the element's style directly.
+ */
+function placeTip(el: HTMLElement | null, pointer: { x: number; y: number }) {
+  if (!el) return;
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   let left = pointer.x + TIP_OFFSET;
   let top = pointer.y + TIP_OFFSET;
   if (left + w > vw - TIP_MARGIN) left = pointer.x - TIP_OFFSET - w;
   if (top + h > vh - TIP_MARGIN) top = pointer.y - TIP_OFFSET - h;
-  return {
-    left: Math.max(TIP_MARGIN, Math.min(left, vw - TIP_MARGIN - w)),
-    top: Math.max(TIP_MARGIN, Math.min(top, vh - TIP_MARGIN - h)),
-  };
+  el.style.left = `${Math.max(TIP_MARGIN, Math.min(left, vw - TIP_MARGIN - w))}px`;
+  el.style.top = `${Math.max(TIP_MARGIN, Math.min(top, vh - TIP_MARGIN - h))}px`;
 }
 
 export const SyncEdge = memo(function SyncEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<SyncEdgeType>) {
@@ -51,13 +55,9 @@ export const SyncEdge = memo(function SyncEdge({ sourceX, sourceY, targetX, targ
   const [d, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   const anchor = pointer ?? focusAt;
 
-  // Position needs the tooltip's rendered size, so it is set before paint rather than through `style`.
+  // First placement before paint, when the tooltip opens or switches between pointer and focus.
   useLayoutEffect(() => {
-    const el = tipRef.current;
-    if (!anchor || !el) return;
-    const { left, top } = placeTip(anchor, el.offsetWidth, el.offsetHeight);
-    el.style.left = `${left}px`;
-    el.style.top = `${top}px`;
+    if (anchor) placeTip(tipRef.current, anchor);
   }, [anchor]);
 
   // React Flow renders the focusable wrapper <g> around this component, so its focus events are
@@ -151,7 +151,8 @@ export const SyncEdge = memo(function SyncEdge({ sourceX, sourceY, targetX, targ
         strokeWidth={18}
         className="react-flow__edge-interaction"
         onPointerEnter={(e) => setPointer({ x: e.clientX, y: e.clientY })}
-        onPointerMove={(e) => setPointer((p) => p && { x: e.clientX, y: e.clientY })}
+        // Following the pointer moves the open tooltip directly: state per move would re-render the whole edge.
+        onPointerMove={(e) => pointer && placeTip(tipRef.current, { x: e.clientX, y: e.clientY })}
         onPointerLeave={() => setPointer(null)}
       />
 

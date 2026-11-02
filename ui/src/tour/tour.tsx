@@ -10,7 +10,7 @@
 // swallows clicks, so the highlighted control can't fire while it's explained.
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, X } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, SNAP } from "@/lib/utils";
 import { fillStyle, usePrefersReducedMotion } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
 
@@ -65,9 +65,9 @@ const MOVE_MS = 260;
  */
 const FIND_MS = 800;
 
-/** cubic-bezier(0.175, 0.885, 0.32, 1.1), i.e. --ease-snap, solved for x so JS tweens match CSS. */
+/** SNAP (--ease-snap) solved for x, so JS tweens match CSS. */
 function easeSnap(t: number) {
-  const [x1, y1, x2, y2] = [0.175, 0.885, 0.32, 1.1];
+  const [x1, y1, x2, y2] = SNAP;
   const bez = (p1: number, p2: number, s: number) => 3 * (1 - s) * (1 - s) * s * p1 + 3 * (1 - s) * s * s * p2 + s * s * s;
   let s = t;
   for (let i = 0; i < 8; i++) {
@@ -459,7 +459,7 @@ export function Tour({
               WebkitMaskComposite: "xor",
             }}
           >
-            <div className="absolute inset-0" style={fillStyle("dotted", { color: "#c4b5fd", cell: 1.5 })} />
+            <div className="absolute inset-0" style={fillStyle("dotted", { color: "--ring", cell: 1.5 })} />
           </div>
           <div
             ref={(el) => void (spot.current.ring = el)}
@@ -491,7 +491,7 @@ export function Tour({
             <div className="col-start-1 row-start-1 flex items-center gap-2">
               <ol className="flex gap-1" aria-label={`Step ${index + 1} of ${steps.length}`}>
                 {steps.map((_, i) => (
-                  <li key={i} className={cn("h-1 w-3 rounded-full transition-colors duration-150", i === index ? "bg-foreground" : i < index ? "bg-muted-foreground/60" : "bg-border-strong")} />
+                  <li key={i} className={cn("h-1 w-3 rounded-full transition-colors duration-150 ease-snap", i === index ? "bg-foreground" : i < index ? "bg-muted-foreground/60" : "bg-border-strong")} />
                 ))}
               </ol>
               <span className="text-xs text-faint" aria-hidden>
