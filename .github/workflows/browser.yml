@@ -14,7 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      NEXT_PUBLIC_SITE_URL: https://canonfig.micr.dev
+      # The docs root, base path included, as scripts/build-pages.mjs builds it.
+      NEXT_PUBLIC_SITE_URL: https://canonfig.micr.dev/docs
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
