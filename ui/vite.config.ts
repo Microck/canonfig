@@ -11,7 +11,7 @@ const DEMO_DESCRIPTION =
 // The share image, rendered from scripts/og-image.html. The docs at /docs point their og:image at the same URL.
 const OG_IMAGE = "og-image.png";
 const OG_IMAGE_URL = `${DEMO_URL}${OG_IMAGE}`;
-const OG_IMAGE_ALT = "The Canonfig chest beside the wordmark canonfig and the line: One-way sync for AI agent configuration.";
+const OG_IMAGE_ALT = "Canonfig machine map: the Source machine atlas syncing to laptop, studio, gaming-pc and build-box, under the line: Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.";
 
 /**
  * The public demo at canonfig.micr.dev (`vite build --mode demo`, GitHub Pages). It adds indexable and share

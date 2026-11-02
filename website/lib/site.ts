@@ -23,5 +23,5 @@ export const shareImage = {
   url: new URL("/og-image.png", siteUrl).href,
   width: 1200,
   height: 630,
-  alt: "The Canonfig chest beside the wordmark canonfig and the line: One-way sync for AI agent configuration.",
+  alt: "Canonfig machine map: the Source machine atlas syncing to laptop, studio, gaming-pc and build-box, under the line: Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.",
 };
