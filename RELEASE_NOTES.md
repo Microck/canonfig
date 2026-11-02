@@ -1,51 +1,62 @@
-# Canonfig v4.2.0
+# Canonfig v5.0.0
 
-This feature release adds opt-in automation for tracked skills, authored source
-profiles and local harness projection. Node.js 24 or newer is required.
+This major release changes the Configuration Agent harness options and adds
+opt-in patch self-updates. The documentation now lives at
+https://canonfig.micr.dev/docs. Node.js 24 or newer is required.
 
-## Automatic tracked skill updates
+## Breaking: agent harness changes
 
-`canonfig skills auto` previews by default. `--apply` runs a foreground update
-loop (24 hours by default); `--once` supports an explicit external scheduler.
-Selected sources are frozen and revalidated under the update lock. Local drift
-and failures stop the updater. It does not install an OS service, publish a
-profile, force an overwrite or apply harness configuration.
+The `gemini` harness is removed. Gemini CLI has been replaced by Google's
+Antigravity CLI, so the adapter targeted a tool that no longer ships.
+`canonfig agent harness` now accepts `codex`, `claude` and `custom`.
 
-## Source skill deletion reconciliation
+`codex` and `claude` take an optional `--model <name>`, which Canonfig passes as
+the CLI's own `--model` flag; leave it out to use the agent's default. Their
+read-only flags stay fixed, so they do not accept free-form arguments.
 
-`canonfig source reconcile-skills --profile-file FILE` previews removal of
-previously observed source-backed skills that have disappeared. `--apply`
-records observations and makes validated, backed-up JSONC edits; `--watch`
-repeats the process. Changed resource identities, inaccessible parents and
-unsafe dependencies fail closed. Other profile writers must be stopped.
-Profile publication and follower synchronization remain explicit separate steps.
+`custom` runs any agent executable with exactly the arguments given by repeated
+`--argument` options, without a shell. Canonfig writes the Agent Task as a
+`canonfig.agent-task/v1` JSON document to its standard input and reads a
+proposal JSON object (`summary` and `actions`) from its standard output.
+Canonfig cannot force a custom agent into a read-only mode; start it in its own
+plan or read-only mode through its arguments. Every proposed action is still
+checked against the configured allowlists, and output that is not a proposal is
+refused. `--model` is rejected for `custom`.
 
-## Live local harness projection
+A follower that stored a `gemini` harness is not converted. After the upgrade,
+commands that read it, such as `canonfig status`, stop with "the gemini agent
+harness was removed in 5.0.0" (exit 2). Run `canonfig agent harness codex`,
+`claude` or `custom` with the executable and allowlist options it needs to
+replace the stored harness, then continue the upgrade checks.
 
-`canonfig harness watch` projects supported canonical configuration into enabled
-harnesses while running in the foreground. Two matching plans are required
-before each serialized apply. It recreates deleted generated outputs, cleans up
-retired ownership and avoids idle writes. Drift, invalid saves and apply errors
-stop the watcher rather than overwriting local edits. SIGINT/SIGTERM waits for
-in-flight cleanup. Continuous dry-run and strict mode are supported.
+## Opt-in patch self-updates
 
-The watcher does not coordinate other apply/clean processes or external editors;
-stop those writers first. It does not install a background service, refresh a
-running harness process, transfer credentials or change machine sync transport.
+`canonfig self-update enable|disable|status|check|apply|auto` installs stable
+patch releases in the current major.minor line for user-owned global npm
+installations. Commands that change anything preview unless given `--apply`.
+Candidates are staged with lifecycle scripts disabled and checked before
+activation, and the previous package is kept as a backup. Active Canonfig
+commands defer activation; unfinished synchronization runs stop it.
+Self-update never crosses a major or minor version, installs no OS service and
+does not restart services. Read `docs/self-update.md` before enabling it: stop
+existing Canonfig processes and schedules first.
 
-## Dependency maintenance
+## Documentation site and interface demo
 
-Pin transitive Zod to 4.6.7 to resolve GHSA-mrhx-c7xc-m3w5 in documentation
-and test tooling. The release candidate is rebuilt and revalidated with this
-lockfile.
+The documentation moved to https://canonfig.micr.dev/docs. Links to the
+previous documentation pages redirect to the same page under `/docs`.
+https://canonfig.micr.dev now serves an interactive demo of the upcoming
+browser interface. It runs on simulated data and is not connected to a
+machine; this release does not ship a `canonfig ui` command.
 
 ## Upgrade boundaries
 
-State and signed-revision formats are unchanged. The existing major.minor
-handshake rejects mixed 4.0/4.1/4.2 fleets. Pause synchronization, upgrade the
-Source and all followers to 4.2.0, restart the Source with its prior settings,
-and verify before resuming. Finish unfinished runs with their original build
-and retain backups. In-place migration from 3.2.x remains unsupported.
+State and signed-revision formats are unchanged, so 4.x installations update
+in place. The major.minor handshake rejects mixed 4.x/5.0 fleets. Pause
+synchronization, upgrade the Source and all followers to 5.0.0, restart the
+Source with its prior settings, replace any stored `gemini` harness, and verify
+before resuming. Finish unfinished runs with their original build and retain
+backups. In-place migration from 3.2.x remains unsupported.
 
 ## Verification
 

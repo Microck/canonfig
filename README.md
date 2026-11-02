@@ -24,7 +24,7 @@ to receive. followers never publish changes back.
 deterministic actions run first. optional Configuration Agents handle bounded
 fallback tasks; an agent's claim never counts as proof of convergence.
 
-[documentation](website/content/docs/index.mdx) | [first sync](website/content/docs/tutorials/first-sync.mdx) | [command reference](website/content/docs/reference/cli.mdx)
+[documentation](https://canonfig.micr.dev/docs) | [first sync](website/content/docs/tutorials/first-sync.mdx) | [command reference](website/content/docs/reference/cli.mdx)
 
 ## why
 
@@ -40,7 +40,7 @@ resident follower daemon.
 requires Node.js 24+ and npm. install the same release on the source and every follower:
 
 ```sh
-npm install --global @microck/canonfig@4.2.0
+npm install --global @microck/canonfig@5.0.0
 canonfig --version
 canonfig doctor --no-input
 ```
@@ -49,11 +49,13 @@ check the `credentials` result before continuing. canonfig uses Secret Service
 on linux, Keychain on macos, and Credential Manager on windows. follow the
 reported recovery steps if the store is locked or unavailable.
 
-4.2.0 adds automatic skill updates, source skill deletion reconciliation, and live
-local harness projection. upgrade the source and all followers together: mixed
-4.0/4.1/4.2 fleets are rejected. **do not replace a
-3.2.x installation or its state in place**; use the
-[fresh-install upgrade guide](website/content/docs/how-to/upgrade.mdx).
+5.0.0 replaces the `gemini` Configuration Agent harness with a `custom` harness
+for any agent CLI and adds `--model` for `codex` and `claude`. a 4.x
+installation updates in place, but upgrade the source and all followers
+together: mixed 4.x/5.0 fleets are rejected. a follower that used `gemini`
+needs `canonfig agent harness codex|claude|custom` after the upgrade. **do not
+replace a 3.2.x installation or its state in place**; use the
+[upgrade guide](website/content/docs/how-to/upgrade.mdx).
 
 ## sync machines
 
@@ -217,7 +219,7 @@ validation, browser checks, and release validation keep the full workspace insta
 
 the frontend lives in [`ui/`](ui/README.md). from this checkout, run `npm --prefix ui ci` and `npm run ui:dev`, then open `http://localhost:5317/source/overview`. screens have separate routes, including `/source/profile`, `/source/machines`, `/follower/sync` and `/setup`.
 
-the frontend currently uses demo data and simulated operations. it is not yet connected to the CLI services or shipped as a `canonfig ui` command.
+the frontend currently uses demo data and simulated operations. it is not yet connected to the CLI services or shipped as a `canonfig ui` command. you can try the demo at [canonfig.micr.dev](https://canonfig.micr.dev).
 
 ## documentation
 

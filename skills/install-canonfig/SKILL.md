@@ -1,6 +1,6 @@
 ---
 name: install-canonfig
-description: Install Canonfig 4.2.0 from its scoped npm package and initialize a Source Machine or securely enroll a Linux, macOS, or Windows Follower Machine. Use for Canonfig prerequisites, package installation, first-time source setup, profile authoring and publication, follower invitations and pinned trust, native schedule setup, installation verification, or installation troubleshooting.
+description: Install Canonfig 5.0.0 from its scoped npm package and initialize a Source Machine or securely enroll a Linux, macOS, or Windows Follower Machine. Use for Canonfig prerequisites, package installation, first-time source setup, profile authoring and publication, follower invitations and pinned trust, native schedule setup, installation verification, or installation troubleshooting.
 ---
 
 # Install Canonfig
@@ -17,17 +17,17 @@ security or human-action boundary.
    - macOS: [references/macos.md](references/macos.md)
    - Windows: [references/windows.md](references/windows.md)
 3. Confirm Node.js 24 or newer and npm are available.
-4. For an existing 4.0.x or 4.1.x installation, first follow the
-   [patch-upgrade guide](../../website/content/docs/how-to/upgrade.mdx): finish
+4. For an existing 4.x installation, first follow the
+   [in-place upgrade guide](../../website/content/docs/how-to/upgrade.mdx): finish
    or recover unfinished runs with the original build, back up state, use the
    same installation prefix, and restart the existing Source service afterward.
    Verify the existing role rather than initializing or enrolling it again.
-   Otherwise, install the exact `@microck/canonfig@4.2.0` package version in a new
+   Otherwise, install the exact `@microck/canonfig@5.0.0` package version in a new
    installation. The installed executable remains `canonfig`. Do not install
    over a 3.2.x installation: an in-place upgrade is unsupported and unverified.
    Preserve its state and use the [fresh-install guide](../../website/content/docs/how-to/upgrade.mdx).
-   The new Source and followers must run the same major.minor release; 4.2.0
-   refuses 3.2.x peers with "source/follower version mismatch" (exit 2).
+   The new Source and followers must run the same major.minor release; 5.0.0
+   refuses 4.x and 3.2.x peers with "source/follower version mismatch" (exit 2).
 5. Run `canonfig --version` and bounded diagnostics. Read the `credentials`
    probe; follow its recovery text before continuing.
 6. Initialize a Source Machine **or** enroll a Follower Machine. Never initialize
