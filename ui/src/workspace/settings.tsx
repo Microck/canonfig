@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { Check, Circle, HourglassMedium, Warning, X } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, removeKeepingFocus } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -522,7 +522,7 @@ export function AgentPolicyView() {
                 {paths.map((p) => (
                   <div key={p} title={p} className="flex h-8 items-center gap-2 rounded-md border border-border pr-1 pl-2.5">
                     <Mono className="min-w-0 truncate text-foreground">{p}</Mono>
-                    <Button variant="ghost" size="icon-xs" className="ml-auto size-6 shrink-0 text-faint" aria-label={`Remove ${p}`} onClick={() => setPaths(paths.filter((x) => x !== p))}>
+                    <Button variant="ghost" size="icon-xs" className="ml-auto size-6 shrink-0 text-faint" data-remove="writable-paths" aria-label={`Remove ${p}`} onClick={(e) => removeKeepingFocus(e.currentTarget, () => setPaths(paths.filter((x) => x !== p)), "ap-path")}>
                       <X />
                     </Button>
                   </div>

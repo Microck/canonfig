@@ -9,6 +9,7 @@ import { Logo } from "@/shared/shared";
 import { StarPrompt, TipHost, TourHost, TourOffer, TourPicker } from "./guide";
 import { focusPageHeading, followLink, navigate, workspaceHref, type AppRoute } from "./routes";
 import { Palette, Sidebar } from "./frame";
+import { navItem } from "./nav";
 import { ChangeGroupsDialog, InviteDialog, MachinesView } from "./machines";
 import type { Setup } from "@/onboarding/onboarding";
 
@@ -195,23 +196,51 @@ function MobileNav() {
 }
 
 function NotFound() {
+  // GitHub Pages answers every unknown path on the demo's domain with this app's 404.html, mistyped or retired
+  // docs links under /docs/ included, so the demo sends those back to the docs (a plain link: they are another site).
+  const docs = DEMO && window.location.pathname.startsWith("/docs/");
   return (
     <main className="flex min-h-svh flex-col items-center justify-center gap-4 bg-canvas px-6 text-center text-foreground">
       <h1 className="text-xl font-semibold">Page not found</h1>
-      <p className="text-sm text-muted-foreground">This address is not a page for this machine role.</p>
+      <p className="text-sm text-muted-foreground">{docs ? "There is no docs page at this address." : "This address is not a page for this machine role."}</p>
       <Button asChild size="lg">
-        <a href="/source/overview" onClick={followLink}>
-          Go to Source overview
-        </a>
+        {docs ? (
+          <a href="/docs/">Go to the docs</a>
+        ) : (
+          <a href="/source/overview" onClick={followLink}>
+            Go to Source overview
+          </a>
+        )}
       </Button>
     </main>
   );
+}
+
+/**
+ * index.html's title ("Canonfig", or the demo build's longer one), kept on <html> the first time this module runs.
+ * Fast Refresh re-runs the module in dev after pages have renamed the tab, so re-reading document.title would
+ * stack page names ("Overview | Overview | Canonfig").
+ */
+const SITE_TITLE = (document.documentElement.dataset.siteTitle ??= document.title);
+
+/** The page's name for the tab and history entry: its sidebar label, so two open tabs or Back's menu tell pages apart. */
+function pageTitle(route: AppRoute): string {
+  if (route.kind === "setup") return "Setup";
+  if (route.kind === "workspace") {
+    const item = navItem(route.role, route.view);
+    if (item) return item.label;
+  }
+  return "Page not found";
 }
 
 export function WorkspaceApp({ route }: { route: AppRoute }) {
   const role = route.kind === "workspace" ? route.role : route.kind;
   // Setup belongs to this role session. Changing pages keeps demo edits; changing roles starts fresh.
   const [session, setSession] = useState<{ role: typeof role; setup: Setup | null }>({ role, setup: null });
+  const title = `${pageTitle(route)} | ${SITE_TITLE}`;
+  useEffect(() => {
+    document.title = title;
+  }, [title]);
   if (session.role !== role) {
     setSession({ role, setup: null });
     return null;

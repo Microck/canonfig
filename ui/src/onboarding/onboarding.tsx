@@ -518,10 +518,14 @@ function Wizard({
     event.preventDefault();
     if (busy || done) return;
     if (blocked) {
+      const form = event.currentTarget;
       // Errors already on screen shake once, so a repeated Continue visibly registers.
       // Errors this press reveals drop in on their own (field-error-in); nothing to shake yet.
-      if (!reduced) for (const error of event.currentTarget.querySelectorAll("[data-field-error]")) error.animate(SHAKE, { duration: 300, easing: SNAP_EASING });
-      onBlocked?.();
+      if (!reduced) for (const error of form.querySelectorAll("[data-field-error]")) error.animate(SHAKE, { duration: 300, easing: SNAP_EASING });
+      // Render the errors now, then move focus to the first field that needs fixing, so keyboard and screen
+      // reader users land on it and hear its error (aria-describedby) instead of staying on Continue.
+      flushSync(() => onBlocked?.());
+      form.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
     } else if (last) onFinish();
     else go(step + 1);
   };
@@ -1095,11 +1099,11 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
                 </div>
                 <Mono className="mt-1 block text-foreground">ED25519 SHA256:Jx7qL2c9…vR0wPq4sE</Mono>
                 <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-2.5 sm:min-h-10">
-                  <Checkbox checked={trusted} onCheckedChange={(c) => setTrusted(c === true)} aria-invalid={!!shown("trusted")} />
+                  <Checkbox checked={trusted} onCheckedChange={(c) => setTrusted(c === true)} aria-invalid={!!shown("trusted")} aria-describedby={shown("trusted") ? "ob-trusted-error" : undefined} />
                   This matches atlas
                 </label>
               </div>
-              {shown("trusted") && <FieldError>{shown("trusted")}</FieldError>}
+              {shown("trusted") && <FieldError id="ob-trusted-error">{shown("trusted")}</FieldError>}
               <Collapsible open={advanced} onOpenChange={setAdvanced}>
                 <DisclosureTrigger>Advanced</DisclosureTrigger>
                 <CollapsibleContent className="mt-3">

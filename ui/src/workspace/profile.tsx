@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { toast } from "sonner";
 import { CaretRight, Plus, Sparkle, X } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, removeKeepingFocus } from "@/lib/utils";
 import { workspaceHref } from "./routes";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -631,6 +631,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
               action={
                 <Button
                   type="button"
+                  id="res-add-key"
                   variant="ghost"
                   size="xs"
                   onClick={() => {
@@ -685,7 +686,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
                       spellCheck={false}
                       className="h-7 font-mono text-sm"
                     />
-                    <Button type="button" variant="ghost" size="icon-xs" className="mt-0.5 text-faint" aria-label={`Remove key ${r.name || i + 1}`} onClick={() => updateRows(rows.filter((x) => x.id !== r.id))}>
+                    <Button type="button" variant="ghost" size="icon-xs" className="mt-0.5 text-faint" data-remove="config-keys" aria-label={`Remove key ${r.name || i + 1}`} onClick={(e) => removeKeepingFocus(e.currentTarget, () => updateRows(rows.filter((x) => x.id !== r.id)), "res-add-key")}>
                       <X />
                     </Button>
                   </div>

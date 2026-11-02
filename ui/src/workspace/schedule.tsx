@@ -97,12 +97,15 @@ export function ScheduleFields({
   /** Offer "use the profile's default" first, labelled with what that default is. */
   defaultLabel?: string;
 }) {
+  // A half-typed time ("10:") is not a mistake yet, so its error waits until the field loses focus. Both forms
+  // disable Save while the schedule is incomplete, so no Save attempt has to reveal it sooner.
+  const [timeBlurred, setTimeBlurred] = useState(false);
   const options = defaultLabel ? [{ value: "default" as const, label: `Same as the Source (${defaultLabel})` }, ...OPTIONS] : OPTIONS;
   const shownDays = daysOf(value);
   const custom = value.cadence !== "default";
   // Both problems can hold at once, so each shows under its own control.
   const daysError = value.cadence === "days" && value.days.length === 0 ? DAYS_ERROR : null;
-  const timeError = custom && !TIME.test(value.time) ? TIME_ERROR : null;
+  const timeError = timeBlurred && custom && !TIME.test(value.time) ? TIME_ERROR : null;
   const toggle = (d: Day) => {
     const next = shownDays.includes(d) ? shownDays.filter((x) => x !== d) : WEEK.filter((x) => x === d || shownDays.includes(x));
     // Changing weekdays turns it into a custom set; selecting all seven uses the daily cadence.
@@ -159,6 +162,7 @@ export function ScheduleFields({
                 id={`${idPrefix}-time`}
                 value={value.time}
                 onChange={(time) => onChange({ ...value, time })}
+                onBlur={() => setTimeBlurred(true)}
                 invalid={!!timeError}
                 describedBy={timeError ? `${idPrefix}-time-note` : undefined}
               />
@@ -182,7 +186,7 @@ const SLOTS = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).
  * choices with one click. ArrowDown moves into the list, arrows walk it, Enter picks,
  * Escape closes and keeps focus in the field.
  */
-export function TimeField({ id, value, onChange, invalid, describedBy }: { id: string; value: string; onChange: (time: string) => void; invalid: boolean; describedBy?: string }) {
+export function TimeField({ id, value, onChange, onBlur, invalid, describedBy }: { id: string; value: string; onChange: (time: string) => void; onBlur?: () => void; invalid: boolean; describedBy?: string }) {
   const [open, setOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -212,6 +216,8 @@ export function TimeField({ id, value, onChange, invalid, describedBy }: { id: s
           aria-invalid={invalid || undefined}
           aria-describedby={describedBy}
           onChange={(e) => onChange(e.target.value)}
+          // Moving into the field's own slot list is still picking a time, not leaving the field.
+          onBlur={(e) => !listRef.current?.contains(e.relatedTarget) && onBlur?.()}
           onClick={() => setOpen(true)}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {

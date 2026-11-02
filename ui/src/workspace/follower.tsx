@@ -2,7 +2,7 @@
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
 import { ArrowRight, Check, DotsThree, HourglassMedium, Key, Plus, WarningCircle, X } from "@/components/icons";
-import { cn } from "@/lib/utils";
+import { cn, removeKeepingFocus } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -461,19 +461,24 @@ export function FollowerOverview() {
             </section>
             <section data-tour="follower-runs">
               <SectionLabel>Recent updates</SectionLabel>
-              <ol className="border-t border-border text-base">
-                <RowPresence>
-                  {ws.runs.map((r) => (
-                    <AnimatedRow key={r.n} as="li">
-                      <div className="flex h-8 items-center gap-2 border-b border-border/70 px-1">
-                        <span className="w-8 font-mono text-xs text-faint tabular-nums">#{r.n}</span>
-                        <span className={cn("truncate", r.tone === "bad" && "text-bad", r.tone === "muted" && "text-muted-foreground")}>{r.what}</span>
-                        <span className="ml-auto shrink-0 pl-2 text-sm text-faint tabular-nums">{r.when}</span>
-                      </div>
-                    </AnimatedRow>
-                  ))}
-                </RowPresence>
-              </ol>
+              {/* A newly enrolled follower has no runs yet; say so rather than leave a bare rule under the label. */}
+              {ws.runs.length === 0 ? (
+                <p className="border-t border-border px-1 py-2 text-sm text-muted-foreground">No updates yet. Each update this machine applies shows here.</p>
+              ) : (
+                <ol className="border-t border-border text-base">
+                  <RowPresence>
+                    {ws.runs.map((r) => (
+                      <AnimatedRow key={r.n} as="li">
+                        <div className="flex h-8 items-center gap-2 border-b border-border/70 px-1">
+                          <span className="w-8 font-mono text-xs text-faint tabular-nums">#{r.n}</span>
+                          <span className={cn("truncate", r.tone === "bad" && "text-bad", r.tone === "muted" && "text-muted-foreground")}>{r.what}</span>
+                          <span className="ml-auto shrink-0 pl-2 text-sm text-faint tabular-nums">{r.when}</span>
+                        </div>
+                      </AnimatedRow>
+                    ))}
+                  </RowPresence>
+                </ol>
+              )}
             </section>
           </aside>
         </div>
@@ -964,6 +969,7 @@ function OverlayEditor({
   const [o, setO] = useState(initial);
   const [newKey, setNewKey] = useState("");
   const [tried, setTried] = useState(false);
+  const [addTried, setAddTried] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const declared = configKeysFor(o.resource);
   const local = LOCAL_VALUES[o.resource] ?? {};
@@ -978,10 +984,18 @@ function OverlayEditor({
   const typedKey = newKey.trim();
   // A key path is dot-separated parts, so `.a`, `a.` and `a..b` each name an empty part.
   const newKeyError = typedKey !== "" && typedKey.split(".").some((part) => part.trim() === "") ? "Use dots only between parts of the path, like env.EDITOR." : null;
+  // Like Writable paths (forms.md, Validation 3): the error waits for Add, so "env." mid-word isn't flagged.
+  const shownKeyError = addTried ? newKeyError : null;
   const addKey = () => {
-    if (!typedKey || newKeyError) return;
+    if (!typedKey) return;
+    setAddTried(true);
+    if (newKeyError) {
+      document.getElementById("ov-key")?.focus();
+      return;
+    }
     if (!o.keys.includes(typedKey) && !kept.includes(typedKey)) setO({ ...o, keys: [...o.keys, typedKey] });
     setNewKey("");
+    setAddTried(false);
   };
   // Only a new panel can pick a file; its picks start empty because existing keys stay kept anyway.
   const pickResource = (id: string) => {
@@ -1011,7 +1025,7 @@ function OverlayEditor({
               variant="ghost"
               size="sm"
               disabled={!isNew && !dirty && typedKey === ""}
-              onClick={isNew ? () => leaveWithoutAsking(onClose) : () => (setO(existing ?? initial), setNewKey(""), setTried(false))}
+              onClick={isNew ? () => leaveWithoutAsking(onClose) : () => (setO(existing ?? initial), setNewKey(""), setAddTried(false), setTried(false))}
             >
               {isNew ? "Cancel" : "Discard"}
             </Button>
@@ -1083,21 +1097,21 @@ function OverlayEditor({
                 value={newKey}
                 onChange={(e) => setNewKey(e.target.value)}
                 aria-label="Another key path"
-                aria-invalid={newKeyError ? true : undefined}
-                aria-describedby={newKeyError ? "ov-key-note" : undefined}
+                aria-invalid={shownKeyError ? true : undefined}
+                aria-describedby={shownKeyError ? "ov-key-note" : undefined}
                 placeholder="Another key, like approval_policy"
                 autoComplete="off"
                 spellCheck={false}
                 className="h-[28px] font-mono text-sm"
               />
-              <Button type="submit" variant="outline" size="sm" disabled={!typedKey || newKeyError !== null}>
+              <Button type="submit" variant="outline" size="sm" disabled={!typedKey}>
                 <Plus /> Add
               </Button>
             </form>
-            {newKeyError && (
+            {shownKeyError && (
               <p id="ov-key-note" role="alert" className="mt-1 flex items-center gap-1.5 text-sm text-bad">
                 <WarningCircle className="size-3.5 shrink-0" />
-                {newKeyError}
+                {shownKeyError}
               </p>
             )}
           </div>
@@ -1107,7 +1121,7 @@ function OverlayEditor({
             {o.keys.map((k) => (
               <span key={k} className="inline-flex min-h-7 max-w-full items-center gap-1 rounded border border-border pr-0.5 pl-1.5 font-mono text-xs break-all text-foreground">
                 {k}
-                <button type="button" aria-label={`Stop keeping ${k}`} className="flex size-6 shrink-0 items-center justify-center rounded text-faint outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60" onClick={() => toggle(k, false)}>
+                <button type="button" data-remove="kept-keys" aria-label={`Stop keeping ${k}`} className="flex size-6 shrink-0 items-center justify-center rounded text-faint outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60" onClick={(e) => removeKeepingFocus(e.currentTarget, () => toggle(k, false), "ov-key")}>
                   <X className="size-3" />
                 </button>
               </span>

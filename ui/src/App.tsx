@@ -1,6 +1,8 @@
 // The GUI currently uses simulated machine data and actions in both builds; DEMO adds the demo panel. ?tour=1 replays the tour.
+import { Component, type ReactNode } from "react";
 import { SkulletProvider } from "skullet/react";
 import type { SkulletTheme } from "skullet";
+import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DEMO } from "@/shared/data";
@@ -22,6 +24,34 @@ const SKELETON_THEME: SkulletTheme = {
   radius: "var(--radius-sm)",
 };
 
+/**
+ * Catches a page that throws while rendering, most often a lazily loaded chunk (setup, Follower screens, the
+ * machine map) whose file is gone because Canonfig was updated while this tab stayed open. Without it React
+ * unmounts the whole app and leaves an empty window. A reload fetches the current files.
+ */
+class PageErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <main className="flex min-h-svh flex-col items-center justify-center gap-4 bg-canvas px-6 text-center text-foreground">
+        <h1 className="text-xl font-semibold">This page couldn't load</h1>
+        <p className="max-w-sm text-sm text-pretty text-muted-foreground">
+          Part of Canonfig failed to load, often because it was updated while this tab was open. Reload the page to get the current version.
+        </p>
+        <Button size="lg" onClick={() => window.location.reload()}>
+          Reload
+        </Button>
+      </main>
+    );
+  }
+}
+
 export default function App() {
   const route = useAppRoute();
 
@@ -29,7 +59,9 @@ export default function App() {
     <SkulletProvider mode="dark" theme={SKELETON_THEME}>
       <TooltipProvider delayDuration={250}>
         <div className="dark min-h-svh">
-          <WorkspaceApp route={route} />
+          <PageErrorBoundary>
+            <WorkspaceApp route={route} />
+          </PageErrorBoundary>
         </div>
         {/* Bottom-right, the usual place for notifications, 8px in like the main panel and the tour offer card. While the tour offer card occupies that corner it
             publishes its height as --toast-lift (guide.tsx), so toasts sit above it and drop back down once it
