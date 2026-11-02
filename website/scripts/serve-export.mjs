@@ -11,7 +11,7 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
-import { extname, join, normalize, sep } from "node:path";
+import { extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -65,8 +65,15 @@ createServer(async (request, response) => {
     notFound(response);
     return;
   }
-  // normalize() collapses "..", so a request cannot leave out/.
-  const path = normalize(join(outDir, decodeURIComponent(pathname.slice(basePath.length))));
+  let relative;
+  try {
+    relative = decodeURIComponent(pathname.slice(basePath.length));
+  } catch {
+    notFound(response); // malformed percent-encoding
+    return;
+  }
+  // join() normalizes "..", and a decoded "%2F.." could still climb, so check the result stays in out/.
+  const path = join(outDir, relative);
   if (path !== outDir && !path.startsWith(`${outDir}${sep}`)) {
     notFound(response);
     return;
