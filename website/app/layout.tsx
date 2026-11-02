@@ -5,7 +5,7 @@ import "fumadocs-ui/style.css";
 import "./global.css";
 
 import { baseOptions } from "@/lib/layout";
-import { siteUrl } from "@/lib/site";
+import { basePath, siteUrl } from "@/lib/site";
 import { source } from "@/lib/source";
 
 export const metadata: Metadata = {
@@ -35,7 +35,12 @@ export default function RootLayout({
         <a className="skip-link" href="#main-content">
           Skip to content
         </a>
-        <RootProvider theme={{ enabled: false }}>
+        <RootProvider
+          theme={{ enabled: false }}
+          // Next does not add the base path to fetch() URLs, so the static
+          // search index path spells it out (see app/api/search/route.ts).
+          search={{ options: { type: "static", api: `${basePath}/api/search` } }}
+        >
           <DocsLayout tree={source.pageTree} {...baseOptions}>
             {children}
           </DocsLayout>
