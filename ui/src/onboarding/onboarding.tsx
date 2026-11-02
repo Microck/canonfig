@@ -1,8 +1,8 @@
 // First-run flow for a simulated, unconfigured machine.
 // `onDone` returns the setup choices that seed the new workspace role.
-import { useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
-import { AnimatePresence, LayoutGroup, motion, useIsPresent, usePresenceData, useReducedMotion, type Variants } from "motion/react";
+import { AnimatePresence, cubicBezier, LayoutGroup, motion, useIsPresent, usePresenceData, useReducedMotion, type Variants } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, Circle, FileArrowUp, RadioButton } from "@/components/icons";
 import { cn, riseIn, SNAP, SNAP_EASING } from "@/lib/utils";
 import { DitherShader, fillStyle } from "@/lib/dither";
@@ -20,17 +20,116 @@ import { DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_
 
 // Rings drifting inward toward the centre: many machines converging on one.
 // At speed 1 a ring takes about 20 seconds to move one ring inward.
+// The setup job (SetupBackdrop) drives four uniforms, all 0 while nothing runs:
+//   progress: the job's share done. The rings travel two rings inward over the whole job,
+//     so they close in on the card in step with its progress bar, and stop when it stops.
+//     Two whole rings, so the pattern after a job matches the one before.
+//   energy: 1 while the job runs. The clear space around the card shrinks so the rings come
+//     closer, and they gain green as progress grows.
+//   ripple: 1 the moment a step completes, falling to 0. One lit ring runs out from the card,
+//     fading as it goes, so each tick of the list shows in the room around it.
+//   settled: 1 once the job succeeded. Rings turn fully green and wobble half as much.
 const CONVERGE_FIELD = /* glsl */ `
 float field(vec2 uv, vec2 res, float t) {
   vec2 p = (uv - vec2(0.5, 0.48)) * vec2(res.x / res.y, 1.0);
   float r = length(p);
-  float wobble = (fbm(p * 1.3 + vec2(t * 0.02, -t * 0.015)) - 0.5) * 0.16;
-  float band = abs(fract((r + wobble) * 5.0 + t * 0.05) - 0.5) * 2.0;
+  float wobble = (fbm(p * 1.3 + vec2(t * 0.02, -t * 0.015)) - 0.5) * 0.16 * (1.0 - 0.5 * settled);
+  float band = abs(fract((r + wobble) * 5.0 + t * 0.05 + progress * 2.0) - 0.5) * 2.0;
   float ring = smoothstep(0.78, 1.0, band);
-  float halo = smoothstep(0.34, 0.95, r);
-  return clamp(ring * halo * 0.7 + halo * 0.05, 0.0, 1.0);
+  float halo = smoothstep(0.34 - 0.1 * energy, 0.95, r);
+  float level = 0.7 + 0.2 * energy * progress + 0.3 * settled;
+  float front = (0.3 + 0.9 * (1.0 - ripple) - r) / 0.05;
+  float wave = 0.6 * ripple * ripple * exp(-front * front);
+  return clamp(ring * halo * level + halo * 0.05 + wave, 0.0, 1.0);
 }
 `;
+
+/** The simulated setup job: the wizard shows it as a progress bar and a list, the backdrop as motion. */
+interface Job {
+  /** 0 to 100. */
+  progress: number;
+  /** Items in the wizard's list; one completes every 100 / steps of progress (RunList). */
+  steps: number;
+  done: boolean;
+}
+
+type JobUniforms = { energy: number; progress: number; ripple: number; settled: number };
+const JOB_IDLE: JobUniforms = { energy: 0, progress: 0, ripple: 0, settled: 0 };
+// Reduced motion: one still frame per phase, held while progress ticks.
+const JOB_STILL = {
+  running: { energy: 1, progress: 0.6, ripple: 0, settled: 0 },
+  done: { energy: 0, progress: 1, ripple: 0, settled: 1 },
+} satisfies Record<string, JobUniforms>;
+// Energy comes up in 400ms as the job starts; a step's ripple crosses the screen in 600ms,
+// inside the ~600ms between steps; after success the rings settle over 900ms.
+const ENERGY_MS = 400;
+const RIPPLE_MS = 600;
+const SETTLE_MS = 900;
+const BACKDROP_FPS = 15;
+const snap = cubicBezier(...SNAP);
+
+/**
+ * The dithered rings behind every screen of setup, choice and wizard alike. They drift calmly
+ * until a job runs, then follow it (see CONVERGE_FIELD). The job's uniforms update at the
+ * shader's own 15fps, only while something moves: the job, a ripple or the settle.
+ * Reduced motion: one still frame per phase (idle, running, done).
+ */
+function SetupBackdrop({ job }: { job: Job | null }) {
+  const reduced = useReducedMotion();
+  const [live, setLive] = useState(JOB_IDLE);
+  // When the job started, its latest step completed and it finished (performance.now() ms), and how many steps are done.
+  const marks = useRef({ start: 0, step: 0, done: 0, completed: 0 });
+  useEffect(() => {
+    if (!job || reduced) return;
+    const m = marks.current;
+    const now = performance.now();
+    m.start ||= now;
+    const completed = Math.floor((job.progress / 100) * job.steps);
+    if (completed > m.completed) {
+      m.completed = completed;
+      m.step = now;
+    }
+    if (job.done) m.done ||= now;
+    let frame = 0;
+    let drawn = -Infinity;
+    const tick = (t: number) => {
+      const settle = m.done ? Math.min(1, (t - m.done) / SETTLE_MS) : 0;
+      const ripple = m.step ? Math.max(0, 1 - (t - m.step) / RIPPLE_MS) : 0;
+      const moving = !job.done || settle < 1 || ripple > 0;
+      // Throttled to the shader's frame rate, but the last frame always lands, so the rings rest exactly settled.
+      if (t - drawn >= 1000 / BACKDROP_FPS || !moving) {
+        drawn = t;
+        setLive({
+          energy: m.done ? 1 - snap(settle) : snap(Math.min(1, (t - m.start) / ENERGY_MS)),
+          progress: job.progress / 100,
+          ripple,
+          settled: snap(settle),
+        });
+      }
+      if (moving) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [job, reduced]);
+
+  const uniforms = !job ? JOB_IDLE : reduced ? JOB_STILL[job.done ? "done" : "running"] : live;
+  return (
+    <>
+      <DitherShader
+        field={CONVERGE_FIELD}
+        uniforms={uniforms}
+        palette={["--dither-paper", "--dither-color-grey", "--dither-color-green"]}
+        cell={3}
+        fps={BACKDROP_FPS}
+        // Livelier while the job runs, slower once it settled.
+        speed={(1 + 2 * uniforms.energy) * (1 - 0.5 * uniforms.settled)}
+        stillTime={6}
+        className="absolute inset-0 opacity-60"
+      />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_48%_52%_at_50%_48%,var(--background)_45%,transparent_100%)]" />
+    </>
+  );
+}
 
 type Role = "source" | "follower";
 type Stage = "choose" | Role;
@@ -69,25 +168,20 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
     setReturnedFrom(from);
     setStage("choose");
   };
+  // Lives here, not in the wizard, because the backdrop follows it too. One job per visit:
+  // the wizard can't be left while it runs (Back is disabled) or once it's done (hidden).
+  const [job, setJob] = useState<Job | null>(null);
+  const run = (ms: number, steps: number) => {
+    setJob({ progress: 0, steps, done: false });
+    simulate(
+      ms,
+      (progress) => setJob({ progress, steps, done: false }),
+      () => setJob({ progress: 100, steps, done: true }),
+    );
+  };
 
   return (
-    <OnboardingShell
-      hostname={machine.hostname}
-      // Drifts calmly behind every screen of setup, choice and wizard alike. Still under reduced motion.
-      backdrop={
-        <>
-          <DitherShader
-            field={CONVERGE_FIELD}
-            palette={["--dither-paper", "--dither-color-grey", "--dither-color-green"]}
-            cell={3}
-            fps={15}
-            stillTime={6}
-            className="absolute inset-0 opacity-60"
-          />
-          <div className="absolute inset-0 bg-[radial-gradient(ellipse_48%_52%_at_50%_48%,var(--background)_45%,transparent_100%)]" />
-        </>
-      }
-    >
+    <OnboardingShell hostname={machine.hostname} backdrop={<SetupBackdrop job={job} />}>
       {/* md:pb-44 clears the fixed demo switcher (215px wide and about 70px tall, 12px from
           the left and 80px above the bottom) at the end of the scroll, where the cards can
           reach under it. From xl the cards start right of it, so normal padding returns and a
@@ -99,8 +193,8 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
             `custom` tells the leaving choice which card was picked. */}
         <AnimatePresence mode="popLayout" custom={stage}>
           {stage === "choose" && <Choose key="choose" returnedFrom={returnedFrom} onPick={setStage} />}
-          {stage === "source" && <SourceWizard key="source" onBack={() => back("source")} onDone={onDone} />}
-          {stage === "follower" && <FollowerWizard key="follower" onBack={() => back("follower")} onDone={onDone} />}
+          {stage === "source" && <SourceWizard key="source" job={job} onRun={run} onBack={() => back("source")} onDone={onDone} />}
+          {stage === "follower" && <FollowerWizard key="follower" job={job} onRun={run} onBack={() => back("follower")} onDone={onDone} />}
         </AnimatePresence>
       </div>
     </OnboardingShell>
@@ -586,7 +680,15 @@ function Finished({ title, children, next, action, onOpen }: { title: string; ch
 /* Source init                                                         */
 /* ------------------------------------------------------------------ */
 
-function SourceWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: SourceSetup) => void }) {
+/** A role's wizard. `job` is the setup job once it starts (Onboarding owns it); `onRun` starts it with the list's length. */
+interface WizardProps<S extends Setup> {
+  job: Job | null;
+  onRun: (ms: number, steps: number) => void;
+  onBack: () => void;
+  onDone: (setup: S) => void;
+}
+
+function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) {
   const [step, setStep] = useState(0);
   const [tried, setTried] = useState(false);
   const [name, setName] = useState(profile.name);
@@ -595,8 +697,8 @@ function SourceWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: 
   const [service, setService] = useState<"service" | "manual">("service");
   const [port, setPort] = useState(String(DEFAULT_PORT));
   const [advanced, setAdvanced] = useState(false);
-  const [progress, setProgress] = useState<number | null>(null);
-  const [done, setDone] = useState(false);
+  const progress = job?.progress ?? null;
+  const done = !!job?.done;
 
   // Validated as typed, never rewritten: stripping characters would turn "1.5" into a different port.
   const portNumber = Number(port);
@@ -633,10 +735,7 @@ function SourceWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: 
         if (step === 1) setAdvanced(true);
       }}
       busy={progress !== null && !done}
-      onFinish={() => {
-        setProgress(0);
-        simulate(2600, setProgress, () => setDone(true));
-      }}
+      onFinish={() => onRun(2600, creates.length)}
       done={
         done ? (
           <Finished
@@ -769,7 +868,7 @@ function SourceWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: 
 /* Follower enroll                                                     */
 /* ------------------------------------------------------------------ */
 
-function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup: FollowerSetup) => void }) {
+function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetup>) {
   const [step, setStep] = useState(0);
   const [tried, setTried] = useState(false);
   const [invite, setInvite] = useState<string | null>(null);
@@ -785,8 +884,8 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
   const [name, setName] = useState("laptop");
   const [profileId, setProfileId] = useState(profile.id);
   const [useSchedule, setUseSchedule] = useState(true);
-  const [progress, setProgress] = useState<number | null>(null);
-  const [done, setDone] = useState(false);
+  const progress = job?.progress ?? null;
+  const done = !!job?.done;
 
   const steps = [
     ...(tunnel ? ["Opening the SSH tunnel to atlas"] : []),
@@ -840,10 +939,7 @@ function FollowerWizard({ onBack, onDone }: { onBack: () => void; onDone: (setup
         if (errors.hostKey) setAdvanced(true);
       }}
       busy={progress !== null && !done}
-      onFinish={() => {
-        setProgress(0);
-        simulate(3000, setProgress, () => setDone(true));
-      }}
+      onFinish={() => onRun(3000, steps.length)}
       done={
         done ? (
           <Finished
