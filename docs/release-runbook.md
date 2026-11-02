@@ -138,8 +138,10 @@ Configure once:
    It carries no `.nojekyll` either, because
    [a custom workflow deploys its artifact as built](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site#publishing-with-a-custom-github-actions-workflow)
    and Jekyll never runs.
-3. In Cloudflare DNS for `micr.dev`, add a `CNAME` record `canonfig` pointing
-   to `microck.github.io` with proxy status DNS only (grey cloud), so GitHub can
+3. The `micr.dev` zone is hosted on Netlify DNS (nameservers
+   `dns1.p04.nsone.net` to `dns4.p04.nsone.net`). Change the existing record
+   `canonfig CNAME 2caa8cf503a6fd37.vercel-dns-017.com` (the documentation's
+   former Vercel host) to `canonfig CNAME microck.github.io`, so GitHub can
    issue the HTTPS certificate.
 
 ## Failure handling

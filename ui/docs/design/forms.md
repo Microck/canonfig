@@ -89,7 +89,7 @@ useEffect(() => { window.onbeforeunload = () => "Unsaved changes" }, []);
 
 ## Secrets and credentials
 
-Canonfig runs under SOC 2 and ISO 27001 controls; a credential the GUI shows or echoes is a credential leaked into screenshots, recordings and logs.
+A credential the GUI shows or echoes is a credential leaked into screenshots, recordings and logs.
 
 - A credential (password, token, API key, passphrase) gets its own `Input type="password"` with `autoComplete="off"` and `data-1p-ignore` (Set a shared secret, `source.tsx`). Never accept one inside a URL, command or free-text field; split it out.
 - Never prefill, display or copy a stored credential. Lists show secret names and update times only; "Replace value…" starts from an empty field.
