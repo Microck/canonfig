@@ -50,15 +50,17 @@ The URL selects the role, screen and view tab. Links can be opened directly or r
 | --- | --- | --- |
 | Overview | `/source/overview` | `/follower/overview` |
 | Profile items | `/source/profile` | |
+| Profile harnesses | `/source/profile/harnesses` | |
 | Profile groups | `/source/profile/groups` | |
 | Profile defaults | `/source/profile/defaults` | |
 | Machine map | `/source/machines` | `/follower/machines` |
 | Machine list | `/source/machines/list` | `/follower/machines/list` |
 | Revisions | `/source/revisions` | |
+| Backups | `/source/backups` | `/follower/backups` |
 | Secrets | `/source/secrets` | `/follower/secrets` |
 | Sync | | `/follower/sync` |
 | Schedule | | `/follower/schedule` |
-| Local settings | | `/follower/local-settings` |
+| Local settings (`~/.canonfig/local/`, harness exclusions, backups) | | `/follower/local-settings` |
 | Service | `/source/settings/service` | |
 | Agent policy | `/source/settings/agent` | `/follower/settings/agent` |
 | Installers | `/source/settings/installers` | |
@@ -95,7 +97,7 @@ Below 768px, a navigation sheet replaces the sidebar. It traps focus and closes 
 
 Profile settings edits include unfinished key rows: adding a blank key enables Save and Discard. Save reports empty or duplicate key names without changing the saved item, focuses the first invalid field, and associates each key error with its input. Discard restores the saved fields and key rows.
 
-Leaving any form with an unsaved draft asks before discarding it: the item editor, Profile defaults, new group, Agent policy, Source secret, Follower schedule, local settings and profile choice. This covers closing a panel, choosing another row, in-app navigation and Demo panel role changes, but not browser Back/Forward or reload. Each form's own Save, Cancel or remove never asks.
+Leaving any form with an unsaved draft asks before discarding it: the item editor, Profile defaults, new group, Agent policy, Source secret, Follower schedule and the local item editor. This covers closing a panel, choosing another row, in-app navigation and Demo panel role changes, but not browser Back/Forward or reload. Each form's own Save, Cancel, Discard or remove never asks.
 
 Detail panels fill the screen below 768px, focus their close button on opening and trap Tab/Shift+Tab while the page behind is inert. Narrow screens start with the list, not an automatically opened panel; selecting a row or following an explicit `?focus` link opens details. Desktop panels remain non-modal beside the list, with default selection retained in Sync. Closing a panel restores its opener when available. The desktop resize edge takes keyboard focus: arrow keys resize in 16px steps, and Home/End jump to the minimum and maximum width. Machine map links are reachable with Tab and show the same explanation on focus as on hover; Escape hides it.
 

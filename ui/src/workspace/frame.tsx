@@ -39,7 +39,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
 import { AnimatedNumber, Logo, StatusMark } from "@/shared/shared";
-import { DEMO, PLAIN, machine } from "@/shared/data";
+import { APP_VERSION, DEMO, PLAIN, machine } from "@/shared/data";
 import { DemoSwitcher } from "@/shared/demo-switcher";
 import { useSharedState, useWorkspace, type View } from "./store";
 import { copy } from "./kit";
@@ -146,7 +146,7 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
           // A stopped machine cannot apply, so it must not advertise a ready revision.
           sync: ws.phase !== "done" && !ws.unenrolled ? <Count tone="warn" value={1} label={`Revision ${ws.targetRevision} ready to apply`} /> : undefined,
           // Like the Source's counts, a badge only appears when there is something to count.
-          overlays: ws.overlays.length > 0 ? <Count value={ws.overlays.length} label={`${ws.overlays.length} files with keys kept here`} /> : undefined,
+          local: ws.local.length > 0 ? <Count value={ws.local.length} label={`${ws.local.length} items in the local folder`} /> : undefined,
         };
 
   return (
@@ -183,13 +183,13 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
           <DropdownMenuLabel className="grid gap-0.5 font-normal">
             <span className="text-sm text-muted-foreground">{role === "source" ? "The Source: you edit here" : "Gets its setup from atlas"}</span>
             <span className="text-xs text-faint">
-              Canonfig {machine.version} on {role === "source" ? "Linux" : "macOS"}
+              Canonfig {APP_VERSION} on {role === "source" ? "Linux" : "macOS"}
             </span>
           </DropdownMenuLabel>
           {role === "source" ? (
             <>
-              <DropdownMenuItem onSelect={() => copy(ws.profileFile, "Profile path copied")}>
-                Copy profile file path
+              <DropdownMenuItem onSelect={() => copy(machine.folder, "Folder path copied")}>
+                Copy Canonfig folder path
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => copy(ws.endpoint, "Endpoint copied")}>Copy source endpoint</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => navigateFromMenu("service")}>Source service settings</DropdownMenuItem>
@@ -339,7 +339,7 @@ export function Palette() {
               </CommandItem>
               <CommandItem onSelect={() => run(() => ws.go("profile", "new"))}>
                 <FileCode className="text-muted-foreground" />
-                Add to the profile
+                Add to the folder
               </CommandItem>
             </>
           ) : (
@@ -348,9 +348,9 @@ export function Palette() {
                 <ArrowsClockwise className="text-muted-foreground" />
                 Review what will change
               </CommandItem>
-              <CommandItem onSelect={() => run(() => ws.go("overlays", "new"))}>
+              <CommandItem onSelect={() => run(() => ws.go("local", "new"))}>
                 <Stack className="text-muted-foreground" />
-                Keep a key on this machine
+                Add a local item
               </CommandItem>
             </>
           )}

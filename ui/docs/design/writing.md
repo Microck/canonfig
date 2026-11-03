@@ -12,7 +12,7 @@ The GUI talks to one person about their machines, in plain words. Match the exis
 
 ## Words
 
-- Use the plain word from `GLOSSARY` (`shared.tsx`): "Source", "follower", "item", "revision", "local setting", "local edit", "needs you". The Canonfig term ("Follower Drift") lives in the `Term` tooltip, not the label.
+- Use the plain word from `GLOSSARY` (`shared.tsx`): "Source", "follower", "item", "revision", "Canonfig folder", "local folder", "backup", "local edit", "needs you". The Canonfig term ("Follower Drift") lives in the `Term` tooltip, not the label.
 - Address the person as "you" and their machine as "this machine"; name other machines by hostname ("atlas"). Never "the user", never "we".
 - Contractions are normal: "can't", "isn't", "aren't saved".
 - Times in 24-hour form ("09:00", "today at 08:45"); counts as digits.

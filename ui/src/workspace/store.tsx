@@ -14,21 +14,27 @@ import {
 import { toast } from "sonner";
 import {
   DEMO,
+  HARNESS_NAMES,
   followers as seedFollowers,
-  configKeysFor,
   followerSelf,
-  machine,
+  harnesses as seedHarnesses,
+  itemPath,
   profile,
+  machine,
   resources as seedResources,
   revisions as seedRevisions,
   secrets as seedSecrets,
+  snapshots as seedSnapshots,
   type Follower,
+  type Harness,
+  type HarnessId,
+  type ItemCategory,
+  type LocalItem,
   type Resource,
-  type ResourceKind,
   type Revision,
+  type Snapshot,
 } from "@/shared/data";
 import type { Setup } from "@/onboarding/onboarding";
-import { profilePlan } from "./profiles";
 import { workspaceHref, type MachinesMode, type Navigate, type NavigateOptions, type ProfileTab, type WorkspaceRole, type WorkspaceRoute } from "./routes";
 
 export type SourceView =
@@ -36,6 +42,7 @@ export type SourceView =
   | "profile"
   | "machines"
   | "revisions"
+  | "backups"
   | "secrets"
   | "service"
   | "agent"
@@ -43,47 +50,56 @@ export type SourceView =
   | "setup"
   | "doctor";
 
-export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "overlays" | "secrets" | "tunnel" | "agent" | "doctor" | "machine";
+export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "local" | "backups" | "secrets" | "tunnel" | "agent" | "doctor" | "machine";
 
 export type View = SourceView | FollowerView | "not-found";
 
-export type PlanAction = "write" | "merge" | "install" | "skip-drift" | "keep-local";
+/** What a plan step does to a harness surface: replace a file or folder, set owned keys, install a tool, or hold a drifted item. */
+export type PlanAction = "write" | "merge" | "install" | "skip-drift";
 
 export interface PlanItem {
+  /** The folder item, like `skills/code-review`. */
   resource: string;
-  kind: ResourceKind;
+  category: ItemCategory;
+  /** The main surface it writes: a harness file or folder, or the tool's command. */
   target: string;
   action: PlanAction;
   reason: string;
   /** Set once a Synchronization Run reaches this step. */
   status?: "pending" | "running" | "done";
   /**
-   * You edited this copy after Canonfig last applied it. Only such an item offers Keep my edit or
-   * Use revision; a machine that never applied anything has nothing that could have drifted.
+   * You edited this item's mirror file after Canonfig last applied it. Canonfig keeps the edit, reports it
+   * and holds what it projects from the item; a machine that never applied anything has nothing that could have drifted.
    */
   drift?: boolean;
 }
 
-/** A person's answer to Follower Drift: keep their edit, or take the revision's copy. */
-export type DriftChoice = "keep" | "canonical";
-
+/** The demo follower's plan from revision 7 to 8: the three unpublished items on the Source, gh, and one drifted skill. */
 export const FOLLOWER_PLAN: PlanItem[] = [
-  { resource: "codex-agents", kind: "file", target: "~/.codex/AGENTS.md", action: "write", reason: "Content changed in revision 8" },
-  { resource: "claude-settings", kind: "config", target: "~/.claude/settings.json", action: "merge", reason: "Sets 3 keys. env.EDITOR is kept on this machine, so it stays as it is." },
-  { resource: "gh-cli", kind: "tool", target: "gh", action: "install", reason: "Not installed yet. Runs brew install gh, then checks it starts." },
-  { resource: "claude-review-skill", kind: "skill", target: "~/.claude/skills/code-review", action: "skip-drift", drift: true, reason: "You edited SKILL.md after Canonfig applied revision 7." },
+  { resource: "rules/typescript", category: "rules", target: "~/.claude/rules/typescript.md", action: "write", reason: "Changed in revision 8. Writes it for each harness with rule files and links it from the others' instructions." },
+  { resource: "commands/ship", category: "commands", target: "~/.claude/commands/ship.md", action: "write", reason: "New in revision 8. Writes the command for Claude Code and OpenCode." },
+  { resource: "settings/claude-code", category: "settings", target: "~/.claude/settings.json", action: "merge", reason: "Sets 2 keys. Every other key in the file stays as it is." },
+  { resource: "tools/gh", category: "tools", target: "gh", action: "install", reason: "Not installed yet. Runs brew install gh, then checks it starts." },
+  {
+    resource: "skills/code-review",
+    category: "skills",
+    target: "~/.canonfig/skills/code-review/SKILL.md",
+    action: "skip-drift",
+    drift: true,
+    reason: "You edited this file after Canonfig applied revision 7. It stays as you left it, and the skill in your harnesses holds at revision 7.",
+  },
 ];
 
 /**
- * The first plan on a follower that just joined: revision 7, the one it downloaded, applied to
- * a machine Canonfig hasn't touched yet. Nothing was applied before, so nothing can have drifted.
+ * The first plan on a follower that just joined: revision 7, the one it downloaded, applied to a machine
+ * Canonfig hasn't written to yet. Each harness surface it takes over is backed up first, unless backups are off.
  */
 export const JOINED_PLAN: PlanItem[] = [
-  { resource: "claude-instructions", kind: "file", target: "~/.claude/CLAUDE.md", action: "write", reason: "Writes the copy from revision 7. Canonfig backs up the file that's there first." },
-  { resource: "codex-agents", kind: "file", target: "~/.codex/AGENTS.md", action: "write", reason: "Writes the copy from revision 7. Canonfig backs up the file that's there first." },
-  { resource: "claude-settings", kind: "config", target: "~/.claude/settings.json", action: "merge", reason: "Sets 3 keys and leaves the rest of the file as it is." },
-  { resource: "claude-review-skill", kind: "skill", target: "~/.claude/skills/code-review", action: "write", reason: "Not on this machine yet. Writes the 3 files of the skill." },
-  { resource: "gh-cli", kind: "tool", target: "gh", action: "install", reason: "Not installed yet. Runs brew install gh, then checks it starts." },
+  { resource: "instructions", category: "instructions", target: "~/.codex/AGENTS.md", action: "write", reason: "Takes over each harness's instructions file. Canonfig backs up what's there first." },
+  { resource: "skills/code-review", category: "skills", target: "~/.agents/skills/code-review", action: "write", reason: "Not on this machine yet. Writes the skill's 3 files." },
+  { resource: "mcp/context7", category: "mcp", target: "~/.claude.json", action: "merge", reason: "Adds the server to each harness's MCP settings. Only those keys change; Canonfig backs up their values first." },
+  { resource: "settings/codex", category: "settings", target: "~/.codex/config.toml", action: "merge", reason: "Sets 2 keys and leaves the rest of the file as it is." },
+  { resource: "tools/gh", category: "tools", target: "gh", action: "install", reason: "Not installed yet. Runs brew install gh, then checks it starts." },
 ];
 
 export interface Invitation {
@@ -110,24 +126,44 @@ export interface Run {
   tone?: "ok" | "bad" | "muted";
 }
 
-// `source scan` over ~/.codex/config.toml and ~/.claude.json: one proposed tool per command found there.
+// `source scan` reads the folder's instructions, skills, hook scripts and MCP commands and proposes one tools entry per program it finds.
 export const SCANNED_TOOLS = [
-  { id: "playwright-mcp", target: "npx", command: "npx @playwright/mcp@0.0.41", file: "~/.claude.json", where: "mcpServers.playwright" },
-  { id: "uv", target: "uvx", command: "uvx mcp-server-fetch", file: "~/.codex/config.toml", where: "mcp_servers.fetch" },
-  { id: "bun", target: "bunx", command: "bunx @modelcontextprotocol/server-memory", file: "~/.claude.json", where: "mcpServers.memory" },
+  { id: "node", executable: "npx", command: "npx -y @upstash/context7-mcp@2.1.0", file: "canonfig.jsonc", where: "mcp.context7" },
+  { id: "prettier", executable: "prettier", command: "prettier --write", file: "hooks/format.sh", where: "line 3" },
+  { id: "ripgrep", executable: "rg", command: "rg --files", file: "skills/code-review/SKILL.md", where: "line 12" },
 ] as const;
 
 export function toolFromScan(f: (typeof SCANNED_TOOLS)[number]): Resource {
   return {
-    id: f.id,
-    kind: "tool",
-    target: f.target,
-    policy: "ensure",
+    id: `tools/${f.id}`,
+    category: "tools",
+    path: `canonfig.jsonc tools.${f.id}`,
     groups: [],
-    summary: `found in ${f.file.split("/").pop()}`,
+    summary: `found in ${f.file}`,
     change: "added",
-    detail: { Command: f.command, Evidence: `${f.file}, ${f.where}`, Verify: "executable-present" },
+    detail: { Executable: f.executable, Evidence: `${f.file}, ${f.where}: ${f.command}` },
   };
+}
+
+/** The categories onboarding's import offers besides instructions (src/projection/import.ts). */
+const IMPORTED: ReadonlySet<string> = new Set(["rules", "skills", "agents", "commands", "mcp"]);
+
+/**
+ * Onboarding's import picks (`<harness>/instructions` or `<harness>/<category>/<name>`) as new folder items.
+ * Duplicates by name were settled in onboarding, so the first pick of an id wins.
+ */
+function importedItems(ids: readonly string[]): Resource[] {
+  const items = new Map<string, Resource>();
+  for (const pick of ids) {
+    const [harness, category, name] = pick.split("/");
+    const from = `imported from ${HARNESS_NAMES[harness as HarnessId] ?? harness}`;
+    if (category === "instructions") {
+      if (!items.has("instructions")) items.set("instructions", { id: "instructions", category: "instructions", path: "AGENTS.md", groups: [], summary: from, change: "added", detail: { Body: "" } });
+    } else if (name && IMPORTED.has(category) && !items.has(`${category}/${name}`)) {
+      items.set(`${category}/${name}`, { id: `${category}/${name}`, category: category as ItemCategory, path: itemPath(category as ItemCategory, name), groups: [], summary: from, change: "added", detail: {} });
+    }
+  }
+  return [...items.values()];
 }
 
 /** localStorage prefix for guidance state; role and item are appended (e.g. `:source:tip:profile`). */
@@ -166,7 +202,7 @@ const guidePrefs: { has: (key: string) => boolean; keys: () => string[]; set: (k
 /** Get started steps that can't be read from other state. */
 export type Milestone = "health-check" | "schedule";
 
-/** What onboarding's scan proposes by default: the two tools it found in both files. */
+/** What onboarding's scan proposes by default: the first two tools it found in the folder. */
 const ONBOARDING_PROPOSED = SCANNED_TOOLS.slice(0, 2).map(toolFromScan);
 
 const SEED_RUNS: Run[] = [
@@ -175,45 +211,17 @@ const SEED_RUNS: Run[] = [
   { n: 39, what: "No changes", when: "Oct 26" },
 ];
 
-/** A Local Overlay claims keys of one config resource: Canonfig stops managing them on this machine. It stores no values. */
-export interface Overlay {
-  resource: string;
-  target: string;
-  keys: string[];
-}
-
-/** What this machine's config files currently hold, shown next to claimed keys as context. */
-export const LOCAL_VALUES: Record<string, Record<string, string>> = {
-  "codex-config": { model: '"gpt-5.5"', model_reasoning_effort: '"medium"', sandbox_mode: '"workspace-write"', approval_policy: '"on-request"' },
-  "claude-settings": { "env.EDITOR": '"zed"', "permissions.defaultMode": '"acceptEdits"', "env.DISABLE_TELEMETRY": '"1"', theme: '"dark"' },
-};
-
 /**
- * Kept keys the Source also sets in that file. `canonfig sync` pauses such a file instead of picking
- * a winner. Here so a run can count what it skips, and Sync can show the same pauses.
- */
-export function conflictsIn(resource: string, overlays: Overlay[]): string[] {
-  const declared = configKeysFor(resource);
-  return overlays.find((o) => o.resource === resource)?.keys.filter((k) => declared.includes(k)) ?? [];
-}
-
-/** The plan item after a drift decision, written for the revision the plan brings. */
-function decideDrift(p: PlanItem, choice: DriftChoice, revision: number): PlanItem {
-  return choice === "keep"
-    ? { ...p, action: "keep-local", reason: "Keeping your edit. Canonfig stops flagging it until the canonical copy changes again." }
-    : { ...p, action: "write", reason: `Replaces your edit with revision ${revision}. Canonfig backs up your version first.` };
-}
-
-/**
- * One unpublished edit to the Machine Profile. Groups and the profile defaults are profile
- * content like items, so they are reviewed and published with them and cleared by publishing.
+ * One unpublished edit to the Machine Profile. Groups, the harness list and the profile defaults are
+ * canonfig.jsonc content like items, so they are reviewed and published with them and cleared by publishing.
  */
 export type PendingChange =
   | { area: "item"; id: string; change: NonNullable<Resource["change"]>; resource: Resource }
   | { area: "group"; id: string; change: "added" }
+  | { area: "harnesses"; id: "harnesses"; change: "modified" }
   | { area: "defaults"; id: "defaults"; change: "modified" };
 
-/** A group or defaults edit, recorded by Profile when it saves one (see `markProfileEdit`). */
+/** A group, harness list or defaults edit, recorded by Profile when it saves one (see `markProfileEdit`). */
 export type ProfileEdit = Exclude<PendingChange, { area: "item" }>;
 
 export type FollowerPhase = "plan" | "running" | "done";
@@ -245,9 +253,8 @@ export interface Workspace {
   role: WorkspaceRole;
   /** This machine's name: atlas for the Source, the name a follower joined with. */
   machineName: string;
-  /** The Source's Machine Profile: its display name and file, as onboarding created them. */
+  /** The Source's Machine Profile display name, as onboarding created it (canonfig.jsonc `profile.name`). */
   profileName: string;
-  profileFile: string;
   /** Where followers reach this Source, with the port chosen in onboarding. */
   endpoint: string;
   /** A follower that just finished onboarding: enrolled, revision downloaded, nothing applied. */
@@ -317,11 +324,11 @@ export interface Workspace {
   setInvitations: SetState<Invitation[]>;
   secrets: Secret[];
   setSecrets: SetState<Secret[]>;
-  /** Profile edits since the latest Profile Revision: items, groups and defaults. */
+  /** Profile edits since the latest Profile Revision: items, groups, the harness list and defaults. */
   pending: PendingChange[];
-  /** Records a group or defaults edit as unpublished; repeating one is a no-op. */
+  /** Records a group, harness list or defaults edit as unpublished; repeating one is a no-op. */
   markProfileEdit: (edit: ProfileEdit) => void;
-  /** Withdraws a recorded group or defaults edit, for example defaults saved back to their published values. */
+  /** Withdraws a recorded edit, for example defaults saved back to their published values. */
   removeProfileEdit: (edit: ProfileEdit) => void;
   nextSequence: number;
   publishing: boolean;
@@ -332,15 +339,12 @@ export interface Workspace {
   changeGroups: ChangeGroupsRequest | null;
   setChangeGroups: (req: ChangeGroupsRequest | null) => void;
   plan: PlanItem[];
-  /** Replaces the plan, for example after selecting another profile; a run in progress stops. */
-  replan: (items: PlanItem[]) => void;
   /** The revision the plan brings this follower to. */
   targetRevision: number;
   phase: FollowerPhase;
   progress: number;
   applyPlan: () => void;
-  /** Decides drift on `resource`. Remembered for the session, so it survives profile switches. */
-  resolveDrift: (resource: string, choice: DriftChoice) => void;
+  /** A drifted mirror file holds its item: kept, reported, and left out of every run until the edit moves or the Source publishes it. */
   driftOpen: boolean;
   interrupted: boolean;
   recover: () => void;
@@ -350,8 +354,24 @@ export interface Workspace {
   setHumanAction: SetState<boolean>;
   /** The revision this follower last applied; 0 when it hasn't applied any yet. */
   appliedRevision: number;
-  overlays: Overlay[];
-  setOverlays: SetState<Overlay[]>;
+  /** Harnesses listed in canonfig.jsonc: the Source edits them in Profile, a follower gets them with each revision. */
+  listed: HarnessId[];
+  setListed: SetState<HarnessId[]>;
+  /** Harnesses excluded on this machine in ~/.canonfig/local/local.jsonc. */
+  excluded: HarnessId[];
+  setExcluded: SetState<HarnessId[]>;
+  /** Every harness as `canonfig harnesses` reports it here, with `listed` and `excluded` from the two above. */
+  harnesses: Harness[];
+  /** local.jsonc `backups`: false takes over harnesses without a takeover snapshot. */
+  backups: boolean;
+  setBackups: SetState<boolean>;
+  /** Takeover snapshots in ~/.canonfig/.backups/, oldest first. */
+  snapshots: Snapshot[];
+  /** Simulates `canonfig restore <snapshot>`: puts the snapshot back and excludes its harnesses here. */
+  restore: (snapshot: string) => void;
+  /** This machine's ~/.canonfig/local/ items. */
+  local: LocalItem[];
+  setLocal: SetState<LocalItem[]>;
   unenrollOpen: boolean;
   setUnenrollOpen: SetState<boolean>;
   unenrolled: boolean;
@@ -474,9 +494,11 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const [inviteOpen, setInviteOpen] = useState(false);
   const [changeGroups, setChangeGroups] = useState<ChangeGroupsRequest | null>(null);
 
-  // Source state. A new Source has no revisions, followers or secrets yet; its profile holds
-  // only what the scan proposed, or nothing when the scan was skipped.
-  const [resources, setResources] = useState<Resource[]>(newSource ? (newSource.scan ? ONBOARDING_PROPOSED : []) : seedResources);
+  // Source state. A new Source has no revisions, followers or secrets yet; its folder holds only what
+  // onboarding imported from its harnesses and the tools the scan proposed.
+  const [resources, setResources] = useState<Resource[]>(() =>
+    newSource ? [...importedItems(newSource.imported), ...(newSource.scan ? ONBOARDING_PROPOSED : [])] : seedResources,
+  );
   const [proposed, setProposed] = useState<string[]>(newSource?.scan ? ONBOARDING_PROPOSED.map((r) => r.id) : []);
   const [revisions, setRevisions] = useState<Revision[]>(newSource ? [] : seedRevisions);
   const [followers, setFollowers] = useState<Follower[]>(newSource ? [] : seedFollowers);
@@ -513,7 +535,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
         const summary = pending.map((c) => `${mark[c.change]}${c.area === "group" ? `group ${c.id}` : c.id}`).join(", ");
         setRevisions((prev) => [{ sequence: seq, digest: demoDigest(seq, summary), publishedAt: "Just now", reviewer, changes: summary }, ...prev]);
         setResources((prev) => prev.filter((r) => r.change !== "removed").map((r) => ({ ...r, change: undefined })));
-        // Groups and defaults went out with this revision too, so they are no longer unpublished.
+        // Groups, the harness list and defaults went out with this revision too, so they are no longer unpublished.
         setProfileEdits([]);
         setProposed([]);
         setPublishing(false);
@@ -536,11 +558,30 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     [nextSequence, pending, followers, later],
   );
 
+  // Harness state on this machine. A machine fresh out of onboarding hasn't taken over any harness yet,
+  // so it has no pinned roots and no takeover snapshots.
+  const fresh = newSource !== null || joined !== null;
+  const [listed, setListed] = useState<HarnessId[]>(() => newSource?.harnesses ?? seedHarnesses.filter((h) => h.listed).map((h) => h.id));
+  const [excluded, setExcluded] = useState<HarnessId[]>(() => joined?.excluded ?? (newSource ? [] : seedHarnesses.filter((h) => h.excluded).map((h) => h.id)));
+  const harnessRows = useMemo<Harness[]>(
+    () =>
+      seedHarnesses.map((h) => ({
+        ...h,
+        listed: listed.includes(h.id),
+        excluded: excluded.includes(h.id),
+        root: fresh ? null : h.root,
+        snapshot: fresh ? null : h.snapshot,
+      })),
+    [listed, excluded, fresh],
+  );
+  const [backups, setBackups] = useState(true);
+  const snapshots = fresh ? [] : seedSnapshots;
+
   // Follower state. One that just joined has downloaded revision 7 and applied nothing: no runs,
-  // nothing interrupted, no Local Overlays, and a plan for the profile it chose.
+  // nothing interrupted, nothing in its local folder, and the revision's first plan.
   const machineName = joined?.name ?? (role === "source" ? machine.hostname : followerSelf.name);
   const targetRevision = joined ? JOINED_REVISION : DEMO_TARGET_REVISION;
-  const [plan, setPlan] = useState<PlanItem[]>(() => (joined ? profilePlan(JOINED_PLAN, joined.profileId) : FOLLOWER_PLAN));
+  const [plan, setPlan] = useState<PlanItem[]>(() => (joined ? JOINED_PLAN : FOLLOWER_PLAN));
   const [phase, setPhase] = useState<FollowerPhase>("plan");
   const [progress, setProgress] = useState(0);
   const [interrupted, setInterrupted] = useState(!joined);
@@ -551,33 +592,23 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const isStopped = useCallback(() => stoppedRef.current, []);
   const [humanAction, setHumanAction] = useState(false);
   const [appliedRevision, setAppliedRevision] = useState(joined ? 0 : followerSelf.revision);
-  const [overlays, setOverlays] = useState<Overlay[]>(() =>
-    joined
-      ? []
-      : followerSelf.overlays.map((o) => ({ resource: o.resource, target: seedResources.find((r) => r.id === o.resource)?.target ?? "", keys: [o.key] })),
-  );
+  const [local, setLocal] = useState<LocalItem[]>(() => (joined ? [] : followerSelf.local));
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearInterval(timer.current), []);
-  // The run's interval closes over the render that started it; completion reads this instead, so
-  // a decision or Local settings change made mid-run is reflected (same pattern as guide.tsx).
-  const latestRun = useRef({ plan, overlays });
-  latestRun.current = { plan, overlays };
 
-  // Drift decisions belong to the session, not to one plan: an item that leaves the plan with a
-  // profile switch gets the same decision back when it returns (see `replan`).
-  const decisions = useRef(new Map<string, DriftChoice>());
-
-  const resolveDrift = useCallback(
-    (resource: string, choice: DriftChoice) => {
-      decisions.current.set(resource, choice);
-      setPlan((prev) => prev.map((p) => (p.resource === resource && p.drift ? decideDrift(p, choice, targetRevision) : p)));
-      // Keeping the edit after a run needs no apply: the run already left the file alone, so the
-      // decision only stops the flag. Taking the revision reopens the plan (see useReopenSkipped).
-      toast(choice === "keep" ? `Keeping your edit to ${resource}` : `Will write revision ${targetRevision} of ${resource}`, {
-        description: choice === "keep" && phase === "done" ? "Recorded now. There is nothing to apply." : "Takes effect when you apply the changes.",
+  const restore = useCallback(
+    (id: string) => {
+      const snapshot = seedSnapshots.find((s) => s.id === id);
+      if (!snapshot) return;
+      const names = snapshot.harnesses.map((h) => HARNESS_NAMES[h]).join(", ");
+      setExcluded((prev) => [...new Set([...prev, ...snapshot.harnesses])]);
+      // `restore` runs as a journaled Synchronization Run, so it shows with the others.
+      setRuns((prev) => [{ n: (prev[0]?.n ?? 0) + 1, what: `Restored snapshot ${id}`, when: "Just now", tone: "ok" }, ...prev]);
+      toast.success(`Restored ${names}`, {
+        description: `${DEMO ? "Simulated in this demo; no files changed. " : ""}Put back ${snapshot.files} files from ${id} and excluded ${names} on this machine in ~/.canonfig/local/local.jsonc.`,
       });
     },
-    [targetRevision, phase],
+    [],
   );
 
   const recover = useCallback(() => {
@@ -607,21 +638,6 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     toast(`${machineName} stopped syncing`, { description: "In the real app this screen would return to setup." });
   }, [machineName, phase, progress, plan.length]);
 
-  const replan = useCallback(
-    (items: PlanItem[]) => {
-      window.clearInterval(timer.current);
-      setPlan(
-        items.map(({ status: _status, ...p }) => {
-          const choice = p.drift ? decisions.current.get(p.resource) : undefined;
-          return choice ? decideDrift(p, choice, targetRevision) : p;
-        }),
-      );
-      setPhase("plan");
-      setProgress(0);
-    },
-    [targetRevision],
-  );
-
   const applyPlan = useCallback(() => {
     setPhase("running");
     setProgress(0);
@@ -629,7 +645,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     const steps = plan.length;
     // Installing gh leaves one step for a person: signing in to it. A later run that doesn't touch gh
     // leaves an earlier sign-in still waiting; only checking again clears it.
-    const signInWaiting = humanAction || plan.some((p) => p.resource === "gh-cli" && p.action === "install");
+    const signInWaiting = humanAction || plan.some((p) => p.resource === "tools/gh" && p.action === "install");
     let tick = 0;
     window.clearInterval(timer.current);
     timer.current = window.setInterval(() => {
@@ -642,9 +658,9 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
       );
       if (value >= 100) {
         window.clearInterval(timer.current);
-        // The run skips paused items, so count them as it ends: completion must not call a partial run up to date.
-        const paused = latestRun.current.plan.filter((p) => p.action === "skip-drift" || conflictsIn(p.resource, latestRun.current.overlays).length > 0).length;
-        const pausedText = `${paused} ${paused === 1 ? "item" : "items"} paused`;
+        // The run leaves drifted items as they are, so count them as it ends: completion must not call a partial run up to date.
+        const paused = plan.filter((p) => p.action === "skip-drift").length;
+        const pausedText = `${paused} ${paused === 1 ? "item" : "items"} held`;
         setPhase("done");
         setAppliedRevision(targetRevision);
         setHumanAction((prev) => prev || signInWaiting);
@@ -654,7 +670,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
         ]);
         if (paused > 0)
           toast(`Revision ${targetRevision} applied, ${pausedText}`, {
-            description: `Decide on ${paused === 1 ? "it" : "them"} in Sync, then apply what's left.${signInWaiting ? " Also sign in to the GitHub CLI." : ""}`,
+            description: `${paused === 1 ? "It keeps" : "They keep"} your local edit. See Sync for how to settle ${paused === 1 ? "it" : "them"}.${signInWaiting ? " Also sign in to the GitHub CLI." : ""}`,
           });
         else
           toast.success(`Revision ${targetRevision} applied`, {
@@ -664,13 +680,10 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     }, 140);
   }, [plan, targetRevision, humanAction]);
 
-  const driftOpen = plan.some((p) => p.action === "skip-drift");
-
   return {
     role,
     machineName,
     profileName: newSource?.profileName ?? profile.name,
-    profileFile: newSource?.profileFile ?? machine.profileFile,
     endpoint: newSource ? `https://127.0.0.1:${newSource.port}` : machine.endpoint,
     justJoined: joined !== null,
     tunnelConfigured: joined?.tunnel ?? true,
@@ -723,13 +736,11 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     changeGroups,
     setChangeGroups,
     plan,
-    replan,
     targetRevision,
     phase,
     progress,
     applyPlan,
-    resolveDrift,
-    driftOpen,
+    driftOpen: plan.some((p) => p.action === "skip-drift"),
     interrupted,
     recover,
     abandon,
@@ -737,8 +748,17 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     humanAction,
     setHumanAction,
     appliedRevision,
-    overlays,
-    setOverlays,
+    listed,
+    setListed,
+    excluded,
+    setExcluded,
+    harnesses: harnessRows,
+    backups,
+    setBackups,
+    snapshots,
+    restore,
+    local,
+    setLocal,
     unenrollOpen,
     setUnenrollOpen,
     unenrolled,
@@ -775,7 +795,6 @@ function sharedSeed(setup: Setup | null): Record<string, unknown> {
     };
   if (setup?.role === "follower")
     return {
-      "selected-profile": setup.profileId,
       "tunnel-up": setup.tunnel,
       // null: no schedule was ever set. With one, the readers' initial (`schedule set --default`) is what onboarding ran.
       ...(setup.schedule ? {} : { "follower-schedule": null }),

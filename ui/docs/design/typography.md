@@ -68,6 +68,6 @@ Static numbers in a column (times, counts that don't animate) take `tabular-nums
 
 ## Glossary words
 
-Canonfig's domain terms (Source Machine, Follower Drift, Local Overlay) show as plain words with a dotted underline through `Term` (`shared.tsx`, terms in `GLOSSARY`). Use `<Term term="...">` the first time a concept appears in a `Lede` or description. Never put a `Term` inside a button or link: it is its own tab stop.
+Canonfig's domain terms (Source Machine, Follower Drift, Canonical Folder) show as plain words with a dotted underline through `Term` (`shared.tsx`, terms in `GLOSSARY`). Use `<Term term="...">` the first time a concept appears in a `Lede` or description. Never put a `Term` inside a button or link: it is its own tab stop.
 
 `term` only accepts a `GLOSSARY` key, and the keys follow the repo's domain glossary in `GLOSSARY.md`. Everyday words ("proxy", "tunnel") are not terms; write them plainly. A new Canonfig concept goes into `GLOSSARY.md` first, then the `GLOSSARY` object.

@@ -39,9 +39,9 @@ Icons are `1em` by default and follow `currentColor`. Size with `size-*` classes
 | Panel titles, toasts, sidebar entries | `size-4` (16px) |
 | Setup choice rows (`RadioRow`) | `size-5` (20px) |
 
-Quiet icons beside a name are `text-faint` (a key before a secret name) or `text-muted-foreground` (resource kind icons). An icon takes a state colour only when it reports that state.
+Quiet icons beside a name are `text-faint` (a key before a secret name) or `text-muted-foreground` (folder category icons). An icon takes a state colour only when it reports that state.
 
-Resource kinds always use `KIND_ICON` (`kit.tsx`): file `FileText`, directory `Folder`, config `SlidersHorizontal`, skill `Sparkle`, tool `Wrench`, credential `Key`. Never pick a different icon for a kind.
+Folder categories always use `CATEGORY_ICON` (`kit.tsx`): instructions `FileText`, rules `ListBullets`, skills `Sparkle`, agents `Robot`, commands `FileCode`, MCP servers `Plug`, hooks `Circuitry`, settings `SlidersHorizontal`, tools `Wrench`, required secrets `Key`. Never pick a different icon for a category.
 
 ## Accessibility
 

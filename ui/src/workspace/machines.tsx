@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AnimatedNumber, Hint, Mono, StateLabel, Term } from "@/shared/shared";
-import { DEMO, PLAIN, SECRETS_GROUP, followers as seedFollowers, followerSelf, machine, profile, type Follower } from "@/shared/data";
+import { DEMO, PLAIN, SECRETS_GROUP, followers as seedFollowers, followerSelf, machine, type Follower } from "@/shared/data";
 import { SOURCE_ID } from "@/shared/machine-map/model";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace, type Invitation } from "./store";
@@ -26,7 +26,7 @@ import {
   EmptyState,
   Field,
   GroupChips,
-  KIND_ICON,
+  CATEGORY_ICON,
   ListHead,
   ListRow,
   PageHeader,
@@ -69,13 +69,14 @@ export function nextStep(f: Follower): { title: string; body: ReactNode; command
   switch (f.state) {
     case "drift":
       return {
-        title: `Decide on ${f.name}`,
+        title: `Settle the local edit on ${f.name}`,
         body: (
           <>
-            Someone edited claude-review-skill on {f.name}. Only {f.name} can keep or replace that edit: open Canonfig there, or run this on {f.name}.
+            Someone edited skills/code-review in ~/.canonfig on {f.name}. Canonfig keeps that edit and holds the skill there at its last revision. Publish the change from here
+            to share it, or move it into {f.name}'s local folder to keep it there only. Run this on {f.name} to see what it holds.
           </>
         ),
-        command: "canonfig sync --plan --review-local",
+        command: "canonfig sync --plan",
       };
     case "human-action":
       return {
@@ -104,7 +105,7 @@ export function nextStep(f: Follower): { title: string; body: ReactNode; command
 export function whyBehind(f: Follower, latest: number, syncing: boolean): string | null {
   const behind = f.revision === null || f.revision < latest;
   if (f.state === "offline") return `Can't reach the Source${f.note ? ` (${f.note.charAt(0).toLowerCase()}${f.note.slice(1)})` : ""}. On revision ${f.revision ?? "none"} of ${latest}.`;
-  if (f.state === "drift") return `${f.note ?? "Someone edited a managed file"} on ${f.name}. That's decided on ${f.name}, not here.`;
+  if (f.state === "drift") return `${f.note ?? "Someone edited a managed file"} on ${f.name}. Canonfig keeps that edit there and holds the item until it's settled on ${f.name}.`;
   if (f.state === "human-action") return `${(f.note ?? "Waiting for a person").replace("this machine", f.name)}. Syncing continues after that.`;
   if (f.state === "failed") return `Its last update failed and was put back. On revision ${f.revision ?? "none"}.`;
   if (!behind) return null;
@@ -462,7 +463,7 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
           .filter((r) => r.change !== "added")
           .map((r) => {
             const state = f.resources[r.id] ?? "never-synced";
-            const Icon = KIND_ICON[r.kind];
+            const Icon = CATEGORY_ICON[r.category];
             const problem = state === "drift" || state === "human-action";
             return (
               <div key={r.id} className="px-4 py-1.5 text-base">
@@ -809,7 +810,7 @@ export function InviteDialog() {
               )}
               <Step
                 title={<>On {host}, join:</>}
-                command={`cat ${shq(`~/${resultFileName}`)} | canonfig follower enroll --stdin --name ${result.name ? shq(result.name) : "<name>"} --profile ${shq(profile.id)}`}
+                command={`cat ${shq(`~/${resultFileName}`)} | canonfig follower enroll --stdin --name ${result.name ? shq(result.name) : "<name>"}`}
                 note="Or open Canonfig there and choose the file."
               />
             </Steps>
@@ -963,7 +964,7 @@ export function ChangeGroupsDialog() {
               <Step title={<>Copy the file to {f.name}, for example with scp:</>} command={`scp ${shq(file)} ${shq(f.name)}:~/`} />
               <Step
                 title={<>On {f.name}, re-join with the new invitation:</>}
-                command={`cat ${shq(`~/${fileName}`)} | canonfig follower enroll --stdin --name ${shq(f.name)} --profile ${shq(profile.id)} --replace`}
+                command={`cat ${shq(`~/${fileName}`)} | canonfig follower enroll --stdin --name ${shq(f.name)} --replace`}
                 note={<>--replace swaps {f.name}'s current enrollment for this one. It already reaches {ws.machineName} through its tunnel, so 127.0.0.1 works there.</>}
               />
             </Steps>

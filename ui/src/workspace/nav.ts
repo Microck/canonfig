@@ -1,6 +1,7 @@
 // Each role's sidebar: its pages, then its settings. The sidebar (frame.tsx) renders it, and the
 // tour picker (guide.tsx) draws a small copy of it to show where a chapter goes.
 import {
+  ArrowCounterClockwise,
   ArrowsClockwise,
   CalendarDots,
   ClockCounterClockwise,
@@ -33,6 +34,7 @@ const SOURCE_NAV: NavItem[] = [
   { view: "profile", label: "Profile", icon: FileCode },
   { view: "machines", label: "Machines", icon: Devices },
   { view: "revisions", label: "Revisions", icon: ClockCounterClockwise },
+  { view: "backups", label: "Backups", icon: ArrowCounterClockwise },
   { view: "secrets", label: "Secrets", icon: Key },
 ];
 
@@ -49,7 +51,8 @@ const FOLLOWER_NAV: NavItem[] = [
   { view: "machines", label: "Machines", icon: Devices },
   { view: "sync", label: "Sync", icon: ArrowsClockwise },
   { view: "schedule", label: "Schedule", icon: CalendarDots },
-  { view: "overlays", label: PLAIN.localNav, icon: Stack },
+  { view: "local", label: PLAIN.localNav, icon: Stack },
+  { view: "backups", label: "Backups", icon: ArrowCounterClockwise },
   { view: "secrets", label: "Secrets", icon: Key },
 ];
 

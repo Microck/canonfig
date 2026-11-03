@@ -13,24 +13,34 @@ export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourS
     profile: {
       target: ["page-help"],
       title: "Reading this list",
-      body: "Click an item to change it. A letter beside an item (A added, M modified, D removed) marks a change machines haven't received yet; it clears when you publish.",
+      body: "Each item is a file or a canonfig.jsonc entry in ~/.canonfig. Click one to change it. A letter beside an item (A added, M modified, D removed) marks a change machines haven't received yet; it clears when you publish.",
     },
     machines: {
       target: ["page-help"],
       title: "Your machines at a glance",
       body: "The line colour shows each machine's state; hover a line to see why. Double-click a machine to open it, or use the brush to name it and pick an icon.",
     },
+    backups: {
+      target: ["page-help"],
+      title: "What a restore does",
+      body: "Restoring puts back what a harness had before Canonfig first wrote to it, then excludes that harness on this machine so the next sync leaves it alone.",
+    },
   },
   follower: {
     sync: {
       target: ["page-help"],
       title: "Nothing changes until you apply",
-      body: "This list is exactly what the update would do here. Anything you edited on this machine is paused until you decide.",
+      body: "This list is exactly what the update would do here. A file you edited stays as you left it, and what Canonfig writes from it holds until the edit moves to your local folder or the Source publishes it.",
     },
-    overlays: {
+    local: {
       target: ["page-help"],
-      title: "Settings only this machine keeps",
-      body: "Pick a key and Canonfig stops managing it here. Whatever this machine has in the file stays.",
+      title: "Items only this machine has",
+      body: "Everything here lives in ~/.canonfig/local and never goes to the Source. Canonfig adds it to what the Source publishes, but only in the categories the Source allows.",
+    },
+    backups: {
+      target: ["page-help"],
+      title: "What a restore does",
+      body: "Restoring puts back what a harness had before Canonfig first wrote to it, then excludes that harness on this machine so the next update leaves it alone.",
     },
   },
 };
