@@ -1,0 +1,110 @@
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import { CanonicalFolderError, loadCanonicalFolder, LocalOverlayCollisionError } from "../src/projection/folder.ts";
+
+const roots: Array<string> = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+const folder = (files: Record<string, string>): string => {
+  const root = mkdtempSync(join(tmpdir(), "canonfig-folder-"));
+  roots.push(root);
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), content);
+  }
+  return root;
+};
+
+const minimal = "{ \"version\": 1, \"harnesses\": [\"claude-code\"] }";
+
+describe("Canonical Folder loader", () => {
+  it("loads the authoring allowlist into the Canonical Model", async () => {
+    const root = folder({
+      "canonfig.jsonc": `{
+        // comments and trailing commas are fine
+        "version": 1,
+        "harnesses": ["claude-code", "codex"],
+        "mcp": { "git": { "transport": "stdio", "command": "uvx", "args": ["mcp-server-git"] },
+                 "off": { "transport": "stdio", "command": "x", "enabled": false } },
+        "hooks": [{ "id": "format", "event": "after_tool", "run": ["hooks/format.sh", "--fix"] }],
+        "settings": { "codex": { "model_reasoning_effort": "high" } },
+      }`,
+      "AGENTS.md": "Be brief.\n",
+      "rules/style.md": "---\npaths: [\"**/*.ts\"]\n---\nTwo spaces.\n",
+      "skills/deploy/SKILL.md": "---\nname: deploy\ndescription: Deploys\nlicense: MIT\n---\nBody.\n",
+      "agents/reviewer.md": "---\ndescription: Reviews\n---\nReview.\n",
+      "commands/ship.md": "---\ndescription: Ships\nargumentHint: \"<branch>\"\n---\nShip.\n",
+      "hooks/format.sh": "#!/bin/sh\n",
+      "state.sqlite": "not authoring input",
+    });
+    const loaded = await loadCanonicalFolder(root);
+    expect(loaded.model.harnesses).toEqual(["claude-code", "codex"]);
+    expect(loaded.model.instructions).toBe("Be brief.\n");
+    expect(loaded.model.rules).toEqual([expect.objectContaining({ id: "style", paths: ["**/*.ts"], content: "Two spaces." })]);
+    expect(loaded.model.skills.map((skill) => [skill.name, skill.files.map((file) => file.path)])).toEqual([["deploy", ["SKILL.md"]]]);
+    expect(loaded.model.agents).toEqual([expect.objectContaining({ id: "reviewer", model: "inherit", tools: [], writable: false })]);
+    expect(loaded.model.commands).toEqual([expect.objectContaining({ id: "ship", argumentHint: "<branch>" })]);
+    expect(loaded.model.mcp.map(([name]) => name)).toEqual(["git"]);
+    expect(loaded.model.hooks[0]?.run).toEqual([join(root, "hooks", "format.sh"), "--fix"]);
+    expect(loaded.model.settings).toEqual({ codex: [{ path: "model_reasoning_effort", value: "high" }] });
+    expect(loaded.local).toEqual({ excludeHarnesses: [], backups: true });
+    expect((await loadCanonicalFolder(root)).digest).toBe(loaded.digest);
+  });
+
+  it.each([
+    ["an unknown key", "{ \"version\": 1, \"harnesses\": [], \"profile\": {} }"],
+    ["an unknown harness", "{ \"version\": 1, \"harnesses\": [\"vim\"] }"],
+    ["a null setting", "{ \"version\": 1, \"harnesses\": [], \"settings\": { \"codex\": { \"model\": null } } }"],
+    ["an invalid key path", "{ \"version\": 1, \"harnesses\": [], \"settings\": { \"codex\": { \"a..b\": 1 } } }"],
+    ["a hook script outside hooks/", "{ \"version\": 1, \"harnesses\": [], \"hooks\": [{ \"id\": \"x\", \"event\": \"stop\", \"run\": [\"../x.sh\"] }] }"],
+  ])("rejects %s in canonfig.jsonc", async (_, content) => {
+    await expect(loadCanonicalFolder(folder({ "canonfig.jsonc": content }))).rejects.toBeInstanceOf(CanonicalFolderError);
+  });
+
+  it("refuses a link that leaves the folder", async () => {
+    const outside = folder({ "secret.md": "---\ndescription: x\n---\nsecret\n" });
+    const root = folder({ "canonfig.jsonc": minimal });
+    mkdirSync(join(root, "agents"));
+    symlinkSync(join(outside, "secret.md"), join(root, "agents", "leak.md"));
+    await expect(loadCanonicalFolder(root)).rejects.toBeInstanceOf(CanonicalFolderError);
+  });
+
+  it("adds allowed local items, ignores the rest, and stops on a name collision", async () => {
+    const root = folder({
+      "canonfig.jsonc": "{ \"version\": 1, \"harnesses\": [\"codex\", \"qwen\"], \"local\": { \"allow\": [\"skills\"] } }",
+      "local/skills/mine/SKILL.md": "---\nname: mine\ndescription: Mine\n---\nMine.\n",
+      "local/commands/extra.md": "---\ndescription: Extra\n---\nExtra.\n",
+      "local/local.jsonc": "{ \"excludeHarnesses\": [\"qwen\"], \"backups\": false }",
+    });
+    const loaded = await loadCanonicalFolder(root);
+    expect(loaded.model.skills.map((skill) => skill.name)).toEqual(["mine"]);
+    expect(loaded.model.commands).toEqual([]);
+    expect(loaded.ignoredLocal).toEqual(["local/commands/"]);
+    expect(loaded.model.harnesses).toEqual(["codex"]);
+    expect(loaded.local).toEqual({ excludeHarnesses: ["qwen"], backups: false });
+
+    mkdirSync(join(root, "skills", "mine"), { recursive: true });
+    writeFileSync(join(root, "skills", "mine", "SKILL.md"), "---\nname: mine\ndescription: Published\n---\nP.\n");
+    await expect(loadCanonicalFolder(root)).rejects.toBeInstanceOf(LocalOverlayCollisionError);
+  });
+
+  it("keeps the executable bit of skill files", async () => {
+    const root = folder({
+      "canonfig.jsonc": minimal,
+      "skills/run/SKILL.md": "---\nname: run\ndescription: Runs\n---\nRun.\n",
+      "skills/run/bin/go.sh": "#!/bin/sh\n",
+    });
+    chmodSync(join(root, "skills", "run", "bin", "go.sh"), 0o755);
+    const loaded = await loadCanonicalFolder(root);
+    expect(loaded.model.skills[0]?.files.map((file) => [file.path, file.executable])).toEqual([
+      ["SKILL.md", false],
+      ["bin/go.sh", true],
+    ]);
+  });
+});

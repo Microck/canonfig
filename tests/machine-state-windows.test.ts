@@ -34,6 +34,9 @@ import {
   windowsPathLimitFromRegistry,
 } from "../src/machine/windows.layer.ts";
 import { machineStateContract } from "./contract/machine-state.contract.ts";
+import { adapterFor } from "../src/projection/adapters/index.ts";
+import type { CanonicalModel, TargetId } from "../src/projection/model.ts";
+import { rootContext } from "../src/projection/plan.ts";
 
 // Windows adapter paths must stay Windows-shaped while still addressing real
 // host storage. Each contract test supplies its own temporary root; keep a
@@ -568,4 +571,48 @@ machineStateContract("Windows", {
     expect(rendered.schedule).toContain("New-ScheduledTaskTrigger -Daily -At '00:00'");
     expect(rendered.schedule).toContain("Register-ScheduledTask");
   },
+});
+
+describe("Windows harness roots", () => {
+  const profile = "C:\\Users\\operator";
+  const appData = "C:\\Users\\operator\\AppData\\Roaming";
+  const model: CanonicalModel = {
+    folder: `${profile}\\.canonfig`,
+    harnesses: ["devin", "copilot-cli"],
+    rules: [],
+    skills: [],
+    agents: [],
+    commands: [],
+    hooks: [],
+    mcp: [],
+    settings: {},
+  };
+  const layout = (harness: TargetId, extra: ReadonlyArray<{ name: string; value: string }> = []) => {
+    const environment = [
+      { name: "USERPROFILE", value: profile },
+      { name: "APPDATA", value: appData },
+      { name: "LOCALAPPDATA", value: `${profile}\\AppData\\Local` },
+      ...extra,
+    ];
+    const context = Effect.runSync(rootContext((name) => environment.find((entry) => entry.name === name)?.value).pipe(
+      Effect.provide(windowsMachineStateLayer({ environment })),
+    ));
+    return adapterFor(harness).layout(context, model);
+  };
+
+  it("puts Devin under %APPDATA% and keeps its credentials out of every surface", () => {
+    const devin = layout("devin");
+    expect(devin.root).toBe(`${appData}\\devin`);
+    expect(devin.neverTouch).toContain(`${appData}\\devin\\credentials.toml`);
+    for (const surface of devin.surfaces) {
+      expect(surface.target.startsWith(profile)).toBe(true);
+      expect(surface.target).not.toBe(`${appData}\\devin\\credentials.toml`);
+    }
+  });
+
+  it("puts Copilot under %USERPROFILE% unless COPILOT_HOME is set", () => {
+    expect(layout("copilot-cli").root).toBe(`${profile}\\.copilot`);
+    expect(layout("copilot-cli", [{ name: "COPILOT_HOME", value: `${profile}\\copilot-home` }]).root)
+      .toBe(`${profile}\\copilot-home`);
+  });
 });
