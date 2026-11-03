@@ -3,10 +3,13 @@ import { constants as filesystemConstants } from "node:fs";
 import { access, open } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
+import { dirname, join } from "node:path";
 
 import { Effect, Option, Redacted, Ref, Schema } from "effect";
 
 import { installerMethods } from "../domain/installer-binding.ts";
+import { harnessReport } from "../projection/detect.ts";
+import { rootContext } from "../projection/plan.ts";
 import { resolveInstallerInvocation } from "../synchronization/installer-bindings.ts";
 import { programVersion } from "../cli/help.ts";
 import {
@@ -46,6 +49,7 @@ export const doctorProbeNames = [
   "scheduler",
   "package-managers",
   "agent-adapter",
+  "harnesses",
 ] as const;
 
 export type DoctorProbeName = typeof doctorProbeNames[number];
@@ -120,6 +124,8 @@ export interface DoctorInput {
    */
   readonly tunnel?: TunnelStatusReport | undefined;
   readonly agent?: DoctorAgentConfiguration | undefined;
+  /** The environment harness roots resolve from. */
+  readonly environment: (name: string) => string | undefined;
 }
 
 const PolicyFile = Schema.Struct({
@@ -558,6 +564,41 @@ const agentProbe = Effect.fn("Doctor.agentAdapter")(function*(
     );
 });
 
+/**
+ * The same report as `canonfig harnesses`: detection, the folder's list,
+ * exclusions, pinned roots and snapshots. A listed harness that is not
+ * installed is a warning; the run still converges without it.
+ */
+const harnessProbe = (
+  statePath: string,
+  environment: (name: string) => string | undefined,
+  repository: StateRepository["Service"],
+) =>
+  Effect.gen(function*() {
+    const report = yield* harnessReport({
+      folder: dirname(statePath),
+      context: yield* rootContext(environment),
+      takeovers: yield* repository.loadHarnessTakeovers(),
+    });
+    if (!report.configured) return skipped("harnesses", `${join(report.folder, "canonfig.jsonc")} does not exist yet`);
+    const pinned = report.harnesses.flatMap((row) =>
+      row.pinnedRoot === undefined ? [] : [[`root.${row.harness}`, row.pinnedRoot] as const]
+    );
+    const entries: Array<readonly [string, string | number]> = [
+      ["listed", report.listed.join(",")],
+      ["excluded", report.excluded.join(",")],
+      ["detected", report.detected.join(",")],
+      ["notInstalled", report.notInstalled.join(",")],
+      ["snapshots", report.snapshots],
+      ...pinned,
+    ];
+    if (report.latestSnapshot !== undefined) entries.push(["latestSnapshot", report.latestSnapshot]);
+    const details = Object.fromEntries(entries);
+    return report.notInstalled.length > 0
+      ? { name: "harnesses" as const, status: "warning" as const, message: `listed but not installed: ${report.notInstalled.join(", ")}`, details }
+      : pass("harnesses", `${report.harnesses.filter((row) => row.status === "selected").length} listed harness(es) installed`, details);
+  });
+
 export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
   input: DoctorInput,
 ): Effect.fn.Return<
@@ -636,6 +677,14 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
       timeout,
       agentProbe(machine, input.policyPath, input.agentPolicy, input.agent),
       () => failed("agent-adapter", "internal", "agent adapter capability check failed"),
+      "internal",
+    ),
+    isolated(
+      "harnesses",
+      timeout,
+      harnessProbe(input.statePath, input.environment, repository),
+      (error) =>
+        failed("harnesses", "usage-or-configuration", `harness selection could not be read: ${error.message}`),
       "internal",
     ),
   ], { concurrency: "unbounded" });

@@ -509,12 +509,33 @@ const modelDigest = (model: CanonicalModel, local: LocalPolicy): ContentDigest =
   return sha256Hex(canonicalJson(value));
 };
 
+/** The harness list in `canonfig.jsonc` and this machine's exclusions in `local/local.jsonc`. */
+export interface HarnessSelection {
+  /** Undefined when `canonfig.jsonc` does not exist yet. */
+  readonly listed: ReadonlyArray<TargetId> | undefined;
+  readonly excluded: ReadonlyArray<TargetId>;
+}
+
+/**
+ * Read only the harness selection, for `canonfig harnesses`, doctor and setup.
+ * Both files are decoded against their full schemas, so an invalid file is
+ * reported here too, but no authored document, skill or hook is loaded.
+ */
+export const readHarnessSelection = async (folder: string): Promise<HarnessSelection> => {
+  const config = await readJsonc(folder, join(folder, "canonfig.jsonc"), CanonfigJsonc);
+  const local = await readJsonc(folder, join(folder, "local", "local.jsonc"), LocalJsonc);
+  return {
+    listed: config === undefined ? undefined : [...new Set(config.harnesses)],
+    excluded: local?.excludeHarnesses ?? [],
+  };
+};
+
 /** Load `~/.canonfig/` and its `local/` overlay into the Canonical Model. */
 export const loadCanonicalFolder = async (folder: string): Promise<LoadedFolder> => {
   const configPath = join(folder, "canonfig.jsonc");
   const config = await readJsonc(folder, configPath, CanonfigJsonc);
   if (config === undefined) {
-    throw failure(configPath, "does not exist; create it with at least {\"version\": 1, \"harnesses\": []}");
+    throw failure(configPath, "does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower");
   }
   const localPath = join(folder, "local", "local.jsonc");
   const localConfig = (await readJsonc(folder, localPath, LocalJsonc)) ?? {};

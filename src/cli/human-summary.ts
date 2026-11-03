@@ -309,6 +309,9 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
       outline.lines.push(`  ${column(textOf(harness.harness), 14)} ${textOf(harness.root) ?? ""}`.trimEnd());
     }
   }
+  if (isList(data.notInstalled) && data.notInstalled.length > 0) {
+    outline.lines.push(`not installed (listed, not projected): ${data.notInstalled.map(textOf).join(", ")}`);
+  }
   // Every takeover says whether it keeps a backup, so `no backup` is never silent.
   for (const takeover of recordsOf(data.takeovers)) {
     const surfaces = isList(takeover.surfaces) ? takeover.surfaces.map(textOf).join(", ") : "";
@@ -365,7 +368,7 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
   outlineRest(
     outline,
     data,
-    ["mode", "revision", "downloadedBlobs", "reusedBlobs", "plan", "outcome", "agentResolutions", "warnings", "clientSteps", "adoptionReviews", "origin", "harnesses", "takeovers", "snapshot"],
+    ["mode", "revision", "downloadedBlobs", "reusedBlobs", "plan", "outcome", "agentResolutions", "warnings", "clientSteps", "adoptionReviews", "origin", "harnesses", "notInstalled", "takeovers", "snapshot"],
   );
   const adoptionReviews = recordsOf(data.adoptionReviews);
   if (adoptionReviews.length > 0) {
@@ -578,10 +581,35 @@ const summarizeSetup = (data: PayloadRecord, outline: Outline): boolean => {
   return true;
 };
 
+// ── harnesses ─────────────────────────────────────────────────────────────
+
+const summarizeHarnesses = (data: PayloadRecord, outline: Outline): boolean => {
+  const rows = recordsOf(data.harnesses);
+  if (rows.length === 0) return false;
+  const listOf = (value: CliPayload | undefined) => isList(value) ? value.map(textOf).join(", ") || "none" : "none";
+  outline.lines.push(
+    `folder: ${textOf(data.folder) ?? ""}${data.configured === false ? " (no canonfig.jsonc yet)" : ""}`,
+    `listed: ${listOf(data.listed)}`,
+    `excluded on this machine: ${listOf(data.excluded)}`,
+    `snapshots: ${textOf(data.snapshots) ?? "0"}${textOf(data.latestSnapshot) === undefined ? "" : ` (latest ${textOf(data.latestSnapshot) ?? ""})`}`,
+  );
+  for (const row of rows) {
+    const pinned = textOf(row.pinnedRoot);
+    const snapshot = textOf(row.snapshot);
+    outline.lines.push(
+      `  ${column(textOf(row.harness), 14)} ${column(textOf(row.status), 14)} ${pinned === undefined ? textOf(row.root) ?? "" : `pinned ${pinned}`}`
+        + `${snapshot === undefined ? "" : ` (snapshot ${snapshot})`}`,
+    );
+  }
+  for (const warning of isList(data.warnings) ? data.warnings : []) outline.lines.push(`warning: ${textOf(warning) ?? ""}`);
+  return true;
+};
+
 const summaries: ReadonlyArray<readonly [(command: string) => boolean, (data: PayloadRecord, outline: Outline) => boolean]> = [
   [(command) => command === "doctor", summarizeDoctor],
   [(command) => command === "status", summarizeStatus],
   [(command) => command.startsWith("sync.") || command === "restore", summarizeSync],
+  [(command) => command === "harnesses" || command.startsWith("harnesses."), summarizeHarnesses],
   [(command) => command === "source.publish" || command === "profile.show", summarizeRevision],
   [(command) => command === "profile.list", summarizeProfileList],
   [(command) => command === "source.digest", summarizeDigests],

@@ -85,6 +85,8 @@ const recordingLayers = (
     synchronize: synchronize ?? ((input) => invoke("sync", input)),
     recover: (input) => invoke("recover", input),
     abandon: () => invoke("abandon", {}),
+    restore: (input) => invoke("restore", input),
+    harnesses: (input) => invoke("harnesses", input),
     status: (input) => invoke("status", input),
     setLocalOverlay: (input) => invoke("overlay.set", input),
     listLocalOverlays: () => invoke("overlay.list"),
@@ -281,13 +283,42 @@ describe("typed CLI command boundary", () => {
     const scoped = await execute(["setup", "plan", "--role", "source", "--scope", "cli-only", "--json"]);
     expect(scoped.invocations).toEqual([{
       route: "setup.plan",
-      input: { role: "source", scope: "cli-only", files: [], intent: undefined },
+      input: { role: "source", scope: "cli-only", files: [], intent: undefined, imports: { kind: "offer" } },
     }]);
     const byDefault = await execute(["setup", "plan", "--role", "follower", "--json"]);
     expect(byDefault.invocations).toEqual([{
       route: "setup.plan",
-      input: { role: "follower", scope: "full", files: [], intent: undefined },
+      input: { role: "follower", scope: "full", files: [], intent: undefined, imports: { kind: "offer" } },
     }]);
+  });
+
+  it("routes Source harness selection and import choices to setup plan", async () => {
+    const chosen = await execute([
+      "setup", "plan", "--role", "source", "--harness", "codex", "--harness", "claude-code",
+      "--import", "claude-code", "--import", "codex/mcp/github", "--json",
+    ]);
+    expect(chosen.invocations[0]?.input).toMatchObject({
+      harnesses: ["codex", "claude-code"],
+      imports: { kind: "some", requested: ["claude-code", "codex/mcp/github"] },
+    });
+    const all = await execute(["setup", "plan", "--role", "source", "--import-all", "--json"]);
+    expect(all.invocations[0]?.input).toMatchObject({ imports: { kind: "all" } });
+    const none = await execute(["setup", "plan", "--role", "source", "--no-import", "--json"]);
+    expect(none.invocations[0]?.input).toMatchObject({ imports: { kind: "none" } });
+    const both = await execute(["setup", "plan", "--role", "source", "--import-all", "--no-import", "--json"]);
+    expect(both.exitCode).toBe(CliExitCode.usageOrConfiguration);
+    expect(both.invocations).toEqual([]);
+  });
+
+  it("routes harnesses with an optional include or exclude of a known harness", async () => {
+    const listed = await execute(["harnesses", "--json"]);
+    expect(listed.invocations).toEqual([{ route: "harnesses", input: {} }]);
+    const excluded = await execute(["harnesses", "exclude", "cursor", "--json"]);
+    expect(excluded.invocations).toEqual([{ route: "harnesses", input: { change: { action: "exclude", harness: "cursor" } } }]);
+    expect(JSON.parse(excluded.stdout).command).toBe("harnesses.exclude");
+    const unknown = await execute(["harnesses", "include", "notepad", "--json"]);
+    expect(unknown.exitCode).toBe(CliExitCode.usageOrConfiguration);
+    expect(unknown.invocations).toEqual([]);
   });
 
   it("decodes symbolic secret bindings into harness configuration", async () => {

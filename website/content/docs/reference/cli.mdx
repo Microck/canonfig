@@ -271,8 +271,11 @@ canonfig sync --apply --no-backup
 On an enrolled Follower Machine, `sync` applies the revision its Source
 Machine selected. On the Source Machine, or a machine that is not enrolled,
 `sync` projects `~/.canonfig/` into the harnesses listed in
-`~/.canonfig/canonfig.jsonc`, minus those `~/.canonfig/local/local.jsonc`
-excludes.
+`~/.canonfig/canonfig.jsonc` that are installed, minus those
+`~/.canonfig/local/local.jsonc` excludes. A listed harness that is not
+installed appears under `notInstalled` in the plan and result; the run still
+converges, and what Canonfig applied to that harness earlier stays as it was
+until the harness is installed again or removed from the list.
 
 | Option | Effect |
 | --- | --- |
@@ -345,6 +348,32 @@ surfaces, and adds their harnesses to `excludeHarnesses` in
 `~/.canonfig/local/local.jsonc` so the next sync leaves them alone. It refuses,
 with exit 3 and nothing changed, when a surface differs from what Canonfig
 last applied. Snapshot ids are the directory names under `~/.canonfig/.backups/`.
+
+## Harnesses
+
+```bash
+canonfig harnesses
+canonfig harnesses exclude cursor
+canonfig harnesses include cursor
+```
+
+`harnesses` reports every harness Canonfig supports: whether it is installed
+(and the executable found), whether `~/.canonfig/canonfig.jsonc` lists it,
+whether this machine excludes it, its root, the root pinned when Canonfig took
+it over, and its latest takeover snapshot. Each row has one status:
+`selected` (listed, installed, not excluded), `not-installed`, `excluded`,
+`detected` (installed but not listed) or `absent`.
+
+A harness is installed when one of its executables resolves through
+Canonfig's install directories, `~/.local/bin`, then `PATH`, the same search a
+tool verifier uses. Nothing is run. A root directory alone does not count, and
+Cursor's generic `agent` executable counts only when `~/.cursor` exists.
+
+`exclude` and `include` edit `excludeHarnesses` in
+`~/.canonfig/local/local.jsonc`, keeping the file's comments. They never change
+the list in `canonfig.jsonc`; including a harness that is not listed prints a
+warning. `doctor` reports the same detection and selection in its `harnesses`
+probe.
 
 ## Status
 
@@ -481,6 +510,8 @@ secret name are saved.
 
 ```bash
 canonfig setup plan --role source --file ~/.codex/AGENTS.md --mode advanced --intent "prepare the Source Machine"
+canonfig setup plan --role source --harness codex --harness claude-code --import claude-code
+canonfig setup plan --role source --no-import
 canonfig setup plan --role follower
 canonfig setup approve --approver dana
 canonfig setup apply
@@ -490,10 +521,14 @@ canonfig setup status
 | `setup plan` option | Value |
 | --- | --- |
 | `--role <source\|follower>` | Required. |
-| `--scope <scope>` | `full` (default), `cli-only` (checks only that the CLI runs), or `project-only` (also installs accepted tools, creates no identity). |
+| `--scope <scope>` | `full` (default) or `cli-only` (checks only that the CLI runs). |
 | `--file <path>` | A file for tool discovery. Repeatable. It does not choose which files sync. |
 | `--mode <simple\|advanced>` | Records the interview depth. Does not change the plan; kept by later plans. |
 | `--intent <text>` | A note recorded with the plan. |
+| `--harness <id>` | Full Source plans only. Lists this harness in `canonfig.jsonc`. Repeatable; replaces the detected list. |
+| `--import <harness\|item-id>` | Full Source plans only. Imports every offered item of a harness, or one item by id. Repeatable. |
+| `--import-all` | Full Source plans only. Imports every offered item without a name collision. |
+| `--no-import` | Full Source plans only. Does not read the harnesses' files at all. |
 
 `setup plan` changes nothing. A `full` plan for the Source Machine fails early
 when the credential store cannot hold the Source Machine's keys. `setup approve` approves the
@@ -501,6 +536,26 @@ current plan, including the exact content of every `--file`. `setup apply`
 runs the next stages; run it again to continue. If a discovery file changed
 after approval, apply clears the approval without running anything: plan and
 approve again.
+
+A full Source plan has a `harnesses` stage. It lists the harnesses `--harness`
+names, else the ones an existing `~/.canonfig/canonfig.jsonc` lists, else the
+installed ones, and its `canonfig-folder` item creates `canonfig.jsonc` with
+that list, an empty `AGENTS.md` and `skills/` (an existing `canonfig.jsonc`
+only gets its `harnesses` list updated; nothing else is replaced).
+
+The same plan offers a one-time import of what each selected harness already
+holds, read from the paths Canonfig would take over: instructions, rules,
+skills, agents, commands and MCP servers, listed under `imports.offered` with
+their item ids. Nothing is imported unless `--import` or `--import-all` asks
+for it. Never-touch paths such as `~/.codex/auth.json` are never read, a
+harness Canonfig already took over is not offered again, and an MCP value that
+looks like a credential becomes a `fromEnv` reference (the plan lists each
+one); a server whose command, arguments or URL carry a credential is skipped.
+Two items with the same name and different content, or an item the folder
+already holds with different content, are listed in `exclusions` and imported
+only once one id is named. The plan digest covers the harness list and every
+chosen item; apply re-reads each item and stops, writing nothing, if one
+changed since approval.
 
 `setup status` shows the role, scope, mode, intent, discovery files, approval,
 completed stages, and the reason for each failed or skipped item. The record is

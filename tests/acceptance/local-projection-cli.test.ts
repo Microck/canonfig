@@ -28,6 +28,8 @@ const invoke = (home: string, args: ReadonlyArray<string>, environment: Record<s
       XDG_CONFIG_HOME: join(home, ".config"),
       XDG_STATE_HOME: join(home, "state"),
       CODEX_HOME: "",
+      // Only the fake harness executables folderHome installs are on PATH.
+      PATH: join(home, "bin"),
       ...environment,
     },
   });
@@ -43,6 +45,8 @@ const folderHome = (): string => {
   mkdirSync(join(home, ".codex"), { recursive: true });
   writeFileSync(join(home, ".codex", "AGENTS.md"), "my old codex instructions\n");
   writeFileSync(join(home, ".codex", "auth.json"), "{\"token\":\"never touch\"}\n");
+  mkdirSync(join(home, "bin"));
+  writeFileSync(join(home, "bin", "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   return home;
 };
 

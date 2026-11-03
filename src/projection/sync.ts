@@ -18,7 +18,9 @@ import type {
   PlanningLocalRevision,
   SynchronizationArtifact,
 } from "../synchronization/synchronization.types.ts";
+import { detectHarnesses, harnessReport } from "./detect.ts";
 import { CanonicalFolderError, LocalOverlayCollisionError, loadCanonicalFolder } from "./folder.ts";
+import type { TargetId } from "./model.ts";
 import { parseSurfaceResourceId, planFolder, planRestore, rootContext, sharedSkillsOwner, takeoverSummary } from "./plan.ts";
 import {
   deleteSnapshot,
@@ -120,7 +122,6 @@ const finishRun = (statePath: string, run: RunIdType, outcome: SynchronizationOu
 const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
   Effect.gen(function*() {
     const repository = yield* StateRepository;
-    const machine = yield* MachineState;
     const restored = (revision.removedResources ?? []).flatMap((id) => {
       const parsed = parseSurfaceResourceId(id);
       return parsed === undefined ? [] : [parsed];
@@ -134,7 +135,23 @@ const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
       .filter((harness) => harness !== sharedSkillsOwner)
       .sort();
     if (harnesses.length === 0) return [];
-    const path = yield* machine.normalizePath({ path: join(folderOf(statePath), "local", "local.jsonc") });
+    yield* editExcludedHarnesses(folderOf(statePath), (previous) => [...previous, ...harnesses]);
+    return harnesses;
+  });
+
+/**
+ * Rewrite `excludeHarnesses` in `local/local.jsonc` (sorted, unique),
+ * keeping the file's comments and other keys. `restore` and
+ * `canonfig harnesses include|exclude` both edit the list through here.
+ */
+export const editExcludedHarnesses = (
+  folder: string,
+  update: (current: ReadonlyArray<string>) => ReadonlyArray<string>,
+) =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const directory = yield* machine.normalizePath({ path: join(folder, "local") });
+    const path = yield* machine.normalizePath({ path: join(folder, "local", "local.jsonc") });
     const current = yield* machine.readFile({ path, maximumBytes: 1024 * 1024 }).pipe(
       Effect.map((bytes) => new TextDecoder().decode(bytes)),
       Effect.catchTag("MachineFilesystemError", (error) =>
@@ -147,13 +164,14 @@ const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
       ),
       catch: (error) => new CanonicalFolderError({ path: path.absolute, message: `cannot read the harness exclusions: ${String(error)}` }),
     });
-    const excluded = [...new Set([...previous, ...harnesses])].sort();
+    const excluded = [...new Set(update(previous))].sort();
     const updated = yield* Effect.try({
       try: () => editConfigText("json", current, { sets: [{ path: "excludeHarnesses", value: excluded }] }),
       catch: (error) => new CanonicalFolderError({ path: path.absolute, message: `cannot update the harness exclusions: ${String(error)}` }),
     });
+    yield* machine.ensureDirectory({ path: directory, mode: 0o700 });
     yield* machine.atomicWrite({ path, content: new TextEncoder().encode(updated), mode: 0o600 });
-    return harnesses;
+    return excluded;
   });
 
 const outcomeOf = (
@@ -197,12 +215,19 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
   const context = yield* rootContext(options.environment);
   const takeovers = yield* repository.loadHarnessTakeovers();
   const applied = yield* repository.loadAppliedResources(localProjectionFollower);
-  const planned = yield* planFolder(loaded, context, takeovers, applied);
+  // A listed harness projects only once installed; until then it is reported
+  // and its earlier outputs are held, and the run can still converge.
+  const installed = new Set((yield* detectHarnesses(context, loaded.model.folder))
+    .filter((entry) => entry.installed)
+    .map((entry) => entry.harness));
+  const notInstalled = loaded.model.harnesses.filter((harness) => !installed.has(harness));
+  const planned = yield* planFolder(loaded, context, takeovers, applied, notInstalled);
   const backup = !options.noBackup && loaded.local.backups;
   const base = {
     mode,
     origin: { folder: loaded.model.folder, digest: loaded.digest },
     harnesses: planned.harnesses.map((entry) => ({ harness: entry.harness, root: entry.layout.root })),
+    notInstalled: notInstalled.length === 0 ? undefined : notInstalled,
     takeovers: takeoverSummary(planned.takeovers, backup),
     diagnostics: planned.diagnostics.length === 0 ? undefined : planned.diagnostics,
   };
@@ -279,6 +304,43 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
     outcome: finished.outcome,
   };
 }, (effect, statePath) => withRunLock(statePath, "restore", effect));
+
+export interface HarnessExclusionChange {
+  readonly action: "include" | "exclude";
+  readonly harness: TargetId;
+}
+
+/**
+ * `canonfig harnesses [include|exclude <id>]`: optionally change this
+ * machine's exclusions, then report detection, the folder's list, exclusions,
+ * pinned roots and snapshots. Including removes a local exclusion only; the
+ * harness list itself lives in `canonfig.jsonc`.
+ */
+export const harnessesLocal = Effect.fn("LocalProjection.harnesses")(function*(
+  statePath: string,
+  environment: (name: string) => string | undefined,
+  change: HarnessExclusionChange | undefined,
+) {
+  const repository = yield* StateRepository;
+  const folder = folderOf(statePath);
+  if (change !== undefined) {
+    yield* editExcludedHarnesses(folder, (current) =>
+      change.action === "exclude" ? [...current, change.harness] : current.filter((harness) => harness !== change.harness));
+  }
+  const report = yield* harnessReport({
+    folder,
+    context: yield* rootContext(environment),
+    takeovers: yield* repository.loadHarnessTakeovers(),
+  });
+  const unlisted = change?.action === "include" && !report.listed.includes(change.harness);
+  return {
+    ...report,
+    change,
+    warnings: unlisted
+      ? [`${change.harness} is not listed in ${join(folder, "canonfig.jsonc")}; add it to "harnesses" there to project it`]
+      : undefined,
+  };
+});
 
 /** Whether this machine has an unfinished local run. */
 export const hasOpenLocalRun = Effect.gen(function*() {

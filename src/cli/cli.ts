@@ -14,6 +14,7 @@ import { AgentPolicy } from "../domain/identity.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
+import { TARGET_IDS, type TargetId } from "../projection/model.ts";
 import {
   scheduleWeekdays,
   type SyncSchedule,
@@ -39,7 +40,7 @@ import {
   SourceCommands,
   type CliPayload,
 } from "./source-commands.ts";
-import { SetupCommands } from "./setup-commands.ts";
+import { SetupCommands, type SetupImportRequest } from "./setup-commands.ts";
 import { helpOrVersion, type HelpOrVersionOutcome } from "./help.ts";
 import { BlobTransferProgress } from "../enrollment/blob-transfer-progress.ts";
 import { humanTransferProgress } from "./transfer-progress.ts";
@@ -103,6 +104,10 @@ export type CliCommand =
     readonly noBackup: boolean;
   }
   | { readonly _tag: "Restore"; readonly snapshot?: string | undefined }
+  | {
+    readonly _tag: "Harnesses";
+    readonly change?: { readonly action: "include" | "exclude"; readonly harness: TargetId } | undefined;
+  }
   | { readonly _tag: "Recover"; readonly noInput: boolean }
   | { readonly _tag: "Abandon" }
   | { readonly _tag: "Status"; readonly follower?: typeof FollowerId.Type | undefined }
@@ -146,6 +151,9 @@ export type CliCommand =
     readonly mode?: string | undefined;
     readonly files: ReadonlyArray<string>;
     readonly intent?: string | undefined;
+    /** `--harness` values; undefined keeps the detected or already listed harnesses. */
+    readonly harnesses?: ReadonlyArray<string> | undefined;
+    readonly imports: SetupImportRequest;
   }
   | { readonly _tag: "SetupApprove"; readonly approver: string }
   | { readonly _tag: "SetupApply" }
@@ -541,11 +549,16 @@ const evaluateSetupCommand = (
   if (action === "plan") {
     const options = parseOptions(
       rest,
-      new Set(["--role", "--scope", "--mode", "--file", "--intent"]),
-      new Set(),
+      new Set(["--role", "--scope", "--mode", "--file", "--intent", "--harness", "--import"]),
+      new Set(["--import-all", "--no-import"]),
     );
     if (options.positionals.length > 0) {
       return invalid("setup plan accepts only named options");
+    }
+    const imports = options.values.get("--import") ?? [];
+    const importModes = [imports.length > 0, options.switches.has("--import-all"), options.switches.has("--no-import")];
+    if (importModes.filter(Boolean).length > 1) {
+      return invalid("--import, --import-all and --no-import are mutually exclusive");
     }
     return command({
       _tag: "SetupPlan",
@@ -554,6 +567,14 @@ const evaluateSetupCommand = (
       mode: one(options, "--mode"),
       files: options.values.get("--file") ?? [],
       intent: one(options, "--intent"),
+      harnesses: options.values.get("--harness"),
+      imports: options.switches.has("--no-import")
+        ? { kind: "none" }
+        : options.switches.has("--import-all")
+        ? { kind: "all" }
+        : imports.length > 0
+        ? { kind: "some", requested: imports }
+        : { kind: "offer" },
     }, format);
   }
   return invalid(`Unknown setup command: ${action ?? ""}`);
@@ -964,6 +985,17 @@ const evaluateCommand = (
       if (options.positionals.length > 1) return invalid("Usage: canonfig restore [<snapshot>]");
       return command({ _tag: "Restore", snapshot: options.positionals[0] }, format);
     }
+    if (area === "harnesses") {
+      const options = parseOptions(arguments_.slice(1), new Set(), new Set());
+      const [action, harness, ...extra] = options.positionals;
+      if (action === undefined) return command({ _tag: "Harnesses" }, format);
+      if ((action !== "include" && action !== "exclude") || harness === undefined || extra.length > 0) {
+        return invalid("Usage: canonfig harnesses [include|exclude <harness>]");
+      }
+      const target = TARGET_IDS.find((id) => id === harness);
+      if (target === undefined) return invalid(`Unknown harness: ${harness}; expected one of ${TARGET_IDS.join(", ")}`);
+      return command({ _tag: "Harnesses", change: { action, harness: target } }, format);
+    }
     if (area === "abandon") {
       const options = parseOptions(arguments_.slice(1), new Set(), new Set());
       if (options.positionals.length > 0) {
@@ -1068,6 +1100,7 @@ export const commandName = (value: CliCommand): string => {
     case "FollowerUnenroll": return "follower.unenroll";
     case "Synchronize": return `sync.${value.mode}`;
     case "Restore": return "restore";
+    case "Harnesses": return value.change === undefined ? "harnesses" : `harnesses.${value.change.action}`;
     case "Recover": return "recover";
     case "Abandon": return "abandon";
     case "Status": return "status";
@@ -1157,6 +1190,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         noBackup: value.noBackup,
       });
     case "Restore": return yield* follower.restore({ snapshot: value.snapshot });
+    case "Harnesses": return yield* follower.harnesses({ change: value.change });
     case "Recover": return yield* follower.recover({ noInput: value.noInput });
     case "Abandon": return yield* follower.abandon();
     case "Status": return yield* follower.status(value.follower);
@@ -1185,6 +1219,8 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         mode: value.mode,
         files: value.files,
         intent: value.intent,
+        harnesses: value.harnesses,
+        imports: value.imports,
       });
     case "SetupApprove": return yield* setup.approve({ approver: value.approver });
     case "SetupApply": return yield* setup.apply();

@@ -176,17 +176,41 @@ After the role and discovery files are selected, use the shipped setup
 controller as the bootstrap plan of record:
 
 ```text
-canonfig setup plan --role <source|follower> --scope <full|cli-only|project-only> --mode <simple|advanced> --file <approved-path> --intent "<selected outcome>"
+canonfig setup plan --role <source|follower> --scope <full|cli-only> --mode <simple|advanced> --file <approved-path> --intent "<selected outcome>"
 canonfig setup approve --approver <operator>
 canonfig setup apply
 canonfig setup status --json
 ```
 
 Pass `--scope` explicitly from the selected goal: `cli-only` for the CLI-only
-goal (no machine identity or schedule), `project-only` to prepare project
-resources without an identity, and the `full` default otherwise. A narrow goal
-planned without `--scope` would silently become full setup and, for a Source
-plan, could establish an identity after approval.
+goal (no machine identity or schedule), and the `full` default otherwise. A
+narrow goal planned without `--scope` would silently become full setup and,
+for a Source plan, could establish an identity after approval.
+
+A full Source plan also selects harnesses and offers an import. Plan once
+without harness or import flags, then show the operator, from the plan:
+
+- the harness list in the `canonfig-folder` item (`harnesses`) next to
+  `detected`, and run `canonfig harnesses` when they want the full table;
+- every `imports.offered` item with its id, target and any
+  `secrets` lines (literal credentials that become `fromEnv` references the
+  operator must export before syncing);
+- every `import collision` and `import skipped` line in `exclusions`.
+
+Ask which harnesses to keep and, per item, what to import. Collisions need one
+chosen id. Then plan again with their answer and present that plan for
+approval:
+
+```text
+canonfig setup plan --role source --harness <id> --harness <id> --import <harness-or-item-id> --import <item-id>
+canonfig setup plan --role source --import-all
+canonfig setup plan --role source --no-import
+```
+
+`--harness` replaces the detected list. Nothing is imported unless the
+operator names it; `--no-import` does not read the harness files at all.
+Declined items stay in the harness and are covered by the takeover snapshot
+the first `canonfig sync --apply` takes.
 
 Show the plan digest, intent, exclusions, inventory, and item graph before the
 approval command. Omit `--file` when no discovery file was approved. An

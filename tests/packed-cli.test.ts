@@ -801,7 +801,7 @@ describe("packed Canonfig executable", () => {
         status: "unhealthy",
       },
     });
-    expect(envelope.data.probes).toHaveLength(7);
+    expect(envelope.data.probes).toHaveLength(8);
     expect(envelope.data.probes).toContainEqual(expect.objectContaining({
       name: "source",
       status: "fail",
@@ -820,9 +820,10 @@ describe("packed Canonfig executable", () => {
     );
     expect(first.status).toBe(2);
     expect(first.stdout).toBe("");
-    // Human output ends a failure with its exit code and category.
-    expect(first.stderr).toBe(
-      "follower synchronization configuration is not enrolled\nexit 2: usage or configuration\n",
+    // Human output ends a failure with its exit code and category. An
+    // unenrolled machine projects its own folder, which does not exist here.
+    expect(first.stderr).toMatch(
+      /canonfig\.jsonc: does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower\nexit 2: usage or configuration\n$/u,
     );
     expect(second).toEqual(first);
     expect(first.stderr).not.toContain("completed");

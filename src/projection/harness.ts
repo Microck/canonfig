@@ -17,7 +17,13 @@ export type Feature = "instructions" | "rules" | "skills" | "mcp" | "hooks" | "a
 export interface HarnessDescriptor {
   readonly id: TargetId;
   readonly name: string;
+  /** Executable names that mean the harness is installed (`detect.ts`). */
   readonly executables: ReadonlyArray<string>;
+  /**
+   * Executables whose names other tools share (Cursor's `agent`). One of these
+   * counts only when the harness root exists too.
+   */
+  readonly genericExecutables?: ReadonlyArray<string> | undefined;
   /** Vendor documentation the layout was checked against. */
   readonly docs: ReadonlyArray<string>;
   /** Date (YYYY-MM-DD) the layout was last checked against `docs`. */

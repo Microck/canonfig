@@ -107,6 +107,7 @@ import {
 } from "../synchronization/follower-orchestration.ts";
 import {
   abandonLocal,
+  harnessesLocal,
   hasOpenLocalRun,
   recoverLocal,
   restoreLocal,
@@ -1582,6 +1583,11 @@ const followerCommandsLayer = (
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),
         )).pipe(Effect.flatMap(outcomePayload)),
+      harnesses: (input) =>
+        mapFailure(harnessesLocal(statePath, (name) => process.env[name], input.change).pipe(
+          Effect.provideService(StateRepository, repository),
+          Effect.provideService(MachineState, machine),
+        )).pipe(Effect.map(payload)),
       status: (follower) =>
         follower === undefined
           ? mapFailure(
@@ -2039,6 +2045,7 @@ const followerCommandsLayer = (
               ...input,
               statePath,
               policyPath,
+              environment: (name) => process.env[name],
               agentPolicy: configuration?.agentPolicy,
               schedule,
               fires: readScheduleFires(statePath),
@@ -2126,7 +2133,7 @@ export const runtimeLayer = (
   );
   const agentResolution = AgentResolutionWithSecretsLive.pipe(Layer.provide(machine));
   const setup = setupCommandsLayer(statePath).pipe(
-    Layer.provide(Layer.merge(machine, enrollment)),
+    Layer.provide(Layer.mergeAll(machine, enrollment, state)),
   );
   const dependencies = Layer.mergeAll(
     state,

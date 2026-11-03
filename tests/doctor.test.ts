@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, X509Certificate } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -76,7 +76,25 @@ describe("doctor probes", () => {
       expect.objectContaining({ name: "scheduler" }),
       expect.objectContaining({ name: "package-managers" }),
       expect.objectContaining({ name: "agent-adapter" }),
+      // No ~/.canonfig/canonfig.jsonc in a clean home.
+      expect.objectContaining({ name: "harnesses", status: "skipped" }),
     ]));
+  });
+
+  it("reports detected and listed harnesses, and warns about a listed one that is not installed", () => {
+    const home = mkdtempSync(resolve(tmpdir(), "canonfig-doctor-harnesses-"));
+    mkdirSync(join(home, ".canonfig"), { recursive: true });
+    writeFileSync(join(home, ".canonfig", "canonfig.jsonc"), "{ \"version\": 1, \"harnesses\": [\"codex\", \"claude-code\"] }\n");
+    mkdirSync(join(home, "bin"));
+    writeFileSync(join(home, "bin", "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const result = executeDoctor(home, ["--json", "--no-input", "--timeout-ms", "5000"], { PATH: join(home, "bin") });
+    const envelope = JSON.parse(result.stdout || result.stderr);
+    expect(envelope.data.probes).toContainEqual({
+      name: "harnesses",
+      status: "warning",
+      message: "listed but not installed: claude-code",
+      details: { listed: "codex,claude-code", excluded: "", detected: "codex", notInstalled: "claude-code", snapshots: 0 },
+    });
   });
 
   it("isolates a local credential-store failure and reports remaining probes", () => {
@@ -197,6 +215,7 @@ describe("doctor source probe response lifecycle", () => {
       timeoutMilliseconds,
       statePath,
       policyPath: join(home, "policy.json"),
+      environment: () => undefined,
       source: {
         endpoint: `https://127.0.0.1:${address.port}`,
         tlsFingerprint: createHash("sha256")
@@ -249,6 +268,7 @@ describe("doctor local credential evidence", () => {
       timeoutMilliseconds,
       statePath,
       policyPath: join(home, "policy.json"),
+      environment: () => undefined,
       source: unreachableSource,
     }).pipe(
       Effect.provide(Layer.mergeAll(

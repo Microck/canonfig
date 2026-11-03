@@ -456,7 +456,28 @@ export interface FolderPlan extends LocalRevisionPlan {
 }
 
 /**
- * Plan a projection of the folder. A surface not yet taken over is written
+ * Whether an applied resource belongs to a held harness: listed but not
+ * installed on this run. Its outputs stay as last applied instead of being
+ * retired, so a scheduled run whose narrower PATH misses an executable does
+ * not undo what an interactive run projected. The shared skills surface is
+ * held while a held harness reads it.
+ */
+const heldResource = (
+  held: ReadonlyArray<TargetId>,
+  context: RootContext,
+  model: LoadedFolder["model"],
+) => {
+  const harnesses = new Set<string>(held);
+  if (held.some((harness) => adapterFor(harness).layout(context, model).sharedSkills)) harnesses.add(sharedSkillsOwner);
+  return (record: AppliedResourceRecord) => {
+    const parsed = parseSurfaceResourceId(record.resource);
+    return parsed !== undefined && harnesses.has(parsed.harness);
+  };
+};
+
+/**
+ * Plan a projection of the folder into its selected harnesses minus `held`
+ * ones (listed but not installed). A surface not yet taken over is written
  * with `replace` (`merge` for config keys); afterward the three-way
  * `replace-if-unmodified` rule protects local edits.
  */
@@ -465,9 +486,11 @@ export const planFolder = (
   context: RootContext,
   takeovers: ReadonlyArray<HarnessTakeover>,
   appliedResources: ReadonlyArray<AppliedResourceRecord>,
+  held: ReadonlyArray<TargetId> = [],
 ) =>
   Effect.gen(function*() {
-    const projected = yield* projectSurfaces(loaded, context, takeovers);
+    const model = { ...loaded.model, harnesses: loaded.model.harnesses.filter((harness) => !held.includes(harness)) };
+    const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers);
     const owned = new Set(takeovers.map((takeover) => `${takeover.harness}\0${takeover.surface}`));
     const units: Array<TakeoverUnit> = [];
     const built: Array<BuiltResource> = [];
@@ -501,7 +524,8 @@ export const planFolder = (
       );
     }
     const current = new Set(built.map((item) => item.resource.id));
-    const retired = appliedResources.filter((record) => !current.has(record.resource));
+    const isHeld = heldResource(held, context, loaded.model);
+    const retired = appliedResources.filter((record) => !current.has(record.resource) && !isHeld(record));
     const planned = yield* planBuilt("folder", loaded.digest, built, retired, appliedResources);
     return { ...planned, takeovers: units, diagnostics: projected.diagnostics, harnesses: projected.harnesses };
   });

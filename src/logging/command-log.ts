@@ -15,6 +15,7 @@ const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
   ["self-update", new Set(["enable", "disable", "status", "check", "apply", "auto"])],
   ["agent", new Set(["harness", "policy"])],
   ["follower", new Set(["enroll"])],
+  ["harnesses", new Set(["exclude", "include"])],
   ["overlay", new Set(["list", "remove", "set"])],
   ["profile", new Set(["list", "select", "show"])],
   ["schedule", new Set(["remove", "set", "status"])],
@@ -135,6 +136,8 @@ const commandName = (arguments_: ReadonlyArray<string>): string => {
   if (second !== undefined && actions?.has(second) === true) {
     return `${first}.${second}`;
   }
+  // `canonfig harnesses` is a command by itself as well as a group.
+  if (second === undefined && first === "harnesses") return first;
   if (
     actions?.has("help") === true
     && (second === undefined || HELP_OPTIONS.has(second))

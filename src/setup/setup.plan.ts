@@ -121,7 +121,11 @@ export const nextEligibleSetupStage = (
 ): SetupStage | "complete" => {
   if (journal === undefined) return "role";
   const completed = new Set(journal.stages.map((stage) => stage.stage));
-  for (const stage of ["role", "preflight", "inventory", "plan"] as const) {
+  // Only a full Source plan selects harnesses.
+  const planning = journal.role === "source" && (journal.scope ?? "full") === "full"
+    ? ["role", "preflight", "inventory", "harnesses", "plan"] as const
+    : ["role", "preflight", "inventory", "plan"] as const;
+  for (const stage of planning) {
     if (!completed.has(stage)) return stage;
   }
   if (!isSetupApproved(journal)) return "approve";

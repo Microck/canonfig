@@ -3,6 +3,7 @@ import { Context, type Effect } from "effect";
 import type { AgentPolicy } from "../domain/identity.ts";
 import type { FollowerId, ProfileId, ResourceId } from "../domain/brand.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
+import type { TargetId } from "../projection/model.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
 import type {
   CliCommandFailure,
@@ -34,6 +35,10 @@ export interface SynchronizeInput {
 export interface RestoreInput {
   /** Snapshot id under `~/.canonfig/.backups/`; the latest when absent. */
   readonly snapshot?: string | undefined;
+}
+
+export interface HarnessesInput {
+  readonly change?: { readonly action: "include" | "exclude"; readonly harness: TargetId } | undefined;
 }
 
 export interface RecoverInput {
@@ -93,6 +98,10 @@ export interface FollowerCommandsService {
   /** Write a takeover snapshot back and exclude its harnesses on this machine. */
   readonly restore: (
     input: RestoreInput,
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  /** Report harness detection and selection; optionally change a local exclusion. */
+  readonly harnesses: (
+    input: HarnessesInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly status: (
     follower?: FollowerId,

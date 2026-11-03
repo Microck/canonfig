@@ -200,9 +200,10 @@ const validatePackageContents = (
   // Self-update adds staged activation, coordination and recovery modules.
   // These bounded budgets include those shipped safety checks; no files or
   // validation are removed to make the package appear smaller.
-  // The candidate measured 461,458 packed / 2,144,997 unpacked bytes.
-  // Keep a small build-identity margin while rejecting unintended assets.
-  if (artifact.size > 480_000 || artifact.unpackedSize > 2_200_000) {
+  // Harness detection, the Source setup import and its setup stage add about
+  // 60 KB unpacked; the candidate measured 474,809 packed / 2,206,433 unpacked
+  // bytes. Keep a small build-identity margin while rejecting unintended assets.
+  if (artifact.size > 480_000 || artifact.unpackedSize > 2_230_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -298,16 +299,18 @@ const validateBinary = (executable: string): void => {
     doctorEnvelope.command !== "doctor"
     || doctorEnvelope.data?.noInput !== true
     || !Array.isArray(doctorEnvelope.data?.probes)
-    || doctorEnvelope.data.probes.length !== 7
+    || doctorEnvelope.data.probes.length !== 8
   ) {
     fail("packed executable doctor returned an invalid envelope");
   }
 
+  // A clean home is neither enrolled nor holding a Canonical Folder, so the
+  // local projection stops on the missing canonfig.jsonc.
   const unattended = invokeExecutable(executable, ["sync", "--apply", "--no-input"]);
   if (
     unattended.status !== 2
     || unattended.stdout !== ""
-    || !unattended.stderr.includes("not enrolled")
+    || !unattended.stderr.includes("canonfig.jsonc: does not exist")
   ) fail("packed executable no-input route was not quiet and truthful");
 };
 

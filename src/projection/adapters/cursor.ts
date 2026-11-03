@@ -36,6 +36,7 @@ export const cursorAdapter: HarnessAdapter = {
     id: "cursor",
     name: "Cursor",
     executables: ["cursor-agent", "agent"],
+    genericExecutables: ["agent"],
     docs: [
       "https://cursor.com/docs/cli/reference/configuration",
       "https://cursor.com/docs/mcp",

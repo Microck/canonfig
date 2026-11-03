@@ -66,6 +66,10 @@ const fixture = (harnesses: ReadonlyArray<TargetId>, extra: Readonly<Record<stri
   write(join(folder, "agents", "reviewer.md"), "---\ndescription: Reviews changes\ntools: [read, search]\n---\nReview carefully.\n");
   write(join(folder, "commands", "ship.md"), "---\ndescription: Ship it\n---\nShip the change.\n");
   write(join(folder, "hooks", "format.sh"), "#!/bin/sh\nexit 0\n", 0o755);
+  // Every harness is installed: a fake executable on the fixture PATH.
+  for (const harness of TARGET_IDS) {
+    write(join(root, "bin", adapterFor(harness).descriptor.executables[0]!), "#!/bin/sh\nexit 0\n", 0o755);
+  }
   return {
     home,
     folder,

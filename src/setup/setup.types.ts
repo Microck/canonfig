@@ -5,14 +5,13 @@ export const SetupRole = Schema.Literals(["source", "follower"]);
 export type SetupRole = typeof SetupRole.Type;
 
 /**
- * How much of the machine setup establishes. `full` is the default and keeps
- * current behavior. `cli-only` verifies the CLI runs without creating
- * identities, installing recipes, or touching schedules and remote
- * connections. `project-only` additionally runs recipe installs but still
- * creates no identity. Named `request` scope because plan items already use
- * `scope` for the machine or resource a step belongs to.
+ * How much of the machine setup establishes. `full` is the default.
+ * `cli-only` verifies the CLI runs without creating identities, installing
+ * recipes, scaffolding the Canonical Folder, or touching schedules and remote
+ * connections. Named `request` scope because plan items already use `scope`
+ * for the machine or resource a step belongs to.
  */
-export const SetupRequestScope = Schema.Literals(["full", "cli-only", "project-only"]);
+export const SetupRequestScope = Schema.Literals(["full", "cli-only"]);
 export type SetupRequestScope = typeof SetupRequestScope.Type;
 
 /**
@@ -22,11 +21,15 @@ export type SetupRequestScope = typeof SetupRequestScope.Type;
  */
 export const SetupMode = Schema.Literals(["simple", "advanced"]);
 export type SetupMode = typeof SetupMode.Type;
-/** Ordered setup stages. `apply` resumes at the next eligible stage. */
+/**
+ * Ordered setup stages. `harnesses` (harness selection and import review)
+ * exists only in a full Source plan. `apply` resumes at the next eligible stage.
+ */
 export const setupStages = [
   "role",
   "preflight",
   "inventory",
+  "harnesses",
   "plan",
   "approve",
   "apply",
@@ -119,6 +122,8 @@ export const SetupItemKind = Schema.Literals([
   "tool-verify",
   "recipe-install",
   "toolchain-verify",
+  "folder-scaffold",
+  "harness-import",
 ]);
 export type SetupItemKind = typeof SetupItemKind.Type;
 
@@ -188,6 +193,29 @@ export const SetupDiscoveryInput = Schema.Struct({
 });
 export type SetupDiscoveryInput = typeof SetupDiscoveryInput.Type;
 
+/** One importable item a selected harness holds, as the plan lists it for review. */
+export const SetupImportOffer = Schema.Struct({
+  id: Schema.String,
+  target: Schema.String,
+  /** Literal credentials the import turns into `fromEnv` references: `env.TOKEN -> fromEnv TOKEN`. */
+  secrets: Schema.Array(Schema.String),
+  notes: Schema.Array(Schema.String),
+});
+export type SetupImportOffer = typeof SetupImportOffer.Type;
+
+/**
+ * The harness import review of a Source plan. Chosen items are the
+ * `harness-import` item's detail; collisions and skipped entries are plan
+ * exclusions. Both are covered by the plan digest; this listing is not.
+ */
+export const SetupImportReview = Schema.Struct({
+  request: Schema.Literals(["offer", "none", "all", "some"]),
+  offered: Schema.Array(SetupImportOffer),
+  /** Offered ids identical to what the folder already holds. */
+  present: Schema.Array(Schema.String),
+});
+export type SetupImportReview = typeof SetupImportReview.Type;
+
 /**
  * The persisted setup journal. Intent, decisions, exclusions, evidence, and
  * approvals are all recorded against `planDigest`, so a re-plan invalidates
@@ -212,6 +240,8 @@ export const SetupJournal = Schema.Struct({
   items: Schema.Array(SetupPlanItem),
   decisions: Schema.Array(Schema.String),
   exclusions: Schema.Array(Schema.String),
+  // Source plans only: what the selected harnesses hold for import.
+  imports: Schema.optional(SetupImportReview),
   evidence: Schema.Array(Schema.String),
   approvals: Schema.Array(SetupApproval),
   catalog: Schema.Array(SetupProvenance),
