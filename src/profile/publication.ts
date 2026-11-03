@@ -30,7 +30,6 @@ import {
   itemResourceId,
   listFolderFiles,
   loadAuthoredFolder,
-  type AuthoredFolder,
 } from "../projection/folder.ts";
 import { RevisionImmutableError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
@@ -146,7 +145,7 @@ const scheduleDefaultOf = (calendar: string): ScheduleDefault => {
  * folder declares, and every file under `hooks/` must be a script a hook runs.
  */
 export const folderProfile = async (folder: string): Promise<MachineProfile> => {
-  const authored: AuthoredFolder = await loadAuthoredFolder(folder);
+  const authored = await loadAuthoredFolder(folder);
   const config = authored.config;
   const configPath = resolve(folder, "canonfig.jsonc");
   const refuse = (message: string) => new CanonicalFolderError({ path: configPath, message });

@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { decodeMachineProfileJsonc } from "../src/domain/profile.ts";
 import { assertProfileMetadataBudget } from "../src/profile/metadata-budget.ts";
 
 import {
   compileProfile,
   compileProfileJsonc,
-  profileContentDigests,
 } from "../src/profile/compiler.ts";
 
 const profile = `{
@@ -122,13 +120,6 @@ describe("transportable revision metadata", () => {
   });
 });
 
-
-it("applies the metadata limit to digest inspection too", () => {
-  const input = decodeMachineProfileJsonc(JSON.stringify({ version: 2, id: "digest-metadata", name: "Digest metadata", resources: [{
-    id: "notes", kind: "directory", target: "~/notes", spec: { kind: "directory", files: Array.from({ length: 12000 }, (_, index) => ({ path: `note-${index}.txt`, content: "fixture" })) }, verify: { method: "digest" },
-  }] }));
-  expect(() => profileContentDigests(input)).toThrow(/metadata.*transport limit/i);
-});
 
 it("does not count separately transported file bytes as revision metadata", () => {
   const compiled = compileProfileJsonc(JSON.stringify({ version: 2, id: "large-blob", name: "Large blob", resources: [{

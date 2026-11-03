@@ -220,11 +220,24 @@ export interface FolderFile {
   readonly executable: boolean;
 }
 
+/** A file's place and mode, without its bytes: what publication compiles skill files from. */
+export interface ListedFile {
+  /** Relative to the listed directory, forward slashes. */
+  readonly path: string;
+  readonly executable: boolean;
+}
+
 /** Where the loader reads authored entries from. */
 interface FolderSource {
   readonly folder: string;
   /** A regular file, or undefined when absent. */
   readonly file: (path: string) => Promise<FolderFile | undefined>;
+  /**
+   * Whether a regular file is executable, or undefined when absent, with the
+   * same checks as `file` but without reading it. Publication streams file
+   * bytes itself, so listing a skill must not hold them in memory.
+   */
+  readonly executable: (path: string) => Promise<boolean | undefined>;
   /** A directory's entries sorted by name, or none when it is absent. */
   readonly entries: (directory: string) => Promise<ReadonlyArray<{ readonly name: string; readonly directory: boolean }>>;
 }
@@ -270,14 +283,22 @@ const diskSource = (folder: string): FolderSource => {
       throw error;
     }
   };
+  const regularFile = async (path: string) => {
+    const found = await status(path);
+    if (found === undefined) return undefined;
+    if (!found.isFile()) throw failure(path, "is not a regular file; links and special files are not authoring input");
+    await insideFolder(path);
+    return found;
+  };
   return {
     folder,
     file: async (path) => {
-      const found = await status(path);
-      if (found === undefined) return undefined;
-      if (!found.isFile()) throw failure(path, "is not a regular file; links and special files are not authoring input");
-      await insideFolder(path);
-      return { content: await readFile(path), executable: (found.mode & 0o100) !== 0 };
+      const found = await regularFile(path);
+      return found === undefined ? undefined : { content: await readFile(path), executable: (found.mode & 0o100) !== 0 };
+    },
+    executable: async (path) => {
+      const found = await regularFile(path);
+      return found === undefined ? undefined : (found.mode & 0o100) !== 0;
     },
     entries: async (directory) => {
       const found = await status(directory);
@@ -306,6 +327,7 @@ const mirrorSource = (folder: string, files: ReadonlyMap<string, FolderFile>): F
   return {
     folder,
     file: (path) => local(key(path)) ? disk.file(path) : Promise.resolve(files.get(key(path))),
+    executable: (path) => local(key(path)) ? disk.executable(path) : Promise.resolve(files.get(key(path))?.executable),
     entries: (directory) => {
       const prefix = key(directory);
       if (local(prefix)) return disk.entries(directory);
@@ -417,24 +439,41 @@ const loadCommands = async (source: FolderSource, directory: string): Promise<Re
     content: document.content,
   }));
 
-/** Regular files beneath a directory, relative with forward slashes. */
-const loadFiles = async (source: FolderSource, directory: string, prefix = ""): Promise<Array<SkillFile>> => {
-  const files: Array<SkillFile> = [];
+/** Regular files beneath a directory, relative with forward slashes, unread. */
+const listFiles = async (source: FolderSource, directory: string, prefix = ""): Promise<Array<ListedFile>> => {
+  const files: Array<ListedFile> = [];
   for (const entry of await source.entries(directory)) {
     const path = join(directory, entry.name);
     const relativePath = `${prefix}${entry.name}`;
     if (entry.directory) {
-      files.push(...await loadFiles(source, path, `${relativePath}/`));
+      files.push(...await listFiles(source, path, `${relativePath}/`));
       continue;
     }
-    const file = await source.file(path);
-    if (file !== undefined) files.push({ path: relativePath, content: file.content, executable: file.executable });
+    const executable = await source.executable(path);
+    if (executable !== undefined) files.push({ path: relativePath, executable });
   }
   return files;
 };
 
-const loadSkills = async (source: FolderSource, directory: string): Promise<ReadonlyArray<SkillTree>> => {
-  const skills: Array<SkillTree> = [];
+/** Regular files beneath a directory with their bytes, for projection. */
+const loadFiles = async (source: FolderSource, directory: string): Promise<Array<SkillFile>> => {
+  const files: Array<SkillFile> = [];
+  for (const listed of await listFiles(source, directory)) {
+    const file = await source.file(join(directory, ...listed.path.split("/")));
+    if (file !== undefined) files.push({ path: listed.path, content: file.content, executable: file.executable });
+  }
+  return files;
+};
+
+/** A skill directory checked against its SKILL.md, with its files as `files` loads them. */
+type LoadedSkill<File> = Omit<SkillTree, "files"> & { readonly files: ReadonlyArray<File> };
+
+const loadSkills = async <File>(
+  source: FolderSource,
+  directory: string,
+  files: (source: FolderSource, directory: string) => Promise<ReadonlyArray<File>>,
+): Promise<ReadonlyArray<LoadedSkill<File>>> => {
+  const skills: Array<LoadedSkill<File>> = [];
   for (const entry of await source.entries(directory)) {
     const path = join(directory, entry.name);
     if (!entry.directory) throw failure(path, "every entry of skills/ is a skill directory");
@@ -463,7 +502,7 @@ const loadSkills = async (source: FolderSource, directory: string): Promise<Read
     skills.push({
       name: entry.name,
       description: frontmatter.description,
-      files: await loadFiles(source, path),
+      files: await files(source, path),
     });
   }
   return skills;
@@ -653,22 +692,22 @@ export const readFolderConfig = (folder: string): Promise<FolderConfig | undefin
 /** Decode `canonfig.jsonc` text, for a caller that edits the file and checks the result. */
 export const decodeFolderConfig = (path: string, text: string): FolderConfig => decodeJsonc(path, text, CanonfigJsonc);
 
-/** Every regular file under one of the folder's directories, relative to it, `/`-separated. */
-export const listFolderFiles = async (
-  folder: string,
-  directory: string,
-): Promise<ReadonlyArray<{ readonly path: string; readonly executable: boolean }>> =>
-  (await loadFiles(diskSource(folder), join(folder, directory))).map((file) => ({ path: file.path, executable: file.executable }));
+/** Every regular file under one of the folder's directories, relative to it, `/`-separated, unread. */
+export const listFolderFiles = (folder: string, directory: string): Promise<ReadonlyArray<ListedFile>> =>
+  listFiles(diskSource(folder), join(folder, directory));
 
 /** The resource id of a folder item reference: `mcp/docs` is `mcp:docs`. */
 export const itemResourceId = (reference: string): string => reference.replace("/", ":");
 
-/** The authored items of a folder, without `local/`: what publication compiles. */
-export interface AuthoredFolder {
+/**
+ * The authored items of a folder, without `local/`. Projection loads skill
+ * files with their bytes; publication lists them and streams the bytes itself.
+ */
+export interface AuthoredFolder<File = SkillFile> {
   readonly config: FolderConfig;
   readonly instructions?: string | undefined;
   readonly rules: ReadonlyArray<RuleDocument>;
-  readonly skills: ReadonlyArray<SkillTree>;
+  readonly skills: ReadonlyArray<LoadedSkill<File>>;
   readonly agents: ReadonlyArray<AgentDocument>;
   readonly commands: ReadonlyArray<CommandDocument>;
   /** Enabled hooks only, scripts resolved to absolute paths. */
@@ -677,7 +716,10 @@ export interface AuthoredFolder {
   readonly settings: HarnessSettings;
 }
 
-const loadAuthored = async (source: FolderSource): Promise<AuthoredFolder> => {
+const loadAuthored = async <File>(
+  source: FolderSource,
+  skillFiles: (source: FolderSource, directory: string) => Promise<ReadonlyArray<File>>,
+): Promise<AuthoredFolder<File>> => {
   const folder = source.folder;
   const configPath = join(folder, "canonfig.jsonc");
   const config = await readJsonc(source, configPath, CanonfigJsonc);
@@ -688,7 +730,7 @@ const loadAuthored = async (source: FolderSource): Promise<AuthoredFolder> => {
     config,
     instructions: await readText(source, join(folder, "AGENTS.md")),
     rules: await loadRules(source, join(folder, "rules")),
-    skills: await loadSkills(source, join(folder, "skills")),
+    skills: await loadSkills(source, join(folder, "skills"), skillFiles),
     agents: await loadAgents(source, join(folder, "agents")),
     commands: await loadCommands(source, join(folder, "commands")),
     hooks: await loadHooks(source, config.hooks ?? [], configPath),
@@ -696,8 +738,9 @@ const loadAuthored = async (source: FolderSource): Promise<AuthoredFolder> => {
   };
 };
 
-/** Load and check the folder's authored items, ignoring `local/`. */
-export const loadAuthoredFolder = (folder: string): Promise<AuthoredFolder> => loadAuthored(diskSource(folder));
+/** Load and check the folder's authored items, ignoring `local/`, with skill files listed but unread. */
+export const loadAuthoredFolder = (folder: string): Promise<AuthoredFolder<ListedFile>> =>
+  loadAuthored(diskSource(folder), listFiles);
 
 /**
  * Load `~/.canonfig/` and its `local/` overlay into the Canonical Model. With
@@ -708,7 +751,7 @@ export const loadCanonicalFolder = async (
   mirror?: ReadonlyMap<string, FolderFile>,
 ): Promise<LoadedFolder> => {
   const source = mirror === undefined ? diskSource(folder) : mirrorSource(folder, mirror);
-  const authored = await loadAuthored(source);
+  const authored = await loadAuthored(source, loadFiles);
   const config = authored.config;
   const localPath = join(folder, "local", "local.jsonc");
   const localConfig = (await readJsonc(source, localPath, LocalJsonc)) ?? {};
@@ -732,7 +775,7 @@ export const loadCanonicalFolder = async (
   );
   const skills = addLocal(
     authored.skills,
-    await localItems("skills", (directory) => loadSkills(source, directory)),
+    await localItems("skills", (directory) => loadSkills(source, directory, loadFiles)),
     (skill) => skill.name, "skill", localDirectory,
   );
   const agents = addLocal(

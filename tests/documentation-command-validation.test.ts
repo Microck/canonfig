@@ -26,12 +26,12 @@ describe("documentation command validation", () => {
     withDocumentationFixture(async (_root, docs) => {
       await writeFile(
         path.join(docs, "invalid.md"),
-        fenced("canonfig source scan"),
+        fenced("canonfig source scan --file AGENTS.md"),
         "utf8",
       );
 
       await expect(validateDocumentation([docs])).rejects.toThrow(
-        /source scan requires at least one --file/u,
+        /Unknown option: --file/u,
       );
     }));
 
@@ -44,7 +44,7 @@ describe("documentation command validation", () => {
       );
 
       await expect(validateDocumentation([docs])).rejects.toThrow(
-        /source publish requires --proposal or --profile-file/u,
+        /Missing required option: --reviewer/u,
       );
     }));
 
@@ -64,12 +64,15 @@ describe("documentation command validation", () => {
     }));
 });
 
+// The folder model removed these commands; documentation that still shows
+// them fails validation instead of drifting from the CLI.
 it.each([
- "canonfig source --json reconcile-skills --profile-file ./profile.jsonc",
- "canonfig --json source reconcile-skills --profile-file ./profile.jsonc",
- "canonfig source reconcile-skills --profile-file ./profile.jsonc --json",
-])("validates reconciliation with global JSON placement: %s", async(command)=>
- withDocumentationFixture(async(_root,docs)=>{
-  const file=path.join(docs,"reconcile.md");await writeFile(file,fenced(command),"utf8");
-  await expect(validateDocumentation([docs])).resolves.toEqual({checked:1,files:[file]});
- }));
+  ["canonfig source reconcile-skills --profile-file ./profile.jsonc", /Unknown source command: reconcile-skills/u],
+  ["canonfig source digest --profile-file ./profile.jsonc", /Unknown source command: digest/u],
+  ["canonfig source publish --profile-file ./profile.jsonc --reviewer me", /Unknown option: --profile-file/u],
+  ["canonfig profile select workstation", /Unknown profile command: select/u],
+] as const)("rejects the removed command %s", async (command, message) =>
+  withDocumentationFixture(async (_root, docs) => {
+    await writeFile(path.join(docs, "removed.md"), fenced(command), "utf8");
+    await expect(validateDocumentation([docs])).rejects.toThrow(message);
+  }));
