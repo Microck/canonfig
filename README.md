@@ -40,7 +40,7 @@ resident follower daemon.
 requires Node.js 24+ and npm. install the same release on the source and every follower:
 
 ```sh
-npm install --global @microck/canonfig@5.0.0
+npm install --global @microck/canonfig@5.0.1
 canonfig --version
 canonfig doctor --no-input
 ```
@@ -56,6 +56,9 @@ together: mixed 4.x/5.0 fleets are rejected. a follower that used `gemini`
 needs `canonfig agent harness codex|claude|custom` after the upgrade. **do not
 replace a 3.2.x installation or its state in place**; use the
 [upgrade guide](website/content/docs/how-to/upgrade.mdx).
+
+5.0.1 expands `~` in agent install paths on followers. 5.0.0 and 5.0.1
+machines sync with each other, so update them one at a time.
 
 ## sync machines
 

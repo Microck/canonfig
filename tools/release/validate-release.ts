@@ -160,7 +160,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const metadata = Schema.decodeUnknownSync(PackageMetadata)(
     JSON.parse(readFileSync(metadataPath, "utf8")),
   );
-  if (metadata.name !== "@microck/canonfig" || metadata.version !== "5.0.0") {
+  if (metadata.name !== "@microck/canonfig" || metadata.version !== "5.0.1") {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
@@ -194,7 +194,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
 const validatePackageContents = (
   artifact: typeof PackedArtifact.Type,
 ): void => {
-  if (artifact.name !== "@microck/canonfig" || artifact.version !== "5.0.0") {
+  if (artifact.name !== "@microck/canonfig" || artifact.version !== "5.0.1") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
   // Self-update adds staged activation, coordination and recovery modules.
@@ -256,7 +256,7 @@ const validateBinary = (executable: string): void => {
 
   const version = invokeExecutable(executable, ["--version"]);
   requireSuccess("packed executable version", version);
-  if (version.stdout !== "5.0.0\n" || version.stderr !== "") {
+  if (version.stdout !== "5.0.1\n" || version.stderr !== "") {
     fail("packed executable version output is invalid");
   }
 

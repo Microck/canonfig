@@ -22,6 +22,21 @@ in one maintenance window:
 3. Upgrade each Follower Machine.
 4. Resume the schedules.
 
+## Upgrade within a release line
+
+Patch releases of one line sync with each other, so you can update the Source
+Machine and each Follower Machine one at a time, without pausing schedules.
+Finish any interrupted run with `canonfig recover` first, then on each machine:
+
+```bash
+npm install --global @microck/canonfig@5.0.1
+canonfig --version
+canonfig doctor --no-input
+```
+
+Restart a running Source Machine after you replace its package, as in
+[Upgrade the Source Machine](#2-upgrade-the-source-machine).
+
 ## Upgrade from 4.x
 
 ### Before you start
@@ -50,7 +65,7 @@ Write down the schedule `status` reports, so you can set it again in step 4.
 Install into the same npm prefix as the existing installation, then check it:
 
 ```bash
-npm install --global @microck/canonfig@5.0.0
+npm install --global @microck/canonfig@5.0.1
 canonfig --version
 canonfig doctor --no-input
 ```
@@ -78,7 +93,7 @@ The output reports `running` and `serving: true`.
 On each Follower Machine, install into the same prefix and preview a sync:
 
 ```bash
-npm install --global @microck/canonfig@5.0.0
+npm install --global @microck/canonfig@5.0.1
 canonfig --version
 canonfig doctor --no-input
 canonfig sync --plan
@@ -114,10 +129,10 @@ separate Source Machine and Follower Machines and leave the 3.2.x installation
 untouched.
 
 <Callout type="warn">
-  Do not install 5.0.0 into the npm prefix of a 3.2.x installation, and do not
+  Do not install 5.0.1 into the npm prefix of a 3.2.x installation, and do not
   point it at the 3.2.x state directory. Doing so replaces the package the old
   installation runs. Leave the existing package, state directory, service,
-  schedules, and credential items untouched while setting up 5.0.0.
+  schedules, and credential items untouched while setting up 5.0.1.
 </Callout>
 
 1. On each 3.2.x machine, record the installed version, role, profile, and
@@ -131,7 +146,7 @@ untouched.
    On Linux or macOS, as that account:
 
    ```bash
-   npm install --global --prefix "$HOME/.local" @microck/canonfig@5.0.0
+   npm install --global --prefix "$HOME/.local" @microck/canonfig@5.0.1
    export PATH="$HOME/.local/bin:$PATH"
    canonfig --version
    ```
@@ -143,7 +158,7 @@ untouched.
 5. Follow [Sync your first two machines](/tutorials/first-sync) from step 2 to
    create a Source Machine with its own identity, publish the profile, and
    enroll each Follower Machine with its own invitation. If the 3.2.x Source
-   Machine runs on the same host, give the 5.0.0 Source Machine another port
+   Machine runs on the same host, give the 5.0.1 Source Machine another port
    with `canonfig source service install --host 127.0.0.1 --port 17343`, and
    use that port in the invitation endpoint and in
    `canonfig tunnel start --local-port`.
@@ -152,7 +167,7 @@ untouched.
 
 | Message | Cause | Fix |
 | --- | --- | --- |
-| "source/follower version mismatch: source 4.2.0 vs follower 5.0.0" (exit 2) | The two machines run different `major.minor` releases. | Upgrade the machine on the older line. |
+| "source/follower version mismatch: source 4.2.0 vs follower 5.0.1" (exit 2) | The two machines run different `major.minor` releases. | Upgrade the machine on the older line. |
 | "run `<id>` was created by canonfig 4.2.0 ... finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade" (exit 4) | The machine has an open run from the previous build. | Reinstall the version the message names, run `canonfig recover`, then upgrade again. Set `CANONFIG_ACCEPT_FOREIGN_BUILD=1` only if you cannot reinstall that build and accept that the upgraded build finishes a run it did not start. |
 | "a revision published by an earlier canonfig release cannot be served; publish the profile again on the Source Machine" | The Source Machine holds a Profile Revision the upgraded release cannot serve. | On the Source Machine, run `canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer "$USER"`, then sync again. |
 | "the gemini agent harness was removed in 5.0.0; run 'canonfig agent harness codex\|claude\|custom ...' to replace it" (exit 2) | The Follower Machine still has a `gemini` agent harness configured. | Set another harness, for example `canonfig agent harness codex --executable /usr/local/bin/codex`, then sync again. See [Let a Configuration Agent resolve work](/how-to/configure-agent-policies#replace-a-gemini-harness). |
