@@ -54,6 +54,12 @@ export type DesiredResource =
     readonly digest: ContentDigest;
     readonly format: "toml" | "json" | "yaml";
     readonly keys: ReadonlyArray<string>;
+    /**
+     * Keys this run writes (or removes) and then stops owning: a restore
+     * giving some keys of a file back while Canonfig keeps the others. The
+     * Applied Resource Record keeps only the remaining keys.
+     */
+    readonly releases?: ReadonlyArray<string> | undefined;
   }
   | {
     readonly kind: "skill";

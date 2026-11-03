@@ -30,6 +30,7 @@ import type {
   VerificationEvidence,
 } from "../state/state-repository.types.ts";
 import {
+  configOwnership,
   executionContexts,
   executionLimits,
   executeSynchronizationAction,
@@ -748,9 +749,10 @@ export const recoverSynchronizationPlan = (
       for (const resource of outcome.verified) {
         if (removedResources.has(resource)) continue;
         const value = desired.get(resource);
+        const owned = value?.kind === "config" ? configOwnership(value, recoveryInput.artifacts) : undefined;
         const digest = value === undefined
           ? undefined
-          : desiredResourceDigest(value);
+          : owned?.digest ?? desiredResourceDigest(value);
         if (digest !== undefined) {
           const ownedFiles = value === undefined ? undefined : ownedFilesFor(value);
           appliedResources.push({
@@ -769,7 +771,7 @@ export const recoverSynchronizationPlan = (
               : undefined,
             symlinkTo: value?.kind === "file" ? value.symlinkTo : undefined,
             ownedFiles,
-            ownedKeys: value?.kind === "config" ? value.keys : undefined,
+            ownedKeys: owned?.ownedKeys,
             configFormat: value?.kind === "config" ? value.format : undefined,
           });
         }

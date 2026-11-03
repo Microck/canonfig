@@ -11,7 +11,8 @@ import type {
 } from "../domain/brand.ts";
 import { configPathSegments } from "../domain/config-path.ts";
 import type { PublishedResource, VerificationInput } from "../domain/profile.ts";
-import type { ApplyPolicy, ConfigValue } from "../domain/resource.ts";
+import type { ApplyPolicy } from "../domain/resource.ts";
+import { ConfigValue } from "../domain/resource.ts";
 import {
   localProjectionFollower,
   type AppliedResourceRecord,
@@ -26,7 +27,7 @@ import {
   sha256Hex,
 } from "../profile/profile-codec.ts";
 import type { HarnessTakeover } from "../state/state-repository.types.ts";
-import { renderConfigDocument } from "../synchronization/config-codec.ts";
+import { getConfigPath, parseConfigDocument, renderConfigDocument } from "../synchronization/config-codec.ts";
 import {
   observeFollowerResource,
   removedResourceState,
@@ -353,6 +354,7 @@ const configResource = (
   policy: ApplyPolicy,
   format: ConfigFormat,
   keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }>,
+  releases?: ReadonlyArray<string>,
 ): BuiltResource => {
   const content = renderConfigDocument({ format, keys });
   const digest = sha256BytesHex(content);
@@ -365,6 +367,7 @@ const configResource = (
         digest,
         format,
         keys: keys.map((entry) => entry.path).sort((left, right) => left.localeCompare(right)),
+        releases: releases === undefined ? undefined : [...releases].sort((left, right) => left.localeCompare(right)),
       },
       verification: { method: "digest", digest },
     },
@@ -598,8 +601,6 @@ export const takeoverSummary = (units: ReadonlyArray<TakeoverUnit>, backup: bool
 export interface RestorePlan extends LocalRevisionPlan {
   /** Real harnesses the snapshot holds, which a converged restore excludes. */
   readonly harnesses: ReadonlyArray<string>;
-  /** Takeover rows a converged restore releases. */
-  readonly released: ReadonlyArray<{ readonly harness: string; readonly surface: string }>;
 }
 
 /**
@@ -607,11 +608,13 @@ export interface RestorePlan extends LocalRevisionPlan {
  * what Canonfig last applied; anything else is drift and the restore is
  * refused before anything is written. The returned revision lists every
  * restored resource as removed, so a converged run also deletes their Applied
- * Resource Records in the same transaction.
+ * Resource Records in the same transaction. A config file whose owned keys
+ * the snapshot captured only in part (a later run took over more) keeps the
+ * others: its resource writes them unchanged and releases only the captured
+ * keys, so its record then names just the kept keys.
  */
 export const planRestore = (
   snapshot: Snapshot,
-  takeovers: ReadonlyArray<HarnessTakeover>,
   appliedResources: ReadonlyArray<AppliedResourceRecord>,
   follower: FollowerId,
 ) =>
@@ -619,6 +622,12 @@ export const planRestore = (
     const machine = yield* MachineState;
     const appliedById = new Map(appliedResources.map((record) => [record.resource, record]));
     const platform = (yield* machine.userDirectories()).home.platform;
+    const readConfig = (target: string, format: ConfigFormat) =>
+      machine.normalizePath({ path: target }).pipe(
+        Effect.flatMap((path) => machine.readFile({ path, maximumBytes: 8 * 1024 * 1024 })),
+        Effect.flatMap((bytes) => Effect.try(() => parseConfigDocument(format, new TextDecoder().decode(bytes)))),
+        Effect.mapError((error) => new ProjectionHumanActionError({ message: `${target}: cannot read the keys Canonfig keeps: ${String(error)}` })),
+      );
     const surfaceOf = (entry: SnapshotEntry) => entry.kind === "config" ? entry.surface.split("#")[0]! : entry.surface;
     const groups = new Map<ResourceIdType, Array<SnapshotEntry>>();
     for (const entry of snapshot.manifest.entries) {
@@ -656,6 +665,7 @@ export const planRestore = (
 
     const built: Array<BuiltResource> = [];
     const retired: Array<AppliedResourceRecord> = [];
+    const restored: Array<ResourceIdType> = [];
     const read = (copy: string) => Effect.tryPromise({
       try: () => readFile(snapshotCopy(snapshot, copy)),
       catch: (error) => new ProjectionHumanActionError({ message: `snapshot ${snapshot.id} is missing ${copy}: ${String(error)}` }),
@@ -664,14 +674,34 @@ export const planRestore = (
       const applied = appliedById.get(id)!;
       const first = entries[0]!;
       if (first.kind === "config") {
+        const captured = new Set(entries.flatMap((entry) => entry.kind === "config" ? [entry.key] : []));
         const keys = entries.flatMap((entry) => {
           if (entry.kind !== "config" || entry.state === "absent") return [];
           const value = snapshot.keys.get(entry.harness)?.get(entry.target)?.get(entry.key);
           return value === undefined ? [] : [{ path: entry.key, value }];
         });
-        built.push(configResource(id, first.target, "merge", first.format, keys));
+        const kept = (applied.ownedKeys ?? []).filter((key) => !captured.has(key));
+        if (kept.length === 0) {
+          built.push(configResource(id, first.target, "merge", first.format, keys));
+          restored.push(id);
+          continue;
+        }
+        // The drift check above proved the kept keys still hold what Canonfig
+        // applied, so their current values are written back unchanged.
+        const current = yield* readConfig(first.target, first.format);
+        const keptValues = yield* Effect.forEach(kept, (key) => {
+          const value = getConfigPath(current, key);
+          return value === undefined
+            ? Effect.succeed([])
+            : Schema.decodeUnknownEffect(ConfigValue)(value).pipe(
+              Effect.map((decoded) => [{ path: key, value: decoded }]),
+              Effect.mapError(() => new ProjectionHumanActionError({ message: `${first.target}: ${key} holds a value Canonfig cannot write back (null)` })),
+            );
+        });
+        built.push(configResource(id, first.target, "merge", first.format, [...keys, ...keptValues.flat()], [...captured]));
         continue;
       }
+      restored.push(id);
       if (first.state === "absent") {
         retired.push(applied);
         continue;
@@ -729,8 +759,8 @@ export const planRestore = (
       });
     }
     const manifestDigest = sha256Hex(canonicalJson(JSON.parse(JSON.stringify(snapshot.manifest))));
-    const restored = [...groups.keys()];
-    // Every restored surface leaves Canonfig's ownership with this run.
+    // Every restored surface leaves Canonfig's ownership with this run; a
+    // config file restored in part leaves only through its released keys.
     const planned = yield* planBuilt({
       follower,
       origin: "snapshot",
@@ -742,12 +772,5 @@ export const planRestore = (
     });
     const harnesses = [...new Set(snapshot.manifest.entries.map((entry) => entry.harness))]
       .filter((harness) => harness !== sharedSkillsOwner);
-    const restoredSurfaces = new Set(restored.map((id) => {
-      const parsed = parseSurfaceResourceId(id)!;
-      return `${parsed.harness}\0${parsed.surface}`;
-    }));
-    const released = takeovers
-      .filter((takeover) => restoredSurfaces.has(`${takeover.harness}\0${takeover.surface.split("#")[0]!}`))
-      .map((takeover) => ({ harness: takeover.harness, surface: takeover.surface }));
-    return { ...planned, harnesses, released };
+    return { ...planned, harnesses } satisfies RestorePlan;
   });

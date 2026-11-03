@@ -130,28 +130,40 @@ export const finishProjectionRun = (
   });
 
 /**
- * After a converged restore: release the restored surfaces and exclude their
- * harnesses in `local/local.jsonc`, so the next sync does not take them over
- * again. The run itself already deleted their Applied Resource Records.
+ * After a converged restore: release the restored surfaces, and the single
+ * config keys a partly restored file gave back, then exclude their harnesses
+ * in `local/local.jsonc` so the next sync does not take them over again. The
+ * run itself already deleted or narrowed their Applied Resource Records.
  */
 const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
   Effect.gen(function*() {
     const repository = yield* StateRepository;
-    const restored = (revision.removedResources ?? []).flatMap((id) => {
+    const surfaces = new Set<string>();
+    const keys = new Set<string>();
+    const harnesses = new Set<string>();
+    for (const id of revision.removedResources ?? []) {
       const parsed = parseSurfaceResourceId(id);
-      return parsed === undefined ? [] : [parsed];
-    });
+      if (parsed === undefined) continue;
+      surfaces.add(`${parsed.harness}\0${parsed.surface}`);
+      harnesses.add(parsed.harness);
+    }
+    for (const entry of revision.desired) {
+      const parsed = parseSurfaceResourceId(entry.resource);
+      if (parsed === undefined || entry.desired.kind !== "config" || entry.desired.releases === undefined) continue;
+      for (const key of entry.desired.releases) keys.add(`${parsed.harness}\0${parsed.surface}#${key}`);
+      harnesses.add(parsed.harness);
+    }
     const takeovers = yield* repository.loadHarnessTakeovers();
-    const restoredKeys = new Set(restored.map((entry) => `${entry.harness}\0${entry.surface}`));
     yield* repository.releaseTakeovers(takeovers
-      .filter((takeover) => restoredKeys.has(`${takeover.harness}\0${takeover.surface.split("#")[0]!}`))
+      .filter((takeover) =>
+        surfaces.has(`${takeover.harness}\0${takeover.surface.split("#")[0]!}`)
+        || keys.has(`${takeover.harness}\0${takeover.surface}`)
+      )
       .map((takeover) => ({ harness: takeover.harness, surface: takeover.surface })));
-    const harnesses = [...new Set(restored.map((entry) => entry.harness))]
-      .filter((harness) => harness !== sharedSkillsOwner)
-      .sort();
-    if (harnesses.length === 0) return [];
-    yield* editExcludedHarnesses(folderOf(statePath), (previous) => [...previous, ...harnesses]);
-    return harnesses;
+    const excluded = [...harnesses].filter((harness) => harness !== sharedSkillsOwner).sort();
+    if (excluded.length === 0) return [];
+    yield* editExcludedHarnesses(folderOf(statePath), (previous) => [...previous, ...excluded]);
+    return excluded;
   });
 
 /**
@@ -326,9 +338,8 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
   const synchronization = yield* Synchronization;
   yield* assertUpgradeGate(follower);
   const snapshot = yield* readSnapshot(backupsOf(statePath), requested);
-  const takeovers = yield* repository.loadHarnessTakeovers();
   const applied = yield* repository.loadAppliedResources(follower);
-  const planned = yield* planRestore(snapshot, takeovers, applied, follower);
+  const planned = yield* planRestore(snapshot, applied, follower);
   const run = newRunId();
   const outcome = yield* Effect.gen(function*() {
     yield* repository.recordLocalRevision(planned.revision, new Date().toISOString());

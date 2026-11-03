@@ -696,6 +696,7 @@ export const PlanningLocalRevisionSchema = Schema.Struct({
         digest: ContentDigest,
         format: Schema.Literals(["toml", "json", "yaml"]),
         keys: Schema.Array(Schema.String),
+        releases: Schema.optional(Schema.Array(Schema.String)),
       }),
       Schema.Struct({
         kind: Schema.Literal("skill"),

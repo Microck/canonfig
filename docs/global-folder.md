@@ -146,6 +146,13 @@ restore of snapshot <id> refused, nothing was changed:
 Keep or move the local changes, sync until it converges, then restore again
 ```
 
+A snapshot holds only what its own run took over. When a later run took over
+more keys of the same config file, restoring the earlier snapshot writes back
+only the keys it captured. The config resource writes the later keys back
+unchanged and lists the captured ones in `releases`, so the run's Applied
+Resource Record keeps the later keys (with a digest of just their values) and
+only the captured keys' takeover rows are released.
+
 ## Local folder merge and collisions
 
 Projection adds `local/` items within the Source's `local.allow`. A local

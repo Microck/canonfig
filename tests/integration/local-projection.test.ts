@@ -126,6 +126,12 @@ const appliedCount = (value: Fixture): number =>
     return (yield* repository.loadAppliedResources(localProjectionFollower)).length;
   }).pipe(Effect.provide(stateRepositoryLayer(value.statePath))));
 
+const appliedRecord = (value: Fixture, resource: string) =>
+  Effect.runSync(Effect.gen(function*() {
+    const repository = yield* StateRepository;
+    return (yield* repository.loadAppliedResources(localProjectionFollower)).find((record) => record.resource === resource);
+  }).pipe(Effect.provide(stateRepositoryLayer(value.statePath))));
+
 /** Every file beneath a directory, relative, with its bytes. */
 const tree = (root: string) => {
   const files = new Map<string, string>();
@@ -344,5 +350,36 @@ describe("local projection", () => {
     expect((await sync(local, "plan")).takeovers.every((entry) => entry.backup === "no backup")).toBe(true);
     expect((await sync(local, "apply")).outcome).toMatchObject({ outcome: "Converged" });
     expect(snapshots(local)).toEqual([]);
+  }, 60_000);
+
+  it("restores only the config keys a snapshot captured and keeps later takeovers owned", async () => {
+    const value = fixture(["codex"], { settings: { codex: { model: "gpt-5" } } });
+    const configPath = join(value.home, ".codex", "config.toml");
+    write(configPath, "model = \"o3\"\napproval_policy = \"never\"\n\n[mcp_servers.old]\ncommand = \"old\"\n");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const [first] = snapshots(value);
+    // A later run takes over one more key of the same file, with its own snapshot.
+    const canonfigPath = join(value.folder, "canonfig.jsonc");
+    const folderConfig = JSON.parse(readFileSync(canonfigPath, "utf8").replace(/^\/\/.*\n/u, ""));
+    write(canonfigPath, JSON.stringify({ ...folderConfig, settings: { codex: { model: "gpt-5", approval_policy: "on-request" } } }));
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const [, second] = snapshots(value);
+    expect(second).toBeDefined();
+
+    const restored = await restore(value, first);
+    expect(restored.outcome).toMatchObject({ outcome: "Converged" });
+    const config = parseToml(readFileSync(configPath, "utf8"));
+    expect(config.model).toBe("o3");
+    expect(config.mcp_servers).toEqual({ old: { command: "old" } });
+    expect(config.approval_policy).toBe("on-request");
+    expect(appliedRecord(value, "harness:codex:config")?.ownedKeys).toEqual(["approval_policy"]);
+    expect(takeoverRows(value).filter((row) => String(row.surface).startsWith("config")).map((row) => row.surface))
+      .toEqual(["config#approval_policy"]);
+
+    // The kept record matches the file, so the later snapshot restores too.
+    expect((await restore(value, second)).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(configPath, "utf8")).toContain("approval_policy = \"never\"");
+    expect(appliedRecord(value, "harness:codex:config")).toBeUndefined();
+    expect(takeoverRows(value)).toEqual([]);
   }, 60_000);
 });

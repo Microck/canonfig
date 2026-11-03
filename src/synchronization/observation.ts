@@ -6,7 +6,7 @@ import type { AppliedResourceRecord, ObservedResourceState } from "../domain/syn
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachineFilesystemError } from "../machine/machine-state.errors.ts";
 import { sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
-import { getConfigPath, parseConfigDocument, renderConfigDocument } from "./config-codec.ts";
+import { configKeysDigest, parseConfigDocument, renderConfigDocument } from "./config-codec.ts";
 import { defaultSynchronizationExecutionLimits } from "./executor.ts";
 import { toolInstallMethods } from "./installer-bindings.ts";
 import { installedToolVersion } from "./installed-tool-version.ts";
@@ -132,21 +132,12 @@ const observeConfig = (
         const current = parseConfigDocument(desired.format, decoder.decode(bytes));
         // The owned values go through the exact rendering the desired digest
         // used, key ordering included, so an unchanged file observes equal.
-        const ownedDigest = (keys: ReadonlyArray<string>) => {
-          const present = keys.flatMap((key) => {
-            const value = getConfigPath(current, key);
-            return value === undefined ? [] : [{ path: key, value }];
-          });
-          return present.length === 0
-            ? undefined
-            : sha256BytesHex(renderConfigDocument({ format: desired.format, keys: present }));
-        };
         const appliedKeysDigest = applied?.ownedKeys === undefined || applied.configFormat !== desired.format
           ? undefined
-          : ownedDigest(applied.ownedKeys);
+          : configKeysDigest(desired.format, current, applied.ownedKeys);
         return {
           state: "present",
-          digest: ownedDigest(desired.keys)
+          digest: configKeysDigest(desired.format, current, desired.keys)
             ?? sha256BytesHex(renderConfigDocument({ format: desired.format, keys: [] })),
           executable: false,
           objectKind: "regular",
