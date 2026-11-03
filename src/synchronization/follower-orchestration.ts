@@ -276,20 +276,6 @@ interface HydratedDesiredResource {
   readonly artifacts: ReadonlyArray<SynchronizationArtifact>;
 }
 
-export const authorizationViewIdentity = (
-  metadata: Pick<RevisionMetadata, "id" | "profileId" | "metadataDigest">,
-) => {
-  const suffix = `view:${metadata.metadataDigest}`;
-  return {
-    revision: Schema.decodeUnknownSync(ProfileRevisionId)(
-      `${metadata.id}:${suffix}`,
-    ),
-    profile: Schema.decodeUnknownSync(ProfileId)(
-      `${metadata.profileId}:${suffix}`,
-    ),
-  };
-};
-
 const desiredFor = (
   spec: PublishedResourceSpec,
   contentByBlob: ReadonlyMap<string, Uint8Array>,
@@ -554,7 +540,10 @@ const persistableRevision = (
   );
   return {
     id: revision.id,
-    profileId: authorizationViewIdentity(metadata).profile,
+    // One record per run revision (`<source revision>:view:<digest>`), so its
+    // profile carries the same suffix: two runs of one Source revision that
+    // project differently must not share a (profile, sequence) row.
+    profileId: Schema.decodeUnknownSync(ProfileId)(`${metadata.profileId}${revision.id.slice(metadata.id.length)}`),
     sequence: metadata.sequence,
     canonicalBytes,
     digest: sha256Hex(canonicalBytes),
