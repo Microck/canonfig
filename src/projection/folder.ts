@@ -696,6 +696,29 @@ export const decodeFolderConfig = (path: string, text: string): FolderConfig => 
 export const listFolderFiles = (folder: string, directory: string): Promise<ReadonlyArray<ListedFile>> =>
   listFiles(diskSource(folder), join(folder, directory));
 
+/** The authoring allowlist: the only top-level entries of `~/.canonfig/` that are published or mirrored. */
+const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks"] as const;
+
+/**
+ * The authoring entries a folder holds, in allowlist order: any file, and any
+ * directory with something in it. An empty directory holds no item, so the
+ * mirror can fill it. `follower enroll` refuses a folder with entries,
+ * because on a follower those places hold the Source's mirror.
+ */
+export const authoredEntries = async (folder: string): Promise<ReadonlyArray<string>> => {
+  const present: Array<string> = [];
+  for (const name of AUTHORING_ENTRIES) {
+    const path = join(folder, name);
+    try {
+      const stat = await lstat(path);
+      if (!stat.isDirectory() || (await readdir(path)).length > 0) present.push(name);
+    } catch (error) {
+      if (!(error instanceof Error && isMissing(error))) throw error;
+    }
+  }
+  return present;
+};
+
 /** The resource id of a folder item reference: `mcp/docs` is `mcp:docs`. */
 export const itemResourceId = (reference: string): string => reference.replace("/", ":");
 

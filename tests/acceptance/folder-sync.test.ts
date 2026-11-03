@@ -171,13 +171,22 @@ const serve = async (source: Machine): Promise<string> => {
   });
 };
 
-/** Issue an invitation and enroll `follower` with it over stdin. */
-const enroll = (source: Machine, endpoint: string, follower: Machine, name: string, groups: ReadonlyArray<string> = []) => {
+/** Issue an invitation and enroll `follower` with it over stdin, expecting exit `status`. */
+const enroll = (
+  source: Machine,
+  endpoint: string,
+  follower: Machine,
+  name: string,
+  groups: ReadonlyArray<string> = [],
+  status = 0,
+) => {
   const output = join(source.home, `${name}.invite`);
   succeed(source.run(["source", "invite", "--endpoint", endpoint, "--output", output, ...groups.flatMap((group) => ["--group", group])]), "invite");
   const envelope = readFileSync(output, "utf8");
   rmSync(output);
-  return succeed(follower.run(["follower", "enroll", "--stdin", "--name", name], envelope), `enroll ${name}`);
+  const result = follower.run(["follower", "enroll", "--stdin", "--name", name], envelope);
+  expect(result.status, `enroll ${name}: ${result.stdout}${result.stderr}`).toBe(status);
+  return result;
 };
 
 /** A Source with its folder published and served. */
@@ -207,28 +216,36 @@ describe("folder sync across a Source and its followers", () => {
     const follower = machine("laptop", ["claude-code"]);
 
     // Before enrolling, the laptop projected a folder of its own.
+    const notes = "---\nname: notes\ndescription: Laptop notes\n---\nKeep notes.\n";
     write(join(follower.folder, "canonfig.jsonc"), JSON.stringify({ version: 1, harnesses: ["claude-code"] }));
     write(join(follower.folder, "AGENTS.md"), "# Laptop instructions\n");
+    write(join(follower.folder, "skills", "notes", "SKILL.md"), notes);
     succeed(follower.run(["sync", "--apply"]), "local sync");
     expect(read(join(follower.home, ".claude", "CLAUDE.md"))).toContain("Laptop instructions");
     const localRecords = appliedFollowers(follower.state).local ?? 0;
     expect(localRecords).toBeGreaterThan(0);
 
-    // Enrolling hands those records to the follower identity in one step.
+    // Those authored files sit where the mirror goes, so enrolling stops
+    // before it contacts the Source and says how to keep them.
+    const refused = enroll(source, endpoint, follower, "laptop", [], 2);
+    expect(refused.envelope.message).toContain("canonfig.jsonc, AGENTS.md, skills");
+    expect(refused.envelope.message).toContain(join(follower.folder, "local"));
+    expect(appliedFollowers(follower.state)).toEqual({ local: localRecords });
+    expect(read(join(follower.folder, "AGENTS.md"))).toBe("# Laptop instructions\n");
+
+    // The laptop keeps its skill as a local item and drops the rest.
+    write(join(follower.folder, "local", "skills", "notes", "SKILL.md"), notes);
+    rmSync(join(follower.folder, "skills"), { recursive: true });
+    rmSync(join(follower.folder, "AGENTS.md"));
+    rmSync(join(follower.folder, "canonfig.jsonc"));
+
+    // Enrolling hands the local records to the follower identity in one step.
     const enrolled = enroll(source, endpoint, follower, "laptop").envelope.data;
     expect(enrolled).toMatchObject({ profile: "workstation", adoptedLocalRecords: localRecords });
     // Every record now belongs to the enrolled identity; none is left under `local`.
     const owners = appliedFollowers(follower.state);
     expect(owners.local).toBeUndefined();
     expect(Object.values(owners)).toEqual([localRecords]);
-
-    // The laptop's own authored files are where the mirror goes: the first
-    // sync keeps them as drift instead of overwriting them.
-    const blocked = follower.run(["sync", "--apply"]);
-    expect(blocked.status, blocked.stdout + blocked.stderr).toBe(4);
-    expect(read(join(follower.folder, "AGENTS.md"))).toBe("# Laptop instructions\n");
-    rmSync(join(follower.folder, "AGENTS.md"));
-    rmSync(join(follower.folder, "canonfig.jsonc"));
 
     const applied = succeed(follower.run(["sync", "--apply"]), "follower sync").envelope.data;
     expect(applied).toMatchObject({ outcome: { outcome: "Converged" }, notInstalled: ["codex"] });
@@ -243,9 +260,10 @@ describe("folder sync across a Source and its followers", () => {
     expect(mirrorConfig.profile).toBeUndefined();
 
     // The projection was updated from the Source, not refused as foreign:
-    // the re-keyed record says Canonfig wrote it.
+    // the re-keyed record says Canonfig wrote it. The local skill stays.
     expect(read(join(follower.home, ".claude", "CLAUDE.md"))).toContain("Source instructions");
     expect(read(join(follower.home, ".claude", "skills", "deploy", "SKILL.md"))).toContain("Deploy carefully.");
+    expect(read(join(follower.home, ".claude", "skills", "notes", "SKILL.md"))).toBe(notes);
     expect(existsSync(join(follower.home, ".codex"))).toBe(false);
 
     const again = succeed(follower.run(["sync", "--apply"]), "second sync").envelope.data;

@@ -101,6 +101,7 @@ import {
   restoreLocal,
   synchronizeLocal,
 } from "../projection/sync.ts";
+import { authoredEntries } from "../projection/folder.ts";
 import {
   FollowerCommands,
   type FollowerCommandsService,
@@ -923,6 +924,28 @@ const followerCommandsLayer = (
               // Replacing is explicit. The superseded identity is revoked on
               // its Source and its credential removed once the new identity
               // is enrolled, so a failed replacement keeps the working one.
+            }
+            // A follower's authoring entries are the Source's mirror. Items
+            // this machine authored there itself would block its first sync
+            // as drift, so the machine moves them into local/ (or removes
+            // them) before it enrolls. A completed enrollment already holds
+            // its mirror there, so rotation and --replace skip the check.
+            if (existing === undefined || existing.enrollmentPending === true) {
+              const folder = dirname(statePath);
+              const authored = yield* Effect.tryPromise({
+                try: () => authoredEntries(folder),
+                catch: (cause) => new CliCommandFailure({
+                  category: "usage-or-configuration",
+                  message: `${folder} could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+                }),
+              });
+              if (authored.length > 0) {
+                return yield* new CliCommandFailure({
+                  category: "usage-or-configuration",
+                  message:
+                    `${folder} already holds authored items (${authored.join(", ")}), where a follower keeps its Source's mirror; move what this machine should keep into ${join(folder, "local")} (rules, skills, agents and commands as files, MCP servers and settings in local.jsonc) or remove them, then enroll again`,
+                });
+              }
             }
             if (existing?.enrollmentPending === true) {
               const resumed = yield* finalizeFollowerEnrollment({
