@@ -1,0 +1,183 @@
+# Canonical Folder internals
+
+This document describes how Canonfig turns `~/.canonfig/` into a signed
+Profile Revision on the Source Machine and into harness files on every
+machine. The decision record is
+[ADR 0003](adr/0003-global-canonfig-folder.md); user-facing reference lives at
+https://canonfig.micr.dev/docs/reference/canonfig-folder/ and
+https://canonfig.micr.dev/docs/reference/harnesses/.
+
+## Folder layout and allowlist
+
+`src/projection/folder.ts` reads only the authoring allowlist:
+
+| Path | Content |
+| --- | --- |
+| `canonfig.jsonc` | `version: 1`, `profile`, `harnesses`, `mcp`, `hooks`, `settings`, `tools`, `credentials`, `groups`, `scheduleDefault`, `local` |
+| `AGENTS.md` | shared instructions |
+| `rules/<id>.md` | rules |
+| `skills/<name>/` | skill trees with `SKILL.md` |
+| `agents/<id>.md` | subagent definitions |
+| `commands/<id>.md` | slash commands |
+| `hooks/` | scripts that a hook in `canonfig.jsonc` runs |
+| `local/` | machine-local items, never published |
+
+Everything else (`state.sqlite`, `setup.json`, `policy.json`, `.runtime/`,
+`.backups/`, `canonfig.log`, `installers/`, `skills-sources.json`) is
+machine-local. The loader never reads it. Every file must resolve inside the
+folder, and authored trees hold regular files and directories only;
+violations fail with `CanonicalFolderError`.
+
+`profile` is required to publish and unused by projection. `local.allow`
+names the categories that `local/` may add to: `rules`, `skills`, `agents`,
+`commands`, `mcp`, `settings` (`LOCAL_CATEGORIES`).
+
+## Compile to resources
+
+`folderProfile` in `src/profile/publication.ts` compiles the folder into a
+Machine Profile with one resource per item:
+
+| Resource id | Kind | From |
+| --- | --- | --- |
+| `instructions` | file | `AGENTS.md` |
+| `rules:<id>`, `agents:<id>`, `commands:<id>` | file | `<category>/<id>.md` |
+| `skills:<name>` | skill | `skills/<name>/` |
+| `hooks:<id>` | config | `canonfig.jsonc#hooks.<id>`, with its position in the `hooks` array |
+| `hook-scripts:<path>` | file | a script under `hooks/`, path segments joined with `:` |
+| `mcp:<name>` | config | `canonfig.jsonc#mcp.<name>`; depends on the `tools/<id>` it `requires` |
+| `settings:<harness>` | config | `canonfig.jsonc#settings.<harness>` |
+| `harnesses` | config | `canonfig.jsonc#harnesses` |
+| `local-policy` | config | `canonfig.jsonc#local` |
+| `tools:<id>` | tool | `canonfig.jsonc#tools.<id>` |
+| `credentials:<id>` | credential | `canonfig.jsonc#credentials.<id>` (reference only) |
+
+The `file` and `config` kinds here are wire encodings of folder items. Nobody
+authors them directly. Compilation refuses a folder without `profile`, a hook
+script no hook runs, a hook naming a missing script, an MCP server requiring
+an undeclared tool, and a group naming an item the folder does not declare.
+A grouped item reaches only followers in one of its groups; a hook script
+follows the hooks that run it.
+
+## Follower mirror
+
+`src/projection/mirror.ts` maps each published resource back to a folder
+item: a file at the same path in the follower's `~/.canonfig/`, an entry of
+the `canonfig.jsonc` the follower renders from the items it may see, or a tool
+or credential applied directly. A resource that is not a Canonical Folder item
+is refused, so a revision cannot make a follower write outside the allowlist.
+
+Enrollment refuses a folder that already holds authored items
+(`src/runtime/layers.ts`):
+
+```text
+<folder> already holds authored items (<items>), where a follower keeps its Source's mirror; move what this machine should keep into <folder>/local (rules, skills, agents and commands as files, MCP servers and settings in local.jsonc) or remove them, then enroll again
+```
+
+A mirror file edited locally is Follower Drift: it is kept and reported, and
+its projections hold.
+
+## Projection plan
+
+`src/projection/plan.ts` turns the Canonical Model into internal `file`,
+`directory` and `config` resources at adapter-computed targets and plans them
+with the same planner a follower uses for a revision. `src/projection/sync.ts`
+runs local projection, restore, recover, abandon and harness exclusion edits.
+
+The projected harness set is: listed in `harnesses`, installed, and not in
+`local/local.jsonc` `excludeHarnesses`. Removing a harness from the list
+retires unmodified outputs; it does not restore the snapshot.
+
+## Adapters and owned surfaces
+
+Each adapter in `src/projection/adapters/` returns a `HarnessLayout`
+(`src/projection/harness.ts`): a root, owned surfaces, never-touch paths and
+whether skills go to the shared `~/.agents/skills/`. An `OwnedSurface` is one
+of:
+
+- `file`: the whole file is replaced.
+- `directory`: the whole directory is replaced; entries Canonfig never wrote
+  are removed at takeover and reported as drift afterward.
+- `config`: only the listed key paths are owned in a file the harness shares
+  with its own state. `settings.reserved` lists keys a declaration may never
+  name.
+
+Never-touch paths (credentials, sessions, history) are never surface targets
+and never enter a snapshot. The harness ids are `TARGET_IDS` in
+`src/projection/model.ts`.
+
+## Detection
+
+`src/projection/detect.ts` reports a harness installed when one of its
+adapter's executables resolves through Canonfig's install destinations,
+`~/.local/bin`, then `PATH`, without running it. A config root alone is only
+evidence. A scheduled run can see fewer harnesses than setup did; projection
+holds such a harness instead of retiring it. The same report backs
+`canonfig harnesses` and the doctor `harnesses` probe.
+
+## Import
+
+`src/projection/import.ts` implements the Source setup's one-time import
+(`setup plan --import`, `--import-all`, `--no-import`). It reads instructions,
+rules, skills, agents, commands and MCP servers from the selected harnesses
+and writes them as folder items. It is read-only on the harness, refuses
+never-touch paths, never follows links, and turns MCP literals that look like
+credentials into `fromEnv` references before digesting them. A source that
+changes between scan and import fails with `ImportChangedError`.
+
+## Takeover snapshots
+
+`src/projection/takeover.ts` writes a Takeover Snapshot before Canonfig first
+writes a harness surface: `~/.canonfig/.backups/<UTC>/` with `manifest.json`,
+one directory per harness holding copied files at their path relative to the
+home directory, and `keys.json` with prior values of taken-over config keys
+only. Directories are 0700 and files 0600. `pruneSnapshots` keeps the first
+snapshot and the four most recent. `local/local.jsonc` `backups: false` or
+`sync --no-backup` skips the snapshot.
+
+## Restore
+
+`canonfig restore [<snapshot>]` plans the snapshot's content with
+`planRestore` in `src/projection/plan.ts`. A surface changed since Canonfig
+last wrote it blocks the restore and nothing changes:
+
+```text
+restore of snapshot <id> refused, nothing was changed:
+  <problems>
+Keep or move the local changes, sync until it converges, then restore again
+```
+
+## Local folder merge and collisions
+
+Projection adds `local/` items within the Source's `local.allow`. A local
+item named like a published one is Human Action Required
+(`src/projection/folder.ts`):
+
+```text
+local <category> <name> has the same name as a published one; rename or remove one of them
+local setting <harness> <path> overlaps published setting <path>; remove one of them
+```
+
+## Pinned roots
+
+The first takeover pins each harness root. A root outside the home directory,
+or a different root later, is Human Action Required
+(`ProjectionHumanActionError` in `src/projection/plan.ts`):
+
+> \<harness\> was taken over at \<previous\> but now resolves to \<root\>, for
+> example because an environment override such as CODEX_HOME changed.
+> Canonfig will not project into a second location: restore the environment,
+> or run 'canonfig restore' and sync again
+
+## State tables
+
+`src/state/state-schema.ts` defines:
+
+- `harness_takeovers`: one row per taken-over surface (`harness`, `surface`,
+  `root`, `snapshot`, `run_id`, `taken_over_at`). Every row of a harness
+  carries the root pinned at first takeover; `snapshot` is NULL when the
+  takeover ran without one.
+- `local_revisions`: the immutable planning revision of one local run
+  (projection or restore), without file content. Recovery resumes from it.
+- `applied_resources` and `action_journal`: the Applied Resource Records and
+  the per-run journal shared with revision runs (see
+  [file-rollback.md](file-rollback.md)).

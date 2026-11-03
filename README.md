@@ -16,10 +16,13 @@
 
 ---
 
-`canonfig` keeps a declared agent setup consistent across linux, macos, and
-windows. one Source Machine publishes immutable, signed Profile Revisions.
-Follower Machines plan, apply, and independently verify what they are authorized
-to receive. followers never publish changes back.
+`canonfig` keeps your global ai agent setup consistent across linux, macos, and
+windows. you author it once in `~/.canonfig/` on the Source Machine: shared
+instructions, rules, skills, agents, commands, hooks, MCP servers, settings and
+tool recipes. canonfig projects that folder into every installed harness's own
+global files, publishes it as immutable, signed Profile Revisions, and
+Follower Machines mirror and project what they are authorized to receive.
+followers never publish changes back.
 
 deterministic actions run first. optional Configuration Agents handle bounded
 fallback tasks; an agent's claim never counts as proof of convergence.
@@ -28,12 +31,12 @@ fallback tasks; an agent's claim never counts as proof of convergence.
 
 ## why
 
-keeping agent setups in sync across machines usually means copying files by hand
-or dealing with bidirectional sync conflicts. canonfig gives you one source for
-configuration, instructions, skills, and platform-specific tool recipes while
-preserving follower-owned configuration values and detecting local skill edits
-before replacing them. native schedules keep followers up to date without a
-resident follower daemon.
+every agent harness keeps its own instructions, skills and MCP config in its
+own format. keeping them in sync across harnesses and machines usually means
+copying files by hand. canonfig gives you one folder for all of it, writes each
+harness's native files for you, backs up what it replaces, and keeps
+machine-local items in `~/.canonfig/local/`. native schedules keep followers up
+to date without a resident follower daemon.
 
 ## install
 
@@ -52,9 +55,9 @@ on linux, Keychain on macos, and Credential Manager on windows.
 
 <img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/walkthrough.gif" width="880" alt="the canonfig browser interface: the Source overview, the machine map, the profile, then a follower's sync page checking for updates">
 
-the browser interface covers the whole loop: see what changed on the Source,
-publish it, watch every machine pick it up, and decide what happens to local
-edits on a follower. [try the interactive demo](https://canonfig.micr.dev); it
+the browser interface covers the whole loop: see what changed in the Source's
+folder, publish it, watch every machine pick it up, and choose which harnesses
+each machine projects into. [try the interactive demo](https://canonfig.micr.dev); it
 runs in your browser on made-up machines.
 
 the interface is a preview and isn't in the npm package yet. to sync real
@@ -66,7 +69,7 @@ machines, use the commands below.
     <td width="50%"><img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/machines.png" alt="machine map: the Source atlas connected to laptop, studio, gaming-pc and build-box, each with its sync state"><br><b>machines</b>: every follower, its revision and its sync state</td>
   </tr>
   <tr>
-    <td width="50%"><img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/sync.png" alt="follower sync page: the planned changes and a paused skill with the choice to keep the local edit or use the new revision"><br><b>sync</b>: the planned changes on a follower, with a choice for each local edit</td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/sync.png" alt="follower sync page: the planned changes for each harness on a follower"><br><b>sync</b>: the planned changes on a follower, per harness</td>
     <td width="50%"><img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/setup.png" alt="setup: what should this machine do, make this the Source or copy the setup from another machine"><br><b>setup</b>: a new machine becomes the Source or copies its setup from one</td>
   </tr>
 </table>
@@ -74,7 +77,31 @@ machines, use the commands below.
 ## sync machines
 
 start with the [first sync tutorial](https://canonfig.micr.dev/docs/tutorials/first-sync/).
-it covers the profile, source service, pinned connection, and follower enrollment.
+it covers setup, the folder, the source service, the pinned connection, and
+follower enrollment.
+
+on the source, setup detects your harnesses, offers to import what they
+already hold, and scaffolds `~/.canonfig/`:
+
+```sh
+canonfig setup plan --role source
+canonfig setup approve --approver "$USER"
+canonfig setup apply
+```
+
+edit the folder, then project it into this machine's harnesses:
+
+```sh
+canonfig sync --plan
+canonfig sync --apply
+```
+
+to publish, give the folder a profile in `~/.canonfig/canonfig.jsonc`
+(`"profile": { "id": "workstation", "name": "Workstation" }`), then:
+
+```sh
+canonfig source publish --reviewer "$USER"
+```
 
 after enrollment, run on the follower:
 
@@ -84,16 +111,42 @@ canonfig sync --apply
 canonfig status
 ```
 
-to publish changes from a reviewed profile on the source:
+`Converged` means declared resources match, not that an agent client has
+loaded them. see [publish from the folder](https://canonfig.micr.dev/docs/how-to/publish-from-the-folder/)
+and the [folder reference](https://canonfig.micr.dev/docs/reference/canonfig-folder/).
+
+### harnesses
+
+canonfig projects into codex, claude-code, amp, oh-my-pi, pi, factory-droid,
+cursor, devin, opencode, grok-build, antigravity, copilot-cli, kimi, kilo,
+hermes and qwen. a machine projects the harnesses listed in `canonfig.jsonc`
+that are installed and not excluded locally:
 
 ```sh
-canonfig source digest --profile-file ~/canonfig.profile.jsonc
-canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer "$USER"
+canonfig harnesses
+canonfig harnesses exclude cursor
 ```
 
-`source digest` validates content without signing it; publication creates an
-immutable revision. `Converged` means declared resources match, not that an
-agent client has loaded them.
+see [choose harnesses](https://canonfig.micr.dev/docs/how-to/choose-harnesses/)
+and the [harness reference](https://canonfig.micr.dev/docs/reference/harnesses/).
+
+### backups and restore
+
+before its first write to a harness, canonfig snapshots what it replaces under
+`~/.canonfig/.backups/`. it keeps the first snapshot and the four most recent.
+
+```sh
+canonfig restore
+```
+
+see [restore from a backup](https://canonfig.micr.dev/docs/how-to/restore-from-a-backup/).
+
+### machine-local items
+
+put rules, skills, agents and commands for one machine in `~/.canonfig/local/`,
+and MCP servers and settings in `~/.canonfig/local/local.jsonc`. they are never
+published and never replaced. see
+[add machine-local items](https://canonfig.micr.dev/docs/how-to/add-machine-local-items/).
 
 ### schedule updates
 
@@ -128,18 +181,16 @@ global npm installs; major and minor upgrades stay manual. read
 
 ## what gets applied
 
-| resource | default behavior |
+| folder item | default behavior |
 | --- | --- |
-| `file` | replace owned content and mode |
-| `directory` | mirror desired entries; remove only unchanged entries previously written by Canonfig |
-| `config` | merge declared TOML, JSON or YAML keys; preserve follower-owned keys and comments |
-| `skill` | replace only if the installed copy is unmodified |
-| `tool` | run a platform recipe and independently verify it |
-| `credential` | require a local credential reference; never copy it as profile content |
+| instructions, rules, agents, commands | written into each harness's native files and directories |
+| skills | replaced only if the installed copy is unmodified |
+| MCP servers, hooks, settings | merged as owned keys; harness-owned keys and credentials are preserved |
+| tools | run a platform recipe and independently verify it |
+| credentials | require a local credential reference; never copy it as profile content |
 
-explicit policies can be more destructive. read the
-[profile reference](https://canonfig.micr.dev/docs/reference/profile-schema/)
-before changing ownership or apply policy.
+read the [folder reference](https://canonfig.micr.dev/docs/reference/canonfig-folder/)
+for every key and file.
 
 ## trust and boundaries
 

@@ -15,7 +15,7 @@ A source archive without Git metadata remains buildable and records `git: null`.
 Compare `compiledDigest` when identifying installed builds. Hash the installed
 `dist` files and compare them with the individual `compiledFiles` hashes to
 check which build an installation came from and that its bytes have not
-changed. The source digest includes the lockfile and build
+changed. `sourceDigest` includes the lockfile and build
 implementation. These receipts are diagnostic evidence, not signatures or a
 substitute for package provenance, Source signing, or TLS pinning. A receipt
 alone does not establish that an installation converged.
