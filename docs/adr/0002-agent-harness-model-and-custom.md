@@ -8,7 +8,7 @@ Canonfig ran three built-in agent CLIs: `codex`, `claude` and `gemini`. Users co
 
 ## Decision
 
-- **Built-ins are `codex` and `claude`.** `gemini` is removed from the harness kinds, the CLI, doctor, docs and tests. No migration: a command that reads a stored `gemini` harness fails as a usage error naming the fix, and `canonfig agent harness <kind>` overwrites it without decoding it (hard cut; nothing is rewritten automatically).
+- **Built-ins are `codex` and `claude`.** `gemini` is removed from the harness kinds, the CLI, doctor, docs and tests. There is no handling for a stored `gemini` harness: it fails state decoding like any other invalid state (hard cut; no installed base).
 - **Built-ins take an optional `model`.** Canonfig adds `--model <name>` in front of its fixed flags. Both CLIs accept it as a top-level option (`codex --model <m> exec ...`, `claude --model <m> --print ...`; checked against codex-cli 0.166.0 and Claude Code 2.1.293). The name must not start with `-` or contain whitespace, so it can never become a second flag. Built-ins do not accept free-form arguments: their read-only flags (`--sandbox read-only`, `--permission-mode plan`) stay Canonfig's.
 - **`custom` runs any agent under a fixed contract.**
   - Canonfig runs `executable` with exactly the configured `arguments`, one argv entry each, without a shell, through the same controlled executor as the built-ins (environment, secret bindings, time and output limits).

@@ -67,10 +67,10 @@ durability on every operating system.
 
 ## Upgrade boundary
 
-This is the only current file-rollback format. Before upgrading, finish or
-recover any unfinished run with the CLI that created it. An old inline-body
-or mode-only journal is rejected with a recovery diagnostic and is not rewritten or deleted
-by a failed recovery attempt.
+This is the only file-rollback format Canonfig reads. Before installing another
+release, finish or recover any unfinished run with the CLI that created it. A
+journal in any other format is rejected with a recovery diagnostic and is not
+rewritten or deleted by a failed recovery attempt.
 
 ## Acceptance
 
@@ -90,8 +90,7 @@ target. Use bounded reads and complete writes rather than whole-file buffers.
 [SQLite's atomic commit design](https://www.sqlite.org/atomiccommit.html)
 explains why original content must be recorded and flushed before mutation,
 and why rollback material must remain until restoration or commit finishes.
-Canonfig retains its existing action journal rather than adding a second
-transaction engine.
+Canonfig uses its action journal rather than a second transaction engine.
 
 [Windows BackupWrite](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-backupwrite)
 restores the native security stream with write-owner and write-DACL access.

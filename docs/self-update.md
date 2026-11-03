@@ -1,8 +1,8 @@
 # Opt-in self-updates
 
 Canonfig can check for and activate **stable patch releases in its current
-major.minor line**. A 4.3.x installation will never automatically jump to 4.4 or
-5.x. Source/follower major.minor compatibility still requires a coordinated fleet
+major.minor line**. A 5.0.x installation never moves to 5.1 or 6.x on its
+own. Source/follower major.minor compatibility still requires a coordinated fleet
 rollout for those releases. This is independent of skill and configuration sync.
 
 ## Supported installations and first enable
@@ -17,7 +17,7 @@ configuration, and strip inherited npm configuration/authentication environment
 variables and Node injection options. Private registries are not supported.
 
 **Before enabling for the first time, stop every existing Canonfig process and
-pause its schedules.** Previously started builds cannot register update leases.
+pause its schedules.** Processes started before you enable it hold no update lease.
 Find the actual npm `bin/npm-cli.js` for your Node installation; do not substitute
 an npm shell shim. Paths below are examples, not discoveries of your machine.
 
@@ -27,10 +27,10 @@ canonfig self-update enable --npm-cli /home/me/.local/lib/node_modules/npm/bin/n
 canonfig self-update status
 ```
 
-`--apply` permits opt-in configuration; `--confirm-idle` acknowledges that older
+`--apply` permits opt-in configuration; `--confirm-idle` acknowledges that existing
 processes and schedules were stopped. Enable does not install a background
 service. After enabling, ordinary Canonfig commands register leases, including
-Sources and foreground watchers. Restart your previous services under this
+Sources and foreground watchers. Restart the services you stopped under this
 opted-in installation so they participate. Failed processes can leave leases;
 these are never reclaimed automatically based on a guessed PID age.
 

@@ -4,7 +4,7 @@ Enrollment JSON, revision metadata, blob downloads, and the doctor source probe
 listen to both request and response-stream failures. A response is accepted only after the complete
 HTTP message reaches `end`. Errors and premature `close` settle the operation
 and destroy its request, including when the socket has already closed and its
-idle timeout can no longer fire.
+idle timeout cannot fire.
 
 Truncated enrollment JSON reports the existing EnrollmentTransportError.
 Truncated transport responses report TransportInterruptedError. A truncated

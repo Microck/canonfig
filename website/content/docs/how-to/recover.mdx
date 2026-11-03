@@ -140,7 +140,6 @@ The sync exits 3 and the message names the step only you can take:
 | "source/follower version mismatch: source `<a>` vs follower `<b>`. install the same major.minor canonfig release on the Source Machine and on every follower" | The Source Machine and this Follower Machine run different `major.minor` releases. | Install one release line on every machine. |
 | "this machine is not enrolled; run 'canonfig follower enroll' first" | The machine has no Follower Identity. | Enroll it with an invitation from the Source Machine. |
 | "follower `<name>` has no run to recover" | You ran `canonfig recover` with no open run. | Run `canonfig sync --apply`. |
-| "the gemini agent harness was removed in 5.0.0; run 'canonfig agent harness codex\|claude\|custom ...' to replace it" | The Follower Machine still has a `gemini` agent harness configured. | Set another harness, for example `canonfig agent harness claude --executable /usr/local/bin/claude`. See [Let a Configuration Agent resolve work](/how-to/configure-agent-policies#replace-a-gemini-harness). |
 | "`<path>` needs N characters including Canonfig's staging names, but this machine accepts file paths of at most 260 characters because Windows long paths are not enabled" | A Windows target path is too long. Nothing was changed. | Shorten the target or enable long paths; see [Windows path length](/reference/cross-platform#windows-path-length-and-symbolic-links). |
 
 ### Exit 3: Human Action Required

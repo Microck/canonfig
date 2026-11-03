@@ -12,7 +12,7 @@ items, and checks that removed values cannot be loaded. It runs in the existing
 Windows native secret-store CI step; non-Windows runs skip these native cases.
 No fixture reads or modifies an operator's pre-existing credentials.
 
-Provider executable presence still does not prove access in a particular SSH,
-login, or scheduler session. This change repairs invocation and byte round trips;
+Provider executable presence does not prove access in a particular SSH,
+login, or scheduler session. This program covers invocation and byte round trips;
 it does not claim to solve credential readiness diagnostics, logged-out access,
 or the lifetime of an operator's login session.

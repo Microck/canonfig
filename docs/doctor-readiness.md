@@ -1,10 +1,10 @@
 # Doctor readiness evidence
 
-`doctor` now diagnoses the saved Source endpoint, TLS pin, and credential reference
+`doctor` diagnoses the saved Source endpoint, TLS pin, and credential reference
 of an enrolled Follower Machine. Environment hints remain a fallback only before
 enrollment; they cannot silently replace its selected authority.
 
-On macOS the credentials evidence no longer stops at provider presence. The
+On macOS the credentials evidence goes beyond provider presence: the
 machine capability runs a disposable add/read-back/delete probe of a non-secret
 sentinel in a unique `dev.canonfig.session-probe.<uuid>` namespace under its own
 account. The sentinel is passed to `security add-generic-password` as its
@@ -71,6 +71,6 @@ Scheduled-fire evidence is scoped to the observed native installation. POSIX
 backends fingerprint unit/plist file identity and content; Windows fingerprints
 the exported task including its registration date. The scheduled process records
 that identity once at start and retains it on completion/failure. Reinstallation
-(including identical POSIX content), definition changes, legacy unbound records,
+(including identical POSIX content), definition changes, records without a bound identity,
 and processes started before registration do not prove the current job fired.
 Historical records remain stored but do not count as current readiness.

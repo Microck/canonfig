@@ -38,9 +38,9 @@ of grace) with the task's `LastRunTime` and the registration `Date` Canonfig
 writes into the task XML. When that start came after both, the job stays
 `current` (it is still armed for the next run) and a second warning names the
 missed time: "the scheduled run at `<time>` did not start (last start
-`<time>`): the cause is not established from task history". A task registered by an earlier release has no registration
-date; until it has run once, a missed run cannot be told from a time that passed
-before registration and is not reported.
+`<time>`): the cause is not established from task history". A task XML without a
+registration date cannot tell a missed run from a time that passed before
+registration until it has run once, so no missed run is reported for it.
 
 The packed-CLI regression installs the packaged tarball, then launches the
 installed CLI through the rendered command with an empty PATH and an unrelated

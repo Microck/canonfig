@@ -3,7 +3,7 @@
 A package version is not enough to identify an unreleased build. Two checkouts
 can both report the same version while containing different compiled modules.
 
-`npm run build:cli` now writes `build-receipt.json` at the repository root after
+`npm run build:cli` writes `build-receipt.json` at the repository root after
 minification. It stays out of `dist` because the published package ships only
 compiled JavaScript; CI preserves the receipt as a workflow artifact instead.
 The `canonfig.build/v1` receipt records the package version, SHA-256

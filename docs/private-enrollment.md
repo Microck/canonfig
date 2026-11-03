@@ -20,9 +20,9 @@ Interactive terminals are rejected because ordinary terminal input can echo the
 invitation. A missing name, profile, or unsupported option fails before reading.
 `--help` and `--version` never wait for input.
 
-Only delivery changes. Invitation schema validation, expiry/replay rejection,
-TLS and signing pins, native credential storage, pending enrollment, and explicit
-replacement policy still use the existing enrollment implementation. No source
+`--stdin` decides only how the invitation arrives. Invitation schema validation,
+expiry/replay rejection, TLS and signing pins, native credential storage, pending
+enrollment, and explicit replacement policy belong to enrollment itself. No source
 is contacted and no state layer is constructed for malformed invitation input.
 The command logger captures the original `--stdin` invocation before input is
 read; the resolved value is never assigned to `process.argv`.
