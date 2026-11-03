@@ -104,7 +104,7 @@ const syncFailure = (value: Fixture) =>
   ));
 
 const restore = (value: Fixture, snapshot?: string) =>
-  Effect.runPromise(restoreLocal(value.statePath, snapshot).pipe(Effect.provide(layer(value))));
+  Effect.runPromise(restoreLocal(value.statePath, snapshot, localProjectionFollower).pipe(Effect.provide(layer(value))));
 
 const snapshots = (value: Fixture): ReadonlyArray<string> => {
   const backups = join(value.folder, ".backups");
@@ -314,7 +314,7 @@ describe("local projection", () => {
     expect(result.outcome).toMatchObject({ outcome: "FollowerDrift" });
     expect(JSON.stringify(result.outcome)).toContain(join(value.home, ".claude", "skills"));
     expect(readFileSync(foreign, "utf8")).toContain("Mine.");
-    const refused = await Effect.runPromise(restoreLocal(value.statePath, undefined).pipe(Effect.flip, Effect.provide(layer(value))));
+    const refused = await Effect.runPromise(restoreLocal(value.statePath, undefined, localProjectionFollower).pipe(Effect.flip, Effect.provide(layer(value))));
     expect(refused._tag).toBe("ProjectionHumanActionError");
     expect(readFileSync(foreign, "utf8")).toContain("Mine.");
   }, 60_000);

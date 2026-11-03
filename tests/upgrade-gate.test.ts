@@ -19,7 +19,7 @@ import { stateFormatVersion } from "../src/state/state-schema.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
 import { evaluateCli } from "../src/cli/cli.ts";
 import { describeRuntimeError } from "../src/cli/failure-taxonomy.ts";
-import { assertUpgradeGate } from "../src/synchronization/follower-orchestration.ts";
+import { assertUpgradeGate } from "../src/synchronization/upgrade-gate.ts";
 import { nodeRuntimeIsSupported } from "../src/runtime/build-identity.ts";
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { stateMigrations as v315StateMigrations } from "./fixtures/upgrade/v3.1.5-state-schema.ts";

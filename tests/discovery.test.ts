@@ -1,11 +1,12 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { scanDiscovery } from "../src/profile/discovery.ts";
+import { scanDiscovery, scanFolder } from "../src/profile/discovery.ts";
+import { decodeFolderConfig } from "../src/projection/folder.ts";
 import {
   DiscoveryParseError,
   InvalidDiscoveryInputError,
@@ -622,20 +623,45 @@ describe("profile discovery", () => {
     ]);
   });
 
-  it("exposes the scan through the ProfileCatalog layer without publication side effects", async () => {
-    const agents = await fixture("AGENTS.md", "```sh\nrg --version\n```\n");
+  it("scans the Canonical Folder through the ProfileCatalog layer without writing", async () => {
+    const folder = join(directory, ".canonfig");
+    await mkdir(join(folder, "skills", "search"), { recursive: true });
+    const config = "// my folder\n{\n  \"version\": 1,\n  \"harnesses\": [] // none yet\n}\n";
+    await writeFile(join(folder, "canonfig.jsonc"), config);
+    await writeFile(join(folder, "skills", "search", "SKILL.md"), "---\nname: search\ndescription: Search\n---\n```sh\nrg --version\n```\n");
     const result = await Effect.runPromise(
       Effect.gen(function*() {
         const catalog = yield* ProfileCatalog;
-        return yield* catalog.scan({
-          files: [{ path: agents, kind: "agents" }],
-          path: fixtureBin,
-        });
+        return yield* catalog.scan({ folder, write: false, path: fixtureBin });
       }).pipe(Effect.provide(ProfileCatalogLive)),
     );
 
     expect(result.tools.map((tool) => tool.id)).toEqual(["rg"]);
-    expect(result.scannedPaths).toEqual([agents]);
+    expect(result.scannedPaths).toEqual([join(folder, "canonfig.jsonc"), join(folder, "skills", "search", "SKILL.md")]);
+    expect(result.written).toEqual([]);
+    expect(await readFile(join(folder, "canonfig.jsonc"), "utf8")).toBe(config);
+  });
+
+  it("writes accepted tools into canonfig.jsonc with its comments, once", async () => {
+    const folder = join(directory, ".canonfig");
+    await mkdir(folder, { recursive: true });
+    await writeFile(join(folder, "canonfig.jsonc"), "// my folder\n{\n  \"version\": 1,\n  \"harnesses\": [] // none yet\n}\n");
+    // A pinned install command gives a deterministic recipe, so it is accepted.
+    await writeFile(join(folder, "AGENTS.md"), "```sh\nuv tool install ruff==0.6.9\n```\n");
+    const scan = () => Effect.runPromise(scanFolder({ folder, write: true, path: fixtureBin }));
+
+    const first = await scan();
+    expect(first.written).toEqual(["ruff"]);
+    const written = await readFile(join(folder, "canonfig.jsonc"), "utf8");
+    expect(written).toContain("// my folder");
+    expect(written).toContain("// none yet");
+    const recipes = decodeFolderConfig(join(folder, "canonfig.jsonc"), written).tools?.ruff?.recipes ?? [];
+    expect(recipes.map((recipe) => recipe.platform).sort()).toEqual(["linux", "macos", "windows"]);
+    for (const recipe of recipes) expect(recipe).toMatchObject({ method: "uv", package: "ruff", version: "0.6.9" });
+
+    const second = await scan();
+    expect(second).toMatchObject({ written: [], declared: ["ruff"] });
+    expect(await readFile(join(folder, "canonfig.jsonc"), "utf8")).toBe(written);
   });
 
   it("reports typed input and parse errors", async () => {

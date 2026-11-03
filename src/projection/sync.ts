@@ -11,7 +11,8 @@ import { MachineState } from "../machine/machine-state.service.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { editConfigText, getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import { cleanupRollbackSnapshots, removeRunTemporaryEntries } from "../synchronization/executor.ts";
-import { assertUpgradeGate, withRunLock } from "../synchronization/run-lock.ts";
+import { withRunLock } from "../synchronization/run-lock.ts";
+import { assertUpgradeGate } from "../synchronization/upgrade-gate.ts";
 import { Synchronization } from "../synchronization/synchronization.service.ts";
 import type {
   PlanningLocalRevision,

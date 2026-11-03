@@ -204,7 +204,7 @@ describe("StateRepository SQLite adapter", () => {
         configuration: {
           schemaVersion: 1,
           follower: configuredFollower,
-          selectedProfile: decode(ProfileId)("profile-1"),
+          profile: decode(ProfileId)("profile-1"),
           source: {
             endpoint: "https://127.0.0.1:17342",
             tlsFingerprint: "tls-fingerprint",
@@ -228,7 +228,7 @@ describe("StateRepository SQLite adapter", () => {
     );
     expect(stored).toMatchObject({
       follower: { id: configuredFollower.id },
-      selectedProfile: "profile-1",
+      profile: "profile-1",
       credentialReference,
       agentPolicy: "deterministic-only",
       scheduledInvocation: { mode: "apply", noInput: true },
@@ -259,7 +259,7 @@ describe("StateRepository SQLite adapter", () => {
     const configuration = {
       schemaVersion: 1 as const,
       follower: configuredFollower,
-      selectedProfile: decode(ProfileId)("profile-1"),
+      profile: decode(ProfileId)("profile-1"),
       source: {
         endpoint: "https://127.0.0.1:17342",
         tlsFingerprint: "tls-fingerprint",

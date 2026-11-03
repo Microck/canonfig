@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
-import { observeFollowerResource } from "../../src/synchronization/follower-orchestration.ts";
+import { observeFollowerResource } from "../../src/synchronization/observation.ts";
 import { selectToolRecipe } from "../../src/synchronization/resource-plans.ts";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";

@@ -144,7 +144,7 @@ describe("Canonfig foundation CLI", () => {
           ["source", "init"],
           ["secrets", "list"],
           ["installer", "list"],
-          ["follower", "enroll", "--stdin", "--name", "test", "--profile", "test"],
+          ["follower", "enroll", "--stdin", "--name", "test"],
         ]) {
           const result = spawnSync(process.execPath, [
             "--import", prerequisiteOnly, "--import", "tsx",

@@ -452,6 +452,11 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) => `${text(error.path)}: ${error.message}`,
   ),
+  // A setup import item changed between approval and apply.
+  ImportChangedError: describe(
+    "conflict-or-drift",
+    (error) => `${text(error.path)}: ${error.message}; run 'canonfig setup plan' again and approve the new plan`,
+  ),
   SnapshotNotFoundError: declared(
     "usage-or-configuration",
     (error) => `takeover snapshot ${text(error.snapshot)} does not exist`,

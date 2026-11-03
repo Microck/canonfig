@@ -85,7 +85,8 @@ import {
   preflightPathLengths,
   removeRunTemporaryEntries,
 } from "./executor.ts";
-import { assertUpgradeGate, withRunLock } from "./run-lock.ts";
+import { withRunLock } from "./run-lock.ts";
+import { assertUpgradeGate } from "./upgrade-gate.ts";
 import { installerRefusals } from "./installer-bindings.ts";
 import { clientReviewSteps, plannedFileChanges } from "./client-review.ts";
 import type {

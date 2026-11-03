@@ -37,7 +37,7 @@ const storeFollowerConfiguration = (
   const follower = { id: "fixture-follower", name: "Fixture", groups: [], revoked: false,
     credentialReference: "fixture-credential", enrolledAt: at };
   const configuration = Schema.decodeUnknownSync(FollowerSynchronizationConfiguration)({
-    schemaVersion: 1, follower, selectedProfile: "fixture-profile",
+    schemaVersion: 1, follower, profile: "fixture-profile",
     source: { endpoint: "https://127.0.0.1:1", tlsFingerprint: "fixture-tls", signingFingerprint: "fixture-signing" },
     credentialReference: follower.credentialReference, cacheDirectory: join(home, "cache"),
     stateLocation: state, agentPolicy: "deterministic-only",
