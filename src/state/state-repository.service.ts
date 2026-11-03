@@ -9,6 +9,7 @@ import type {
   GroupName,
   ProfileId,
   ProfileRevisionId,
+  ResourceId,
   RunId,
 } from "../domain/brand.ts";
 import type { SourceIdentity } from "../domain/identity.ts";
@@ -148,6 +149,15 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly releaseTakeovers: (
     surfaces: ReadonlyArray<{ readonly harness: string; readonly surface: string }>,
   ) => Effect.Effect<void, StateRepositoryError>;
+  /**
+   * The resources of a run's actions that started (journaled running,
+   * succeeded or failed), whether the run is open or finished. A started
+   * action may have written its target even without an Applied Resource
+   * Record, for example when the process died before journaling success.
+   */
+  readonly loadStartedResources: (
+    run: RunId,
+  ) => Effect.Effect<ReadonlyArray<ResourceId>, StateRepositoryError>;
   /**
    * Hand this machine's local projection records to the follower identity it
    * enrolled as, in one transaction: the follower's runs then own the harness

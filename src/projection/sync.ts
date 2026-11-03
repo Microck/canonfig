@@ -138,29 +138,38 @@ export const finishProjectionRun = (
 
 /**
  * After a run that stopped early (Human Action Required or Follower Drift) or
- * was interrupted and then abandoned: the run never reached some surfaces it
- * took over. Their takeover rows are released and their snapshot entries
- * dropped, deleting the snapshot if it empties; otherwise the next run would
+ * was interrupted and then abandoned: the run never finished some surfaces it
+ * took over. Their takeover rows are released; otherwise the next run would
  * treat them as owned with no Applied Resource Record and report drift on
- * content Canonfig never wrote. A surface counts as applied when it has a
- * record, and a config key when that record owns it. Returns whether the
- * run's snapshot was deleted.
+ * content Canonfig may never have written. A surface counts as applied when it
+ * has a record, and a config key when that record owns it.
+ *
+ * Snapshot entries are dropped only for surfaces whose action never started,
+ * deleting the snapshot if it empties. A started action may have written its
+ * target before the process died without journaling success; the next
+ * takeover would then snapshot Canonfig's content, so this snapshot keeps the
+ * only copy of what was there before. Returns whether the run's snapshot was
+ * deleted.
  */
 export const releaseUnappliedTakeovers = (statePath: string, follower: FollowerId, run: RunIdType) =>
   Effect.gen(function*() {
     const repository = yield* StateRepository;
     const applied = new Map((yield* repository.loadAppliedResources(follower)).map((record) => [record.resource, record]));
-    const unapplied = (yield* repository.loadHarnessTakeovers()).filter((takeover) => {
-      if (takeover.run !== run) return false;
+    const unapplied = (yield* repository.loadHarnessTakeovers()).flatMap((takeover) => {
+      if (takeover.run !== run) return [];
       const hash = takeover.surface.indexOf("#");
-      const record = applied.get(surfaceResourceId(takeover.harness, hash < 0 ? takeover.surface : takeover.surface.slice(0, hash)));
-      return record === undefined || (hash >= 0 && !(record.ownedKeys ?? []).includes(takeover.surface.slice(hash + 1)));
-    }).map((takeover) => ({ harness: takeover.harness, surface: takeover.surface }));
+      const resource = surfaceResourceId(takeover.harness, hash < 0 ? takeover.surface : takeover.surface.slice(0, hash));
+      const record = applied.get(resource);
+      const owned = record !== undefined && (hash < 0 || (record.ownedKeys ?? []).includes(takeover.surface.slice(hash + 1)));
+      return owned ? [] : [{ harness: takeover.harness, surface: takeover.surface, resource }];
+    });
     if (unapplied.length === 0) return false;
     yield* repository.releaseTakeovers(unapplied);
+    const started = new Set<string>(yield* repository.loadStartedResources(run));
+    const neverStarted = unapplied.filter((takeover) => !started.has(takeover.resource));
     const backups = backupsOf(statePath);
-    const snapshot = yield* snapshotOfRun(backups, run);
-    return snapshot === undefined ? false : yield* dropSnapshotEntries(backups, snapshot, unapplied);
+    const snapshot = neverStarted.length === 0 ? undefined : yield* snapshotOfRun(backups, run);
+    return snapshot === undefined ? false : yield* dropSnapshotEntries(backups, snapshot, neverStarted);
   });
 
 /**

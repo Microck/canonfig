@@ -8,6 +8,7 @@ import { parse as parseToml } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { MachineFilesystemError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { adapterFor } from "../../src/projection/adapters/index.ts";
 import { loadCanonicalFolder } from "../../src/projection/folder.ts";
@@ -432,24 +433,35 @@ describe("local projection", () => {
     expect(takeoverRows(value).map((row) => row.harness)).not.toContain("opencode");
   }, 60_000);
 
-  it("releases takeovers of surfaces an abandoned first run never applied", async () => {
+  it.each([
+    ["before its write lands", false],
+    ["after its write lands, as a killed process leaves it", true],
+  ] as const)("releases takeovers an abandoned first run never applied, stopped at CLAUDE.md %s", async (_, landed) => {
     const value = fixture(["amp", "claude-code", "qwen"]);
     const instructions = join(value.home, ".claude", "CLAUDE.md");
     write(join(value.home, ".config", "amp", "AGENTS.md"), "old amp\n");
     write(instructions, "old instructions\n");
     write(join(value.home, ".qwen", "QWEN.md"), "old qwen\n");
-    // The run is killed while writing CLAUDE.md: amp (and the shared skills)
-    // sort before it and are applied, qwen sorts after it and never runs.
-    // Only the first write is held; later ones restore the file.
+    // The run is interrupted at CLAUDE.md: amp (and the shared skills) sort
+    // before it and are applied, qwen sorts after it and never starts. With
+    // `landed` the write goes through and the rollback the interruption runs
+    // fails, so the file keeps Canonfig's content and its action stays
+    // journaled running, as after a kill. Otherwise the first write is held
+    // and the rollback restores the file.
     const { promise: started, resolve: notify } = Promise.withResolvers<void>();
-    let held = false;
+    let writes = 0;
     const holding = Layer.effect(MachineState, Effect.map(MachineState, (service) => ({
       ...service,
       atomicWrite: (input: Parameters<typeof service.atomicWrite>[0]) => {
-        if (held || input.path.absolute !== instructions) return service.atomicWrite(input);
-        held = true;
-        notify();
-        return Effect.never;
+        if (input.path.absolute !== instructions) return service.atomicWrite(input);
+        writes += 1;
+        if (writes === 1) {
+          const hold = Effect.sync(notify).pipe(Effect.andThen(Effect.never));
+          return landed ? service.atomicWrite(input).pipe(Effect.andThen(hold)) : hold;
+        }
+        return landed
+          ? Effect.fail(new MachineFilesystemError({ operation: "write", path: input.path.absolute, message: "the process was killed" }))
+          : service.atomicWrite(input);
       },
     }))).pipe(Layer.provide(machineLayer(value)));
     const fiber = Effect.runFork(synchronizeLocal(value.statePath, "apply", { noBackup: false, environment: environmentOf(value) }).pipe(
@@ -458,9 +470,14 @@ describe("local projection", () => {
     await started;
     await Effect.runPromise(Fiber.interrupt(fiber));
     const database = new DatabaseSync(value.statePath, { readOnly: true });
-    const row = database.prepare("SELECT status FROM synchronization_runs").get();
+    const run = database.prepare("SELECT status FROM synchronization_runs").get();
+    const lastAction = database.prepare("SELECT state FROM action_journal ORDER BY sequence DESC LIMIT 1").get();
     database.close();
-    expect(row?.status).toBe("Interrupted");
+    expect(run?.status).toBe("Interrupted");
+    expect(lastAction?.state).toBe(landed ? "running" : "failed");
+    const interruptedInstructions = readFileSync(instructions, "utf8");
+    if (landed) expect(interruptedInstructions).toContain("Prefer small diffs.");
+    else expect(interruptedInstructions).toBe("old instructions\n");
     const [interruptedSnapshot] = snapshots(value);
 
     await Effect.runPromise(abandonLocal(value.statePath).pipe(Effect.provide(layer(value))));
@@ -476,14 +493,17 @@ describe("local projection", () => {
     const retrySnapshot = join(value.folder, ".backups", snapshots(value).at(-1)!);
     expect(retrySnapshot).not.toBe(kept);
     expect(readFileSync(join(retrySnapshot, "qwen", ".qwen", "QWEN.md"), "utf8")).toBe("old qwen\n");
-    expect(readFileSync(join(retrySnapshot, "claude-code", ".claude", "CLAUDE.md"), "utf8")).toBe("old instructions\n");
+    expect(readFileSync(join(retrySnapshot, "claude-code", ".claude", "CLAUDE.md"), "utf8")).toBe(interruptedInstructions);
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
 
     expect(rowsAfterAbandon.map((row) => row.harness)).toContain("amp");
     expect(rowsAfterAbandon.map((row) => row.harness)).not.toContain("qwen");
     expect(rowsAfterAbandon.some((row) => row.harness === "claude-code" && row.surface === "instructions")).toBe(false);
     expect([...keptTree.keys()].some((path) => path.startsWith("qwen/"))).toBe(false);
-    expect(keptTree.has("claude-code/.claude/CLAUDE.md")).toBe(false);
     expect(keptTree.get("amp/.config/amp/AGENTS.md")).toBe("old amp\n");
+    // CLAUDE.md's action started, so the abandoned run's snapshot keeps the
+    // only copy of its original content, even after the retry took it over.
+    expect(keptTree.get("claude-code/.claude/CLAUDE.md")).toBe("old instructions\n");
+    expect(readFileSync(join(kept, "claude-code", ".claude", "CLAUDE.md"), "utf8")).toBe("old instructions\n");
   }, 120_000);
 });

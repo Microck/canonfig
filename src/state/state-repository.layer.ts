@@ -1803,6 +1803,25 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
+  const loadStartedResources = Effect.fn("StateRepository.loadStartedResources")(
+    function*(run: RunIdType): Effect.fn.Return<ReadonlyArray<ResourceId>, StateRepositoryError> {
+      const runRows = yield* sql`SELECT plan_json FROM synchronization_runs WHERE id = ${run}`.pipe(
+        Effect.mapError(sqlError("load synchronization run plan")),
+      );
+      const row = (yield* decodeRows(Schema.Struct({ plan_json: Schema.String }), runRows, "synchronization run plan", run))[0];
+      if (row === undefined) return [];
+      const plan = yield* parseJson(SynchronizationPlanSchema, row.plan_json, "synchronization plan", run);
+      const startedRows = yield* sql`
+        SELECT DISTINCT action_id FROM action_journal
+        WHERE run_id = ${run} AND state IN ('running', 'succeeded', 'failed')
+      `.pipe(Effect.mapError(sqlError("load started actions")));
+      const started = new Set(
+        (yield* decodeRows(Schema.Struct({ action_id: ActionId }), startedRows, "started actions", run)).map((entry) => entry.action_id),
+      );
+      return [...new Set(plan.actions.filter((action) => started.has(action.id)).map((action) => action.resource))];
+    },
+  );
+
   const adoptLocalProjection = Effect.fn("StateRepository.adoptLocalProjection")(
     function*(follower: FollowerIdType): Effect.fn.Return<number, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
@@ -2795,6 +2814,7 @@ const makeRepository = Effect.gen(function*() {
     recordHarnessTakeovers,
     removeRunTakeovers,
     releaseTakeovers,
+    loadStartedResources,
     adoptLocalProjection,
     startRun,
     journalAction,

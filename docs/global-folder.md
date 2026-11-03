@@ -135,9 +135,12 @@ snapshot and the four most recent. `local/local.jsonc` `backups: false` or
 `sync --no-backup` skips the snapshot. A run that rolls back deletes its
 snapshot and takeover rows. A run that stops early (Human Action Required or
 Follower Drift), or an interrupted run closed with `canonfig abandon`, keeps
-takeover rows only for surfaces it applied: the others are released and
-dropped from its snapshot (an emptied snapshot is deleted), so the next run
-takes them over again with a fresh snapshot.
+takeover rows only for surfaces it applied, so the next run takes the others
+over again with a fresh snapshot. Its snapshot drops the entries of surfaces
+whose action never started (an emptied snapshot is deleted) but keeps those
+whose action started: a killed process may have written the surface before
+journaling success, and then that snapshot holds the only copy of the
+original content.
 
 ## Restore
 
