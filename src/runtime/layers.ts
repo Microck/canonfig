@@ -106,6 +106,13 @@ import {
   synchronizeFollower,
 } from "../synchronization/follower-orchestration.ts";
 import {
+  abandonLocal,
+  hasOpenLocalRun,
+  recoverLocal,
+  restoreLocal,
+  synchronizeLocal,
+} from "../projection/sync.ts";
+import {
   FollowerCommands,
   type FollowerCommandsService,
 } from "../cli/follower-commands.ts";
@@ -1482,19 +1489,41 @@ const followerCommandsLayer = (
           Effect.map((status) => status.generation),
           Effect.catch(() => Effect.succeed(undefined)),
         ) : Effect.succeed(undefined);
-        const run: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(synchronizeFollower(
-          statePath,
-          input.mode,
-          undefined,
-          scheduled || input.noInput,
-          input.reviewLocal === true,
-        ).pipe(
-          Effect.provideService(StateRepository, repository),
-          Effect.provideService(MachineState, machine),
-          Effect.provideService(Synchronization, synchronization),
-          Effect.provideService(AgentResolution, agentResolution),
-          Effect.provideService(ScheduleManager, schedules),
-        )).pipe(Effect.flatMap(outcomePayload));
+        const follower: Effect.Effect<CliPayload, CliCommandFailure> = input.noBackup === true
+          ? Effect.fail(new CliCommandFailure({
+            category: "usage-or-configuration",
+            message: "--no-backup applies only when this machine projects its own ~/.canonfig/; this machine is an enrolled follower",
+          }))
+          : mapFailure(synchronizeFollower(
+            statePath,
+            input.mode,
+            undefined,
+            scheduled || input.noInput,
+            input.reviewLocal === true,
+          ).pipe(
+            Effect.provideService(StateRepository, repository),
+            Effect.provideService(MachineState, machine),
+            Effect.provideService(Synchronization, synchronization),
+            Effect.provideService(AgentResolution, agentResolution),
+            Effect.provideService(ScheduleManager, schedules),
+          )).pipe(Effect.flatMap(outcomePayload));
+        // The Source and unenrolled machines project their own folder.
+        const local: Effect.Effect<CliPayload, CliCommandFailure> = input.reviewLocal === true
+          ? Effect.fail(new CliCommandFailure({
+            category: "usage-or-configuration",
+            message: "--review-local applies only to an enrolled follower",
+          }))
+          : mapFailure(synchronizeLocal(statePath, input.mode, {
+            noBackup: input.noBackup === true,
+            environment: (name) => process.env[name],
+          }).pipe(
+            Effect.provideService(StateRepository, repository),
+            Effect.provideService(MachineState, machine),
+            Effect.provideService(Synchronization, synchronization),
+          )).pipe(Effect.flatMap(outcomePayload));
+        const run: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(
+          repository.getFollowerSynchronizationConfiguration(),
+        ).pipe(Effect.flatMap((configuration) => configuration === undefined ? local : follower));
         return installedGeneration.pipe(Effect.flatMap((generation) => {
           const record = (outcome: string, reason?: string) => scheduled
             ? recordScheduleFire(statePath, outcome, reason, generation, startedAt) : Effect.void;
@@ -1526,17 +1555,32 @@ const followerCommandsLayer = (
           );
         }));
       },
+      // An open local projection run is resolved before any follower run.
       abandon: () =>
-        mapFailure(abandonFollowerRun(statePath).pipe(
+        mapFailure(Effect.gen(function*() {
+          return (yield* hasOpenLocalRun)
+            ? yield* abandonLocal(statePath)
+            : yield* abandonFollowerRun(statePath);
+        }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
       recover: () =>
-        mapFailure(recoverFollower(statePath).pipe(
+        mapFailure(Effect.gen(function*() {
+          return (yield* hasOpenLocalRun)
+            ? yield* recoverLocal(statePath)
+            : yield* recoverFollower(statePath);
+        }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),
           Effect.provideService(ScheduleManager, schedules),
+        )).pipe(Effect.flatMap(outcomePayload)),
+      restore: (input) =>
+        mapFailure(restoreLocal(statePath, input.snapshot).pipe(
+          Effect.provideService(StateRepository, repository),
+          Effect.provideService(MachineState, machine),
+          Effect.provideService(Synchronization, synchronization),
         )).pipe(Effect.flatMap(outcomePayload)),
       status: (follower) =>
         follower === undefined

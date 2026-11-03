@@ -298,6 +298,24 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
   if (downloaded !== undefined || reused !== undefined) {
     outline.lines.push(`content: ${downloaded ?? "0"} blob(s) downloaded, ${reused ?? "0"} reused`);
   }
+  const origin = objectOf(data.origin);
+  if (origin !== undefined) {
+    outline.lines.push(`folder: ${textOf(origin.folder) ?? ""} (digest ${textOf(origin.digest) ?? ""})`);
+  }
+  const harnesses = recordsOf(data.harnesses);
+  if (harnesses.length > 0) {
+    outline.lines.push("harnesses:");
+    for (const harness of harnesses) {
+      outline.lines.push(`  ${column(textOf(harness.harness), 14)} ${textOf(harness.root) ?? ""}`.trimEnd());
+    }
+  }
+  // Every takeover says whether it keeps a backup, so `no backup` is never silent.
+  for (const takeover of recordsOf(data.takeovers)) {
+    const surfaces = isList(takeover.surfaces) ? takeover.surfaces.map(textOf).join(", ") : "";
+    outline.lines.push(`takeover: ${textOf(takeover.harness) ?? ""} (${textOf(takeover.root) ?? ""}): ${surfaces}; ${textOf(takeover.backup) ?? ""}`);
+  }
+  const snapshot = textOf(data.snapshot);
+  if (snapshot !== undefined) outline.lines.push(`takeover snapshot: ${snapshot}`);
   const plan = objectOf(data.plan);
   const actions = recordsOf(plan?.actions);
   if (plan !== undefined) {
@@ -347,7 +365,7 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
   outlineRest(
     outline,
     data,
-    ["mode", "revision", "downloadedBlobs", "reusedBlobs", "plan", "outcome", "agentResolutions", "warnings", "clientSteps", "adoptionReviews"],
+    ["mode", "revision", "downloadedBlobs", "reusedBlobs", "plan", "outcome", "agentResolutions", "warnings", "clientSteps", "adoptionReviews", "origin", "harnesses", "takeovers", "snapshot"],
   );
   const adoptionReviews = recordsOf(data.adoptionReviews);
   if (adoptionReviews.length > 0) {
@@ -563,7 +581,7 @@ const summarizeSetup = (data: PayloadRecord, outline: Outline): boolean => {
 const summaries: ReadonlyArray<readonly [(command: string) => boolean, (data: PayloadRecord, outline: Outline) => boolean]> = [
   [(command) => command === "doctor", summarizeDoctor],
   [(command) => command === "status", summarizeStatus],
-  [(command) => command.startsWith("sync."), summarizeSync],
+  [(command) => command.startsWith("sync.") || command === "restore", summarizeSync],
   [(command) => command === "source.publish" || command === "profile.show", summarizeRevision],
   [(command) => command === "profile.list", summarizeProfileList],
   [(command) => command === "source.digest", summarizeDigests],

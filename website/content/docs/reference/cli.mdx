@@ -265,15 +265,42 @@ canonfig sync --plan
 canonfig sync --plan --review-local
 canonfig sync --apply
 canonfig sync --apply --no-input
+canonfig sync --apply --no-backup
 ```
+
+On an enrolled Follower Machine, `sync` applies the revision its Source
+Machine selected. On the Source Machine, or a machine that is not enrolled,
+`sync` projects `~/.canonfig/` into the harnesses listed in
+`~/.canonfig/canonfig.jsonc`, minus those `~/.canonfig/local/local.jsonc`
+excludes.
 
 | Option | Effect |
 | --- | --- |
 | `--plan` | Default. Downloads and compares; changes nothing. |
 | `--apply` | Applies the plan and verifies every resource. Cannot be combined with `--plan`. |
 | `--no-input` | Never prompts. |
-| `--review-local` | With an interactive `--plan`, writes private reviews of first `append-local` adoptions. See [`append-local`](/reference/profile-schema#keep-local-instructions-with-append-local). |
+| `--review-local` | Enrolled followers only. With an interactive `--plan`, writes private reviews of first `append-local` adoptions. See [`append-local`](/reference/profile-schema#keep-local-instructions-with-append-local). |
+| `--no-backup` | Local projection only. Takes over harness surfaces without a takeover snapshot. |
 | `--scheduled` | Set only by the native schedule, which runs `sync --apply --no-input --scheduled`. |
+
+### Takeover snapshots
+
+The first time a projection writes a harness surface (a file, a directory, or
+an owned key such as `mcpServers` in `~/.claude.json`), it copies what was
+there to `~/.canonfig/.backups/<UTC time>/` and then replaces it. Owned keys
+keep only their prior values, in `<harness>/keys.json`; the rest of the file
+is never copied. Snapshot directories are private (0700, files 0600). Canonfig
+keeps the first snapshot and the 4 most recent, and deletes a snapshot whose
+run rolled back.
+
+The plan lists every takeover and says `takeover snapshot` or `no backup` for
+each. `--no-backup`, or `"backups": false` in `~/.canonfig/local/local.jsonc`,
+takes over without a snapshot. After takeover, a surface you edit, or an entry
+you add to an owned directory, is Follower Drift: kept and reported (exit 4).
+
+A harness root is pinned at takeover. A later run that resolves a different
+root, for example because `CODEX_HOME` changed, stops with Human Action
+Required (exit 3) instead of writing a second copy.
 
 A failed action rolls back the run's file, directory, and config changes and
 exits 7: "resource `<id>` could not be applied to `<target>`: `<cause>`". Tool
@@ -299,13 +326,25 @@ If the Source Machine is still unreachable, the run exits 6 and says to run
 canonfig recover
 canonfig recover --no-input
 canonfig abandon
+canonfig restore
+canonfig restore 2026-11-03T09-30-00-000Z
 ```
 
 `recover` resumes or rolls back an interrupted run. It accepts only
-`--no-input`, and needs that run's revision to still be authorized. `abandon`
-closes a run `recover` cannot finish; it does not undo anything, and the next
-run reconciles what was applied. Both exit 4 while another Canonfig process
-holds the run, and print its process ID. See [Recover from a failed or blocked sync](/how-to/recover).
+`--no-input`; on a follower it needs that run's revision to still be
+authorized, and a local projection run resumes from the revision it recorded.
+`abandon` closes a run `recover` cannot finish; it does not undo anything, and
+the next run reconciles what was applied. Both exit 4 while another Canonfig
+process holds the run, and print its process ID. See [Recover from a failed or blocked sync](/how-to/recover).
+
+`restore [<snapshot>]` writes a takeover snapshot back, the latest one when
+no id is given. It runs as a journaled run: it rewrites the files, directories
+and owned keys the snapshot holds, removes what Canonfig added where the
+snapshot recorded nothing, deletes Canonfig's ownership records for those
+surfaces, and adds their harnesses to `excludeHarnesses` in
+`~/.canonfig/local/local.jsonc` so the next sync leaves them alone. It refuses,
+with exit 3 and nothing changed, when a surface differs from what Canonfig
+last applied. Snapshot ids are the directory names under `~/.canonfig/.backups/`.
 
 ## Status
 

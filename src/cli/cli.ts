@@ -99,7 +99,10 @@ export type CliCommand =
     /** Only the rendered native job passes this; it keys the fire evidence. */
     readonly scheduled: boolean;
     readonly reviewLocal: boolean;
+    /** Take over harness surfaces without a takeover snapshot. */
+    readonly noBackup: boolean;
   }
+  | { readonly _tag: "Restore"; readonly snapshot?: string | undefined }
   | { readonly _tag: "Recover"; readonly noInput: boolean }
   | { readonly _tag: "Abandon" }
   | { readonly _tag: "Status"; readonly follower?: typeof FollowerId.Type | undefined }
@@ -937,7 +940,7 @@ const evaluateCommand = (
         new Set(),
         // --scheduled is set by the rendered native job; typing it by hand
         // is harmless but pointless without the scheduler's provenance.
-        new Set(["--plan", "--apply", "--no-input", "--scheduled", "--review-local"]),
+        new Set(["--plan", "--apply", "--no-input", "--scheduled", "--review-local", "--no-backup"]),
       );
       if (options.positionals.length > 0) return invalid("sync accepts no positional arguments");
       if (options.switches.has("--plan") && options.switches.has("--apply")) {
@@ -953,7 +956,13 @@ const evaluateCommand = (
         noInput: options.switches.has("--no-input"),
         scheduled: options.switches.has("--scheduled"),
         reviewLocal: options.switches.has("--review-local"),
+        noBackup: options.switches.has("--no-backup"),
       }, format);
+    }
+    if (area === "restore") {
+      const options = parseOptions(arguments_.slice(1), new Set(), new Set());
+      if (options.positionals.length > 1) return invalid("Usage: canonfig restore [<snapshot>]");
+      return command({ _tag: "Restore", snapshot: options.positionals[0] }, format);
     }
     if (area === "abandon") {
       const options = parseOptions(arguments_.slice(1), new Set(), new Set());
@@ -1058,6 +1067,7 @@ export const commandName = (value: CliCommand): string => {
     case "FollowerEnroll": return "follower.enroll";
     case "FollowerUnenroll": return "follower.unenroll";
     case "Synchronize": return `sync.${value.mode}`;
+    case "Restore": return "restore";
     case "Recover": return "recover";
     case "Abandon": return "abandon";
     case "Status": return "status";
@@ -1144,7 +1154,9 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         noInput: value.noInput,
         scheduled: value.scheduled,
         reviewLocal: value.reviewLocal,
+        noBackup: value.noBackup,
       });
+    case "Restore": return yield* follower.restore({ snapshot: value.snapshot });
     case "Recover": return yield* follower.recover({ noInput: value.noInput });
     case "Abandon": return yield* follower.abandon();
     case "Status": return yield* follower.status(value.follower);

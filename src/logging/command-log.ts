@@ -24,6 +24,7 @@ const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
 const SINGLE_COMMANDS = new Set([
   "doctor",
   "recover",
+  "restore",
   "status",
   "sync",
 ]);

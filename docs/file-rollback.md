@@ -65,6 +65,19 @@ Recovery covers process interruption. Flush guarantees remain those of the
 platform adapter and filesystem; this does not promise identical power-loss
 durability on every operating system.
 
+## Takeover snapshots
+
+Projection of `~/.canonfig/` keeps one more copy, outside the per-run journal:
+before Canonfig first writes a harness surface it copies the prior content to
+`~/.canonfig/.backups/<UTC time>/` with a `manifest.json` (harness, root,
+target, object kind, mode, symlink text, SHA-256, `absent` markers, run id).
+Owned config keys keep only their prior values in `<harness>/keys.json`.
+Snapshots are written through the protected writer (directories 0700, files
+0600, Windows ACLs) before the run is recorded. A run that rolls back deletes
+its snapshot; otherwise Canonfig keeps the first snapshot and the 4 most
+recent. Later runs rely on the per-run journal only. `canonfig restore` writes
+a snapshot back as its own journaled run.
+
 ## Upgrade boundary
 
 This is the only file-rollback format Canonfig reads. Before installing another

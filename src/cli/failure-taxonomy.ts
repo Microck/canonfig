@@ -457,6 +457,14 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) => `agent task ${text(error.task)} is not valid`,
   ),
+  CanonicalFolderError: describe(
+    "usage-or-configuration",
+    (error) => `${text(error.path)}: ${error.message}`,
+  ),
+  SnapshotNotFoundError: declared(
+    "usage-or-configuration",
+    (error) => `takeover snapshot ${text(error.snapshot)} does not exist`,
+  ),
   FollowerSynchronizationConfigurationError: declared(
     "usage-or-configuration",
     (error) =>
@@ -614,6 +622,15 @@ export const failureTaxonomy = {
   InvalidAgentResponseError: declared(
     "human-action-required",
     () => "the agent harness returned output Canonfig cannot use",
+  ),
+
+  LocalOverlayCollisionError: describe(
+    "human-action-required",
+    (error) => `${text(error.path)}: ${error.message}`,
+  ),
+  ProjectionHumanActionError: declared(
+    "human-action-required",
+    (error) => `${text(error.harness)} needs human action before projection`,
   ),
 
   // Something already on this machine blocks the requested change.
@@ -774,6 +791,11 @@ export const failureTaxonomy = {
         bytes === undefined ? "unknown" : `${bytes.toString()} bytes (${(bytes / 1048576n).toString()} MiB)`;
       return `the filesystem holding ${text(error.path)} needs ${amount(error.requiredBytes)} free but only ${amount(error.availableBytes)} are available; nothing was changed. Free space there, then retry`;
     },
+  ),
+  TakeoverSnapshotError: describe(
+    "verification-or-apply-failure",
+    (error) =>
+      `cannot take a takeover snapshot of ${text(error.path)}: ${error.message}. Nothing in the harness was changed`,
   ),
   ScheduleVerificationError: declared(
     "verification-or-apply-failure",

@@ -27,6 +27,13 @@ export interface SynchronizeInput {
   readonly scheduled?: boolean | undefined;
   /** Write exact append-local adoption reviews to protected local files, never output. */
   readonly reviewLocal?: boolean | undefined;
+  /** Take over harness surfaces without a takeover snapshot. */
+  readonly noBackup?: boolean | undefined;
+}
+
+export interface RestoreInput {
+  /** Snapshot id under `~/.canonfig/.backups/`; the latest when absent. */
+  readonly snapshot?: string | undefined;
 }
 
 export interface RecoverInput {
@@ -82,6 +89,10 @@ export interface FollowerCommandsService {
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly recover: (
     input: RecoverInput,
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  /** Write a takeover snapshot back and exclude its harnesses on this machine. */
+  readonly restore: (
+    input: RestoreInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly status: (
     follower?: FollowerId,

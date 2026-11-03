@@ -166,7 +166,7 @@ Apply Policies mean:
 - `mirror-owned`: add and update desired files, then remove only files previously owned by Canonfig and still unmodified. Files Canonfig never wrote are preserved.
 - `replace` on a directory: the managed subtree ends up exactly the desired subtree. The whole directory is listed, so entries Canonfig never wrote are removed too. Use `mirror-owned` to keep them.
 - `merge`: update declared keys through a format-specific codec while preserving the Local Overlay. A key Canonfig owned that the profile no longer declares is removed, unless the follower claimed it through its Local Overlay, which is how an operator keeps a key the profile has dropped.
-- `replace-if-unmodified`: replace only when current content equals the Applied Resource Record or already equals desired content. An absent target is reinstalled, because absence is not a local edit; a target that exists but cannot be verified is left alone and reported.
+- `replace-if-unmodified`: replace only when current content equals the Applied Resource Record or already equals desired content. An absent target is reinstalled, because absence is not a local edit; a target that exists but cannot be verified is left alone and reported. On a directory the whole tree is listed, so an entry Canonfig never wrote is a local edit. On a config it merges the declared keys only when the values at the keys Canonfig last applied are unchanged; a newly declared key is not an edit.
 - `append-local`: compose a regular UTF-8 text file from a marked Source section
   followed by follower-owned text. On first adoption an existing file that differs
   from Source is preserved in full as local text; an identical file is not
@@ -177,8 +177,9 @@ Apply Policies mean:
 - `require-local`: verify a local credential and return Human Action Required when it is absent.
 
 Policy compatibility is kind-specific: files support `replace`,
-`replace-if-unmodified`, and `append-local`; directories support `mirror-owned` and `replace`;
-configs support `merge` and `replace`; skills support `replace-if-unmodified`
+`replace-if-unmodified`, and `append-local`; directories support `mirror-owned`, `replace`
+and `replace-if-unmodified`; configs support `merge`, `replace` and `replace-if-unmodified`;
+skills support `replace-if-unmodified`
 and `replace`; tools and credentials support only their listed kind-specific
 policies. A file's verification is also shape-specific:
 symlink files require `symlink` verification, while regular files require
@@ -549,6 +550,8 @@ canonfig follower unenroll
 canonfig tunnel start
 canonfig tunnel stop --forget
 canonfig sync --plan
+canonfig sync --apply --no-backup
+canonfig restore
 canonfig recover --no-input
 canonfig status --json
 canonfig overlay list
