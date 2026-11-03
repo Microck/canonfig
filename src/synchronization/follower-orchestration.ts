@@ -1150,7 +1150,7 @@ export const recoverFollower = Effect.fn(
       processTimeoutMilliseconds: localProcessTimeout(configuration),
     },
   });
-  yield* finishProjectionRun(stateLocation, recovery.run.id, outcome, revision);
+  yield* finishProjectionRun(stateLocation, configuration.follower.id, recovery.run.id, outcome, revision);
   if (outcome.outcome === "Converged") {
     const published = yield* repository.findRevision(recovery.run.revision);
     yield* persistProfileScheduleDefault(configuration, published?.scheduleDefault);

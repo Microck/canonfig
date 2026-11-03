@@ -221,6 +221,71 @@ export const readSnapshot = (
     return { id, directory, manifest, keys };
   });
 
+/**
+ * Drop the entries of `surfaces` from a snapshot, with their copied files and
+ * key values, and delete the snapshot when no entry is left. A run that
+ * stopped before it wrote a surface uses this, so the snapshot keeps only
+ * prior content of surfaces Canonfig did take over. The manifest is rewritten
+ * first: an interruption then leaves only unreferenced copies, never a
+ * manifest naming a missing one. Returns whether the snapshot was deleted.
+ */
+export const dropSnapshotEntries = (
+  backups: string,
+  id: string,
+  surfaces: ReadonlyArray<{ readonly harness: string; readonly surface: string }>,
+): Effect.Effect<boolean, TakeoverSnapshotError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const snapshot = yield* readSnapshot(backups, id).pipe(
+      Effect.mapError((error) => new TakeoverSnapshotError({ path: join(backups, id), message: error.message })),
+    );
+    const droppedSurfaces = new Set(surfaces.map((entry) => `${entry.harness}\0${entry.surface}`));
+    const isDropped = (entry: SnapshotEntry) => droppedSurfaces.has(`${entry.harness}\0${entry.surface}`);
+    const dropped = snapshot.manifest.entries.filter(isDropped);
+    if (dropped.length === 0) return false;
+    const kept = snapshot.manifest.entries.filter((entry) => !isDropped(entry));
+    if (kept.length === 0) {
+      yield* deleteSnapshot(backups, id);
+      return true;
+    }
+    const pathOf = (relative: string) => join(snapshot.directory, ...relative.split("/"));
+    const write = (relative: string, value: SnapshotManifest | Record<string, Record<string, ConfigValue>>) =>
+      machine.normalizePath({ path: pathOf(relative) }).pipe(
+        Effect.flatMap((path) => machine.atomicWrite({ path, content: new TextEncoder().encode(`${JSON.stringify(value, undefined, 2)}\n`), mode: 0o600 })),
+        Effect.mapError(snapshotError(pathOf(relative))),
+      );
+    const remove = (relative: string) => Effect.tryPromise({
+      try: () => rm(pathOf(relative), { recursive: true, force: true }),
+      catch: (error) => new TakeoverSnapshotError({ path: pathOf(relative), message: String(error) }),
+    });
+    yield* write("manifest.json", { ...snapshot.manifest, entries: kept } satisfies SnapshotManifest);
+    const keptHarnesses = new Set(kept.map((entry) => entry.harness));
+    for (const harness of new Set(dropped.map((entry) => entry.harness))) {
+      if (!keptHarnesses.has(harness)) {
+        yield* remove(harness);
+        continue;
+      }
+      // keys.json holds the kept keys that had a value, or goes away.
+      const values: Record<string, Record<string, ConfigValue>> = {};
+      for (const entry of kept) {
+        if (entry.harness !== harness || entry.kind !== "config" || entry.state !== "present") continue;
+        const value = snapshot.keys.get(harness)?.get(entry.target)?.get(entry.key);
+        if (value !== undefined) values[entry.target] = { ...values[entry.target], [entry.key]: value };
+      }
+      if (Object.keys(values).length === 0) yield* remove(`${harness}/keys.json`);
+      else yield* write(`${harness}/keys.json`, values);
+      for (const entry of dropped) {
+        if (entry.harness !== harness || entry.state !== "present") continue;
+        if (entry.kind === "file" && entry.object === "regular") yield* remove(entry.copy);
+        if (entry.kind !== "directory") continue;
+        // Every copied child sits under the directory's own copy.
+        const child = entry.entries.find((candidate) => candidate.object === "regular");
+        if (child?.object === "regular") yield* remove(child.copy.slice(0, child.copy.length - child.path.length - 1));
+      }
+    }
+    return false;
+  });
+
 const isNotFound = (error: { readonly message: string }) => /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message);
 
 /**

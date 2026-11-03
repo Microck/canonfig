@@ -28,11 +28,13 @@ import {
   planRestore,
   rootContext,
   sharedSkillsOwner,
+  surfaceResourceId,
   takeoverSummary,
   type FolderPlan,
 } from "./plan.ts";
 import {
   deleteSnapshot,
+  dropSnapshotEntries,
   pruneSnapshots,
   readSnapshot,
   snapshotOfRun,
@@ -104,12 +106,14 @@ export const discardRunArtifacts = (run: RunIdType) =>
 
 /**
  * Finish a run the shared engine completed or recovered. A run that rolled
- * back forgets its takeovers and deletes the snapshot it wrote; one that did
- * not keeps them and applies snapshot retention. An interrupted run keeps
+ * back forgets its takeovers and deletes the snapshot it wrote. A run that
+ * stopped early keeps them only for surfaces it applied. Either way, a run
+ * that did not roll back applies snapshot retention. An interrupted run keeps
  * everything for `canonfig recover`.
  */
 export const finishProjectionRun = (
   statePath: string,
+  follower: FollowerId,
   run: RunIdType,
   outcome: SynchronizationOutcome,
   revision: PlanningLocalRevision,
@@ -125,8 +129,37 @@ export const finishProjectionRun = (
       if (snapshot !== undefined) yield* deleteSnapshot(backups, snapshot);
       return { snapshotDeleted: snapshot !== undefined, pruned: [] };
     }
+    const snapshotDeleted = outcome.outcome === "Converged"
+      ? false
+      : yield* releaseUnappliedTakeovers(backups, follower, run);
     if (revision.origin === "snapshot" && outcome.outcome === "Converged") yield* finishRestore(statePath, revision);
-    return { snapshotDeleted: false, pruned: yield* pruneSnapshots(backups) };
+    return { snapshotDeleted, pruned: yield* pruneSnapshots(backups) };
+  });
+
+/**
+ * After a run that stopped early (Human Action Required or Follower Drift):
+ * the executor skipped every action after the stop, so some surfaces the run
+ * took over were never written. Their takeover rows are released and their
+ * snapshot entries dropped, deleting the snapshot if it empties; otherwise
+ * the next run would treat them as owned with no Applied Resource Record and
+ * report drift on content Canonfig never wrote. A surface counts as applied
+ * when it has a record, and a config key when that record owns it. Returns
+ * whether the run's snapshot was deleted.
+ */
+const releaseUnappliedTakeovers = (backups: string, follower: FollowerId, run: RunIdType) =>
+  Effect.gen(function*() {
+    const repository = yield* StateRepository;
+    const applied = new Map((yield* repository.loadAppliedResources(follower)).map((record) => [record.resource, record]));
+    const unapplied = (yield* repository.loadHarnessTakeovers()).filter((takeover) => {
+      if (takeover.run !== run) return false;
+      const hash = takeover.surface.indexOf("#");
+      const record = applied.get(surfaceResourceId(takeover.harness, hash < 0 ? takeover.surface : takeover.surface.slice(0, hash)));
+      return record === undefined || (hash >= 0 && !(record.ownedKeys ?? []).includes(takeover.surface.slice(hash + 1)));
+    }).map((takeover) => ({ harness: takeover.harness, surface: takeover.surface }));
+    if (unapplied.length === 0) return false;
+    yield* repository.releaseTakeovers(unapplied);
+    const snapshot = yield* snapshotOfRun(backups, run);
+    return snapshot === undefined ? false : yield* dropSnapshotEntries(backups, snapshot, unapplied);
   });
 
 /**
@@ -278,7 +311,7 @@ export const runProjection = (input: ProjectionRunInput) =>
         limits: input.limits,
       });
     }).pipe(Effect.tapError(() => undo));
-    const finished = yield* finishProjectionRun(input.statePath, run, outcome, planned.revision);
+    const finished = yield* finishProjectionRun(input.statePath, input.follower, run, outcome, planned.revision);
     return { outcome, snapshot: finished.snapshotDeleted ? undefined : snapshot };
   });
 
@@ -352,7 +385,7 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
       artifacts: planned.artifacts,
     });
   }).pipe(Effect.tapError(() => discardRunArtifacts(run).pipe(Effect.ignore)));
-  yield* finishProjectionRun(statePath, run, outcome, planned.revision);
+  yield* finishProjectionRun(statePath, follower, run, outcome, planned.revision);
   return {
     restored: snapshot.id,
     excludedHarnesses: outcome.outcome === "Converged" ? planned.harnesses : [],
@@ -416,7 +449,7 @@ export const recoverLocal = Effect.fn("LocalProjection.recover")(function*(state
   const revision = yield* repository.getLocalRevision(recovery.run.revision);
   const artifacts = yield* loadRunArtifacts(recovery.run.id, revision);
   const outcome = yield* synchronization.recover({ follower: localProjectionFollower, revision, artifacts });
-  yield* finishProjectionRun(statePath, recovery.run.id, outcome, revision);
+  yield* finishProjectionRun(statePath, localProjectionFollower, recovery.run.id, outcome, revision);
   return { run: recovery.run.id, origin: revision.origin, outcome };
 }, (effect, statePath) => withRunLock(statePath, "recover", effect));
 

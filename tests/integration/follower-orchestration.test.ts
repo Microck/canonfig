@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1175,5 +1175,43 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     });
     expect(kindsOf(planned.plan, "rules:style")).toEqual(["write-file"]);
     expect(read(claudeJson)).toBe(broken);
+  });
+
+  it("takes over a harness with a snapshot once a tool that blocked the first run is installed", async () => {
+    const root = temporaryRoot("tool-blocked-takeover");
+    const source = await startSource(root, (folder) => authorFolder(folder, {
+      // Cargo cannot install with build scripts disabled, so the tool is Human
+      // Action Required, and every projected resource waits for it because
+      // the MCP server requires it.
+      tools: { probe: { executable: "probe-tool", recipes: [{ platform: "linux", method: "cargo", package: "probe-tool", version: "1.0.0" }] } },
+      mcp: { probe: { transport: "stdio", command: "probe-tool", requires: ["tools/probe"] } },
+    }, { "AGENTS.md": "Prefer small diffs.\n" }));
+    const follower = await enroll(root, source, { name: "Blocked follower", harnesses: ["claude-code"] });
+    const instructions = join(follower.home, ".claude", "CLAUDE.md");
+    write(instructions, "old instructions\n");
+    const backups = join(follower.folder, ".backups");
+    const takeoverHarnesses = () => {
+      const database = new DatabaseSync(follower.state, { readOnly: true });
+      try {
+        return database.prepare("SELECT harness FROM harness_takeovers").all().map((row) => row.harness);
+      } finally {
+        database.close();
+      }
+    };
+
+    const blocked = await follower.apply();
+    expect(blocked.outcome).toMatchObject({ outcome: "HumanActionRequired" });
+    expect(read(instructions)).toBe("old instructions\n");
+    expect(takeoverHarnesses()).toEqual([]);
+    expect(existsSync(backups) ? readdirSync(backups) : []).toEqual([]);
+
+    write(join(follower.bin, "probe-tool"), "#!/bin/sh\nexit 0\n", 0o755);
+    const resolved = await follower.apply();
+    expect(resolved.outcome).toMatchObject({ outcome: "Converged" });
+    expect(read(instructions)).toContain("Prefer small diffs.");
+    expect(takeoverHarnesses()).toContain("claude-code");
+    const [snapshot] = readdirSync(backups);
+    expect(read(join(backups, snapshot!, "claude-code", ".claude", "CLAUDE.md"))).toBe("old instructions\n");
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
   });
 });

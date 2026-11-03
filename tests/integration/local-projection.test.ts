@@ -132,6 +132,13 @@ const appliedRecord = (value: Fixture, resource: string) =>
     return (yield* repository.loadAppliedResources(localProjectionFollower)).find((record) => record.resource === resource);
   }).pipe(Effect.provide(stateRepositoryLayer(value.statePath))));
 
+/** Change top-level keys of the fixture's `canonfig.jsonc`, keeping the rest. */
+const editFolderConfig = (value: Fixture, changes: Readonly<Record<string, ConfigValue>>) => {
+  const path = join(value.folder, "canonfig.jsonc");
+  const current = JSON.parse(readFileSync(path, "utf8").replace(/^\/\/.*\n/u, ""));
+  write(path, JSON.stringify({ ...current, ...changes }));
+};
+
 /** Every file beneath a directory, relative, with its bytes. */
 const tree = (root: string) => {
   const files = new Map<string, string>();
@@ -359,9 +366,7 @@ describe("local projection", () => {
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
     const [first] = snapshots(value);
     // A later run takes over one more key of the same file, with its own snapshot.
-    const canonfigPath = join(value.folder, "canonfig.jsonc");
-    const folderConfig = JSON.parse(readFileSync(canonfigPath, "utf8").replace(/^\/\/.*\n/u, ""));
-    write(canonfigPath, JSON.stringify({ ...folderConfig, settings: { codex: { model: "gpt-5", approval_policy: "on-request" } } }));
+    editFolderConfig(value, { settings: { codex: { model: "gpt-5", approval_policy: "on-request" } } });
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
     const [, second] = snapshots(value);
     expect(second).toBeDefined();
@@ -381,5 +386,49 @@ describe("local projection", () => {
     expect(readFileSync(configPath, "utf8")).toContain("approval_policy = \"never\"");
     expect(appliedRecord(value, "harness:codex:config")).toBeUndefined();
     expect(takeoverRows(value)).toEqual([]);
+  }, 60_000);
+
+  it("keeps takeovers only for surfaces a run applied before it stopped", async () => {
+    const value = fixture(["claude-code"]);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const instructions = join(value.home, ".claude", "CLAUDE.md");
+    const projected = readFileSync(instructions, "utf8");
+    write(instructions, "my local edit\n");
+    // The run stops at the drifted CLAUDE.md: amp (and the shared skills)
+    // sort before it and are applied, qwen sorts after it and is skipped.
+    write(join(value.home, ".config", "amp", "AGENTS.md"), "old amp\n");
+    write(join(value.home, ".qwen", "QWEN.md"), "old qwen\n");
+    editFolderConfig(value, { harnesses: ["amp", "claude-code", "qwen"] });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "FollowerDrift" });
+    const rowsAfterStop = takeoverRows(value).map((row) => String(row.harness));
+    const stoppedSnapshot = join(value.folder, ".backups", snapshots(value).at(-1)!);
+    const stoppedEntries = JSON.parse(readFileSync(join(stoppedSnapshot, "manifest.json"), "utf8")).entries;
+
+    write(instructions, projected);
+    const retried = await sync(value, "apply");
+    expect(retried.outcome).toMatchObject({ outcome: "Converged" });
+    expect(retried.takeovers.map((entry) => entry.harness)).toEqual(["qwen"]);
+    expect(readFileSync(join(value.home, ".qwen", "QWEN.md"), "utf8")).toContain("Prefer small diffs.");
+    const retrySnapshot = join(value.folder, ".backups", snapshots(value).at(-1)!);
+    expect(readFileSync(join(retrySnapshot, "qwen", ".qwen", "QWEN.md"), "utf8")).toBe("old qwen\n");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+
+    expect(rowsAfterStop).toContain("amp");
+    expect(rowsAfterStop).not.toContain("qwen");
+    expect([...new Set(stoppedEntries.map((entry: { harness: string }) => entry.harness))].sort()).toEqual(["agents", "amp"]);
+    expect(existsSync(join(stoppedSnapshot, "qwen"))).toBe(false);
+    expect(readFileSync(join(stoppedSnapshot, "amp", ".config", "amp", "AGENTS.md"), "utf8")).toBe("old amp\n");
+  }, 120_000);
+
+  it("deletes the snapshot of a stopped run that applied none of its takeovers", async () => {
+    const value = fixture(["claude-code"]);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    write(join(value.home, ".claude", "CLAUDE.md"), "my local edit\n");
+    editFolderConfig(value, { harnesses: ["claude-code", "opencode"] });
+    const stopped = await sync(value, "apply");
+    expect(stopped.outcome).toMatchObject({ outcome: "FollowerDrift" });
+    expect(stopped.snapshot).toBeUndefined();
+    expect(snapshots(value)).toHaveLength(1);
+    expect(takeoverRows(value).map((row) => row.harness)).not.toContain("opencode");
   }, 60_000);
 });
