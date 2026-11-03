@@ -42,9 +42,9 @@ identity. Symlinks remain links and do not publish their referents as file bytes
 
 ## Why this model
 
-The previous publisher hashed a whole resource spec as one JSON blob. Followers
-parsed that blob and turned content strings back into bytes. A single changed
-asset therefore invalidated the whole directory or skill payload.
+Hashing a whole resource spec as one JSON blob would make followers parse that
+blob and turn content strings back into bytes, and a single changed asset would
+invalidate the whole directory or skill payload.
 
 Base64 can preserve bytes, but adds `4 * ceil(length / 3)` characters and a
 decoding contract. A 15 MiB file becomes 20 MiB before JSON framing. Canonfig
@@ -66,9 +66,9 @@ and revisions. Paths, modes, and link targets remain resource metadata.
 - Store immutable bytes durably before making a revision visible. Publication
   must not depend on rereading mutable authoring files to serve old revisions.
   A successful publication must survive Source restart and authoring-file loss.
-- Replace the resource-spec JSON blob layer with signed resource specs and
-  per-file byte references. Update publisher, repository, enrollment transport,
-  follower hydration, and fixtures together. Do not add a legacy decoder.
+- Signed resource specs carry per-file byte references. Publisher, repository,
+  enrollment transport, follower hydration, and fixtures share that one format;
+  there is no decoder for any other.
 - Preserve group-filtered signed metadata. A follower must not receive hidden
   resource names, configuration values, or blob references. The research
   suggestion to distribute one full manifest to every follower is rejected.
@@ -83,9 +83,8 @@ and revisions. Paths, modes, and link targets remain resource metadata.
   limits for structured configuration rather than applying them to raw files.
 - Feed verified bytes into the existing ownership, planning, application, and
   rollback model. Do not add binary-specific policy or shell decoding steps.
-- Do not deploy the format change or republish live profiles until the complete
-  new path passes conformance checks. Existing live data must remain recoverable
-  during the coordinated replacement; do not erase it as a migration shortcut.
+- Do not deploy the byte pipeline or republish live profiles until the complete
+  path passes conformance checks.
 
 ## Byte-transfer protocol
 

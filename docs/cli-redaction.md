@@ -52,9 +52,9 @@ publishing again. Accepted bytes are never silently rewritten or redacted.
 Reviewed uv index URLs must be credential-free. They reject credential-named query
 parameters even when the value is empty or an environment reference, because the
 installer does not resolve secrets in index URLs. Noncredential query parameters
-retain their existing behavior. Recipe diagnostics report the failing field and
+are accepted. Recipe diagnostics report the failing field and
 trusted rule explanation without copying rejected package, version, or URL values.
 
-The installation audit's C09 finding motivated these regression tests. This patch
+The installation audit's C09 finding motivated these tests. The redaction
 hardens Canonfig output; it does not claim to prevent an external agent from
 printing a file directly outside Canonfig.

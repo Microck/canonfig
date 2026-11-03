@@ -1,9 +1,9 @@
 # Reconcile deleted source skills into a Machine Profile
 
 An authored Machine Profile normally keeps its declared resources until you
-edit them. For source-backed skills, an explicit local reconciler can now remove
-the resource automatically when its previously observed source directory is
-deleted. This edits the authoring file only. It does not publish, sign a Profile
+edit them. For source-backed skills, an explicit local reconciler removes the
+resource automatically when the source directory it last observed is deleted.
+This edits the authoring file only. It does not publish, sign a Profile
 Revision, synchronize Followers, delete any source/follower files, or run an LLM.
 
 ```sh

@@ -1,11 +1,11 @@
-# Canonfig v2 architecture
+# Canonfig architecture
 
 Canonfig is a one-way configuration synchronizer for AI-assisted development machines. A Source Machine publishes an immutable Machine Profile. Each Follower Machine plans, applies, and verifies that profile while preserving declared local configuration and any modified skill that Canonfig previously installed.
 
 The Configuration Agent is part of the product contract, but it is not the source of truth. Deterministic code owns discovery evidence, policy, execution, verification, and history. The agent resolves work only when Canonfig cannot select one safe action from declared facts.
 
 > [!IMPORTANT]
-> This document defines the accepted v2 architecture.
+> This document defines the accepted architecture.
 
 ## Product invariants
 
@@ -19,7 +19,6 @@ The Configuration Agent is part of the product contract, but it is not the sourc
 8. An Agent Task has explicit allowed paths, commands, network origins, time limits, and completion checks.
 9. Scheduled sync uses the same command path as an interactive sync. There is no second reconciliation implementation.
 10. Linux, macOS, and Windows adapters must pass the same conformance suite.
-11. Canonfig v2 does not read, migrate, or preserve legacy v1 state.
 
 ## System shape
 
@@ -310,8 +309,8 @@ same top-level digest, is accepted. npm and pnpm then receive explicit offline
 installation flags; bun artifacts remain Human Action Required because its
 local tarball command has no guaranteed offline mode.
 
-Every recipe also carries a reviewed `buildPolicy`. The backward-compatible
-default is `{ "mode": "scripts-disabled" }`; npm installs use
+Every recipe also carries a reviewed `buildPolicy`. The default is
+`{ "mode": "scripts-disabled" }`; npm installs use
 `--ignore-scripts` and `uv tool install` uses `--no-build`. A package that
 requires lifecycle hooks or an sdist must publish
 `{ "mode": "required", "reviewedBy", "reviewedAt", "executables", "paths",
@@ -415,7 +414,7 @@ observed == last applied  -> safe to update or remove
 otherwise                 -> Follower Drift; preserve follower content
 ```
 
-Canonfig does not merge modified canonical skills in v2. The user can keep the follower copy, replace it with the source revision, or move the changes into a Local Overlay. This keeps the automatic rule deterministic.
+Canonfig does not merge modified canonical skills. The user can keep the follower copy, replace it with the source revision, or move the changes into a Local Overlay. This keeps the automatic rule deterministic.
 
 Local Overlays are follower-owned records for `config` resources using the
 `merge` policy. Each record stores the authorized resource ID, its normalized
@@ -479,7 +478,7 @@ resource that was successfully removed.
 
 Package installation, login, and arbitrary agent commands cannot promise full rollback. Canonfig records their evidence and reruns their idempotent verification during recovery. `canonfig recover` resumes the recorded plan when its Profile Revision is still available. Otherwise it explains why a new plan is required. An `Interrupted` run remains recoverable and blocks a new synchronization run for that follower until recovery completes or an explicit terminal abandonment outcome is recorded; terminal historical runs remain available to status and diagnostic queries.
 
-Profile Revisions and content blobs are immutable. V2 does not perform automatic source garbage collection. A later explicit source maintenance command can remove unreachable revisions after policy is defined.
+Profile Revisions and content blobs are immutable. Canonfig does not perform automatic source garbage collection. A later explicit source maintenance command can remove unreachable revisions after policy is defined.
 
 ## Scheduling
 
@@ -590,10 +589,9 @@ Service tags, implementing layers, public errors, and domain types remain separa
 
 ## Deliberate exclusions
 
-Canonfig v2 does not provide:
+Canonfig does not provide:
 
 - bidirectional synchronization
-- Legacy v1 state migration or aliases
 - automatic copying of source credentials
 - silent conflict resolution for modified skills
 - arbitrary whole-home-directory backup
