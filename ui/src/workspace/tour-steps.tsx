@@ -117,13 +117,13 @@ function tourSteps(ws: Workspace, live: () => Workspace): TourStep[] {
   ];
 }
 
-/** Both roles have the same Agent policy and Harness projects pages, so they share one chapter. */
+/** Both roles have the same Agent policy page, so they share one chapter. */
 function agentsChapter(ws: Workspace): TourChapter {
   return {
     id: "agents",
     title: "AI agents",
     summary: "When an AI agent may help, and what it may change.",
-    pages: ["agent", "harness"],
+    pages: ["agent"],
     steps: [
       {
         target: ["agent-mode"],
@@ -142,12 +142,6 @@ function agentsChapter(ws: Workspace): TourChapter {
         title: "Where the agent may write",
         body: "The agent can write only in these folders; everything else is read-only to it. Click Save policy to keep your changes.",
         before: () => ws.setView("agent"),
-      },
-      {
-        target: ["harness-projects"],
-        title: "Harness projects",
-        body: "Add a repository, and Canonfig writes each agent's instruction files from one .canonfig/harness.yaml in it. This is separate from the profile your machines sync.",
-        before: () => ws.setView("harness"),
       },
     ],
   };

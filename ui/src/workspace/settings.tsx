@@ -1,5 +1,5 @@
 // Settings shared by both machine roles where the feature exists on both.
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Check, Circle, HourglassMedium, Warning, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
@@ -10,9 +10,9 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
-import { DEMO, agentPolicy, doctor, harnessProject, installers } from "@/shared/data";
+import { DEMO, agentPolicy, doctor, installers } from "@/shared/data";
 import { useSharedState, useWorkspace } from "./store";
-import { Body, CommandBox, DetailPanel, Field, ListHead, ListRow, PageHeader, Prop, SectionLabel, SettingRow, settingsGroup, useLeaveGuard } from "./kit";
+import { Body, CommandBox, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useLeaveGuard } from "./kit";
 
 const LINGER_FIX = "sudo loginctl enable-linger ubuntu";
 /** Ends the toasts below, which report simulated work; only the demo says where it happened. */
@@ -21,7 +21,7 @@ const IN_DEMO = DEMO ? " in this demo workspace" : "";
 /**
  * Absolute (`/`), home (`~` or `~/`) or explicitly relative (`./`), on one line. A shape check only:
  * the demo can't see this machine's filesystem, so it never claims the path exists.
- * Used by Writable paths and harness project folders.
+ * Used by Writable paths.
  */
 const PATH_SHAPE = /^(?:~|(?:\/|~\/|\.\/)[^\r\n]*)$/;
 const PATH_SHAPE_ERROR = "Enter a path that starts with /, ~/ or ./.";
@@ -565,205 +565,6 @@ export function AgentPolicyView() {
       </Body>
       {leaveDialog}
     </>
-  );
-}
-
-interface Project {
-  path: string;
-  targets: string[];
-  pending: number;
-  status: "valid" | "invalid" | "applied";
-}
-
-const PROJECT_SEED: Project[] = [
-  { path: harnessProject.path, targets: harnessProject.targets, pending: harnessProject.pending, status: "valid" },
-  { path: "~/code/canonfig", targets: ["claude", "codex"], pending: 0, status: "applied" },
-];
-
-// Match DetailPanel's md breakpoint: only the side-by-side layout gets a default selection.
-const HARNESS_DETAIL_QUERY = "(min-width: 48rem)";
-function subscribeHarnessDetailLayout(onChange: () => void) {
-  const query = window.matchMedia(HARNESS_DETAIL_QUERY);
-  query.addEventListener("change", onChange);
-  return () => query.removeEventListener("change", onChange);
-}
-
-export function HarnessView() {
-  const ws = useWorkspace();
-  // Shared so added projects and applied plans survive leaving the page.
-  const [projects, setProjects] = useSharedState("harness-projects", PROJECT_SEED);
-  const sideBySide = useSyncExternalStore(
-    subscribeHarnessDetailLayout,
-    () => window.matchMedia(HARNESS_DETAIL_QUERY).matches,
-    () => false,
-  );
-  // Explicit focus works at every width; an empty focus keeps a closed panel closed.
-  const selected = ws.focus ?? (sideBySide ? harnessProject.path : null);
-  const [initOpen, setInitOpen] = useState(false);
-  const [folder, setFolder] = useState("");
-  const [tried, setTried] = useState(false);
-  const current = projects.find((p) => p.path === selected);
-  const cols = "minmax(220px,360px) minmax(160px,240px) minmax(140px,1fr)";
-  const path = folder.trim().replace(/\/+$/, "");
-  // The shape applies to what was typed, so "./" passes before its trailing slash is dropped.
-  const folderProblem = !path
-    ? "Enter a folder."
-    : !PATH_SHAPE.test(folder.trim())
-      ? PATH_SHAPE_ERROR
-      : projects.some((p) => p.path === path)
-        ? "That folder is already a harness project."
-        : null;
-  const folderError = tried ? folderProblem : null;
-  // Only an open dialog holds a draft: Cancel and Escape close it, and reopening starts blank.
-  const { dialog: leaveDialog, leaveWithoutAsking } = useLeaveGuard(initOpen && folder !== "", "this new harness project");
-  return (
-    <>
-      <PageHeader
-        crumbs={["Settings", "Harness projects"]}
-        actions={
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => {
-              setFolder("");
-              setTried(false);
-              setInitOpen(true);
-            }}
-          >
-            Add project
-          </Button>
-        }
-      />
-      <Body
-        detail={
-          current && (
-            <HarnessDetail key={current.path} project={current} onClose={() => ws.go("harness", "")} onChange={(p) => setProjects((all) => all.map((x) => (x.path === p.path ? p : x)))} />
-          )
-        }
-      >
-        <p data-tour="harness-projects" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          A harness project keeps one <Mono>{harnessProject.file}</Mono> in a repository and writes each agent's instruction files from it. It's separate from the profile your machines sync.
-        </p>
-        <ListHead cols={cols} data-tour="harness-projects">
-          <span>Folder</span>
-          <span>Agents</span>
-          <span>State</span>
-        </ListHead>
-        {projects.map((p) => (
-          <ListRow key={p.path} cols={cols} selected={selected === p.path} onClick={() => ws.go("harness", p.path)} data-tour="harness-projects">
-            <Mono className="truncate text-foreground">{p.path}</Mono>
-            <span className="truncate text-sm text-muted-foreground">{p.targets.join(", ")}</span>
-            <span className={cn("text-sm tabular-nums", p.pending ? "text-warn" : "text-muted-foreground")}>{p.pending ? `${p.pending} files to write` : "Up to date"}</span>
-          </ListRow>
-        ))}
-      </Body>
-      <Dialog open={initOpen} onOpenChange={setInitOpen}>
-        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
-          <form
-            className="contents"
-            onSubmit={(e) => {
-              e.preventDefault();
-              setTried(true);
-              if (folderProblem) return;
-              setProjects((p) => [...p, { path, targets: ["claude", "codex"], pending: 2, status: "valid" }]);
-              // Creating settles the draft, so opening the new project must not ask about it.
-              leaveWithoutAsking(() => ws.go("harness", path));
-              setInitOpen(false);
-              toast.success(`Added ${path}${DEMO ? " to this demo workspace" : ""}`);
-            }}
-          >
-            <DialogHeader>
-              <DialogTitle>Add a harness project</DialogTitle>
-              <DialogDescription className="text-base text-pretty">Creates {harnessProject.file} in the folder with your current agent files as a starting point.</DialogDescription>
-            </DialogHeader>
-            <Field label="Project folder" htmlFor="h-folder" error={folderError}>
-              <Input
-                id="h-folder"
-                value={folder}
-                onChange={(e) => setFolder(e.target.value)}
-                aria-invalid={!!folderError}
-                aria-describedby={folderError ? "h-folder-note" : undefined}
-                placeholder="~/code/my-repo"
-                autoComplete="off"
-                spellCheck={false}
-                className="font-mono text-sm"
-              />
-            </Field>
-            <DialogFooter>
-              <Button type="button" variant="ghost" onClick={() => setInitOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" variant="primary">
-                Create harness file
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-      {leaveDialog}
-    </>
-  );
-}
-
-function HarnessDetail({ project, onClose, onChange }: { project: Project; onClose: () => void; onChange: (p: Project) => void }) {
-  // Separate on purpose: Validation reports only what Validate found, while `planned` gates Apply
-  // and is used up by it. Neither step implies the other.
-  const [validated, setValidated] = useState(false);
-  const [planned, setPlanned] = useState(false);
-  const plan = ["AGENTS.md", "CLAUDE.md", ".cursor/rules/project.mdc", "GEMINI.md"].slice(0, Math.max(project.pending, 0));
-  return (
-    <DetailPanel
-      title={<Mono className="text-base text-foreground">{project.path}</Mono>}
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="ghost" size="sm" onClick={() => (setValidated(true), toast.success(`${harnessProject.file} is valid${IN_DEMO}`))}>
-            Validate
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => setPlanned(true)}>
-            Plan
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            className="ml-auto"
-            disabled={!planned || project.pending === 0}
-            onClick={() => {
-              onChange({ ...project, pending: 0, status: "applied" });
-              setPlanned(false);
-              toast.success(`Updated ${plan.length} agent files for ${project.path}${IN_DEMO}`);
-            }}
-          >
-            Apply
-          </Button>
-        </>
-      }
-    >
-      <div className="px-4 py-3">
-        <Prop label="File">
-          <Mono className="text-foreground">{harnessProject.file}</Mono>
-        </Prop>
-        <Prop label="Agents">{project.targets.join(", ")}</Prop>
-        <Prop label="Validation">{validated ? <span className="text-ok">Valid</span> : <span className="text-muted-foreground">Not run yet</span>}</Prop>
-      </div>
-      <div className="border-t border-border px-4 pt-3">
-        <SectionLabel>Plan</SectionLabel>
-        {!planned ? (
-          <p className="pb-4 text-sm text-pretty text-muted-foreground">Run Plan to list the files Apply would write.</p>
-        ) : plan.length === 0 ? (
-          <p className="pb-4 text-sm text-muted-foreground">Every agent file already matches {harnessProject.file}.</p>
-        ) : (
-          <div className="pb-3">
-            {plan.map((f) => (
-              <div key={f} className="flex h-8 items-center gap-2 text-base">
-                <span className="rounded bg-warn/12 px-1 font-mono text-xs text-warn">write</span>
-                <Mono className="text-foreground">{f}</Mono>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </DetailPanel>
   );
 }
 

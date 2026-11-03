@@ -6,7 +6,6 @@ import {
   ClockCounterClockwise,
   Devices,
   FileCode,
-  GitBranch,
   HardDrives,
   Key,
   ListChecks,
@@ -40,7 +39,6 @@ const SOURCE_NAV: NavItem[] = [
 const SOURCE_SETTINGS: NavItem[] = [
   { view: "service", label: "Source service", icon: HardDrives },
   { view: "agent", label: "Agent policy", icon: Robot },
-  { view: "harness", label: "Harness projects", icon: GitBranch },
   { view: "installers", label: "Installers", icon: Package },
   { view: "setup", label: "Setup", icon: ListChecks },
   { view: "doctor", label: "Health check", icon: Stethoscope },
@@ -58,7 +56,6 @@ const FOLLOWER_NAV: NavItem[] = [
 const FOLLOWER_SETTINGS: NavItem[] = [
   { view: "tunnel", label: "SSH tunnel", icon: Plug },
   { view: "agent", label: "Agent policy", icon: Robot },
-  { view: "harness", label: "Harness projects", icon: GitBranch },
   { view: "doctor", label: "Health check", icon: Stethoscope },
   { view: "machine", label: "Enrollment", icon: Monitor },
 ];

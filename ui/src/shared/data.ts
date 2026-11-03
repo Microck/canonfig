@@ -334,13 +334,6 @@ export const installers = [
   { name: "winget", path: "-", status: "not on this platform" },
 ];
 
-export const harnessProject = {
-  path: "~/code/acme-api",
-  file: ".canonfig/harness.yaml",
-  targets: ["claude", "codex", "cursor", "gemini"],
-  pending: 3,
-};
-
 export const followerSelf = {
   name: "laptop",
   source: "atlas (via SSH tunnel)",

@@ -12,7 +12,6 @@ const pages: [WorkspaceRole, View, string][] = [
   ["source", "secrets", "secrets"],
   ["source", "service", "settings/service"],
   ["source", "agent", "settings/agent"],
-  ["source", "harness", "settings/harness"],
   ["source", "installers", "settings/installers"],
   ["source", "setup", "settings/setup"],
   ["source", "doctor", "settings/health"],
@@ -24,7 +23,6 @@ const pages: [WorkspaceRole, View, string][] = [
   ["follower", "secrets", "secrets"],
   ["follower", "tunnel", "settings/tunnel"],
   ["follower", "agent", "settings/agent"],
-  ["follower", "harness", "settings/harness"],
   ["follower", "doctor", "settings/health"],
   ["follower", "machine", "settings/enrollment"],
 ];

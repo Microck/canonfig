@@ -14,7 +14,6 @@ const SOURCE_PATHS: Record<SourceView, string> = {
   secrets: "secrets",
   service: "settings/service",
   agent: "settings/agent",
-  harness: "settings/harness",
   installers: "settings/installers",
   setup: "settings/setup",
   doctor: "settings/health",
@@ -29,7 +28,6 @@ const FOLLOWER_PATHS: Record<FollowerView, string> = {
   secrets: "secrets",
   tunnel: "settings/tunnel",
   agent: "settings/agent",
-  harness: "settings/harness",
   doctor: "settings/health",
   machine: "settings/enrollment",
 };

@@ -39,12 +39,11 @@ export type SourceView =
   | "secrets"
   | "service"
   | "agent"
-  | "harness"
   | "installers"
   | "setup"
   | "doctor";
 
-export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "overlays" | "secrets" | "tunnel" | "agent" | "harness" | "doctor" | "machine";
+export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "overlays" | "secrets" | "tunnel" | "agent" | "doctor" | "machine";
 
 export type View = SourceView | FollowerView | "not-found";
 
