@@ -80,6 +80,16 @@ describe("Canonical Folder loader", () => {
     await expect(loadCanonicalFolder(root)).rejects.toBeInstanceOf(CanonicalFolderError);
   });
 
+  it("loads a folder reached through a linked parent directory", async () => {
+    // macOS temp and home paths can pass through a link (/var is /private/var).
+    const root = folder({ "canonfig.jsonc": minimal, "AGENTS.md": "Be brief.\n" });
+    const linkParent = mkdtempSync(join(tmpdir(), "canonfig-folder-link-"));
+    roots.push(linkParent);
+    symlinkSync(root, join(linkParent, "via"));
+    const loaded = await loadCanonicalFolder(join(linkParent, "via"));
+    expect(loaded.model.instructions).toBe("Be brief.\n");
+  });
+
   it("adds allowed local items, ignores the rest, and stops on a name collision", async () => {
     const root = folder({
       "canonfig.jsonc": "{ \"version\": 1, \"harnesses\": [\"codex\", \"qwen\"], \"local\": { \"allow\": [\"skills\"] } }",

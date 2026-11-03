@@ -266,11 +266,15 @@ const byName = <Entry extends { readonly name: string }>(left: Entry, right: Ent
 /**
  * The folder on disk. Every path read must resolve inside it, and links are
  * refused, so neither `..` nor a symlink can make Canonfig read or publish
- * content from elsewhere.
+ * content from elsewhere. Containment compares real paths on both sides: the
+ * folder's own path can pass through a link (macOS `/var` is `/private/var`,
+ * or a home directory on another volume), and that must not reject every file.
  */
 const diskSource = (folder: string): FolderSource => {
+  let realFolder: Promise<string> | undefined;
   const insideFolder = async (path: string): Promise<void> => {
-    const fromRoot = relative(folder, await realpath(path));
+    realFolder ??= realpath(folder);
+    const fromRoot = relative(await realFolder, await realpath(path));
     if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
       throw failure(path, "resolves outside the Canonical Folder");
     }
