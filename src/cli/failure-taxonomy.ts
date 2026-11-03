@@ -369,15 +369,6 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) => `the publication input is not valid: ${text(error.reason)}`,
   ),
-  EmptyPublicationError: describe(
-    "usage-or-configuration",
-    (error) =>
-      `nothing to publish: the profile declares no resources and ${
-        (error.scannedPaths ?? []).length === 0
-          ? "no proposal was given"
-          : `the proposal from ${list(error.scannedPaths)} found no accepted tool or skill`
-      }. Author resources in a profile file and publish it with --profile-file, or pass --allow-empty to publish an empty revision on purpose`,
-  ),
   PublicationSourceError: describe(
     "usage-or-configuration",
     (error) => `resource ${text(error.resource)} cannot publish source ${text(error.path)}: ${text(error.reason)}`,
@@ -565,14 +556,6 @@ export const failureTaxonomy = {
     "human-action-required",
     (error) =>
       `credential ${text(error.reference)} could not be ${text(error.operation)}`,
-  ),
-  PublicationReviewRequiredError: describe(
-    "human-action-required",
-    (error) => `the proposal needs review before publication: ${text(error.decision)}`,
-  ),
-  UnresolvedPublicationProposalError: describe(
-    "human-action-required",
-    (error) => `the proposal has evidence that needs review: ${list(error.reasons)}`,
   ),
   RecoveryIntegrityError: declared(
     "human-action-required",

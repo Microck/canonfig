@@ -158,6 +158,15 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly releaseTakeovers: (
     surfaces: ReadonlyArray<{ readonly harness: string; readonly surface: string }>,
   ) => Effect.Effect<void, StateRepositoryError>;
+  /**
+   * Hand this machine's local projection records to the follower identity it
+   * enrolled as, in one transaction: the follower's runs then own the harness
+   * surfaces the machine projected while it projected its own folder. Run
+   * history stays under the local projection. Returns how many records moved.
+   */
+  readonly adoptLocalProjection: (
+    follower: FollowerId,
+  ) => Effect.Effect<number, StateRepositoryError>;
   readonly loadAppliedResources: (
     follower: FollowerId,
   ) => Effect.Effect<ReadonlyArray<AppliedResourceRecord>, StateRepositoryError>;

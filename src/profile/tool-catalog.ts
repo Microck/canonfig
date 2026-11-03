@@ -667,3 +667,63 @@ export const buildToolCatalog = (
     .sort((left, right) => compareText(`${left.kind}\0${left.id}`, `${right.kind}\0${right.id}`));
   return { resources, tools, skills, evidence, agentTasks };
 };
+
+const recipePackage = (recipe: InstallationRecipe): string => {
+  switch (recipe.method) {
+    case "npm":
+    case "uv":
+      return recipe.package;
+    case "homebrew":
+      return recipe.formula;
+    case "winget":
+      return recipe.id;
+    case "cargo":
+      return recipe.crate;
+    case "source":
+      return recipe.repository;
+  }
+};
+
+const recipePlatforms = (recipe: InstallationRecipe): ReadonlyArray<"linux" | "macos" | "windows"> => {
+  switch (recipe.method) {
+    case "homebrew":
+      return ["macos"];
+    case "winget":
+      return ["windows"];
+    case "npm":
+    case "uv":
+    case "cargo":
+    case "source":
+      return ["linux", "macos", "windows"];
+  }
+};
+
+/**
+ * The `canonfig.jsonc` `tools` entry for a reviewed discovered tool: its
+ * executable, one recipe per platform the install method supports, and its
+ * verification. `canonfig source scan --write` inserts these.
+ */
+export const folderToolEntry = (tool: DiscoveredTool) => ({
+  executable: tool.executable,
+  recipes: tool.recipes
+    .flatMap((recipe) =>
+      recipePlatforms(recipe).map((platform) => ({
+        platform,
+        method: recipe.method,
+        package: recipePackage(recipe),
+        version: recipe.version,
+        indexPolicy: recipe.indexPolicy,
+        source: recipe.integrity === undefined ? recipe.source : { source: recipe.source, integrity: recipe.integrity },
+        buildPolicy: recipe.buildPolicy,
+      }))
+    )
+    .sort((left, right) =>
+      compareText(
+        `${left.platform}\0${left.method}\0${left.package}\0${left.version}\0${JSON.stringify(left.source)}`,
+        `${right.platform}\0${right.method}\0${right.package}\0${right.version}\0${JSON.stringify(right.source)}`,
+      )
+    ),
+  verify: tool.verify.method === "command"
+    ? { method: "command" as const, command: [...tool.verify.command] }
+    : { method: "executable-present" as const, executable: tool.verify.executable },
+});

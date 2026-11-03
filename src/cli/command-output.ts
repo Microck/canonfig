@@ -7,7 +7,7 @@ import { redactText } from "./redaction.ts";
 import type { CliPayload } from "./source-commands.ts";
 
 // Output helpers for commands that run outside the Effect CLI tree
-// (`skills`, `self-update`, `source reconcile-skills`) but still emit the
+// (`skills`, `self-update`) but still emit the
 // shared `canonfig.cli/v1` envelope.
 
 export const toCliPayload = <Value>(value: Value): CliPayload =>

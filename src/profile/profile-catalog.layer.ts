@@ -1,7 +1,7 @@
 import { Effect, Layer } from "effect";
 
 import { StateRepository } from "../state/state-repository.service.ts";
-import { scanDiscovery } from "./discovery.ts";
+import { scanFolder } from "./discovery.ts";
 import { PublicationNotConfiguredError } from "./profile-catalog.errors.ts";
 import { ProfileCatalog } from "./profile-catalog.service.ts";
 import {
@@ -12,7 +12,7 @@ import {
 export const ProfileCatalogLive = Layer.succeed(
   ProfileCatalog,
   ProfileCatalog.of({
-    scan: scanDiscovery,
+    scan: scanFolder,
     publish: () => Effect.fail(
       new PublicationNotConfiguredError({ operation: "publish" }),
     ),
@@ -30,7 +30,7 @@ export const profileCatalogLayer = (
     const repository = yield* StateRepository;
     const publication = makePublication(signer, repository);
     return ProfileCatalog.of({
-      scan: scanDiscovery,
+      scan: scanFolder,
       publish: publication.publish,
       getRevision: repository.getRevision,
     });

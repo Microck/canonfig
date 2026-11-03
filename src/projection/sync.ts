@@ -5,23 +5,31 @@ import { dirname, join } from "node:path";
 import { Effect, Schema } from "effect";
 
 import { RunId } from "../domain/brand.ts";
-import type { RunId as RunIdType } from "../domain/brand.ts";
+import type { FollowerId, RunId as RunIdType } from "../domain/brand.ts";
 import { localProjectionFollower, type SynchronizationOutcome } from "../domain/synchronization.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { editConfigText, getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import { cleanupRollbackSnapshots, removeRunTemporaryEntries } from "../synchronization/executor.ts";
-import { assertUpgradeGate } from "../synchronization/follower-orchestration.ts";
-import { withRunLock } from "../synchronization/run-lock.ts";
+import { assertUpgradeGate, withRunLock } from "../synchronization/run-lock.ts";
 import { Synchronization } from "../synchronization/synchronization.service.ts";
 import type {
   PlanningLocalRevision,
   SynchronizationArtifact,
+  SynchronizationRunInput,
 } from "../synchronization/synchronization.types.ts";
 import { detectHarnesses, harnessReport } from "./detect.ts";
 import { CanonicalFolderError, LocalOverlayCollisionError, loadCanonicalFolder } from "./folder.ts";
 import type { TargetId } from "./model.ts";
-import { parseSurfaceResourceId, planFolder, planRestore, rootContext, sharedSkillsOwner, takeoverSummary } from "./plan.ts";
+import {
+  parseSurfaceResourceId,
+  planFolder,
+  planRestore,
+  rootContext,
+  sharedSkillsOwner,
+  takeoverSummary,
+  type FolderPlan,
+} from "./plan.ts";
 import {
   deleteSnapshot,
   pruneSnapshots,
@@ -31,10 +39,11 @@ import {
 } from "./takeover.ts";
 
 /**
- * Local projection: `canonfig sync`, `recover`, `abandon` and `restore` on the
- * Source or an unenrolled machine. Runs belong to the local projection
- * follower and go through the shared Synchronization run, journal, rollback
- * and recovery.
+ * Projection runs: `canonfig sync`, `recover`, `abandon` and `restore`. On
+ * the Source or an unenrolled machine they project the local folder and
+ * belong to the local projection follower; a follower's sync runs the same
+ * way under its own identity. Every run goes through the shared
+ * Synchronization run, journal, rollback and recovery.
  */
 
 export interface LocalSyncOptions {
@@ -45,7 +54,7 @@ export interface LocalSyncOptions {
 }
 
 /** The Canonical Folder holds the state database. */
-const folderOf = (statePath: string): string => dirname(statePath);
+export const folderOf = (statePath: string): string => dirname(statePath);
 const backupsOf = (statePath: string): string => join(folderOf(statePath), ".backups");
 
 const newRunId = (): RunIdType => Schema.decodeUnknownSync(RunId)(`run-${randomUUID()}`);
@@ -70,7 +79,7 @@ const storeArtifacts = (run: RunIdType, artifacts: ReadonlyArray<Synchronization
   });
 
 /** The stored content of a run, for every digest its revision names. */
-const loadArtifacts = (run: RunIdType, revision: PlanningLocalRevision) =>
+export const loadRunArtifacts = (run: RunIdType, revision: PlanningLocalRevision) =>
   Effect.gen(function*() {
     const directory = (yield* artifactDirectory(run)).absolute;
     const digests = new Set(revision.desired.flatMap((entry) => {
@@ -87,23 +96,28 @@ const loadArtifacts = (run: RunIdType, revision: PlanningLocalRevision) =>
     return artifacts;
   });
 
-const discardArtifacts = (run: RunIdType) =>
+export const discardRunArtifacts = (run: RunIdType) =>
   artifactDirectory(run).pipe(
     Effect.flatMap((directory) => Effect.promise(() => rm(directory.absolute, { recursive: true, force: true }))),
   );
 
 /**
- * Finish a local run the shared engine completed or recovered. A run that
- * rolled back forgets its takeovers and deletes the snapshot it wrote; one
- * that did not keeps them and applies snapshot retention. An interrupted run
- * keeps everything for `canonfig recover`.
+ * Finish a run the shared engine completed or recovered. A run that rolled
+ * back forgets its takeovers and deletes the snapshot it wrote; one that did
+ * not keeps them and applies snapshot retention. An interrupted run keeps
+ * everything for `canonfig recover`.
  */
-const finishRun = (statePath: string, run: RunIdType, outcome: SynchronizationOutcome, revision: PlanningLocalRevision) =>
+export const finishProjectionRun = (
+  statePath: string,
+  run: RunIdType,
+  outcome: SynchronizationOutcome,
+  revision: PlanningLocalRevision,
+) =>
   Effect.gen(function*() {
     if (outcome.outcome === "Interrupted") return { snapshotDeleted: false, pruned: [] };
     const repository = yield* StateRepository;
     const backups = backupsOf(statePath);
-    yield* discardArtifacts(run);
+    yield* discardRunArtifacts(run);
     if (outcome.outcome === "Failed") {
       yield* repository.removeRunTakeovers(run);
       const snapshot = yield* snapshotOfRun(backups, run);
@@ -174,13 +188,6 @@ export const editExcludedHarnesses = (
     return excluded;
   });
 
-const outcomeOf = (
-  statePath: string,
-  run: RunIdType,
-  revision: PlanningLocalRevision,
-  outcome: SynchronizationOutcome,
-) => finishRun(statePath, run, outcome, revision).pipe(Effect.map((finished) => ({ outcome, ...finished })));
-
 const loadFolder = (statePath: string) =>
   Effect.tryPromise({
     try: () => loadCanonicalFolder(folderOf(statePath)),
@@ -191,17 +198,81 @@ const loadFolder = (statePath: string) =>
   });
 
 /** Whether the engine recorded the run, open or completed. */
-const runRecorded = (run: RunIdType) =>
+const runRecorded = (follower: FollowerId, run: RunIdType) =>
   Effect.gen(function*() {
     const repository = yield* StateRepository;
     if ((yield* repository.loadDeploymentReceipt(run)) !== undefined) return true;
-    return (yield* repository.loadOpenRunIdentity(localProjectionFollower))?.run === run;
+    return (yield* repository.loadOpenRunIdentity(follower))?.run === run;
+  });
+
+export interface ProjectionRunInput {
+  readonly statePath: string;
+  readonly follower: FollowerId;
+  readonly planned: FolderPlan;
+  /** Write a takeover snapshot before the first write to a surface. */
+  readonly backup: boolean;
+  readonly home: string;
+  /** What a follower adds to the run: its Configuration Agent and process bounds. */
+  readonly agent?: SynchronizationRunInput["agent"];
+  readonly agentResolution?: SynchronizationRunInput["agentResolution"];
+  readonly limits?: SynchronizationRunInput["limits"];
+}
+
+/**
+ * Apply a planned projection run: write the takeover snapshot (unless
+ * backups are off), record the takeovers and the revision, store the run's
+ * content for recovery, then run the plan. A run that rolls back takes its
+ * takeovers and snapshot back.
+ */
+export const runProjection = (input: ProjectionRunInput) =>
+  Effect.gen(function*() {
+    const repository = yield* StateRepository;
+    const synchronization = yield* Synchronization;
+    const planned = input.planned;
+    const run = newRunId();
+    const now = new Date().toISOString();
+    const backups = backupsOf(input.statePath);
+    const snapshot = planned.takeovers.length > 0 && input.backup
+      ? yield* writeTakeoverSnapshot(backups, input.home, run, planned.takeovers)
+      : undefined;
+    // Anything that stops the run before the engine records it leaves no
+    // takeover behind: the snapshot and rows are this run's alone.
+    const undo = Effect.gen(function*() {
+      if (yield* runRecorded(input.follower, run)) return;
+      yield* repository.removeRunTakeovers(run);
+      if (snapshot !== undefined) yield* deleteSnapshot(backups, snapshot);
+      yield* discardRunArtifacts(run);
+    }).pipe(Effect.ignore);
+    const outcome = yield* Effect.gen(function*() {
+      yield* repository.recordLocalRevision(planned.revision, now);
+      yield* repository.recordHarnessTakeovers(planned.takeovers.map((unit) => ({
+        harness: unit.harness,
+        surface: unit.surface,
+        root: unit.root,
+        snapshot,
+        run,
+        takenOverAt: now,
+      })));
+      yield* storeArtifacts(run, planned.artifacts);
+      return yield* synchronization.run({
+        id: run,
+        plan: planned.plan,
+        revision: planned.revision,
+        appliedResources: planned.appliedResources,
+        artifacts: planned.artifacts,
+        agent: input.agent,
+        agentResolution: input.agentResolution,
+        limits: input.limits,
+      });
+    }).pipe(Effect.tapError(() => undo));
+    const finished = yield* finishProjectionRun(input.statePath, run, outcome, planned.revision);
+    return { outcome, snapshot: finished.snapshotDeleted ? undefined : snapshot };
   });
 
 /**
- * `canonfig sync --plan|--apply` for the local folder. Apply writes the
- * takeover snapshot (unless backups are off), records the takeovers and the
- * revision, then runs the plan; a run that rolls back takes them back.
+ * `canonfig sync --plan|--apply` for the local folder. A listed harness
+ * projects only once installed; until then it is reported and its earlier
+ * outputs are held, and the run can still converge.
  */
 export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(function*(
   statePath: string,
@@ -209,14 +280,11 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
   options: LocalSyncOptions,
 ) {
   const repository = yield* StateRepository;
-  const synchronization = yield* Synchronization;
   if (mode === "apply") yield* assertUpgradeGate(localProjectionFollower);
   const loaded = yield* loadFolder(statePath);
   const context = yield* rootContext(options.environment);
   const takeovers = yield* repository.loadHarnessTakeovers();
   const applied = yield* repository.loadAppliedResources(localProjectionFollower);
-  // A listed harness projects only once installed; until then it is reported
-  // and its earlier outputs are held, and the run can still converge.
   const installed = new Set((yield* detectHarnesses(context, loaded.model.folder))
     .filter((entry) => entry.installed)
     .map((entry) => entry.harness));
@@ -232,58 +300,34 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
     diagnostics: planned.diagnostics.length === 0 ? undefined : planned.diagnostics,
   };
   if (mode === "plan") return { ...base, plan: planned.plan, outcome: undefined };
-
-  const run = newRunId();
-  const now = new Date().toISOString();
-  const snapshot = planned.takeovers.length > 0 && backup
-    ? yield* writeTakeoverSnapshot(backupsOf(statePath), context.home, run, planned.takeovers)
-    : undefined;
-  // Anything that stops the run before the engine records it leaves no
-  // takeover behind: the snapshot and rows are this run's alone.
-  const undo = Effect.gen(function*() {
-    if (yield* runRecorded(run)) return;
-    yield* repository.removeRunTakeovers(run);
-    if (snapshot !== undefined) yield* deleteSnapshot(backupsOf(statePath), snapshot);
-    yield* discardArtifacts(run);
-  }).pipe(Effect.ignore);
-  const outcome = yield* Effect.gen(function*() {
-    yield* repository.recordLocalRevision(planned.revision, now);
-    yield* repository.recordHarnessTakeovers(planned.takeovers.map((unit) => ({
-      harness: unit.harness,
-      surface: unit.surface,
-      root: unit.root,
-      snapshot,
-      run,
-      takenOverAt: now,
-    })));
-    yield* storeArtifacts(run, planned.artifacts);
-    return yield* synchronization.run({
-      id: run,
-      plan: planned.plan,
-      revision: planned.revision,
-      appliedResources: planned.appliedResources,
-      artifacts: planned.artifacts,
-    });
-  }).pipe(Effect.tapError(() => undo));
-  const finished = yield* outcomeOf(statePath, run, planned.revision, outcome);
-  return { ...base, snapshot: finished.snapshotDeleted ? undefined : snapshot, outcome: finished.outcome };
+  const result = yield* runProjection({
+    statePath,
+    follower: localProjectionFollower,
+    planned,
+    backup,
+    home: context.home,
+  });
+  return { ...base, snapshot: result.snapshot, outcome: result.outcome };
 }, (effect, statePath, mode) => mode === "plan" ? effect : withRunLock(statePath, "sync --apply", effect));
 
 /**
  * `canonfig restore [<snapshot>]`: write a takeover snapshot back as a
- * journaled run, refusing drifted surfaces, then exclude its harnesses.
+ * journaled run, refusing drifted surfaces, then exclude its harnesses. The
+ * run belongs to whoever projected the surfaces: this machine's local
+ * projection, or its follower identity once enrolled.
  */
 export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
   statePath: string,
   requested: string | undefined,
+  follower: FollowerId,
 ) {
   const repository = yield* StateRepository;
   const synchronization = yield* Synchronization;
-  yield* assertUpgradeGate(localProjectionFollower);
+  yield* assertUpgradeGate(follower);
   const snapshot = yield* readSnapshot(backupsOf(statePath), requested);
   const takeovers = yield* repository.loadHarnessTakeovers();
-  const applied = yield* repository.loadAppliedResources(localProjectionFollower);
-  const planned = yield* planRestore(snapshot, takeovers, applied);
+  const applied = yield* repository.loadAppliedResources(follower);
+  const planned = yield* planRestore(snapshot, takeovers, applied, follower);
   const run = newRunId();
   const outcome = yield* Effect.gen(function*() {
     yield* repository.recordLocalRevision(planned.revision, new Date().toISOString());
@@ -295,13 +339,13 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
       appliedResources: planned.appliedResources,
       artifacts: planned.artifacts,
     });
-  }).pipe(Effect.tapError(() => discardArtifacts(run).pipe(Effect.ignore)));
-  const finished = yield* outcomeOf(statePath, run, planned.revision, outcome);
+  }).pipe(Effect.tapError(() => discardRunArtifacts(run).pipe(Effect.ignore)));
+  yield* finishProjectionRun(statePath, run, outcome, planned.revision);
   return {
     restored: snapshot.id,
-    excludedHarnesses: finished.outcome.outcome === "Converged" ? planned.harnesses : [],
+    excludedHarnesses: outcome.outcome === "Converged" ? planned.harnesses : [],
     plan: planned.plan,
-    outcome: finished.outcome,
+    outcome,
   };
 }, (effect, statePath) => withRunLock(statePath, "restore", effect));
 
@@ -358,10 +402,10 @@ export const recoverLocal = Effect.fn("LocalProjection.recover")(function*(state
   }
   yield* assertUpgradeGate(localProjectionFollower);
   const revision = yield* repository.getLocalRevision(recovery.run.revision);
-  const artifacts = yield* loadArtifacts(recovery.run.id, revision);
+  const artifacts = yield* loadRunArtifacts(recovery.run.id, revision);
   const outcome = yield* synchronization.recover({ follower: localProjectionFollower, revision, artifacts });
-  const finished = yield* outcomeOf(statePath, recovery.run.id, revision, outcome);
-  return { run: recovery.run.id, origin: revision.origin, outcome: finished.outcome };
+  yield* finishProjectionRun(statePath, recovery.run.id, outcome, revision);
+  return { run: recovery.run.id, origin: revision.origin, outcome };
 }, (effect, statePath) => withRunLock(statePath, "recover", effect));
 
 /**
@@ -388,7 +432,6 @@ export const abandonLocal = Effect.fn("LocalProjection.abandon")(function*(state
     outcome: { outcome: "Failed", run: recovery.run.id, reason: "the interrupted run was abandoned by the operator" },
     appliedResources: yield* repository.loadAppliedResources(localProjectionFollower),
   });
-  yield* discardArtifacts(recovery.run.id);
+  yield* discardRunArtifacts(recovery.run.id);
   return { run: recovery.run.id, revision: recovery.run.revision, abandoned: true as const };
 }, (effect, statePath) => withRunLock(statePath, "abandon", effect));
-

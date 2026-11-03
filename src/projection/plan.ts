@@ -4,7 +4,11 @@ import { posix, win32 } from "node:path";
 import { Effect, Schema } from "effect";
 
 import { ContentDigest, ProfileRevisionId, ResourceId } from "../domain/brand.ts";
-import type { ResourceId as ResourceIdType } from "../domain/brand.ts";
+import type {
+  FollowerId,
+  ProfileRevisionId as ProfileRevisionIdType,
+  ResourceId as ResourceIdType,
+} from "../domain/brand.ts";
 import { configPathSegments } from "../domain/config-path.ts";
 import type { PublishedResource, VerificationInput } from "../domain/profile.ts";
 import type { ApplyPolicy, ConfigValue } from "../domain/resource.ts";
@@ -27,12 +31,13 @@ import {
   observeFollowerResource,
   removedResourceState,
   removedResourceVerification,
-} from "../synchronization/follower-orchestration.ts";
+} from "../synchronization/observation.ts";
 import { planSynchronization } from "../synchronization/planner.ts";
 import { planResource, relativePathAncestors } from "../synchronization/resource-plans.ts";
 import type {
   DesiredResource,
   DesiredResourceEntry,
+  LocalOverlayEntry,
   ObservedResourceEntry,
   PlannedSynchronization,
   PlanningLocalRevision,
@@ -289,13 +294,14 @@ const takeoverUnits = (projected: ProjectedSurface): ReadonlyArray<TakeoverUnit>
   }));
 };
 
-interface BuiltResource {
+/** A resource a run writes: its metadata, desired state and content. */
+export interface BuiltResource {
   readonly resource: PublishedResource;
   readonly entry: DesiredResourceEntry;
   readonly artifacts: ReadonlyArray<SynchronizationArtifact>;
 }
 
-const fileResource = (
+export const fileResource = (
   id: ResourceIdType,
   target: string,
   policy: ApplyPolicy,
@@ -374,21 +380,33 @@ export interface LocalRevisionPlan {
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
 }
 
+export interface PlanBuiltInput {
+  readonly follower: FollowerId;
+  readonly origin: PlanningLocalRevision["origin"];
+  readonly originDigest: string;
+  /**
+   * The Source revision a follower run was built from. Its id then names
+   * that revision (`<revision>:view:<digest>`); a local run is `local:<digest>`.
+   */
+  readonly sourceRevision?: ProfileRevisionIdType | undefined;
+  readonly built: ReadonlyArray<BuiltResource>;
+  /** Applied resources this run removes. */
+  readonly retired: ReadonlyArray<AppliedResourceRecord>;
+  readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+  /** Resources whose ownership the run ends although it writes them (restore). */
+  readonly endsOwnership?: ReadonlyArray<ResourceIdType> | undefined;
+  readonly localOverlay?: ReadonlyArray<LocalOverlayEntry> | undefined;
+}
+
 /**
- * Observe and plan a set of built resources, plus removal of every applied
- * resource the set no longer holds, through the shared planner.
+ * Observe and plan a set of built resources, plus removal of every retired
+ * applied resource, through the shared planner. The revision is
+ * content-addressed and holds no file content.
  */
-const planBuilt = (
-  origin: PlanningLocalRevision["origin"],
-  originDigest: string,
-  built: ReadonlyArray<BuiltResource>,
-  retired: ReadonlyArray<AppliedResourceRecord>,
-  appliedResources: ReadonlyArray<AppliedResourceRecord>,
-  endsOwnership: ReadonlyArray<ResourceIdType> = [],
-) =>
+export const planBuilt = (input: PlanBuiltInput) =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    const appliedById = new Map(appliedResources.map((record) => [record.resource, record]));
+    const appliedById = new Map(input.appliedResources.map((record) => [record.resource, record]));
     const resources: Array<PublishedResource> = [];
     const desired: Array<DesiredResourceEntry> = [];
     const observations: Array<ObservedResourceEntry> = [];
@@ -400,16 +418,20 @@ const planBuilt = (
           verification,
           appliedById.get(resource.id),
         );
-        const resolved = yield* machine.normalizePath({ path: resource.target });
-        observations.push({ resource: resource.id, resolvedTarget: resolved.absolute, observed });
+        // A tool's target is its executable name and a credential's its
+        // reference, not paths.
+        const resolvedTarget = resource.kind === "tool" || resource.kind === "credential"
+          ? undefined
+          : (yield* machine.normalizePath({ path: resource.target })).absolute;
+        observations.push({ resource: resource.id, resolvedTarget, observed });
       });
-    for (const item of built) {
+    for (const item of input.built) {
       resources.push(item.resource);
       desired.push(item.entry);
       yield* observe(item.resource, item.entry.desired, item.entry.verification);
     }
     const removedResources: Array<ResourceIdType> = [];
-    for (const record of retired) {
+    for (const record of input.retired) {
       const state = removedResourceState(record);
       if (state === undefined) continue;
       const verification = removedResourceVerification(record, state.desired);
@@ -421,38 +443,38 @@ const planBuilt = (
     // The run's revision lists every resource whose ownership it ends; the
     // planner sees only the retired ones, so the others are planned as writes.
     const content = {
-      origin,
-      originDigest: Schema.decodeUnknownSync(ContentDigest)(originDigest),
+      origin: input.origin,
+      originDigest: Schema.decodeUnknownSync(ContentDigest)(input.originDigest),
       resources,
       desired,
       blobs: [],
-      removedResources: [...new Set([...removedResources, ...endsOwnership])].sort(),
+      removedResources: [...new Set([...removedResources, ...input.endsOwnership ?? []])].sort(),
     };
+    const digest = sha256Hex(canonicalJson(JSON.parse(JSON.stringify(content))));
     const revision: PlanningLocalRevision = {
       ...content,
       id: Schema.decodeUnknownSync(ProfileRevisionId)(
-        `local:${sha256Hex(canonicalJson(JSON.parse(JSON.stringify(content))))}`,
+        input.sourceRevision === undefined ? `local:${digest}` : `${input.sourceRevision}:view:${digest}`,
       ),
     };
     const plan = yield* planSynchronization({
       revision: { ...revision, removedResources },
-      follower: localProjectionFollower,
+      follower: input.follower,
       observedState: {
         platform: (yield* machine.userDirectories()).home.platform,
         resources: observations,
         availableBlobs: [],
       },
-      localOverlay: [],
-      appliedResources,
+      localOverlay: input.localOverlay ?? [],
+      appliedResources: input.appliedResources,
     });
-    const artifacts = [...new Map(built.flatMap((item) => item.artifacts).map((artifact) => [artifact.digest, artifact])).values()];
-    return { revision, plan, artifacts, appliedResources };
+    const artifacts = [...new Map(input.built.flatMap((item) => item.artifacts).map((artifact) => [artifact.digest, artifact])).values()];
+    return { revision, plan, artifacts, appliedResources: input.appliedResources } satisfies LocalRevisionPlan;
   });
 
 export interface FolderPlan extends LocalRevisionPlan {
   /** Surfaces (and config keys) this run takes over, not yet owned. */
   readonly takeovers: ReadonlyArray<TakeoverUnit>;
-  readonly diagnostics: ReadonlyArray<Diagnostic>;
 }
 
 /**
@@ -475,17 +497,27 @@ const heldResource = (
   };
 };
 
+/** What a projection run writes: built resources plus the takeovers they perform. */
+export interface Projection {
+  readonly built: ReadonlyArray<BuiltResource>;
+  /** Surfaces (and config keys) this run takes over, not yet owned. */
+  readonly takeovers: ReadonlyArray<TakeoverUnit>;
+  readonly diagnostics: ReadonlyArray<Diagnostic>;
+  readonly harnesses: ReadonlyArray<HarnessPlan>;
+  /** Applied projection records kept although this run does not project them. */
+  readonly isHeld: (record: AppliedResourceRecord) => boolean;
+}
+
 /**
- * Plan a projection of the folder into its selected harnesses minus `held`
- * ones (listed but not installed). A surface not yet taken over is written
- * with `replace` (`merge` for config keys); afterward the three-way
- * `replace-if-unmodified` rule protects local edits.
+ * Project the folder into its selected harnesses minus `held` ones (listed
+ * but not installed). A surface not yet taken over is written with `replace`
+ * (`merge` for config keys); afterward the three-way `replace-if-unmodified`
+ * rule protects local edits.
  */
-export const planFolder = (
+export const buildProjection = (
   loaded: LoadedFolder,
   context: RootContext,
   takeovers: ReadonlyArray<HarnessTakeover>,
-  appliedResources: ReadonlyArray<AppliedResourceRecord>,
   held: ReadonlyArray<TargetId> = [],
 ) =>
   Effect.gen(function*() {
@@ -523,11 +555,35 @@ export const planFolder = (
         fileResource(Schema.decodeUnknownSync(ResourceId)("runtime:hooks"), paths.join(folder, ".runtime", "hooks.json"), "replace", encoder.encode(hookRegistryJson(loaded.model.hooks)), false),
       );
     }
-    const current = new Set(built.map((item) => item.resource.id));
-    const isHeld = heldResource(held, context, loaded.model);
-    const retired = appliedResources.filter((record) => !current.has(record.resource) && !isHeld(record));
-    const planned = yield* planBuilt("folder", loaded.digest, built, retired, appliedResources);
-    return { ...planned, takeovers: units, diagnostics: projected.diagnostics, harnesses: projected.harnesses };
+    return {
+      built,
+      takeovers: units,
+      diagnostics: projected.diagnostics,
+      harnesses: projected.harnesses,
+      isHeld: heldResource(held, context, loaded.model),
+    } satisfies Projection;
+  });
+
+/** Plan a projection of this machine's own folder as a local run. */
+export const planFolder = (
+  loaded: LoadedFolder,
+  context: RootContext,
+  takeovers: ReadonlyArray<HarnessTakeover>,
+  appliedResources: ReadonlyArray<AppliedResourceRecord>,
+  held: ReadonlyArray<TargetId> = [],
+) =>
+  Effect.gen(function*() {
+    const projection = yield* buildProjection(loaded, context, takeovers, held);
+    const current = new Set(projection.built.map((item) => item.resource.id));
+    const planned = yield* planBuilt({
+      follower: localProjectionFollower,
+      origin: "folder",
+      originDigest: loaded.digest,
+      built: projection.built,
+      retired: appliedResources.filter((record) => !current.has(record.resource) && !projection.isHeld(record)),
+      appliedResources,
+    });
+    return { ...planned, takeovers: projection.takeovers, diagnostics: projection.diagnostics, harnesses: projection.harnesses };
   });
 
 /** Group takeover units per harness for plan output. */
@@ -560,6 +616,7 @@ export const planRestore = (
   snapshot: Snapshot,
   takeovers: ReadonlyArray<HarnessTakeover>,
   appliedResources: ReadonlyArray<AppliedResourceRecord>,
+  follower: FollowerId,
 ) =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -677,7 +734,15 @@ export const planRestore = (
     const manifestDigest = sha256Hex(canonicalJson(JSON.parse(JSON.stringify(snapshot.manifest))));
     const restored = [...groups.keys()];
     // Every restored surface leaves Canonfig's ownership with this run.
-    const planned = yield* planBuilt("snapshot", manifestDigest, built, retired, appliedResources, restored);
+    const planned = yield* planBuilt({
+      follower,
+      origin: "snapshot",
+      originDigest: manifestDigest,
+      built,
+      retired,
+      appliedResources,
+      endsOwnership: restored,
+    });
     const harnesses = [...new Set(snapshot.manifest.entries.map((entry) => entry.harness))]
       .filter((harness) => harness !== sharedSkillsOwner);
     const restoredSurfaces = new Set(restored.map((id) => {

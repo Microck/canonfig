@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import path from "node:path";
 import { automaticSkillUpdates, type AutomaticSkillOptions } from "./automatic.ts";
 import { CliExitCode } from "../cli/exit-codes.ts";
@@ -16,8 +17,9 @@ Usage: canonfig skills <track|list|check|update|auto> [options]
   update  Preview updates; --apply is required to replace installed skills
   auto    Preview once; --apply runs periodic updates, --once supports schedulers
 
-  --root <path>     Root containing installed skills (default: current directory)
-  --config <path>   Root-relative source configuration (default: .canonfig/skills-sources.json)
+  --root <path>     Root containing installed skills (default: ~/.canonfig, the
+                    Canonical Folder whose skills/ the Source publishes)
+  --config <path>   Root-relative source configuration (default: skills-sources.json)
   --name <id>       Skill name; repeat to select updates (default: all tracked)
   --path <path>     Root-relative installed directory, required for track
   --source <repo>   HTTPS Git URL or local repository path, required for track
@@ -33,10 +35,16 @@ Usage: canonfig skills <track|list|check|update|auto> [options]
 No skill scripts, Git hooks or install commands are executed. HTTPS sources
 must be publicly accessible; credential helpers and interactive login are disabled.
 `;
+
+// On a follower, ~/.canonfig/skills/ is the managed mirror of what the Source
+// publishes, so local updates there would only show up as drift: track and
+// update skills on the Source and publish.
+const defaultLocation = () => ({ root: path.join(homedir(), ".canonfig"), config: "skills-sources.json" });
+
 export function parseSkillsArguments(args: readonly string[]) {
   const filtered = args.filter((arg) => arg !== "--json" && arg !== "--no-input");
   const command = filtered[0] ?? "help";
-  if (command === "help" || args.includes("--help") || args.includes("-h")) return { command: "help", location: { root: process.cwd(), config: ".canonfig/skills-sources.json" }, values: new Map<string, string>(), names: [] as string[], apply: false };
+  if (command === "help" || args.includes("--help") || args.includes("-h")) return { command: "help", location: defaultLocation(), values: new Map<string, string>(), names: [] as string[], apply: false };
   if (!["track", "list", "check", "update", "auto"].includes(command)) throw new CanonfigError("SKILL_COMMAND_UNKNOWN", `Unknown skills command: ${command}`);
   const values = new Map<string, string>(); const names: string[] = [];
   let apply = false; let dryRun = false; let once = false;
@@ -57,7 +65,8 @@ export function parseSkillsArguments(args: readonly string[]) {
   if ((apply || dryRun) && !(["update", "auto"].includes(command))) throw new CanonfigError("SKILL_OPTION_NOT_ALLOWED", "--apply and --dry-run are only valid with update or auto");
   if (apply && dryRun) throw new CanonfigError("SKILL_OPTION_INVALID", "Choose either --apply or --dry-run");
   if (command !== "track" && ["--path", "--source", "--ref", "--subdir"].some((key) => values.has(key))) throw new CanonfigError("SKILL_OPTION_NOT_ALLOWED", "Source registration options are only valid with track; edit the source configuration to change tracked refs");
-  const location = { root: path.resolve(values.get("--root") ?? process.cwd()), config: values.get("--config") ?? ".canonfig/skills-sources.json" };
+  const fallback = defaultLocation();
+  const location = { root: path.resolve(values.get("--root") ?? fallback.root), config: values.get("--config") ?? fallback.config };
   if (command === "track" && (names.length !== 1 || !values.get("--source") || !values.get("--ref") || !values.get("--path"))) throw new CanonfigError("SKILL_TRACK_REQUIRED", "track requires exactly one --name, --path, --source and --ref");
   if (command === "list" && names.length) throw new CanonfigError("SKILL_OPTION_NOT_ALLOWED", "list does not accept --name");
   if ((once || values.has("--interval")) && command !== "auto") throw new CanonfigError("SKILL_OPTION_NOT_ALLOWED", "--once and --interval require auto");

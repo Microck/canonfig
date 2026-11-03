@@ -4,9 +4,10 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { parse as parseJsonc, type ParseError, printParseErrorCode } from "jsonc-parser";
 import { Schema } from "effect";
 
-import type { ContentDigest } from "../domain/brand.ts";
+import { type ContentDigest, ProfileId } from "../domain/brand.ts";
 import { configPathIssue, configPathsOverlap } from "../domain/config-path.ts";
-import { ConfigValue } from "../domain/resource.ts";
+import { AuthoredVerificationInputSchema } from "../domain/profile.ts";
+import { AgentInstallBounds, ConfigValue, LoginRequirement, ToolRecipeRef } from "../domain/resource.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { canonicalJson, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
 import { parseMarkdownDocument } from "./frontmatter.ts";
@@ -35,6 +36,10 @@ import {
  * Everything else in the folder (state, backups, logs) is machine-local and
  * never read here. Every file read must resolve inside the folder, and the
  * authored trees hold regular files and directories only.
+ *
+ * On a follower the authoring entries are a managed mirror: the run that
+ * writes them also projects them, so it loads the mirror it is about to write
+ * from memory and only `local/` from disk.
  */
 
 /** The folder or one of its files is not valid authoring input. */
@@ -49,8 +54,9 @@ export class LocalOverlayCollisionError extends TaggedError<LocalOverlayCollisio
   { path: Schema.String, message: Schema.String },
 ) {}
 
+const namePattern = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
 const identifier = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u, { expected: "letters, digits, '-' or '_'" }),
+  Schema.isPattern(namePattern, { expected: "letters, digits, '-' or '_'" }),
 );
 const environmentName = Schema.String.check(
   Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/u, { expected: "an environment variable name" }),
@@ -63,11 +69,25 @@ const SecretMap = Schema.Record(Schema.String, SecretValueInput);
 const ToolList = Schema.Array(Schema.NonEmptyString);
 const positiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
+/** Categories whose items `groups` can name, as `<category>/<name>`, plus `instructions`. */
+export const GROUPABLE_CATEGORIES = [
+  "rules", "skills", "agents", "commands", "hooks", "mcp", "settings", "tools", "credentials",
+] as const;
+const itemReference = Schema.String.check(Schema.isPattern(
+  new RegExp(`^(?:instructions|(?:${GROUPABLE_CATEGORIES.join("|")})/[A-Za-z0-9][A-Za-z0-9_-]*)$`, "u"),
+  { expected: "instructions or <category>/<name>, for example mcp/docs" },
+));
+const toolReference = Schema.String.check(
+  Schema.isPattern(/^tools\/[A-Za-z0-9][A-Za-z0-9_-]*$/u, { expected: "tools/<id>" }),
+);
+
 const McpCommon = {
   enabled: Schema.optional(Schema.Boolean),
   timeoutMs: Schema.optional(positiveInteger),
   enabledTools: Schema.optional(ToolList),
   disabledTools: Schema.optional(ToolList),
+  /** Tools the server needs; each is installed before the server is projected. */
+  requires: Schema.optional(Schema.Array(toolReference)),
 };
 
 const McpServerInput = Schema.Union([
@@ -104,20 +124,51 @@ const HookInput = Schema.Struct({
 
 const SettingsMap = Schema.Record(Schema.String, Schema.Record(Schema.String, ConfigValue));
 
+/**
+ * A tool entry: the executable followers verify, platform recipes with exact
+ * versions, and the optional login, bounded agent install and verification
+ * of a `tool` Profile Resource.
+ */
+const ToolInput = Schema.Struct({
+  executable: Schema.NonEmptyString,
+  recipes: Schema.Array(ToolRecipeRef),
+  login: Schema.optional(LoginRequirement),
+  agentInstall: Schema.optional(AgentInstallBounds),
+  verify: Schema.optional(AuthoredVerificationInputSchema),
+});
+
+/** `daily@HH:mm` or `weekly:Mon,Thu@HH:mm`, the calendars `canonfig schedule set` accepts. */
+const ScheduleInput = Schema.String.check(Schema.isPattern(
+  /^(?:daily|weekly:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:,(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))*)@(?:[01]\d|2[0-3]):[0-5]\d$/u,
+  { expected: "daily@HH:mm or weekly:Mon,Thu@HH:mm" },
+));
+
 /** Categories `local/` may add to, named by `local.allow`. */
 export const LOCAL_CATEGORIES = ["rules", "skills", "agents", "commands", "mcp", "settings"] as const;
 type LocalCategory = (typeof LOCAL_CATEGORIES)[number];
 
+const LocalAllow = Schema.Struct({ allow: Schema.Array(Schema.Literals(LOCAL_CATEGORIES)) });
+
 const CanonfigJsonc = Schema.Struct({
   version: Schema.Literal(1),
+  /** The Machine Profile this folder publishes; required to publish, unused by projection. */
+  profile: Schema.optional(Schema.Struct({ id: ProfileId, name: Schema.NonEmptyString })),
   harnesses: Schema.Array(Schema.Literals(TARGET_IDS)),
   mcp: Schema.optional(McpMap),
   hooks: Schema.optional(Schema.Array(HookInput)),
   settings: Schema.optional(SettingsMap),
-  local: Schema.optional(Schema.Struct({
-    allow: Schema.Array(Schema.Literals(LOCAL_CATEGORIES)),
-  })),
+  tools: Schema.optional(Schema.Record(identifier, ToolInput)),
+  credentials: Schema.optional(Schema.Record(identifier, Schema.Struct({ reference: Schema.NonEmptyString }))),
+  groups: Schema.optional(Schema.Record(identifier, Schema.Array(itemReference))),
+  scheduleDefault: Schema.optional(ScheduleInput),
+  local: Schema.optional(LocalAllow),
 });
+
+/** `canonfig.jsonc` as authored, after schema decoding. */
+export type FolderConfig = typeof CanonfigJsonc.Type;
+export type FolderMcpServer = Schema.Schema.Type<typeof McpServerInput>;
+export type FolderHook = Schema.Schema.Type<typeof HookInput>;
+export type FolderTool = Schema.Schema.Type<typeof ToolInput>;
 
 const LocalJsonc = Schema.Struct({
   mcp: Schema.optional(McpMap),
@@ -163,6 +214,21 @@ export interface LoadedFolder {
   readonly ignoredLocal: ReadonlyArray<string>;
 }
 
+/** An authored file: its bytes and whether its owner may execute it. */
+export interface FolderFile {
+  readonly content: Uint8Array;
+  readonly executable: boolean;
+}
+
+/** Where the loader reads authored entries from. */
+interface FolderSource {
+  readonly folder: string;
+  /** A regular file, or undefined when absent. */
+  readonly file: (path: string) => Promise<FolderFile | undefined>;
+  /** A directory's entries sorted by name, or none when it is absent. */
+  readonly entries: (directory: string) => Promise<ReadonlyArray<{ readonly name: string; readonly directory: boolean }>>;
+}
+
 const failure = (path: string, message: string) => new CanonicalFolderError({ path, message });
 
 /** Decode authored frontmatter; unknown fields are errors, so typos surface. */
@@ -181,31 +247,80 @@ const decodeFrontmatter = <S extends Schema.Decoder<unknown>>(
 const isMissing = (error: Error): boolean =>
   "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR");
 
-/** Resolve a path inside the folder and refuse anything that leaves it through a link. */
-const insideFolder = async (folder: string, path: string): Promise<void> => {
-  const fromRoot = relative(folder, await realpath(path));
-  if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
-    throw failure(path, "resolves outside the Canonical Folder");
-  }
+const byName = <Entry extends { readonly name: string }>(left: Entry, right: Entry) =>
+  left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+
+/**
+ * The folder on disk. Every path read must resolve inside it, and links are
+ * refused, so neither `..` nor a symlink can make Canonfig read or publish
+ * content from elsewhere.
+ */
+const diskSource = (folder: string): FolderSource => {
+  const insideFolder = async (path: string): Promise<void> => {
+    const fromRoot = relative(folder, await realpath(path));
+    if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+      throw failure(path, "resolves outside the Canonical Folder");
+    }
+  };
+  const status = async (path: string) => {
+    try {
+      return await lstat(path);
+    } catch (error) {
+      if (error instanceof Error && isMissing(error)) return undefined;
+      throw error;
+    }
+  };
+  return {
+    folder,
+    file: async (path) => {
+      const found = await status(path);
+      if (found === undefined) return undefined;
+      if (!found.isFile()) throw failure(path, "is not a regular file; links and special files are not authoring input");
+      await insideFolder(path);
+      return { content: await readFile(path), executable: (found.mode & 0o100) !== 0 };
+    },
+    entries: async (directory) => {
+      const found = await status(directory);
+      if (found === undefined) return [];
+      if (!found.isDirectory()) throw failure(directory, "is not a directory");
+      await insideFolder(directory);
+      const entries = await readdir(directory, { withFileTypes: true });
+      return entries.map((entry) => ({ name: entry.name, directory: entry.isDirectory(), link: entry.isSymbolicLink() }))
+        .map((entry) => {
+          if (entry.link) throw failure(join(directory, entry.name), "is a link; links are not authoring input");
+          return { name: entry.name, directory: entry.directory };
+        })
+        .sort(byName);
+    },
+  };
 };
 
-/** An authored regular file, or undefined when absent. Links are refused. */
-const readAuthored = async (folder: string, path: string): Promise<Uint8Array | undefined> => {
-  let status;
-  try {
-    status = await lstat(path);
-  } catch (error) {
-    if (error instanceof Error && isMissing(error)) return undefined;
-    throw error;
-  }
-  if (!status.isFile()) throw failure(path, "is not a regular file; links and special files are not authoring input");
-  await insideFolder(folder, path);
-  return readFile(path);
+/**
+ * A follower's mirror: authoring entries come from `files` (keyed by path
+ * relative to the folder, `/`-separated), `local/` from disk.
+ */
+const mirrorSource = (folder: string, files: ReadonlyMap<string, FolderFile>): FolderSource => {
+  const disk = diskSource(folder);
+  const key = (path: string) => relative(folder, path).split(sep).join("/");
+  const local = (relativePath: string) => relativePath === "local" || relativePath.startsWith("local/");
+  return {
+    folder,
+    file: (path) => local(key(path)) ? disk.file(path) : Promise.resolve(files.get(key(path))),
+    entries: (directory) => {
+      const prefix = key(directory);
+      if (local(prefix)) return disk.entries(directory);
+      const children = new Map<string, boolean>();
+      for (const path of files.keys()) {
+        if (!path.startsWith(`${prefix}/`)) continue;
+        const [name, ...rest] = path.slice(prefix.length + 1).split("/");
+        children.set(name!, (children.get(name!) ?? false) || rest.length > 0);
+      }
+      return Promise.resolve([...children].map(([name, directory]) => ({ name, directory })).sort(byName));
+    },
+  };
 };
 
-const readText = async (folder: string, path: string): Promise<string | undefined> => {
-  const bytes = await readAuthored(folder, path);
-  if (bytes === undefined) return undefined;
+const decodeText = (path: string, bytes: Uint8Array): string => {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
@@ -213,14 +328,13 @@ const readText = async (folder: string, path: string): Promise<string | undefine
   }
 };
 
-/** Read and decode a JSONC file, or undefined when it does not exist. */
-const readJsonc = async <S extends Schema.Decoder<unknown>>(
-  folder: string,
-  path: string,
-  schema: S,
-): Promise<S["Type"] | undefined> => {
-  const text = await readText(folder, path);
-  if (text === undefined) return undefined;
+const readText = async (source: FolderSource, path: string): Promise<string | undefined> => {
+  const file = await source.file(path);
+  return file === undefined ? undefined : decodeText(path, file.content);
+};
+
+/** Parse and decode JSONC text. */
+const decodeJsonc = <S extends Schema.Decoder<unknown>>(path: string, text: string, schema: S): S["Type"] => {
   const errors: Array<ParseError> = [];
   const value: unknown = parseJsonc(text, errors, { allowTrailingComma: true, disallowComments: false });
   const first = errors[0];
@@ -234,24 +348,19 @@ const readJsonc = async <S extends Schema.Decoder<unknown>>(
   }
 };
 
-/** Directory entries, sorted, or none when the directory is absent. Links are refused. */
-const listEntries = async (folder: string, directory: string) => {
-  let status;
-  try {
-    status = await lstat(directory);
-  } catch (error) {
-    if (error instanceof Error && isMissing(error)) return [];
-    throw error;
-  }
-  if (!status.isDirectory()) throw failure(directory, "is not a directory");
-  await insideFolder(folder, directory);
-  const entries = await readdir(directory, { withFileTypes: true });
-  return entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+/** Read and decode a JSONC file, or undefined when it does not exist. */
+const readJsonc = async <S extends Schema.Decoder<unknown>>(
+  source: FolderSource,
+  path: string,
+  schema: S,
+): Promise<S["Type"] | undefined> => {
+  const text = await readText(source, path);
+  return text === undefined ? undefined : decodeJsonc(path, text, schema);
 };
 
 const documentId = (path: string, name: string): string => {
   const id = name.slice(0, -".md".length);
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(id)) {
+  if (!namePattern.test(id)) {
     throw failure(path, "file names must be letters, digits, '-' or '_' followed by .md");
   }
   return id;
@@ -259,16 +368,16 @@ const documentId = (path: string, name: string): string => {
 
 /** Every `<id>.md` in a document directory, as frontmatter plus body. */
 const loadDocuments = async <S extends Schema.Decoder<unknown>>(
-  folder: string,
+  source: FolderSource,
   directory: string,
   schema: S,
 ) => {
   const documents: Array<{ readonly id: string; readonly path: string; readonly data: S["Type"]; readonly content: string }> = [];
-  for (const entry of await listEntries(folder, directory)) {
+  for (const entry of await source.entries(directory)) {
     const path = join(directory, entry.name);
-    if (!entry.name.endsWith(".md")) throw failure(path, "only <id>.md documents belong here");
+    if (entry.directory || !entry.name.endsWith(".md")) throw failure(path, "only <id>.md documents belong here");
     const id = documentId(path, entry.name);
-    const text = (await readText(folder, path))!;
+    const text = (await readText(source, path))!;
     let parsed;
     try {
       parsed = parseMarkdownDocument(text);
@@ -280,8 +389,8 @@ const loadDocuments = async <S extends Schema.Decoder<unknown>>(
   return documents;
 };
 
-const loadRules = async (folder: string, directory: string): Promise<ReadonlyArray<RuleDocument>> =>
-  (await loadDocuments(folder, directory, RuleFrontmatter)).map((document) => ({
+const loadRules = async (source: FolderSource, directory: string): Promise<ReadonlyArray<RuleDocument>> =>
+  (await loadDocuments(source, directory, RuleFrontmatter)).map((document) => ({
     id: document.id,
     description: document.data.description,
     paths: document.data.paths ?? [],
@@ -290,8 +399,8 @@ const loadRules = async (folder: string, directory: string): Promise<ReadonlyArr
     source: document.path,
   }));
 
-const loadAgents = async (folder: string, directory: string): Promise<ReadonlyArray<AgentDocument>> =>
-  (await loadDocuments(folder, directory, AgentFrontmatter)).map((document) => ({
+const loadAgents = async (source: FolderSource, directory: string): Promise<ReadonlyArray<AgentDocument>> =>
+  (await loadDocuments(source, directory, AgentFrontmatter)).map((document) => ({
     id: document.id,
     description: document.data.description,
     model: document.data.model ?? "inherit",
@@ -300,41 +409,39 @@ const loadAgents = async (folder: string, directory: string): Promise<ReadonlyAr
     content: document.content,
   }));
 
-const loadCommands = async (folder: string, directory: string): Promise<ReadonlyArray<CommandDocument>> =>
-  (await loadDocuments(folder, directory, CommandFrontmatter)).map((document) => ({
+const loadCommands = async (source: FolderSource, directory: string): Promise<ReadonlyArray<CommandDocument>> =>
+  (await loadDocuments(source, directory, CommandFrontmatter)).map((document) => ({
     id: document.id,
     description: document.data.description,
     argumentHint: document.data.argumentHint,
     content: document.content,
   }));
 
-/** Regular files beneath a skill directory, relative with forward slashes. */
-const loadSkillFiles = async (folder: string, directory: string, prefix = ""): Promise<Array<SkillFile>> => {
+/** Regular files beneath a directory, relative with forward slashes. */
+const loadFiles = async (source: FolderSource, directory: string, prefix = ""): Promise<Array<SkillFile>> => {
   const files: Array<SkillFile> = [];
-  for (const entry of await listEntries(folder, directory)) {
+  for (const entry of await source.entries(directory)) {
     const path = join(directory, entry.name);
     const relativePath = `${prefix}${entry.name}`;
-    if (entry.isDirectory()) {
-      files.push(...await loadSkillFiles(folder, path, `${relativePath}/`));
+    if (entry.directory) {
+      files.push(...await loadFiles(source, path, `${relativePath}/`));
       continue;
     }
-    const content = await readAuthored(folder, path);
-    if (content === undefined) continue;
-    const status = await lstat(path);
-    files.push({ path: relativePath, content, executable: (status.mode & 0o100) !== 0 });
+    const file = await source.file(path);
+    if (file !== undefined) files.push({ path: relativePath, content: file.content, executable: file.executable });
   }
   return files;
 };
 
-const loadSkills = async (folder: string, directory: string): Promise<ReadonlyArray<SkillTree>> => {
+const loadSkills = async (source: FolderSource, directory: string): Promise<ReadonlyArray<SkillTree>> => {
   const skills: Array<SkillTree> = [];
-  for (const entry of await listEntries(folder, directory)) {
+  for (const entry of await source.entries(directory)) {
     const path = join(directory, entry.name);
-    if (!entry.isDirectory()) throw failure(path, "every entry of skills/ is a skill directory");
+    if (!entry.directory) throw failure(path, "every entry of skills/ is a skill directory");
     if (!/^[a-z0-9][a-z0-9-]*$/u.test(entry.name)) {
       throw failure(path, "skill directory names are lowercase letters, digits and '-'");
     }
-    const manifest = await readText(folder, join(path, "SKILL.md"));
+    const manifest = await readText(source, join(path, "SKILL.md"));
     if (manifest === undefined) throw failure(path, "has no SKILL.md");
     let data;
     try {
@@ -356,13 +463,13 @@ const loadSkills = async (folder: string, directory: string): Promise<ReadonlyAr
     skills.push({
       name: entry.name,
       description: frontmatter.description,
-      files: await loadSkillFiles(folder, path),
+      files: await loadFiles(source, path),
     });
   }
   return skills;
 };
 
-const mcpServer = (input: Schema.Schema.Type<typeof McpServerInput>): McpServer =>
+const mcpServer = (input: FolderMcpServer): McpServer =>
   input.transport === "stdio"
     ? {
       transport: "stdio",
@@ -384,24 +491,28 @@ const mcpServer = (input: Schema.Schema.Type<typeof McpServerInput>): McpServer 
     };
 
 /**
+ * The script a hook runs from the folder's `hooks/` directory, relative to
+ * the folder (`hooks/format.sh`), or undefined for a command name or an
+ * absolute path. Anything else is refused.
+ */
+export const hookScript = (hook: FolderHook, path: string): string | undefined => {
+  const command = hook.run[0]!;
+  if (isAbsolute(command) || !/[\\/]/u.test(command)) return undefined;
+  const normalized = command.replaceAll("\\", "/");
+  if (!normalized.startsWith("hooks/") || normalized.split("/").some((segment) => segment === ".." || segment === "." || segment === "")) {
+    throw failure(path, `hook command ${command} must be a command name, an absolute path, or a script under hooks/`);
+  }
+  return normalized;
+};
+
+/**
  * A relative `run[0]` names a script in the folder's `hooks/` directory and
  * becomes absolute, so harnesses can run it from any working directory. A bare
  * command name is looked up on PATH when the hook runs.
  */
-const resolveHookCommand = async (folder: string, command: string, path: string): Promise<string> => {
-  if (isAbsolute(command) || !/[\\/]/u.test(command)) return command;
-  const normalized = command.replaceAll("\\", "/");
-  if (!normalized.startsWith("hooks/") || normalized.split("/").includes("..")) {
-    throw failure(path, `hook command ${command} must be a command name, an absolute path, or a script under hooks/`);
-  }
-  const script = join(folder, ...normalized.split("/"));
-  if (await readAuthored(folder, script) === undefined) throw failure(path, `hook script ${command} does not exist`);
-  return script;
-};
-
 const loadHooks = async (
-  folder: string,
-  inputs: ReadonlyArray<Schema.Schema.Type<typeof HookInput>>,
+  source: FolderSource,
+  inputs: ReadonlyArray<FolderHook>,
   path: string,
 ): Promise<ReadonlyArray<Hook>> => {
   const seen = new Set<string>();
@@ -411,6 +522,10 @@ const loadHooks = async (
     seen.add(input.id);
     if (input.enabled === false) continue;
     const [command, ...rest] = input.run;
+    const script = hookScript(input, path);
+    if (script !== undefined && await source.file(join(source.folder, ...script.split("/"))) === undefined) {
+      throw failure(path, `hook script ${command} does not exist`);
+    }
     hooks.push({
       id: input.id,
       event: input.event,
@@ -419,7 +534,7 @@ const loadHooks = async (
         tools: input.matcher?.tools ?? [],
         inputRegex: input.matcher?.inputRegex,
       },
-      run: [await resolveHookCommand(folder, command!, path), ...rest],
+      run: [script === undefined ? command! : join(source.folder, ...script.split("/")), ...rest],
       timeoutMs: input.timeoutMs ?? 30_000,
       onFailure: input.onFailure ?? "warn",
     });
@@ -522,23 +637,81 @@ export interface HarnessSelection {
  * reported here too, but no authored document, skill or hook is loaded.
  */
 export const readHarnessSelection = async (folder: string): Promise<HarnessSelection> => {
-  const config = await readJsonc(folder, join(folder, "canonfig.jsonc"), CanonfigJsonc);
-  const local = await readJsonc(folder, join(folder, "local", "local.jsonc"), LocalJsonc);
+  const source = diskSource(folder);
+  const config = await readJsonc(source, join(folder, "canonfig.jsonc"), CanonfigJsonc);
+  const local = await readJsonc(source, join(folder, "local", "local.jsonc"), LocalJsonc);
   return {
     listed: config === undefined ? undefined : [...new Set(config.harnesses)],
     excluded: local?.excludeHarnesses ?? [],
   };
 };
 
-/** Load `~/.canonfig/` and its `local/` overlay into the Canonical Model. */
-export const loadCanonicalFolder = async (folder: string): Promise<LoadedFolder> => {
+/** `canonfig.jsonc` as authored, or undefined when it does not exist. */
+export const readFolderConfig = (folder: string): Promise<FolderConfig | undefined> =>
+  readJsonc(diskSource(folder), join(folder, "canonfig.jsonc"), CanonfigJsonc);
+
+/** Decode `canonfig.jsonc` text, for a caller that edits the file and checks the result. */
+export const decodeFolderConfig = (path: string, text: string): FolderConfig => decodeJsonc(path, text, CanonfigJsonc);
+
+/** Every regular file under one of the folder's directories, relative to it, `/`-separated. */
+export const listFolderFiles = async (
+  folder: string,
+  directory: string,
+): Promise<ReadonlyArray<{ readonly path: string; readonly executable: boolean }>> =>
+  (await loadFiles(diskSource(folder), join(folder, directory))).map((file) => ({ path: file.path, executable: file.executable }));
+
+/** The resource id of a folder item reference: `mcp/docs` is `mcp:docs`. */
+export const itemResourceId = (reference: string): string => reference.replace("/", ":");
+
+/** The authored items of a folder, without `local/`: what publication compiles. */
+export interface AuthoredFolder {
+  readonly config: FolderConfig;
+  readonly instructions?: string | undefined;
+  readonly rules: ReadonlyArray<RuleDocument>;
+  readonly skills: ReadonlyArray<SkillTree>;
+  readonly agents: ReadonlyArray<AgentDocument>;
+  readonly commands: ReadonlyArray<CommandDocument>;
+  /** Enabled hooks only, scripts resolved to absolute paths. */
+  readonly hooks: ReadonlyArray<Hook>;
+  /** Declared `settings.<harness>` keys, checked. */
+  readonly settings: HarnessSettings;
+}
+
+const loadAuthored = async (source: FolderSource): Promise<AuthoredFolder> => {
+  const folder = source.folder;
   const configPath = join(folder, "canonfig.jsonc");
-  const config = await readJsonc(folder, configPath, CanonfigJsonc);
+  const config = await readJsonc(source, configPath, CanonfigJsonc);
   if (config === undefined) {
     throw failure(configPath, "does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower");
   }
+  return {
+    config,
+    instructions: await readText(source, join(folder, "AGENTS.md")),
+    rules: await loadRules(source, join(folder, "rules")),
+    skills: await loadSkills(source, join(folder, "skills")),
+    agents: await loadAgents(source, join(folder, "agents")),
+    commands: await loadCommands(source, join(folder, "commands")),
+    hooks: await loadHooks(source, config.hooks ?? [], configPath),
+    settings: settingsFor(config.settings, configPath),
+  };
+};
+
+/** Load and check the folder's authored items, ignoring `local/`. */
+export const loadAuthoredFolder = (folder: string): Promise<AuthoredFolder> => loadAuthored(diskSource(folder));
+
+/**
+ * Load `~/.canonfig/` and its `local/` overlay into the Canonical Model. With
+ * `mirror`, the authored entries are those files instead of the disk's.
+ */
+export const loadCanonicalFolder = async (
+  folder: string,
+  mirror?: ReadonlyMap<string, FolderFile>,
+): Promise<LoadedFolder> => {
+  const source = mirror === undefined ? diskSource(folder) : mirrorSource(folder, mirror);
+  const authored = await loadAuthored(source);
+  const config = authored.config;
   const localPath = join(folder, "local", "local.jsonc");
-  const localConfig = (await readJsonc(folder, localPath, LocalJsonc)) ?? {};
+  const localConfig = (await readJsonc(source, localPath, LocalJsonc)) ?? {};
   const allow = config.local?.allow ?? [];
   const ignoredLocal: Array<string> = [];
   const localDirectory = join(folder, "local");
@@ -553,23 +726,23 @@ export const loadCanonicalFolder = async (folder: string): Promise<LoadedFolder>
   };
 
   const rules = addLocal(
-    await loadRules(folder, join(folder, "rules")),
-    await localItems("rules", (directory) => loadRules(folder, directory)),
+    authored.rules,
+    await localItems("rules", (directory) => loadRules(source, directory)),
     (rule) => rule.id, "rule", localDirectory,
   );
   const skills = addLocal(
-    await loadSkills(folder, join(folder, "skills")),
-    await localItems("skills", (directory) => loadSkills(folder, directory)),
+    authored.skills,
+    await localItems("skills", (directory) => loadSkills(source, directory)),
     (skill) => skill.name, "skill", localDirectory,
   );
   const agents = addLocal(
-    await loadAgents(folder, join(folder, "agents")),
-    await localItems("agents", (directory) => loadAgents(folder, directory)),
+    authored.agents,
+    await localItems("agents", (directory) => loadAgents(source, directory)),
     (agent) => agent.id, "agent", localDirectory,
   );
   const commands = addLocal(
-    await loadCommands(folder, join(folder, "commands")),
-    await localItems("commands", (directory) => loadCommands(folder, directory)),
+    authored.commands,
+    await localItems("commands", (directory) => loadCommands(source, directory)),
     (command) => command.id, "command", localDirectory,
   );
 
@@ -589,19 +762,19 @@ export const loadCanonicalFolder = async (folder: string): Promise<LoadedFolder>
     ignoredLocal.push("local/local.jsonc settings");
     localSettings = {};
   }
-  const settings = mergeLocalSettings(settingsFor(config.settings, configPath), localSettings, localPath);
+  const settings = mergeLocalSettings(authored.settings, localSettings, localPath);
 
   const excluded = new Set(localConfig.excludeHarnesses ?? []);
   const listed = [...new Set(config.harnesses)];
   const model: CanonicalModel = {
     folder,
     harnesses: listed.filter((harness) => !excluded.has(harness)),
-    instructions: await readText(folder, join(folder, "AGENTS.md")),
+    instructions: authored.instructions,
     rules,
     skills,
     agents,
     commands,
-    hooks: await loadHooks(folder, config.hooks ?? [], configPath),
+    hooks: authored.hooks,
     mcp,
     settings,
   };

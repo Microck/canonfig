@@ -778,7 +778,7 @@ export const probeSourceDescriptor = (
 };
 
 export interface FollowerLifecycleInput extends FollowerTransportInput {
-  readonly selectedProfile: string;
+  readonly profile: string;
   readonly appliedRevisions: ReadonlyArray<string>;
 }
 
@@ -815,7 +815,7 @@ export const queryFollowerLifecycle = (
     };
     const selected: FollowerLifecycleState = {
       reached: true,
-      detail: `profile ${input.selectedProfile} is selected locally`,
+      detail: `following profile ${input.profile}`,
     };
     const probe = yield* probeSourceDescriptor({
       endpoint: input.endpoint,
@@ -865,14 +865,14 @@ export const queryFollowerLifecycle = (
         Effect.match({ onFailure: () => undefined, onSuccess: (result) => result }),
       );
     const latest = revisions?.revisions
-      .filter((revision) => revision.profileId === input.selectedProfile)
+      .filter((revision) => revision.profileId === input.profile)
       .sort((left, right) => right.sequence - left.sequence)[0];
     const converged: FollowerLifecycleState = latest === undefined
       ? {
         reached: false,
         detail: revisions === undefined
           ? "convergence could not be checked"
-          : `profile ${input.selectedProfile} has no authorized revision`,
+          : `profile ${input.profile} has no authorized revision`,
       }
       : input.appliedRevisions.some((applied) => appliesPublishedRevision(applied, latest.id))
       ? { reached: true, detail: `applied revision ${latest.id}` }

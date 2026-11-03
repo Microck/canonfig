@@ -477,8 +477,8 @@ const summarizeProfileList = (data: PayloadRecord, outline: Outline): boolean =>
 const summarizeScan = (data: PayloadRecord, outline: Outline): boolean => {
   if (!isList(data.scannedPaths) || !isList(data.tools)) return false;
   outline.lines.push(
-    `scanned ${data.scannedPaths.length} file(s) for tool evidence`,
-    "(scan discovers tools only; author file, config, and skill resources in a profile file)",
+    `scanned ${data.scannedPaths.length} file(s) in ~/.canonfig/ for tool evidence`,
+    "(scan discovers tools only; --write adds accepted ones to canonfig.jsonc)",
   );
   const tools = recordsOf(data.tools);
   if (tools.length === 0) outline.lines.push("tools: none found");
@@ -503,8 +503,8 @@ const summarizeScan = (data: PayloadRecord, outline: Outline): boolean => {
       outline.lines.push(`  ${textOf(task.id) ?? "task"}: ${textOf(task.desiredOutcome) ?? ""}`.trimEnd());
     }
     outline.lines.push(
-      "  A proposal with unreviewed evidence cannot be published with --proposal. Author the",
-      "  tool resource (with a recipe) in your profile file, or scan only files whose evidence is accepted.",
+      "  Evidence that needs review is never written. Add the tool (with a recipe) to",
+      "  the tools section of ~/.canonfig/canonfig.jsonc yourself once you have reviewed it.",
     );
   }
   outlineRest(outline, data, ["scannedPaths", "tools", "skills", "agentTasks", "evidence", "resources"]);

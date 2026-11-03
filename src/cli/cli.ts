@@ -5,7 +5,6 @@ import {
   FollowerId,
   GroupName,
   InvitationCode,
-  ProfileId,
   ProfileRevisionId,
   ResourceId,
   Timestamp,
@@ -47,21 +46,12 @@ import { humanTransferProgress } from "./transfer-progress.ts";
 
 export type CliCommand =
   | { readonly _tag: "SourceInit" }
-  | { readonly _tag: "SourceScan"; readonly files: ReadonlyArray<{ readonly path: string }> }
   | {
-    readonly _tag: "SourcePublish";
-    readonly proposalPath?: string | undefined;
-    readonly profile?: typeof ProfileId.Type | undefined;
-    readonly name?: string | undefined;
-    readonly profilePath?: string | undefined;
-    readonly reviewer: string;
-    readonly allowEmpty: boolean;
+    readonly _tag: "SourceScan";
+    /** Insert the reviewed tool entries into canonfig.jsonc. */
+    readonly write: boolean;
   }
-  | {
-    readonly _tag: "SourceDigest";
-    readonly profilePath: string;
-    readonly resource?: string | undefined;
-  }
+  | { readonly _tag: "SourcePublish"; readonly reviewer: string }
   | {
     readonly _tag: "SourceServe";
     readonly hostname: "127.0.0.1" | "::1";
@@ -87,7 +77,6 @@ export type CliCommand =
     readonly _tag: "FollowerEnroll";
     readonly invitation: EnrollmentInvitationGrant;
     readonly followerName: string;
-    readonly selectedProfile?: typeof ProfileId.Type | undefined;
     readonly timeoutMilliseconds?: number | undefined;
     /** Replace a completed enrollment instead of refusing. */
     readonly replace: boolean;
@@ -162,10 +151,6 @@ export type CliCommand =
   | {
     readonly _tag: "ProfileShow";
     readonly revision: typeof ProfileRevisionId.Type;
-  }
-  | {
-    readonly _tag: "ProfileSelect";
-    readonly profile: typeof ProfileId.Type;
   }
   | { readonly _tag: "AgentPolicyGet" }
   | { readonly _tag: "AgentPolicySet"; readonly policy: typeof AgentPolicy.Type }
@@ -591,52 +576,14 @@ const evaluateSourceCommand = (
     return command({ _tag: "SourceInit" }, format);
   }
   if (action === "scan") {
-    const options = parseOptions(rest, new Set(["--file"]), new Set());
-    if (options.positionals.length > 0) return invalid("source scan accepts only --file inputs");
-    const files = (options.values.get("--file") ?? []).map((path) => ({ path }));
-    if (files.length === 0) return invalid("source scan requires at least one --file");
-    return command({ _tag: "SourceScan", files }, format);
+    const options = parseOptions(rest, new Set(), new Set(["--write"]));
+    if (options.positionals.length > 0) return invalid("source scan reads ~/.canonfig/ and accepts only --write");
+    return command({ _tag: "SourceScan", write: options.switches.has("--write") }, format);
   }
   if (action === "publish") {
-    const options = parseOptions(
-      rest,
-      new Set(["--proposal", "--profile", "--name", "--profile-file", "--reviewer"]),
-      new Set(["--allow-empty"]),
-    );
-    if (options.positionals.length > 0) return invalid("source publish accepts only named options");
-    const proposalPath = one(options, "--proposal");
-    const profilePath = one(options, "--profile-file");
-    const profileValue = one(options, "--profile");
-    const name = one(options, "--name");
-    if (proposalPath === undefined && profilePath === undefined) {
-      return invalid("source publish requires --proposal or --profile-file");
-    }
-    if (profilePath === undefined && (profileValue === undefined || name === undefined)) {
-      return invalid("source publish requires --profile and --name without --profile-file");
-    }
-    return command({
-      _tag: "SourcePublish",
-      proposalPath,
-      profile: profileValue === undefined
-        ? undefined
-        : decodeOption(Schema.decodeUnknownOption(ProfileId), profileValue, "profile id"),
-      name,
-      profilePath,
-      reviewer: one(options, "--reviewer", true)!,
-      allowEmpty: options.switches.has("--allow-empty"),
-    }, format);
-  }
-  if (action === "digest") {
-    const options = parseOptions(rest, new Set(["--profile-file", "--resource"]), new Set());
-    if (options.positionals.length > 0) return invalid("source digest accepts only named options");
-    const resource = one(options, "--resource");
-    return command({
-      _tag: "SourceDigest",
-      profilePath: one(options, "--profile-file", true)!,
-      resource: resource === undefined
-        ? undefined
-        : decodeOption(Schema.decodeUnknownOption(ResourceId), resource, "resource id"),
-    }, format);
+    const options = parseOptions(rest, new Set(["--reviewer"]), new Set());
+    if (options.positionals.length > 0) return invalid("source publish accepts only --reviewer");
+    return command({ _tag: "SourcePublish", reviewer: one(options, "--reviewer", true)! }, format);
   }
   if (action === "serve") {
     const options = parseOptions(rest, new Set(["--host", "--port"]), new Set());
@@ -737,18 +684,6 @@ const evaluateProfileCommand = (
     return command({
       _tag: "ProfileShow",
       revision: decodeOption(Schema.decodeUnknownOption(ProfileRevisionId), options.positionals[0]!, "profile revision id"),
-    }, format);
-  }
-  if (action === "select") {
-    const options = parseOptions(rest, new Set(), new Set());
-    if (options.positionals.length !== 1) return invalid("Usage: canonfig profile select <profile-id>");
-    return command({
-      _tag: "ProfileSelect",
-      profile: decodeOption(
-        Schema.decodeUnknownOption(ProfileId),
-        options.positionals[0]!,
-        "profile id",
-      ),
     }, format);
   }
   return invalid(`Unknown profile command: ${action ?? ""}`);
@@ -925,12 +860,12 @@ const evaluateCommand = (
     if (area === "follower" && action === "enroll") {
       const options = parseOptions(
         rest,
-        new Set(["--name", "--profile", "--timeout-ms"]),
+        new Set(["--name", "--timeout-ms"]),
         new Set(["--replace"]),
       );
       if (options.positionals.length !== 1) {
         return invalid(
-          "Usage: canonfig follower enroll <invite> --name <name> --profile <id> [--timeout-ms <milliseconds>]",
+          "Usage: canonfig follower enroll <invite> --name <name> [--timeout-ms <milliseconds>]",
         );
       }
       const timeout = one(options, "--timeout-ms");
@@ -938,11 +873,6 @@ const evaluateCommand = (
         _tag: "FollowerEnroll",
         invitation: decodeInvitation(options.positionals[0]!),
         followerName: one(options, "--name", true)!,
-        selectedProfile: decodeOption(
-          Schema.decodeUnknownOption(ProfileId),
-          one(options, "--profile", true)!,
-          "profile id",
-        ),
         replace: options.switches.has("--replace"),
         timeoutMilliseconds: timeout === undefined
           ? undefined
@@ -1089,7 +1019,6 @@ export const commandName = (value: CliCommand): string => {
     case "SourceInit": return "source.init";
     case "SourceScan": return "source.scan";
     case "SourcePublish": return "source.publish";
-    case "SourceDigest": return "source.digest";
     case "SourceServe": return "source.serve";
     case "SourceServiceInstall": return "source.service.install";
     case "SourceServiceStatus": return "source.service.status";
@@ -1110,7 +1039,6 @@ export const commandName = (value: CliCommand): string => {
     case "Doctor": return "doctor";
     case "ProfileList": return "profile.list";
     case "ProfileShow": return "profile.show";
-    case "ProfileSelect": return "profile.select";
     case "AgentPolicyGet": return "agent.policy.get";
     case "AgentPolicySet": return "agent.policy.set";
     case "TunnelStart": return "tunnel.start";
@@ -1142,21 +1070,8 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
   const setup = yield* SetupCommands;
   switch (value._tag) {
     case "SourceInit": return yield* source.initialize();
-    case "SourceScan": return yield* source.scan({ files: value.files });
-    case "SourcePublish":
-      return yield* source.publish({
-        proposalPath: value.proposalPath,
-        profile: value.profile,
-        name: value.name,
-        profilePath: value.profilePath,
-        reviewer: value.reviewer,
-        allowEmpty: value.allowEmpty,
-      });
-    case "SourceDigest":
-      return yield* source.digest({
-        profilePath: value.profilePath,
-        resource: value.resource,
-      });
+    case "SourceScan": return yield* source.scan({ write: value.write });
+    case "SourcePublish": return yield* source.publish({ reviewer: value.reviewer });
     case "SourceServe":
       return yield* source.serve({ hostname: value.hostname, port: value.port });
     case "SourceServiceInstall":
@@ -1176,7 +1091,6 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
       return yield* follower.enroll({
         invitation: value.invitation,
         followerName: value.followerName,
-        selectedProfile: value.selectedProfile,
         timeoutMilliseconds: value.timeoutMilliseconds,
         replace: value.replace,
       });
@@ -1227,7 +1141,6 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
     case "SetupStatus": return yield* setup.status();
     case "ProfileList": return yield* source.listProfiles();
     case "ProfileShow": return yield* source.inspectProfile(value.revision);
-    case "ProfileSelect": return yield* follower.selectProfile(value.profile);
     case "AgentPolicyGet": return yield* follower.getAgentPolicy();
     case "AgentPolicySet": return yield* follower.setAgentPolicy(value.policy);
     case "AgentHarnessGet": return yield* follower.getAgentHarness();

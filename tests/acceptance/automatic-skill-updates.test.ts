@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { assertAutomaticSelection, automaticSkillUpdates, type AutomaticSkillOperations } from "../../src/skills/automatic.ts";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseSkillsArguments, runSkillsCli } from "../../src/skills/cli.ts";
@@ -8,7 +8,7 @@ import type { TrackedSkill, SkillCheck } from "../../src/skills/manager.ts";
 
 const skill: TrackedSkill = { name: "demo", path: "skills/demo", source: "https://example.invalid/skills.git", ref: "main", subdir: "demo", commit: "a".repeat(40), digest: "b".repeat(64) };
 const check: SkillCheck = { name: "demo", path: skill.path, previousCommit: skill.commit, nextCommit: "c".repeat(40), status: "update-available", added: [], changed: ["SKILL.md"], removed: [] };
-const location = { root: process.cwd(), config: ".canonfig/skills-sources.json" };
+const location = { root: process.cwd(), config: "skills-sources.json" };
 function fixture(): AutomaticSkillOperations {
   return {
     list: vi.fn(async () => ({ version: 1 as const, skills: [{ ...skill }] })),
@@ -22,8 +22,7 @@ describe("automatic upstream skill updates", () => {
   it("emits the documented zero-pass JSON envelope without data", async () => {
     const root=await mkdtemp(path.join(tmpdir(),"canonfig-auto-empty-"));
     try {
-      await mkdir(path.join(root,".canonfig"));
-      await writeFile(path.join(root,".canonfig/skills-sources.json"),JSON.stringify({version:1,skills:[]}));
+      await writeFile(path.join(root,"skills-sources.json"),JSON.stringify({version:1,skills:[]}));
       const output:string[]=[];let exit=-1;
       await runSkillsCli(["auto","--root",root,"--json"],{writeStdout:text=>{output.push(text);},writeStderr:text=>{throw new Error(text);},setExitCode:code=>{exit=code;}});
       expect(output).toHaveLength(1);const envelope=JSON.parse(output[0]);

@@ -29,7 +29,6 @@ import {
   defaultPolicyForKind,
   Platform,
   type Platform as PlatformName,
-  type ResourceKind,
 } from "../domain/resource.ts";
 
 export interface ProfileCompilerOptions {
@@ -240,52 +239,6 @@ const publishedContentDigest = (
     case "credential":
       return undefined;
   }
-};
-
-/** One resource's content digest beside the digest its profile declares. */
-export interface ResourceContentDigest {
-  readonly id: ResourceId;
-  readonly kind: ResourceKind;
-  readonly verifyMethod: ProfileResourceInput["verify"]["method"];
-  readonly computedDigest: ContentDigest;
-  /** Absent when the profile omits `verify.digest` or verifies another way. */
-  readonly declaredDigest?: string | undefined;
-}
-
-const contentDigestsFor = (
-  profile: MachineProfile,
-  materialized: MaterializedProfileResources,
-): ReadonlyArray<ResourceContentDigest> =>
-  profile.resources.flatMap((resource, index) => {
-    const computedDigest = publishedContentDigest(materialized.resources[index]!.spec!);
-    if (computedDigest === undefined) return [];
-    return [{
-      id: Schema.decodeUnknownSync(ResourceId)(resource.id),
-      kind: resource.kind,
-      verifyMethod: resource.verify.method,
-      computedDigest,
-      declaredDigest: resource.verify.method === "digest" ? resource.verify.digest : undefined,
-    }];
-  });
-
-/**
- * Content digests of every resource that has content, computed exactly as
- * publication computes them. `canonfig source digest` prints these. Sources
- * must already be resolved.
- */
-export const profileContentDigests = (
-  input: ProfileCompilerInput,
-  sources?: ResolvedSourceFiles | undefined,
-): ReadonlyArray<ResourceContentDigest> => {
-  const profile = decodeInput(input);
-  const materialized = materializeResources(profile, sources);
-  const digests = contentDigestsFor(profile, materialized);
-  const byId = new Map(digests.map((entry) => [entry.id, entry.computedDigest]));
-  assertProfileMetadataBudget({ profileId: profile.id, scheduleDefault: profile.scheduleDefault,
-    resources: materialized.resources.map((resource, index) => profile.resources[index]!.verify.method === "digest"
-      ? { ...resource, verify: { method: "digest", digest: byId.get(resource.id)! } }
-      : { ...resource, verify: profile.resources[index]!.verify }) });
-  return digests;
 };
 
 /**

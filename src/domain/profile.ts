@@ -149,8 +149,8 @@ export type VerificationInput =
 /**
  * Verification as authored. A digest-verified resource (file, directory,
  * config, skill) may omit `digest`: publication computes it from the exact
- * published content, the value `canonfig source digest` prints. A supplied
- * digest that differs fails publication before signing.
+ * published content. A supplied digest that differs fails publication before
+ * signing.
  */
 export type AuthoredVerificationInput =
   | Exclude<VerificationInput, { readonly method: "digest" }>

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
-import { Effect, Option, Redacted, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import {
   AgentResolution,
@@ -11,14 +12,10 @@ import {
 } from "../agent/agent-resolution.service.ts";
 import type { AgentResolutionOutcome } from "../agent/agent-resolution.types.ts";
 import {
-  BlobId,
   ContentDigest,
-  CredentialReference,
-  type FollowerId,
   ProfileId,
   ProfileRevisionId,
   ResourceId,
-  RunId,
   SourceSignature,
 } from "../domain/brand.ts";
 import {
@@ -26,7 +23,6 @@ import {
   type PublishedResourceSpec,
   type VerificationInput,
 } from "../domain/profile.ts";
-import type { ObservedResourceState } from "../domain/synchronization.ts";
 import { composeTextFile, parseTextComposition } from "../domain/text-composition.ts";
 import type { AppliedResourceRecord } from "../domain/synchronization.ts";
 import {
@@ -38,7 +34,29 @@ import type {
   RevisionMetadata,
 } from "../enrollment/enrollment.types.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import { MachineFilesystemError } from "../machine/machine-state.errors.ts";
+import { detectHarnesses } from "../projection/detect.ts";
+import {
+  CanonicalFolderError,
+  LocalOverlayCollisionError,
+  loadCanonicalFolder,
+  type FolderFile,
+} from "../projection/folder.ts";
+import { mirrorItem, renderMirrorConfig, type MirrorEntry } from "../projection/mirror.ts";
+import {
+  buildProjection,
+  fileResource,
+  planBuilt,
+  rootContext,
+  takeoverSummary,
+  type BuiltResource,
+} from "../projection/plan.ts";
+import {
+  discardRunArtifacts,
+  finishProjectionRun,
+  loadRunArtifacts,
+  runProjection,
+  type LocalSyncOptions,
+} from "../projection/sync.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
   desiredScheduleInput,
@@ -53,55 +71,30 @@ import {
   sha256Hex,
 } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
-import { UpgradeGateError, type StateRepositoryError } from "../state/state-repository.errors.ts";
-import { buildIdentity } from "../runtime/build-identity.ts";
-import { stateFormatVersion } from "../state/state-schema.ts";
 import { Synchronization } from "./synchronization.service.ts";
-import {
-  getConfigPath,
-  parseConfigDocument,
-  renderConfigDocument,
-} from "./config-codec.ts";
+import { renderConfigDocument } from "./config-codec.ts";
 import {
   defaultLocalExecution,
   FollowerSynchronizationConfigurationError,
   type FollowerSynchronizationConfiguration,
   type FollowerAgentHarnessConfiguration,
 } from "./follower-sync-config.ts";
-import { planSynchronization } from "./planner.ts";
 import {
   cleanupRollbackSnapshots,
   defaultSynchronizationExecutionLimits,
   preflightPathLengths,
   removeRunTemporaryEntries,
 } from "./executor.ts";
-import { withRunLock } from "./run-lock.ts";
-import { installerRefusals, toolInstallMethods } from "./installer-bindings.ts";
-import { installedToolVersion } from "./installed-tool-version.ts";
-import { relativePathAncestors, selectToolRecipe } from "./resource-plans.ts";
+import { assertUpgradeGate, withRunLock } from "./run-lock.ts";
+import { installerRefusals } from "./installer-bindings.ts";
 import { clientReviewSteps, plannedFileChanges } from "./client-review.ts";
 import type {
-  AvailableBlob,
   DesiredResource,
-  DesiredResourceEntry,
-  PlanningProfileRevision,
   PlannedSynchronization,
+  PlanningLocalRevision,
   SynchronizationArtifact,
   SynchronizationAgentConfiguration,
 } from "./synchronization.types.ts";
-
-/**
- * A version query only reads installer state, so it gets a short bound; a
- * query that does not finish leaves the version unknown and `ensure` keeps
- * the present tool.
- */
-const installedVersionTimeoutMilliseconds = 60_000;
-
-const decoder = new TextDecoder();
-
-const isNotFoundFilesystemError = (
-  error: MachineFilesystemError,
-): boolean => /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message);
 
 /**
  * The bound on a process Canonfig starts on this machine. Installers and
@@ -113,39 +106,6 @@ const localProcessTimeout = (
 ): number =>
   configuration.localExecution?.processTimeoutMilliseconds
     ?? defaultLocalExecution.processTimeoutMilliseconds;
-
-/**
- * An upgrade must not change executable or state underneath a run that an
- * earlier build left unfinished: that run can only be finished or recovered
- * by the build that created it, because the journal and codec behavior of a
- * foreign build are unknown. The operator can accept the upgrade explicitly,
- * which is the migration path.
- */
-export const assertUpgradeGate = Effect.fn(
-  "FollowerOrchestration.upgradeGate",
-)(function*(follower: FollowerId): Effect.fn.Return<void, UpgradeGateError | StateRepositoryError, StateRepository> {
-  const repository = yield* StateRepository;
-  const open = yield* repository.loadOpenRunIdentity(follower);
-  if (open === undefined) return;
-  // A run created before builds recorded their identity has no receipt-era
-  // evidence; it is grandfathered rather than stranded by this upgrade.
-  const compatible = open.creatingIdentity === null
-    || open.stateFormat === null
-    || (
-      open.creatingIdentity === buildIdentity.sourceDigest
-      && open.stateFormat === stateFormatVersion
-    );
-  if (compatible || process.env.CANONFIG_ACCEPT_FOREIGN_BUILD === "1") return;
-  return yield* new UpgradeGateError({
-    run: open.run,
-    creatingVersion: open.creatingVersion,
-    creatingIdentity: open.creatingIdentity,
-    creatingStateFormat: open.stateFormat,
-    currentVersion: buildIdentity.packageVersion,
-    currentIdentity: buildIdentity.sourceDigest,
-    currentStateFormat: stateFormatVersion,
-  });
-});
 
 const configurationError = (
   reason: "missing" | "stale" | "invalid-profile" | "invalid-reference",
@@ -244,7 +204,7 @@ const selectedRevision = Effect.fn(
 ) {
   const revisions = yield* listRevisions(transportInput(configuration, signal));
   const matching = revisions.revisions
-    .filter((revision) => revision.profileId === configuration.selectedProfile)
+    .filter((revision) => revision.profileId === configuration.profile)
     .sort((left, right) => right.sequence - left.sequence);
   const selected = requestedRevision === undefined
     ? matching[0]
@@ -253,7 +213,7 @@ const selectedRevision = Effect.fn(
     return yield* configurationError(
       "invalid-profile",
       requestedRevision === undefined
-        ? `selected profile ${configuration.selectedProfile} has no authorized revision`
+        ? `profile ${configuration.profile} has no authorized revision`
         : `recovery revision ${requestedRevision} is no longer authorized`,
     );
   }
@@ -430,680 +390,180 @@ const desiredFor = (
   }
 };
 
-const observeFile = (
-  target: string,
-  desired: Extract<DesiredResource, { readonly kind: "file" }>,
-  policy: ProfileRevision["resources"][number]["policy"],
-): Effect.Effect<ObservedResourceState, never, MachineState> =>
-  Effect.gen(function*() {
-    const machine = yield* MachineState;
-    const path = yield* machine.normalizePath({ path: target });
-    const observedKind = yield* machine.inspectPath(path);
-    if (observedKind.kind === "symlink") {
-      return yield* machine.readSymlink(path).pipe(
-        Effect.map((symlinkTo): ObservedResourceState => ({
-          state: "present",
-          digest: desired.symlinkTo === symlinkTo
-            ? desired.digest
-            : sha256Hex(symlinkTo),
-          executable: false,
-          objectKind: "symlink",
-          symlinkTo,
-        })),
-      );
-    }
-    if (observedKind.kind !== "regular") {
-      return {
-        state: "present",
-        digest: sha256Hex(`canonfig:observed-object:${observedKind.kind}`),
-        executable: false,
-        objectKind: observedKind.kind,
-      } as const;
-    }
-    if (desired.symlinkTo !== undefined) {
-      return {
-        state: "present",
-        digest: sha256Hex("canonfig:observed-object:regular"),
-        executable: false,
-        objectKind: "regular",
-      } as const;
-    }
-    if (policy === "append-local") {
-      const bytes = yield* machine.readFile({ path, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes });
-      const composition = yield* Effect.try(() => parseTextComposition(bytes));
-      const permissions = yield* machine.permissions(path);
-      const observation = {
-        state: "present",
-        digest: sha256BytesHex(bytes),
-        executable: permissions.executableByOwner,
-        mode: permissions.mode,
-        objectKind: "regular",
-      } as const;
-      return composition.kind === "managed"
-        ? { ...observation, managedSourceDigest: sha256Hex(composition.source) }
-        : observation;
-    }
-    return yield* machine.digestFile({ path }).pipe(
-      Effect.flatMap((digest) =>
-        machine.permissions(path).pipe(
-          Effect.map((permissions): ObservedResourceState => ({
-            state: "present",
-            digest: digest.value,
-            executable: permissions.executableByOwner,
-            mode: permissions.mode,
-            objectKind: "regular",
-          })),
-        )
-      ),
-      Effect.catchTag("MachineFilesystemError", (error) =>
-        Effect.succeed(error.message.includes("ENOENT")
-          ? { state: "absent" } as const
-          : { state: "unverifiable", reason: error.message } as const)
-      ),
-      Effect.catch((error) =>
-        Effect.succeed({ state: "unverifiable", reason: String(error) } as const)
-      ),
-    );
-  }).pipe(
-    Effect.catchTag("MachineFilesystemError", (error) =>
-      Effect.succeed(error.message.includes("ENOENT")
-        ? { state: "absent" } as const
-        : { state: "unverifiable", reason: error.message } as const)
-    ),
-    Effect.catch((error) =>
-      Effect.succeed({ state: "unverifiable", reason: String(error) } as const)
-    ),
-  );
+/** The resource id of a follower's rendered `canonfig.jsonc`. */
+const mirrorConfigResource = Schema.decodeUnknownSync(ResourceId)("mirror:canonfig.jsonc");
 
-const observeConfig = (
-  decoded: {
-    readonly resource: Pick<ProfileRevision["resources"][number], "target">;
-  },
-  desired: Extract<DesiredResource, { readonly kind: "config" }>,
-  applied: AppliedResourceRecord | undefined,
-): Effect.Effect<ObservedResourceState, never, MachineState> =>
-  Effect.gen(function*() {
-    const machine = yield* MachineState;
-    const path = yield* machine.normalizePath({ path: decoded.resource.target });
-    const observedKind = yield* machine.inspectPath(path);
-    if (observedKind.kind !== "regular") {
-      return {
-        state: "present",
-        digest: sha256Hex(`canonfig:observed-object:${observedKind.kind}`),
-        executable: false,
-        objectKind: observedKind.kind,
-      } as const;
-    }
-    const bytes = yield* machine.readFile({
-      path,
-      maximumBytes: 8 * 1024 * 1024,
-    });
-    // An unparseable follower file blocks only the resources that merge into
-    // it. Parsing used to throw inside this generator, which escaped as a
-    // defect and aborted the whole synchronization with a raw stack trace.
-    return yield* Effect.try({
-      try: (): ObservedResourceState => {
-        const current = parseConfigDocument(desired.format, decoder.decode(bytes));
-        // The owned values go through the exact rendering the desired digest
-        // used, key ordering included, so an unchanged file observes equal.
-        const ownedDigest = (keys: ReadonlyArray<string>) => {
-          const present = keys.flatMap((key) => {
-            const value = getConfigPath(current, key);
-            return value === undefined ? [] : [{ path: key, value }];
-          });
-          return present.length === 0
-            ? undefined
-            : sha256BytesHex(renderConfigDocument({ format: desired.format, keys: present }));
-        };
-        const appliedKeysDigest = applied?.ownedKeys === undefined || applied.configFormat !== desired.format
-          ? undefined
-          : ownedDigest(applied.ownedKeys);
-        return {
-          state: "present",
-          digest: ownedDigest(desired.keys)
-            ?? sha256BytesHex(renderConfigDocument({ format: desired.format, keys: [] })),
-          executable: false,
-          objectKind: "regular",
-          appliedKeysDigest,
-        };
-      },
-      catch: (error) => error,
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.succeed({
-          state: "unverifiable",
-          reason: `${decoded.resource.target} is not valid ${desired.format.toUpperCase()}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        } as const)
-      ),
-    );
-  }).pipe(
-    Effect.catch((error) =>
-      Effect.succeed(
-        String(error).includes("ENOENT")
-          ? { state: "absent" } as const
-          : { state: "unverifiable", reason: String(error) } as const,
-      )
-    ),
-  );
+const McpRequires = Schema.Struct({ requires: Schema.optional(Schema.Array(Schema.String)) });
 
-export const observeFollowerResource = (
-  decoded: {
-    // `policy` is read so a `replace` directory can be listed in full; the
-    // other policies observe only owned and desired paths.
-    readonly resource: Pick<
-      ProfileRevision["resources"][number],
-      "kind" | "target" | "policy"
-    >;
-  },
-  desired: DesiredResource,
-  verification: VerificationInput,
-  applied?: AppliedResourceRecord,
-): Effect.Effect<ObservedResourceState, never, MachineState> => {
-  switch (desired.kind) {
-    case "file":
-      return observeFile(decoded.resource.target, desired, decoded.resource.policy);
-    case "config":
-      return observeConfig(decoded, desired, applied);
-    case "directory":
-    case "skill":
-      return Effect.gen(function*() {
-        const machine = yield* MachineState;
-        const root = yield* machine.normalizePath({ path: decoded.resource.target });
-        const rootKind = yield* machine.inspectPath(root).pipe(
-          Effect.catchTag("MachineFilesystemError", (error) =>
-            isNotFoundFilesystemError(error)
-              ? Effect.succeed(undefined)
-              : Effect.fail(error)
-          ),
-        );
-        if (rootKind === undefined) return { state: "absent" } as const;
-        if (rootKind.kind !== "directory") {
-          return {
-            state: "present",
-            digest: sha256Hex(`canonfig:observed-object:${rootKind.kind}`),
-            executable: false,
-            objectKind: rootKind.kind,
-          } as const;
-        }
-        const rootPermissions = yield* machine.permissions(root);
-        // Under `replace` the managed subtree is the desired subtree exactly,
-        // so every entry has to be observed, including ones Canonfig never
-        // wrote. Observation otherwise inspects only owned and desired paths,
-        // which made a locally added file invisible and therefore
-        // unremovable: `replace` behaved like `mirror-owned` for anything
-        // foreign, and the two policies were the same thing.
-        // A projected directory keeps the same full view after takeover, so
-        // an entry added to it is reported as drift instead of going unseen.
-        const listsEverything = decoded.resource.policy === "replace"
-          || decoded.resource.kind === "directory" && decoded.resource.policy === "replace-if-unmodified";
-        const foreign = listsEverything
-          ? yield* machine.listDirectory(root).pipe(
-            Effect.map((entries) =>
-              entries.map((entry) => {
-                const observed = {
-                  path: entry.path,
-                  digest: Schema.decodeUnknownSync(ContentDigest)(
-                    sha256Hex(`canonfig:observed-object:${entry.kind}`),
-                  ),
-                  executable: false,
-                };
-                return entry.kind === "directory"
-                  ? { ...observed, objectKind: "directory" as const }
-                  : observed;
-              })
-            ),
-          )
-          : [];
-        const ancestors = [...relativePathAncestors([
-          ...desired.files.map((entry) => entry.path),
-          ...desired.directories.map((entry) => entry.path),
-          ...(applied?.ownedFiles ?? []).map((entry) => entry.path),
-        ])].sort((left, right) => left.split("/").length - right.split("/").length);
-        const candidates = [...new Map([
-          ...ancestors.map((path) => ({ path })),
-          ...foreign,
-          ...(applied?.ownedFiles ?? []).map((file) => ({
-            ...file,
-            executable: file.executable ?? false,
-          })),
-          ...desired.files,
-          ...desired.directories.map((directory) => ({
-            path: directory.path,
-            digest: Schema.decodeUnknownSync(ContentDigest)(sha256Hex("canonfig:directory")),
-            executable: (directory.mode & 0o100) !== 0,
-            mode: directory.mode,
-            objectKind: "directory" as const,
-          })),
-        ].map((file) => [file.path, file])).values()];
-        const blockedAncestors = new Set<string>();
-        const files = yield* Effect.forEach(candidates, (file) =>
-          Effect.gen(function*() {
-            if ([...relativePathAncestors([file.path])].some((ancestor) => blockedAncestors.has(ancestor))) {
-              return { path: file.path, state: "absent" } as const;
-            }
-            const path = yield* machine.normalizePath({ path: file.path, base: root });
-            const kind = yield* machine.inspectPath(path).pipe(
-              Effect.catchTag("MachineFilesystemError", (error) =>
-                isNotFoundFilesystemError(error)
-                  ? Effect.succeed(undefined)
-                  : Effect.fail(error)
-              ),
-            );
-            if (kind === undefined) {
-              blockedAncestors.add(file.path);
-              return { path: file.path, state: "absent" } as const;
-            }
-            if (kind.kind !== "directory") blockedAncestors.add(file.path);
-            if (kind.kind === "directory") {
-              const permissions = yield* machine.permissions(path);
-              return {
-                path: file.path,
-                digest: sha256Hex("canonfig:directory"),
-                executable: permissions.executableByOwner,
-                mode: permissions.mode,
-                objectKind: "directory" as const,
-              };
-            }
-            if (kind.kind === "symlink") {
-              const symlinkTo = yield* machine.readSymlink(path);
-              return {
-                path: file.path,
-                digest: sha256Hex(symlinkTo),
-                executable: false,
-                objectKind: "symlink" as const,
-                symlinkTo,
-              };
-            }
-            if (kind.kind !== "regular") {
-              return {
-                path: file.path,
-                digest: sha256Hex(`canonfig:observed-object:${kind.kind}`),
-                executable: false,
-                objectKind: kind.kind,
-              } as const;
-            }
-            return yield* machine.digestFile({ path }).pipe(
-              Effect.flatMap((digest) =>
-                machine.permissions(path).pipe(
-                  Effect.map((permissions) => ({
-                    path: file.path,
-                    digest: digest.value,
-                    executable: permissions.executableByOwner,
-                    mode: permissions.mode,
-                    objectKind: "regular" as const,
-                  })),
-                )
-              ),
-              Effect.catchTag("MachineFilesystemError", (error) =>
-                isNotFoundFilesystemError(error)
-                  ? Effect.succeed({ path: file.path, state: "absent" } as const)
-                  : Effect.fail(error)
-              ),
-            );
-          })
-        );
-        return {
-          state: "directory",
-          objectKind: "directory",
-          mode: rootPermissions.mode,
-          files,
-        } as const;
-      }).pipe(
-        Effect.catch((error) =>
-          Effect.succeed({ state: "unverifiable", reason: String(error) } as const)
-        ),
-      );
-    case "tool":
-      return Effect.gen(function*() {
-        const machine = yield* MachineState;
-        const platform = (yield* machine.userDirectories()).home.platform;
-        const qualifiedEntrypoint = desired.qualification === undefined
-          ? undefined
-          : selectToolRecipe(desired, platform)?.entrypoint;
-        const executable = qualifiedEntrypoint
-          ?? (verification.method === "executable-present"
-            ? verification.executable
-            : decoded.resource.target);
-        const present = executable.includes("/") || executable.includes("\\")
-          ? yield* machine.normalizePath({ path: executable }).pipe(
-            Effect.flatMap((path) => machine.permissions(path)),
-            Effect.as(true),
-            Effect.catch(() => Effect.succeed(false)),
-          )
-          : yield* machine.findExecutable({
-            name: executable,
-            installMethods: yield* toolInstallMethods(desired.recipes),
-          }).pipe(
-            Effect.as(true),
-            Effect.catch(() => Effect.succeed(false)),
-          );
-        if (!present) return { state: "absent" } as const;
-        // The executable says nothing about its version; ask the installer
-        // the plan would use, so a changed pin plans a reinstall.
-        const recipe = selectToolRecipe(desired, platform);
-        const installedVersion = recipe?.version === undefined
-          ? undefined
-          : yield* installedToolVersion({
-            method: recipe.method,
-            package: recipe.package,
-            timeoutMilliseconds: installedVersionTimeoutMilliseconds,
-            maximumOutputBytes: defaultSynchronizationExecutionLimits.maximumProcessOutputBytes,
-          });
-        return {
-          state: "present",
-          digest: sha256Hex(executable),
-          executable: true,
-          installedVersion,
-        } as const;
-      }).pipe(
-        Effect.catch((error) =>
-          Effect.succeed({ state: "unverifiable", reason: String(error) } as const)
-        ),
-      );
-    case "credential":
-      return Effect.gen(function*() {
-        const machine = yield* MachineState;
-        const reference = Schema.decodeUnknownSync(CredentialReference)(
-          verification.method === "credential-present"
-            ? verification.reference
-            : desired.reference,
-        );
-        return yield* machine.loadCredential({ reference }).pipe(
-          Effect.map((value) => {
-            Redacted.value(value);
-            return {
-              state: "present",
-              digest: sha256Hex(desired.reference),
-              executable: false,
-            } as const;
-          }),
-          Effect.catch(() => Effect.succeed({ state: "absent" } as const)),
-        );
-      });
-  }
-};
+const encoder = new TextEncoder();
 
 /**
- * The verification a removed resource's own shape requires.
+ * Plan one follower run from a verified Source revision, in three parts:
  *
- * Every removed resource used to be given `digest` verification, but the
- * planner requires `symlink` verification for a symlink file and rejects the
- * mismatch, so a follower that had applied a symlink and then stopped
- * receiving it failed every plan and apply with a bare
- * `PlannerVerificationKindMismatchError` before any action was planned. The
- * record was never dropped, so the failure repeated forever and the follower
- * could neither converge nor remove anything.
+ * 1. The managed mirror: every authorized file and skill item at the same
+ *    place in this machine's `~/.canonfig/`, plus a `canonfig.jsonc` rendered
+ *    from the authorized JSON items. Mirror items use the three-way
+ *    `replace-if-unmodified` rule, so a local edit is Follower Drift: kept,
+ *    reported, and the run stops before anything projected from it changes.
+ * 2. Tools and credentials, applied as published.
+ * 3. The projection of the mirror (as this run writes it, read from memory)
+ *    plus `local/` into the listed, installed and not excluded harnesses.
+ *    Every projected resource depends on the mirror and on the tools its MCP
+ *    servers require, so those apply first.
  */
-export const removedResourceVerification = (
-  applied: AppliedResourceRecord,
-  desired: DesiredResource,
-): VerificationInput =>
-  desired.kind === "file" && desired.symlinkTo !== undefined
-    ? { method: "symlink", target: desired.symlinkTo }
-    : { method: "digest", digest: Schema.decodeUnknownSync(ContentDigest)(applied.digest) };
-
-export const removedResourceState = (
-  applied: AppliedResourceRecord,
-): {
-  readonly resource: ProfileRevision["resources"][number];
-  readonly desired: DesiredResource;
-} | undefined => {
-  if (
-    applied.kind === undefined
-    || applied.policy === undefined
-    || applied.target === undefined
-  ) {
-    return undefined;
-  }
-  const resource = {
-    id: applied.resource,
-    kind: applied.kind,
-    policy: applied.policy,
-    target: applied.target,
-    dependsOn: [],
-    blobs: [],
-  } satisfies ProfileRevision["resources"][number];
-  const digest = Schema.decodeUnknownSync(ContentDigest)(applied.digest);
-  switch (applied.kind) {
-    case "file":
-      return {
-        resource,
-        desired: {
-          kind: "file",
-          digest,
-          executable: applied.executable ?? false,
-          mode: applied.mode ?? (applied.executable === true ? 0o700 : 0o600),
-          symlinkTo: applied.symlinkTo,
-        },
-      };
-    case "directory":
-    case "skill":
-      if (applied.ownedFiles === undefined) return undefined;
-      const directories = applied.ownedFiles
-        .filter((file) => file.objectKind === "directory")
-        .map((directory) => ({
-          path: directory.path,
-          mode: directory.mode ?? 0o700,
-        }));
-      const files = applied.ownedFiles
-        .filter((file) => file.objectKind !== "directory")
-        .map((file) => ({
-          path: file.path,
-          digest: Schema.decodeUnknownSync(ContentDigest)(file.digest),
-          executable: file.executable ?? false,
-          mode: file.mode ?? (file.executable === true ? 0o700 : 0o600),
-          symlinkTo: file.symlinkTo,
-        }));
-      return {
-        resource,
-        desired: applied.kind === "skill"
-          ? {
-            kind: "skill",
-            digest,
-            mode: applied.mode ?? 0o700,
-            directories,
-            files,
-          }
-          : {
-            kind: "directory",
-            mode: applied.mode ?? 0o700,
-            directories,
-            files,
-          },
-      };
-    case "config":
-      if (
-        applied.ownedKeys === undefined
-        || applied.configFormat === undefined
-      ) {
-        return undefined;
-      }
-      return {
-        resource,
-        desired: {
-          kind: "config",
-          digest,
-          format: applied.configFormat,
-          keys: applied.ownedKeys,
-        },
-      };
-    case "tool":
-    case "credential":
-      return undefined;
-  }
-};
-
-const hydrateRevision = Effect.fn("FollowerOrchestration.hydrateRevision")(
-  function*(
-    fetched: FetchedRevision,
-    appliedResources: ReadonlyArray<AppliedResourceRecord> = [],
-  ): Effect.fn.Return<
-    {
-      readonly revision: PlanningProfileRevision;
-      readonly observations: ReadonlyArray<{
-        readonly resolvedTarget?: string | undefined;
-        readonly resource: typeof ResourceId.Type;
-        readonly observed: ObservedResourceState;
-      }>;
-      readonly artifacts: ReadonlyArray<SynchronizationArtifact>;
-    },
-    FollowerSynchronizationConfigurationError,
-    MachineState
-  > {
-    const decoded = yield* decodeSpecs(fetched);
-    const machine = yield* MachineState;
-    const resolveTarget = (resource: ProfileRevision["resources"][number]) =>
-      resource.kind === "tool" || resource.kind === "credential" ? Effect.succeed(undefined)
-        : machine.normalizePath({ path: resource.target }).pipe(
-          Effect.map((path) => path.absolute),
-          Effect.mapError(() => configurationError("invalid-profile", `Cannot resolve target for ${resource.id}`)),
-        );
-    const desired: Array<DesiredResourceEntry> = [];
-    const observations = [];
-    const artifacts: Array<SynchronizationArtifact> = [];
-    const blobs: Array<AvailableBlob> = [];
-    const announcedBlobs = new Set<string>();
-    const removedResources = [];
-    const appliedByResource = new Map(appliedResources.map((record) => [
-      record.resource,
-      record,
-    ]));
-    for (const entry of decoded) {
-      const hydration = desiredFor(entry.spec, entry.content, entry.resource.verify);
-      const tool = hydration.desired.kind === "tool" ? hydration.desired : undefined;
-      // `agentInstall.paths` are authored like targets, once for every
-      // follower, so `~` means this follower's home. Resolving them here, as
-      // targets are, gives the Agent Task, the harness bounds check and the
-      // agent itself the absolute paths the follower's `--allow-path` values
-      // are stored as.
-      desired.push({
-        resource: entry.resource.id,
-        desired: tool?.agentInstall === undefined ? hydration.desired : {
-          ...tool,
-          agentInstall: {
-            ...tool.agentInstall,
-            paths: yield* Effect.forEach(tool.agentInstall.paths, (path) =>
-              machine.normalizePath({ path }).pipe(Effect.map((normalized) => normalized.absolute))
-            ).pipe(Effect.mapError(() =>
-              configurationError("invalid-profile", `Cannot resolve agentInstall paths for ${entry.resource.id}`)
-            )),
-          },
-        },
-        verification: entry.resource.verify,
-      });
-      observations.push({
-        resolvedTarget: yield* resolveTarget(entry.resource),
-        resource: entry.resource.id,
-        observed: yield* observeFollowerResource(
-          entry,
-          hydration.desired,
-          entry.resource.verify,
-          appliedByResource.get(entry.resource.id),
-        ),
-      });
-      artifacts.push(...hydration.artifacts);
-      for (const [id, content] of entry.content) {
-        if (announcedBlobs.has(id)) continue;
-        announcedBlobs.add(id);
-        blobs.push({
-          id: Schema.decodeUnknownSync(BlobId)(id),
-          bytes: content.byteLength,
-        });
-      }
-    }
-    const currentIds = new Set(fetched.metadata.resources.map((resource) => resource.id));
-    for (
-      const applied of [...appliedResources].sort((left, right) =>
-        left.resource.localeCompare(right.resource)
-      )
-    ) {
-      if (currentIds.has(applied.resource)) continue;
-      const removed = removedResourceState(applied);
-      if (removed === undefined) continue;
-      removedResources.push(applied.resource);
-      const removedVerification = removedResourceVerification(
-        applied,
-        removed.desired,
+const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
+  fetched: FetchedRevision,
+  configuration: FollowerSynchronizationConfiguration,
+  appliedResources: ReadonlyArray<AppliedResourceRecord>,
+  environment: (name: string) => string | undefined,
+) {
+  const machine = yield* MachineState;
+  const repository = yield* StateRepository;
+  const folder = dirname(configuration.stateLocation);
+  const folderPath = yield* machine.normalizePath({ path: folder });
+  const inFolder = (path: string) => machine.normalizePath({ path, base: folderPath }).pipe(Effect.map((resolved) => resolved.absolute));
+  const decoded = yield* decodeSpecs(fetched);
+  const built: Array<BuiltResource> = [];
+  const mirrorFiles = new Map<string, FolderFile>();
+  const entries: Array<MirrorEntry> = [];
+  const mirrored: Array<ResourceId> = [];
+  for (const entry of decoded) {
+    const item = mirrorItem({ ...entry.resource, spec: entry.spec });
+    if (item === undefined) {
+      return yield* configurationError(
+        "invalid-profile",
+        `revision ${fetched.metadata.id} holds resource ${entry.resource.id}, which is not a Canonical Folder item; publish ~/.canonfig/ again on the Source with this release`,
       );
-      desired.push({
-        resource: removed.resource.id,
-        desired: removed.desired,
-        verification: removedVerification,
-      });
-      observations.push({
-        resolvedTarget: yield* resolveTarget(removed.resource),
-        resource: removed.resource.id,
-        observed: yield* observeFollowerResource(
-          { resource: removed.resource },
-          removed.desired,
-          removedVerification,
-          applied,
-        ),
-      });
     }
-    const metadata = fetched.metadata;
-    const view = authorizationViewIdentity(metadata);
-    const canonicalBytes = canonicalJson(
-      Schema.decodeUnknownSync(Schema.MutableJson)({
-        sourceRevision: metadata.id,
-        metadataDigest: metadata.metadataDigest,
-        resources: metadata.resources,
-      }),
-    );
-    const base: ProfileRevision = {
-      id: view.revision,
-      profileId: view.profile,
-      sequence: metadata.sequence,
-      canonicalBytes,
-      digest: sha256Hex(canonicalBytes),
-      signature: Schema.decodeUnknownSync(SourceSignature)(
-        metadata.sourceSignature,
-      ),
-      publishedAt: metadata.publishedAt,
-      scheduleDefault: metadata.scheduleDefault,
-      resources: [
-        ...metadata.resources.map(({ verify: _, ...resource }) => resource),
-        ...removedResources.map((resource) =>
-          removedResourceState(appliedByResource.get(resource)!)!.resource
-        ),
-      ],
-      groups: [],
+    if (item.kind === "entry") {
+      entries.push(item);
+      continue;
+    }
+    const { verify, ...published } = entry.resource;
+    const hydration = desiredFor(entry.spec, entry.content, verify);
+    if (item.kind === "file") {
+      built.push({
+        resource: { ...published, spec: undefined, target: yield* inFolder(item.path), dependsOn: [], blobs: [], groups: undefined },
+        entry: { resource: published.id, desired: hydration.desired, verification: verify },
+        artifacts: hydration.artifacts,
+      });
+      mirrored.push(published.id);
+      const files = entry.spec.kind === "file"
+        ? [{ path: item.path, blob: entry.spec.blob, executable: entry.spec.executable }]
+        : entry.spec.kind === "skill"
+        ? entry.spec.files.map((file) => ({ path: `${item.path}/${file.path}`, blob: file.blob, executable: file.executable }))
+        : [];
+      for (const file of files) {
+        mirrorFiles.set(file.path, { content: contentFor(entry.content, file.blob), executable: file.executable });
+      }
+      continue;
+    }
+    const tool = hydration.desired.kind === "tool" ? hydration.desired : undefined;
+    // `agentInstall.paths` are authored once for every follower, so `~`
+    // means this follower's home. Resolving them here gives the Agent Task,
+    // the harness bounds check and the agent itself the absolute paths the
+    // follower's `--allow-path` values are stored as.
+    const desired = tool?.agentInstall === undefined ? hydration.desired : {
+      ...tool,
+      agentInstall: {
+        ...tool.agentInstall,
+        paths: yield* Effect.forEach(tool.agentInstall.paths, (path) =>
+          machine.normalizePath({ path }).pipe(Effect.map((normalized) => normalized.absolute))
+        ).pipe(Effect.mapError(() =>
+          configurationError("invalid-profile", `Cannot resolve agentInstall paths for ${published.id}`)
+        )),
+      },
     };
-    return {
-      revision: { ...base, desired, blobs, removedResources },
-      observations,
-      artifacts: [...new Map(artifacts.map((entry) => [entry.digest, entry])).values()],
-    };
-  },
-);
+    built.push({
+      resource: { ...published, groups: undefined, dependsOn: [], blobs: [] },
+      entry: { resource: published.id, desired, verification: verify },
+      artifacts: [],
+    });
+  }
+  const configContent = encoder.encode(renderMirrorConfig(entries));
+  mirrorFiles.set("canonfig.jsonc", { content: configContent, executable: false });
+  built.push(fileResource(mirrorConfigResource, yield* inFolder("canonfig.jsonc"), "replace-if-unmodified", configContent, false));
+  mirrored.push(mirrorConfigResource);
 
-const persistableRevision = (
-  revision: PlanningProfileRevision,
-): ProfileRevision => ({
-  id: revision.id,
-  profileId: revision.profileId,
-  sequence: revision.sequence,
-  canonicalBytes: revision.canonicalBytes,
-  digest: revision.digest,
-  signature: revision.signature,
-  publishedAt: revision.publishedAt,
-  resources: revision.resources
-    .filter((resource) => !revision.removedResources?.includes(resource.id))
-    .map((resource) => ({
-    id: resource.id,
-    kind: resource.kind,
-    policy: resource.policy,
-    target: resource.target,
-    groups: resource.groups,
-    dependsOn: resource.dependsOn,
-    spec: resource.spec,
-    blobs: resource.blobs,
-    })),
-  groups: revision.groups,
-  scheduleDefault: revision.scheduleDefault,
+  const loaded = yield* Effect.tryPromise({
+    try: () => loadCanonicalFolder(folder, mirrorFiles),
+    catch: (error) =>
+      error instanceof CanonicalFolderError || error instanceof LocalOverlayCollisionError
+        ? error
+        : new CanonicalFolderError({ path: folder, message: String(error) }),
+  });
+  const context = yield* rootContext(environment);
+  const takeovers = yield* repository.loadHarnessTakeovers();
+  // A listed harness projects only once installed; until then it is reported
+  // and its earlier outputs are held, and the run can still converge.
+  const installed = new Set((yield* detectHarnesses(context, folder))
+    .filter((entry) => entry.installed)
+    .map((entry) => entry.harness));
+  const notInstalled = loaded.model.harnesses.filter((harness) => !installed.has(harness));
+  const projection = yield* buildProjection(loaded, context, takeovers, notInstalled);
+  const authorized = new Set<string>(built.map((item) => item.resource.id));
+  const requiredTools = entries.flatMap((entry) =>
+    entry.key.startsWith("mcp.")
+      ? Option.match(Schema.decodeUnknownOption(McpRequires)(entry.value), {
+        onNone: () => [],
+        onSome: (server) => (server.requires ?? []).map((reference) => reference.replace("/", ":")),
+      })
+      : []
+  ).filter((id) => authorized.has(id));
+  const prerequisites = [...new Set([...mirrored, ...requiredTools.map((id) => Schema.decodeUnknownSync(ResourceId)(id))])].sort();
+  built.push(...projection.built.map((item) => ({ ...item, resource: { ...item.resource, dependsOn: prerequisites } })));
+  const current = new Set(built.map((item) => item.resource.id));
+  const planned = yield* planBuilt({
+    follower: configuration.follower.id,
+    origin: "revision",
+    originDigest: fetched.metadata.metadataDigest,
+    sourceRevision: Schema.decodeUnknownSync(ProfileRevisionId)(fetched.metadata.id),
+    built,
+    retired: appliedResources.filter((record) => !current.has(record.resource) && !projection.isHeld(record)),
+    appliedResources,
+    localOverlay: configuration.localOverlay ?? [],
+  });
+  return {
+    ...planned,
+    takeovers: projection.takeovers,
+    diagnostics: projection.diagnostics,
+    harnesses: projection.harnesses,
+    notInstalled,
+    backups: loaded.local.backups,
+    home: context.home,
+  };
 });
+
+/**
+ * The follower's record of a run's revision as a profile revision, under the
+ * run's revision id: what `status` reports as the published revision this
+ * machine applied. The id is content-addressed, so equal runs store equal
+ * records.
+ */
+const persistableRevision = (
+  revision: PlanningLocalRevision,
+  metadata: RevisionMetadata,
+): ProfileRevision => {
+  const canonicalBytes = canonicalJson(
+    Schema.decodeUnknownSync(Schema.MutableJson)({
+      sourceRevision: metadata.id,
+      metadataDigest: metadata.metadataDigest,
+      resources: metadata.resources,
+    }),
+  );
+  return {
+    id: revision.id,
+    profileId: authorizationViewIdentity(metadata).profile,
+    sequence: metadata.sequence,
+    canonicalBytes,
+    digest: sha256Hex(canonicalBytes),
+    signature: Schema.decodeUnknownSync(SourceSignature)(metadata.sourceSignature),
+    publishedAt: metadata.publishedAt,
+    resources: revision.resources.filter((resource) => !revision.removedResources?.includes(resource.id)),
+    groups: [],
+    scheduleDefault: metadata.scheduleDefault,
+  };
+};
 
 const originWithinHarnessBounds = (
   origin: string,
@@ -1546,11 +1006,17 @@ const writeAdoptionReviews = Effect.fn("FollowerOrchestration.writeAdoptionRevie
   },
 );
 
+/**
+ * `canonfig sync` on a follower: fetch and verify the latest authorized
+ * revision, then plan and (with `apply`) run its mirror, tools and
+ * projection as one journaled run. See {@link planFollowerRun}.
+ */
 export const synchronizeFollower = Effect.fn(
   "FollowerOrchestration.synchronize",
 )(function*(
   stateLocation: string,
   mode: "plan" | "apply",
+  projection: LocalSyncOptions,
   signal?: AbortSignal,
   scheduled = false,
   reviewLocal = false,
@@ -1560,7 +1026,6 @@ export const synchronizeFollower = Effect.fn(
   }
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
-  const synchronization = yield* Synchronization;
   const agentResolution = Option.getOrUndefined(
     yield* Effect.serviceOption(AgentResolution),
   );
@@ -1585,31 +1050,10 @@ export const synchronizeFollower = Effect.fn(
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
   );
-  const hydrated = yield* hydrateRevision(
-    fetched,
-    appliedResources,
-  ).pipe(
-    Effect.provideService(MachineState, machine),
-  );
-  if (mode === "apply") {
-    yield* repository.publishRevision({
-      revision: persistableRevision(hydrated.revision),
-    });
-  }
-  const plan = yield* planSynchronization({
-    revision: hydrated.revision,
-    follower: configuration.follower.id,
-    observedState: {
-      platform: (yield* machine.userDirectories()).home.platform,
-      resources: hydrated.observations,
-      availableBlobs: fetched.blobs.map((blob) => blob.id),
-    },
-    localOverlay: configuration.localOverlay ?? [],
-    appliedResources,
-  });
+  const followerPlan = yield* planFollowerRun(fetched, configuration, appliedResources, projection.environment);
   // `sync --plan` must not accept a target this machine cannot write; the
   // apply repeats the check before it records the run.
-  yield* preflightPathLengths(plan.actions, hydrated.revision.desired);
+  yield* preflightPathLengths(followerPlan.plan.actions, followerPlan.revision.desired);
   const noAgentResolutions: ReadonlyArray<AgentResolutionOutcome> = [];
   // `agent-propose` records a proposal and stops, which is what the operator
   // documentation and the glossary describe. Apply used to skip resolution
@@ -1625,12 +1069,12 @@ export const synchronizeFollower = Effect.fn(
   const planned = resolveBeforeRun
     ? yield* resolveAgentTasks(
       configuration,
-      plan,
+      followerPlan.plan,
       scheduled,
       signal,
       mode === "plan",
     )
-    : { plan: plan, agentResolutions: noAgentResolutions };
+    : { plan: followerPlan.plan, agentResolutions: noAgentResolutions };
   const appliedAgentResolutions: Array<AgentResolutionOutcome> = [];
   const journaledAgentResolution = mode === "apply" && agentResolution !== undefined
     ? AgentResolution.of({
@@ -1645,6 +1089,17 @@ export const synchronizeFollower = Effect.fn(
       proposeProfileChange: agentResolution.proposeProfileChange,
     })
     : undefined;
+  const backup = !projection.noBackup && followerPlan.backups;
+  const base = {
+    mode,
+    revision: selected.id,
+    downloadedBlobs: fetched.downloadedBlobs,
+    reusedBlobs: fetched.reusedBlobs,
+    harnesses: followerPlan.harnesses.map((entry) => ({ harness: entry.harness, root: entry.layout.root })),
+    notInstalled: followerPlan.notInstalled.length === 0 ? undefined : followerPlan.notInstalled,
+    takeovers: takeoverSummary(followerPlan.takeovers, backup),
+    diagnostics: followerPlan.diagnostics.length === 0 ? undefined : followerPlan.diagnostics,
+  };
   if (mode === "plan") {
     // Planning never touches the native scheduler: it only discloses a
     // profile default the follower has not consented to.
@@ -1658,26 +1113,27 @@ export const synchronizeFollower = Effect.fn(
       action.detail.kind === "install-tool" ? [action.detail.method] : []
     ));
     const adoptionReviews = reviewLocal
-      ? yield* writeAdoptionReviews(planned.plan, hydrated.artifacts)
+      ? yield* writeAdoptionReviews(planned.plan, followerPlan.artifacts)
       : undefined;
     return {
-      mode,
-      revision: selected.id,
-      downloadedBlobs: fetched.downloadedBlobs,
-      reusedBlobs: fetched.reusedBlobs,
+      ...base,
       plan: planned.plan,
       agentResolutions: planned.agentResolutions,
       schedule,
       warnings: warnings.length === 0 ? undefined : warnings,
       adoptionReviews,
+      outcome: undefined,
     };
   }
-  const outcome = yield* synchronization.run({
-    id: Schema.decodeUnknownSync(RunId)(`run-${randomUUID()}`),
-    plan: planned.plan,
-    revision: hydrated.revision,
-    appliedResources,
-    artifacts: hydrated.artifacts,
+  yield* repository.publishRevision({
+    revision: persistableRevision(followerPlan.revision, fetched.metadata),
+  });
+  const result = yield* runProjection({
+    statePath: stateLocation,
+    follower: configuration.follower.id,
+    planned: { ...followerPlan, plan: planned.plan },
+    backup,
+    home: followerPlan.home,
     agent: agentConfigurationFor(configuration, scheduled, signal),
     agentResolution: journaledAgentResolution,
     limits: {
@@ -1686,6 +1142,7 @@ export const synchronizeFollower = Effect.fn(
       processTimeoutMilliseconds: localProcessTimeout(configuration),
     },
   });
+  const outcome = result.outcome;
   const schedule = outcome.outcome === "Converged"
     ? yield* persistProfileScheduleDefault(
       configuration,
@@ -1702,11 +1159,9 @@ export const synchronizeFollower = Effect.fn(
     ? clientReviewSteps(plannedFileChanges(planned.plan.actions))
     : [];
   return {
-    mode,
-    revision: selected.id,
-    downloadedBlobs: fetched.downloadedBlobs,
-    reusedBlobs: fetched.reusedBlobs,
+    ...base,
     agentResolutions: appliedAgentResolutions,
+    snapshot: result.snapshot,
     outcome,
     schedule,
     clientSteps: clientSteps.length === 0 ? undefined : clientSteps,
@@ -1717,11 +1172,10 @@ export const synchronizeFollower = Effect.fn(
 /**
  * Closes an interrupted run without recovering it.
  *
- * `recover` needs the run's source revision to still be authorized, so a
- * follower whose view changed, whose source is gone, or which was pointed at
- * another profile could not close its run at all: `recover` failed and
- * `sync --apply` was refused with `ActiveRunExistsError` on every attempt, with
- * no way out short of editing the database.
+ * `recover` needs the run's stored revision, so a follower whose state lost
+ * it could not close its run at all: `recover` failed and `sync --apply` was
+ * refused with `ActiveRunExistsError` on every attempt, with no way out short
+ * of editing the database.
  *
  * This is deliberately not a rollback. Whatever the interrupted run had already
  * applied stays applied, and the next run reconciles it like any other
@@ -1767,6 +1221,7 @@ export const abandonFollowerRun = Effect.fn(
     },
     appliedResources,
   });
+  yield* discardRunArtifacts(recovery.run.id);
   return {
     run: recovery.run.id,
     revision: recovery.run.revision,
@@ -1774,11 +1229,15 @@ export const abandonFollowerRun = Effect.fn(
   };
 }, (effect, ...args) => withRunLock(args[0], "abandon", effect));
 
+/**
+ * `canonfig recover` on a follower: resume the interrupted run from the
+ * revision and content it stored when it started, so recovery needs neither
+ * the Source nor the run's original environment.
+ */
 export const recoverFollower = Effect.fn(
   "FollowerOrchestration.recover",
 )(function*(stateLocation: string, signal?: AbortSignal) {
   const repository = yield* StateRepository;
-  const machine = yield* MachineState;
   const synchronization = yield* Synchronization;
   const agentResolution = Option.getOrUndefined(
     yield* Effect.serviceOption(AgentResolution),
@@ -1794,73 +1253,30 @@ export const recoverFollower = Effect.fn(
     );
   }
   yield* assertUpgradeGate(configuration.follower.id);
-  const sourceRevision = recovery.run.revision.replace(
-    /:view:[a-f0-9]{64}$/u,
-    "",
-  );
-  // A run whose revision can no longer be obtained, such as one an earlier
-  // release left unfinished, can only be closed. Saying so ends the loop
-  // where recover failed and sync --apply sent the operator back to recover.
-  const unrecoverable = (cause: string) =>
-    Effect.fail(configurationError(
+  // A run whose revision cannot be read back can only be closed. Saying so
+  // ends the loop where recover failed and sync --apply sent the operator
+  // back to recover.
+  const revision = yield* repository.getLocalRevision(recovery.run.revision).pipe(
+    Effect.mapError(() => configurationError(
       "stale",
-      `run ${recovery.run.id} cannot be recovered: ${cause}. run 'canonfig abandon' to close it without rollback, then 'canonfig sync --apply'`,
-    ));
-  const selected = yield* selectedRevision(
-    configuration,
-    sourceRevision,
-    signal,
-  ).pipe(
-    Effect.catchTag("FollowerSynchronizationConfigurationError", (error) =>
-      unrecoverable(error.message)),
+      `run ${recovery.run.id} cannot be recovered: its revision ${recovery.run.revision} is not stored on this machine. run 'canonfig abandon' to close it without rollback, then 'canonfig sync --apply'`,
+    )),
   );
-  const fetched = yield* fetchRevision({
-    ...transportInput(configuration, signal),
-    revisionId: selected.id,
-    cacheDirectory: configuration.cacheDirectory,
-    maximumMetadataBytes:
-      configuration.scheduledInvocation.maximumMetadataBytes,
-    maximumBlobBytes: configuration.scheduledInvocation.maximumBlobBytes,
-  }).pipe(
-    Effect.provideService(MachineState, machine),
-    Effect.catchTag("LegacyRevisionFormatError", (error) => unrecoverable(error.message)),
-    Effect.catchTag("TransportResourceNotFoundError", () =>
-      unrecoverable("the Source Machine no longer has this run's revision")),
-  );
-  const appliedResources = [
-    ...new Map([
-      ...(yield* repository.loadAppliedResources(configuration.follower.id)),
-      ...recovery.removedResources,
-    ].map((record) => [record.resource, record] as const)).values(),
-  ];
-  const hydrated = yield* hydrateRevision(
-    fetched,
-    appliedResources,
-  ).pipe(
-    Effect.provideService(MachineState, machine),
-  );
+  const artifacts = yield* loadRunArtifacts(recovery.run.id, revision);
   const outcome = yield* synchronization.recover({
     follower: configuration.follower.id,
-    revision: hydrated.revision,
-    artifacts: hydrated.artifacts,
+    revision,
+    artifacts,
     agent: agentConfigurationFor(configuration, false, signal),
     agentResolution,
     limits: {
-      // The transport timeout used to be passed here, which killed any
-      // installer or `command` verification that ran longer than 10 seconds.
       processTimeoutMilliseconds: localProcessTimeout(configuration),
     },
   });
+  yield* finishProjectionRun(stateLocation, recovery.run.id, outcome, revision);
   if (outcome.outcome === "Converged") {
-    yield* persistProfileScheduleDefault(
-      configuration,
-      fetched.metadata.scheduleDefault,
-    );
+    const published = yield* repository.findRevision(recovery.run.revision);
+    yield* persistProfileScheduleDefault(configuration, published?.scheduleDefault);
   }
-  return {
-    revision: selected.id,
-    downloadedBlobs: fetched.downloadedBlobs,
-    reusedBlobs: fetched.reusedBlobs,
-    outcome,
-  };
+  return { revision: recovery.run.revision, outcome };
 }, (effect, ...args) => withRunLock(args[0], "recover", effect));

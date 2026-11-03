@@ -1,7 +1,7 @@
 import { Context, type Effect } from "effect";
 
 import type { AgentPolicy } from "../domain/identity.ts";
-import type { FollowerId, ProfileId, ResourceId } from "../domain/brand.ts";
+import type { FollowerId, ResourceId } from "../domain/brand.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import type { TargetId } from "../projection/model.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
@@ -15,7 +15,6 @@ import type { FollowerAgentHarnessConfiguration } from
 export interface FollowerEnrollInput {
   readonly invitation: EnrollmentInvitationGrant;
   readonly followerName: string;
-  readonly selectedProfile?: ProfileId | undefined;
   readonly timeoutMilliseconds?: number | undefined;
   /** Replace a completed enrollment instead of refusing. */
   readonly replace: boolean;
@@ -121,9 +120,6 @@ export interface FollowerCommandsService {
     configuration: FollowerAgentHarnessConfiguration,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly getAgentHarness: () => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly selectProfile: (
-    profile: ProfileId,
-  ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly setSchedule: (
     input: ScheduleInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;

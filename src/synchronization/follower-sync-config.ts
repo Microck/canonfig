@@ -70,7 +70,8 @@ export type LocalOverlayEntry = typeof LocalOverlayEntrySchema.Type;
 export const FollowerSynchronizationConfiguration = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   follower: FollowerIdentity,
-  selectedProfile: ProfileId,
+  /** The one profile its Source publishes, recorded at enrollment. */
+  profile: ProfileId,
   source: Schema.Struct({
     endpoint: Schema.NonEmptyString,
     tlsFingerprint: CertificateFingerprint,

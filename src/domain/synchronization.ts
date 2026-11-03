@@ -19,6 +19,8 @@ import {
   RecipeIndexPolicy,
   type RecipeSource,
   type BuildPolicy,
+  AgentInstallBounds,
+  ToolRecipeRef,
 } from "./resource.ts";
 
 import {
@@ -28,6 +30,7 @@ import {
 } from "./recipe-versions.ts";
 import {
   InstallerRecipeProvenance,
+  McpQualificationInput,
   type InstallerRecipeProvenance as InstallerRecipeProvenanceType,
 } from "./mcp-qualification.ts";
 import { PublishedResourceSchema, VerificationInputSchema } from "./profile.ts";
@@ -682,11 +685,12 @@ const DesiredFileSchema = Schema.Struct({
 });
 
 /**
- * The stored form of a local planning revision. Local projections produce
- * only file, directory and config resources.
+ * The stored form of a revision this machine built: a local projection
+ * (`folder`, `snapshot`) or a follower run built from a Source revision
+ * (`revision`), which also mirrors items and installs tools.
  */
 export const PlanningLocalRevisionSchema = Schema.Struct({
-  origin: Schema.Literals(["folder", "snapshot"]),
+  origin: Schema.Literals(["folder", "snapshot", "revision"]),
   id: ProfileRevisionId,
   originDigest: ContentDigest,
   resources: Schema.Array(PublishedResourceSchema),
@@ -711,6 +715,27 @@ export const PlanningLocalRevisionSchema = Schema.Struct({
         digest: ContentDigest,
         format: Schema.Literals(["toml", "json", "yaml"]),
         keys: Schema.Array(Schema.String),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("skill"),
+        digest: ContentDigest,
+        mode: Schema.Int,
+        directories: Schema.Array(Schema.Struct({ path: Schema.NonEmptyString, mode: Schema.Int })),
+        files: Schema.Array(DesiredFileSchema),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("tool"),
+        toolId: Schema.NonEmptyString,
+        recipes: Schema.Array(ToolRecipeRef),
+        loginRequired: Schema.Boolean,
+        loginInstructions: Schema.optional(Schema.String),
+        qualification: Schema.optional(McpQualificationInput),
+        agentInstall: Schema.optional(AgentInstallBounds),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("credential"),
+        reference: Schema.NonEmptyString,
+        instructions: Schema.String,
       }),
     ]),
     verification: VerificationInputSchema,

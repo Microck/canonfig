@@ -1940,6 +1940,43 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
+  const adoptLocalProjection = Effect.fn("StateRepository.adoptLocalProjection")(
+    function*(follower: FollowerIdType): Effect.fn.Return<number, StateRepositoryError> {
+      const transaction = Effect.gen(function*() {
+        const open = yield* statusCount(
+          sql,
+          sql`
+            SELECT COUNT(*) AS count FROM synchronization_runs
+            WHERE follower_id = ${localProjectionFollower} AND status IN ('applying', 'Interrupted')
+          `,
+          "open local runs",
+          localProjectionFollower,
+        );
+        if (open > 0) return yield* new ActiveRunExistsError({ follower: localProjectionFollower });
+        const moved = yield* statusCount(
+          sql,
+          sql`SELECT COUNT(*) AS count FROM applied_resources WHERE follower_id = ${localProjectionFollower}`,
+          "local applied resources",
+          localProjectionFollower,
+        );
+        // A record the follower already holds for the same resource is older
+        // than the machine's own projection of it; the local one wins.
+        yield* sql`
+          UPDATE OR REPLACE applied_resources SET follower_id = ${follower}
+          WHERE follower_id = ${localProjectionFollower}
+        `;
+        return moved;
+      });
+      return yield* sql.withTransaction(transaction).pipe(
+        Effect.mapError((error) =>
+          "_tag" in error && error._tag !== "SqlError"
+            ? error
+            : sqlError("adopt local projection records")(error)
+        ),
+      );
+    },
+  );
+
   const startRun = Effect.fn("StateRepository.startRun")(
     function*(input: StartRunInput): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
@@ -2899,6 +2936,7 @@ const makeRepository = Effect.gen(function*() {
     recordHarnessTakeovers,
     removeRunTakeovers,
     releaseTakeovers,
+    adoptLocalProjection,
     startRun,
     journalAction,
     recordDrift,

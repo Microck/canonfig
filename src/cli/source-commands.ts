@@ -3,10 +3,8 @@ import { Context, Data, type Effect } from "effect";
 import type {
   FollowerId,
   GroupName,
-  ProfileId,
   ProfileRevisionId,
 } from "../domain/brand.ts";
-import type { DiscoveryFileKind } from "../profile/discovery.ts";
 import type { CliFailureCategory } from "./exit-codes.ts";
 
 export type CliPayload =
@@ -26,30 +24,12 @@ export class CliCommandFailure extends Data.TaggedError(
 }> {}
 
 export interface SourceScanInput {
-  readonly files: ReadonlyArray<{
-    readonly path: string;
-    readonly kind?: DiscoveryFileKind | undefined;
-  }>;
+  /** Insert the reviewed `tools` entries into `canonfig.jsonc`. */
+  readonly write: boolean;
 }
 
 export interface SourcePublishInput {
-  readonly proposalPath?: string | undefined;
-  /**
-   * Legacy metadata inputs remain supported when publishing discovery-only
-   * proposals. An authored profile file is authoritative for these fields.
-   */
-  readonly profile?: ProfileId | undefined;
-  readonly name?: string | undefined;
-  readonly profilePath?: string | undefined;
   readonly reviewer: string;
-  /** Publish a revision with no resources on purpose. */
-  readonly allowEmpty?: boolean | undefined;
-}
-
-export interface SourceDigestInput {
-  readonly profilePath: string;
-  /** Report only this resource. */
-  readonly resource?: string | undefined;
 }
 
 export interface SourceServeInput {
@@ -72,9 +52,6 @@ export interface SourceCommandsService {
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly publish: (
     input: SourcePublishInput,
-  ) => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly digest: (
-    input: SourceDigestInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly serve: (
     input: SourceServeInput,
