@@ -1,92 +1,113 @@
-import type { DesiredArtifact, Diagnostic, HarnessAdapter } from "../core/types.ts";
-import { descriptor } from "./descriptor.ts";
+import type { ConfigValue } from "../../domain/resource.ts";
+import type { HarnessAdapter, SurfaceContent } from "../harness.ts";
+import type { HookEvent } from "../model.ts";
 import {
-  agentDocuments,
   agentMarkdown,
-  commandDocuments,
-  commandMarkdown,
-  cursorHooks,
-  enabledHooks,
-  hasEnabledMcpServers,
-  jsonMcpArtifact,
-  ruleDocuments,
-  skillArtifacts,
-  standardMcpProjectionDiagnostics,
+  byEvent,
+  documentFiles,
+  hookCommand,
+  hookTimeoutSeconds,
+  jsonFile,
+  mcpGapDiagnostics,
+  mcpTable,
+  nativeHooks,
+  standardMcpServer,
+  under,
+  unsupportedFeatures,
+  VERIFIED_AT,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
-import { markdownWithFrontmatter } from "../core/frontmatter.ts";
+
+/** https://cursor.com/docs/agent/hooks */
+const CURSOR_EVENTS: ReadonlyMap<HookEvent, string> = new Map([
+  ["session_start", "sessionStart"],
+  ["session_end", "sessionEnd"],
+  ["prompt_submit", "beforeSubmitPrompt"],
+  ["before_tool", "preToolUse"],
+  ["after_tool", "postToolUse"],
+  ["before_compact", "preCompact"],
+  ["stop", "stop"],
+  ["subagent_start", "subagentStart"],
+  ["subagent_stop", "subagentStop"],
+]);
 
 export const cursorAdapter: HarnessAdapter = {
-  descriptor: descriptor(
-    "cursor",
-    "Cursor",
-    ["cursor-agent", "agent"],
-    [
+  descriptor: {
+    id: "cursor",
+    name: "Cursor",
+    executables: ["cursor-agent", "agent"],
+    docs: [
       "https://cursor.com/docs/cli/reference/configuration",
-      "https://cursor.com/docs/context/rules",
-      "https://cursor.com/docs/skills",
+      "https://cursor.com/docs/mcp",
+      "https://cursor.com/docs/rules#user-rules",
       "https://cursor.com/docs/agent/hooks",
     ],
-    {
-      instructions: "portable",
-      rules: "native",
-      skills: "native",
-      mcp: "native",
-      hooks: "native",
-      agents: "native",
-      commands: "native",
+    verifiedAt: VERIFIED_AT,
+    capabilities: {
+      instructions: "unsupported", rules: "unsupported", skills: "portable", mcp: "native",
+      hooks: "native", agents: "native", commands: "unsupported",
     },
-    ["Hook event availability is Cursor-version dependent; unsupported canonical events produce diagnostics."],
-  ),
-  async build(context) {
-    const artifacts: DesiredArtifact[] = [];
-    const diagnostics: Diagnostic[] = [];
+    notes: [
+      "Cursor keeps user rules in its settings, outside the filesystem.",
+      "Skills go to the shared ~/.agents/skills/.",
+    ],
+  },
+  layout(context) {
+    const configDir = context.environment("CURSOR_CONFIG_DIR");
+    const root = configDir ?? context.join(context.home, ".cursor");
+    // cli-config.json moves with CURSOR_CONFIG_DIR, or to $XDG_CONFIG_HOME/cursor
+    // on Linux (https://cursor.com/docs/cli/reference/configuration).
+    const xdg = context.platform === "linux" ? context.environment("XDG_CONFIG_HOME") : undefined;
+    const cliConfig = configDir === undefined && xdg !== undefined
+      ? context.join(xdg, "cursor", "cli-config.json")
+      : context.join(root, "cli-config.json");
+    return {
+      root,
+      surfaces: [
+        { id: "agents", kind: "directory", target: context.join(root, "agents") },
+        { id: "hooks", kind: "file", target: context.join(root, "hooks.json") },
+        { id: "mcp", kind: "config", target: context.join(root, "mcp.json"), format: "json", keys: ["mcpServers"] },
+        { id: "settings", kind: "config", target: cliConfig, format: "json", keys: [], settings: { reserved: [] } },
+      ],
+      // The CLI login credential and IDE state paths are not documented.
+      neverTouch: under(context, root, ["chats", "worktrees", "extensions"]),
+      sharedSkills: true,
+    };
+  },
+  project(model, _layout, runtime) {
+    const contents: Array<SurfaceContent> = [];
+    const diagnostics = [
+      ...unsupportedFeatures("cursor", model, [
+        ["instructions", "Cursor keeps user rules in its settings, outside the filesystem."],
+        ["rules", "Cursor keeps user rules in its settings, outside the filesystem."],
+        ["commands", "Cursor has no global command directory."],
+      ]),
+      ...mcpGapDiagnostics("cursor", model.mcp, ["timeoutMs", "enabledTools", "disabledTools"]),
+    ];
 
-    artifacts.push(...await skillArtifacts(context, ".cursor/skills", "cursor"));
-    if (hasEnabledMcpServers(context)) {
-      diagnostics.push(...standardMcpProjectionDiagnostics(context, "cursor"));
-      artifacts.push(jsonMcpArtifact(".cursor/mcp.json", "cursor", context));
-    }
-
-    if (enabledHooks(context).length > 0) {
-      const compiled = cursorHooks(context);
-      diagnostics.push(...compiled.diagnostics);
-      if (Object.keys(compiled.hooks).length > 0) {
-        artifacts.push({
-          kind: "json",
-          path: ".cursor/hooks.json",
-          owner: "cursor",
-          rootDefaults: { version: 1 },
-          operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
-        });
-      }
-    }
-
-    for (const { rule, content } of await ruleDocuments(context)) {
-      const activation = rule.activation ?? (rule.paths.length > 0 ? "path" : "always");
-      artifacts.push({
-        kind: "replace",
-        path: `.cursor/rules/${rule.id}.mdc`,
-        owner: "cursor",
-        content: markdownWithFrontmatter({
-          description: rule.description ?? `Canonfig rule: ${rule.id}`,
-          globs: rule.paths.join(","),
-          alwaysApply: activation === "always",
-        }, content),
+    if (model.agents.length > 0) {
+      contents.push({
+        kind: "directory", surface: "agents",
+        files: documentFiles(model.agents, ".md", (agent) => agentMarkdown(agent, nativeTools("cursor", agent))),
       });
     }
-    for (const { agent, content } of await agentDocuments(context)) {
-      artifacts.push({
-        kind: "replace",
-        path: `.cursor/agents/${agent.id}.md`,
-        owner: "cursor",
-        content: agentMarkdown(agent, content, nativeTools("cursor", agent)),
+
+    const hooks = byEvent(nativeHooks("cursor", model.hooks, CURSOR_EVENTS, diagnostics).map(({ hook, event }) => {
+      const entry: Array<[string, ConfigValue]> = [
+        ["command", hookCommand(runtime, "cursor", hook)],
+        ["timeout", hookTimeoutSeconds("cursor", hook, diagnostics)],
+      ];
+      if (event === "preToolUse" || event === "postToolUse") entry.push(["matcher", ".*"]);
+      return [event, Object.fromEntries(entry)];
+    }));
+    if (Object.keys(hooks).length > 0) contents.push({ kind: "file", surface: "hooks", content: jsonFile({ version: 1, hooks }) });
+
+    if (model.mcp.length > 0) {
+      contents.push({
+        kind: "config", surface: "mcp",
+        keys: [{ path: "mcpServers", value: mcpTable(model.mcp, (server) => standardMcpServer(server, { type: true, syntax: "cursor", timeout: false })) }],
       });
     }
-    for (const { command, content } of await commandDocuments(context)) {
-      artifacts.push({ kind: "replace", path: `.cursor/commands/${command.id}.md`, owner: "cursor", content: commandMarkdown(command, content) });
-    }
-
-    return { artifacts, diagnostics };
+    return { contents, diagnostics };
   },
 };

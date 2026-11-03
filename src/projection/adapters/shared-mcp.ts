@@ -1,329 +1,122 @@
 import { Predicate } from "effect";
-import type { McpServer, SecretValue } from "../core/schema.ts";
-import type { BuildContext, Diagnostic, JsonArtifact, TargetId } from "../core/types.ts";
 
-type EnvironmentSyntax = "shell" | "cursor" | "opencode";
+import type { ConfigValue } from "../../domain/resource.ts";
+import type { Diagnostic } from "../harness.ts";
+import type { McpServer, SecretValue, TargetId } from "../model.ts";
+import type { ConfigTable } from "./shared.ts";
 
-export function secretValue(value: SecretValue, syntax: EnvironmentSyntax = "shell"): string {
-  if (typeof value === "string") return value;
-  if (syntax === "cursor") return `\${env:${value.fromEnv}}`;
-  if (syntax === "opencode") return `{env:${value.fromEnv}}`;
-  return `\${${value.fromEnv}}`;
-}
+/** How a harness spells an environment reference inside MCP strings. */
+export type EnvironmentSyntax = "shell" | "cursor" | "opencode";
 
-export function enabledMcpServerEntries(context: BuildContext): Array<[string, McpServer]> {
-  return Object.entries(context.config.mcp.servers).filter(([, server]) => server.enabled);
-}
-
-export function hasEnabledMcpServers(context: BuildContext): boolean {
-  return enabledMcpServerEntries(context).length > 0;
-}
-
-type McpProjectionGap = "timeoutMs" | "enabledTools" | "disabledTools" | "cwd" | "sse transport discriminator";
-
-/**
- * One warning per MCP server whose canonical options a target projection
- * drops. `strictDiagnostics` turns these into errors in strict mode.
- */
-export function mcpOptionDiagnostics(
-  context: BuildContext,
-  target: TargetId,
-  gaps: readonly McpProjectionGap[],
-  projection: string,
-): Diagnostic[] {
-  const diagnostics: Diagnostic[] = [];
-  for (const [name, server] of enabledMcpServerEntries(context)) {
-    const omitted = gaps.filter((gap) => {
-      switch (gap) {
-        case "timeoutMs":
-          return server.timeoutMs !== undefined;
-        case "enabledTools":
-          return (server.enabledTools?.length ?? 0) > 0;
-        case "disabledTools":
-          return (server.disabledTools?.length ?? 0) > 0;
-        case "cwd":
-          return server.transport === "stdio" && server.cwd !== undefined && server.cwd.length > 0;
-        case "sse transport discriminator":
-          return server.transport === "sse";
-      }
-    });
-    if (omitted.length > 0) {
-      diagnostics.push({
-        level: "warning",
-        code: "MCP_OPTION_UNSUPPORTED",
-        target,
-        message: `${target} cannot represent ${omitted.join(", ")} for MCP server ${name} in its ${projection}; those options were omitted.`,
-      });
-    }
+/** A literal, or the harness's reference to an environment variable; never its value. */
+export function secretValue(value: SecretValue, syntax: EnvironmentSyntax): string {
+  if (Predicate.isString(value)) return value;
+  switch (syntax) {
+    case "cursor":
+      return `\${env:${value.fromEnv}}`;
+    case "opencode":
+      return `{env:${value.fromEnv}}`;
+    case "shell":
+      return `\${${value.fromEnv}}`;
   }
-  return diagnostics;
 }
 
-export function standardMcpProjectionDiagnostics(
-  context: BuildContext,
-  target: TargetId,
-  includeType = true,
-): Diagnostic[] {
-  return mcpOptionDiagnostics(
-    context,
-    target,
-    ["timeoutMs", "enabledTools", "disabledTools", ...(includeType ? [] : ["sse transport discriminator" as const])],
-    "standard JSON projection",
-  );
+export function secretTable(values: Readonly<Record<string, SecretValue>>, syntax: EnvironmentSyntax): ConfigTable {
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, secretValue(value, syntax)]));
 }
 
-export function codexMcpDiagnostics(context: BuildContext): Diagnostic[] {
-  return [
-    ...mcpOptionDiagnostics(context, "codex", ["timeoutMs"], "project config.toml"),
-    ...enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] =>
-      server.transport !== "stdio" ? [] : Object.entries(server.env).flatMap(([key, value]): Diagnostic[] =>
-        typeof value !== "string" && key !== value.fromEnv ? [{
-          level: "warning", code: "MCP_ENV_RENAME_UNSUPPORTED", target: "codex",
-          message: `Codex cannot forward ${value.fromEnv} under a different environment name ${key} for MCP server ${name}; use the same name or an explicit wrapper. The binding was omitted.`,
-        }] : [])
-    ),
-    ...enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] =>
-      server.transport === "sse"
-        ? [{
-          level: "warning",
-          code: "MCP_TRANSPORT_UNSUPPORTED",
-          target: "codex",
-          message: `Codex project MCP config supports streamable HTTP URLs but cannot preserve legacy SSE transport for server ${name}; the URL is emitted as streamable HTTP.`,
-        }]
-        : []
-    ),
-  ];
-}
+/** Canonical MCP options some harness formats cannot hold. */
+export type McpGap = "timeoutMs" | "enabledTools" | "disabledTools" | "cwd" | "sse";
 
-export function grokMcpDiagnostics(context: BuildContext): Diagnostic[] {
-  return [
-    ...mcpOptionDiagnostics(context, "grok-build", ["enabledTools", "disabledTools"], "config.toml"),
-    ...enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] =>
-      server.timeoutMs !== undefined && server.timeoutMs % 1000 !== 0
-        ? [{
-          level: "warning",
-          code: "MCP_OPTION_COERCED",
-          target: "grok-build",
-          message: `Grok takes MCP timeouts in whole seconds, so timeoutMs ${server.timeoutMs} for MCP server ${name} was rounded up to ${Math.ceil(server.timeoutMs / 1000)}s.`,
-        }]
-        : []
-    ),
-  ];
-}
-
-export function standardMcpServer(server: McpServer, includeType = true, syntax: EnvironmentSyntax = "shell"): Record<string, unknown> {
-  if (server.transport === "stdio") {
-    return {
-      ...(includeType ? { type: "stdio" } : {}),
-      command: server.command,
-      args: server.args,
-      ...(Object.keys(server.env).length > 0
-        ? { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, secretValue(value, syntax)])) }
-        : {}),
-      ...(server.cwd ? { cwd: server.cwd } : {}),
-    };
+function hasGap(server: McpServer, gap: McpGap): boolean {
+  switch (gap) {
+    case "timeoutMs":
+      return server.timeoutMs !== undefined;
+    case "enabledTools":
+      return (server.enabledTools?.length ?? 0) > 0;
+    case "disabledTools":
+      return (server.disabledTools?.length ?? 0) > 0;
+    case "cwd":
+      return server.transport === "stdio" && (server.cwd?.length ?? 0) > 0;
+    case "sse":
+      return server.transport === "sse";
   }
-  return {
-    ...(includeType ? { type: server.transport === "sse" ? "sse" : "http" } : {}),
-    url: server.url,
-    ...(Object.keys(server.headers).length > 0
-      ? { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, secretValue(value, syntax)])) }
-      : {}),
-  };
 }
 
-export function standardMcpMap(context: BuildContext, includeType = true, syntax: EnvironmentSyntax = "shell"): Record<string, unknown> {
-  return Object.fromEntries(
-    enabledMcpServerEntries(context)
-      .map(([name, server]) => [name, standardMcpServer(server, includeType, syntax)]),
-  );
-}
-
-export function piMcpMap(context: BuildContext): Record<string, unknown> {
-  return Object.fromEntries(
-    enabledMcpServerEntries(context)
-      .map(([name, server]) => {
-        if (server.transport === "stdio") {
-          return [name, {
-            command: server.command,
-            args: server.args,
-            ...(server.cwd ? { cwd: server.cwd } : {}),
-            ...(Object.keys(server.env).length
-              ? { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, secretValue(value)])) }
-              : {}),
-          }];
-        }
-        return [name, {
-          transport: server.transport,
-          url: server.url,
-          ...(Object.keys(server.headers).length
-            ? { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, secretValue(value)])) }
-            : {}),
-        }];
-      }),
-  );
-}
-
-export function antigravityMcpMap(context: BuildContext): Record<string, unknown> {
-  return Object.fromEntries(
-    enabledMcpServerEntries(context)
-      .map(([name, server]) => {
-        if (server.transport === "stdio") {
-          return [name, {
-            command: server.command,
-            args: server.args,
-            ...(Object.keys(server.env).length
-              ? { env: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, secretValue(value)])) }
-              : {}),
-          }];
-        }
-        return [name, {
-          serverUrl: server.url,
-          ...(Object.keys(server.headers).length
-            ? { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, secretValue(value)])) }
-            : {}),
-        }];
-      }),
-  );
-}
-
-/** Kilo intentionally refuses environment substitution in untrusted project config. */
-export function kiloProjectMcpDiagnostics(context: BuildContext): Diagnostic[] {
-  return enabledMcpServerEntries(context).flatMap(([name, server]): Diagnostic[] => {
-    const values = server.transport === "stdio" ? Object.values(server.env) : Object.values(server.headers);
-    if (!values.some((value) => !Predicate.isString(value) || /\{env:[A-Za-z_][A-Za-z0-9_]*\}/u.test(value))) return [];
+/** One warning per MCP server whose options the harness format drops. */
+export function mcpGapDiagnostics(
+  harness: TargetId,
+  servers: ReadonlyArray<readonly [string, McpServer]>,
+  gaps: ReadonlyArray<McpGap>,
+): Array<Diagnostic> {
+  return servers.flatMap(([name, server]): Array<Diagnostic> => {
+    const omitted = gaps.filter((gap) => hasGap(server, gap));
+    if (omitted.length === 0) return [];
     return [{
-      level: "warning", code: "MCP_ENV_PROJECT_UNSUPPORTED", target: "kilo",
-      message: `Kilo does not resolve environment references for MCP server ${name} from project kilo.json. Configure these bindings in trusted Kilo user, explicit KILO_CONFIG, or organization configuration. The project mapping is not usable for authentication; strict mode refuses it.`,
+      level: "warning",
+      code: "MCP_OPTION_UNSUPPORTED",
+      harness,
+      message: `${harness} cannot represent ${omitted.join(", ")} for MCP server ${name}; those options were omitted.`,
     }];
   });
 }
 
-export function openCodeMcpMap(context: BuildContext): Record<string, unknown> {
-  // Disabled servers carry no profile material. Their env and header values
-  // must not reach generated files even though this target models an
-  // explicit enabled flag for the servers it does receive.
-  return Object.fromEntries(enabledMcpServerEntries(context).map(([name, server]) => {
-    if (server.transport === "stdio") {
-      return [name, {
-        type: "local",
-        command: [server.command, ...server.args],
-        enabled: server.enabled,
-        ...(Object.keys(server.env).length
-          ? { environment: Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, secretValue(value, "opencode")])) }
-          : {}),
-        ...(server.timeoutMs ? { timeout: server.timeoutMs } : {}),
-      }];
-    }
-    return [name, {
-      type: "remote",
-      url: server.url,
-      enabled: server.enabled,
-      ...(Object.keys(server.headers).length
-        ? { headers: Object.fromEntries(Object.entries(server.headers).map(([key, value]) => [key, secretValue(value, "opencode")])) }
-        : {}),
-      ...(server.timeoutMs ? { timeout: server.timeoutMs } : {}),
-    }];
-  }));
-}
-
-function tomlString(value: string): string {
-  return JSON.stringify(value);
-}
-function tomlKey(value: string): string {
-  return /^[A-Za-z0-9_-]+$/.test(value) ? value : JSON.stringify(value);
-}
-function tomlArray(values: string[]): string {
-  return `[${values.map(tomlString).join(", ")}]`;
-}
-function tomlInlineTable(entries: Record<string, string>): string {
-  return `{ ${Object.entries(entries).map(([key, value]) => `${tomlKey(key)} = ${tomlString(value)}`).join(", ")} }`;
-}
-
-export function mcpToml(
-  context: BuildContext,
-  remoteHeadersKey: "http_headers" | "headers" = "http_headers",
-): string {
-  const sections: string[] = [];
-  for (const [name, server] of enabledMcpServerEntries(context)) {
-    const lines = [`[mcp_servers.${tomlKey(name)}]`];
-    if (server.transport === "stdio") {
-      lines.push(`command = ${tomlString(server.command)}`);
-      if (server.args.length) lines.push(`args = ${tomlArray(server.args)}`);
-      if (server.cwd) lines.push(`cwd = ${tomlString(server.cwd)}`);
-      const literalEnv: Record<string, string> = {};
-      const forwardedEnv: string[] = [];
-      for (const [key, value] of Object.entries(server.env)) {
-        if (typeof value === "string") literalEnv[key] = value;
-        else if (key === value.fromEnv) forwardedEnv.push(key);
-      }
-      if (Object.keys(literalEnv).length) lines.push(`env = ${tomlInlineTable(literalEnv)}`);
-      if (forwardedEnv.length) lines.push(`env_vars = ${tomlArray(forwardedEnv)}`);
-    } else {
-      lines.push(`url = ${tomlString(server.url)}`);
-      const literalHeaders: Record<string, string> = {};
-      const environmentHeaders: Record<string, string> = {};
-      for (const [key, value] of Object.entries(server.headers)) {
-        if (typeof value === "string") literalHeaders[key] = value;
-        else environmentHeaders[key] = value.fromEnv;
-      }
-      if (Object.keys(literalHeaders).length) lines.push(`${remoteHeadersKey} = ${tomlInlineTable(literalHeaders)}`);
-      if (Object.keys(environmentHeaders).length) lines.push(`env_http_headers = ${tomlInlineTable(environmentHeaders)}`);
-    }
-    if (server.enabledTools?.length) lines.push(`enabled_tools = ${tomlArray(server.enabledTools)}`);
-    if (server.disabledTools?.length) lines.push(`disabled_tools = ${tomlArray(server.disabledTools)}`);
-    sections.push(lines.join("\n"));
+/** Whole-second MCP timeout; a rounded value is reported. */
+export function mcpTimeoutSeconds(
+  harness: TargetId,
+  name: string,
+  timeoutMs: number,
+  diagnostics: Array<Diagnostic>,
+): number {
+  const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  if (seconds * 1000 !== timeoutMs) {
+    diagnostics.push({
+      level: "warning",
+      code: "MCP_OPTION_COERCED",
+      harness,
+      message: `${harness} takes MCP timeouts in whole seconds, so timeoutMs ${timeoutMs} for MCP server ${name} was rounded up to ${seconds}s.`,
+    });
   }
-  return sections.join("\n\n");
+  return seconds;
 }
 
-export function jsonMcpArtifact(
-  pathname: string,
-  owner: TargetId,
-  context: BuildContext,
-  pathSegments: string[] = ["mcpServers"],
-  includeType = true,
-): JsonArtifact {
-  return {
-    kind: "json",
-    path: pathname,
-    owner,
-    operations: [{
-      kind: "managed-map",
-      path: pathSegments,
-      entries: standardMcpMap(context, includeType, owner === "cursor" ? "cursor" : "shell"),
-      collision: "error",
-    }],
-  };
+export interface StandardMcpOptions {
+  /** Emit `type` (`stdio`, `http` or `sse`). */
+  readonly type: boolean;
+  readonly syntax: EnvironmentSyntax;
+  /** Emit `timeoutMs` as `timeout` in milliseconds. */
+  readonly timeout: boolean;
 }
 
-export function grokMcpToml(context: BuildContext): string {
-  const sections: string[] = [];
-  for (const [name, server] of enabledMcpServerEntries(context)) {
-    const lines = [`[mcp_servers.${tomlKey(name)}]`];
-    if (server.transport === "stdio") {
-      lines.push(`command = ${tomlString(server.command)}`);
-      if (server.args.length) lines.push(`args = ${tomlArray(server.args)}`);
-      if (server.cwd) lines.push(`cwd = ${tomlString(server.cwd)}`);
-      if (Object.keys(server.env).length) {
-        lines.push(`env = ${tomlInlineTable(Object.fromEntries(
-          Object.entries(server.env).map(([key, value]) => [key, secretValue(value)]),
-        ))}`);
-      }
-    } else {
-      lines.push(`url = ${tomlString(server.url)}`);
-      if (Object.keys(server.headers).length) {
-        lines.push(`headers = ${tomlInlineTable(Object.fromEntries(
-          Object.entries(server.headers).map(([key, value]) => [key, secretValue(value)]),
-        ))}`);
-      }
-    }
-    if (server.timeoutMs) {
-      const seconds = Math.max(1, Math.ceil(server.timeoutMs / 1000));
-      lines.push(`startup_timeout_sec = ${seconds}`);
-      lines.push(`tool_timeout_sec = ${seconds}`);
-    }
-    sections.push(lines.join("\n"));
+/**
+ * The `mcpServers` entry most clients share: `command`, `args`, `env`, `cwd`
+ * for stdio and `url`, `headers` for remote servers.
+ */
+export function standardMcpServer(server: McpServer, options: StandardMcpOptions): ConfigTable {
+  const fields: Array<[string, ConfigValue]> = [];
+  if (server.transport === "stdio") {
+    if (options.type) fields.push(["type", "stdio"]);
+    fields.push(["command", server.command], ["args", server.args]);
+    if (Object.keys(server.env).length > 0) fields.push(["env", secretTable(server.env, options.syntax)]);
+    if (server.cwd) fields.push(["cwd", server.cwd]);
+  } else {
+    if (options.type) fields.push(["type", server.transport === "sse" ? "sse" : "http"]);
+    fields.push(["url", server.url]);
+    if (Object.keys(server.headers).length > 0) fields.push(["headers", secretTable(server.headers, options.syntax)]);
   }
-  return sections.join("\n\n");
+  if (options.timeout && server.timeoutMs !== undefined) fields.push(["timeout", server.timeoutMs]);
+  return Object.fromEntries(fields);
+}
+
+/** Server name to native entry; a server the translator returns undefined for is left out. */
+export function mcpTable(
+  servers: ReadonlyArray<readonly [string, McpServer]>,
+  translate: (server: McpServer, name: string) => ConfigValue | undefined,
+): ConfigTable {
+  const entries: Array<[string, ConfigValue]> = [];
+  for (const [name, server] of servers) {
+    const entry = translate(server, name);
+    if (entry !== undefined) entries.push([name, entry]);
+  }
+  return Object.fromEntries(entries);
 }

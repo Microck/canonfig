@@ -1,226 +1,138 @@
-import type { Hook } from "../core/schema.ts";
-import type { BuildContext, Diagnostic, TargetId } from "../core/types.ts";
+import type { ConfigValue } from "../../domain/resource.ts";
+import type { Diagnostic, ProjectionRuntime } from "../harness.ts";
+import type { Hook, HookEvent, TargetId } from "../model.ts";
 
-export function hookCommand(target: TargetId, hook: Hook): string {
-  // Antigravity executes project hooks from .agents, beside hooks.json.
-  const runner = target === "antigravity" ? "../.canonfig/.runtime/hook-runner.mjs"
-    : target === "factory-droid" ? "$FACTORY_PROJECT_DIR/.canonfig/.runtime/hook-runner.mjs"
-    : ".canonfig/.runtime/hook-runner.mjs";
-  return `node "${runner}" --hook ${hook.id} --target ${target} --event ${hook.event}`;
+/**
+ * The command a harness hook config runs. It names the generated runner by
+ * absolute path, so a hook works from any working directory.
+ */
+export function hookCommand(runtime: ProjectionRuntime, harness: TargetId, hook: Hook): string {
+  return `node "${runtime.hookRunner}" --hook ${hook.id} --target ${harness} --event ${hook.event}`;
 }
 
-export function enabledHooks(context: BuildContext): Hook[] {
-  return context.config.hooks.filter((hook) => hook.enabled);
-}
-
-/** Whole-second hook timeout; a rounded value is reported so strict mode can reject it. */
-function timeoutSeconds(target: TargetId, hook: Hook, diagnostics: Diagnostic[]): number {
+/** Whole-second hook timeout; a rounded value is reported. */
+export function hookTimeoutSeconds(harness: TargetId, hook: Hook, diagnostics: Array<Diagnostic>): number {
   const seconds = Math.max(1, Math.ceil(hook.timeoutMs / 1000));
   if (seconds * 1000 !== hook.timeoutMs) {
     diagnostics.push({
       level: "warning",
       code: "HOOK_TIMEOUT_ROUNDED",
-      target,
-      message: `${target} takes hook timeouts in whole seconds, so hook ${hook.id} timeoutMs ${hook.timeoutMs} was rounded up to ${seconds}s.`,
+      harness,
+      message: `${harness} takes hook timeouts in whole seconds, so hook ${hook.id} timeoutMs ${hook.timeoutMs} was rounded up to ${seconds}s.`,
     });
   }
   return seconds;
 }
 
-export const CLAUDE_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
-  session_start: "SessionStart",
-  session_end: "SessionEnd",
-  prompt_submit: "UserPromptSubmit",
-  before_tool: "PreToolUse",
-  after_tool: "PostToolUse",
-  before_compact: "PreCompact",
-  after_compact: "PostCompact",
-  stop: "Stop",
-  subagent_start: "SubagentStart",
-  subagent_stop: "SubagentStop",
-};
+/** A hook with the harness's native name for its event. */
+export interface NativeHook {
+  readonly hook: Hook;
+  readonly event: string;
+}
+
+/**
+ * Hooks whose canonical event the harness has a native name for. Every other
+ * hook is reported and skipped.
+ */
+export function nativeHooks(
+  harness: TargetId,
+  hooks: ReadonlyArray<Hook>,
+  events: ReadonlyMap<HookEvent, string>,
+  diagnostics: Array<Diagnostic>,
+): Array<NativeHook> {
+  const mapped: Array<NativeHook> = [];
+  for (const hook of hooks) {
+    const event = events.get(hook.event);
+    if (event === undefined) {
+      diagnostics.push({
+        level: "warning",
+        code: "HOOK_EVENT_UNSUPPORTED",
+        harness,
+        message: `${harness} has no hook event for ${hook.event}, so hook ${hook.id} was skipped.`,
+      });
+      continue;
+    }
+    mapped.push({ hook, event });
+  }
+  return mapped;
+}
+
+/** Groups entries under their native event name, keeping hook order. */
+export function byEvent(entries: ReadonlyArray<readonly [string, ConfigValue]>): Record<string, Array<ConfigValue>> {
+  const grouped = new Map<string, Array<ConfigValue>>();
+  for (const [event, entry] of entries) {
+    const list = grouped.get(event) ?? [];
+    list.push(entry);
+    grouped.set(event, list);
+  }
+  return Object.fromEntries(grouped);
+}
+
+/**
+ * Claude Code's hook map, which Codex, Factory, Devin and Grok also read:
+ * `{ <Event>: [{ matcher, hooks: [{ type: "command", command, timeout }] }] }`.
+ * The matcher is `.*` because the runner applies the canonical matcher.
+ */
+export function claudeStyleHooks(
+  runtime: ProjectionRuntime,
+  harness: TargetId,
+  hooks: ReadonlyArray<NativeHook>,
+  diagnostics: Array<Diagnostic>,
+): Record<string, Array<ConfigValue>> {
+  return byEvent(hooks.map(({ hook, event }) => [event, {
+    matcher: ".*",
+    hooks: [{
+      type: "command",
+      command: hookCommand(runtime, harness, hook),
+      timeout: hookTimeoutSeconds(harness, hook, diagnostics),
+    }],
+  }]));
+}
+
+/** Pretty JSON file content with a trailing newline. */
+export function jsonFile(value: ConfigValue): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+// Event tables are Maps: a partial table annotated as a Record trips the
+// known-value-widening lint, and `satisfies` would reject lookups by any
+// canonical event the table leaves out.
+export const CLAUDE_EVENTS: ReadonlyMap<HookEvent, string> = new Map([
+  ["session_start", "SessionStart"],
+  ["session_end", "SessionEnd"],
+  ["prompt_submit", "UserPromptSubmit"],
+  ["before_tool", "PreToolUse"],
+  ["after_tool", "PostToolUse"],
+  ["before_compact", "PreCompact"],
+  ["after_compact", "PostCompact"],
+  ["stop", "Stop"],
+  ["subagent_start", "SubagentStart"],
+  ["subagent_stop", "SubagentStop"],
+]);
+
+/** Codex and Grok document the same event set as Claude Code. */
+export const CODEX_EVENTS = CLAUDE_EVENTS;
+export const GROK_EVENTS = CLAUDE_EVENTS;
 
 /** Factory documents a smaller event set than Claude Code. */
-export const DROID_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
-  session_start: "SessionStart",
-  session_end: "SessionEnd",
-  prompt_submit: "UserPromptSubmit",
-  before_tool: "PreToolUse",
-  after_tool: "PostToolUse",
-  before_compact: "PreCompact",
-  stop: "Stop",
-  subagent_stop: "SubagentStop",
-};
+export const DROID_EVENTS: ReadonlyMap<HookEvent, string> = new Map([
+  ["session_start", "SessionStart"],
+  ["session_end", "SessionEnd"],
+  ["prompt_submit", "UserPromptSubmit"],
+  ["before_tool", "PreToolUse"],
+  ["after_tool", "PostToolUse"],
+  ["before_compact", "PreCompact"],
+  ["stop", "Stop"],
+  ["subagent_stop", "SubagentStop"],
+]);
 
-export const CODEX_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
-  session_start: "SessionStart",
-  session_end: "SessionEnd",
-  prompt_submit: "UserPromptSubmit",
-  before_tool: "PreToolUse",
-  after_tool: "PostToolUse",
-  before_compact: "PreCompact",
-  after_compact: "PostCompact",
-  stop: "Stop",
-  subagent_start: "SubagentStart",
-  subagent_stop: "SubagentStop",
-};
-
-export const DEVIN_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
-  session_start: "SessionStart",
-  session_end: "SessionEnd",
-  prompt_submit: "UserPromptSubmit",
-  before_tool: "PreToolUse",
-  after_tool: "PostToolUse",
-  after_compact: "PostCompaction",
-  stop: "Stop",
-};
-
-export const GROK_EVENT_MAP: Partial<Record<Hook["event"], string>> = {
-  session_start: "SessionStart",
-  session_end: "SessionEnd",
-  prompt_submit: "UserPromptSubmit",
-  before_tool: "PreToolUse",
-  after_tool: "PostToolUse",
-  before_compact: "PreCompact",
-  after_compact: "PostCompact",
-  stop: "Stop",
-  subagent_start: "SubagentStart",
-  subagent_stop: "SubagentStop",
-};
-
-export function claudeStyleHooks(
-  context: BuildContext,
-  eventMap: Partial<Record<Hook["event"], string>> = CLAUDE_EVENT_MAP,
-): { hooks: Record<string, unknown[]>; diagnostics: Diagnostic[] } {
-  const hooks: Record<string, unknown[]> = {};
-  const diagnostics: Diagnostic[] = [];
-  for (const hook of enabledHooks(context)) {
-    const nativeEvent = eventMap[hook.event];
-    if (!nativeEvent) {
-      diagnostics.push({
-        level: "warning",
-        code: "HOOK_EVENT_UNSUPPORTED",
-        target: context.target,
-        message: `${context.target} cannot directly map hook event ${hook.event}; it was skipped.`,
-      });
-      continue;
-    }
-    const entry = {
-      matcher: ".*",
-      hooks: [{
-        type: "command",
-        command: hookCommand(context.target, hook),
-        timeout: timeoutSeconds(context.target, hook, diagnostics),
-      }],
-    };
-    (hooks[nativeEvent] ??= []).push(entry);
-  }
-  return { hooks, diagnostics };
-}
-
-export function cursorHooks(context: BuildContext): { hooks: Record<string, unknown[]>; diagnostics: Diagnostic[] } {
-  const eventMap: Partial<Record<Hook["event"], string>> = {
-    session_start: "sessionStart",
-    session_end: "sessionEnd",
-    prompt_submit: "beforeSubmitPrompt",
-    before_tool: "preToolUse",
-    after_tool: "postToolUse",
-    before_compact: "preCompact",
-    stop: "stop",
-    subagent_start: "subagentStart",
-    subagent_stop: "subagentStop",
-  };
-  const hooks: Record<string, unknown[]> = {};
-  const diagnostics: Diagnostic[] = [];
-  for (const hook of enabledHooks(context)) {
-    const event = eventMap[hook.event];
-    if (!event) {
-      diagnostics.push({
-        level: "warning",
-        code: "HOOK_EVENT_UNSUPPORTED",
-        target: "cursor",
-        message: `Cursor cannot directly map hook event ${hook.event}; it was skipped.`,
-      });
-      continue;
-    }
-    (hooks[event] ??= []).push({
-      command: hookCommand("cursor", hook),
-      ...(event === "preToolUse" || event === "postToolUse" ? { matcher: ".*" } : {}),
-    });
-  }
-  return { hooks, diagnostics };
-}
-
-export function copilotHooks(context: BuildContext): { hooks: Record<string, unknown[]>; diagnostics: Diagnostic[] } {
-  const eventMap: Partial<Record<Hook["event"], string>> = {
-    session_start: "sessionStart",
-    session_end: "sessionEnd",
-    prompt_submit: "userPromptSubmitted",
-    before_tool: "preToolUse",
-    after_tool: "postToolUse",
-    stop: "agentStop",
-    subagent_start: "subagentStart",
-    subagent_stop: "subagentStop",
-    before_compact: "preCompact",
-  };
-  const hooks: Record<string, unknown[]> = {};
-  const diagnostics: Diagnostic[] = [];
-  for (const hook of enabledHooks(context)) {
-    const event = eventMap[hook.event];
-    if (!event) {
-      diagnostics.push({
-        level: "warning",
-        code: "HOOK_EVENT_UNSUPPORTED",
-        target: "copilot-cli",
-        message: `Copilot CLI cannot directly map hook event ${hook.event}; it was skipped.`,
-      });
-      continue;
-    }
-    const command = hookCommand("copilot-cli", hook);
-    (hooks[event] ??= []).push({
-      type: "command",
-      bash: command,
-      powershell: command,
-      cwd: ".",
-      timeoutSec: timeoutSeconds("copilot-cli", hook, diagnostics),
-      ...(event === "preToolUse" || event === "postToolUse" ? { matcher: ".*" } : {}),
-    });
-  }
-  return { hooks, diagnostics };
-}
-
-export function antigravityHooks(context: BuildContext): { entries: Record<string, unknown>; diagnostics: Diagnostic[] } {
-  const eventMap: Partial<Record<Hook["event"], string>> = {
-    before_tool: "PreToolUse",
-    after_tool: "PostToolUse",
-    before_agent: "PreInvocation",
-    after_agent: "PostInvocation",
-    stop: "Stop",
-  };
-  const entries: Record<string, unknown> = {};
-  const diagnostics: Diagnostic[] = [];
-  for (const hook of enabledHooks(context)) {
-    const event = eventMap[hook.event];
-    if (!event) {
-      diagnostics.push({
-        level: "warning",
-        code: "HOOK_EVENT_UNSUPPORTED",
-        target: "antigravity",
-        message: `Antigravity cannot map hook event ${hook.event}; it was skipped.`,
-      });
-      continue;
-    }
-    const handler = {
-      type: "command",
-      command: hookCommand("antigravity", hook),
-      timeout: timeoutSeconds("antigravity", hook, diagnostics),
-    };
-    entries[`canonfig-${hook.id}`] = {
-      enabled: true,
-      [event]: event === "PreToolUse" || event === "PostToolUse"
-        ? [{ matcher: ".*", hooks: [handler] }]
-        : [handler],
-    };
-  }
-  return { entries, diagnostics };
-}
+/** https://docs.devin.ai/cli/extensibility/hooks (event table). */
+export const DEVIN_EVENTS: ReadonlyMap<HookEvent, string> = new Map([
+  ["session_start", "SessionStart"],
+  ["session_end", "SessionEnd"],
+  ["prompt_submit", "UserPromptSubmit"],
+  ["before_tool", "PreToolUse"],
+  ["after_tool", "PostToolUse"],
+  ["after_compact", "PostCompaction"],
+  ["stop", "Stop"],
+]);

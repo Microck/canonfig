@@ -1,19 +1,30 @@
-import { createOpenCodeFamilyAdapter } from "./open-code-family.ts";
+import { openCodeFamilyAdapter } from "./open-code-family.ts";
+import { xdgCacheHome, xdgConfigHome, xdgDataHome } from "./shared.ts";
 
-export const opencodeAdapter = createOpenCodeFamilyAdapter({
+export const opencodeAdapter = openCodeFamilyAdapter({
   id: "opencode",
-  name: "OpenCode",
-  executables: ["opencode"],
-  docs: [
-    "https://opencode.ai/docs/config/",
-    "https://opencode.ai/docs/agents/",
-    "https://opencode.ai/docs/skills/",
-    "https://opencode.ai/docs/plugins/",
-  ],
-  schemaUrl: "https://opencode.ai/config.json",
-  configPath: "opencode.json",
-  resourceRoot: ".opencode",
-  notes: [
-    "Tool hooks compile into an OpenCode TypeScript plugin; non-tool lifecycle events are not emitted.",
+  descriptor: {
+    id: "opencode",
+    name: "OpenCode",
+    executables: ["opencode"],
+    docs: [
+      "https://opencode.ai/docs/config/",
+      "https://opencode.ai/docs/plugins/",
+      "https://opencode.ai/docs/troubleshooting/",
+    ],
+    notes: [
+      "Rules are linked from AGENTS.md.",
+      "Tool hooks compile into an OpenCode plugin; other lifecycle events are not emitted.",
+    ],
+  },
+  root: (context) => context.join(xdgConfigHome(context), "opencode"),
+  config: "opencode.json",
+  alternative: "opencode.jsonc",
+  agents: "agents",
+  plugins: "plugins",
+  // auth.json and opencode.db live in the data directory.
+  state: (context) => [
+    context.join(xdgDataHome(context), "opencode"),
+    context.join(xdgCacheHome(context), "opencode"),
   ],
 });

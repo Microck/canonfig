@@ -1,7 +1,7 @@
-import type { Agent, Capability } from "../core/schema.ts";
-import type { TargetId } from "../core/types.ts";
+import type { AgentDocument, Capability, TargetId } from "../model.ts";
 
-const maps: Record<TargetId, Record<Capability, string[]>> = {
+/** Native tool names per capability; an agent's tool list is the union for its capabilities. */
+const maps = {
   codex: { read: ["read_file"], write: ["apply_patch"], search: ["grep", "glob"], shell: ["shell"], web: ["web_search"], mcp: ["mcp"], subagent: ["spawn_agent"], test: ["shell"], git: ["shell"] },
   "claude-code": { read: ["Read"], write: ["Edit", "Write"], search: ["Grep", "Glob"], shell: ["Bash"], web: ["WebFetch", "WebSearch"], mcp: [], subagent: ["Task"], test: ["Bash"], git: ["Bash"] },
   amp: { read: ["read"], write: ["edit", "write"], search: ["grep", "glob"], shell: ["Bash"], web: ["web"], mcp: ["mcp"], subagent: ["agent"], test: ["Bash"], git: ["Bash"] },
@@ -18,12 +18,12 @@ const maps: Record<TargetId, Record<Capability, string[]>> = {
   kilo: { read: ["read"], write: ["edit", "write"], search: ["grep", "glob"], shell: ["bash"], web: ["webfetch"], mcp: [], subagent: ["task"], test: ["bash"], git: ["bash"] },
   hermes: { read: ["read_file"], write: ["write_file", "patch"], search: ["search_files"], shell: ["terminal"], web: ["web_search", "web_extract"], mcp: ["mcp"], subagent: ["delegate_task"], test: ["terminal"], git: ["terminal"] },
   qwen: { read: ["read_file"], write: ["edit", "write_file"], search: ["grep_search", "glob", "list_directory"], shell: ["run_shell_command"], web: ["web_fetch", "web_search"], mcp: ["mcp__*"], subagent: ["agent"], test: ["run_shell_command"], git: ["run_shell_command"] },
-};
+} satisfies Record<TargetId, Record<Capability, ReadonlyArray<string>>>;
 
-export function nativeToolsForCapabilities(target: TargetId, capabilities: readonly Capability[]): string[] {
+export function nativeToolsForCapabilities(target: TargetId, capabilities: ReadonlyArray<Capability>): Array<string> {
   return [...new Set(capabilities.flatMap((capability) => maps[target][capability]))];
 }
 
-export function nativeTools(target: TargetId, agent: Agent): string[] {
+export function nativeTools(target: TargetId, agent: AgentDocument): Array<string> {
   return nativeToolsForCapabilities(target, agent.tools);
 }

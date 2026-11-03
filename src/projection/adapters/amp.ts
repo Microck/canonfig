@@ -1,115 +1,93 @@
-import type { DesiredArtifact, Diagnostic, HarnessAdapter } from "../core/types.ts";
-import { descriptor } from "./descriptor.ts";
+import type { HarnessAdapter, SurfaceContent } from "../harness.ts";
+import { AMP_PLUGIN_EVENTS, ampPluginSource } from "../templates/runtime.ts";
 import {
-  agentDocuments,
-  commandSkillArtifacts,
-  enabledHooks,
-  hasEnabledMcpServers,
-  ruleDocuments,
-  ruleMarkdown,
-  skillArtifacts,
-  standardMcpMap,
-  standardMcpProjectionDiagnostics,
+  instructionsText,
+  mcpGapDiagnostics,
+  mcpTable,
+  nativeHooks,
+  standardMcpServer,
+  VERIFIED_AT,
+  xdgCacheHome,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
-import { AMP_PLUGIN_EVENT_MAP, ampPluginSource } from "../templates/runtime.ts";
-
-const AMP_PLUGIN_EVENTS = new Set(Object.keys(AMP_PLUGIN_EVENT_MAP));
 
 export const ampAdapter: HarnessAdapter = {
-  descriptor: descriptor(
-    "amp",
-    "Amp",
-    ["amp"],
-    [
-      "https://ampcode.com/manual",
-      "https://ampcode.com/manual#mcp",
-      "https://ampcode.com/manual#agent-skills",
-      "https://ampcode.com/manual#plugins",
+  descriptor: {
+    id: "amp",
+    name: "Amp",
+    executables: ["amp"],
+    docs: [
+      "https://ampcode.com/docs/markdown/cli/settings",
+      "https://ampcode.com/docs/markdown/customize/agents-md",
+      "https://ampcode.com/docs/markdown/customize/skills",
+      "https://ampcode.com/docs/markdown/customize/mcp",
+      "https://ampcode.com/docs/markdown/customize/plugins",
+      "https://ampcode.com/security#client-security",
     ],
-    {
-      instructions: "portable",
-      rules: "translated",
-      skills: "portable",
-      mcp: "native",
-      hooks: "shim",
-      agents: "translated",
-      commands: "translated",
+    verifiedAt: VERIFIED_AT,
+    capabilities: {
+      instructions: "native", rules: "translated", skills: "portable", mcp: "native",
+      hooks: "shim", agents: "translated", commands: "translated",
     },
-    [
-      "Hooks and custom subagents compile into an Amp TypeScript plugin.",
-      "Commands compile to Agent Skills so they remain invokable without relying on an unstable command manifest.",
+    notes: [
+      "Hooks, subagents and commands compile into one Amp plugin.",
+      "Rules are linked from AGENTS.md; skills go to the shared ~/.agents/skills/.",
     ],
-  ),
-  async build(context) {
-    const artifacts: DesiredArtifact[] = [];
-    const diagnostics: Diagnostic[] = [];
+  },
+  layout(context) {
+    // Settings and AGENTS.md live in ~/.config/amp on every platform; only the
+    // system plugin directory follows XDG_CONFIG_HOME
+    // (https://ampcode.com/docs/markdown/customize/plugins).
+    const root = context.join(context.home, ".config", "amp");
+    const xdg = context.environment("XDG_CONFIG_HOME");
+    const plugins = xdg === undefined ? context.join(root, "plugins") : context.join(xdg, "amp", "plugins");
+    const data = context.join(context.home, ".local", "share", "amp");
+    return {
+      root,
+      surfaces: [
+        { id: "instructions", kind: "file", target: context.join(root, "AGENTS.md") },
+        { id: "plugin", kind: "file", target: context.join(plugins, "canonfig.ts") },
+        {
+          id: "settings", kind: "config", target: context.join(root, "settings.json"),
+          alternatives: [context.join(root, "settings.jsonc")], format: "json",
+          keys: ["amp\\.mcpServers"], settings: { reserved: [] },
+        },
+      ],
+      neverTouch: [
+        context.join(data, "secrets.json"),
+        context.join(data, "threads"),
+        context.join(xdgCacheHome(context), "amp"),
+      ],
+      sharedSkills: true,
+    };
+  },
+  project(model, _layout, runtime) {
+    const contents: Array<SurfaceContent> = [];
+    const diagnostics = mcpGapDiagnostics("amp", model.mcp, ["timeoutMs", "enabledTools", "disabledTools", "sse"]);
 
-    if (hasEnabledMcpServers(context)) {
-      diagnostics.push(...standardMcpProjectionDiagnostics(context, "amp", false));
-      artifacts.push({
-        kind: "json",
-        path: ".amp/settings.json",
-        owner: "amp",
-        operations: [{
-          kind: "managed-map",
-          path: ["amp.mcpServers"],
-          entries: standardMcpMap(context, false),
-          collision: "error",
-        }],
-      });
-    }
+    const instructions = instructionsText(model, true);
+    if (instructions) contents.push({ kind: "file", surface: "instructions", content: instructions });
 
-    const agents = await agentDocuments(context);
-    const hooks = enabledHooks(context);
-    const supportedHooks = hooks.filter((hook) => AMP_PLUGIN_EVENTS.has(hook.event));
-    for (const hook of hooks) {
-      if (!AMP_PLUGIN_EVENTS.has(hook.event)) {
-        diagnostics.push({
-          level: "warning",
-          code: "HOOK_EVENT_UNSUPPORTED",
-          target: "amp",
-          message: `Amp's generated plugin cannot map hook event ${hook.event}; it was skipped.`,
-        });
-      }
-    }
-    if (supportedHooks.length > 0 || agents.length > 0) {
-      artifacts.push({
-        kind: "replace",
-        path: ".amp/plugins/canonfig.ts",
-        owner: "amp",
+    const hooks = nativeHooks("amp", model.hooks, AMP_PLUGIN_EVENTS, diagnostics);
+    if (hooks.length > 0 || model.agents.length > 0 || model.commands.length > 0) {
+      contents.push({
+        kind: "file", surface: "plugin",
         content: ampPluginSource(
-          supportedHooks,
-          agents.map(({ agent, content }) => ({ agent, content, tools: nativeTools("amp", agent) })),
+          runtime.hookRunner,
+          hooks,
+          model.agents.map((agent) => ({ agent, tools: nativeTools("amp", agent) })),
+          model.commands,
         ),
       });
     }
 
-    for (const { rule, content } of await ruleDocuments(context)) {
-      artifacts.push({
-        kind: "replace",
-        path: `.amp/rules/${rule.id}.md`,
-        owner: "amp",
-        content: ruleMarkdown(rule, content),
+    if (model.mcp.length > 0) {
+      // Amp infers the transport from `command` or `url`; it has no `type` field.
+      contents.push({
+        kind: "config", surface: "settings",
+        keys: [{ path: "amp\\.mcpServers", value: mcpTable(model.mcp, (server) => standardMcpServer(server, { type: false, syntax: "shell", timeout: false })) }],
       });
     }
-
-    const commonSkillPaths = new Set(
-      (await skillArtifacts(context, ".agents/skills", "common")).map((artifact) => artifact.path),
-    );
-    for (const artifact of await commandSkillArtifacts(context, ".agents/skills", "amp")) {
-      if (commonSkillPaths.has(artifact.path)) {
-        diagnostics.push({
-          level: "error",
-          code: "TRANSLATED_SKILL_COLLISION",
-          target: "amp",
-          path: artifact.path,
-          message: `Amp command output collides with a canonical skill at ${artifact.path}; rename the skill or command.`,
-        });
-      } else {
-        artifacts.push(artifact);
-      }
-    }
-    return { artifacts, diagnostics };
+    return { contents, diagnostics };
   },
 };

@@ -1,403 +1,305 @@
-import { parse as parseToml } from "smol-toml";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { ConfigValue } from "../src/domain/resource.ts";
 import {
-  claudeAdapter,
-  codexAdapter,
-  cursorAdapter,
-  droidAdapter,
-  hermesAdapter,
-  kiloAdapter,
-  kimiAdapter,
-  opencodeAdapter,
-  qwenAdapter,
+  adapterFor,
+  hookCommand,
 } from "../src/projection/adapters/index.ts";
-import { enabledHooks } from "../src/projection/adapters/shared.ts";
-import {
-  compatibilityDiagnostics,
-  strictDiagnostics,
-  usedFeatures,
-} from "../src/projection/core/compatibility.ts";
-import { renderArtifacts } from "../src/projection/core/render.ts";
-import { CanonfigConfigSchema } from "../src/projection/core/schema.ts";
 import type {
-  BuildContext,
-  BuildResult,
-  CleanupInstruction,
-  DesiredArtifact,
-  HarnessAdapter,
-} from "../src/projection/core/types.ts";
-import { validateFolder } from "../src/projection/core/validation.ts";
-import { hookRegistryJson, hookRunnerSource } from "../src/projection/templates/runtime.ts";
+  HarnessProjection,
+  ProjectionRuntime,
+  RootContext,
+  SurfaceContent,
+} from "../src/projection/harness.ts";
+import type { CanonicalModel, Hook, McpServer, TargetId } from "../src/projection/model.ts";
+import {
+  hookRegistryJson,
+  hookRunnerSource,
+  openCodePluginSource,
+} from "../src/projection/templates/runtime.ts";
 
-// The translators read canonical sources from a folder and return artifacts.
-// These tests drive them directly: no planner, no state file, no writes
-// outside a temporary directory.
+// The translators are pure: a model and a runtime in, surface contents out.
+// Only the plugin and runner cases touch the disk, inside a temporary directory.
 
-const roots: string[] = [];
+const FOLDER = "/home/user/.canonfig";
+const RUNNER = `${FOLDER}/.runtime/hook-runner.mjs`;
+const runtime: ProjectionRuntime = { folder: FOLDER, hookRunner: RUNNER, platform: "linux" };
+const context: RootContext = {
+  platform: "linux",
+  home: "/home/user",
+  appData: "/home/user/.config",
+  environment: () => undefined,
+  join: (...segments) => path.posix.join(...segments),
+};
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, {
-    recursive: true,
-    force: true,
-  })));
-});
+const guard: Hook = {
+  id: "guard-shell",
+  event: "before_tool",
+  matcher: { capabilities: ["shell"], tools: [], inputRegex: "git\\s+push" },
+  run: ["node", `${FOLDER}/hooks/guard.mjs`],
+  timeoutMs: 5_000,
+  onFailure: "block",
+};
 
-async function write(root: string, relative: string, content: string): Promise<void> {
-  const target = path.join(root, relative);
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, content, "utf8");
-}
-
-const baseConfig = (mcpEnabled: boolean) => ({
-  version: 1,
-  targets: {},
-  instructions: {
-    root: "instructions/AGENTS.md",
-    rules: [{
-      id: "source",
-      file: "rules/source.md",
-      paths: ["src/**"],
-      activation: "path",
-      description: "Source rules",
-    }],
-  },
-  skills: { roots: ["skills"] },
-  mcp: {
-    servers: {
-      local: {
-        enabled: mcpEnabled,
-        transport: "stdio",
-        command: "node",
-        args: ["tools/server.mjs"],
-        cwd: ".",
-        env: { API_KEY: { fromEnv: "TEST_API_KEY" } },
-        timeoutMs: 15_000,
-        enabledTools: ["read"],
-        disabledTools: ["delete"],
-      },
-      docs: {
-        enabled: mcpEnabled,
-        transport: "streamable-http",
-        url: "https://example.invalid/mcp",
-        headers: { Authorization: { fromEnv: "DOCS_TOKEN" } },
-        timeoutMs: 10_000,
-      },
-    },
-  },
-  hooks: [{
-    id: "guard-shell",
-    event: "before_tool",
-    enabled: true,
-    matcher: {
-      capabilities: ["shell"],
-      tools: [],
-      inputRegex: "git\\s+push",
-    },
-    run: ["node", ".canonfig/hooks/guard.mjs"],
-    timeoutMs: 5_000,
-    onFailure: "block",
+const servers: ReadonlyArray<readonly [string, McpServer]> = [
+  ["docs", {
+    transport: "streamable-http",
+    url: "https://example.invalid/mcp",
+    headers: { Authorization: { fromEnv: "DOCS_MCP_TOKEN" }, "X-Static": "safe-value" },
+    timeoutMs: 10_000,
   }],
-  agents: [{
-    id: "reviewer",
-    file: "agents/reviewer.md",
-    description: "Review changes",
-    model: "inherit",
-    tools: ["read", "search", "mcp"],
-    writable: false,
+  ["local", {
+    transport: "stdio",
+    command: "fixture-tool",
+    args: ["serve"],
+    env: { API_KEY: { fromEnv: "API_KEY" }, PLAIN_SETTING: "safe-value" },
+    timeoutMs: 15_000,
+    enabledTools: ["read"],
+    disabledTools: ["delete"],
   }],
-  commands: [{
-    id: "release-check",
-    file: "commands/release-check.md",
-    description: "Check release readiness",
-    argumentHint: "[scope]",
-  }],
-  permissions: { rules: [] },
-  extensions: {},
-});
+];
 
-/** A canonical folder holding every source `baseConfig` names. */
-async function canonicalFolder(): Promise<string> {
-  const folder = await mkdtemp(path.join(tmpdir(), "canonfig-projection-"));
-  roots.push(folder);
-  await write(folder, "instructions/AGENTS.md", "# Instructions\n\nRun tests.\n");
-  await write(folder, "rules/source.md", "# Source rules\n\nKeep changes scoped.\n");
-  await write(folder, "agents/reviewer.md", "Return severity-ranked findings.\n");
-  await write(folder, "commands/release-check.md", "Inspect the current release.\n");
-  await write(folder, "hooks/guard.mjs", "process.exit(0);\n");
-  await write(folder, "skills/repository-checks/SKILL.md", [
-    "---",
-    "name: repository-checks",
-    "description: Run repository checks.",
-    "---",
-    "",
-    "Run the relevant checks.",
-    "",
-  ].join("\n"));
-  return folder;
+function model(overrides: Partial<CanonicalModel> = {}): CanonicalModel {
+  return {
+    folder: FOLDER,
+    harnesses: [],
+    rules: [],
+    skills: [],
+    agents: [],
+    commands: [],
+    hooks: [],
+    mcp: [],
+    settings: {},
+    ...overrides,
+  };
 }
 
-const contextFor = (
-  canonfigDir: string,
-  config: unknown,
-  adapter: HarnessAdapter,
-): BuildContext => ({
-  canonfigDir,
-  config: CanonfigConfigSchema.parse(config),
-  target: adapter.descriptor.id,
-  targetOptions: {},
-});
-
-async function project(
-  adapter: HarnessAdapter,
-  config: unknown = baseConfig(true),
-  canonfigDir?: string,
-): Promise<BuildResult> {
-  return adapter.build(contextFor(canonfigDir ?? await canonicalFolder(), config, adapter));
+function project(harness: TargetId, input: CanonicalModel): HarnessProjection {
+  const adapter = adapterFor(harness);
+  return adapter.project(input, adapter.layout(context, input), runtime);
 }
 
-const atPath = (artifacts: readonly DesiredArtifact[], target: string) =>
-  artifacts.filter((artifact) => artifact.path === target);
-
-/** Render every artifact for one path onto `current`, failing on conflicts. */
-function render(
-  artifacts: readonly DesiredArtifact[],
-  target: string,
-  current?: string,
-): { content: string; cleanup: CleanupInstruction[] } {
-  const owned = atPath(artifacts, target);
-  expect(owned, target).not.toEqual([]);
-  const rendered = renderArtifacts(owned, current, undefined);
-  expect(rendered.conflicts).toEqual([]);
-  return { content: String(rendered.content), cleanup: rendered.cleanup };
+function content(projection: HarnessProjection, surface: string): SurfaceContent {
+  const found = projection.contents.find((entry) => entry.surface === surface);
+  expect(found, surface).toBeDefined();
+  return found!;
 }
 
-const json = (artifacts: readonly DesiredArtifact[], target: string) =>
-  JSON.parse(render(artifacts, target).content);
+function configValue(projection: HarnessProjection, surface: string, key: string): ConfigValue {
+  const found = content(projection, surface);
+  if (found.kind !== "config") throw new Error(`${surface} is not a config surface`);
+  const entry = found.keys.find((candidate) => candidate.path === key);
+  expect(entry, key).toBeDefined();
+  return entry!.value;
+}
 
-describe("native Claude and Droid hook events", () => {
+function fileText(projection: HarnessProjection, surface: string): string {
+  const found = content(projection, surface);
+  if (found.kind !== "file") throw new Error(`${surface} is not a file surface`);
+  return String(found.content);
+}
+
+const codes = (projection: HarnessProjection) => projection.diagnostics.map((diagnostic) => diagnostic.code);
+
+describe("hook mapping", () => {
+  it("calls the runner by absolute path", () => {
+    expect(hookCommand(runtime, "codex", guard)).toBe(
+      `node "${RUNNER}" --hook guard-shell --target codex --event before_tool`,
+    );
+  });
+
   it.each([
     ["claude-code", "before_agent"], ["claude-code", "after_agent"],
-    ["factory-droid", "before_agent"], ["factory-droid", "after_agent"],
-    ["factory-droid", "after_compact"], ["factory-droid", "subagent_start"],
-  ] as const)("reports unsupported %s event %s and rejects it in strict mode", async (target, event) => {
-    const adapter = target === "claude-code" ? claudeAdapter : droidAdapter;
-    const config = baseConfig(false);
-    config.hooks = [{ ...config.hooks[0]!, event }];
-    const result = await project(adapter, config);
-
-    expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "HOOK_EVENT_UNSUPPORTED", target, level: "warning" }),
-    ]));
-    expect(atPath(result.artifacts, target === "claude-code" ? ".claude/settings.json" : ".factory/hooks.json"))
-      .toEqual([]);
-    expect(strictDiagnostics(result.diagnostics)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "HOOK_EVENT_UNSUPPORTED", target, level: "error" }),
-    ]));
+    ["factory-droid", "before_agent"], ["factory-droid", "after_compact"], ["factory-droid", "subagent_start"],
+  ] as const)("reports unsupported %s event %s and writes no hooks", (harness, event) => {
+    const result = project(harness, model({ hooks: [{ ...guard, event }] }));
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: "HOOK_EVENT_UNSUPPORTED", harness, level: "warning" }));
+    expect(result.contents.filter((entry) => entry.surface === "hooks" || entry.surface === "settings")).toEqual([]);
   });
 
-  it("writes Droid hooks at the documented root and removes only owned hooks on cleanup", async () => {
-    const result = await project(droidAdapter, baseConfig(false));
-    const native = { Notification: [{ matcher: ".*", hooks: [{ type: "command", command: "echo user" }] }] };
-    const first = render(result.artifacts, ".factory/hooks.json", JSON.stringify(native));
-    const generated = JSON.parse(first.content);
+  it("keys a standalone Factory hooks.json by event name", () => {
+    const hooks = JSON.parse(fileText(project("factory-droid", model({ hooks: [guard] })), "hooks"));
+    expect(hooks).toEqual({
+      PreToolUse: [{
+        matcher: ".*",
+        hooks: [{ type: "command", command: hookCommand(runtime, "factory-droid", guard), timeout: 5 }],
+      }],
+    });
+  });
 
-    expect(generated.hooks).toBeUndefined();
-    expect(generated.Notification).toEqual(native.Notification);
-    expect(generated.PreToolUse[0].hooks[0].command)
-      .toContain("$FACTORY_PROJECT_DIR/.canonfig/.runtime/hook-runner.mjs");
+  it("writes Kimi `[[hooks]]` tables and Hermes shell hooks", () => {
+    expect(configValue(project("kimi", model({ hooks: [guard] })), "config", "hooks")).toEqual([
+      { event: "PreToolUse", command: hookCommand(runtime, "kimi", guard), timeout: 5 },
+    ]);
+    expect(configValue(project("hermes", model({ hooks: [guard] })), "config", "hooks")).toEqual({
+      pre_tool_call: [{ command: hookCommand(runtime, "hermes", guard), timeout: 5, fail_closed: true }],
+    });
+  });
 
-    const previous = { owner: "factory-droid" as const, hash: "", existedBefore: true, cleanup: first.cleanup };
-    const again = renderArtifacts(atPath(result.artifacts, ".factory/hooks.json"), first.content, previous);
-    expect(again.conflicts).toEqual([]);
-    expect(again.content).toBe(first.content);
+  it("rounds hook timeouts up to whole seconds and says so", () => {
+    const result = project("claude-code", model({ hooks: [{ ...guard, timeoutMs: 1_500 }] }));
+    expect(configValue(result, "settings", "hooks")).toMatchObject({ PreToolUse: [{ hooks: [{ timeout: 2 }] }] });
+    expect(codes(result)).toContain("HOOK_TIMEOUT_ROUNDED");
+  });
 
-    const removed = renderArtifacts([], first.content, previous);
-    expect(removed.conflicts).toEqual([]);
-    expect(JSON.parse(String(removed.content))).toEqual(native);
+  it("keeps Qwen timeouts in milliseconds", () => {
+    expect(configValue(project("qwen", model({ hooks: [guard] })), "settings", "hooks")).toEqual({
+      PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: hookCommand(runtime, "qwen", guard), timeout: 5_000 }] }],
+    });
   });
 });
 
-describe("Kimi, Kilo, Hermes, and Qwen translators", () => {
-  it("project the researched native equivalents", async () => {
-    const folder = await canonicalFolder();
-    const config = baseConfig(true);
-    const [kimi, kilo, hermes, qwen] = await Promise.all(
-      [kimiAdapter, kiloAdapter, hermesAdapter, qwenAdapter].map((adapter) => project(adapter, config, folder)),
-    );
-    for (const result of [kimi!, kilo!, hermes!, qwen!]) {
-      expect(result.diagnostics.filter((diagnostic) => diagnostic.level === "error")).toEqual([]);
-    }
-
-    const kimiMcp = json(kimi!.artifacts, ".kimi-code/mcp.json");
-    expect(kimiMcp.mcpServers.local).toMatchObject({
-      transport: "stdio",
-      startupTimeoutMs: 15_000,
-      toolTimeoutMs: 15_000,
-      enabledTools: ["read"],
-      disabledTools: ["delete"],
+describe("MCP mapping", () => {
+  it("writes each client's reference syntax and never a secret value", () => {
+    const input = model({ mcp: servers });
+    expect(configValue(project("codex", input), "config", "mcp_servers")).toEqual({
+      docs: {
+        url: "https://example.invalid/mcp",
+        http_headers: { "X-Static": "safe-value" },
+        env_http_headers: { Authorization: "DOCS_MCP_TOKEN" },
+      },
+      local: {
+        command: "fixture-tool",
+        args: ["serve"],
+        env: { PLAIN_SETTING: "safe-value" },
+        env_vars: ["API_KEY"],
+        enabled_tools: ["read"],
+        disabled_tools: ["delete"],
+      },
     });
-    expect(kimiMcp.mcpServers.docs).toMatchObject({
-      transport: "http",
-      bearerTokenEnvVar: "DOCS_TOKEN",
+    expect(configValue(project("cursor", input), "mcp", "mcpServers")).toMatchObject({
+      docs: { type: "http", headers: { Authorization: "${env:DOCS_MCP_TOKEN}" } },
+      local: { type: "stdio", env: { API_KEY: "${env:API_KEY}" } },
     });
-    expect(render(kimi!.artifacts, ".kimi-code/agents/reviewer.md").content).toContain("mcp__*");
-
-    const kiloConfig = json(kilo!.artifacts, "kilo.json");
-    expect(kiloConfig.$schema).toBe("https://app.kilo.ai/config.json");
-    expect(kiloConfig.mcp.local).toBeDefined();
-    expect(render(kilo!.artifacts, ".kilo/plugins/canonfig.ts").content).toContain('"--target", "kilo"');
-
-    expect(render(hermes!.artifacts, ".hermes.md").content).toContain("## Canonical commands");
-
-    const qwenSettings = json(qwen!.artifacts, ".qwen/settings.json");
-    expect(qwenSettings.mcpServers.docs).toMatchObject({
-      httpUrl: "https://example.invalid/mcp",
-      timeout: 10_000,
+    expect(configValue(project("opencode", input), "config", "mcp")).toEqual({
+      docs: {
+        type: "remote",
+        url: "https://example.invalid/mcp",
+        enabled: true,
+        headers: { Authorization: "{env:DOCS_MCP_TOKEN}", "X-Static": "safe-value" },
+        timeout: 10_000,
+      },
+      local: {
+        type: "local",
+        command: ["fixture-tool", "serve"],
+        enabled: true,
+        environment: { API_KEY: "{env:API_KEY}", PLAIN_SETTING: "safe-value" },
+        timeout: 15_000,
+      },
     });
-    expect(qwenSettings.mcpServers.local).toMatchObject({
-      includeTools: ["read"],
-      excludeTools: ["delete"],
+    expect(configValue(project("claude-code", input), "mcp", "mcpServers")).toMatchObject({
+      docs: { type: "http", headers: { Authorization: "${DOCS_MCP_TOKEN}" } },
     });
-    expect(qwenSettings.hooks.PreToolUse).toEqual([expect.objectContaining({
-      matcher: "*",
-      hooks: [expect.objectContaining({ timeout: 5_000 })],
-    })]);
-    expect(render(qwen!.artifacts, ".qwen/commands/release-check.md").content)
-      .toContain("description: Check release readiness");
   });
 
-  it("stage no MCP material when every server is disabled", async () => {
-    const folder = await canonicalFolder();
-    const kimi = await project(kimiAdapter, baseConfig(false), folder);
-    const kilo = await project(kiloAdapter, baseConfig(false), folder);
-
-    expect(atPath(kimi.artifacts, ".kimi-code/mcp.json")).toEqual([]);
-    expect(atPath(kilo.artifacts, "kilo.json")).toEqual([]);
+  it("projects the Kimi, Qwen, Antigravity and Grok native fields", () => {
+    const input = model({ mcp: servers });
+    expect(configValue(project("kimi", input), "mcp", "mcpServers")).toMatchObject({
+      docs: { transport: "http", bearerTokenEnvVar: "DOCS_MCP_TOKEN", headers: { "X-Static": "safe-value" } },
+      local: { transport: "stdio", startupTimeoutMs: 15_000, toolTimeoutMs: 15_000, enabledTools: ["read"], disabledTools: ["delete"] },
+    });
+    expect(configValue(project("qwen", input), "settings", "mcpServers")).toMatchObject({
+      docs: { httpUrl: "https://example.invalid/mcp", timeout: 10_000 },
+      local: { includeTools: ["read"], excludeTools: ["delete"] },
+    });
+    expect(configValue(project("antigravity", input), "mcp", "mcpServers")).toMatchObject({
+      docs: { serverUrl: "https://example.invalid/mcp", timeoutSeconds: 10 },
+      local: { enabledTools: ["read"], disabledTools: ["delete"], timeoutSeconds: 15 },
+    });
+    expect(configValue(project("grok-build", input), "config", "mcp_servers")).toMatchObject({
+      local: { env: { API_KEY: "${API_KEY}" }, startup_timeout_sec: 15, tool_timeout_sec: 15 },
+    });
   });
 
-  it("reject Hermes profile-scoped losses in strict mode", () => {
-    const config = CanonfigConfigSchema.parse(baseConfig(true));
-    expect(compatibilityDiagnostics(hermesAdapter.descriptor, usedFeatures(config), true))
-      .toContainEqual(expect.objectContaining({
-        target: "hermes",
-        code: "FEATURE_LOSSY",
-        level: "error",
-      }));
+  it("reports Codex environment renames and SSE servers Pi cannot load", () => {
+    const renamed: McpServer = { transport: "stdio", command: "tool", args: [], env: { API_KEY: { fromEnv: "OTHER_KEY" } } };
+    const codex = project("codex", model({ mcp: [["local", renamed]] }));
+    expect(codes(codex)).toContain("MCP_ENV_RENAME_UNSUPPORTED");
+    expect(configValue(codex, "config", "mcp_servers")).toEqual({ local: { command: "tool" } });
+
+    const sse: McpServer = { transport: "sse", url: "https://example.invalid/sse", headers: {} };
+    const pi = project("pi", model({ mcp: [["legacy", sse]] }));
+    expect(codes(pi)).toContain("MCP_TRANSPORT_UNSUPPORTED");
+    expect(pi.contents.filter((entry) => entry.surface === "mcp")).toEqual([]);
   });
 });
 
-describe("OpenCode hook execution", () => {
-  it("uses Node even when the client executable embeds its own runtime", async () => {
-    // The generated plugin finds the runner under `<root>/.canonfig/.runtime`.
-    const root = await mkdtemp(path.join(tmpdir(), "canonfig-opencode-hook-"));
+describe("generated hook runtime", () => {
+  const roots: Array<string> = [];
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  /** A Canonical Folder with the runner, its registry and a hook that records its environment. */
+  async function folderWithRunner(): Promise<{ readonly root: string; readonly folder: string; readonly runner: string; readonly hook: Hook }> {
+    const root = await mkdtemp(path.join(tmpdir(), "canonfig-runtime-"));
     roots.push(root);
     const folder = path.join(root, ".canonfig");
-    await mkdir(folder);
-    await write(folder, "instructions/AGENTS.md", "# Instructions\n");
-    await write(folder, "hooks/guard.mjs", [
+    const runner = path.join(folder, ".runtime", "hook-runner.mjs");
+    const script = path.join(folder, "hooks", "record.mjs");
+    await mkdir(path.dirname(runner), { recursive: true });
+    await mkdir(path.dirname(script), { recursive: true });
+    await writeFile(script, [
       'import { writeFileSync } from "node:fs";',
-      'writeFileSync(".canonfig/hook-hit", "hit\\n");',
+      'import path from "node:path";',
+      "writeFileSync(path.join(process.env.CANONFIG_ROOT, \"hook-hit\"), JSON.stringify({",
+      "  cwd: process.cwd(), target: process.env.CANONFIG_TARGET, event: process.env.CANONFIG_EVENT,",
+      "}));",
       "",
     ].join("\n"));
-    const config = { ...baseConfig(false), instructions: { root: "instructions/AGENTS.md" }, skills: { roots: [] }, agents: [], commands: [] };
-    const context = contextFor(folder, config, opencodeAdapter);
-    const result = await opencodeAdapter.build(context);
-    await write(root, ".opencode/plugins/canonfig.ts", render(result.artifacts, ".opencode/plugins/canonfig.ts").content);
-    await write(root, ".canonfig/.runtime/hook-runner.mjs", hookRunnerSource());
-    await write(root, ".canonfig/.runtime/hooks.json", hookRegistryJson(enabledHooks(context)));
+    const hook: Hook = { ...guard, run: ["node", script] };
+    await writeFile(runner, hookRunnerSource());
+    await chmod(runner, 0o755);
+    await writeFile(path.join(folder, ".runtime", "hooks.json"), hookRegistryJson([hook]));
+    return { root, folder, runner, hook };
+  }
 
-    const plugin = pathToFileURL(path.join(root, ".opencode/plugins/canonfig.ts")).href;
+  it("runs a hook in the caller's directory with CANONFIG_ROOT set to the folder", async () => {
+    const { root, folder, runner, hook } = await folderWithRunner();
+    const workspace = path.join(root, "workspace");
+    await mkdir(workspace);
+    const child = spawnSync(process.execPath, [runner, "--hook", hook.id, "--target", "codex", "--event", "before_tool"], {
+      cwd: workspace,
+      input: JSON.stringify({ tool_name: "bash", tool_input: { command: "git push" } }),
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(await readFile(path.join(folder, "hook-hit"), "utf8"))).toEqual({
+      cwd: workspace, target: "codex", event: "before_tool",
+    });
+  });
+
+  it("skips a hook whose canonical matcher does not match", async () => {
+    const { folder, runner, hook } = await folderWithRunner();
+    const child = spawnSync(process.execPath, [runner, "--hook", hook.id, "--target", "codex", "--event", "before_tool"], {
+      input: JSON.stringify({ tool_name: "bash", tool_input: { command: "git status" } }),
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    expect(child.status, child.stderr).toBe(0);
+    await expect(readFile(path.join(folder, "hook-hit"), "utf8")).rejects.toThrow();
+  });
+
+  it("runs the OpenCode plugin through node even when the client embeds its own runtime", async () => {
+    const { root, folder, runner, hook } = await folderWithRunner();
+    const plugin = path.join(root, "opencode", "plugins", "canonfig.ts");
+    await mkdir(path.dirname(plugin), { recursive: true });
+    await writeFile(plugin, openCodePluginSource("opencode", runner, [{ hook, event: "tool.execute.before" }]));
+
     const child = spawnSync(process.execPath, ["--input-type=module", "-e", [
       `Object.defineProperty(process, "execPath", { value: ${JSON.stringify(path.join(root, "embedded-client"))} });`,
-      `const { CanonfigPlugin } = await import(${JSON.stringify(plugin)});`,
+      `const { CanonfigPlugin } = await import(${JSON.stringify(pathToFileURL(plugin).href)});`,
       'await (await CanonfigPlugin())["tool.execute.before"]({ tool: "bash" }, { args: { command: "git push" } });',
     ].join("\n")], { cwd: root, encoding: "utf8", timeout: 10_000 });
 
     expect(child.status, child.stderr).toBe(0);
-    await expect(readFile(path.join(root, ".canonfig/hook-hit"), "utf8"))
-      .resolves.toBe("hit\n");
-  });
-});
-
-describe("native MCP environment references", () => {
-  const referenceConfig = (alias = false) => ({
-    version: 1,
-    targets: {},
-    instructions: { root: "instructions/AGENTS.md" },
-    mcp: { servers: {
-      local: { transport: "stdio", command: "fixture-tool", env: {
-        API_KEY: { fromEnv: alias ? "OTHER_API_KEY" : "API_KEY" }, PLAIN_SETTING: "safe-value",
-      } },
-      docs: { transport: "streamable-http", url: "https://example.invalid/mcp", headers: {
-        Authorization: { fromEnv: "DOCS_MCP_TOKEN" }, "X-Static": "safe-value",
-      } },
-    } },
-  });
-
-  it("writes each client's documented reference syntax without resolving secrets", async () => {
-    const folder = await canonicalFolder();
-    const config = referenceConfig();
-    const codex = await project(codexAdapter, config, folder);
-    const cursor = await project(cursorAdapter, config, folder);
-    const opencode = await project(opencodeAdapter, config, folder);
-    for (const result of [codex, cursor, opencode]) {
-      expect(strictDiagnostics(result.diagnostics).filter((item) => item.level === "error")).toEqual([]);
-    }
-
-    const codexToml = render(codex.artifacts, ".codex/config.toml").content;
-    expect(parseToml(codexToml)).toMatchObject({ mcp_servers: {
-      local: { env_vars: ["API_KEY"], env: { PLAIN_SETTING: "safe-value" } },
-      docs: { env_http_headers: { Authorization: "DOCS_MCP_TOKEN" }, http_headers: { "X-Static": "safe-value" } },
-    } });
-    expect(codexToml).not.toContain("${");
-    const cursorMcp = json(cursor.artifacts, ".cursor/mcp.json");
-    expect(cursorMcp.mcpServers.local.env.API_KEY).toBe("${env:API_KEY}");
-    expect(cursorMcp.mcpServers.docs.headers.Authorization).toBe("${env:DOCS_MCP_TOKEN}");
-    const opencodeConfig = json(opencode.artifacts, "opencode.json");
-    expect(opencodeConfig.mcp.local.environment.API_KEY).toBe("{env:API_KEY}");
-    expect(opencodeConfig.mcp.docs.headers.Authorization).toBe("{env:DOCS_MCP_TOKEN}");
-  });
-
-  it.each([false, true])("warns about and strictly rejects Kilo references (literal syntax: %s)", async (literal) => {
-    const config = referenceConfig();
-    if (literal) {
-      config.mcp.servers.local.env.API_KEY = "{env:API_KEY}" as never;
-      config.mcp.servers.docs.headers.Authorization = "{env:DOCS_MCP_TOKEN}" as never;
-    }
-    const result = await project(kiloAdapter, config);
-    expect(result.diagnostics.filter((item) => item.code === "MCP_ENV_PROJECT_UNSUPPORTED")).toHaveLength(2);
-    expect(strictDiagnostics(result.diagnostics)
-      .filter((item) => item.code === "MCP_ENV_PROJECT_UNSUPPORTED")
-      .every((item) => item.level === "error")).toBe(true);
-  });
-
-  it("rejects unsupported Codex environment renaming in strict mode", async () => {
-    const result = await project(codexAdapter, referenceConfig(true));
-    expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "MCP_ENV_RENAME_UNSUPPORTED", target: "codex", level: "warning" }),
-    ]));
-    expect(strictDiagnostics(result.diagnostics)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "MCP_ENV_RENAME_UNSUPPORTED", target: "codex", level: "error" }),
-    ]));
-  });
-});
-
-describe("canonical folder validation", () => {
-  it("reports missing sources relative to the folder", async () => {
-    const folder = await canonicalFolder();
-    await rm(path.join(folder, "agents/reviewer.md"));
-    const diagnostics = await validateFolder(folder, CanonfigConfigSchema.parse(baseConfig(true)));
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      level: "error",
-      code: "SOURCE_MISSING",
-      path: "agents/reviewer.md",
-    }));
+    expect(JSON.parse(await readFile(path.join(folder, "hook-hit"), "utf8"))).toMatchObject({ cwd: root, target: "opencode" });
   });
 });

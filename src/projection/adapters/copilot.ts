@@ -1,99 +1,140 @@
-import type { DesiredArtifact, Diagnostic, HarnessAdapter } from "../core/types.ts";
-import { descriptor } from "./descriptor.ts";
+import type { ConfigValue } from "../../domain/resource.ts";
+import type { HarnessAdapter, SurfaceContent } from "../harness.ts";
+import { markdownWithFrontmatter } from "../frontmatter.ts";
+import type { HookEvent, McpServer } from "../model.ts";
 import {
-  agentDocuments,
-  commandSkillArtifacts,
-  copilotHooks,
-  enabledHooks,
-  ruleDocuments,
-  skillArtifacts,
-  standardMcpProjectionDiagnostics,
+  agentMarkdown,
+  byEvent,
+  type ConfigTable,
+  documentFiles,
+  hookCommand,
+  hookTimeoutSeconds,
+  instructionsText,
+  jsonFile,
+  mcpGapDiagnostics,
+  mcpTable,
+  nativeHooks,
+  secretTable,
+  skillDirectoryFiles,
+  under,
+  unsupportedFeatures,
+  VERIFIED_AT,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
-import { markdownWithFrontmatter } from "../core/frontmatter.ts";
+
+/** https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks */
+const COPILOT_EVENTS: ReadonlyMap<HookEvent, string> = new Map([
+  ["session_start", "sessionStart"],
+  ["session_end", "sessionEnd"],
+  ["prompt_submit", "userPromptSubmitted"],
+  ["before_tool", "preToolUse"],
+  ["after_tool", "postToolUse"],
+  ["stop", "agentStop"],
+  ["subagent_start", "subagentStart"],
+  ["subagent_stop", "subagentStop"],
+  ["before_compact", "preCompact"],
+]);
+
+/**
+ * `~/.copilot/mcp-config.json` entries
+ * (https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers):
+ * `type` is `local`, `http` or `sse`, and `tools` is the allowlist. The page
+ * shows no environment reference syntax; references use `${VAR}` (unverified).
+ */
+function copilotMcpServer(server: McpServer): ConfigTable {
+  const fields: Array<[string, ConfigValue]> = [];
+  if (server.transport === "stdio") {
+    fields.push(["type", "local"], ["command", server.command], ["args", server.args]);
+    if (Object.keys(server.env).length > 0) fields.push(["env", secretTable(server.env, "shell")]);
+  } else {
+    fields.push(["type", server.transport === "sse" ? "sse" : "http"], ["url", server.url]);
+    if (Object.keys(server.headers).length > 0) fields.push(["headers", secretTable(server.headers, "shell")]);
+  }
+  fields.push(["tools", server.enabledTools?.length ? server.enabledTools : ["*"]]);
+  return Object.fromEntries(fields);
+}
 
 export const copilotAdapter: HarnessAdapter = {
-  descriptor: descriptor(
-    "copilot-cli",
-    "GitHub Copilot CLI",
-    ["copilot"],
-    [
-      "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions",
-      "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills",
-      "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-hooks",
-      "https://docs.github.com/en/copilot/customizing-copilot/adding-repository-custom-instructions-for-github-copilot",
+  descriptor: {
+    id: "copilot-cli",
+    name: "GitHub Copilot CLI",
+    executables: ["copilot"],
+    docs: [
+      "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference",
+      "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks",
+      "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers",
     ],
-    {
-      instructions: "portable",
-      rules: "native",
-      skills: "native",
-      mcp: "portable",
-      hooks: "native",
-      agents: "native",
-      commands: "translated",
+    verifiedAt: VERIFIED_AT,
+    capabilities: {
+      instructions: "native", rules: "native", skills: "native", mcp: "native",
+      hooks: "native", agents: "native", commands: "unsupported",
     },
-    ["The shared repository .mcp.json is used for MCP; commands compile to Agent Skills."],
-  ),
-  async build(context) {
-    const artifacts: DesiredArtifact[] = [];
-    const diagnostics: Diagnostic[] = standardMcpProjectionDiagnostics(context, "copilot-cli");
+  },
+  layout(context) {
+    const root = context.environment("COPILOT_HOME") ?? context.join(context.home, ".copilot");
+    return {
+      root,
+      surfaces: [
+        { id: "instructions", kind: "file", target: context.join(root, "copilot-instructions.md") },
+        { id: "rules", kind: "directory", target: context.join(root, "instructions") },
+        { id: "skills", kind: "directory", target: context.join(root, "skills") },
+        { id: "agents", kind: "directory", target: context.join(root, "agents") },
+        { id: "hooks", kind: "file", target: context.join(root, "hooks", "canonfig.json") },
+        { id: "mcp", kind: "config", target: context.join(root, "mcp-config.json"), format: "json", keys: ["mcpServers"] },
+        {
+          id: "settings", kind: "config", target: context.join(root, "settings.json"), format: "json",
+          keys: [], settings: { reserved: [] },
+        },
+      ],
+      neverTouch: under(context, root, [
+        "config.json", "mcp-oauth-config", "mcp-secrets", "session-state", "session-store.db",
+        "command-history-state", "logs", "ide", "plugin-data", "permissions-config.json", "providers.json",
+      ]),
+      sharedSkills: false,
+    };
+  },
+  project(model, _layout, runtime) {
+    const contents: Array<SurfaceContent> = [];
+    const diagnostics = [
+      ...unsupportedFeatures("copilot-cli", model, [["commands", "Copilot CLI has no global command directory."]]),
+      ...mcpGapDiagnostics("copilot-cli", model.mcp, ["timeoutMs", "disabledTools", "cwd"]),
+    ];
 
-    const commonSkills = await skillArtifacts(context, ".github/skills", "copilot-cli");
-    artifacts.push(...commonSkills);
-    const occupiedSkillPaths = new Set(commonSkills.map((artifact) => artifact.path));
-    if (enabledHooks(context).length > 0) {
-      const compiled = copilotHooks(context);
-      diagnostics.push(...compiled.diagnostics);
-      if (Object.keys(compiled.hooks).length > 0) {
-        artifacts.push({
-          kind: "json",
-          path: ".github/hooks/canonfig.json",
-          owner: "copilot-cli",
-          rootDefaults: { version: 1 },
-          operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
-        });
-      }
-    }
-
-    for (const { rule, content } of await ruleDocuments(context)) {
-      artifacts.push({
-        kind: "replace",
-        path: `.github/instructions/${rule.id}.instructions.md`,
-        owner: "copilot-cli",
-        content: markdownWithFrontmatter({
+    const instructions = instructionsText(model, false);
+    if (instructions) contents.push({ kind: "file", surface: "instructions", content: instructions });
+    if (model.rules.length > 0) {
+      contents.push({
+        kind: "directory", surface: "rules",
+        files: documentFiles(model.rules, ".instructions.md", (rule) => markdownWithFrontmatter({
           description: rule.description ?? `Canonfig rule: ${rule.id}`,
           applyTo: rule.paths.length > 0 ? rule.paths.join(",") : "**",
-        }, content),
+        }, rule.content)),
       });
     }
-    for (const { agent, content } of await agentDocuments(context)) {
-      artifacts.push({
-        kind: "replace",
-        path: `.github/agents/${agent.id}.agent.md`,
-        owner: "copilot-cli",
-        content: markdownWithFrontmatter({
-          name: agent.id,
-          description: agent.description,
-          ...(agent.model === "inherit" ? {} : { model: agent.model }),
-          tools: nativeTools("copilot-cli", agent),
-        }, content),
+    if (model.skills.length > 0) contents.push({ kind: "directory", surface: "skills", files: skillDirectoryFiles(model.skills) });
+    if (model.agents.length > 0) {
+      contents.push({
+        kind: "directory", surface: "agents",
+        files: documentFiles(model.agents, ".agent.md", (agent) => agentMarkdown(agent, nativeTools("copilot-cli", agent))),
       });
-    }
-    for (const artifact of await commandSkillArtifacts(context, ".github/skills", "copilot-cli")) {
-      if (occupiedSkillPaths.has(artifact.path)) {
-        diagnostics.push({
-          level: "error",
-          code: "TRANSLATED_SKILL_COLLISION",
-          target: "copilot-cli",
-          path: artifact.path,
-          message: `Copilot command output collides with a canonical skill at ${artifact.path}; rename the skill or command.`,
-        });
-        continue;
-      }
-      occupiedSkillPaths.add(artifact.path);
-      artifacts.push(artifact);
     }
 
-    return { artifacts, diagnostics };
+    const hooks = byEvent(nativeHooks("copilot-cli", model.hooks, COPILOT_EVENTS, diagnostics).map(({ hook, event }) => {
+      const command = hookCommand(runtime, "copilot-cli", hook);
+      const entry: Array<[string, ConfigValue]> = [
+        ["type", "command"],
+        ["bash", command],
+        ["powershell", command],
+        ["timeoutSec", hookTimeoutSeconds("copilot-cli", hook, diagnostics)],
+      ];
+      if (event === "preToolUse" || event === "postToolUse") entry.push(["matcher", ".*"]);
+      return [event, Object.fromEntries(entry)];
+    }));
+    if (Object.keys(hooks).length > 0) contents.push({ kind: "file", surface: "hooks", content: jsonFile({ version: 1, hooks }) });
+
+    if (model.mcp.length > 0) {
+      contents.push({ kind: "config", surface: "mcp", keys: [{ path: "mcpServers", value: mcpTable(model.mcp, copilotMcpServer) }] });
+    }
+    return { contents, diagnostics };
   },
 };

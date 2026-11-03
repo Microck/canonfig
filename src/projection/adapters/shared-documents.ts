@@ -1,163 +1,122 @@
-import fs from "node:fs/promises";
-import path from "node:path";
+import type { ProjectedFile } from "../harness.ts";
+import { type FrontmatterData, markdownWithFrontmatter } from "../frontmatter.ts";
+import type {
+  AgentDocument,
+  CanonicalModel,
+  CommandDocument,
+  RuleDocument,
+  SkillTree,
+} from "../model.ts";
 
-import type { Agent, Command, Rule } from "../core/schema.ts";
-import type { ArtifactOwner, BuildContext, DesiredArtifact, TargetId } from "../core/types.ts";
-import { assertRealPathInside, assertSafeRelativePath, resolveInside, toPosix } from "../../skills/path.ts";
-import { markdownWithFrontmatter } from "../core/frontmatter.ts";
-import { walkFiles } from "../../skills/filesystem.ts";
+type Activation = NonNullable<RuleDocument["activation"]>;
 
-export async function readCanonfigText(context: BuildContext, relativePath: string): Promise<string> {
-  const safe = assertSafeRelativePath(relativePath);
-  const absolute = resolveInside(context.canonfigDir, safe);
-  await assertRealPathInside(context.canonfigDir, absolute);
-  return fs.readFile(absolute, "utf8");
+/** A rule without an explicit activation is path-scoped when it names paths. */
+export function ruleActivation(rule: RuleDocument): Activation {
+  return rule.activation ?? (rule.paths.length > 0 ? "path" : "always");
 }
 
-export async function copyDirectoryArtifacts(
-  context: BuildContext,
-  sourceRelative: string,
-  destination: string,
-  owner: ArtifactOwner,
-): Promise<DesiredArtifact[]> {
-  const source = resolveInside(context.canonfigDir, assertSafeRelativePath(sourceRelative));
-  const files = await walkFiles(source, context.canonfigDir);
-  const artifacts: DesiredArtifact[] = [];
-  for (const file of files.sort()) {
-    const absolute = path.join(source, file);
-    await assertRealPathInside(context.canonfigDir, absolute);
-    const [content, stat] = await Promise.all([fs.readFile(absolute), fs.stat(absolute)]);
-    const executable = (stat.mode & 0o111) !== 0;
-    artifacts.push({
-      kind: "replace",
-      path: toPosix(path.posix.join(destination, toPosix(file))),
-      owner,
-      content,
-      ...(executable ? { mode: 0o755 } : {}),
-    });
+function ruleScope(rule: RuleDocument): string {
+  switch (ruleActivation(rule)) {
+    case "always":
+      return "always applies";
+    case "path":
+      return `applies to ${rule.paths.map((pattern) => `\`${pattern}\``).join(", ")}`;
+    case "manual":
+      return "applies only when the user asks for it";
+    case "model":
+      return "applies when its description matches the task";
   }
-  return artifacts;
 }
 
-export async function skillArtifacts(
-  context: BuildContext,
-  destination: string,
-  owner: ArtifactOwner,
-): Promise<DesiredArtifact[]> {
-  const artifacts = new Map<string, DesiredArtifact>();
-  for (const root of context.config.skills.roots) {
-    const rootArtifacts = await copyDirectoryArtifacts(context, root, destination, owner);
-    const replacedSkillDirectories = rootArtifacts
-      .filter((artifact) => path.posix.basename(artifact.path) === "SKILL.md")
-      .map((artifact) => path.posix.dirname(artifact.path));
-    for (const skillDirectory of replacedSkillDirectories) {
-      for (const artifactPath of artifacts.keys()) {
-        if (artifactPath === skillDirectory || artifactPath.startsWith(`${skillDirectory}/`)) {
-          artifacts.delete(artifactPath);
-        }
-      }
-    }
-    for (const artifact of rootArtifacts) {
-      // Skill roots are layered in declaration order. Later roots represent
-      // narrower scopes, and a manifest replaces its complete prior skill tree.
-      artifacts.set(artifact.path, artifact);
-    }
+/**
+ * The global instruction file: the canonical instructions, plus, for a harness
+ * without a native global rules location, one link per rule to its authored
+ * file under `~/.canonfig/rules/`. Undefined when there is nothing to say.
+ */
+export function instructionsText(model: CanonicalModel, linkRules: boolean): string | undefined {
+  const sections: Array<string> = [];
+  const instructions = model.instructions?.trim();
+  if (instructions) sections.push(instructions);
+  if (linkRules && model.rules.length > 0) {
+    sections.push([
+      "## Canonfig rules",
+      "",
+      "Read a rule file before doing work it covers:",
+      "",
+      ...model.rules.map((rule) => {
+        const description = rule.description ? `: ${rule.description}` : "";
+        return `- \`${rule.source}\` (${ruleScope(rule)})${description}`;
+      }),
+    ].join("\n"));
   }
-  return [...artifacts.values()];
+  return sections.length > 0 ? `${sections.join("\n\n")}\n` : undefined;
 }
 
-export async function ruleDocuments(context: BuildContext): Promise<Array<{ rule: Rule; content: string }>> {
-  return Promise.all(context.config.instructions.rules.map(async (rule) => ({
-    rule,
-    content: await readCanonfigText(context, rule.file),
-  })));
+/** Windsurf-style `trigger` values that Devin and Antigravity rule frontmatter share. */
+const TRIGGERS = {
+  always: "always_on",
+  path: "glob",
+  manual: "manual",
+  model: "model_decision",
+} satisfies Record<Activation, string>;
+
+/** Rule frontmatter with `trigger`, `description` and comma-separated `globs`. */
+export function triggerRuleMarkdown(rule: RuleDocument): string {
+  const data: Array<[string, string]> = [["trigger", TRIGGERS[ruleActivation(rule)]]];
+  if (rule.description) data.push(["description", rule.description]);
+  if (rule.paths.length > 0) data.push(["globs", rule.paths.join(", ")]);
+  return markdownWithFrontmatter(Object.fromEntries(data), rule.content);
 }
 
-export async function agentDocuments(context: BuildContext): Promise<Array<{ agent: Agent; content: string }>> {
-  return Promise.all(context.config.agents.map(async (agent) => ({
-    agent,
-    content: await readCanonfigText(context, agent.file),
-  })));
+/** Rule frontmatter in the Cursor style (`description`, `globs`, `alwaysApply`). */
+export function globRuleMarkdown(rule: RuleDocument): string {
+  const data: Array<[string, string | boolean | ReadonlyArray<string>]> = [
+    ["description", rule.description ?? `Canonfig rule: ${rule.id}`],
+  ];
+  if (rule.paths.length > 0) data.push(["globs", rule.paths]);
+  data.push(["alwaysApply", ruleActivation(rule) === "always"]);
+  return markdownWithFrontmatter(Object.fromEntries(data), rule.content);
 }
 
-export async function commandDocuments(context: BuildContext): Promise<Array<{ command: Command; content: string }>> {
-  return Promise.all(context.config.commands.map(async (command) => ({
-    command,
-    content: await readCanonfigText(context, command.file),
-  })));
-}
-
-export function agentMarkdown(agent: Agent, content: string, tools: string[]): string {
-  return markdownWithFrontmatter({
-    name: agent.id,
-    description: agent.description,
-    ...(agent.model === "inherit" ? {} : { model: agent.model }),
-    tools,
-  }, content);
-}
-
-export function commandMarkdown(command: Command, content: string): string {
-  return markdownWithFrontmatter({
-    description: command.description,
-    ...(command.argumentHint ? { "argument-hint": command.argumentHint } : {}),
-  }, content);
-}
-
-export function ruleMarkdown(rule: Rule, content: string, extra: Record<string, unknown> = {}): string {
-  return markdownWithFrontmatter({
-    description: rule.description ?? `Canonfig rule: ${rule.id}`,
-    ...(rule.paths.length ? { globs: rule.paths } : {}),
-    ...extra,
-  }, content);
-}
-
-export function skillMarkdown(
-  name: string,
-  description: string,
-  content: string,
-  metadata: Record<string, unknown> = {},
+/** Subagent markdown with `name`, `description`, optional `model` and `tools`. */
+export function agentMarkdown(
+  agent: AgentDocument,
+  tools: ReadonlyArray<string>,
+  extra: FrontmatterData = {},
 ): string {
-  return markdownWithFrontmatter({ name, description, ...metadata }, content);
+  const data: Array<[string, FrontmatterData[string]]> = [
+    ["name", agent.id],
+    ["description", agent.description],
+  ];
+  if (agent.model !== "inherit") data.push(["model", agent.model]);
+  data.push(["tools", tools]);
+  return markdownWithFrontmatter({ ...Object.fromEntries(data), ...extra }, agent.content);
 }
 
-function translatedSkillName(owner: TargetId, kind: "command" | "agent", id: string): string {
-  return `canonfig-${owner}-${kind}-${id}`;
+/** Slash-command markdown with `description` and an optional `argument-hint`. */
+export function commandMarkdown(command: CommandDocument): string {
+  const data: Array<[string, string]> = [["description", command.description]];
+  if (command.argumentHint) data.push(["argument-hint", command.argumentHint]);
+  return markdownWithFrontmatter(Object.fromEntries(data), command.content);
 }
 
-export async function commandSkillArtifacts(
-  context: BuildContext,
-  destination: string,
-  owner: TargetId,
-): Promise<DesiredArtifact[]> {
-  const documents = await commandDocuments(context);
-  return documents.map(({ command, content }) => {
-    const name = translatedSkillName(owner, "command", command.id);
-    return {
-      kind: "replace",
-      path: `${destination}/${name}/SKILL.md`,
-      owner,
-      content: skillMarkdown(name, command.description, content, {
-        metadata: { canonfig: { kind: "command", sourceId: command.id, argumentHint: command.argumentHint ?? null } },
-      }),
-    };
-  });
+/** One file per document, named `<id><suffix>`. */
+export function documentFiles<Document extends { readonly id: string }>(
+  documents: ReadonlyArray<Document>,
+  suffix: string,
+  render: (document: Document) => string,
+): Array<ProjectedFile> {
+  return documents.map((document) => ({ path: `${document.id}${suffix}`, content: render(document) }));
 }
 
-export async function agentSkillArtifacts(
-  context: BuildContext,
-  destination: string,
-  owner: TargetId,
-): Promise<DesiredArtifact[]> {
-  const documents = await agentDocuments(context);
-  return documents.map(({ agent, content }) => {
-    const name = translatedSkillName(owner, "agent", agent.id);
-    return {
-      kind: "replace",
-      path: `${destination}/${name}/SKILL.md`,
-      owner,
-      content: skillMarkdown(name, agent.description, content, {
-        metadata: { canonfig: { kind: "agent", sourceId: agent.id, model: agent.model, tools: agent.tools } },
-      }),
-    };
-  });
+/** The files of one skill, relative to that skill's own directory. */
+export function skillTreeFiles(skill: SkillTree): Array<ProjectedFile> {
+  return skill.files.map((file) => ({ path: file.path, content: file.content, executable: file.executable }));
+}
+
+/** Every skill as `<name>/<path>`, for a harness-private skills directory. */
+export function skillDirectoryFiles(skills: ReadonlyArray<SkillTree>): Array<ProjectedFile> {
+  return skills.flatMap((skill) =>
+    skill.files.map((file) => ({ path: `${skill.name}/${file.path}`, content: file.content, executable: file.executable }))
+  );
 }

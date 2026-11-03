@@ -1,70 +1,107 @@
-import type { DesiredArtifact, Diagnostic, HarnessAdapter } from "../core/types.ts";
-import { descriptor } from "./descriptor.ts";
+import type { ConfigValue } from "../../domain/resource.ts";
+import type { Diagnostic, HarnessAdapter, SurfaceContent } from "../harness.ts";
+import type { McpServer } from "../model.ts";
 import {
-  agentDocuments,
   agentMarkdown,
   claudeStyleHooks,
-  commandDocuments,
-  commandMarkdown,
-  enabledHooks,
-  GROK_EVENT_MAP,
-  grokMcpDiagnostics,
-  grokMcpToml,
-  ruleDocuments,
-  skillArtifacts,
+  type ConfigTable,
+  documentFiles,
+  GROK_EVENTS,
+  instructionsText,
+  jsonFile,
+  mcpGapDiagnostics,
+  mcpTable,
+  mcpTimeoutSeconds,
+  nativeHooks,
+  secretTable,
+  under,
+  unsupportedFeatures,
+  VERIFIED_AT,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
 
+/**
+ * `[mcp_servers.<name>]` per https://docs.x.ai/build/features/mcp-servers:
+ * Grok expands `${VAR}` in `env` and `headers`; timeouts are whole seconds.
+ */
+function grokMcpServer(server: McpServer, name: string, diagnostics: Array<Diagnostic>): ConfigTable {
+  const fields: Array<[string, ConfigValue]> = [];
+  if (server.transport === "stdio") {
+    fields.push(["command", server.command]);
+    if (server.args.length > 0) fields.push(["args", server.args]);
+    if (server.cwd) fields.push(["cwd", server.cwd]);
+    if (Object.keys(server.env).length > 0) fields.push(["env", secretTable(server.env, "shell")]);
+  } else {
+    fields.push(["url", server.url]);
+    if (Object.keys(server.headers).length > 0) fields.push(["headers", secretTable(server.headers, "shell")]);
+  }
+  if (server.timeoutMs !== undefined) {
+    const seconds = mcpTimeoutSeconds("grok-build", name, server.timeoutMs, diagnostics);
+    fields.push(["startup_timeout_sec", seconds], ["tool_timeout_sec", seconds]);
+  }
+  return Object.fromEntries(fields);
+}
+
 export const grokAdapter: HarnessAdapter = {
-  descriptor: descriptor(
-    "grok-build",
-    "Grok Build CLI",
-    ["grok"],
-    ["https://docs.x.ai/build/cli/reference", "https://docs.x.ai/build/features/skills-plugins-marketplaces", "https://docs.x.ai/build/features/mcp-servers", "https://docs.x.ai/build/features/hooks"],
-    { instructions: "portable", rules: "portable", skills: "native", mcp: "native", hooks: "native", agents: "native", commands: "native" },
-    ["Project hooks require Grok workspace hook trust."],
-  ),
-  async build(context) {
-    const artifacts: DesiredArtifact[] = [];
-    const diagnostics: Diagnostic[] = [];
-    artifacts.push(...await skillArtifacts(context, ".grok/skills", "grok-build"));
+  descriptor: {
+    id: "grok-build",
+    name: "Grok Build CLI",
+    executables: ["grok"],
+    docs: [
+      "https://docs.x.ai/build/settings/reference",
+      "https://docs.x.ai/build/features/mcp-servers",
+      "https://docs.x.ai/build/features/hooks",
+    ],
+    verifiedAt: VERIFIED_AT,
+    capabilities: {
+      instructions: "native", rules: "translated", skills: "portable", mcp: "native",
+      hooks: "native", agents: "native", commands: "unsupported",
+    },
+    notes: ["Rules are linked from AGENTS.md; skills go to the shared ~/.agents/skills/."],
+  },
+  layout(context) {
+    const root = context.environment("GROK_HOME") ?? context.join(context.home, ".grok");
+    return {
+      root,
+      surfaces: [
+        { id: "instructions", kind: "file", target: context.join(root, "AGENTS.md") },
+        { id: "agents", kind: "directory", target: context.join(root, "agents") },
+        { id: "hooks", kind: "file", target: context.join(root, "hooks", "canonfig.json") },
+        {
+          id: "config", kind: "config", target: context.join(root, "config.toml"), format: "toml",
+          keys: ["mcp_servers"], settings: { reserved: ["model.*.api_key"] },
+        },
+      ],
+      neverTouch: under(context, root, ["sessions", "logs", "crash", "mcp_credentials.json", "trusted_folders.toml"]),
+      sharedSkills: true,
+    };
+  },
+  project(model, _layout, runtime) {
+    const contents: Array<SurfaceContent> = [];
+    const diagnostics = [
+      ...unsupportedFeatures("grok-build", model, [["commands", "Grok has no global command directory."]]),
+      ...mcpGapDiagnostics("grok-build", model.mcp, ["enabledTools", "disabledTools"]),
+    ];
 
-    const mcp = grokMcpToml(context);
-    if (mcp) {
-      diagnostics.push(...grokMcpDiagnostics(context));
-      artifacts.push({ kind: "toml", path: ".grok/config.toml", owner: "grok-build", blocks: [{ marker: "mcp-servers", content: mcp }] });
+    const instructions = instructionsText(model, true);
+    if (instructions) contents.push({ kind: "file", surface: "instructions", content: instructions });
+    if (model.agents.length > 0) {
+      contents.push({
+        kind: "directory", surface: "agents",
+        files: documentFiles(model.agents, ".md", (agent) => agentMarkdown(agent, nativeTools("grok-build", agent))),
+      });
     }
 
-    if (enabledHooks(context).length > 0) {
-      const compiled = claudeStyleHooks(context, GROK_EVENT_MAP);
-      diagnostics.push(...compiled.diagnostics);
-      if (Object.keys(compiled.hooks).length > 0) {
-        artifacts.push({
-          kind: "json", path: ".grok/hooks/canonfig.json", owner: "grok-build", rootDefaults: { version: 1 },
-          operations: [{ kind: "managed-hooks", path: ["hooks"], hooks: compiled.hooks, marker: ".canonfig/.runtime/hook-runner.mjs" }],
-        });
-      }
-    }
+    // ~/.grok/hooks/*.json wrap the Claude-style event map in `hooks`.
+    const hooks = claudeStyleHooks(runtime, "grok-build", nativeHooks("grok-build", model.hooks, GROK_EVENTS, diagnostics), diagnostics);
+    if (Object.keys(hooks).length > 0) contents.push({ kind: "file", surface: "hooks", content: jsonFile({ hooks }) });
 
-    for (const { agent, content } of await agentDocuments(context)) {
-      artifacts.push({ kind: "replace", path: `.grok/agents/${agent.id}.md`, owner: "grok-build", content: agentMarkdown(agent, content, nativeTools("grok-build", agent)) });
+    if (model.mcp.length > 0) {
+      contents.push({
+        kind: "config", surface: "config",
+        keys: [{ path: "mcp_servers", value: mcpTable(model.mcp, (server, name) => grokMcpServer(server, name, diagnostics)) }],
+      });
     }
-    for (const { command, content } of await commandDocuments(context)) {
-      artifacts.push({ kind: "replace", path: `.grok/commands/${command.id}.md`, owner: "grok-build", content: commandMarkdown(command, content) });
-    }
-    for (const { rule, content } of await ruleDocuments(context)) {
-      if (rule.paths.length > 0) {
-        diagnostics.push({
-          level: "warning",
-          code: "RULE_SCOPE_LOST",
-          target: "grok-build",
-          path: `.canonfig/${rule.file}`,
-          message: `Grok project rules cannot preserve Canonfig's path scope for ${rule.id}; the native rule file was skipped and the scoped AGENTS.md bridge remains authoritative.`,
-        });
-        continue;
-      }
-      artifacts.push({ kind: "replace", path: `.grok/rules/${rule.id}.md`, owner: "grok-build", content });
-    }
-    return { artifacts, diagnostics };
+    return { contents, diagnostics };
   },
 };
