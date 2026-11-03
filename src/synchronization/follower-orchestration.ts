@@ -35,7 +35,7 @@ import { MachineState } from "../machine/machine-state.service.ts";
 import { detectHarnesses } from "../projection/detect.ts";
 import {
   CanonicalFolderError,
-  LocalOverlayCollisionError,
+  LocalItemCollisionError,
   loadCanonicalFolder,
   type FolderFile,
 } from "../projection/folder.ts";
@@ -448,7 +448,7 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   const loaded = yield* Effect.tryPromise({
     try: () => loadCanonicalFolder(folder, mirrorFiles),
     catch: (error) =>
-      error instanceof CanonicalFolderError || error instanceof LocalOverlayCollisionError
+      error instanceof CanonicalFolderError || error instanceof LocalItemCollisionError
         ? error
         : new CanonicalFolderError({ path: folder, message: String(error) }),
   });

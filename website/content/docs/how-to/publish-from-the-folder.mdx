@@ -216,7 +216,7 @@ example "the publication input is not valid:
 
 | Message after the file name | Cause | Fix |
 | --- | --- | --- |
-| `needs "profile": { "id": ..., "name": ... } to publish; the id names the Machine Profile followers sync` | `canonfig.jsonc` has no `profile`. | Add `"profile": { "id": "workstation", "name": "Workstation" }`. |
+| `needs "profile": { "id": ..., "name": ... } to publish; the id names the Machine Profile followers sync` | `canonfig.jsonc` has no `profile`. Setup writes one, so it was removed. | Add `"profile": { "id": "workstation", "name": "Workstation" }`. |
 | "does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower" | There is no `~/.canonfig/canonfig.jsonc`. | Run Source setup, as in [Sync your first two machines](/tutorials/first-sync). |
 | "is not valid JSONC: ..." | `canonfig.jsonc` does not parse. The message gives the error and its offset. | Fix the syntax at that offset. |
 | "this Source publishes profile workstation; set "profile.id" in canonfig.jsonc back to workstation" | You changed `profile.id`. A Source Machine publishes one Machine Profile. | Set `profile.id` back. |

@@ -226,12 +226,13 @@ approval command. An unchanged journal resumes; preserve its approval and
 completed evidence. Changing the harness list or an import choice changes the
 digest and needs a new approval.
 
-Setup apply scaffolds `~/.canonfig/` (`canonfig.jsonc` with `version` and the
-approved `harnesses`, an empty `AGENTS.md`, and `skills/`) and writes the
-chosen imports. It replaces nothing that exists and writes no `profile`.
-Before the first publish, add `"profile": { "id": "<id>", "name": "<name>" }`
-to `canonfig.jsonc` with the operator's approved values; `source publish`
-refuses the folder without it. Everything after that is folder authoring:
+Setup apply scaffolds `~/.canonfig/` (`canonfig.jsonc` with `version`, the
+approved `harnesses`, and a `profile` whose `name` is the hostname and whose
+`id` is its slug, or `workstation`; an empty `AGENTS.md`; and `skills/`) and
+writes the chosen imports. It replaces nothing that exists and keeps a
+`profile` the file already holds. The plan shows the proposed profile and its
+digest covers it; to use other values, edit `profile` in `canonfig.jsonc`
+before the first publish. Everything after that is folder authoring:
 [source setup](references/source-setup.md) covers the folder, the first local
 projection, and publication.
 

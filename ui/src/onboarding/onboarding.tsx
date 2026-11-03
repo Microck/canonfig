@@ -788,6 +788,7 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
   const [tried, setTried] = useState(false);
   const [name, setName] = useState(profile.name);
   // Setup lists the installed harnesses until the person edits the list, as `setup plan` does without --harness.
+  // Any harness can be listed, installed or not, as `--harness` allows.
   const [listed, setListed] = useState<HarnessId[]>(() => INSTALLED.map((h) => h.id));
   // The import choice: checked items, and for each target that several items collide on, the one picked. Nothing by default.
   const [checked, setChecked] = useState<string[]>([]);
@@ -914,17 +915,21 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
             <DisclosureTrigger>Not installed on atlas ({NOT_INSTALLED.length})</DisclosureTrigger>
             <CollapsibleContent className="mt-3 space-y-3">
               <p className="text-sm text-muted-foreground">
-                Canonfig counts a harness as installed when its program is in Canonfig's install folders, ~/.local/bin or PATH. You can add one of these to the list in
-                ~/.canonfig/canonfig.jsonc later, for machines that have it.
+                Canonfig counts a harness as installed when its program is in Canonfig's install folders, ~/.local/bin or PATH. Check one to list it anyway: machines that have it
+                get your folder, and atlas takes it over, with a backup, once it's installed here.
               </p>
               <ul aria-label="Harnesses not installed" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {NOT_INSTALLED.map((h) => (
                   <li key={h.id}>
-                    <label className={cn(CHECK_ROW, "cursor-not-allowed hover:bg-transparent")}>
-                      <Checkbox checked={false} disabled className="mt-px" />
+                    <label className={CHECK_ROW}>
+                      <Checkbox
+                        checked={listed.includes(h.id)}
+                        onCheckedChange={(c) => setListed((ids) => (c === true ? [...ids, h.id] : ids.filter((id) => id !== h.id)))}
+                        className="mt-px"
+                      />
                       <span className="min-w-0">
-                        <span className="block text-muted-foreground">{h.name}</span>
-                        <span className="text-sm text-faint">Not installed</span>
+                        <span className="block font-medium">{h.name}</span>
+                        <span className="text-sm text-muted-foreground">Not installed</span>
                       </span>
                     </label>
                   </li>

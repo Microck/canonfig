@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { join } from "node:path";
 
 import { Effect, Schema } from "effect";
@@ -7,7 +8,7 @@ import type { SetupImportRequest } from "../cli/setup-commands.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { canonicalJson, sha256Hex, type JsonValue } from "../profile/profile-codec.ts";
 import { detectHarnesses } from "../projection/detect.ts";
-import { CanonicalFolderError, readHarnessSelection } from "../projection/folder.ts";
+import { CanonicalFolderError, readFolderConfig } from "../projection/folder.ts";
 import {
   existingFolderItems,
   ImportChangedError,
@@ -176,10 +177,28 @@ const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetI
     };
   });
 
+/** The Machine Profile a new folder publishes, `{ id, name }`. */
+export interface ScaffoldProfile {
+  readonly id: string;
+  readonly name: string;
+}
+
+/**
+ * Propose the profile from the machine's hostname: the name is the hostname,
+ * the id its slug (lowercase, runs of characters outside the ProfileId
+ * alphabet collapsed to `-`, trimmed so it starts with a letter or digit).
+ * A hostname with no usable character gives `workstation`.
+ */
+export const scaffoldProfile = (host: string): ScaffoldProfile => {
+  const id = host.toLowerCase().replace(/[^a-z0-9._:-]+/gu, "-").replace(/^[^a-z0-9]+|-+$/gu, "");
+  return id.length === 0 ? { id: "workstation", name: "workstation" } : { id, name: host.trim() };
+};
+
 /**
  * Plan the `harnesses` stage: the harness list (from `--harness`, else the
- * existing `canonfig.jsonc`, else detection), the folder scaffold, and the
- * import review.
+ * existing `canonfig.jsonc`, else detection), the folder scaffold (with a
+ * profile when the folder has none, so `source publish` works without a hand
+ * edit), and the import review.
  */
 export const planSourceFolder = (input: SourceFolderInput) =>
   Effect.gen(function*() {
@@ -188,9 +207,11 @@ export const planSourceFolder = (input: SourceFolderInput) =>
     const detected = (yield* detectHarnesses(context, input.folder))
       .filter((entry) => entry.installed)
       .map((entry) => entry.harness);
-    const current = yield* Effect.tryPromise({ try: () => readHarnessSelection(input.folder), catch: (error) => folderFailure(error instanceof Error ? error : new Error(String(error))) });
-    const harnesses = flagged ?? current.listed ?? detected;
-    const origin = flagged !== undefined ? "--harness" : current.listed !== undefined ? "the existing canonfig.jsonc" : "detection";
+    const current = yield* Effect.tryPromise({ try: () => readFolderConfig(input.folder), catch: (error) => folderFailure(error instanceof Error ? error : new Error(String(error))) });
+    const listed = current === undefined ? undefined : [...new Set(current.harnesses)];
+    const harnesses = flagged ?? listed ?? detected;
+    const origin = flagged !== undefined ? "--harness" : listed !== undefined ? "the existing canonfig.jsonc" : "detection";
+    const profile = current?.profile === undefined ? scaffoldProfile(hostname()) : undefined;
     const imports = yield* reviewImports(input, harnesses);
     const items: Array<SetupPlanItem> = [{
       id: "canonfig-folder",
@@ -198,7 +219,9 @@ export const planSourceFolder = (input: SourceFolderInput) =>
       scope: "machine",
       optional: false,
       dependsOn: ["ensure-directories"],
-      detail: { folder: input.folder, harnesses, detected },
+      detail: profile === undefined
+        ? { folder: input.folder, harnesses, detected }
+        : { folder: input.folder, harnesses, detected, profile: asJson(profile) },
     }];
     if (imports.chosen.length > 0) {
       items.push({
@@ -217,10 +240,13 @@ export const planSourceFolder = (input: SourceFolderInput) =>
       decisions: [
         `harnesses from ${origin}: ${harnesses.join(", ") || "none"}`,
         `installed harnesses detected: ${detected.join(", ") || "none"}`,
+        profile === undefined
+          ? `profile kept from the existing canonfig.jsonc: ${current?.profile?.id}`
+          : `profile proposed from the hostname: ${profile.id} (${profile.name}); edit canonfig.jsonc to rename it`,
         ...imports.decisions,
       ],
       imports: imports.review,
-      stage: { stage: "harnesses", digest: sha256Hex(canonicalJson(asJson({ harnesses, detected, imports: imports.chosen.map((item) => item.digest) }))) },
+      stage: { stage: "harnesses", digest: sha256Hex(canonicalJson(asJson({ harnesses, detected, profile: profile ?? null, imports: imports.chosen.map((item) => item.digest) }))) },
     } satisfies SourceFolderPlan;
   });
 
@@ -229,6 +255,7 @@ export const planSourceFolder = (input: SourceFolderInput) =>
 const FolderDetail = Schema.Struct({
   folder: Schema.String,
   harnesses: Schema.Array(Schema.Literals(TARGET_IDS)),
+  profile: Schema.optional(Schema.Struct({ id: Schema.String, name: Schema.String })),
 });
 
 const ImportSourceSchema = Schema.Union([Schema.Literals(TARGET_IDS), Schema.Literal(sharedSkillsOwner)]);
@@ -304,18 +331,19 @@ const pathExists = (path: string) =>
     );
   });
 
-const configTemplate = (harnesses: ReadonlyArray<TargetId>) =>
+const configTemplate = (harnesses: ReadonlyArray<TargetId>, profile: ScaffoldProfile | undefined) =>
   [
     "// Canonfig projects this folder into every harness listed here. Edit the list,",
     "// then run `canonfig sync --plan` to review. Schema: docs/adr/0003-global-canonfig-folder.md.",
-    JSON.stringify({ version: 1, harnesses }, undefined, 2),
+    JSON.stringify(profile === undefined ? { version: 1, harnesses } : { version: 1, profile, harnesses }, undefined, 2),
     "",
   ].join("\n");
 
 /**
- * Create `canonfig.jsonc` with the approved list (or set the list in an
- * existing one, keeping its comments and other keys), an empty `AGENTS.md`
- * and `skills/`. Nothing that exists is replaced.
+ * Create `canonfig.jsonc` with the approved profile and list (or set them in
+ * an existing one, keeping its comments and other keys; a profile the file
+ * already holds is kept), an empty `AGENTS.md` and `skills/`. Nothing that
+ * exists is replaced.
  */
 export const executeFolderScaffold = (item: SetupPlanItem) =>
   Effect.gen(function*() {
@@ -325,20 +353,28 @@ export const executeFolderScaffold = (item: SetupPlanItem) =>
     const current = yield* readOptional(configPath);
     let configAction = "created canonfig.jsonc";
     if (current === undefined) {
-      yield* writeFile(configPath, utf8(configTemplate(detail.harnesses)));
+      yield* writeFile(configPath, utf8(configTemplate(detail.harnesses, detail.profile)));
     } else {
-      const listed = getConfigPath(parseConfigDocument("json", current), "harnesses");
-      if (JSON.stringify(listed) === JSON.stringify(detail.harnesses)) {
+      const document = parseConfigDocument("json", current);
+      const sets: Array<{ path: string; value: ConfigValue }> = [];
+      if (JSON.stringify(getConfigPath(document, "harnesses")) !== JSON.stringify(detail.harnesses)) {
+        sets.push({ path: "harnesses", value: [...detail.harnesses] });
+      }
+      if (detail.profile !== undefined && getConfigPath(document, "profile") === undefined) {
+        sets.push({ path: "profile", value: { ...detail.profile } });
+      }
+      if (sets.length === 0) {
         configAction = "kept canonfig.jsonc";
       } else {
-        yield* writeFile(configPath, utf8(editConfigText("json", current, { sets: [{ path: "harnesses", value: [...detail.harnesses] }] })));
-        configAction = "set harnesses in canonfig.jsonc";
+        yield* writeFile(configPath, utf8(editConfigText("json", current, { sets })));
+        configAction = `set ${sets.map((set) => set.path).join(" and ")} in canonfig.jsonc`;
       }
     }
     const instructions = join(detail.folder, "AGENTS.md");
     if (!(yield* pathExists(instructions))) yield* writeFile(instructions, new Uint8Array());
     yield* ensureDirectory(join(detail.folder, "skills"));
-    return { evidence: `${configAction} listing ${detail.harnesses.join(", ") || "no harnesses"} in ${detail.folder}` };
+    const profileText = detail.profile === undefined ? "" : ` with profile ${detail.profile.id}`;
+    return { evidence: `${configAction} listing ${detail.harnesses.join(", ") || "no harnesses"}${profileText} in ${detail.folder}` };
   }).pipe(Effect.mapError((cause) => cause instanceof SetupError ? cause : applyFailure(`the Canonical Folder could not be scaffolded: ${cause.message}`)));
 
 type CandidateRecord = typeof ImportCandidateSchema.Type;

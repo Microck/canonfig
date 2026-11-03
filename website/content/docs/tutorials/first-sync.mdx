@@ -122,10 +122,11 @@ and `skills/code-review/`, and adds the `memory` MCP server to
 
 ## 3. Write your folder
 
-Open `~/.canonfig/canonfig.jsonc`. Setup wrote the harness list and the
-imported MCP server. Add a `profile`, which names what the Source Machine
-publishes, and a second MCP server whose token comes from an environment
-variable:
+Open `~/.canonfig/canonfig.jsonc`. Setup wrote the harness list, the imported
+MCP server, and a `profile`, which names what the Source Machine publishes.
+Setup takes the profile from the machine's hostname; this tutorial renames it
+to `workstation`. Add a second MCP server whose token comes from an
+environment variable:
 
 ```jsonc title="~/.canonfig/canonfig.jsonc"
 {
@@ -398,7 +399,7 @@ projections. To add something to B only, use its local folder; see
 | --- | --- | --- |
 | "unknown harness: claude" (`setup plan`, exit 2) | `--harness` takes a harness id. | Use an id such as `claude-code`; the message lists every id. |
 | "import collision: AGENTS.md differs between claude-code/instructions/AGENTS.md, codex/instructions/AGENTS.md; choose one with --import &lt;id&gt;" (under `exclusions`) | Two harnesses hold different instructions. | Plan again and add `--import` with the `id` you want to keep. |
-| `/home/maria/.canonfig/canonfig.jsonc needs "profile": { "id": ..., "name": ... } to publish; the id names the Machine Profile followers sync` (`source publish`, exit 2) | `canonfig.jsonc` has no `profile`. | Add `"profile": { "id": "workstation", "name": "Workstation" }`, as in step 3. |
+| `/home/maria/.canonfig/canonfig.jsonc needs "profile": { "id": ..., "name": ... } to publish; the id names the Machine Profile followers sync` (`source publish`, exit 2) | `canonfig.jsonc` has no `profile`. Setup writes one, so it was removed. | Add `"profile": { "id": "workstation", "name": "Workstation" }`, as in step 3. |
 | "... contains a literal credential [REDACTED]; remove the value and use a symbolic environment reference ..." (`source publish`, exit 2) | A value in `canonfig.jsonc` looks like a secret. | Replace it with `{ "fromEnv": "NAME" }`. |
 | "/home/maria/.canonfig already holds authored items (canonfig.jsonc, skills), where a follower keeps its Source's mirror; ..." (`follower enroll`, exit 2) | B's `~/.canonfig/` holds its own items. | Move what B should keep into `~/.canonfig/local/` (see [Add items to one machine only](/how-to/add-machine-local-items)) or remove it, then enroll again. |
 | "Invitation duration must not exceed 24h" (`source invite`, exit 2) | `--expires` is longer than 24 hours. | Pick a value such as `15m`, `1h`, or `24h`. |

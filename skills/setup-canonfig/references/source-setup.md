@@ -94,9 +94,10 @@ else in `~/.canonfig/` stays on this machine:
   hooks/...          scripts that canonfig.jsonc hooks run
 ```
 
-Setup writes `canonfig.jsonc` with `version` and `harnesses` only. Before the
-first publish, add `profile` with the `id` and `name` from the NAME/profile
-answer; publication refuses the folder without it. A minimal publishable file
+Setup writes `canonfig.jsonc` with `version`, `harnesses`, and a `profile`
+proposed from the hostname (shown in the plan). If the NAME/profile answer
+differs, edit `profile` before the first publish; publication refuses a folder
+without it. A minimal publishable file
 with one MCP server, one hook, and one tool (illustrative values):
 
 ```jsonc

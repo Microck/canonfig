@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { Effect, Schema } from "effect";
@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { establishSetupScope, probeTools, runSetupPreflight, setupStatus } from "../src/setup/setup.controller.ts";
+import { scaffoldProfile } from "../src/setup/setup.folder.ts";
 
 import {
   nextEligibleSetupStage,
@@ -728,6 +729,9 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
       const folder = join(test.home, ".canonfig");
       const config = parseJsonc(readFileSync(join(folder, "canonfig.jsonc"), "utf8"));
       expect(config.harnesses).toEqual(["codex", "claude-code"]);
+      // The scaffold proposes the profile `source publish` requires.
+      expect(config.profile).toEqual(scaffoldProfile(hostname()));
+      expect(test.item(planned, "canonfig-folder")?.detail).toMatchObject({ profile: scaffoldProfile(hostname()) });
       expect(config.mcp.github).toEqual({
         transport: "stdio",
         command: "npx",
@@ -770,4 +774,13 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
       test.cleanup();
     }
   }, 180_000);
+});
+
+describe("scaffoldProfile", () => {
+  it("slugs the hostname into a ProfileId and falls back to workstation", () => {
+    expect(scaffoldProfile("Mac-Book Pro.local")).toEqual({ id: "mac-book-pro.local", name: "Mac-Book Pro.local" });
+    expect(scaffoldProfile("--box_1--")).toEqual({ id: "box_1", name: "--box_1--" });
+    expect(scaffoldProfile("")).toEqual({ id: "workstation", name: "workstation" });
+    expect(scaffoldProfile("üï")).toEqual({ id: "workstation", name: "workstation" });
+  });
 });

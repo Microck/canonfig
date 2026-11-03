@@ -604,7 +604,7 @@ export const failureTaxonomy = {
     () => "the agent harness returned output Canonfig cannot use",
   ),
 
-  LocalOverlayCollisionError: describe(
+  LocalItemCollisionError: describe(
     "human-action-required",
     (error) => `${text(error.path)}: ${error.message}`,
   ),

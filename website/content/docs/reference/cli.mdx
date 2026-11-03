@@ -522,8 +522,11 @@ approve again.
 A full Source plan has a `harnesses` stage. It lists the harnesses `--harness`
 names, else the ones an existing `~/.canonfig/canonfig.jsonc` lists, else the
 installed ones, and its `canonfig-folder` item creates `canonfig.jsonc` with
-that list, an empty `AGENTS.md` and `skills/` (an existing `canonfig.jsonc`
-only gets its `harnesses` list updated; nothing else is replaced).
+that list and a `profile` (`name` is the hostname, `id` its slug, or
+`workstation` when the hostname has no usable character), an empty `AGENTS.md`
+and `skills/`. An existing `canonfig.jsonc` only gets its `harnesses` list
+updated and a `profile` added when it has none; nothing else is replaced. The
+plan digest covers the proposed profile.
 
 The same plan offers a one-time import of what each selected harness already
 holds, read from the paths Canonfig would take over: instructions, rules,

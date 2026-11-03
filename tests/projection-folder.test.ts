@@ -8,7 +8,7 @@ import {
   CanonicalFolderError,
   decodeFolderConfig,
   loadCanonicalFolder,
-  LocalOverlayCollisionError,
+  LocalItemCollisionError,
 } from "../src/projection/folder.ts";
 
 const roots: Array<string> = [];
@@ -96,7 +96,7 @@ describe("Canonical Folder loader", () => {
 
     mkdirSync(join(root, "skills", "mine"), { recursive: true });
     writeFileSync(join(root, "skills", "mine", "SKILL.md"), "---\nname: mine\ndescription: Published\n---\nP.\n");
-    await expect(loadCanonicalFolder(root)).rejects.toBeInstanceOf(LocalOverlayCollisionError);
+    await expect(loadCanonicalFolder(root)).rejects.toBeInstanceOf(LocalItemCollisionError);
   });
 
   it("keeps the executable bit of skill files", async () => {

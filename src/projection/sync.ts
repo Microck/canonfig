@@ -20,7 +20,7 @@ import type {
   SynchronizationRunInput,
 } from "../synchronization/synchronization.types.ts";
 import { detectHarnesses, harnessReport } from "./detect.ts";
-import { CanonicalFolderError, LocalOverlayCollisionError, loadCanonicalFolder } from "./folder.ts";
+import { CanonicalFolderError, LocalItemCollisionError, loadCanonicalFolder } from "./folder.ts";
 import type { TargetId } from "./model.ts";
 import {
   parseSurfaceResourceId,
@@ -193,7 +193,7 @@ const loadFolder = (statePath: string) =>
   Effect.tryPromise({
     try: () => loadCanonicalFolder(folderOf(statePath)),
     catch: (error) =>
-      error instanceof CanonicalFolderError || error instanceof LocalOverlayCollisionError
+      error instanceof CanonicalFolderError || error instanceof LocalItemCollisionError
         ? error
         : new CanonicalFolderError({ path: folderOf(statePath), message: String(error) }),
   });

@@ -49,8 +49,8 @@ export class CanonicalFolderError extends TaggedError<CanonicalFolderError>()(
 ) {}
 
 /** A `local/` item collides with a published one; the operator must choose. */
-export class LocalOverlayCollisionError extends TaggedError<LocalOverlayCollisionError>()(
-  "LocalOverlayCollisionError",
+export class LocalItemCollisionError extends TaggedError<LocalItemCollisionError>()(
+  "LocalItemCollisionError",
   { path: Schema.String, message: Schema.String },
 ) {}
 
@@ -616,7 +616,7 @@ const addLocal = <Item>(
   const names = new Set(published.map(name));
   for (const item of local) {
     if (names.has(name(item))) {
-      throw new LocalOverlayCollisionError({
+      throw new LocalItemCollisionError({
         path,
         message: `local ${label} ${name(item)} has the same name as a published one; rename or remove one of them`,
       });
@@ -634,7 +634,7 @@ const mergeLocalSettings = (
     for (const entry of local[harness] ?? []) {
       const collision = (published[harness] ?? []).find((other) => configPathsOverlap(entry.path, other.path));
       if (collision !== undefined) {
-        throw new LocalOverlayCollisionError({
+        throw new LocalItemCollisionError({
           path,
           message: `local setting ${harness} ${entry.path} overlaps published setting ${collision.path}; remove one of them`,
         });
@@ -766,7 +766,7 @@ export const loadAuthoredFolder = (folder: string): Promise<AuthoredFolder<Liste
   loadAuthored(diskSource(folder), listFiles);
 
 /**
- * Load `~/.canonfig/` and its `local/` overlay into the Canonical Model. With
+ * Load `~/.canonfig/` and its `local/` items into the Canonical Model. With
  * `mirror`, the authored entries are those files instead of the disk's.
  */
 export const loadCanonicalFolder = async (

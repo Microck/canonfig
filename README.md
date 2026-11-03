@@ -96,8 +96,8 @@ canonfig sync --plan
 canonfig sync --apply
 ```
 
-to publish, give the folder a profile in `~/.canonfig/canonfig.jsonc`
-(`"profile": { "id": "workstation", "name": "Workstation" }`), then:
+setup writes a `profile` named after the machine's hostname into
+`~/.canonfig/canonfig.jsonc`; rename it there if you want, then publish:
 
 ```sh
 canonfig source publish --reviewer "$USER"

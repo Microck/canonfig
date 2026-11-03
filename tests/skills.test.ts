@@ -121,7 +121,7 @@ describe("Canonfig guided setup experience", () => {
   it("requires evidence before reporting completion", () => {
     expect(setupCompletion).toContain("A command completing is not proof");
     expect(setupCompletion).toContain("complete");
-    expect(setupCompletion).toContain("incomplete — Human Action Required");
+    expect(setupCompletion).toContain("incomplete (Human Action Required)");
     expect(setupCompletion).toContain("Do not call a degraded, partially applied");
   });
 });
@@ -142,7 +142,7 @@ describe("Canonfig skill safety scenarios", () => {
 
   it("preserves a follower-modified skill instead of forcing convergence", () => {
     expect(operationsSkill).toContain("Preserve modified follower skills");
-    expect(followerOperations).toContain("preserve it and report the conflict");
+    expect(followerOperations).toContain("preserve it and report\nthe conflict");
     expect(followerOperations).toContain("Unattended agents do not make this");
   });
 
@@ -173,7 +173,7 @@ describe("Canonfig choice-first setup contract", () => {
     expect(setupSkill).toContain("Simple and Advanced change interview depth, never");
     expect(setupQuestions).toContain("A bare `2` is valid only for one active question");
     expect(setupQuestions).toContain("comma-separated numbers");
-    expect(setupQuestions).toContain("Exclude consent/approval questions from");
+    expect(setupQuestions).toContain("Exclude\nconsent/approval questions from");
   });
 
   it("gives every question example explained, consecutive choices ending in custom input", () => {
@@ -197,7 +197,7 @@ describe("Canonfig choice-first setup contract", () => {
   });
 
   it("covers nested configurable fields without forcing empty optional sections", () => {
-    for (const field of ["Apply Policy", "Dependencies", "Local Overlay", "Verification", "Build policy", "Invitation", "Agent policy", "Maximum input bytes", "Schedule"]) {
+    for (const field of ["Harness list", "Dependencies", "local/", "Verification", "Build policy", "Invitation", "Agent policy", "Maximum input bytes", "Schedule"]) {
       expect(setupCatalogue).toContain(field);
     }
     expect(setupCatalogue).toContain("Apply the same\nmenu rule recursively");
