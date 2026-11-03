@@ -4,7 +4,12 @@ import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { CanonicalFolderError, loadCanonicalFolder, LocalOverlayCollisionError } from "../src/projection/folder.ts";
+import {
+  CanonicalFolderError,
+  decodeFolderConfig,
+  loadCanonicalFolder,
+  LocalOverlayCollisionError,
+} from "../src/projection/folder.ts";
 
 const roots: Array<string> = [];
 afterEach(() => {
@@ -106,5 +111,97 @@ describe("Canonical Folder loader", () => {
       ["SKILL.md", false],
       ["bin/go.sh", true],
     ]);
+  });
+});
+
+/**
+ * canonfig.jsonc diagnostics reach the terminal, the command log and
+ * --json envelopes, so they name the field and the reason but never echo
+ * the rejected value: an author may have pasted a credential there.
+ */
+describe("canonfig.jsonc validation detail", () => {
+  const failureOf = (text: string): string => {
+    try {
+      decodeFolderConfig("/home/operator/.canonfig/canonfig.jsonc", text);
+    } catch (error) {
+      expect(error).toBeInstanceOf(CanonicalFolderError);
+      return error instanceof CanonicalFolderError ? error.message : "";
+    }
+    throw new Error("canonfig.jsonc decoded");
+  };
+
+  it("never echoes parser excerpts from the file", () => {
+    const message = failureOf("{ \"version\": unquoted-secret-value }");
+    expect(message).toContain("is not valid JSONC");
+    expect(message).not.toContain("unquoted-secret-value");
+  });
+
+  it("drops rejected values from decoder failures", () => {
+    const message = failureOf(JSON.stringify({
+      version: 1,
+      harnesses: [],
+      mcp: { git: { transport: "stdio", command: { secret_marker: "MARKER-ABC-123" } } },
+    }));
+    expect(message).toContain("[\"mcp\"][\"git\"][\"command\"]");
+    expect(message).not.toContain("MARKER-ABC-123");
+  });
+
+  it.each([
+    {
+      name: "index URL user information",
+      fields: { indexPolicy: { url: "https://operator:profile-disposable-value@example.test/simple", reviewedBy: "reviewer", reviewedAt: "2026-09-30T00:00:00Z" } },
+      field: "[\"indexPolicy\"][\"url\"]",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "index URL query credential",
+      fields: { indexPolicy: { url: "https://example.test/simple?token=profile-disposable-value", reviewedBy: "reviewer", reviewedAt: "2026-09-30T00:00:00Z" } },
+      field: "[\"indexPolicy\"][\"url\"]",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "symbolic index URL query credential",
+      fields: { indexPolicy: { url: "https://example.test/simple?token=${API_TOKEN}", reviewedBy: "reviewer", reviewedAt: "2026-09-30T00:00:00Z" } },
+      field: "[\"indexPolicy\"][\"url\"]",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "empty index URL query credential",
+      fields: { indexPolicy: { url: "https://example.test/simple?token=", reviewedBy: "reviewer", reviewedAt: "2026-09-30T00:00:00Z" } },
+      field: "[\"indexPolicy\"][\"url\"]",
+      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
+    },
+    {
+      name: "unsupported version",
+      fields: { version: "profile-disposable-value/invalid" },
+      field: "[\"version\"]",
+      reason: "installer uv cannot honor requested version",
+    },
+    {
+      name: "unsafe registry package",
+      fields: { method: "npm", package: "https://operator:profile-disposable-value@example.test/tool.tgz" },
+      field: "[\"package\"]",
+      reason: "npm-family package must be an exact registry name",
+    },
+    {
+      name: "missing build executable bounds",
+      fields: {
+        buildPolicy: {
+          mode: "required", reviewedBy: "profile-disposable-value", reviewedAt: "2026-09-30T00:00:00Z",
+          paths: [], origins: [], capabilities: ["execute"], steps: [],
+        },
+      },
+      field: "[\"buildPolicy\"][\"executables\"]",
+      reason: "Missing key",
+    },
+  ])("reports the field and an actionable reason for $name without the rejected value", ({ fields, field, reason }) => {
+    const message = failureOf(JSON.stringify({
+      version: 1,
+      harnesses: [],
+      tools: { tool: { executable: "tool", recipes: [{ platform: "linux", method: "uv", package: "tool", version: "1.2.3", ...fields }] } },
+    }));
+    expect(message).toContain(`["tools"]["tool"]["recipes"][0]${field}`);
+    expect(message).toContain(reason);
+    expect(message).not.toContain("profile-disposable-value");
   });
 });

@@ -29,8 +29,6 @@ import {
 } from "../src/cli/setup-commands.ts";
 import { BlobTransferProgress } from "../src/enrollment/blob-transfer-progress.ts";
 import { clientReviewSteps, plannedFileChanges } from "../src/synchronization/client-review.ts";
-import { profileFileFailure } from "../src/runtime/layers.ts";
-import { decodeMachineProfileJsonc } from "../src/domain/profile.ts";
 import { PlannedAction } from "../src/domain/synchronization.ts";
 
 interface Invocation {
@@ -70,7 +68,6 @@ const recordingLayers = (
     initialize: () => invoke("source.init"),
     scan: (input) => invoke("source.scan", input),
     publish: (input) => invoke("source.publish", input),
-    digest: (input) => invoke("source.digest", input),
     serve: (input) => invoke("source.serve", input),
     installService: (input) => invoke("source.service.install", input),
     serviceStatus: () => invoke("source.service.status"),
@@ -82,6 +79,7 @@ const recordingLayers = (
   };
   const follower: FollowerCommandsService = {
     enroll: (input) => invoke("follower.enroll", input),
+    unenroll: () => invoke("follower.unenroll"),
     synchronize: synchronize ?? ((input) => invoke("sync", input)),
     recover: (input) => invoke("recover", input),
     abandon: () => invoke("abandon", {}),
@@ -95,7 +93,6 @@ const recordingLayers = (
     getAgentPolicy: () => invoke("agent.policy.get"),
     setAgentHarness: (input) => invoke("agent.harness.set", input),
     getAgentHarness: () => invoke("agent.harness.get"),
-    selectProfile: (input) => invoke("profile.select", input),
     setSchedule: (input) => invoke("schedule.set", input),
     scheduleStatus: () => invoke("schedule.status"),
     removeSchedule: () => invoke("schedule.remove"),
@@ -149,28 +146,9 @@ const execute = async (
 describe("typed CLI command boundary", () => {
   it.each([
     [["source", "init"], "source.init"],
-    [["source", "scan", "--file", "AGENTS.md"], "source.scan"],
-    [[
-      "source",
-      "publish",
-      "--proposal",
-      "proposal.json",
-      "--profile",
-      "workstation",
-      "--name",
-      "Workstation",
-      "--reviewer",
-      "operator",
-    ], "source.publish"],
-    [[
-      "source",
-      "publish",
-      "--profile-file",
-      "profile.jsonc",
-      "--reviewer",
-      "operator",
-    ], "source.publish"],
-    [["source", "digest", "--profile-file", "profile.jsonc", "--resource", "codex-config"], "source.digest"],
+    [["source", "scan"], "source.scan"],
+    [["source", "scan", "--write"], "source.scan"],
+    [["source", "publish", "--reviewer", "operator"], "source.publish"],
     [["source", "serve"], "source.serve"],
     [[
       "source",
@@ -183,13 +161,7 @@ describe("typed CLI command boundary", () => {
       "/tmp/canonfig-invite",
     ], "source.invite"],
     [["source", "revoke", "follower-one"], "source.revoke"],
-    [
-      // --profile is required: the help text always showed it as required and
-      // the runtime always refused without it, but the parser used to accept
-      // its absence and hint at a usage line that omitted it.
-      ["follower", "enroll", invitation, "--name", "workstation", "--profile", "base"],
-      "follower.enroll",
-    ],
+    [["follower", "enroll", invitation, "--name", "workstation"], "follower.enroll"],
     [["sync", "--plan"], "sync"],
     [["sync", "--apply"], "sync"],
     [["recover"], "recover"],
@@ -209,7 +181,6 @@ describe("typed CLI command boundary", () => {
     [["doctor"], "doctor"],
     [["profile", "list"], "profile.list"],
     [["profile", "show", "revision-one"], "profile.show"],
-    [["profile", "select", "profile-one"], "profile.select"],
     [["agent", "policy"], "agent.policy.get"],
     [["agent", "policy", "agent-propose"], "agent.policy.set"],
     [["agent", "harness"], "agent.harness.get"],
@@ -383,15 +354,7 @@ describe("typed CLI command boundary", () => {
       executable: "/opt/canonfig",
     });
 
-    const enrollment = await execute([
-      "follower",
-      "enroll",
-      invitation,
-      "--name",
-      "laptop",
-      "--profile",
-      "workstation",
-    ]);
+    const enrollment = await execute(["follower", "enroll", invitation, "--name", "laptop"]);
     expect(enrollment.invocations[0]?.input).toMatchObject({
       followerName: "laptop",
       invitation: {
@@ -430,33 +393,20 @@ describe("typed CLI command boundary", () => {
     });
   });
 
-  it("carries authored profile input separately from discovery review input", async () => {
-    const result = await execute([
-      "source",
-      "publish",
-      "--proposal",
-      "proposal.json",
-      "--profile-file",
-      "profile.jsonc",
-      "--reviewer",
-      "operator",
-    ]);
-    expect(result.invocations[0]?.input).toEqual({
-      proposalPath: "proposal.json",
-      profilePath: "profile.jsonc",
-      reviewer: "operator",
-      allowEmpty: false,
-    });
-    const empty = await execute([
-      "source",
-      "publish",
-      "--profile-file",
-      "profile.jsonc",
-      "--reviewer",
-      "operator",
-      "--allow-empty",
-    ]);
-    expect(empty.invocations[0]?.input).toMatchObject({ allowEmpty: true });
+  it("carries the publish reviewer and the scan write switch, and rejects removed authoring options", async () => {
+    const published = await execute(["source", "publish", "--reviewer", "operator"]);
+    expect(published.invocations[0]?.input).toEqual({ reviewer: "operator" });
+    const scanned = await execute(["source", "scan"]);
+    expect(scanned.invocations[0]?.input).toEqual({ write: false });
+    const written = await execute(["source", "scan", "--write"]);
+    expect(written.invocations[0]?.input).toEqual({ write: true });
+    // Publication reads ~/.canonfig/ and nothing else.
+    for (const removed of [["--profile-file", "profile.jsonc"], ["--proposal", "proposal.json"], ["--allow-empty"]]) {
+      const result = await execute(["source", "publish", ...removed, "--reviewer", "operator"]);
+      expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
+      expect(result.stderr).toContain(`Unknown option: ${removed[0]}`);
+      expect(result.invocations).toEqual([]);
+    }
   });
 
   it("emits a CLI envelope for a usage error when --json is requested", async () => {
@@ -525,17 +475,7 @@ describe("typed CLI command boundary", () => {
   });
 
   it("routes --replace through to enrollment", async () => {
-    const result = await execute([
-      "follower",
-      "enroll",
-      invitation,
-      "--name",
-      "laptop",
-      "--profile",
-      "workstation",
-      "--replace",
-      "--json",
-    ]);
+    const result = await execute(["follower", "enroll", invitation, "--name", "laptop", "--replace", "--json"]);
     expect(result.exitCode).toBe(CliExitCode.success);
     expect(result.invocations[0]?.input).toMatchObject({
       followerName: "laptop",
@@ -544,23 +484,15 @@ describe("typed CLI command boundary", () => {
   });
 
   it("defaults --replace to false", async () => {
-    const result = await execute([
-      "follower",
-      "enroll",
-      invitation,
-      "--name",
-      "laptop",
-      "--profile",
-      "workstation",
-      "--json",
-    ]);
+    const result = await execute(["follower", "enroll", invitation, "--name", "laptop", "--json"]);
     expect(result.invocations[0]?.input).toMatchObject({ replace: false });
   });
 
-  it("requires the --profile the enroll usage line promises", async () => {
-    const result = await execute(["follower", "enroll", invitation, "--name", "laptop"]);
+  it("rejects --profile at enrollment, since a Source publishes one profile", async () => {
+    const result = await execute(["follower", "enroll", invitation, "--name", "laptop", "--profile", "workstation"]);
     expect(result.exitCode).toBe(CliExitCode.usageOrConfiguration);
-    expect(result.stderr).toContain("Missing required option: --profile");
+    expect(result.stderr).toContain("Unknown option: --profile");
+    expect(result.invocations).toEqual([]);
   });
 
   it("restarts the recorded tunnel only when no new configuration is given", async () => {
@@ -929,189 +861,6 @@ describe("CLI rendering and exit semantics", () => {
   });
 });
 
-describe("authored profile validation detail", () => {
-  it("falls back safely for empty and unknown causes", () => {
-    expect(profileFileFailure(new Error("   ")).message).toContain("profile validation failed");
-    expect(profileFileFailure("boom").message).toContain("unknown validation failure");
-  });
-
-  it("does not treat arbitrary error text as a trusted schema diagnostic", () => {
-    const failure = profileFileFailure(new Error("Expected profile-disposable-value at [version]"));
-    expect(failure.category).toBe("usage-or-configuration");
-    expect(failure.message).toContain("profile validation failed");
-    expect(failure.message).not.toContain("profile-disposable-value");
-  });
-
-  it("drops reported input from typed schema failures", () => {
-    let cause: unknown;
-    try {
-      Schema.decodeUnknownSync(Schema.String)(
-        { value: "profile-disposable-value" },
-        { reportInput: true },
-      );
-    } catch (error) {
-      cause = error;
-    }
-    const failure = profileFileFailure(cause);
-    expect(failure.message).toContain("Expected string");
-    expect(failure.message).not.toContain("profile-disposable-value");
-  });
-
-  it("never echoes parser excerpts from profile contents", () => {
-    const failure = profileFileFailure(
-      new SyntaxError(`Unexpected token 'u', '{"id": unquoted-secret-value'... is not valid JSON`),
-    );
-    expect(failure.message).toContain("profile is not valid JSONC");
-    expect(failure.message).not.toContain("unquoted-secret-value");
-  });
-
-  it("drops rejected values from real decoder failures", () => {
-    const text = JSON.stringify({
-      id: "x",
-      version: 2,
-      name: "n",
-      groups: [],
-      resources: [{
-        id: "r",
-        kind: "file",
-        target: "~/a",
-        spec: { kind: "file", content: { secret_marker: "MARKER-ABC-123" } },
-        verify: { method: "digest", digest: "0".repeat(64) },
-      }],
-    });
-    let cause: unknown;
-    try {
-      decodeMachineProfileJsonc(text);
-    } catch (error) {
-      cause = error;
-    }
-    expect(cause).toBeDefined();
-    const failure = profileFileFailure(cause);
-    expect(failure.message).toContain("resources");
-    expect(failure.message).not.toContain("MARKER-ABC-123");
-  });
-
-  it.each([
-    {
-      name: "index URL user information",
-      fields: {
-        indexPolicy: {
-          url: "https://operator:profile-disposable-value@example.test/simple",
-          reviewedBy: "reviewer",
-          reviewedAt: "2026-09-30T00:00:00Z",
-        },
-      },
-      field: "indexPolicy",
-      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
-    },
-    {
-      name: "index URL query credential",
-      fields: {
-        indexPolicy: {
-          url: "https://example.test/simple?token=profile-disposable-value",
-          reviewedBy: "reviewer",
-          reviewedAt: "2026-09-30T00:00:00Z",
-        },
-      },
-      field: "indexPolicy",
-      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
-    },
-    {
-      name: "symbolic index URL query credential",
-      fields: {
-        indexPolicy: {
-          url: "https://example.test/simple?token=${API_TOKEN}",
-          reviewedBy: "reviewer",
-          reviewedAt: "2026-09-30T00:00:00Z",
-        },
-      },
-      field: "indexPolicy",
-      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
-    },
-    {
-      name: "empty index URL query credential",
-      fields: {
-        indexPolicy: {
-          url: "https://example.test/simple?token=",
-          reviewedBy: "reviewer",
-          reviewedAt: "2026-09-30T00:00:00Z",
-        },
-      },
-      field: "indexPolicy",
-      reason: "recipe index policy must be a credential-free HTTPS simple-index URL",
-    },
-    {
-      name: "unsupported version",
-      fields: { version: "profile-disposable-value/invalid" },
-      field: "version",
-      reason: "installer uv cannot honor requested version",
-    },
-    {
-      name: "unsafe registry package",
-      fields: {
-        method: "npm",
-        package: "https://operator:profile-disposable-value@example.test/tool.tgz",
-      },
-      field: "package",
-      reason: "npm-family package must be an exact registry name",
-    },
-    {
-      name: "missing build executable bounds",
-      fields: {
-        buildPolicy: {
-          mode: "required",
-          reviewedBy: "profile-disposable-value",
-          reviewedAt: "2026-09-30T00:00:00Z",
-          paths: [],
-          origins: [],
-          capabilities: ["execute"],
-          steps: [],
-        },
-      },
-      field: "buildPolicy",
-      reason: "executables",
-    },
-  ])("reports the correct field and actionable reason for $name without rejected values", ({ fields, field, reason }) => {
-    let cause: unknown;
-    try {
-      decodeMachineProfileJsonc(JSON.stringify({
-        id: "invalid-recipe",
-        version: 2,
-        name: "Invalid recipe",
-        groups: [],
-        resources: [{
-          id: "tool",
-          kind: "tool",
-          target: "~/.local/bin/tool",
-          spec: {
-            kind: "tool",
-            toolId: "tool",
-            recipes: [{
-              platform: "linux",
-              method: "uv",
-              package: "tool",
-              version: "1.2.3",
-              ...fields,
-            }],
-          },
-          verify: { method: "executable-present", executable: "tool" },
-        }],
-      }));
-    } catch (error) {
-      cause = error;
-    }
-    expect(cause).toBeDefined();
-    const failure = profileFileFailure(cause);
-    expect(failure.message).toContain(field);
-    expect(failure.message).toContain(reason);
-    expect(failure.message).not.toContain("profile-disposable-value");
-    if (field === "indexPolicy") {
-      expect(failure.message).toContain("url");
-      expect(failure.message).not.toMatch(/recipes[^\n]*version/u);
-    }
-  });
-});
-
 
 describe("automatic secret synchronization result", () => {
   it.each(["json", "human"])("renders only the final apply failure in %s", async (format) => {
@@ -1145,7 +894,8 @@ it.each([
   [["source", "init", "extra"], "canonfig source init accepts no arguments"],
   [["profile", "list", "extra"], "canonfig profile list accepts no arguments"],
   [["profile", "show"], "Usage: canonfig profile show <revision-id>"],
-  [["profile", "select"], "Usage: canonfig profile select <profile-id>"],
+  [["profile", "select", "workstation"], "Unknown profile command: select"],
+  [["source", "digest"], "Unknown source command: digest"],
   [["overlay", "list", "--foo"], "Unknown option: --foo"],
   [["tunnel", "status", "extra"], "canonfig tunnel status accepts no arguments"],
   [["overlay", "remove", "--foo"], "Unknown option: --foo"],
