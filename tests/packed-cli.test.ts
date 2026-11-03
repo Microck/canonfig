@@ -50,6 +50,13 @@ const compileCache = resolve(packedRoot, "compile-cache");
 const failingSystemctl = resolve(fixtureBin, "systemctl-fail");
 /** While this file is not empty, the `probe` tool's verification kills the run verifying it, once. */
 const crashMarker = resolve(packedRoot, "crash-once");
+/** What `packed-probe`, the real node under another name, runs to verify the `probe` tool. */
+const probeScript = resolve(fixtureBin, "packed-probe.cjs");
+/** npm's own entrypoint, which Windows runs as Node plus this script instead of through the npm.cmd shim. */
+const npmCli = process.env.npm_execpath;
+if (process.platform === "win32" && npmCli === undefined) {
+  throw new Error("npm_execpath is required for shell-free npm execution on Windows");
+}
 const nodeVersion = process.versions.node;
 let executable = "";
 let packedEntry = "";
@@ -64,14 +71,16 @@ const write = (path: string, content: string, mode?: number) => {
   if (mode !== undefined) chmodSync(path, mode);
 };
 
+/**
+ * A fixture executable's file name. Windows runs only the extensions PATHEXT
+ * lists, and Canonfig never starts a shell, so there it is `<name>.exe`.
+ */
+const executableName = (name: string) => process.platform === "win32" ? `${name}.exe` : name;
+
 const runNpm = (
   cwd: string,
   arguments_: ReadonlyArray<string>,
 ) => {
-  const npmCli = process.env.npm_execpath;
-  if (process.platform === "win32" && npmCli === undefined) {
-    throw new Error("npm_execpath is required for shell-free npm execution on Windows");
-  }
   if (npmCli !== undefined && process.platform === "win32") {
     return spawnSync(process.execPath, [npmCli, ...arguments_], {
       cwd,
@@ -114,8 +123,25 @@ const machine = (name: string, harnesses: ReadonlyArray<TargetId> = []): Machine
   const bin = resolve(packedRoot, name, "bin");
   mkdirSync(home, { recursive: true });
   mkdirSync(bin, { recursive: true });
+  // Detection only looks for the file, so an empty one stands for the harness.
   for (const harness of harnesses) {
-    write(resolve(bin, adapterFor(harness).descriptor.executables[0]!), "#!/bin/sh\nexit 0\n", 0o755);
+    write(
+      resolve(bin, executableName(adapterFor(harness).descriptor.executables[0]!)),
+      "",
+      process.platform === "win32" ? undefined : 0o755,
+    );
+  }
+  // Windows has no npm Canonfig can run from PATH: npm.cmd needs a shell. A
+  // Windows operator binds npm to Node and npm-cli.js instead, and this is
+  // the document `canonfig installer set npm` records for that binding.
+  if (process.platform === "win32") {
+    write(resolve(home, ".canonfig", "installers", "npm.json"), `${JSON.stringify({
+      schema: "canonfig.installer/v1",
+      method: "npm",
+      platform: "windows",
+      executable: process.execPath,
+      arguments: [npmCli!],
+    })}\n`);
   }
   // A systemd user manager of this machine's own: enabling the timer writes a
   // marker that `show` then reports. Canonfig runs systemctl with no
@@ -410,7 +436,7 @@ const authorSourceFolder = (folder: string, edition: 1 | 2) => {
       probe: {
         executable: "packed-probe",
         recipes: recipesFor("source", "packed-probe", "v1.0.0"),
-        verify: { method: "command", command: ["packed-probe"] },
+        verify: { method: "command", command: ["packed-probe", probeScript] },
       },
       ...edition === 1
         ? {
@@ -487,21 +513,27 @@ esac
 `, 0o700);
   write(failingSystemctl, "#!/bin/sh\nexit 42\n", 0o700);
   // The real node and npm, as every follower's tools see them. npm also makes
-  // the doctor's package-manager probe pass.
-  symlinkSync(process.execPath, resolve(fixtureBin, "node"));
-  symlinkSync(resolve(dirname(process.execPath), "npm"), resolve(fixtureBin, "npm"));
+  // the doctor's package-manager probe pass; on Windows each machine binds it
+  // instead (`machine`).
+  symlinkSync(process.execPath, resolve(fixtureBin, executableName("node")));
+  if (process.platform !== "win32") {
+    symlinkSync(resolve(dirname(process.execPath), "npm"), resolve(fixtureBin, "npm"));
+  }
   // The `probe` tool verifies like node, except that while the crash marker
   // is armed (not empty) it disarms it and kills the canonfig process
   // verifying it, which interrupts that apply after its artifacts and journal
-  // are on disk. Verification may run without PATH, so only shell builtins.
-  write(resolve(fixtureBin, "packed-probe"), `#!/bin/sh
-if [ -s "${crashMarker}" ]; then
-  : > "${crashMarker}"
-  kill -9 "$PPID"
-  exit 1
-fi
-exec "${process.execPath}" --version
-`, 0o755);
+  // are on disk. It is node running a script rather than a shell script, so
+  // Canonfig, which never starts a shell, can run it on Windows too.
+  symlinkSync(process.execPath, resolve(fixtureBin, executableName("packed-probe")));
+  write(probeScript, `const { existsSync, statSync, writeFileSync } = require("node:fs");
+const marker = ${JSON.stringify(crashMarker)};
+if (existsSync(marker) && statSync(marker).size > 0) {
+  writeFileSync(marker, "");
+  process.kill(process.ppid, "SIGKILL");
+  process.exit(1);
+}
+console.log(process.version);
+`);
   const packed = runNpm(
     projectRoot,
     [
@@ -949,7 +981,10 @@ describe("packed Canonfig executable", () => {
     // The mirror holds what the Source published, rendered for this follower:
     // the grouped items stay with the Source.
     expect(readText(resolve(laptop.folder, "AGENTS.md"))).toBe(readText(resolve(source.folder, "AGENTS.md")));
-    expect(statSync(resolve(laptop.folder, "skills", "deploy", "scripts", "run.sh")).mode & 0o100).toBe(0o100);
+    // Windows has no execute bit to carry.
+    if (process.platform !== "win32") {
+      expect(statSync(resolve(laptop.folder, "skills", "deploy", "scripts", "run.sh")).mode & 0o100).toBe(0o100);
+    }
     expect(existsSync(resolve(laptop.folder, "skills", "restricted"))).toBe(false);
     expect(existsSync(resolve(laptop.folder, "notes.txt"))).toBe(false);
     const mirrorConfig = readJsonc(resolve(laptop.folder, "canonfig.jsonc"));
@@ -1181,7 +1216,9 @@ describe("packed Canonfig executable", () => {
     });
     const claude = resolve(workstation.home, ".claude");
     expect(readText(resolve(claude, "CLAUDE.md"))).toContain("# Packed instructions");
-    expect(statSync(resolve(claude, "skills", "deploy", "scripts", "run.sh")).mode & 0o100).toBe(0o100);
+    if (process.platform !== "win32") {
+      expect(statSync(resolve(claude, "skills", "deploy", "scripts", "run.sh")).mode & 0o100).toBe(0o100);
+    }
     // Canonfig owns only its keys in the files Claude shares with its own state.
     expect(JSON.parse(readText(resolve(claude, "settings.json")))).toMatchObject({
       theme: "dark",
