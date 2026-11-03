@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
+
+import type { ConfigValue } from "../../src/domain/resource.ts";
 
 import { adapterFor } from "../../src/projection/adapters/index.ts";
 import type { TargetId } from "../../src/projection/model.ts";
@@ -39,8 +42,8 @@ interface CliResult {
   readonly envelope: {
     readonly status?: string;
     readonly message?: string;
-    readonly data?: { readonly follower?: { readonly id: string }; readonly [key: string]: unknown };
-    readonly details?: Readonly<Record<string, unknown>>;
+    readonly data?: Readonly<Record<string, ConfigValue>>;
+    readonly details?: Readonly<Record<string, ConfigValue>>;
   };
 }
 
@@ -108,7 +111,7 @@ const succeed = (result: CliResult, label: string): CliResult => {
 };
 
 /** The Source's Canonical Folder: instructions, a skill, a rule, two hooks out of id order, MCP and tools. */
-const authorSource = (folder: string, config: Readonly<Record<string, unknown>> = {}) => {
+const authorSource = (folder: string, config: Readonly<Record<string, ConfigValue>> = {}) => {
   write(join(folder, "canonfig.jsonc"), `// The Source's folder\n${JSON.stringify({
     version: 1,
     profile: { id: "workstation", name: "Workstation" },
@@ -134,8 +137,8 @@ const unusedPort = (): Promise<number> =>
     const server = createServer();
     server.once("error", rejectPort);
     server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address !== null ? address.port : 0;
+      const decoded = Schema.decodeUnknownOption(Schema.Struct({ port: Schema.Int }))(server.address());
+      const port = decoded._tag === "Some" ? decoded.value.port : 0;
       server.close(() => resolvePort(port));
     });
   });
@@ -178,7 +181,7 @@ const enroll = (source: Machine, endpoint: string, follower: Machine, name: stri
 };
 
 /** A Source with its folder published and served. */
-const startSource = async (config: Readonly<Record<string, unknown>> = {}) => {
+const startSource = async (config: Readonly<Record<string, ConfigValue>> = {}) => {
   const source = machine("source");
   authorSource(source.folder, config);
   succeed(source.run(["source", "init"]), "source init");
@@ -214,8 +217,10 @@ describe("folder sync across a Source and its followers", () => {
     // Enrolling hands those records to the follower identity in one step.
     const enrolled = enroll(source, endpoint, follower, "laptop").envelope.data;
     expect(enrolled).toMatchObject({ profile: "workstation", adoptedLocalRecords: localRecords });
-    const followerId = enrolled?.follower?.id ?? "";
-    expect(appliedFollowers(follower.state)).toEqual({ [followerId]: localRecords });
+    // Every record now belongs to the enrolled identity; none is left under `local`.
+    const owners = appliedFollowers(follower.state);
+    expect(owners.local).toBeUndefined();
+    expect(Object.values(owners)).toEqual([localRecords]);
 
     // The laptop's own authored files are where the mirror goes: the first
     // sync keeps them as drift instead of overwriting them.
