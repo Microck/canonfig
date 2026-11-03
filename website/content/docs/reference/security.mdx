@@ -33,12 +33,6 @@ Machine's user account accordingly.
 Each Canonfig state directory has its own key names, so two Source Machines
 under one OS account do not overwrite each other's keys.
 
-Releases before 3.2.1 used account-wide key names. Reusing 3.2.x keys or state
-is not a supported migration to 5.0.1. Do not point 5.0.1 at a 3.2.x state
-directory or copy its credential items into another Source Machine; set up a
-separate Source Machine instead (see
-[Move from 3.2.x](/how-to/upgrade#move-from-32x)).
-
 Running `canonfig source init` again never creates another identity. It checks
 that the stored keys match the fingerprints recorded at initialization. If they
 do not, Canonfig signs and serves nothing and fails with exit 4:
@@ -75,7 +69,7 @@ refuses options that turn off host key checking or add forwards.
 
 The Source Machine and each Follower Machine must run the same `major.minor`
 release. A mismatch fails with a "source/follower version mismatch" error
-(exit 2), never a signature error. See [Upgrade Canonfig](/how-to/upgrade).
+(exit 2), never a signature error.
 
 ## Follower credentials
 

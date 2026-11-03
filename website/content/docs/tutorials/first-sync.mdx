@@ -395,7 +395,7 @@ content, change it on A.
 | "the Source Machine's certificate fingerprint does not match the invitation" | B reached a server whose TLS certificate is not the one in the invitation: another Source Machine on the same port, or an invitation from an earlier `canonfig source init`. | On A, run `canonfig source service status` to confirm which Source Machine is serving, then issue an invitation from it. Do not enroll until the fingerprints match. |
 | "SSH host identity for a.example did not match its pin" (`tunnel start`) | The host key file does not belong to the host you connected to. | Copy `/etc/ssh/ssh_host_ed25519_key.pub` from A again, reading it on A itself, and check that `--ssh-host` names A. |
 | "nothing answered at the Source endpoint" (exit 6) | Nothing listens on `127.0.0.1:17342`: A is not serving, or the tunnel is down. | On A, run `canonfig source service status` and expect `running`. On B, run `canonfig tunnel status`, then `canonfig tunnel start`. If A serves on another port, use that port in `--endpoint` and in `tunnel start --local-port`. |
-| "source/follower version mismatch" (exit 2) | A and B run different `major.minor` releases. The message names both. | Install the same release on both machines, as in step 1. See [Upgrade Canonfig](/how-to/upgrade). |
+| "source/follower version mismatch" (exit 2) | A and B run different `major.minor` releases. The message names both. | Install the same release on both machines, as in step 1. |
 | "the follower identity is already enrolled" | A Follower Machine named `laptop` is already enrolled. | Pick another `--name`, or revoke the old one on A first; see [Follower credentials](/reference/security#follower-credentials). |
 
 For other errors, run `canonfig doctor --no-input` on the machine that failed.
@@ -404,5 +404,4 @@ For other errors, run `canonfig doctor --no-input` on the machine that failed.
 ## Next steps
 
 - [Publish a change to your Follower Machines](/how-to/publish-profile-changes)
-- [Upgrade Canonfig](/how-to/upgrade)
 - [Revoke or remove a Follower Machine](/reference/security#follower-credentials)

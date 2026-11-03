@@ -38,9 +38,6 @@ proposals must show their timezone and remain editable.
 Install only when necessary, then create the Source bootstrap plan. `--file`
 names approved tool-discovery inputs only; it never selects synced content.
 
-For an existing 3.2.x installation, do not replace its package or state.
-Set up 5.0.1 separately using the [fresh-install guide](../../../website/content/docs/how-to/upgrade.mdx).
-
 ```bash
 npm install --global @microck/canonfig@5.0.1
 canonfig --version

@@ -48,10 +48,6 @@ canonfig doctor --no-input
 check the `credentials` result before continuing. canonfig uses Secret Service
 on linux, Keychain on macos, and Credential Manager on windows.
 
-upgrading? the source and every follower must run the same `major.minor`
-release, and a 3.2.x installation must not be replaced in place. follow the
-[upgrade guide](https://canonfig.micr.dev/docs/how-to/upgrade/).
-
 ## browser interface
 
 <img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/walkthrough.gif" width="880" alt="the canonfig browser interface: the Source overview, the machine map, the profile, then a follower's sync page checking for updates">
