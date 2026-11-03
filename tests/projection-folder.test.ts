@@ -109,6 +109,26 @@ describe("Canonical Folder loader", () => {
     await expect(loadCanonicalFolder(root)).rejects.toBeInstanceOf(LocalItemCollisionError);
   });
 
+  it("only warns about a local category that is not allowed, whatever it holds", async () => {
+    const root = folder({
+      "canonfig.jsonc": minimal,
+      "local/skills/example/notes.txt": "no SKILL.md here\n",
+      "local/rules/Not A Rule.txt": "not a document\n",
+    });
+    const outside = folder({ "secret.md": "---\ndescription: x\n---\nsecret\n" });
+    mkdirSync(join(root, "local", "agents"), { recursive: true });
+    symlinkSync(join(outside, "secret.md"), join(root, "local", "agents", "leak.md"));
+    mkdirSync(join(root, "local", "commands"));
+    const loaded = await loadCanonicalFolder(root);
+    expect(loaded.model.skills).toEqual([]);
+    expect(loaded.model.rules).toEqual([]);
+    expect(loaded.model.agents).toEqual([]);
+    expect(loaded.ignoredLocal).toEqual(["local/rules/", "local/skills/", "local/agents/"]);
+
+    writeFileSync(join(root, "canonfig.jsonc"), "{ \"version\": 1, \"harnesses\": [], \"local\": { \"allow\": [\"skills\"] } }");
+    await expect(loadCanonicalFolder(root)).rejects.toThrow("has no SKILL.md");
+  });
+
   it("keeps the executable bit of skill files", async () => {
     const root = folder({
       "canonfig.jsonc": minimal,

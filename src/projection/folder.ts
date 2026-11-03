@@ -704,21 +704,29 @@ export const listFolderFiles = (folder: string, directory: string): Promise<Read
 const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks"] as const;
 
 /**
- * The authoring entries a folder holds, in allowlist order: any file, and any
- * directory with something in it. An empty directory holds no item, so the
- * mirror can fill it. `follower enroll` refuses a folder with entries,
- * because on a follower those places hold the Source's mirror.
+ * Whether a path holds something: any file, and any directory with something
+ * in it. Nothing beneath it is read or checked.
+ */
+const holdsEntries = async (path: string): Promise<boolean> => {
+  try {
+    const stat = await lstat(path);
+    return !stat.isDirectory() || (await readdir(path)).length > 0;
+  } catch (error) {
+    if (error instanceof Error && isMissing(error)) return false;
+    throw error;
+  }
+};
+
+/**
+ * The authoring entries a folder holds, in allowlist order. An empty
+ * directory holds no item, so the mirror can fill it. `follower enroll`
+ * refuses a folder with entries, because on a follower those places hold the
+ * Source's mirror.
  */
 export const authoredEntries = async (folder: string): Promise<ReadonlyArray<string>> => {
   const present: Array<string> = [];
   for (const name of AUTHORING_ENTRIES) {
-    const path = join(folder, name);
-    try {
-      const stat = await lstat(path);
-      if (!stat.isDirectory() || (await readdir(path)).length > 0) present.push(name);
-    } catch (error) {
-      if (!(error instanceof Error && isMissing(error))) throw error;
-    }
+    if (await holdsEntries(join(folder, name))) present.push(name);
   }
   return present;
 };
@@ -786,13 +794,15 @@ export const loadCanonicalFolder = async (
   const ignoredLocal: Array<string> = [];
   const localDirectory = join(folder, "local");
 
+  // A category not in `local.allow` is never decoded: it only earns the
+  // ignored-local warning, so content that would not load (a skill without
+  // SKILL.md, a link) cannot stop the sync. `local/` always comes from disk,
+  // mirror or not, so the presence check reads the disk too.
   const localItems = async <Item>(category: LocalCategory, load: (directory: string) => Promise<ReadonlyArray<Item>>) => {
-    const items = await load(join(localDirectory, category));
-    if (items.length > 0 && !allow.includes(category)) {
-      ignoredLocal.push(`local/${category}/`);
-      return [];
-    }
-    return items;
+    const directory = join(localDirectory, category);
+    if (allow.includes(category)) return load(directory);
+    if (await holdsEntries(directory)) ignoredLocal.push(`local/${category}/`);
+    return [];
   };
 
   const rules = addLocal(

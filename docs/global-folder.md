@@ -159,9 +159,11 @@ only the captured keys' takeover rows are released.
 
 ## Local folder merge and collisions
 
-Projection adds `local/` items within the Source's `local.allow`. A local
-item named like a published one is Human Action Required
-(`src/projection/folder.ts`):
+Projection adds `local/` items within the Source's `local.allow`. A category
+outside it is never read: anything in it only earns a warning that it is
+ignored, so content that would not load there (a skill without `SKILL.md`)
+does not stop the sync. A local item named like a published one is Human
+Action Required (`src/projection/folder.ts`):
 
 ```text
 local <category> <name> has the same name as a published one; rename or remove one of them
