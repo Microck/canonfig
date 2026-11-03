@@ -24,7 +24,7 @@ to receive. followers never publish changes back.
 deterministic actions run first. optional Configuration Agents handle bounded
 fallback tasks; an agent's claim never counts as proof of convergence.
 
-[documentation](https://canonfig.micr.dev/docs) | [first sync](website/content/docs/tutorials/first-sync.mdx) | [command reference](website/content/docs/reference/cli.mdx)
+[documentation](https://canonfig.micr.dev/docs) | [interactive demo](https://canonfig.micr.dev) | [first sync](https://canonfig.micr.dev/docs/tutorials/first-sync/) | [CLI reference](https://canonfig.micr.dev/docs/reference/cli/)
 
 ## why
 
@@ -46,25 +46,16 @@ canonfig doctor --no-input
 ```
 
 check the `credentials` result before continuing. canonfig uses Secret Service
-on linux, Keychain on macos, and Credential Manager on windows. follow the
-reported recovery steps if the store is locked or unavailable.
+on linux, Keychain on macos, and Credential Manager on windows.
 
-5.0.0 replaces the `gemini` Configuration Agent harness with a `custom` harness
-for any agent CLI and adds `--model` for `codex` and `claude`. a 4.x
-installation updates in place, but upgrade the source and all followers
-together: mixed 4.x/5.0 fleets are rejected. a follower that used `gemini`
-needs `canonfig agent harness codex|claude|custom` after the upgrade. **do not
-replace a 3.2.x installation or its state in place**; use the
-[upgrade guide](website/content/docs/how-to/upgrade.mdx).
-
-5.0.1 expands `~` in agent install paths on followers. 5.0.0 and 5.0.1
-machines sync with each other, so update them one at a time.
+upgrading? the source and every follower must run the same `major.minor`
+release, and a 3.2.x installation must not be replaced in place. follow the
+[upgrade guide](https://canonfig.micr.dev/docs/how-to/upgrade/).
 
 ## sync machines
 
-start with the [Source Machine → Follower Machine tutorial](website/content/docs/tutorials/first-sync.mdx).
+start with the [first sync tutorial](https://canonfig.micr.dev/docs/tutorials/first-sync/).
 it covers the profile, source service, pinned connection, and follower enrollment.
-profile source paths are relative to the profile's directory and cannot escape it.
 
 after enrollment, run on the follower:
 
@@ -74,21 +65,16 @@ canonfig sync --apply
 canonfig status
 ```
 
-to publish changes from an existing, reviewed profile on the source:
+to publish changes from a reviewed profile on the source:
 
 ```sh
 canonfig source digest --profile-file ~/canonfig.profile.jsonc
 canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer "$USER"
 ```
 
-these examples use a POSIX shell. `source digest` validates content without
-signing it; publication creates an immutable revision.
-see [publishing changes](website/content/docs/how-to/publish-profile-changes.mdx).
-
-apply journals filesystem changes and verifies resources independently.
-`Converged` means declared resources match, not that an agent client has loaded
-or trusted them. `clientLoaded` remains `not-verified`; complete any client-side
-restart, project-trust or hook approval separately.
+`source digest` validates content without signing it; publication creates an
+immutable revision. `Converged` means declared resources match, not that an
+agent client has loaded them.
 
 ### schedule updates
 
@@ -97,15 +83,10 @@ canonfig schedule set daily@09:00
 canonfig schedule status
 ```
 
-the native job runs `sync --apply --no-input --scheduled` at the resolved local
-time. a profile's `scheduleDefault` is only reported until you install it with
-`canonfig schedule set --default`.
-
-by default, services and schedules follow the user's login-session lifecycle.
-boot or logged-out operation needs platform-specific setup and an available
-credential store. an installed unit is not proof it can serve or sync.
-see [unattended operation](website/content/docs/how-to/run-unattended.mdx) and
-[schedules](website/content/docs/how-to/manage-schedules.mdx).
+schedules follow the user's login session by default. see
+[schedules](https://canonfig.micr.dev/docs/how-to/manage-schedules/) and
+[unattended operation](https://canonfig.micr.dev/docs/how-to/run-unattended/)
+for boot or logged-out operation.
 
 ## configure harnesses
 
@@ -114,73 +95,49 @@ selected agent harnesses:
 
 ```sh
 canonfig harness init
-canonfig harness validate
 canonfig harness plan
 canonfig harness apply
-# Or keep local projections updated while this foreground process runs:
+# or keep local projections updated while this foreground process runs:
 canonfig harness watch
 ```
 
-YAML is the default; use `harness init --format json` for strict JSON. keep only
-one of `.canonfig/harness.yaml`, `.canonfig/harness.yml`, or `.canonfig/harness.json`.
-ordinary follower sync does not run harness projection.
-see the [harness guide](docs/harness-configuration.md) and
-[sync-harnesses skill](skills/sync-harnesses/SKILL.md).
-
-### package a setup
-
-export canonfig configuration itself, one harness, or several harnesses:
-
-```sh
-canonfig harness export --source-only --output canonfig-source.zip
-canonfig harness export --target codex --output codex.tar.gz
-canonfig harness export --target codex --target claude-code --include-source --output setup.zip
-```
-
-add `--dry-run` to inspect the inventory first. exports compile declared project
-sources, not your whole home directory or local account state. existing archives
-are never overwritten. this is **not a secret scanner**: review declared content
-before sharing it. see [archive contents and limits](docs/harness-archives.md).
+`canonfig harness export` packages a setup to share; it is **not a secret
+scanner**, so review declared content first. see the
+[harness guide](docs/harness-configuration.md) and
+[archive contents and limits](docs/harness-archives.md).
 
 ## update upstream skills
 
-register an existing skill's Git source and revision with `canonfig skills track`,
-then preview updates before applying them:
+register an existing skill's Git source with `canonfig skills track`, then
+preview updates before applying them:
 
 ```sh
-canonfig skills list
 canonfig skills check
-canonfig skills update
 canonfig skills update --apply
 ```
 
-the last command updates all tracked skills; repeat `--name` to select specific
-skills. local edits block the selected update rather than being discarded.
-roots, source configuration, refs and subdirectories are configurable.
+local edits block an update rather than being discarded. see
+[tracking, local edits and recovery](docs/skill-updates.md).
 
-for unattended upstream updates, `canonfig skills auto --apply` runs a foreground
-worker every 24 hours. add `--once` for your own OS scheduler. preview with
-`canonfig skills auto` first. local edits or source changes stop the worker;
-it never publishes profiles or applies harness configuration automatically.
+## self-updates
 
-only public HTTPS Git sources and local repositories are supported. this is not
-follower synchronization or a skill marketplace. update canonical skills on the
-Source Machine, review, then publish.
-see [tracking, local edits and recovery](docs/skill-updates.md).
+opt-in `canonfig self-update` installs stable patch releases for user-owned
+global npm installs; major and minor upgrades stay manual. read
+[setup, automation and recovery](docs/self-update.md) before enabling it.
 
 ## what gets applied
 
 | resource | default behavior |
 | --- | --- |
 | `file` | replace owned content and mode |
-| `directory` | mirror desired entries; remove only unchanged entries previously written by Canonfig; preserve unrelated or locally modified entries |
-| `config` | merge declared TOML, JSON or YAML keys; preserve follower-owned keys and comments; remove dropped Canonfig-owned keys unless claimed through Local Overlay |
+| `directory` | mirror desired entries; remove only unchanged entries previously written by Canonfig |
+| `config` | merge declared TOML, JSON or YAML keys; preserve follower-owned keys and comments |
 | `skill` | replace only if the installed copy is unmodified |
 | `tool` | run a platform recipe and independently verify it |
 | `credential` | require a local credential reference; never copy it as profile content |
 
-explicit policies can be more destructive: directory `replace` removes foreign
-entries too. read the [profile schema](website/content/docs/reference/profile-schema.mdx)
+explicit policies can be more destructive. read the
+[profile reference](https://canonfig.micr.dev/docs/reference/profile-schema/)
 before changing ownership or apply policy.
 
 ## trust and boundaries
@@ -188,17 +145,18 @@ before changing ownership or apply policy.
 - enrollment pins source TLS and signing identities; changed pins, invalid
   signatures and replayed invitations fail closed
 - each follower has an independently revocable identity and group assignment
-- profile credentials stay local; separately named secrets are shared only with
-  explicitly enrolled `canonfig:secrets` followers and stored in native credential stores
+- profile credentials stay local; named secrets are shared only with followers
+  enrolled in `canonfig:secrets`
 - Configuration Agents are bounded by allowlists; elevation, login, restart and
-  reboot are denied by default
-- `source scan` and `setup plan --file` discover tools, not the files, configs or
-  skills selected for synchronization
+  reboot are denied
 
-`--json` uses the stable `canonfig.cli/v1` envelope. exit `3` means Human Action
-Required; exit `4` means conflict or Follower Drift.
-see the [CLI reference](website/content/docs/reference/cli.mdx) and
-[diagnostics](website/content/docs/reference/diagnostics.mdx) for all exit codes.
+see [security and credentials](https://canonfig.micr.dev/docs/reference/security/).
+
+## agent skills
+
+let an AI agent install, set up or operate canonfig for you with the
+[install](skills/install-canonfig/SKILL.md), [setup](skills/setup-canonfig/SKILL.md)
+and [operate](skills/operate-canonfig/SKILL.md) skills.
 
 ## development
 
@@ -209,37 +167,10 @@ npm run docs:validate
 npm test
 ```
 
-the separate documentation browser suite uses `npm run website:build`,
-`npx e2e-web install chromium`, and `npm run test:e2e`; its runner needs
-Node.js 24.8+. browser checks do not verify native keyrings, synchronization or
-scheduled jobs. see the [release runbook](docs/release-runbook.md) for all gates.
-
-CI cancels superseded pull-request runs but validates every push to `main`.
-The CLI-only platform and uv jobs use `npm ci --workspaces=false`; repository
-validation, browser checks, and release validation keep the full workspace install.
-
-## browser interface
-
-the frontend lives in [`ui/`](ui/README.md). from this checkout, run `npm --prefix ui ci` and `npm run ui:dev`, then open `http://localhost:5317/source/overview`. screens have separate routes, including `/source/profile`, `/source/machines`, `/follower/sync` and `/setup`.
-
-the frontend currently uses demo data and simulated operations. it is not yet connected to the CLI services or shipped as a `canonfig ui` command. you can try the demo at [canonfig.micr.dev](https://canonfig.micr.dev).
-
-## documentation
-
-- [first sync](website/content/docs/tutorials/first-sync.mdx) · [profiles](website/content/docs/reference/profile-schema.mdx)
-- [harness configuration](docs/harness-configuration.md) · [archives](docs/harness-archives.md) · [skill updates](docs/skill-updates.md)
-- [recovery](website/content/docs/how-to/recover.mdx) · [upgrades](website/content/docs/how-to/upgrade.mdx)
-- [security](website/content/docs/reference/security.mdx) · [cross-platform behavior](website/content/docs/reference/cross-platform.mdx)
-- [install skill](skills/install-canonfig/SKILL.md) · [setup skill](skills/setup-canonfig/SKILL.md) · [operate skill](skills/operate-canonfig/SKILL.md)
+the browser interface lives in [`ui/`](ui/README.md) and runs on demo data
+(`npm --prefix ui ci`, then `npm run ui:dev`). see the
+[release runbook](docs/release-runbook.md) for every release gate.
 
 ## license
 
 [MIT](LICENSE)
-
-## self-updates
-
-Opt-in `canonfig self-update` supports stable patch updates for user-private
-global npm installs. It stages and verifies candidates, retains old packages,
-and defers activation while Canonfig commands are active. Major/minor fleet
-upgrades remain coordinated manual operations. See [setup, automation and
-recovery](docs/self-update.md) before enabling; no OS service is installed.
