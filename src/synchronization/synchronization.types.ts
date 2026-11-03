@@ -3,6 +3,7 @@ import type {
   BlobId,
   ContentDigest,
   FollowerId,
+  ProfileRevisionId,
   RunId,
   ResourceId,
 } from "../domain/brand.ts";
@@ -133,6 +134,26 @@ export interface PlanningProfileRevision extends ProfileRevision {
   readonly removedResources?: ReadonlyArray<ResourceId> | undefined;
 }
 
+/**
+ * A revision Canonfig built on this machine. No Source published or signed
+ * it. `origin` says what it was built from: the Canonical Folder (`sync`) or a
+ * takeover snapshot (`restore`), and `originDigest` identifies that content.
+ * It is stored in `local_revisions`, never served, and holds no file content:
+ * a run's content is kept beside the run until it completes.
+ */
+export interface PlanningLocalRevision {
+  readonly origin: "folder" | "snapshot";
+  readonly id: ProfileRevisionId;
+  readonly originDigest: ContentDigest;
+  readonly resources: ReadonlyArray<PublishedResource>;
+  readonly desired: ReadonlyArray<DesiredResourceEntry>;
+  readonly blobs: ReadonlyArray<AvailableBlob>;
+  readonly removedResources?: ReadonlyArray<ResourceId> | undefined;
+}
+
+/** What planning, execution and recovery read from either kind of revision. */
+export type PlanningRevision = PlanningProfileRevision | PlanningLocalRevision;
+
 /** All follower observations used by planning, including its blob cache. */
 export interface ObservedState {
   readonly platform: Platform;
@@ -155,7 +176,7 @@ export interface LocalOverlayEntry {
 }
 
 export interface SynchronizationPlannerInput {
-  readonly revision: PlanningProfileRevision;
+  readonly revision: PlanningRevision;
   readonly follower: FollowerId;
   readonly observedState: ObservedState;
   readonly localOverlay: ReadonlyArray<LocalOverlayEntry>;
@@ -242,7 +263,7 @@ export interface SynchronizationAgentConfiguration {
 export interface SynchronizationRunInput {
   readonly id: RunId;
   readonly plan: PlannedSynchronization;
-  readonly revision: PlanningProfileRevision;
+  readonly revision: PlanningRevision;
   readonly appliedResources?: ReadonlyArray<AppliedResourceRecord> | undefined;
   readonly artifacts: ReadonlyArray<SynchronizationArtifact>;
   readonly knownSecrets?: ReadonlyArray<string> | undefined;
@@ -258,7 +279,7 @@ export interface SynchronizationRunInput {
 /** Hydrated immutable inputs needed to resume one persisted follower run. */
 export interface SynchronizationRecoveryInput {
   readonly follower: FollowerId;
-  readonly revision: PlanningProfileRevision;
+  readonly revision: PlanningRevision;
   readonly artifacts: ReadonlyArray<SynchronizationArtifact>;
   readonly knownSecrets?: ReadonlyArray<string> | undefined;
   readonly limits?: Partial<SynchronizationExecutionLimits> | undefined;

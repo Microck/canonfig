@@ -27,6 +27,8 @@ import { ProfileRevision, ProfileRevisionSchema } from "../domain/profile.ts";
 import {
   AppliedResourceRecordSchema,
   DriftConflictSchema,
+  localProjectionFollower,
+  PlanningLocalRevisionSchema,
   SynchronizationPlanSchema,
   type AppliedResourceRecord,
   type DriftConflict,
@@ -64,6 +66,7 @@ import type {
   CreateEnrollmentInvitationInput,
   DeploymentReceipt,
   DriftRecord,
+  HarnessTakeover,
   EnrollmentSourceRecord,
   FinalizeEnrollmentInput,
   FollowerCredentialRecord,
@@ -89,9 +92,20 @@ import type {
 import { stateFormatVersion, stateMigrations } from "./state-schema.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import { storedRevisionJson } from "../profile/legacy-revision.ts";
-import type { LocalOverlayEntry } from "../synchronization/synchronization.types.ts";
+import type {
+  LocalOverlayEntry,
+  PlanningLocalRevision,
+} from "../synchronization/synchronization.types.ts";
 
 const CountRow = Schema.Struct({ count: Schema.Number });
+const HarnessTakeoverRow = Schema.Struct({
+  harness: Schema.String,
+  surface: Schema.String,
+  root: Schema.String,
+  snapshot: Schema.NullOr(Schema.String),
+  run_id: RunId,
+  taken_over_at: Schema.String,
+});
 const RevisionJsonRow = Schema.Struct({ revision_json: Schema.String });
 const RevisionBlobCandidateRow = Schema.Struct({
   blob_id: ContentDigest,
@@ -302,6 +316,7 @@ const parseJson = <S extends Schema.Constraint>(
 
 type RepositoryJson =
   | ProfileRevision
+  | PlanningLocalRevision
   | SynchronizationPlan
   | SynchronizationOutcome
   | DriftConflict
@@ -1826,6 +1841,105 @@ const makeRepository = Effect.gen(function*() {
     );
   });
 
+  const recordLocalRevision = Effect.fn("StateRepository.recordLocalRevision")(
+    function*(revision: PlanningLocalRevision, recordedAt: string): Effect.fn.Return<void, StateRepositoryError> {
+      const encoded = encodeJson(revision);
+      const transaction = Effect.gen(function*() {
+        const rows = yield* sql`
+          SELECT revision_json FROM local_revisions WHERE id = ${revision.id}
+        `;
+        const existing = yield* decodeRows(RevisionJsonRow, rows, "local revision row", revision.id);
+        if (existing.length > 0) {
+          if (existing[0]!.revision_json !== encoded) {
+            return yield* new RevisionImmutableError({
+              revision: revision.id,
+              message: "the local revision id already names different content",
+            });
+          }
+          return;
+        }
+        yield* sql`
+          INSERT INTO local_revisions (id, origin_digest, revision_json, recorded_at)
+          VALUES (${revision.id}, ${revision.originDigest}, ${encoded}, ${recordedAt})
+        `;
+      });
+      yield* sql.withTransaction(transaction).pipe(
+        Effect.mapError((error) =>
+          "_tag" in error && error._tag !== "SqlError"
+            ? error
+            : sqlError("record local revision")(error)
+        ),
+      );
+    },
+  );
+
+  const getLocalRevision = Effect.fn("StateRepository.getLocalRevision")(
+    function*(revision: ProfileRevisionIdType): Effect.fn.Return<PlanningLocalRevision, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT revision_json FROM local_revisions WHERE id = ${revision}
+      `.pipe(Effect.mapError(sqlError("load local revision")));
+      const row = (yield* decodeRows(RevisionJsonRow, rows, "local revision row", revision))[0];
+      if (row === undefined) return yield* new RevisionNotFoundError({ revision });
+      return yield* parseJson(PlanningLocalRevisionSchema, row.revision_json, "local revision", revision);
+    },
+  );
+
+  const loadHarnessTakeovers = Effect.fn("StateRepository.loadHarnessTakeovers")(
+    function*(): Effect.fn.Return<ReadonlyArray<HarnessTakeover>, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT harness, surface, root, snapshot, run_id, taken_over_at
+        FROM harness_takeovers
+        ORDER BY harness, surface
+      `.pipe(Effect.mapError(sqlError("load harness takeovers")));
+      const decoded = yield* decodeRows(HarnessTakeoverRow, rows, "harness takeover", "*");
+      return decoded.map((row) => ({
+        harness: row.harness,
+        surface: row.surface,
+        root: row.root,
+        snapshot: row.snapshot ?? undefined,
+        run: row.run_id,
+        takenOverAt: row.taken_over_at,
+      }));
+    },
+  );
+
+  const recordHarnessTakeovers = Effect.fn("StateRepository.recordHarnessTakeovers")(
+    function*(takeovers: ReadonlyArray<HarnessTakeover>): Effect.fn.Return<void, StateRepositoryError> {
+      const transaction = Effect.forEach(takeovers, (takeover) => sql`
+        INSERT INTO harness_takeovers (harness, surface, root, snapshot, run_id, taken_over_at)
+        VALUES (
+          ${takeover.harness}, ${takeover.surface}, ${takeover.root},
+          ${takeover.snapshot ?? null}, ${takeover.run}, ${takeover.takenOverAt}
+        )
+      `, { discard: true });
+      yield* sql.withTransaction(transaction).pipe(
+        Effect.mapError(sqlError("record harness takeovers")),
+      );
+    },
+  );
+
+  const removeRunTakeovers = Effect.fn("StateRepository.removeRunTakeovers")(
+    function*(run: RunIdType): Effect.fn.Return<void, StateRepositoryError> {
+      yield* sql`DELETE FROM harness_takeovers WHERE run_id = ${run}`.pipe(
+        Effect.mapError(sqlError("remove run takeovers")),
+      );
+    },
+  );
+
+  const releaseTakeovers = Effect.fn("StateRepository.releaseTakeovers")(
+    function*(
+      surfaces: ReadonlyArray<{ readonly harness: string; readonly surface: string }>,
+    ): Effect.fn.Return<void, StateRepositoryError> {
+      const transaction = Effect.forEach(surfaces, (entry) => sql`
+        DELETE FROM harness_takeovers
+        WHERE harness = ${entry.harness} AND surface = ${entry.surface}
+      `, { discard: true });
+      yield* sql.withTransaction(transaction).pipe(
+        Effect.mapError(sqlError("release harness takeovers")),
+      );
+    },
+  );
+
   const startRun = Effect.fn("StateRepository.startRun")(
     function*(input: StartRunInput): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
@@ -1835,12 +1949,17 @@ const makeRepository = Effect.gen(function*() {
           "follower",
           input.follower,
         );
-        if (followerCount === 0) {
+        if (followerCount === 0 && input.follower !== localProjectionFollower) {
           return yield* new FollowerNotFoundError({ follower: input.follower });
         }
         const revisionCount = yield* statusCount(
           sql,
-          sql`SELECT COUNT(*) AS count FROM profile_revisions WHERE id = ${input.revision}`,
+          sql`
+            SELECT
+              (SELECT COUNT(*) FROM profile_revisions WHERE id = ${input.revision})
+              + (SELECT COUNT(*) FROM local_revisions WHERE id = ${input.revision})
+              AS count
+          `,
           "profile revision",
           input.revision,
         );
@@ -2774,6 +2893,12 @@ const makeRepository = Effect.gen(function*() {
     listRevisionBlobCandidates,
     readResourceBlobRange,
     loadAppliedResources,
+    recordLocalRevision,
+    getLocalRevision,
+    loadHarnessTakeovers,
+    recordHarnessTakeovers,
+    removeRunTakeovers,
+    releaseTakeovers,
     startRun,
     journalAction,
     recordDrift,

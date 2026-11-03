@@ -520,6 +520,7 @@ const observeConfig = (
     readonly resource: Pick<ProfileRevision["resources"][number], "target">;
   },
   desired: Extract<DesiredResource, { readonly kind: "config" }>,
+  applied: AppliedResourceRecord | undefined,
 ): Effect.Effect<ObservedResourceState, never, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -545,17 +546,25 @@ const observeConfig = (
         const current = parseConfigDocument(desired.format, decoder.decode(bytes));
         // The owned values go through the exact rendering the desired digest
         // used, key ordering included, so an unchanged file observes equal.
+        const ownedDigest = (keys: ReadonlyArray<string>) => {
+          const present = keys.flatMap((key) => {
+            const value = getConfigPath(current, key);
+            return value === undefined ? [] : [{ path: key, value }];
+          });
+          return present.length === 0
+            ? undefined
+            : sha256BytesHex(renderConfigDocument({ format: desired.format, keys: present }));
+        };
+        const appliedKeysDigest = applied?.ownedKeys === undefined || applied.configFormat !== desired.format
+          ? undefined
+          : ownedDigest(applied.ownedKeys);
         return {
           state: "present",
-          digest: sha256BytesHex(renderConfigDocument({
-            format: desired.format,
-            keys: desired.keys.flatMap((key) => {
-              const value = getConfigPath(current, key);
-              return value === undefined ? [] : [{ path: key, value }];
-            }),
-          })),
+          digest: ownedDigest(desired.keys)
+            ?? sha256BytesHex(renderConfigDocument({ format: desired.format, keys: [] })),
           executable: false,
           objectKind: "regular",
+          appliedKeysDigest,
         };
       },
       catch: (error) => error,
@@ -596,7 +605,7 @@ export const observeFollowerResource = (
     case "file":
       return observeFile(decoded.resource.target, desired, decoded.resource.policy);
     case "config":
-      return observeConfig(decoded, desired);
+      return observeConfig(decoded, desired, applied);
     case "directory":
     case "skill":
       return Effect.gen(function*() {
@@ -625,7 +634,11 @@ export const observeFollowerResource = (
         // which made a locally added file invisible and therefore
         // unremovable: `replace` behaved like `mirror-owned` for anything
         // foreign, and the two policies were the same thing.
-        const foreign = decoded.resource.policy === "replace"
+        // A projected directory keeps the same full view after takeover, so
+        // an entry added to it is reported as drift instead of going unseen.
+        const listsEverything = decoded.resource.policy === "replace"
+          || decoded.resource.kind === "directory" && decoded.resource.policy === "replace-if-unmodified";
+        const foreign = listsEverything
           ? yield* machine.listDirectory(root).pipe(
             Effect.map((entries) =>
               entries.map((entry) => {
@@ -823,7 +836,7 @@ export const observeFollowerResource = (
  * record was never dropped, so the failure repeated forever and the follower
  * could neither converge nor remove anything.
  */
-const removedResourceVerification = (
+export const removedResourceVerification = (
   applied: AppliedResourceRecord,
   desired: DesiredResource,
 ): VerificationInput =>
@@ -831,7 +844,7 @@ const removedResourceVerification = (
     ? { method: "symlink", target: desired.symlinkTo }
     : { method: "digest", digest: Schema.decodeUnknownSync(ContentDigest)(applied.digest) };
 
-const removedResourceState = (
+export const removedResourceState = (
   applied: AppliedResourceRecord,
 ): {
   readonly resource: ProfileRevision["resources"][number];

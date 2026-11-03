@@ -196,6 +196,18 @@ export interface FollowerCredentialRecord {
   readonly credentialReference: CredentialReference;
 }
 
+/** One harness surface Canonfig has taken over, with the root pinned at takeover. */
+export interface HarnessTakeover {
+  /** A harness id, or `agents` for the shared `~/.agents/skills/` surface. */
+  readonly harness: string;
+  readonly surface: string;
+  readonly root: string;
+  /** The takeover snapshot holding the surface's prior content; absent without a backup. */
+  readonly snapshot?: string | undefined;
+  readonly run: RunId;
+  readonly takenOverAt: string;
+}
+
 export interface StartRunInput {
   readonly id: RunId;
   readonly follower: FollowerId;

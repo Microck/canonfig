@@ -20,6 +20,7 @@ import type {
   ConsumeEnrollmentInvitationInput,
   CreateEnrollmentInvitationInput,
   DeploymentReceipt,
+  HarnessTakeover,
   EnrollmentSourceRecord,
   FollowerCredentialRecord,
   FinalizeEnrollmentInput,
@@ -43,7 +44,7 @@ import type {
 } from "./state-repository.types.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
-import type { LocalOverlayEntry } from
+import type { LocalOverlayEntry, PlanningLocalRevision } from
   "../synchronization/synchronization.types.ts";
 
 export class StateRepository extends Context.Service<StateRepository, {
@@ -136,6 +137,27 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly readResourceBlobRange: (
     input: ReadResourceBlobRangeInput,
   ) => Effect.Effect<ResourceBlobRange | undefined, StateRepositoryError>;
+  /** Store the planning revision of a local projection; equal content is a no-op. */
+  readonly recordLocalRevision: (
+    revision: PlanningLocalRevision,
+    recordedAt: string,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  readonly getLocalRevision: (
+    revision: ProfileRevisionId,
+  ) => Effect.Effect<PlanningLocalRevision, StateRepositoryError>;
+  readonly loadHarnessTakeovers: (
+  ) => Effect.Effect<ReadonlyArray<HarnessTakeover>, StateRepositoryError>;
+  readonly recordHarnessTakeovers: (
+    takeovers: ReadonlyArray<HarnessTakeover>,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  /** Forget the takeovers a run recorded, after that run rolled back. */
+  readonly removeRunTakeovers: (
+    run: RunId,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  /** Forget surfaces a restore gave back to their harness. */
+  readonly releaseTakeovers: (
+    surfaces: ReadonlyArray<{ readonly harness: string; readonly surface: string }>,
+  ) => Effect.Effect<void, StateRepositoryError>;
   readonly loadAppliedResources: (
     follower: FollowerId,
   ) => Effect.Effect<ReadonlyArray<AppliedResourceRecord>, StateRepositoryError>;

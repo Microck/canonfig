@@ -765,9 +765,38 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   }];
 };
 
+/**
+ * Three-way merge for owned config keys: write them unless their values
+ * changed since Canonfig last applied them. The comparison uses the keys the
+ * Applied Resource Record owns, so declaring a new key is not mistaken for a
+ * local edit. Without a record, or with none of its keys left in the file,
+ * there is nothing to protect and the keys are merged.
+ */
+const planConfigIfUnmodified = (
+  context: ResourcePlanningContext,
+  desired: Extract<DesiredResource, { readonly kind: "config" }>,
+): ReadonlyArray<ResourceActionDraft> => {
+  const observed = context.observed;
+  if (
+    context.applied !== undefined
+    && observed.state === "present"
+    && (observed.objectKind === undefined || observed.objectKind === "regular")
+    && observed.appliedKeysDigest !== undefined
+    && observed.appliedKeysDigest !== context.applied.digest
+  ) {
+    return [driftConflict(
+      context,
+      desired.digest,
+      Schema.decodeUnknownSync(ContentDigestSchema)(observed.digest),
+    )];
+  }
+  return planMerge(context);
+};
+
 const planReplaceIfUnmodified = (
   context: ResourcePlanningContext,
 ): ReadonlyArray<ResourceActionDraft> => {
+  if (context.desired.kind === "config") return planConfigIfUnmodified(context, context.desired);
   const desiredDigest = desiredResourceDigest(context.desired);
   if (desiredDigest === undefined) {
     return [unresolvedAgentTask(context, `Resolve ${context.resource.kind} ${context.resource.id}`)];
@@ -791,14 +820,17 @@ const planReplaceIfUnmodified = (
       },
     }];
   }
-  // A skill already at the desired tree needs no write, regardless of which
+  // A tree already at the desired state needs no write, regardless of which
   // directories the previous revision declared. Otherwise compare to that
   // previous tree so Source path changes do not look like follower edits.
-  if (context.desired.kind === "skill"
+  const tree = context.desired.kind === "skill" || context.desired.kind === "directory"
+    ? context.desired
+    : undefined;
+  if (tree !== undefined
     && context.observed.state === "directory"
-    && observedMatchesDesired(context.desired, context.observed)) return [noOp()];
-  const currentDigest = context.desired.kind === "skill" && context.observed.state === "directory"
-    ? observedDirectoryDigest(context.observed, context.applied?.ownedFiles ?? desiredDirectoryEntries(context.desired))
+    && observedMatchesDesired(tree, context.observed)) return [noOp()];
+  const currentDigest = tree !== undefined && context.observed.state === "directory"
+    ? observedDirectoryDigest(context.observed, context.applied?.ownedFiles ?? desiredDirectoryEntries(tree))
     : observedDigest(context);
   if (
     context.desired.kind === "file"
@@ -830,7 +862,7 @@ const planReplaceIfUnmodified = (
     );
   const compareFilePermissions = context.desired.kind === "file"
     && context.desired.symlinkTo === undefined;
-  const compareSkillRootPermissions = context.desired.kind === "skill"
+  const compareSkillRootPermissions = tree !== undefined
     && context.observed.state === "directory";
   const drift = detectSkillDrift({
     desiredDigest,
@@ -848,7 +880,7 @@ const planReplaceIfUnmodified = (
       ? context.applied?.executable
       : undefined,
     desiredMode: compareFilePermissions || compareSkillRootPermissions
-      ? context.desired.mode
+      ? desiredResourceMode(context.desired)
       : undefined,
     observedMode: compareFilePermissions && context.observed.state === "present"
       ? context.observed.mode
@@ -1180,7 +1212,7 @@ const planRemovedResource = (
         }];
       }
       if (
-        context.resource.policy !== "merge"
+        (context.resource.policy !== "merge" && context.resource.policy !== "replace-if-unmodified")
         || applied.ownedKeys === undefined
         || applied.configFormat === undefined
       ) {

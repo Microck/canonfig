@@ -30,6 +30,7 @@ import {
   InstallerRecipeProvenance,
   type InstallerRecipeProvenance as InstallerRecipeProvenanceType,
 } from "./mcp-qualification.ts";
+import { PublishedResourceSchema, VerificationInputSchema } from "./profile.ts";
 /**
  * Synchronization domain types: plans, actions, outcomes, drift, agent tasks,
  * and human action records.
@@ -232,6 +233,13 @@ export type ObservedResourceState =
      * installed, when it lists the package. Undefined when it cannot say.
      */
     readonly installedVersion?: string | undefined;
+    /**
+     * Configs: the current values at the Applied Resource Record's keys,
+     * rendered like `digest`, so they compare with the record's digest even
+     * when the desired key set changed. Undefined when none of those keys is
+     * present or nothing was applied.
+     */
+    readonly appliedKeysDigest?: string | undefined;
   }
   | {
     readonly state: "directory";
@@ -483,6 +491,7 @@ export const ObservedResourceStateSchema = Schema.Union([
     objectKind: Schema.optional(ObservedObjectKind),
     symlinkTo: Schema.optional(Schema.NonEmptyString),
     installedVersion: Schema.optional(Schema.NonEmptyString),
+    appliedKeysDigest: Schema.optional(ContentDigest),
   }),
   Schema.Struct({
     state: Schema.Literal("directory"),
@@ -657,3 +666,55 @@ export type ExitCode = (typeof ExitCode)[keyof typeof ExitCode];
 
 /** Agent policy schema re-exported for the profile authoring boundary. */
 export { AgentPolicy } from "./identity.ts";
+
+/**
+ * The follower id of runs that project this machine's own Canonical Folder.
+ * Enrolled followers are named `follower-<hash>`, so this never collides.
+ */
+export const localProjectionFollower = Schema.decodeUnknownSync(FollowerId)("local");
+
+const DesiredFileSchema = Schema.Struct({
+  path: Schema.NonEmptyString,
+  digest: ContentDigest,
+  executable: Schema.Boolean,
+  mode: Schema.Int,
+  symlinkTo: Schema.optional(Schema.NonEmptyString),
+});
+
+/**
+ * The stored form of a local planning revision. Local projections produce
+ * only file, directory and config resources.
+ */
+export const PlanningLocalRevisionSchema = Schema.Struct({
+  origin: Schema.Literals(["folder", "snapshot"]),
+  id: ProfileRevisionId,
+  originDigest: ContentDigest,
+  resources: Schema.Array(PublishedResourceSchema),
+  desired: Schema.Array(Schema.Struct({
+    resource: ResourceIdSchema,
+    desired: Schema.Union([
+      Schema.Struct({
+        kind: Schema.Literal("file"),
+        digest: ContentDigest,
+        executable: Schema.Boolean,
+        mode: Schema.Int,
+        symlinkTo: Schema.optional(Schema.NonEmptyString),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("directory"),
+        mode: Schema.Int,
+        directories: Schema.Array(Schema.Struct({ path: Schema.NonEmptyString, mode: Schema.Int })),
+        files: Schema.Array(DesiredFileSchema),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("config"),
+        digest: ContentDigest,
+        format: Schema.Literals(["toml", "json", "yaml"]),
+        keys: Schema.Array(Schema.String),
+      }),
+    ]),
+    verification: VerificationInputSchema,
+  })),
+  blobs: Schema.Array(Schema.Struct({ id: BlobId, bytes: Schema.Int })),
+  removedResources: Schema.optional(Schema.Array(ResourceIdSchema)),
+});

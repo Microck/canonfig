@@ -531,7 +531,154 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       )
     `;
   }),
+  // Local projection runs (`canonfig sync` on the Source or an unenrolled
+  // machine) belong to this machine rather than to an enrolled follower, and
+  // apply a revision Canonfig built from `~/.canonfig/` rather than one a
+  // Source published. Runs and Applied Resource Records therefore no longer
+  // reference `followers` and `profile_revisions`; the repository checks that
+  // a run's revision exists in `profile_revisions` or `local_revisions`.
+  //
+  // SQLite cannot drop a foreign key in place. Each table is copied, dropped
+  // and recreated under its own name with the checks deferred to commit, so
+  // the rows that reference `synchronization_runs` resolve again once the
+  // recreated table holds its rows.
+  "0022_local_projection": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`PRAGMA defer_foreign_keys = ON`;
+    yield* sql`CREATE TABLE synchronization_runs_copy AS SELECT * FROM synchronization_runs`;
+    yield* sql`DROP TABLE synchronization_runs`;
+    yield* sql`
+      CREATE TABLE synchronization_runs (
+        id TEXT PRIMARY KEY,
+        follower_id TEXT NOT NULL,
+        revision_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+          status IN (
+            'applying',
+            'Converged',
+            'HumanActionRequired',
+            'FollowerDrift',
+            'Failed',
+            'Interrupted'
+          )
+        ),
+        plan_json TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        outcome_json TEXT,
+        creating_version TEXT,
+        creating_identity TEXT,
+        state_format INTEGER
+      )
+    `;
+    yield* sql`
+      INSERT INTO synchronization_runs (
+        id, follower_id, revision_id, status, plan_json, started_at, completed_at,
+        outcome_json, creating_version, creating_identity, state_format
+      )
+      SELECT
+        id, follower_id, revision_id, status, plan_json, started_at, completed_at,
+        outcome_json, creating_version, creating_identity, state_format
+      FROM synchronization_runs_copy
+    `;
+    yield* sql`DROP TABLE synchronization_runs_copy`;
+    yield* sql`
+      CREATE UNIQUE INDEX one_active_applying_run_per_follower
+      ON synchronization_runs(follower_id)
+      WHERE status = 'applying'
+    `;
+    yield* sql`
+      CREATE INDEX recoverable_runs_by_follower
+      ON synchronization_runs(follower_id, status)
+      WHERE status IN ('applying', 'Interrupted')
+    `;
+    yield* sql`
+      CREATE TRIGGER block_run_while_recoverable
+      BEFORE INSERT ON synchronization_runs
+      WHEN EXISTS (
+        SELECT 1
+        FROM synchronization_runs
+        WHERE follower_id = NEW.follower_id
+          AND status IN ('applying', 'Interrupted')
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'recoverable synchronization run exists');
+      END
+    `;
+
+    yield* sql`CREATE TABLE applied_resources_copy AS SELECT * FROM applied_resources`;
+    yield* sql`DROP TABLE applied_resources`;
+    yield* sql`
+      CREATE TABLE applied_resources (
+        follower_id TEXT NOT NULL,
+        resource_id TEXT NOT NULL,
+        revision_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        owned_files_json TEXT,
+        kind TEXT,
+        policy TEXT,
+        target TEXT,
+        owned_keys_json TEXT,
+        config_format TEXT,
+        executable INTEGER,
+        symlink_target TEXT,
+        mode INTEGER,
+        installer_recipe_json TEXT,
+        PRIMARY KEY (follower_id, resource_id)
+      )
+    `;
+    yield* sql`
+      INSERT INTO applied_resources (
+        follower_id, resource_id, revision_id, digest, applied_at, owned_files_json,
+        kind, policy, target, owned_keys_json, config_format, executable,
+        symlink_target, mode, installer_recipe_json
+      )
+      SELECT
+        follower_id, resource_id, revision_id, digest, applied_at, owned_files_json,
+        kind, policy, target, owned_keys_json, config_format, executable,
+        symlink_target, mode, installer_recipe_json
+      FROM applied_resources_copy
+    `;
+    yield* sql`DROP TABLE applied_resources_copy`;
+
+    // The planning revision of one local run (a projection of the folder or
+    // a restore of a snapshot): resources, desired state and blob sizes,
+    // without file content. Recovery resumes from it.
+    yield* sql`
+      CREATE TABLE local_revisions (
+        id TEXT PRIMARY KEY,
+        origin_digest TEXT NOT NULL,
+        revision_json TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      )
+    `;
+    yield* sql`
+      CREATE TRIGGER local_revisions_immutable_update
+      BEFORE UPDATE ON local_revisions
+      BEGIN
+        SELECT RAISE(ABORT, 'local revisions are immutable');
+      END
+    `;
+
+    // One row per harness surface Canonfig has taken over. Every row of a
+    // harness carries the root resolved at its first takeover. `snapshot`
+    // names the takeover snapshot that holds the surface's prior content, or
+    // is NULL when the takeover ran without one.
+    yield* sql`
+      CREATE TABLE harness_takeovers (
+        harness TEXT NOT NULL,
+        surface TEXT NOT NULL,
+        root TEXT NOT NULL,
+        snapshot TEXT,
+        run_id TEXT NOT NULL,
+        taken_over_at TEXT NOT NULL,
+        PRIMARY KEY (harness, surface)
+      )
+    `;
+  }),
 });
 
 /** Bumped by every migration that changes what a stored run means. */
-export const stateFormatVersion = 4;
+export const stateFormatVersion = 5;

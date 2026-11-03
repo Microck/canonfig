@@ -56,6 +56,7 @@ import {
 } from "./synchronization.errors.ts";
 import type {
   PlannedSynchronization,
+  PlanningProfileRevision,
   SynchronizationRecoveryInput,
   SynchronizationRunInput,
 } from "./synchronization.types.ts";
@@ -217,7 +218,7 @@ const validateJournal = (
     return latest;
   });
 
-const baseRevision = (revision: SynchronizationRecoveryInput["revision"]) => ({
+const baseRevision = (revision: PlanningProfileRevision) => ({
   id: revision.id,
   profileId: revision.profileId,
   sequence: revision.sequence,
@@ -423,12 +424,14 @@ export const recoverSynchronizationPlan = (
       });
     }
     const plan = yield* hydratePlan(recovery);
-    const persistedRevision = yield* repository.getRevision(recovery.run.revision);
-    if (
-      recoveryInput.revision.id !== recovery.run.revision
-      || JSON.stringify(baseRevision(recoveryInput.revision))
-        !== JSON.stringify(persistedRevision)
-    ) {
+    // A local revision is stored whole, so recovery resumes from exactly the
+    // stored value; a published revision is compared without its hydration.
+    const matchesPersisted = "origin" in recoveryInput.revision
+      ? JSON.stringify(yield* repository.getLocalRevision(recovery.run.revision))
+        === JSON.stringify(recoveryInput.revision)
+      : JSON.stringify(baseRevision(recoveryInput.revision))
+        === JSON.stringify(yield* repository.getRevision(recovery.run.revision));
+    if (recoveryInput.revision.id !== recovery.run.revision || !matchesPersisted) {
       return yield* integrityError(
         recovery,
         "hydrated revision does not match the persisted run revision",

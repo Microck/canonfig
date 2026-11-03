@@ -548,7 +548,7 @@ const buildPlan = (
     const successors = retired && filesystem(resource) ? activeResources.filter((next) =>
       filesystem(next) && overlaps(target, normalize(indexed.resolvedTargets.get(next.id) ?? next.target))) : [];
     if (successors.length > 0) {
-      const retainsContent = resource.policy === "append-local" || resource.kind === "config" && resource.policy === "merge";
+      const retainsContent = resource.policy === "append-local" || resource.kind === "config" && resource.policy !== "replace";
       const retainedDirectoryRoot = (resource.kind === "directory" || resource.kind === "skill")
         && successors.some((next) => next.kind !== "directory" && next.kind !== "skill" && normalize(indexed.resolvedTargets.get(next.id) ?? next.target) === target);
       if (observed.state !== "absent" && (drafts.length === 0 || retainsContent || retainedDirectoryRoot)) {
@@ -591,7 +591,7 @@ const buildPlan = (
       if (draft.detail.kind !== "remove-resource") continue;
       if (resource.kind === "directory" || resource.kind === "skill") {
         for (const path of draft.detail.paths) removedPaths.add(normalize(`${target}/${path}`));
-      } else if (resource.policy !== "append-local" && !(resource.kind === "config" && resource.policy === "merge")) {
+      } else if (resource.policy !== "append-local" && !(resource.kind === "config" && resource.policy !== "replace")) {
         removedPaths.add(target);
       }
     }
