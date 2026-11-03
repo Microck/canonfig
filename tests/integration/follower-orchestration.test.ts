@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
+import { Effect, Fiber, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentResolutionLive } from "../../src/agent/agent-resolution.layer.ts";
@@ -1213,5 +1213,62 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     const [snapshot] = readdirSync(backups);
     expect(read(join(backups, snapshot!, "claude-code", ".claude", "CLAUDE.md"))).toBe("old instructions\n");
     expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+  });
+
+  it("releases takeovers of surfaces an abandoned first run never applied", async () => {
+    const root = temporaryRoot("abandoned-takeover");
+    const source = await startSource(root, (folder) => authorFolder(folder, { harnesses: ["amp", "claude-code", "qwen"] }, {
+      "AGENTS.md": "Prefer small diffs.\n",
+    }));
+    const follower = await enroll(root, source, { name: "Abandoned follower", harnesses: ["amp", "claude-code", "qwen"] });
+    const instructions = join(follower.home, ".claude", "CLAUDE.md");
+    const qwen = join(follower.home, ".qwen", "QWEN.md");
+    write(join(follower.home, ".config", "amp", "AGENTS.md"), "old amp\n");
+    write(instructions, "old instructions\n");
+    write(qwen, "old qwen\n");
+    // The run is killed while writing CLAUDE.md: amp sorts before it and is
+    // applied, qwen sorts after it and never runs. Only the first write is
+    // held; later ones restore the file.
+    const { promise: started, resolve: notify } = Promise.withResolvers<void>();
+    let held = false;
+    const holding = Layer.effect(MachineState, Effect.map(MachineState, (service) => ({
+      ...service,
+      atomicWrite: (input: Parameters<typeof service.atomicWrite>[0]) => {
+        if (held || input.path.absolute !== instructions) return service.atomicWrite(input);
+        held = true;
+        notify();
+        return Effect.never;
+      },
+    }))).pipe(Layer.provide(follower.machine));
+    const repository = stateRepositoryLayer(follower.state);
+    const fiber = Effect.runFork(synchronizeFollower(follower.state, "apply", { environment: () => undefined, noBackup: false }).pipe(
+      Effect.provide(Layer.mergeAll(
+        repository,
+        holding,
+        AgentResolutionLive,
+        SynchronizationLive.pipe(Layer.provide(Layer.merge(repository, holding))),
+      )),
+    ));
+    await started;
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    await expect(Effect.runPromise(
+      abandonFollowerRun(follower.state).pipe(Effect.provide(follower.application)),
+    )).resolves.toMatchObject({ abandoned: true });
+    const database = new DatabaseSync(follower.state, { readOnly: true });
+    const rowsAfterAbandon = database.prepare("SELECT harness, surface FROM harness_takeovers").all();
+    database.close();
+
+    const retried = await follower.apply();
+    expect(retried.outcome).toMatchObject({ outcome: "Converged" });
+    expect(read(instructions)).toContain("Prefer small diffs.");
+    expect(read(qwen)).toContain("Prefer small diffs.");
+    const backups = join(follower.folder, ".backups");
+    const retrySnapshot = join(backups, readdirSync(backups).sort().at(-1)!);
+    expect(read(join(retrySnapshot, "qwen", ".qwen", "QWEN.md"))).toBe("old qwen\n");
+    expect(read(join(retrySnapshot, "claude-code", ".claude", "CLAUDE.md"))).toBe("old instructions\n");
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+
+    expect(rowsAfterAbandon.map((row) => row.harness)).toContain("amp");
+    expect(rowsAfterAbandon.map((row) => row.harness)).not.toContain("qwen");
   });
 });

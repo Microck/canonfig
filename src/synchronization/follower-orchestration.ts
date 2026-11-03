@@ -52,6 +52,7 @@ import {
   discardRunArtifacts,
   finishProjectionRun,
   loadRunArtifacts,
+  releaseUnappliedTakeovers,
   runProjection,
   type LocalSyncOptions,
 } from "../projection/sync.ts";
@@ -1056,7 +1057,8 @@ export const synchronizeFollower = Effect.fn(
  *
  * This is deliberately not a rollback. Whatever the interrupted run had already
  * applied stays applied, and the next run reconciles it like any other
- * follower state. Abandoning only stops the open run from blocking that.
+ * follower state. Abandoning only stops the open run from blocking that, and
+ * releases takeovers of surfaces the run never applied, as after an early stop.
  */
 export const abandonFollowerRun = Effect.fn(
   "FollowerOrchestration.abandon",
@@ -1085,6 +1087,8 @@ export const abandonFollowerRun = Effect.fn(
     [],
     recovery.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]),
   );
+  // Before the run closes, so a failure here leaves it open for another abandon.
+  yield* releaseUnappliedTakeovers(stateLocation, configuration.follower.id, recovery.run.id);
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
   );

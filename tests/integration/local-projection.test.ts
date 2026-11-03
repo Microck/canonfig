@@ -13,7 +13,7 @@ import { adapterFor } from "../../src/projection/adapters/index.ts";
 import { loadCanonicalFolder } from "../../src/projection/folder.ts";
 import { TARGET_IDS, type TargetId } from "../../src/projection/model.ts";
 import { rootContext } from "../../src/projection/plan.ts";
-import { recoverLocal, restoreLocal, synchronizeLocal } from "../../src/projection/sync.ts";
+import { abandonLocal, recoverLocal, restoreLocal, synchronizeLocal } from "../../src/projection/sync.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import type { ConfigValue } from "../../src/domain/resource.ts";
@@ -431,4 +431,59 @@ describe("local projection", () => {
     expect(snapshots(value)).toHaveLength(1);
     expect(takeoverRows(value).map((row) => row.harness)).not.toContain("opencode");
   }, 60_000);
+
+  it("releases takeovers of surfaces an abandoned first run never applied", async () => {
+    const value = fixture(["amp", "claude-code", "qwen"]);
+    const instructions = join(value.home, ".claude", "CLAUDE.md");
+    write(join(value.home, ".config", "amp", "AGENTS.md"), "old amp\n");
+    write(instructions, "old instructions\n");
+    write(join(value.home, ".qwen", "QWEN.md"), "old qwen\n");
+    // The run is killed while writing CLAUDE.md: amp (and the shared skills)
+    // sort before it and are applied, qwen sorts after it and never runs.
+    // Only the first write is held; later ones restore the file.
+    const { promise: started, resolve: notify } = Promise.withResolvers<void>();
+    let held = false;
+    const holding = Layer.effect(MachineState, Effect.map(MachineState, (service) => ({
+      ...service,
+      atomicWrite: (input: Parameters<typeof service.atomicWrite>[0]) => {
+        if (held || input.path.absolute !== instructions) return service.atomicWrite(input);
+        held = true;
+        notify();
+        return Effect.never;
+      },
+    }))).pipe(Layer.provide(machineLayer(value)));
+    const fiber = Effect.runFork(synchronizeLocal(value.statePath, "apply", { noBackup: false, environment: environmentOf(value) }).pipe(
+      Effect.provide(layer(value, holding)),
+    ));
+    await started;
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    const database = new DatabaseSync(value.statePath, { readOnly: true });
+    const row = database.prepare("SELECT status FROM synchronization_runs").get();
+    database.close();
+    expect(row?.status).toBe("Interrupted");
+    const [interruptedSnapshot] = snapshots(value);
+
+    await Effect.runPromise(abandonLocal(value.statePath).pipe(Effect.provide(layer(value))));
+    const rowsAfterAbandon = takeoverRows(value);
+    const kept = join(value.folder, ".backups", interruptedSnapshot!);
+    const keptTree = tree(kept);
+
+    const retried = await sync(value, "apply");
+    expect(retried.outcome).toMatchObject({ outcome: "Converged" });
+    expect(retried.takeovers.map((entry) => entry.harness)).toEqual(expect.arrayContaining(["claude-code", "qwen"]));
+    expect(readFileSync(instructions, "utf8")).toContain("Prefer small diffs.");
+    expect(readFileSync(join(value.home, ".qwen", "QWEN.md"), "utf8")).toContain("Prefer small diffs.");
+    const retrySnapshot = join(value.folder, ".backups", snapshots(value).at(-1)!);
+    expect(retrySnapshot).not.toBe(kept);
+    expect(readFileSync(join(retrySnapshot, "qwen", ".qwen", "QWEN.md"), "utf8")).toBe("old qwen\n");
+    expect(readFileSync(join(retrySnapshot, "claude-code", ".claude", "CLAUDE.md"), "utf8")).toBe("old instructions\n");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+
+    expect(rowsAfterAbandon.map((row) => row.harness)).toContain("amp");
+    expect(rowsAfterAbandon.map((row) => row.harness)).not.toContain("qwen");
+    expect(rowsAfterAbandon.some((row) => row.harness === "claude-code" && row.surface === "instructions")).toBe(false);
+    expect([...keptTree.keys()].some((path) => path.startsWith("qwen/"))).toBe(false);
+    expect(keptTree.has("claude-code/.claude/CLAUDE.md")).toBe(false);
+    expect(keptTree.get("amp/.config/amp/AGENTS.md")).toBe("old amp\n");
+  }, 120_000);
 });

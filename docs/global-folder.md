@@ -134,9 +134,10 @@ only. Directories are 0700 and files 0600. `pruneSnapshots` keeps the first
 snapshot and the four most recent. `local/local.jsonc` `backups: false` or
 `sync --no-backup` skips the snapshot. A run that rolls back deletes its
 snapshot and takeover rows. A run that stops early (Human Action Required or
-Follower Drift) keeps takeover rows only for surfaces it applied: the others
-are released and dropped from its snapshot (an emptied snapshot is deleted),
-so the next run takes them over again with a fresh snapshot.
+Follower Drift), or an interrupted run closed with `canonfig abandon`, keeps
+takeover rows only for surfaces it applied: the others are released and
+dropped from its snapshot (an emptied snapshot is deleted), so the next run
+takes them over again with a fresh snapshot.
 
 ## Restore
 

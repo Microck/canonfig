@@ -131,22 +131,22 @@ export const finishProjectionRun = (
     }
     const snapshotDeleted = outcome.outcome === "Converged"
       ? false
-      : yield* releaseUnappliedTakeovers(backups, follower, run);
+      : yield* releaseUnappliedTakeovers(statePath, follower, run);
     if (revision.origin === "snapshot" && outcome.outcome === "Converged") yield* finishRestore(statePath, revision);
     return { snapshotDeleted, pruned: yield* pruneSnapshots(backups) };
   });
 
 /**
- * After a run that stopped early (Human Action Required or Follower Drift):
- * the executor skipped every action after the stop, so some surfaces the run
- * took over were never written. Their takeover rows are released and their
- * snapshot entries dropped, deleting the snapshot if it empties; otherwise
- * the next run would treat them as owned with no Applied Resource Record and
- * report drift on content Canonfig never wrote. A surface counts as applied
- * when it has a record, and a config key when that record owns it. Returns
- * whether the run's snapshot was deleted.
+ * After a run that stopped early (Human Action Required or Follower Drift) or
+ * was interrupted and then abandoned: the run never reached some surfaces it
+ * took over. Their takeover rows are released and their snapshot entries
+ * dropped, deleting the snapshot if it empties; otherwise the next run would
+ * treat them as owned with no Applied Resource Record and report drift on
+ * content Canonfig never wrote. A surface counts as applied when it has a
+ * record, and a config key when that record owns it. Returns whether the
+ * run's snapshot was deleted.
  */
-const releaseUnappliedTakeovers = (backups: string, follower: FollowerId, run: RunIdType) =>
+export const releaseUnappliedTakeovers = (statePath: string, follower: FollowerId, run: RunIdType) =>
   Effect.gen(function*() {
     const repository = yield* StateRepository;
     const applied = new Map((yield* repository.loadAppliedResources(follower)).map((record) => [record.resource, record]));
@@ -158,6 +158,7 @@ const releaseUnappliedTakeovers = (backups: string, follower: FollowerId, run: R
     }).map((takeover) => ({ harness: takeover.harness, surface: takeover.surface }));
     if (unapplied.length === 0) return false;
     yield* repository.releaseTakeovers(unapplied);
+    const backups = backupsOf(statePath);
     const snapshot = yield* snapshotOfRun(backups, run);
     return snapshot === undefined ? false : yield* dropSnapshotEntries(backups, snapshot, unapplied);
   });
@@ -455,7 +456,8 @@ export const recoverLocal = Effect.fn("LocalProjection.recover")(function*(state
 
 /**
  * `canonfig abandon` for an interrupted local run: close it without rollback.
- * What it applied stays applied, with its takeovers and snapshot.
+ * What it applied stays applied, with its takeovers and snapshot; takeovers
+ * of surfaces it never applied are released, as after an early stop.
  */
 export const abandonLocal = Effect.fn("LocalProjection.abandon")(function*(statePath: string) {
   const repository = yield* StateRepository;
@@ -471,6 +473,8 @@ export const abandonLocal = Effect.fn("LocalProjection.abandon")(function*(state
     [],
     recovery.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]),
   );
+  // Before the run closes, so a failure here leaves it open for another abandon.
+  yield* releaseUnappliedTakeovers(statePath, localProjectionFollower, recovery.run.id);
   yield* repository.completeRun({
     run: recovery.run.id,
     completedAt: new Date().toISOString(),
