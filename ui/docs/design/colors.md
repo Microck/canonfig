@@ -56,7 +56,7 @@ What text colour?
 | --- | --- | --- |
 | `ok` | Up to date, done, connected, added | `ok` |
 | `warn` | Edited on a machine, modified since the last revision, an update ready to apply | `warn` |
-| `act` | Needs a person: "Needs you", "Paused until you decide" | `act` |
+| `act` | Needs a person: "Needs you", a sign-in only a person can do | `act` |
 | `bad` | Failed, unreachable, invalid, destructive (`destructive` aliases `bad`) | `bad`, `offline` |
 | `text-faint` | Off, not used, not applied, excluded | `off` |
 

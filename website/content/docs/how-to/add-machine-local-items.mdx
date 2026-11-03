@@ -1,0 +1,118 @@
+---
+title: Add items to one machine only
+description: Keep extra skills, rules, subagents, commands, MCP servers, or settings on one machine in ~/.canonfig/local/, without publishing them.
+---
+
+Items in `~/.canonfig/local/` are projected into that machine's harnesses
+together with the published items. They are never published, never mirrored,
+and never replaced by a sync. Use the local folder for a skill you only need at
+work, an MCP server that only runs on one machine, or a setting that differs on
+a laptop.
+
+## Before you start
+
+- The Source Machine decides which kinds of local items any machine may add,
+  with `local.allow` in its `~/.canonfig/canonfig.jsonc`. Local items of a kind
+  it does not allow are reported and not projected.
+- A local item cannot have the same name as a published one.
+
+## Allow local items (Source Machine)
+
+On the Source Machine, list the kinds of local items to allow, then publish:
+
+```jsonc title="part of ~/.canonfig/canonfig.jsonc"
+{
+  "local": { "allow": ["skills", "mcp", "settings"] }
+}
+```
+
+```bash
+canonfig source publish --reviewer "$USER"
+```
+
+The kinds are `rules`, `skills`, `agents`, `commands`, `mcp`, and `settings`.
+Hooks and tools cannot be local. The same `local.allow` applies to the Source
+Machine's own local folder.
+
+## Add local items
+
+The local folder uses the same files and formats as the main folder:
+
+```text
+~/.canonfig/local/
+  rules/<id>.md
+  skills/<name>/SKILL.md
+  agents/<id>.md
+  commands/<id>.md
+  local.jsonc
+```
+
+For example, add a skill on one machine:
+
+```markdown title="~/.canonfig/local/skills/deploy-staging/SKILL.md"
+---
+name: deploy-staging
+description: Deploy the current branch to the staging cluster.
+---
+
+Run `make deploy-staging` from the repository root and report the URL it prints.
+```
+
+MCP servers and settings go in `local/local.jsonc`, in the same shape as
+`mcp` and `settings` in `canonfig.jsonc`:
+
+```jsonc title="~/.canonfig/local/local.jsonc"
+{
+  "mcp": {
+    "postgres": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/app_dev"]
+    }
+  },
+  "settings": {
+    "codex": { "model_reasoning_effort": "medium" }
+  }
+}
+```
+
+Then preview and apply on that machine:
+
+```bash
+canonfig sync --plan
+canonfig sync --apply
+```
+
+`local.jsonc` also holds two settings that work whatever `local.allow` says:
+
+| Key | What it does |
+| --- | --- |
+| `excludeHarnesses` | Harnesses this machine never projects into. `canonfig harnesses exclude` and `canonfig restore` edit it. See [Choose which harnesses Canonfig manages](/how-to/choose-harnesses). |
+| `backups` | `false` takes over harnesses on this machine without a Takeover Snapshot. See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
+
+## Move a machine's own items before it becomes a Follower Machine
+
+On a Follower Machine, `~/.canonfig/canonfig.jsonc`, `AGENTS.md`, `rules/`,
+`skills/`, `agents/`, `commands/`, and `hooks/` hold the Source Machine's
+mirror. `canonfig follower enroll` refuses a folder that already holds items
+there. Move what the machine should keep into `~/.canonfig/local/` (documents
+and skills as files, MCP servers and settings into `local.jsonc`), delete the
+rest, then enroll.
+
+Do not edit the mirror on a Follower Machine. A changed mirror file is
+Follower Drift: Canonfig keeps it, reports it, and stops updating that item's
+projections. Put the change in the local folder instead.
+
+## If something fails
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| "local/skills/ is not admitted by canonfig.jsonc local.allow and was not projected" (warning) | The Source Machine does not allow local skills. The same message names `local/rules/`, `local/agents/`, `local/commands/`, `local/local.jsonc mcp`, or `local/local.jsonc settings`. | Ask for the kind to be added to `local.allow` on the Source Machine, or remove the local items. |
+| "/home/maria/.canonfig/local: local skill code-review has the same name as a published one; rename or remove one of them" (exit 3) | A local rule, skill, subagent, or command has the name of a published one. | Rename or remove the local item, then sync again. |
+| "/home/maria/.canonfig/local/local.jsonc: local MCP server docs has the same name as a published one; rename or remove one of them" (exit 3) | A local MCP server has the name of a published one. | Rename or remove the local server. |
+| "/home/maria/.canonfig/local/local.jsonc: local setting codex model_reasoning_effort overlaps published setting model_reasoning_effort; remove one of them" (exit 3) | A local setting overlaps a published one. | Remove the local setting, or ask for the published one to be removed. |
+| "/home/maria/.canonfig already holds authored items (canonfig.jsonc, skills), where a follower keeps its Source's mirror; ..." (`follower enroll`, exit 2) | The machine has its own items where the mirror goes. | See [Move a machine's own items before it becomes a Follower Machine](#move-a-machines-own-items-before-it-becomes-a-follower-machine). |
+
+A collision stops the whole run before anything changes. It can start after
+the Source Machine publishes an item whose name you already use locally; the
+fix is the same.

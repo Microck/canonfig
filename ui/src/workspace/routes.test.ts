@@ -9,6 +9,7 @@ const pages: [WorkspaceRole, View, string][] = [
   ["source", "profile", "profile"],
   ["source", "machines", "machines"],
   ["source", "revisions", "revisions"],
+  ["source", "backups", "backups"],
   ["source", "secrets", "secrets"],
   ["source", "service", "settings/service"],
   ["source", "agent", "settings/agent"],
@@ -19,7 +20,8 @@ const pages: [WorkspaceRole, View, string][] = [
   ["follower", "machines", "machines"],
   ["follower", "sync", "sync"],
   ["follower", "schedule", "schedule"],
-  ["follower", "overlays", "local-settings"],
+  ["follower", "local", "local-settings"],
+  ["follower", "backups", "backups"],
   ["follower", "secrets", "secrets"],
   ["follower", "tunnel", "settings/tunnel"],
   ["follower", "agent", "settings/agent"],
@@ -33,13 +35,13 @@ describe("canonical workspace routes", () => {
       const href = `/${role}/${segment}`;
       assert.equal(workspaceHref(role, view), href);
       assert.deepEqual(parseRoute(href), {
-        kind: "workspace", role, view, profileTab: "resources", machinesMode: "map", focus: null,
+        kind: "workspace", role, view, profileTab: "items", machinesMode: "map", focus: null,
       });
     });
   }
 
   it("round-trips profile tabs and both machine list routes", () => {
-    for (const profileTab of ["groups", "defaults"] as const) {
+    for (const profileTab of ["harnesses", "groups", "defaults"] as const) {
       const href = workspaceHref("source", "profile", { profileTab });
       assert.equal(href, `/source/profile/${profileTab}`);
       assert.deepEqual(parseRoute(href), {
@@ -50,7 +52,7 @@ describe("canonical workspace routes", () => {
       const href = workspaceHref(role, "machines", { machinesMode: "list" });
       assert.equal(href, `/${role}/machines/list`);
       assert.deepEqual(parseRoute(href), {
-        kind: "workspace", role, view: "machines", profileTab: "resources", machinesMode: "list", focus: null,
+        kind: "workspace", role, view: "machines", profileTab: "items", machinesMode: "list", focus: null,
       });
     }
   });
@@ -81,9 +83,9 @@ describe("canonical workspace routes", () => {
   it("rejects unknown pages and pages belonging to the other role", () => {
     for (const href of [
       "/source/sync", "/source/settings/tunnel", "/source/settings/enrollment", "/source/profile/items",
-      "/source/machines/map", "/source/doctor", "/source/profile/", "/source", "/source/no-such-page",
-      "/follower/profile", "/follower/profile/groups", "/follower/revisions", "/follower/settings/service",
-      "/follower/settings/setup", "/follower/settings/installers", "/follower/overlays", "/follower/machine",
+      "/source/machines/map", "/source/doctor", "/source/profile/", "/source", "/source/no-such-page", "/source/local-settings",
+      "/follower/profile", "/follower/profile/groups", "/follower/profile/harnesses", "/follower/revisions", "/follower/settings/service",
+      "/follower/settings/setup", "/follower/settings/installers", "/follower/local", "/follower/machine",
     ]) {
       const route = parseRoute(href);
       assert.equal(route.kind, "workspace", href);

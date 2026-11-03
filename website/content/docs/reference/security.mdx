@@ -1,26 +1,90 @@
 ---
 title: Security and credentials
-description: Look up what Canonfig signs and sends between machines, where it stores credentials on each platform, and how to revoke a Follower Machine.
+description: Look up what Canonfig publishes and sends between machines, what it may write in each harness, where it keeps backups and credentials, and how to revoke a Follower Machine.
 ---
 
 ## What leaves each machine
 
 | Data | Where it goes | How it travels |
 | --- | --- | --- |
-| Profile Revisions and the files they name | Source Machine to Follower Machines | HTTPS pinned at enrollment, signed by the Source Machine |
+| Profile Revisions: the authoring allowlist of `~/.canonfig/` | Source Machine to Follower Machines | HTTPS pinned at enrollment, signed by the Source Machine |
 | Shared secrets (opt-in only) | Source Machine to Follower Machines in the `canonfig:secrets` group | The same pinned HTTPS connection |
 | Follower Machine status and run results | Stay on the Follower Machine | Not sent |
-| Local Overlay keys and local `append-local` text | Stay on the Follower Machine | Not sent |
-| `credential` resource values | Never sent; the profile holds only a reference | Not sent |
+| `~/.canonfig/local/` and everything else outside the allowlist | Stay on the machine | Not sent |
+| Takeover snapshots and run journals | Stay on the machine | Not sent |
+| Values behind `credentials` and `fromEnv` references | Never sent; the folder holds only the name | Not sent |
 | Command log | Stays on the machine | Not sent |
 
-Everything in a profile, including inline `content` and every `source` file,
-is published to every Follower Machine that selects the profile. Do not put
-tokens, passwords, private keys, or cookies in profile content.
+Publication reads only the authoring allowlist: `canonfig.jsonc`,
+`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, and `hooks/`. Every
+file must resolve inside `~/.canonfig/`, and links are refused, so neither
+`..` nor a symbolic link can publish a file from elsewhere on the Source
+Machine. Everything in the allowlist reaches every Follower Machine its
+[groups](/reference/canonfig-folder#groups) allow. Do not put tokens,
+passwords, private keys, or cookies in it:
+
+- Write MCP secrets as `{ "fromEnv": "NAME" }` references. Each machine's
+  harness reads the variable when it starts the server.
+- A `canonfig.jsonc` value that looks like a literal credential stops
+  publication before anything is signed:
+
+  > config resource `<id>` at `<path>` contains a literal credential
+  > [REDACTED]; remove the value and use a symbolic environment reference or
+  > named shared-secret binding, store shared values with canonfig secrets
+  > set, then review and publish again
+
+- `canonfig setup plan` turns credential-looking MCP values it imports into
+  `fromEnv` references and lists each one.
 
 Canonfig signs Profile Revisions and pins the connection; it does not encrypt
-profile content at rest. Follower Machines write applied files with the modes
-the profile declares (`0600` by default).
+content at rest. A Follower Machine writes its mirror files with mode `0600`,
+or `0700` for executable files.
+
+## What Canonfig writes in a harness
+
+Each harness has a fixed list of surfaces Canonfig owns: whole files, whole
+directories, or named keys in a file the harness shares with its own state.
+Canonfig writes only those, and only inside the harness root it pinned at
+takeover. Every root must resolve inside your home directory.
+
+Each harness also has a never-touch list: credentials, sessions, history, and
+other state, such as `~/.codex/auth.json` or every key in `~/.claude.json`
+except `mcpServers`. No owned surface may equal or contain a never-touch path,
+and no snapshot ever copies one.
+Settings keys you declare cannot name the keys a harness keeps for provider
+credentials, such as `provider` in OpenCode. The
+[harness reference](/reference/harnesses) lists every owned surface and
+never-touch path.
+
+## Takeover snapshots
+
+Before Canonfig first writes a harness surface, it copies what was there into
+`~/.canonfig/.backups/<UTC time>/`. Snapshots are local and private:
+
+- Directories are created with mode `0700` and files with `0600`; on Windows
+  Canonfig sets an ACL that grants only your user.
+- For a key Canonfig owns in a shared file, the snapshot stores only that key's
+  prior value, in `<harness>/keys.json`. The rest of the file, including any
+  login data, never enters a backup.
+- Snapshots and run journals are never published, mirrored, or sent to the
+  Source Machine.
+
+`--no-backup`, or `"backups": false` in `~/.canonfig/local/local.jsonc`, turns
+snapshots off on one machine. The setting is machine-local, so a Source
+Machine cannot turn off a Follower Machine's backups. See
+[Restore a harness from a backup](/how-to/restore-from-a-backup).
+
+## Hooks and MCP servers run code
+
+A hook runs its command, and a `stdio` MCP server runs its `command`, on every
+Follower Machine that receives it, as your user. Publishing one is the same as
+running that program on each of those machines. Review `hooks`, `mcp`, and
+every script under `hooks/` before you publish. Each hook and MCP server is its
+own item in the revision (`hooks:<id>`, `mcp:<name>`), so a Follower Machine's
+`canonfig sync --plan` names each one it is about to receive, and its mirrored
+`~/.canonfig/canonfig.jsonc` shows the full definition after apply. Some
+harnesses add their own check: Codex runs a new or changed hook only after you
+trust it in `/hooks`, and Hermes asks once before each new hook command.
 
 ## Source keys
 
@@ -195,8 +259,8 @@ fails with exit 6. Wait for the other process to finish and retry.
 
 Canonfig removes configured secret values from captured command arguments,
 output, and JSON results before it stores or prints them. Treat this as a
-safety net: keep secrets off command lines and out of profiles in the first
-place.
+safety net: keep secrets off command lines and out of `~/.canonfig/` in the
+first place.
 
 The command log, `~/.canonfig/canonfig.log`, records only the command name,
 time, process ID, duration, and exit code. It never records arguments, output,

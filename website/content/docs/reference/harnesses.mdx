@@ -1,0 +1,246 @@
+---
+title: Harness reference
+description: Look up each Target Harness Canonfig projects into, with its id, root, the files and keys Canonfig owns there, the files it never touches, and what the harness cannot receive.
+---
+
+Canonfig projects the Canonical Folder into 16 Target Harnesses. For each one
+it owns a fixed list of surfaces: whole files, whole directories, or single
+keys in a file the harness shares with its own state. It writes nothing else in
+the harness, never reads the never-touched paths, and never copies them into a
+backup. List the harnesses to project in `harnesses` in `canonfig.jsonc`; see
+[Choose which harnesses Canonfig manages](/how-to/choose-harnesses).
+
+## Summary
+
+The root shows the environment override first, then the default. `~` is your
+home directory (`%USERPROFILE%` on Windows).
+
+| Id | Harness | Executable | Root |
+| --- | --- | --- | --- |
+| `codex` | OpenAI Codex | `codex` | `$CODEX_HOME`, else `~/.codex` |
+| `claude-code` | Claude Code | `claude` | `$CLAUDE_CONFIG_DIR`, else `~/.claude` |
+| `amp` | Amp | `amp` | `~/.config/amp` |
+| `oh-my-pi` | Oh My Pi | `omp` | `$PI_CODING_AGENT_DIR`, else `~/.omp/agent` |
+| `pi` | Pi Coding Agent | `pi` | `$PI_CODING_AGENT_DIR`, else `~/.pi/agent` |
+| `factory-droid` | Factory Droid CLI | `droid` | `~/.factory` |
+| `cursor` | Cursor | `cursor-agent`, `agent` | `$CURSOR_CONFIG_DIR`, else `~/.cursor` |
+| `devin` | Devin CLI | `devin` | `~/.config/devin`; on Windows `%APPDATA%\devin` |
+| `opencode` | OpenCode | `opencode` | `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode` |
+| `grok-build` | Grok Build CLI | `grok` | `$GROK_HOME`, else `~/.grok` |
+| `antigravity` | Google Antigravity CLI | `agy` | `~/.gemini` |
+| `copilot-cli` | GitHub Copilot CLI | `copilot` | `$COPILOT_HOME`, else `~/.copilot` |
+| `kimi` | Kimi Code CLI | `kimi` | `$KIMI_CODE_HOME`, else `~/.kimi-code` |
+| `kilo` | Kilo Code CLI | `kilo` | `$KILO_CONFIG_DIR`, else `$XDG_CONFIG_HOME/kilo`, else `~/.config/kilo` |
+| `hermes` | Hermes Agent | `hermes` | `$HERMES_HOME`, else `~/.hermes` |
+| `qwen` | Qwen Code | `qwen` | `$QWEN_HOME`, else `~/.qwen` |
+
+A harness is installed when one of its executables resolves through
+Canonfig's install directories, `~/.local/bin`, then `PATH`. Canonfig does not
+run it, and a root directory alone does not count. Cursor's generic `agent`
+executable counts only when the Cursor root exists. Run `canonfig harnesses`
+to see what this machine detects.
+
+Every root must resolve inside your home directory, and Canonfig pins the root
+it used at takeover. A later run that resolves a different root, for example
+because `CODEX_HOME` is not set in a scheduled run, stops with Human Action
+Required (exit 3):
+
+> codex was taken over at /home/dana/.codex-work but now resolves to
+> /home/dana/.codex, for example because an environment override such as
+> CODEX_HOME changed. Canonfig will not project into a second location:
+> restore the environment, or run 'canonfig restore' and sync again
+
+## Shared skills directory
+
+Codex, Amp, Cursor, Devin, Grok Build, Kimi, Kilo, and Qwen read skills from
+the shared `~/.agents/skills/`. While any of them is projected, Canonfig owns
+that whole directory and writes every skill there once. Their private skill
+directories are left alone. In plans, snapshots, and restores this surface
+belongs to the pseudo-harness `agents`.
+
+## Rules without a global rules location
+
+Codex, Amp, Pi, Factory Droid, OpenCode, Grok Build, Kimi, Kilo, and Qwen have
+no global rules directory. For them, the projected instruction file ends with
+one link per rule to its file under `~/.canonfig/rules/` (or
+`~/.canonfig/local/rules/`), by absolute path.
+
+## Per harness
+
+"Owns" lists whole files and directories: Canonfig replaces them at takeover
+and afterward they hold exactly the folder's items. "Keys" lists the only keys
+Canonfig writes in a file the harness shares; "declared settings" means the
+keys you name under `settings.<harness>`. "Not projected" lists folder features
+the harness has no global place for. Canonfig reports them in the plan as
+`FEATURE_UNSUPPORTED` and writes them nowhere else.
+
+### `codex`
+
+- **Owns:** `AGENTS.md`, `agents/` (one `<id>.toml` per subagent), `hooks.json`; skills in `~/.agents/skills/`.
+- **Keys:** `config.toml`: `mcp_servers`, declared settings.
+- **Never touches:** `auth.json`, `history.jsonl`, `log/`, `sessions/`, `rules/` (the execution policy Codex writes).
+- **Not projected:** commands. Subagents always inherit the parent sandbox, so a subagent without `writable` can still write; the plan warns about it.
+- **After apply:** Codex runs a new or changed hook only after you review it. Open Codex, run `/hooks`, and trust each Canonfig hook.
+
+### `claude-code`
+
+- **Owns:** `CLAUDE.md`, `rules/`, `skills/`, `agents/`, `commands/`.
+- **Keys:** `settings.json`: `hooks`, declared settings. `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json` when that variable is set): `mcpServers` only.
+- **Never touches:** `.credentials.json`, `projects/`, `sessions/`, `history.jsonl`, `file-history/`, `cache/`, and every other key in `.claude.json`.
+- **Not projected:** nothing.
+
+### `amp`
+
+- **Owns:** `AGENTS.md`, `plugins/canonfig.ts` (hooks, subagents, and commands compile into this one plugin; it sits in `$XDG_CONFIG_HOME/amp/plugins/` when that variable is set); skills in `~/.agents/skills/`.
+- **Keys:** `settings.json` (or `settings.jsonc`): `amp.mcpServers`, declared settings.
+- **Never touches:** `~/.local/share/amp/secrets.json`, `~/.local/share/amp/threads/`, `~/.cache/amp/`.
+- **Not projected:** nothing.
+
+### `oh-my-pi`
+
+The root follows Oh My Pi's own rules: `PI_CONFIG_DIR` names the directory
+under your home (default `.omp`), and a named profile in `OMP_PROFILE` or
+`PI_PROFILE` uses `~/.omp/profiles/<name>/agent` instead of
+`PI_CODING_AGENT_DIR`.
+
+- **Owns:** `AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `extensions/canonfig.ts` (hooks).
+- **Keys:** `mcp.json`: `mcpServers`. `config.yml` (or `config.yaml`): declared settings.
+- **Never touches:** `agent.db` (it holds your login), `history.db`, `models.db`, `sessions/`, `blobs/`, `memories/`, and `~/.omp/logs/` and `~/.omp/install-id`.
+- **Not projected:** nothing.
+
+### `pi`
+
+- **Owns:** `AGENTS.md`, `skills/`, `prompts/` (commands), `extensions/canonfig.ts` (hooks).
+- **Keys:** `mcp.json`: `mcpServers`. `settings.json`: declared settings.
+- **Never touches:** `auth.json`, `mcp-auth.json`, `models.json`, `sessions/`, `logs/`.
+- **Not projected:** subagents, and MCP servers with the `sse` transport.
+
+### `factory-droid`
+
+- **Owns:** `AGENTS.md`, `skills/`, `droids/` (subagents), `commands/`, `hooks.json`.
+- **Keys:** `mcp.json`: `mcpServers`. `settings.json`: declared settings.
+- **Never touches:** `projects/`, `sessions/`, `logs/`.
+- **Not projected:** nothing.
+
+### `cursor`
+
+- **Owns:** `agents/`, `hooks.json`; skills in `~/.agents/skills/`.
+- **Keys:** `mcp.json`: `mcpServers`. `cli-config.json`: declared settings. On Linux, when `XDG_CONFIG_HOME` is set and `CURSOR_CONFIG_DIR` is not, that file is `$XDG_CONFIG_HOME/cursor/cli-config.json`.
+- **Never touches:** `chats/`, `worktrees/`, `extensions/`.
+- **Not projected:** instructions and rules (Cursor keeps user rules in its settings, outside the filesystem), commands.
+
+### `devin`
+
+- **Owns:** `AGENTS.md`, `agents/`, `~/.devin/rules/`; skills in `~/.agents/skills/`.
+- **Keys:** `config.json`: `hooks`, declared settings. `mcp_config.json`: `mcpServers`.
+- **Never touches:** `credentials.toml` (in the root on Windows; `~/.local/share/devin/` elsewhere), `cli/logs/`, `sessions/`.
+- **Not projected:** commands.
+
+### `opencode`
+
+- **Owns:** `AGENTS.md`, `skills/`, `agents/`, `commands/`, `plugins/canonfig.ts` (tool hooks).
+- **Keys:** `opencode.json` (or `opencode.jsonc`): `mcp`, declared settings.
+- **Never touches:** `~/.local/share/opencode/` (it holds `auth.json`), `~/.cache/opencode/`, and the `provider` key.
+- **Not projected:** lifecycle hooks other than tool events.
+
+### `grok-build`
+
+- **Owns:** `AGENTS.md`, `agents/`, `hooks/canonfig.json`; skills in `~/.agents/skills/`.
+- **Keys:** `config.toml`: `mcp_servers`, declared settings.
+- **Never touches:** `sessions/`, `logs/`, `crash/`, `mcp_credentials.json`, `trusted_folders.toml`, and `model.*.api_key` keys.
+- **Not projected:** commands.
+
+### `antigravity`
+
+`~/.gemini` is shared by the Antigravity CLI, app, and IDE. Canonfig writes
+only `AGENTS.md` and files under `config/` and `antigravity-cli/`.
+
+- **Owns:** `AGENTS.md`, `config/rules/`, `config/skills/`, `config/agents/`, `config/hooks.json`.
+- **Keys:** `config/mcp_config.json`: `mcpServers`. `antigravity-cli/settings.json`: declared settings.
+- **Never touches:** `antigravity-cli/brain/`, `antigravity/`, `antigravity-ide/`, and the `trustedWorkspaces` and `gcp` keys.
+- **Not projected:** commands.
+
+### `copilot-cli`
+
+- **Owns:** `copilot-instructions.md`, `instructions/` (rules), `skills/`, `agents/`, `hooks/canonfig.json`.
+- **Keys:** `mcp-config.json`: `mcpServers`. `settings.json`: declared settings.
+- **Never touches:** `config.json`, `mcp-oauth-config/`, `mcp-secrets/`, `session-state/`, `session-store.db`, `command-history-state/`, `logs/`, `ide/`, `plugin-data/`, `permissions-config.json`, `providers.json`.
+- **Not projected:** commands.
+
+### `kimi`
+
+- **Owns:** `AGENTS.md`, `agents/`; skills in `~/.agents/skills/`.
+- **Keys:** `mcp.json`: `mcpServers`. `config.toml`: `hooks`, declared settings.
+- **Never touches:** `credentials/`, `sessions/`, `session_index.jsonl`, `user-history/`, `logs/`, `bin/`, and the `providers` and `services.*.api_key` keys.
+- **Not projected:** commands.
+
+### `kilo`
+
+- **Owns:** `AGENTS.md`, `agent/`, `commands/`, `plugin/canonfig.ts` (tool hooks); skills in `~/.agents/skills/`.
+- **Keys:** `kilo.jsonc` (or `kilo.json`): `mcp`, declared settings.
+- **Never touches:** `~/.local/share/kilo/` (it holds `auth.json`), `~/.local/state/kilo/daemon.json`, `~/.cache/kilo/`, and the `provider` key.
+- **Not projected:** lifecycle hooks other than tool events.
+
+### `hermes`
+
+- **Owns:** one `skills/<name>/` directory per published skill. Hermes's own skills stay as they are.
+- **Keys:** `config.yaml`: `mcp_servers`, `hooks`.
+- **Never touches:** `SOUL.md`, `.env`, `auth.json`, `sessions/`, `state.db`, `logs/`, `cache/`, `memories/`, `skills/.hub/`, `skills/.bundled_manifest`.
+- **Not projected:** instructions and rules (`SOUL.md` is an identity, not instructions), subagents, commands. Hermes has no settings file, so `settings.hermes` fails validation. Hermes asks once before it runs each new hook command.
+
+### `qwen`
+
+- **Owns:** `QWEN.md`, `agents/`, `commands/`; skills in `~/.agents/skills/`.
+- **Keys:** `settings.json`: `mcpServers`, `hooks`, declared settings.
+- **Never touches:** `oauth_creds.json`, `mcp-oauth-tokens.json`, `google_accounts.json`, `.env`, `installation_id`, `projects/`, `tmp/`, `memory.md`, `file-history/`, `ide/`.
+- **Not projected:** nothing.
+
+The `$XDG_DATA_HOME`, `$XDG_STATE_HOME`, and `$XDG_CACHE_HOME` variables
+replace `~/.local/share`, `~/.local/state`, and `~/.cache` above when they are
+set.
+
+## Settings files
+
+`settings.<harness>` keys go into one file per harness. A declared key must not
+overlap a key Canonfig writes from the folder or a reserved key.
+
+| Harness | Settings file | Reserved keys |
+| --- | --- | --- |
+| `codex` | `config.toml` | |
+| `claude-code` | `settings.json` | |
+| `amp` | `settings.json` | |
+| `oh-my-pi` | `config.yml` | |
+| `pi` | `settings.json` | |
+| `factory-droid` | `settings.json` | |
+| `cursor` | `cli-config.json` | |
+| `devin` | `config.json` | |
+| `opencode` | `opencode.json` | `provider` |
+| `grok-build` | `config.toml` | `model.*.api_key` |
+| `antigravity` | `antigravity-cli/settings.json` | `trustedWorkspaces`, `gcp` |
+| `copilot-cli` | `settings.json` | |
+| `kimi` | `config.toml` | `providers`, `services.*.api_key` |
+| `kilo` | `kilo.jsonc` | `provider` |
+| `hermes` | none | |
+| `qwen` | `settings.json` | |
+
+Permission keys, such as `permissions` in Claude Code's `settings.json`, are
+yours to declare: Canonfig owns them only when you name them under `settings`,
+because each harness writes permissions in its own syntax.
+
+## MCP fields a harness cannot express
+
+The plan warns, per server, when a harness cannot carry a field. The server is
+still projected without it, except where noted.
+
+| Harness | Fields not carried |
+| --- | --- |
+| `codex` | `timeoutMs`; `sse` is written as streamable HTTP; an `env` reference whose variable name differs from the key is omitted |
+| `claude-code` | `timeoutMs`, `enabledTools`, `disabledTools` |
+| `amp` | `timeoutMs`, `enabledTools`, `disabledTools`, `sse` |
+| `oh-my-pi`, `factory-droid`, `grok-build` | `enabledTools`, `disabledTools` |
+| `pi` | `enabledTools`, `disabledTools`; `sse` servers are not projected |
+| `cursor`, `hermes` | `timeoutMs`, `enabledTools`, `disabledTools` |
+| `devin` | `timeoutMs`, `enabledTools`, `disabledTools`, `cwd` |
+| `opencode`, `kilo` | `enabledTools`, `disabledTools`, `cwd` |
+| `antigravity` | `sse` |
+| `copilot-cli` | `timeoutMs`, `disabledTools`, `cwd` |

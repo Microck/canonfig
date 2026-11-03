@@ -1,38 +1,49 @@
 ---
 title: Canonfig
-description: Keep Claude Code, Codex, and other AI agent configuration the same on every machine you use, published from one machine you control.
+description: Write your AI agent setup once in ~/.canonfig/ and use it in Claude Code, Codex, and every other harness you run, on every machine you use.
 ---
 
-Canonfig copies your AI agent configuration (instruction files, settings keys,
-MCP servers, skills, and tools) from one machine to others. You declare what to
-share in a **Machine Profile** on the **Source Machine** and publish it as a
-signed **Profile Revision**. Each **Follower Machine** checks that Profile
-Revision, applies it, and verifies the result. Follower Machines never send
-changes back.
+You keep one folder, `~/.canonfig/`, with your agent setup: instructions,
+rules, skills, subagents, commands, MCP servers, hooks, settings, and the tools
+they need. Canonfig writes that folder into the global configuration of every
+harness you list, such as Claude Code, Codex, and OpenCode, translating it into
+each harness's own files and formats. This is a **Projection**.
+
+The machine where you edit the folder is the **Source Machine**. It publishes
+the folder as a signed **Profile Revision**. Each **Follower Machine** checks
+the signature, mirrors the folder into its own `~/.canonfig/`, and projects it
+into the harnesses installed there. Follower Machines never send changes back.
+
+Before Canonfig first writes to a harness, it copies what was there into a
+**Takeover Snapshot** under `~/.canonfig/.backups/`, and `canonfig restore`
+puts it back.
 
 To see the commands and their output before you install anything, try the
 [interactive demo](https://canonfig.micr.dev). It runs on simulated data.
 
-## What do you want to do?
+## Where to start
 
 <Cards>
   <Card title="Sync your first two machines" href="/tutorials/first-sync">
-    Publish your setup from one machine, enroll a second one, and keep it in sync on a schedule.
+    Set up the Source Machine, write your folder, publish it, and keep a second machine in sync.
   </Card>
-  <Card title="Add another Follower Machine" href="/tutorials/first-sync#7-invite-machine-b">
-    Issue an invitation on the Source Machine and enroll the other machine with it.
+  <Card title="Publish from the folder" href="/how-to/publish-from-the-folder">
+    Change what Follower Machines receive, limit items to a Follower Group, or roll content back.
   </Card>
-  <Card title="Publish a change" href="/how-to/publish-profile-changes">
-    Change what Follower Machines receive, add or remove resources, or roll content back.
+  <Card title="Choose which harnesses Canonfig manages" href="/how-to/choose-harnesses">
+    List harnesses, leave one out on a single machine, or stop managing one.
+  </Card>
+  <Card title="Restore a harness from a backup" href="/how-to/restore-from-a-backup">
+    Put back the configuration a harness had before Canonfig took it over.
+  </Card>
+  <Card title="Add items to one machine only" href="/how-to/add-machine-local-items">
+    Keep extra skills, rules, MCP servers, or settings on one machine without publishing them.
   </Card>
   <Card title="Sync on a schedule" href="/how-to/manage-schedules">
     Set, check, or remove a daily or weekly sync.
   </Card>
-  <Card title="Run Canonfig unattended" href="/how-to/run-unattended">
-    Keep the Source Machine serving and Follower Machines syncing after logout or reboot.
-  </Card>
   <Card title="Recover from a failed or blocked sync" href="/how-to/recover">
-    Find the message you see and bring the Follower Machine back to Convergence.
+    Find the message you see and bring the machine back to Convergence.
   </Card>
   <Card title="Look up a command" href="/reference/cli">
     Every command, option, default, and exit code.
@@ -41,10 +52,15 @@ To see the commands and their output before you install anything, try the
 
 ## What Canonfig does not do
 
-- It does not sync in both directions. A change made on a Follower Machine stays there or is overwritten, depending on the resource.
-- It does not copy credentials, logins, or the trust decisions each client asks you to make.
-- It does not back up your home directory.
-- It does not run a hosted service. Your Source Machine serves the Profile Revisions.
+- It does not sync in both directions. A change made in a Follower Machine's
+  mirror stays there as Follower Drift and never reaches the Source Machine.
+- It does not touch a harness's logins, sessions, history, or trust decisions.
+  In files a harness shares with its own state, such as `~/.claude.json`,
+  Canonfig changes only the keys it owns.
+- It does not publish arbitrary files. Only the folder's authoring entries
+  reach Follower Machines.
+- It does not run a hosted service. Your Source Machine serves the Profile
+  Revisions.
 - It does not guarantee that a third-party installer can be rolled back.
 
 To learn which machine owns what and what one run can roll back, read

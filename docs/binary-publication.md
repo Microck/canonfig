@@ -18,27 +18,15 @@ Publish regular files as raw bytes addressed by their SHA-256 digest. Signed
 resource metadata carries the digest and exact byte length, never encoded file
 contents. Text, images, fonts, audio, and executables use the same byte pipeline.
 
-Keep inline text convenient at the authoring boundary. A native file is named
-with the `source` field, a path relative to the profile file's directory, on a
-`file` resource spec or on an entry of a directory or skill `files` list:
+Publication compiles every file item of the Canonical Folder (`AGENTS.md`,
+`rules/`, `agents/`, `commands/`, hook scripts and every skill file) into a
+resource whose `source` is the item's path relative to `~/.canonfig/`
+(`folderProfile` in `src/profile/publication.ts`). Canonfig rejects paths that
+resolve outside the folder, reads the selected regular file without a text
+encoding, and does not publish its Source path.
 
-```jsonc
-{ "kind": "file", "source": "assets/icon.png" }
-{ "path": "assets/icon.png", "source": "assets/icon.png" }
-```
-
-`source` and inline `content` are mutually exclusive, and `encoding: "base64"`
-applies only to inline `content`. There is no `content: { file: … }` form; the
-authoring schema rejects it (`Expected string | undefined at
-['resources'][0]['spec']['content']`). Canonfig rejects absolute paths, parent
-traversal, and paths that resolve (after following symlinks) outside the
-profile directory. It reads the selected regular file without a text encoding
-and does not publish its Source path.
-
-Inline strings become UTF-8 bytes without newline or Unicode normalization.
-Equivalent inline text and native-file bytes produce identical published
-semantics and revision identity. The authoring locator is not part of that
-identity. Symlinks remain links and do not publish their referents as file bytes.
+File bytes are published without newline or Unicode normalization. The
+authoring locator is not part of revision identity.
 
 ## Why this model
 
@@ -109,11 +97,11 @@ database reads do not imply constant-memory processing of arbitrarily large file
 ## Acceptance checks
 
 1. Publish empty files, NULs, invalid UTF-8, LF and CRLF text, and real binary
-   assets from file, directory, and skill resources. Retrieve exact bytes after
+   assets from folder file items and skills. Retrieve exact bytes after
    restarting the Source and removing the original fixture inputs.
-2. Equivalent inline and native-file inputs have identical file and revision
-   identities. One changed byte changes both. Changing only a mode leaves the
-   file-byte identity unchanged but changes desired resource semantics.
+2. One changed byte changes both the file and revision identities. Changing
+   only a mode leaves the file-byte identity unchanged but changes desired
+   resource semantics.
 3. A 15 MiB fixture transfers in bounded responses. Its payload is absent from
    signed JSON. Two references to the same bytes store one immutable object.
 4. Reject corrupted, truncated, oversized, incorrectly ranged, or wrongly

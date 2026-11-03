@@ -2,8 +2,8 @@
 
 Canonfig must save the original bytes before it changes an owned file. File
 size must not determine whether replacement, removal, or recovery can succeed.
-The 16 MiB execution limit still applies to text parsing and composition, not
-to binary rollback.
+The 16 MiB execution limit still applies to text parsing, not to binary
+rollback.
 
 ## Storage and ordering
 
@@ -58,25 +58,30 @@ to binary rollback.
   directory remain readable at their isolated location.
 - Completed actions remove their journal and raw backups. Failed restoration
   retains both. Cleanup must not remove another action's or run's files.
-- Append-local still checks for later local edits and parses text within its
-  existing limit. Its saved original bytes use the same raw backup format.
 
 Recovery covers process interruption. Flush guarantees remain those of the
 platform adapter and filesystem; this does not promise identical power-loss
 durability on every operating system.
 
-## Takeover snapshots
+## Takeover snapshots and the per-run journal
 
-Projection of `~/.canonfig/` keeps one more copy, outside the per-run journal:
-before Canonfig first writes a harness surface it copies the prior content to
+The per-run journal above protects one run: it holds what that run replaced
+and is deleted when the run completes or rolls back. A Takeover Snapshot
+protects the state before Canonfig ever owned a harness surface, and outlives
+runs.
+
+Projection of `~/.canonfig/` writes it before Canonfig first writes a harness
+surface, outside the per-run journal: it copies the prior content to
 `~/.canonfig/.backups/<UTC time>/` with a `manifest.json` (harness, root,
 target, object kind, mode, symlink text, SHA-256, `absent` markers, run id).
 Owned config keys keep only their prior values in `<harness>/keys.json`.
 Snapshots are written through the protected writer (directories 0700, files
 0600, Windows ACLs) before the run is recorded. A run that rolls back deletes
 its snapshot; otherwise Canonfig keeps the first snapshot and the 4 most
-recent. Later runs rely on the per-run journal only. `canonfig restore` writes
-a snapshot back as its own journaled run.
+recent. `sync --no-backup` or `"backups": false` in `local/local.jsonc` takes
+over without a snapshot. Later runs rely on the per-run journal only.
+`canonfig restore` writes a snapshot back as its own journaled run. See
+[global-folder.md](global-folder.md) and `src/projection/takeover.ts`.
 
 ## Upgrade boundary
 
@@ -90,8 +95,7 @@ rewritten or deleted by a failed recovery attempt.
 The machine-state contract owns bounded file-source writes, digest checking
 before replacement, and native permissions. Synchronization integration tests
 own large-file update/removal, rollback after failure, persisted recovery, and
-retention or cleanup of the complete snapshot. Existing append-local tests own
-the protection of later local edits.
+retention or cleanup of the complete snapshot.
 
 ## Basis
 

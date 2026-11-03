@@ -89,71 +89,49 @@ checks that the stored keys still match; see [Source keys](/reference/security#s
 ### `source scan`
 
 ```bash
-canonfig source scan --file ~/.codex/AGENTS.md --file ~/.claude.json
+canonfig source scan
+canonfig source scan --write
 ```
 
-Proposes `tool` resources from evidence in the named files. At least one
-`--file` is required. It runs nothing and never proposes other kinds; see
+Finds the command-line tools `~/.canonfig/` uses: shell code blocks in
+`AGENTS.md`, rules, subagents, commands, and skills, hook scripts under
+`hooks/`, and MCP server commands in `canonfig.jsonc`. It runs nothing and
+never reads `local/`. Without `--write` it only reports. `--write` adds each
+accepted tool that `canonfig.jsonc` does not declare yet under `tools`,
+keeping the file's comments and layout; tools that need review are only
+reported. See
 [How Canonfig installs and verifies tools](/explanation/tools-and-recipes).
 
-### `source reconcile-skills`
-
-```bash
-canonfig source reconcile-skills --profile-file ~/canonfig.profile.jsonc
-canonfig source reconcile-skills --profile-file ~/canonfig.profile.jsonc --apply
-canonfig source reconcile-skills --profile-file ~/canonfig.profile.jsonc --apply --watch --interval 30
-```
-
-Removes `skill` resources from the profile file when you deleted their skill
-directory on the Source Machine. Without `--apply` it previews. `--watch`
-needs `--apply` and repeats every `--interval` seconds (default 5, from 1 to
-86400). It never publishes and never deletes a skill directory. A conflict
-exits 4. See [Remove deleted skills from the profile](/how-to/reconcile-source-skills).
-
-### `source digest`
-
-```bash
-canonfig source digest --profile-file ~/canonfig.profile.jsonc
-canonfig source digest --profile-file ~/canonfig.profile.jsonc --resource codex-config
-```
-
-Validates a profile and prints each resource's content digest, without
-publishing. `--resource <id>` limits output to one resource. It exits 0 even
-when a declared digest differs. `tool` and `credential` resources have no
-content digest. An unknown resource fails with "profile `<id>` in `<file>`
-declares no resource `<r>`".
+| Message | Cause |
+| --- | --- |
+| `the scan input is not valid: <folder> holds no authored files; scaffold it with 'canonfig setup plan --role source'` | The folder is empty. |
+| `the scan input is not valid: <folder>/canonfig.jsonc does not exist; --write adds tools to it` | `--write` with no `canonfig.jsonc`. |
 
 ### `source publish`
 
 ```bash
-canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer dana
-canonfig source publish --proposal ./proposal.json --profile workstation --name Workstation --reviewer dana
-canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer dana --allow-empty
+canonfig source publish --reviewer dana
 ```
 
 | Option | Value |
 | --- | --- |
-| `--profile-file <path>` | The profile file. Required unless `--proposal` is given. |
-| `--proposal <path>` | A `source scan` proposal to accept. Without `--profile-file`, also pass `--profile <id>` and `--name <name>`. |
 | `--reviewer <name>` | Required. Recorded with the revision. |
-| `--allow-empty` | Publish a revision with no resources. |
 
-Signs the next Profile Revision. Content equal to the latest Profile Revision
-returns that Profile Revision. Any other content, including an older Profile
-Revision's, becomes the next sequence number; publishing old content again is
-how you roll back.
+Compiles the authoring allowlist of `~/.canonfig/` (`canonfig.jsonc`,
+`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`) into the
+next signed Profile Revision. Nothing else in the folder is published, and
+`canonfig.jsonc` needs `profile` with an `id` and `name`. Content equal to the
+latest Profile Revision returns that revision. Any other content, including
+an older revision's, becomes the next sequence number; publishing old content
+again is how you roll back.
 
-Publication fails with exit 2, before signing, when:
-
-- a declared `verify.digest` does not match (the message prints the right one);
-- a `source` path is absolute, contains `..`, or resolves outside the profile
-  file's directory;
-- a number is too large to carry exactly, or is not finite;
-- an automatic installer recipe has no exact `version`;
-- the revision's metadata exceeds 1 MiB;
-- there are no resources and `--allow-empty` is not set.
-
-See [Profile file reference](/reference/profile-schema).
+Publication fails with exit 2, before signing, when the folder does not
+validate, a hook script is missing or unused, a `requires` or `groups` entry
+names an undeclared item, a value looks like a literal credential, a recipe
+has no exact `version`, or the revision's metadata exceeds the transport
+limit. Every message is in the
+[Canonical Folder reference](/reference/canonfig-folder#publication-failures).
+See [Publish changes from the folder](/how-to/publish-from-the-folder).
 
 ### `source serve` and `source service`
 
@@ -217,8 +195,8 @@ Revokes one Follower Identity. Its next request fails with exit 5.
 ## Follower enrollment
 
 ```bash
-cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop-dana --profile workstation
-cat ./canonfig-invite | canonfig follower enroll --stdin --name desk-dana --profile workstation --replace
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop-dana
+cat ./canonfig-invite | canonfig follower enroll --stdin --name desk-dana --replace
 canonfig follower unenroll
 ```
 
@@ -228,19 +206,26 @@ canonfig follower unenroll
 | --- | --- |
 | `--stdin` | Required. The invitation is read from standard input only, never as an argument. |
 | `--name <name>` | Required. This Follower Machine's name. |
-| `--profile <id>` | Required. The Machine Profile to follow. |
 | `--replace` | Replace this machine's existing enrollment under a different name. |
 | `--timeout-ms <ms>` | Limit for each network step. Default 10000, at most 300000. Kept for later requests, including scheduled syncs. |
 
 Standard input must be the invitation file, at most 16384 bytes, ending within
 10 seconds. A terminal on standard input is refused. Canonfig checks that this
-machine can store a credential before it uses the invitation.
+machine can store a credential before it uses the invitation. A Source Machine
+publishes one Machine Profile, and the Follower Machine follows it.
+
+On a Follower Machine, the authoring entries of `~/.canonfig/` hold the Source
+Machine's mirror. Enrollment refuses a folder that already holds authored
+items, with exit 2; move what this machine should keep into
+`~/.canonfig/local/` first. Harness surfaces this machine already took over
+stay Canonfig's, and later syncs update them from the Source Machine.
 
 | Situation | Result |
 | --- | --- |
-| The name is already enrolled | Refused: "the follower identity is already enrolled". Run `canonfig source revoke <name>` on the Source Machine first. Re-enrolling a revoked name keeps this machine's local settings. |
+| The folder holds authored items | Exit 2: "`<folder>` already holds authored items (`<entries>`), where a follower keeps its Source's mirror; move what this machine should keep into `<folder>/local` (rules, skills, agents and commands as files, MCP servers and settings in local.jsonc) or remove them, then enroll again". |
+| The name is already enrolled | Exit 4: "the follower identity is already enrolled". Run `canonfig source revoke <name>` on the Source Machine first. Re-enrolling a revoked name keeps this machine's local settings. |
 | This machine is enrolled under another name | Exit 4: "this machine is already enrolled as `<name>` (`<id>`); pass --replace to enroll it as `<new name>` instead". |
-| `--replace` | Enrolls the identity under the other name, then revokes the old one. Lists every reset setting (agent policy, harness and secret bindings, schedule, Local Overlay). If the old identity could not be revoked, prints the `canonfig source revoke` command to run. |
+| `--replace` | Enrolls the identity under the other name, then revokes the old one. Lists every reset setting (agent policy, harness and secret bindings, schedule). If the old identity could not be revoked, prints the `canonfig source revoke` command to run. |
 | Enrollment fails or you cancel it | The credentials it created are removed on both machines. |
 
 ### `follower unenroll`
@@ -262,28 +247,32 @@ canonfig tunnel stop --forget
 
 ```bash
 canonfig sync --plan
-canonfig sync --plan --review-local
 canonfig sync --apply
 canonfig sync --apply --no-input
 canonfig sync --apply --no-backup
 ```
 
-On an enrolled Follower Machine, `sync` applies the revision its Source
-Machine selected. On the Source Machine, or a machine that is not enrolled,
-`sync` projects `~/.canonfig/` into the harnesses listed in
-`~/.canonfig/canonfig.jsonc` that are installed, minus those
-`~/.canonfig/local/local.jsonc` excludes. A listed harness that is not
-installed appears under `notInstalled` in the plan and result; the run still
-converges, and what Canonfig applied to that harness earlier stays as it was
-until the harness is installed again or removed from the list.
+On an enrolled Follower Machine, `sync` fetches the latest authorized Profile
+Revision, writes its items into `~/.canonfig/` (the mirror), and projects the
+mirror plus `~/.canonfig/local/` in one run. On the Source Machine, or a
+machine that is not enrolled, `sync` projects `~/.canonfig/` itself. Either way
+it projects into the harnesses listed in `canonfig.jsonc` that are installed,
+minus those `~/.canonfig/local/local.jsonc` excludes. A listed harness that is
+not installed appears under `notInstalled` in the plan and result; the run
+still converges, and what Canonfig applied to that harness earlier stays as it
+was until the harness is installed again or removed from the list. Removing a
+harness from the list removes Canonfig's unmodified outputs there; it does not
+write the takeover snapshot back, which `canonfig restore` does.
+
+A mirror file you edit on a Follower Machine is Follower Drift: Canonfig keeps
+it, reports it, exits 4, and leaves its projections as they were last applied.
 
 | Option | Effect |
 | --- | --- |
 | `--plan` | Default. Downloads and compares; changes nothing. |
 | `--apply` | Applies the plan and verifies every resource. Cannot be combined with `--plan`. |
 | `--no-input` | Never prompts. |
-| `--review-local` | Enrolled followers only. With an interactive `--plan`, writes private reviews of first `append-local` adoptions. See [`append-local`](/reference/profile-schema#keep-local-instructions-with-append-local). |
-| `--no-backup` | Local projection only. Takes over harness surfaces without a takeover snapshot. |
+| `--no-backup` | Takes over harness surfaces without a takeover snapshot. |
 | `--scheduled` | Set only by the native schedule, which runs `sync --apply --no-input --scheduled`. |
 
 ### Takeover snapshots
@@ -303,7 +292,8 @@ you add to an owned directory, is Follower Drift: kept and reported (exit 4).
 
 A harness root is pinned at takeover. A later run that resolves a different
 root, for example because `CODEX_HOME` changed, stops with Human Action
-Required (exit 3) instead of writing a second copy.
+Required (exit 3) instead of writing a second copy. Each harness's root and
+owned surfaces are in the [harness reference](/reference/harnesses).
 
 A failed action rolls back the run's file, directory, and config changes and
 exits 7: "resource `<id>` could not be applied to `<target>`: `<cause>`". Tool
@@ -345,9 +335,15 @@ no id is given. It runs as a journaled run: it rewrites the files, directories
 and owned keys the snapshot holds, removes what Canonfig added where the
 snapshot recorded nothing, deletes Canonfig's ownership records for those
 surfaces, and adds their harnesses to `excludeHarnesses` in
-`~/.canonfig/local/local.jsonc` so the next sync leaves them alone. It refuses,
-with exit 3 and nothing changed, when a surface differs from what Canonfig
-last applied. Snapshot ids are the directory names under `~/.canonfig/.backups/`.
+`~/.canonfig/local/local.jsonc` so the next sync leaves them alone. Snapshot
+ids are the directory names under `~/.canonfig/.backups/`. See
+[Restore a harness from a backup](/how-to/restore-from-a-backup).
+
+| Message | Exit | Cause |
+| --- | ---: | --- |
+| `there are no takeover snapshots in <folder>/.backups` | 2 | Canonfig has not taken over any harness on this machine. |
+| `snapshot <id> does not exist; snapshots: <ids>` | 2 | The id is not a directory under `.backups/`. |
+| `restore of snapshot <id> refused, nothing was changed:` followed by one line per surface and `Keep or move the local changes, sync until it converges, then restore again` | 3 | A surface changed since Canonfig last applied it, or was never applied completely. |
 
 ## Harnesses
 
@@ -371,9 +367,12 @@ Cursor's generic `agent` executable counts only when `~/.cursor` exists.
 
 `exclude` and `include` edit `excludeHarnesses` in
 `~/.canonfig/local/local.jsonc`, keeping the file's comments. They never change
-the list in `canonfig.jsonc`; including a harness that is not listed prints a
-warning. `doctor` reports the same detection and selection in its `harnesses`
-probe.
+the list in `canonfig.jsonc`. Including a harness that is not listed warns:
+"`<harness>` is not listed in `<folder>/canonfig.jsonc`; add it to "harnesses"
+there to project it". An unknown id fails with exit 2: "Unknown harness:
+`<id>`; expected one of codex, claude-code, ...". `doctor` reports the same
+detection and selection in its `harnesses` probe. See
+[Choose which harnesses Canonfig manages](/how-to/choose-harnesses).
 
 ## Status
 
@@ -394,23 +393,6 @@ publication, apply result, client-load evidence, native scheduling, and journal
 verification. `secondRunNoOp` is true only when the latest converged run
 changed nothing. `scheduled` stays `pending` until a scheduled run has
 completed; after a failed scheduled run it gives the time and reason.
-
-## Local overlays
-
-```bash
-canonfig overlay list
-canonfig overlay set claude-settings --target ~/.claude/settings.json --key permissions.deny
-canonfig overlay remove claude-settings
-```
-
-A Local Overlay claims keys of a `config` resource's target for this Follower
-Machine.
-`set` needs one resource ID, `--target`, and at least one `--key` (repeatable).
-A claimed key that the profile drops is kept instead of removed. A claimed key
-that overlaps a key the profile still declares is Human Action Required until
-you change the overlay. In a key, write `\.` for a literal dot and `\\` for a
-backslash. See
-[Structured configuration ownership](/reference/profile-schema#structured-configuration-ownership).
 
 ## Diagnostics
 
@@ -466,12 +448,12 @@ connected but the Source Machine is not answering.
 
 ```bash
 canonfig profile list
-canonfig profile show 7f3c9a2e
-canonfig profile select workstation
+canonfig profile show workstation:3f9a2c41
 ```
 
-`list` shows profiles, `show` shows one Profile Revision by ID, and `select`
-changes which profile this Follower Machine follows.
+On the Source Machine, `list` shows every published Profile Revision with its
+id, sequence number, digest, and publication time, and `show` prints one
+Profile Revision by id.
 
 ## Agent policy
 

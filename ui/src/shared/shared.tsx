@@ -19,11 +19,23 @@ export const GLOSSARY = {
   },
   "Follower Machine": {
     plain: "follower",
-    meaning: "A machine that copies your setup from the Source and keeps the settings you mark as its own.",
+    meaning: "A machine that copies your setup from the Source and adds its own items from its local folder.",
   },
   "Machine Profile": {
     plain: "profile",
-    meaning: "The list of everything your machines should have: files, settings, skills and tools.",
+    meaning: "Everything your machines should have, written in the ~/.canonfig folder on the Source: instructions, rules, skills, MCP servers, settings and tools.",
+  },
+  "Canonical Folder": {
+    plain: "Canonfig folder",
+    meaning: "The ~/.canonfig folder on every machine. On the Source you write your setup there; on a follower it holds a copy of what the Source published, plus that machine's own items.",
+  },
+  "Target Harness": {
+    plain: "harness",
+    meaning: "An AI agent app, like Codex or Claude Code, whose own global settings Canonfig writes from your folder.",
+  },
+  "Takeover Snapshot": {
+    plain: "backup",
+    meaning: "A copy of what a harness had before Canonfig first wrote to it, kept in ~/.canonfig/.backups so you can put it back.",
   },
   "Profile Revision": {
     plain: "revision",
@@ -31,15 +43,15 @@ export const GLOSSARY = {
   },
   "Profile Resource": {
     plain: "item",
-    meaning: "One thing in the profile, like a file, a few settings or a tool to install.",
+    meaning: "One thing in the profile, like a skill, an MCP server or a tool to install.",
   },
-  "Local Overlay": {
-    plain: "local setting",
-    meaning: "A setting one machine keeps as its own. Canonfig doesn't overwrite it and never sends its value to the Source.",
+  "Local folder": {
+    plain: "local folder",
+    meaning: "~/.canonfig/local on one machine: items it adds for itself, within what the Source allows. Canonfig never replaces them and never sends them to the Source.",
   },
   "Follower Drift": {
     plain: "local edit",
-    meaning: "Someone changed a file Canonfig manages, on that machine. Canonfig leaves the change alone instead of overwriting it.",
+    meaning: "Someone changed a file Canonfig manages, on that machine. Canonfig keeps the change, reports it and stops updating what came from that file.",
   },
   "Human Action Required": {
     plain: "needs you",
@@ -48,10 +60,6 @@ export const GLOSSARY = {
   Convergence: {
     plain: "up to date",
     meaning: "Everything a machine should have matches the profile and passes its check.",
-  },
-  "Apply Policy": {
-    plain: "update rule",
-    meaning: "What Canonfig does when the machine's copy is different from yours.",
   },
   "Follower Group": {
     plain: "group",

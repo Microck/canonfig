@@ -18,13 +18,14 @@ const Onboarding = lazy(() => import("@/onboarding/onboarding").then((m) => ({ d
 import { ProfileView } from "./profile";
 import { PublishDialog, RevisionsView, SecretsView, SourceOverview } from "./source";
 import { AgentPolicyView, DoctorView, InstallersView, ServiceView, SetupView } from "./settings";
+import { BackupsView } from "./harnesses";
 // A session is one role, so the Follower screens load only when a Follower workspace opens. All of them share
 // one chunk: after the first Follower page suspends once, page changes inside the role never suspend.
 const follower = () => import("./follower");
 const FollowerOverview = lazy(() => follower().then((m) => ({ default: m.FollowerOverview })));
 const FollowerSecretsView = lazy(() => follower().then((m) => ({ default: m.FollowerSecretsView })));
 const MachineView = lazy(() => follower().then((m) => ({ default: m.MachineView })));
-const OverlaysView = lazy(() => follower().then((m) => ({ default: m.OverlaysView })));
+const LocalView = lazy(() => follower().then((m) => ({ default: m.LocalView })));
 const ScheduleView = lazy(() => follower().then((m) => ({ default: m.ScheduleView })));
 const SyncView = lazy(() => follower().then((m) => ({ default: m.SyncView })));
 const TunnelView = lazy(() => follower().then((m) => ({ default: m.TunnelView })));
@@ -36,6 +37,7 @@ const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   profile: ProfileView,
   machines: MachinesView,
   revisions: RevisionsView,
+  backups: BackupsView,
   secrets: SecretsView,
   service: ServiceView,
   agent: AgentPolicyView,
@@ -49,7 +51,8 @@ const FOLLOWER_SCREENS: Partial<Record<View, React.ComponentType>> = {
   machines: MachinesView,
   sync: SyncView,
   schedule: ScheduleView,
-  overlays: OverlaysView,
+  local: LocalView,
+  backups: BackupsView,
   secrets: FollowerSecretsView,
   tunnel: TunnelView,
   agent: AgentPolicyView,

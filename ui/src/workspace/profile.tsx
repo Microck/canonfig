@@ -1,6 +1,7 @@
-// Profile resources grouped by kind, with an editor in the detail panel.
+// The Source's Canonical Folder (~/.canonfig/) by category, with an editor in the detail panel, plus the
+// folder's harness list, Follower Groups and profile defaults. The real GUI edits the folder's files and
+// canonfig.jsonc in place, keeping comments; the demo keeps edits in the browser session.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import { toast } from "sonner";
 import { CaretRight, Plus, Sparkle, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
@@ -12,21 +13,36 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Textarea } from "@/components/ui/textarea";
 import { AnimatedNumber, DitherProgress, Hint, Mono, Term } from "@/shared/shared";
-import { DEMO, KIND_LABEL, PLAIN, POLICY_HINT, POLICY_TITLE, SECRETS_GROUP, profile, type Resource, type ResourceKind } from "@/shared/data";
+import {
+  CATEGORY_LABEL,
+  DEMO,
+  HARNESS_NAMES,
+  LOCAL_CATEGORIES,
+  PLAIN,
+  SECRETS_GROUP,
+  itemPath,
+  machine,
+  profile,
+  type HarnessId,
+  type ItemCategory,
+  type LocalCategory,
+  type Resource,
+} from "@/shared/data";
 import { SCANNED_TOOLS, toolFromScan, useSharedState, useWorkspace } from "./store";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
+import { HarnessTable } from "./harnesses";
 import {
   AnimatedRow,
   Body,
+  CATEGORY_ICON,
   ChangeMark,
   DetailPanel,
   EmptyState,
   Field,
   GroupChips,
   GroupRow,
-  KIND_ICON,
   ListHead,
   ListRow,
   PageHeader,
@@ -41,76 +57,137 @@ import {
   type Group,
 } from "./kit";
 
-const KINDS: ResourceKind[] = ["file", "config", "skill", "directory", "tool", "credential"];
+const CATEGORIES = Object.keys(CATEGORY_LABEL) as ItemCategory[];
 
-const POLICIES_BY_KIND: Record<ResourceKind, string[]> = {
-  file: ["replace", "replace-if-unmodified", "append-local"],
-  directory: ["mirror-owned", "replace"],
-  config: ["merge", "replace"],
-  skill: ["replace-if-unmodified", "replace"],
-  tool: ["ensure"],
-  credential: ["require-local"],
-};
+/** Categories stored as markdown files with frontmatter; the rest are keys of canonfig.jsonc. */
+const MARKDOWN: Partial<Record<ItemCategory, true>> = { instructions: true, rules: true, skills: true, agents: true, commands: true };
 
-const VERIFY: Record<string, string> = {
-  digest: "Compare file contents with the published digest.",
-  "executable-present": "Check the program is on PATH and starts.",
-  "mcp-qualification": "Start the MCP server and list its tools.",
-  "credential-present": "Check the credential exists, without reading it.",
-};
+/** src/projection/model.ts HOOK_EVENTS and CAPABILITIES. */
+const HOOK_EVENTS = ["session_start", "session_end", "prompt_submit", "before_agent", "after_agent", "before_tool", "after_tool", "before_compact", "after_compact", "stop", "subagent_start", "subagent_stop"];
+const CAPABILITIES = "read, write, search, shell, web, mcp, subagent, test, git";
 
-const DEFAULT_DETAIL: Record<ResourceKind, Record<string, string>> = {
-  file: { Source: "" },
-  directory: { Source: "" },
-  config: { Format: "JSON" },
-  skill: { Name: "" },
-  tool: { macOS: "", Linux: "", Windows: "" },
-  credential: { Reference: "" },
-};
-
-const DEFAULT_VERIFY: Record<ResourceKind, string> = {
-  file: "digest",
-  directory: "digest",
-  config: "digest",
-  skill: "digest",
-  tool: "executable-present",
-  credential: "credential-present",
-};
-
-const TARGET: Record<ResourceKind, { label: string; placeholder: string; missing: string }> = {
-  file: { label: "Where on each machine", placeholder: "~/.codex/AGENTS.md", missing: "Enter where the file goes on each machine." },
-  directory: { label: "Where on each machine", placeholder: "~/.agents/skills", missing: "Enter where the folder goes on each machine." },
-  config: { label: "Settings file on each machine", placeholder: "~/.claude/settings.json", missing: "Enter the settings file to set keys in." },
-  skill: { label: "Where on each machine", placeholder: "~/.claude/skills/code-review", missing: "Enter where the skill goes on each machine." },
-  tool: { label: "Command", placeholder: "gh", missing: "Enter the command the tool provides." },
-  credential: { label: "Credential name", placeholder: "github-token", missing: "Enter the credential name." },
-};
-
-const FORMATS = ["JSON", "TOML", "YAML"];
-
-/** Detail entries edited by their own controls (format, Advanced), so not listed as content fields. */
-const EDITOR_FIELDS = ["Format", "Verify", "Mode", "DependsOn"];
-
-interface KeyRow {
-  id: number;
-  name: string;
-  value: string;
+/**
+ * One editor field. `label` keys `Resource.detail`; `key` is the field's name in the file (frontmatter or
+ * canonfig.jsonc), shown in the "As written" preview. Field names follow src/projection/folder.ts.
+ */
+interface FieldSpec {
+  label: string;
+  key: string;
+  placeholder?: string;
+  options?: readonly string[];
+  /** Comma-separated in the editor, a list in the file. */
+  list?: boolean;
+  long?: boolean;
+  hint?: string;
+  required?: boolean;
+  /** Only for some values of the other fields, like Command for a stdio MCP server. */
+  shown?: (detail: Record<string, string>) => boolean;
 }
 
-function keyRowsOf(r: Resource): KeyRow[] {
-  return Object.entries(r.keys ?? {}).map(([name, value], i) => ({ id: i, name, value }));
+const BODY: FieldSpec = { label: "Body", key: "body", long: true, placeholder: "What the agent should know, in Markdown." };
+const stdio = (d: Record<string, string>) => (d.Transport ?? "stdio") === "stdio";
+
+const FIELDS: Record<ItemCategory, FieldSpec[]> = {
+  instructions: [{ ...BODY, placeholder: "# Working agreements" }],
+  rules: [
+    { label: "Description", key: "description", placeholder: "TypeScript conventions" },
+    { label: "Paths", key: "paths", list: true, placeholder: "**/*.ts, **/*.tsx", hint: "Globs, separated by commas. Leave empty for a rule that applies everywhere." },
+    { label: "Activation", key: "activation", options: ["always", "path", "manual", "model"], hint: "always: every session. path: files matching Paths. manual: when you ask for it. model: when the agent decides it fits." },
+    BODY,
+  ],
+  skills: [{ label: "Description", key: "description", required: true, placeholder: "Review a diff for correctness and tests." }, BODY],
+  agents: [
+    { label: "Description", key: "description", required: true, placeholder: "Finds sources and summarizes them." },
+    { label: "Model", key: "model", placeholder: "Each harness's default" },
+    { label: "Tools", key: "tools", list: true, placeholder: "read, search", hint: `Any of ${CAPABILITIES}, separated by commas.` },
+    { label: "Writable", key: "writable", options: ["false", "true"], hint: "true lets the agent change files." },
+    BODY,
+  ],
+  commands: [
+    { label: "Description", key: "description", required: true, placeholder: "Run the checks, then open a pull request." },
+    { label: "Argument hint", key: "argumentHint", placeholder: "[branch]" },
+    BODY,
+  ],
+  mcp: [
+    { label: "Transport", key: "transport", options: ["stdio", "streamable-http", "sse"] },
+    { label: "Command", key: "command", required: true, placeholder: "npx", shown: stdio },
+    { label: "Args", key: "args", placeholder: "-y @upstash/context7-mcp@2.1.0", hint: "Separated by spaces.", shown: stdio },
+    { label: "URL", key: "url", required: true, placeholder: "https://docs.example.com/mcp", shown: (d) => !stdio(d) },
+  ],
+  hooks: [
+    { label: "Event", key: "event", options: HOOK_EVENTS },
+    { label: "Run", key: "run", required: true, placeholder: "hooks/format.sh", hint: "A script in ~/.canonfig/hooks/ and its arguments." },
+    { label: "Capabilities", key: "capabilities", list: true, placeholder: "write", hint: `Run only for tools with these capabilities: ${CAPABILITIES}.` },
+    { label: "On failure", key: "onFailure", options: ["warn", "block", "ignore"] },
+  ],
+  settings: [],
+  tools: [
+    { label: "Executable", key: "executable", required: true, placeholder: "gh", hint: "The command machines check for after installing." },
+    { label: "macOS", key: "recipes", placeholder: "brew install gh" },
+    { label: "Linux", key: "recipes", placeholder: "apt install gh" },
+    { label: "Windows", key: "recipes", placeholder: "winget install GitHub.cli" },
+    { label: "Login", key: "login", placeholder: "gh auth login", hint: "A sign-in step only a person can do, if the tool needs one." },
+  ],
+  credentials: [{ label: "Reference", key: "reference", required: true, placeholder: "github-token", hint: "The name this machine's credential store keeps it under." }],
+};
+
+/** Item names in the folder: src/projection/folder.ts namePattern. */
+const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+const NAME_PLACEHOLDER: Record<ItemCategory, string> = {
+  instructions: "",
+  rules: "typescript",
+  skills: "code-review",
+  agents: "researcher",
+  commands: "ship",
+  mcp: "context7",
+  hooks: "format",
+  settings: "",
+  tools: "gh",
+  credentials: "github-token",
+};
+
+/** The name part of an item id: `code-review` for `skills/code-review`, empty for `instructions`. */
+const nameOf = (r: Resource) => (r.category === "instructions" ? "" : r.id.slice(r.category.length + 1));
+
+function blankItem(category: ItemCategory): Resource {
+  // Fields with a fixed set of values start on the first one, so the draft is valid as far as they go.
+  const detail = Object.fromEntries(FIELDS[category].flatMap((f) => (f.options ? [[f.label, f.options[0]]] : [])));
+  return { id: category === "instructions" ? "instructions" : "", category, path: itemPath(category, ""), groups: [], summary: "", detail, keys: category === "settings" ? {} : undefined };
 }
 
-function blankResource(): Resource {
-  return { id: "", kind: "file", target: "", policy: "replace", groups: [], summary: "", detail: { ...DEFAULT_DETAIL.file, Verify: "digest" } };
+const listOf = (text: string | undefined) => (text ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+
+/** The one-line summary the list shows, from what the item holds. */
+function summaryOf(r: Resource): string {
+  const d = r.detail;
+  switch (r.category) {
+    case "instructions":
+      return `${(d.Body ?? "").split("\n").length} lines`;
+    case "rules":
+      return d.Paths?.trim() ? d.Paths.trim() : "applies everywhere";
+    case "skills":
+      return d.Files ? `${d.Files.split(",").length} files` : "SKILL.md";
+    case "agents":
+      return d.Writable === "true" ? "may write" : "read-only";
+    case "commands":
+      return `/${nameOf(r)}${d["Argument hint"] ? ` ${d["Argument hint"]}` : ""}`;
+    case "mcp":
+      return stdio(d) ? `stdio, ${d.Command}` : (d.Transport ?? "");
+    case "hooks":
+      return `${d.Event}, ${d.Run}`;
+    case "settings": {
+      const n = Object.keys(r.keys ?? {}).length;
+      return `${n} ${n === 1 ? "key" : "keys"}`;
+    }
+    case "tools":
+      return ["macOS", "Linux", "Windows"].filter((os) => d[os]?.trim()).join(", ") || "no recipe yet";
+    case "credentials":
+      return "local reference";
+  }
 }
 
-/** `r` without its Depends on choice, marked as an unpublished edit; for dependents of a removed item. */
-function withoutDependency(r: Resource): Resource {
-  return { ...r, detail: Object.fromEntries(Object.entries(r.detail).filter(([k]) => k !== "DependsOn")), change: r.change ?? "modified" };
-}
-
-/** A config value as the profile stores it: valid JSON text keeps its type (`42`, `false`, `"zed"`); anything else is written as a string. */
+/** A settings value as canonfig.jsonc stores it: valid JSON text keeps its type (`42`, `false`, `"zed"`); anything else is written as a string. */
 function jsonValue(text: string) {
   const t = text.trim();
   try {
@@ -121,37 +198,73 @@ function jsonValue(text: string) {
   }
 }
 
-function jsonc(r: Resource) {
-  // "Nothing" in Depends on is the editor's empty choice, not an item id.
-  const fields = Object.entries(r.detail).filter(([k, v]) => k !== "Verify" && !(k === "DependsOn" && v === "none"));
-  const keys = Object.entries(r.keys ?? {});
-  const lines = [
-    `${JSON.stringify(r.id || "new-resource")}: {`,
-    `  "kind": ${JSON.stringify(r.kind)},`,
-    `  "target": ${JSON.stringify(r.target)},`,
-    `  "policy": ${JSON.stringify(r.policy)},`,
-    ...(r.groups.length ? [`  "groups": [${r.groups.map((g) => JSON.stringify(g)).join(", ")}],`] : []),
-    // Editor field labels map to the file's camelCase names. Config keys are user data: exact case, typed values.
-    ...fields.map(([k, v]) => `  ${JSON.stringify(`${k.charAt(0).toLowerCase()}${k.slice(1)}`)}: ${JSON.stringify(v)},`),
-    ...(r.kind !== "config"
-      ? []
-      : keys.length === 0
-        ? [`  "keys": {},`]
-        : [`  "keys": {`, ...keys.map(([k, v], i) => `    ${JSON.stringify(k)}: ${jsonValue(v)}${i < keys.length - 1 ? "," : ""}`), `  },`]),
-    `  "verify": ${JSON.stringify(r.detail.Verify ?? DEFAULT_VERIFY[r.kind])}`,
-    `}`,
-  ];
-  return lines.join("\n");
+/**
+ * The item as written in ~/.canonfig/: a markdown file with YAML frontmatter, or its entry in canonfig.jsonc.
+ * Tools are left out: their recipes carry exact versions and build policy that this editor doesn't show.
+ */
+function preview(r: Resource): { where: string; text: string } | null {
+  const name = nameOf(r);
+  const d = r.detail;
+  const fields = FIELDS[r.category].filter((f) => f !== BODY && (f.shown?.(d) ?? true) && d[f.label]?.trim());
+  if (MARKDOWN[r.category]) {
+    const front = [
+      ...(r.category === "skills" ? [`name: ${name || "new-skill"}`] : []),
+      ...fields.map((f) => {
+        const v = d[f.label].trim();
+        return `${f.key}: ${f.list ? JSON.stringify(listOf(v)) : v === "true" || v === "false" ? v : JSON.stringify(v)}`;
+      }),
+    ];
+    return {
+      where: `~/.canonfig/${r.category === "skills" ? `${r.path}SKILL.md` : r.path}`,
+      text: `${front.length ? `---\n${front.join("\n")}\n---\n` : ""}${d.Body ?? ""}`,
+    };
+  }
+  const where = `~/.canonfig/canonfig.jsonc → ${r.category}`;
+  const key = JSON.stringify(name || "new-item");
+  if (r.category === "settings") {
+    const keys = Object.entries(r.keys ?? {});
+    const body = keys.map(([k, v], i) => `  ${JSON.stringify(k)}: ${jsonValue(v)}${i < keys.length - 1 ? "," : ""}`);
+    return { where, text: keys.length ? [`${key}: {`, ...body, "}"].join("\n") : `${key}: {}` };
+  }
+  if (r.category === "mcp") {
+    const server = stdio(d)
+      ? { transport: "stdio", command: d.Command, ...(d.Args?.trim() ? { args: d.Args.trim().split(/\s+/) } : {}) }
+      : { transport: d.Transport, url: d.URL };
+    return { where, text: `${key}: ${JSON.stringify(server, null, 2)}` };
+  }
+  if (r.category === "hooks") {
+    const hook = {
+      id: name || "new-hook",
+      event: d.Event,
+      ...(d.Capabilities?.trim() ? { matcher: { capabilities: listOf(d.Capabilities) } } : {}),
+      run: (d.Run ?? "").trim().split(/\s+/).filter(Boolean),
+      onFailure: d["On failure"],
+    };
+    return { where, text: JSON.stringify(hook, null, 2) };
+  }
+  if (r.category === "credentials") return { where, text: `${key}: ${JSON.stringify({ reference: d.Reference ?? "" })}` };
+  return null;
+}
+
+/** The "As written" text, built only while its disclosure is open: CollapsibleContent mounts it then. */
+function WrittenPreview({ item }: { item: Resource }) {
+  const written = preview(item);
+  if (!written) return null;
+  return (
+    <pre tabIndex={0} aria-label="This item as written in the folder" className="overflow-x-auto rounded-md border border-border bg-canvas/70 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground">
+      <span className="text-faint">// {written.where}{"\n"}</span>
+      {written.text}
+    </pre>
+  );
 }
 
 /*
- * Name and Target stop growing at readable lengths (about 240 and 360px) and Summary takes what's left, so a
- * wide window doesn't push the columns apart. Summary's 140px minimum keeps a short note like
- * "from .claude/CLAUDE.md" whole at 1280px; below their caps the other columns shrink toward their minimums.
+ * Name and Path stop growing at readable lengths (about 240 and 360px) and Summary takes what's left, so a
+ * wide window doesn't push the columns apart; below their caps the columns shrink toward their minimums.
  */
-const COLS = "16px minmax(150px,240px) minmax(180px,360px) 190px 140px minmax(140px,1fr)";
-// Column minimums + 5 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
-const COLS_MIN = 16 + 150 + 180 + 190 + 140 + 140 + 5 * 12 + 20;
+const COLS = "16px minmax(150px,240px) minmax(180px,360px) 140px minmax(140px,1fr)";
+// Column minimums + 4 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
+const COLS_MIN = 16 + 150 + 180 + 140 + 140 + 4 * 12 + 20;
 
 /** A checkbox row per Follower Group; the whole row toggles. */
 function GroupPicker({ idPrefix, value, onChange }: { idPrefix: string; value: string[]; onChange: (groups: string[]) => void }) {
@@ -181,22 +294,11 @@ function GroupPicker({ idPrefix, value, onChange }: { idPrefix: string; value: s
   );
 }
 
-/** A plain policy title; the real policy id is only in its tooltip ("Canonfig calls this merge."). */
-function PolicyName({ id, tip = true }: { id: string; tip?: boolean }) {
-  const name = <span className="truncate">{POLICY_TITLE[id] ?? id}</span>;
-  if (!tip) return <span title={`Canonfig calls this ${id}.`}>{name}</span>;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{name}</TooltipTrigger>
-      <TooltipContent>Canonfig calls this {id}.</TooltipContent>
-    </Tooltip>
-  );
-}
-
-/** What Profile → Defaults has saved. The page header reads the name from here too. */
+/** What Profile → Defaults has saved: canonfig.jsonc `profile.name`, `scheduleDefault` and `local.allow`. The page header reads the name from here too. */
 interface ProfileDefaults {
   name: string;
   schedule: Schedule;
+  localAllow: LocalCategory[];
 }
 
 /**
@@ -209,22 +311,27 @@ function useProfileDefaults(which: "saved" | "published" = "saved") {
   return useSharedState<ProfileDefaults>(which === "saved" ? "profile-defaults" : "profile-defaults-published", {
     name: ws.profileName,
     schedule: { cadence: "daily", days: [], time: "09:00" },
+    localAllow: profile.localAllow,
   });
 }
 
-/** Whether two defaults write the same profile file values. Compares the written schedule, so days kept from a weekly choice don't count under daily. */
+/** Whether two defaults write the same canonfig.jsonc values. Compares the written schedule, so days kept from a weekly choice don't count under daily. */
 function sameDefaults(a: ProfileDefaults, b: ProfileDefaults) {
-  return a.name === b.name && JSON.stringify(scheduleDefaultOf(a.schedule)) === JSON.stringify(scheduleDefaultOf(b.schedule));
+  return (
+    a.name === b.name &&
+    scheduleDefaultOf(a.schedule) === scheduleDefaultOf(b.schedule) &&
+    LOCAL_CATEGORIES.every((c) => a.localAllow.includes(c) === b.localAllow.includes(c))
+  );
 }
 
 /**
- * The profile file's `scheduleDefault` (src/domain/profile.ts): daily, or weekly with lowercase day names,
- * always in each follower's local time, since every scheduler backend can render only that.
+ * canonfig.jsonc `scheduleDefault`: `daily@HH:mm` or `weekly:Mon,Thu@HH:mm` (src/projection/folder.ts), always in
+ * each follower's local time, since every scheduler backend can render only that.
  */
 function scheduleDefaultOf(s: Schedule) {
-  if (s.cadence === "daily") return { type: "daily", at: s.time, timezone: "local" };
+  if (s.cadence === "daily") return `daily@${s.time}`;
   const days = s.cadence === "weekdays" ? WEEK.slice(0, 5) : WEEK.filter((d) => s.days.includes(d));
-  return { type: "weekly", days: days.map((d) => d.toLowerCase()), at: s.time, timezone: "local" };
+  return `weekly:${days.join(",")}@${s.time}`;
 }
 
 export function ProfileView() {
@@ -237,17 +344,17 @@ export function ProfileView() {
   const [discoverOpen, setDiscoverOpen] = useState(false);
 
   const proposed = ws.proposed.filter((id) => ws.resources.some((r) => r.id === id));
-  const grouped = useMemo(() => KINDS.map((k) => ({ kind: k, items: ws.resources.filter((r) => r.kind === k) })).filter((g) => g.items.length), [ws.resources]);
+  const grouped = useMemo(() => CATEGORIES.map((c) => ({ category: c, items: ws.resources.filter((r) => r.category === c) })).filter((g) => g.items.length), [ws.resources]);
   const current = ws.resources.find((r) => r.id === selected);
 
   const close = () => ws.go("profile");
   const startCreating = () => ws.go("profile", "new");
 
   const detail =
-    tab === "resources" && (creating || current) ? (
-      <ResourceEditor
+    tab === "items" && (creating || current) ? (
+      <ItemEditor
         key={creating ? "new" : current!.id}
-        resource={creating ? blankResource() : current!}
+        resource={creating ? blankItem(ws.resources.some((r) => r.id === "instructions") ? "rules" : "instructions") : current!}
         isNew={creating}
         onClose={close}
         onSaved={(id) => ws.go("profile", id, { replace: creating })}
@@ -263,7 +370,7 @@ export function ProfileView() {
             <Button variant="outline" size="sm" onClick={() => setDiscoverOpen(true)} data-tour="profile-add">
               Discover tools
             </Button>
-            <Button variant={ws.pending.length === 0 && !detail && tab !== "defaults" ? "primary" : "outline"} size="sm" onClick={startCreating} data-tour="profile-add">
+            <Button variant={ws.pending.length === 0 && !detail && tab === "items" ? "primary" : "outline"} size="sm" onClick={startCreating} data-tour="profile-add">
               <Plus />
               Add item
             </Button>
@@ -277,26 +384,30 @@ export function ProfileView() {
       />
       <Toolbar
         right={
-          <span data-tour="profile-file" className="flex min-w-0 items-center gap-1.5 text-sm whitespace-nowrap text-faint">
-            <span className="hidden sm:inline">Profile file</span>
+          <span data-tour="profile-folder" className="flex min-w-0 items-center gap-1.5 text-sm whitespace-nowrap text-faint">
+            <span className="hidden sm:inline">Folder</span>
             <button
               type="button"
-              title={`Copy path ${ws.profileFile}`}
-              aria-label={`Copy profile file path ${ws.profileFile}`}
+              title={`Copy path ${machine.folder}`}
+              aria-label={`Copy folder path ${machine.folder}`}
               className="truncate rounded font-mono text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
-              onClick={() => copy(ws.profileFile, "Profile path copied")}
+              onClick={() => copy(machine.folder, "Folder path copied")}
             >
-              {ws.profileFile}
+              {machine.folder}
             </button>
-            <Hint label="the profile file">
-              The file on disk is the source of truth. Edits here are written into it in place and keep your comments. Hand edits show up here too.
+            <Hint label="the Canonfig folder">
+              The <Term term="Canonical Folder">Canonfig folder</Term> is the source of truth. Edits here are written into its files, and canonfig.jsonc keeps your comments. Hand
+              edits show up here too.
               {DEMO && " In this demo, edits stay in this browser session and no file is written."}
             </Hint>
           </span>
         }
       >
-        <ToolbarTab active={tab === "resources"} href={workspaceHref("source", "profile")} count={ws.resources.length}>
+        <ToolbarTab active={tab === "items"} href={workspaceHref("source", "profile")} count={ws.resources.length}>
           Items
+        </ToolbarTab>
+        <ToolbarTab active={tab === "harnesses"} href={workspaceHref("source", "profile", { profileTab: "harnesses" })} count={ws.listed.length}>
+          Harnesses
         </ToolbarTab>
         <ToolbarTab active={tab === "groups"} href={workspaceHref("source", "profile", { profileTab: "groups" })} count={groups.length}>
           {PLAIN.groups}
@@ -305,7 +416,7 @@ export function ProfileView() {
           Defaults
         </ToolbarTab>
       </Toolbar>
-      {tab === "resources" && (
+      {tab === "items" && (
         <Body detail={detail}>
           <RowPresence>
             {proposed.length > 0 && (
@@ -313,7 +424,7 @@ export function ProfileView() {
                 <div className="flex items-center gap-3 border-b border-border bg-gold/8 px-[18px] py-2.5 text-sm">
                   <Sparkle bold className="size-3.5 shrink-0 text-gold" />
                   <span className="min-w-0 text-pretty">
-                    Canonfig found <AnimatedNumber value={proposed.length} /> {proposed.length === 1 ? "tool" : "tools"} in your agent config. Open each one to review it, remove
+                    Canonfig found <AnimatedNumber value={proposed.length} /> {proposed.length === 1 ? "tool" : "tools"} that your folder runs. Open each one to review it, remove
                     any you don't want, then publish revision {ws.nextSequence}. Nothing reaches other machines before you publish.
                   </span>
                   <Button variant="outline" size="xs" className="ml-auto shrink-0" onClick={() => ws.go("profile", proposed[0])}>
@@ -325,8 +436,8 @@ export function ProfileView() {
           </RowPresence>
           {grouped.length === 0 ? (
             <EmptyState
-              title="The profile is empty"
-              body="Add the files, settings, skills and tools every machine should have, or discover tools from your config files."
+              title="The folder is empty"
+              body="Add the instructions, rules, skills, MCP servers, settings and tools every machine should have, or discover tools your folder runs."
               action={
                 <Button variant="outline" size="sm" onClick={startCreating}>
                   Add item
@@ -338,16 +449,19 @@ export function ProfileView() {
               <ListHead cols={COLS} minWidth={COLS_MIN} data-tour="profile-items">
                 <span />
                 <span>Name</span>
-                <span>Target</span>
-                <span>
-                  <Term term="Apply Policy">If it differs there</Term>
-                </span>
+                <span>In ~/.canonfig</span>
                 <span>Groups</span>
                 <span>Summary</span>
               </ListHead>
               {grouped.map((g) => (
-                <div key={g.kind} data-tour="profile-items">
-                  <GroupRow icon={KIND_ICON[g.kind]} label={KIND_LABEL[g.kind].label} count={g.items.length} hint={KIND_LABEL[g.kind].hint} minWidth={COLS_MIN} />
+                <div key={g.category} data-tour="profile-items">
+                  <GroupRow
+                    icon={CATEGORY_ICON[g.category]}
+                    label={CATEGORY_LABEL[g.category].label}
+                    count={g.items.length}
+                    hint={`${CATEGORY_LABEL[g.category].where}: ${CATEGORY_LABEL[g.category].hint}`}
+                    minWidth={COLS_MIN}
+                  />
                   <RowPresence>
                     {g.items.map((r) => (
                       <AnimatedRow key={r.id}>
@@ -360,15 +474,12 @@ export function ProfileView() {
                         >
                           <ChangeMark change={r.change} />
                           <span className="flex min-w-0 items-center gap-2">
-                            <span className="truncate font-medium">{r.id}</span>
+                            <span className="truncate font-medium">{nameOf(r) || r.id}</span>
                             {proposed.includes(r.id) && (
                               <span className="inline-flex h-4 shrink-0 items-center rounded-[3px] bg-gold/15 px-1 text-xs font-semibold text-gold">Proposed</span>
                             )}
                           </span>
-                          <Mono className="truncate">{r.target}</Mono>
-                          <span className="text-sm text-muted-foreground">
-                            <PolicyName id={r.policy} />
-                          </span>
+                          <Mono className="truncate">{r.path}</Mono>
                           <GroupChips groups={r.groups} />
                           <span className="truncate text-sm text-faint" title={r.summary}>
                             {r.summary}
@@ -384,6 +495,7 @@ export function ProfileView() {
           <div className="h-16" />
         </Body>
       )}
+      {tab === "harnesses" && <HarnessesTab />}
       {tab === "groups" && <GroupsTab />}
       {tab === "defaults" && <DefaultsTab />}
       <DiscoverDialog open={discoverOpen} onOpenChange={setDiscoverOpen} />
@@ -391,41 +503,53 @@ export function ProfileView() {
   );
 }
 
-function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resource; isNew: boolean; onClose: () => void; onSaved: (id: string) => void }) {
+interface KeyRow {
+  id: number;
+  name: string;
+  value: string;
+}
+
+function keyRowsOf(r: Resource): KeyRow[] {
+  return Object.entries(r.keys ?? {}).map(([name, value], i) => ({ id: i, name, value }));
+}
+
+function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource; isNew: boolean; onClose: () => void; onSaved: (id: string) => void }) {
   const ws = useWorkspace();
   const [draft, setDraft] = useState<Resource>(resource);
+  const [name, setName] = useState(nameOf(resource));
   const [confirmRemove, setConfirmRemove] = useState(false);
   const returnFocus = useRef<HTMLElement | null>(null);
   const [tried, setTried] = useState(false);
-  const set = (patch: Partial<Resource>) => setDraft((d) => ({ ...d, ...patch }));
   const setDetail = (k: string, v: string) => setDraft((d) => ({ ...d, detail: { ...d.detail, [k]: v } }));
-  const isConfig = draft.kind === "config";
-  const contentKeys = Object.keys(draft.detail).filter((k) => !EDITOR_FIELDS.includes(k));
+  const category = draft.category;
+  const isSettings = category === "settings";
+  const fields = FIELDS[category].filter((f) => f.shown?.(draft.detail) ?? true);
   const others = ws.resources.filter((r) => r.id !== resource.id);
-  // A removed item disappears at the next publish, so nothing new may depend on it.
-  const dependencyChoices = others.filter((r) => r.change !== "removed");
-  const dependents = others.filter((r) => r.detail.DependsOn === resource.id);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const Icon = KIND_ICON[draft.kind];
+  const Icon = CATEGORY_ICON[category];
+  // AGENTS.md is one file, so a folder that has it offers no second one; each harness has one settings entry.
+  const categories = CATEGORIES.filter((c) => c !== "instructions" || !others.some((r) => r.id === "instructions"));
+  const freeHarnesses = (Object.keys(HARNESS_NAMES) as HarnessId[]).filter((h) => !others.some((r) => r.id === `settings/${h}`));
 
-  // Config keys are edited as rows so a key can be renamed, including a new one that has no name yet.
+  // Settings keys are edited as rows so a key can be renamed, including a new one that has no name yet.
   const [rows, setRows] = useState<KeyRow[]>(() => keyRowsOf(resource));
   const [focusRow, setFocusRow] = useState<number | null>(null);
   // Unnamed rows are still edits even though they cannot enter the saved key map yet. The change marker is
   // publication state, not an edit: publishing clears it on the saved item while this editor is open, and
   // the draft must still count as matching the item it now shows, so the comparison leaves it out.
   const content = (r: Resource) => JSON.stringify({ ...r, change: undefined });
-  const dirty = content(draft) !== content(resource)
-    || JSON.stringify(rows.map(({ name, value }) => [name, value])) !== JSON.stringify(Object.entries(resource.keys ?? {}));
+  const dirty =
+    content(draft) !== content(resource) ||
+    name !== nameOf(resource) ||
+    JSON.stringify(rows.map(({ name: k, value }) => [k, value])) !== JSON.stringify(Object.entries(resource.keys ?? {}));
   const updateRows = (next: KeyRow[]) => {
     setRows(next);
     setDraft((d) => ({ ...d, keys: Object.fromEntries(next.filter((r) => r.name.trim()).map((r) => [r.name.trim(), r.value])) }));
   };
   const rowError = (r: KeyRow) => {
-    const name = r.name.trim();
+    const key = r.name.trim();
     if (!tried) return null;
-    if (!name) return "Name this key, or remove the row.";
-    if (rows.some((x) => x.id !== r.id && x.name.trim() === name)) return `${name} is listed twice.`;
+    if (!key) return "Name this key, or remove the row.";
+    if (rows.some((x) => x.id !== r.id && x.name.trim() === key)) return `${key} is listed twice.`;
     return null;
   };
 
@@ -434,52 +558,38 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
   // Save, remove and Cancel on a new item settle the draft, so they leave through leaveWithoutAsking.
   const { dialog: leaveDialog, leaveWithoutAsking } = useLeaveGuard(dirty, isNew ? "this new item" : resource.id);
 
-  const id = draft.id.trim();
-  const idError = !id ? "Enter a name." : !/^[a-z0-9][a-z0-9-]*$/.test(id) ? "Use lowercase letters, digits and dashes." : others.some((r) => r.id === id) ? `${id} is already in the profile. Choose another name.` : null;
-  const targetError = !draft.target.trim() ? TARGET[draft.kind].missing : null;
-  const hasMode = draft.kind === "file" || draft.kind === "directory";
-  // Unix permission bits: three octal digits (644), or four with the setuid/setgid/sticky digit first (0644).
-  const modeError = hasMode && draft.detail.Mode !== undefined && !/^[0-7]{3,4}$/.test(draft.detail.Mode) ? "Use 3 or 4 octal digits (0 to 7), like 0644." : null;
-  const dependencyError = (() => {
-    const dep = draft.detail.DependsOn;
-    if (!dep || dep === "none") return null;
-    if (dep === id) return "An item can't depend on itself.";
-    // Walk the chain as it would stand after this save: items that pointed at the old name follow the rename.
-    const after = new Map(others.map((r) => [r.id, r.detail.DependsOn === resource.id ? id : r.detail.DependsOn] as const));
-    const chain = [id];
-    for (let at: string | undefined = dep; at && at !== "none" && chain.length <= after.size + 1; at = after.get(at)) {
-      chain.push(at);
-      if (at === id) return `This makes a loop: ${chain.join(" → ")}. Choose another item or Nothing.`;
-    }
-    return null;
-  })();
+  const trimmed = name.trim();
+  const id = category === "instructions" ? "instructions" : `${category}/${trimmed}`;
+  const nameError =
+    category === "instructions"
+      ? null
+      : !trimmed
+        ? isSettings
+          ? "Choose a harness."
+          : "Enter a name."
+        : !NAME_PATTERN.test(trimmed)
+          ? "Use letters, digits, - and _, starting with a letter or digit."
+          : others.some((r) => r.id === id)
+            ? `${id} is already in the folder. Choose another name.`
+            : null;
+  const fieldError = (f: FieldSpec) => (f.required && !draft.detail[f.label]?.trim() ? `Enter ${f.label === "URL" ? "the URL" : `a ${f.label.toLowerCase()}`}.` : null);
+  const asWritten: Resource = { ...draft, id, path: itemPath(category, trimmed) };
 
   const save = (form: HTMLFormElement) => {
     setTried(true);
-    const badRow = isConfig ? rows.find((r) => !r.name.trim() || rows.some((x) => x.id !== r.id && x.name.trim() === r.name.trim())) : undefined;
-    if (idError || targetError || badRow || modeError || dependencyError) {
-      const selector = idError ? "#res-id" : targetError ? "#res-target" : badRow ? `#res-key-${badRow.id}` : modeError ? "#res-mode" : "#res-deps";
-      // Mode and Depends on live under Advanced, which renders its fields only while open.
-      if (!idError && !targetError && !badRow) flushSync(() => setAdvancedOpen(true));
+    const badField = fields.find(fieldError);
+    const badRow = isSettings ? rows.find((r) => !r.name.trim() || rows.some((x) => x.id !== r.id && x.name.trim() === r.name.trim())) : undefined;
+    if (nameError || badField || badRow) {
+      const selector = nameError ? "#item-name" : badField ? `#item-${badField.label.replace(/\W/g, "")}` : `#item-key-${badRow!.id}`;
       form.querySelector<HTMLElement>(selector)?.focus();
       return;
     }
-    const summary = isConfig ? `${rows.length} ${draft.detail.Format ?? "JSON"} ${rows.length === 1 ? "key" : "keys"}` : draft.summary || KIND_LABEL[draft.kind].label;
-    const next: Resource = { ...draft, id, target: draft.target.trim(), change: isNew ? "added" : resource.change ?? "modified", summary };
-    // Items that depended on the old name follow the rename, so no declaration points at a missing item.
-    const renamedDependents = !isNew && id !== resource.id ? dependents : [];
-    ws.setResources((prev) => {
-      const saved = isNew ? [...prev, next] : prev.map((r) => (r.id === resource.id ? next : r));
-      return renamedDependents.length === 0
-        ? saved
-        : saved.map((r) => (r.detail.DependsOn === resource.id ? { ...r, detail: { ...r.detail, DependsOn: id }, change: r.change ?? "modified" } : r));
-    });
-    const unpublished = ws.pending.length + (resource.change && !isNew ? 0 : 1) + renamedDependents.filter((r) => !r.change).length;
-    const updated = renamedDependents.length
-      ? ` ${renamedDependents.map((r) => r.id).join(", ")} now ${renamedDependents.length === 1 ? "depends" : "depend"} on ${id}.`
-      : "";
+    const base: Resource = { ...draft, id, path: itemPath(category, trimmed), change: isNew ? "added" : resource.change ?? "modified" };
+    const next = { ...base, summary: summaryOf(base) };
+    ws.setResources((prev) => (isNew ? [...prev, next] : prev.map((r) => (r.id === resource.id ? next : r))));
+    const unpublished = ws.pending.length + (resource.change && !isNew ? 0 : 1);
     toast.success(isNew ? `Added ${id}` : `Saved ${id}`, {
-      description: `Goes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${updated}${DEMO ? " Saved in this demo workspace." : ""}`,
+      description: `Written to ${next.path}. Goes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${DEMO ? " Saved in this demo workspace." : ""}`,
     });
     setDraft(next);
     setRows(keyRowsOf(next));
@@ -508,130 +618,153 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
             <Button
               variant="ghost"
               size="sm"
-              onClick={isNew ? () => leaveWithoutAsking(onClose) : () => (setDraft(resource), setRows(keyRowsOf(resource)), setTried(false))}
+              onClick={isNew ? () => leaveWithoutAsking(onClose) : () => (setDraft(resource), setName(nameOf(resource)), setRows(keyRowsOf(resource)), setTried(false))}
               disabled={!isNew && !dirty}
             >
               {isNew ? "Cancel" : "Discard"}
             </Button>
-            <Button type="submit" form="res-form" variant="primary" size="sm" disabled={!isNew && !dirty}>
-              {isNew ? "Add to profile" : "Save to profile"}
+            <Button type="submit" form="item-form" variant="primary" size="sm" disabled={!isNew && !dirty}>
+              {isNew ? "Add to the folder" : "Save to the folder"}
             </Button>
           </div>
         </>
       }
     >
       <form
-        id="res-form"
+        id="item-form"
         className="grid gap-4 px-4 py-4"
         onSubmit={(e) => {
           e.preventDefault();
           save(e.currentTarget);
         }}
       >
-        <Field label="Name" htmlFor="res-id" error={tried && idError ? idError : null}>
-          <Input
-            id="res-id"
-            value={draft.id}
-            placeholder="codex-agents"
-            onChange={(e) => set({ id: e.target.value })}
-            aria-invalid={tried && !!idError}
-            aria-describedby={tried && idError ? "res-id-note" : undefined}
-            autoComplete="off"
-            spellCheck={false}
-            autoFocus={isNew}
-            className="font-mono text-sm"
-          />
-        </Field>
-        <Field label="Kind" htmlFor="res-kind" hint={isNew ? <>The kind of <Term term="Profile Resource">item</Term> decides how Canonfig copies and checks it.</> : undefined}>
+        <Field label="Kind" htmlFor="item-category" hint={isNew ? <>Where the <Term term="Profile Resource">item</Term> lives in ~/.canonfig decides which harness files it reaches.</> : undefined}>
           <Select
-            value={draft.kind}
-            onValueChange={(k: ResourceKind) => {
-              set({ kind: k, policy: POLICIES_BY_KIND[k][0], detail: { ...DEFAULT_DETAIL[k], Verify: DEFAULT_VERIFY[k] }, keys: k === "config" ? {} : undefined });
+            value={category}
+            onValueChange={(c: ItemCategory) => {
+              setDraft(blankItem(c));
+              setName("");
               setRows([]);
             }}
             disabled={!isNew}
           >
-            <SelectTrigger id="res-kind" className="w-full">
-              <SelectValue>{KIND_LABEL[draft.kind].label}</SelectValue>
+            <SelectTrigger id="item-category" className="w-full">
+              <SelectValue>{CATEGORY_LABEL[category].label}</SelectValue>
             </SelectTrigger>
             <SelectContent>
-              {KINDS.map((k) => {
-                const KIcon = KIND_ICON[k];
+              {categories.map((c) => {
+                const CIcon = CATEGORY_ICON[c];
                 return (
-                  <SelectItem key={k} value={k} className="items-start py-1.5">
-                    <KIcon className="mt-0.5 text-muted-foreground" />
+                  <SelectItem key={c} value={c} className="items-start py-1.5">
+                    <CIcon className="mt-0.5 text-muted-foreground" />
                     <span className="grid gap-0.5">
-                      <span className="text-base">{KIND_LABEL[k].label}</span>
-                      <span className="text-xs whitespace-normal text-muted-foreground">{KIND_LABEL[k].hint}</span>
+                      <span className="text-base">{CATEGORY_LABEL[c].label}</span>
+                      <span className="text-xs whitespace-normal text-muted-foreground">{CATEGORY_LABEL[c].hint}</span>
                     </span>
                   </SelectItem>
                 );
               })}
             </SelectContent>
           </Select>
-          {!isNew && <p className="text-sm text-pretty text-faint">{KIND_LABEL[draft.kind].hint}</p>}
+          {!isNew && <p className="text-sm text-pretty text-faint">{CATEGORY_LABEL[category].hint}</p>}
         </Field>
-        <Field label={TARGET[draft.kind].label} htmlFor="res-target" error={tried && targetError ? targetError : null}>
-          <Input
-            id="res-target"
-            value={draft.target}
-            placeholder={TARGET[draft.kind].placeholder}
-            onChange={(e) => set({ target: e.target.value })}
-            aria-invalid={tried && !!targetError}
-            aria-describedby={tried && targetError ? "res-target-note" : undefined}
-            autoComplete="off"
-            spellCheck={false}
-            className="font-mono text-sm"
-          />
-        </Field>
-        <Field label={<Term term="Apply Policy">{PLAIN.applyPolicy}</Term>} htmlFor="res-policy">
-          <Select value={draft.policy} onValueChange={(p) => set({ policy: p })}>
-            <SelectTrigger id="res-policy" className="w-full">
-              <SelectValue>
-                <PolicyName id={draft.policy} tip={false} />
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {POLICIES_BY_KIND[draft.kind].map((p) => (
-                <SelectItem key={p} value={p} className="items-start py-1.5">
-                  <span className="grid gap-0.5">
-                    <PolicyName id={p} tip={false} />
-                    <span className="text-xs whitespace-normal text-muted-foreground">{POLICY_HINT[p]}</span>
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-sm text-pretty text-faint">{POLICY_HINT[draft.policy]}</p>
-        </Field>
-        <Field
-          label={<Term term="Follower Group">Who gets it</Term>}
-          description={draft.groups.length === 0 ? "Every machine gets this. Tick a group to send it only to that group's machines." : "Only machines in these groups get it."}
-        >
-          <GroupPicker idPrefix="grp" value={draft.groups} onChange={(groups) => set({ groups })} />
-        </Field>
-
-        {isConfig && (
-          <div className="grid gap-2">
-            <Field label="File format" htmlFor="res-format">
-              <Select value={draft.detail.Format ?? "JSON"} onValueChange={(v) => setDetail("Format", v)}>
-                <SelectTrigger id="res-format" className="w-32" size="sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {FORMATS.map((f) => (
-                    <SelectItem key={f} value={f}>
-                      {f}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+        {isSettings ? (
+          <Field label="Harness" htmlFor="item-name" error={tried ? nameError : null}>
+            <Select value={trimmed} onValueChange={setName}>
+              <SelectTrigger id="item-name" className="w-full" aria-invalid={tried && !!nameError} aria-describedby={tried && nameError ? "item-name-note" : undefined}>
+                <SelectValue placeholder="Choose a harness">{trimmed && HARNESS_NAMES[trimmed as HarnessId]}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {(isNew ? freeHarnesses : [trimmed as HarnessId, ...freeHarnesses]).map((h) => (
+                  <SelectItem key={h} value={h}>
+                    {HARNESS_NAMES[h]}
+                    <span className="font-mono text-xs text-faint">{h}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        ) : (
+          category !== "instructions" && (
+            <Field label="Name" htmlFor="item-name" error={tried ? nameError : null}>
+              <Input
+                id="item-name"
+                value={name}
+                placeholder={NAME_PLACEHOLDER[category]}
+                onChange={(e) => setName(e.target.value)}
+                aria-invalid={tried && !!nameError}
+                aria-describedby={tried && nameError ? "item-name-note" : undefined}
+                autoComplete="off"
+                spellCheck={false}
+                autoFocus={isNew}
+                className="font-mono text-sm"
+              />
             </Field>
+          )
+        )}
+
+        {fields.map((f) => {
+          const fid = `item-${f.label.replace(/\W/g, "")}`;
+          const error = tried ? fieldError(f) : null;
+          return (
+            <Field key={f.label} label={f.label} htmlFor={fid} hint={f.hint} error={error}>
+              {f.options ? (
+                <Select value={draft.detail[f.label] ?? f.options[0]} onValueChange={(v) => setDetail(f.label, v)}>
+                  <SelectTrigger id={fid} className="w-full" size="sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {f.options.map((o) => (
+                      <SelectItem key={o} value={o}>
+                        <span className="font-mono text-sm">{o}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : f.long ? (
+                <Textarea
+                  id={fid}
+                  value={draft.detail[f.label] ?? ""}
+                  placeholder={f.placeholder}
+                  onChange={(e) => setDetail(f.label, e.target.value)}
+                  spellCheck={false}
+                  className="max-h-80 font-mono text-sm"
+                />
+              ) : (
+                <Input
+                  id={fid}
+                  value={draft.detail[f.label] ?? ""}
+                  placeholder={f.placeholder}
+                  onChange={(e) => setDetail(f.label, e.target.value)}
+                  aria-invalid={!!error}
+                  aria-describedby={error ? `${fid}-note` : undefined}
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="h-7 font-mono text-sm"
+                />
+              )}
+            </Field>
+          );
+        })}
+
+        {category === "skills" && draft.detail.Files && (
+          <Prop label="Files">
+            <Mono className="text-foreground">{draft.detail.Files}</Mono>
+          </Prop>
+        )}
+        {draft.detail.Evidence && (
+          <Prop label="Found in">
+            <Mono className="text-foreground">{draft.detail.Evidence}</Mono>
+          </Prop>
+        )}
+
+        {isSettings && (
+          <div className="grid gap-2">
             <SectionLabel
               action={
                 <Button
                   type="button"
-                  id="res-add-key"
+                  id="item-add-key"
                   variant="ghost"
                   size="xs"
                   onClick={() => {
@@ -646,7 +779,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
             >
               Keys Canonfig sets
             </SectionLabel>
-            {rows.length === 0 && <p className="text-sm text-faint">No keys yet. Add the first key Canonfig should set in this file.</p>}
+            {rows.length === 0 && <p className="text-sm text-faint">No keys yet. Add the first key Canonfig should set in this harness's settings file.</p>}
             {/* Key paths are long dotted names; values are short scalars, so the path gets the larger share. */}
             <div className="grid grid-cols-[minmax(0,3fr)_minmax(0,2fr)_24px] items-start gap-x-1.5 gap-y-1.5">
               {rows.length > 0 && (
@@ -662,20 +795,24 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
                   <div key={r.id} className="contents">
                     <div className="grid gap-1">
                       <Input
-                        id={`res-key-${r.id}`}
+                        id={`item-key-${r.id}`}
                         value={r.name}
                         title={r.name || undefined}
                         aria-label={`Key ${i + 1} path`}
                         placeholder="permissions.defaultMode"
                         autoFocus={focusRow === r.id}
                         aria-invalid={!!err}
-                        aria-describedby={err ? `res-key-${r.id}-note` : undefined}
+                        aria-describedby={err ? `item-key-${r.id}-note` : undefined}
                         onChange={(e) => updateRows(rows.map((x) => (x.id === r.id ? { ...x, name: e.target.value } : x)))}
                         autoComplete="off"
                         spellCheck={false}
                         className="h-7 font-mono text-sm"
                       />
-                      {err && <span id={`res-key-${r.id}-note`} role="alert" className="text-xs text-bad">{err}</span>}
+                      {err && (
+                        <span id={`item-key-${r.id}-note`} role="alert" className="text-xs text-bad">
+                          {err}
+                        </span>
+                      )}
                     </div>
                     <Input
                       value={r.value}
@@ -686,108 +823,46 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
                       spellCheck={false}
                       className="h-7 font-mono text-sm"
                     />
-                    <Button type="button" variant="ghost" size="icon-xs" className="mt-0.5 text-faint" data-remove="config-keys" aria-label={`Remove key ${r.name || i + 1}`} onClick={(e) => removeKeepingFocus(e.currentTarget, () => updateRows(rows.filter((x) => x.id !== r.id)), "res-add-key")}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      className="mt-0.5 text-faint"
+                      data-remove="config-keys"
+                      aria-label={`Remove key ${r.name || i + 1}`}
+                      onClick={(e) => removeKeepingFocus(e.currentTarget, () => updateRows(rows.filter((x) => x.id !== r.id)), "item-add-key")}
+                    >
                       <X />
                     </Button>
                   </div>
                 );
               })}
             </div>
-            <p className="text-xs text-pretty text-faint">Values are written as {draft.detail.Format ?? "JSON"}: put text in quotes, like "zed"; numbers and true/false without.</p>
+            <p className="text-xs text-pretty text-faint">
+              Values are JSON: put text in quotes, like "high"; numbers and true/false without. Canonfig translates them into the harness's own file format and leaves every
+              other key in that file as it is.
+            </p>
           </div>
         )}
 
-        {!isConfig && contentKeys.length > 0 && (
-          <div className="grid gap-2">
-            <SectionLabel>{draft.kind === "tool" ? "Install recipe per system" : "Content"}</SectionLabel>
-            <div className="grid gap-2">
-              {contentKeys.map((k) => (
-                <div key={k} className="grid grid-cols-[120px_1fr] items-center gap-x-2 gap-y-1">
-                  <Label htmlFor={`d-${k}`} title={k} className="truncate text-sm font-normal text-muted-foreground">
-                    {k}
-                  </Label>
-                  <Input id={`d-${k}`} value={draft.detail[k]} onChange={(e) => setDetail(k, e.target.value)} autoComplete="off" spellCheck={false} className="h-7 font-mono text-sm" />
-                </div>
-              ))}
-            </div>
-          </div>
+        <Field
+          label={<Term term="Follower Group">Who gets it</Term>}
+          description={draft.groups.length === 0 ? "Every machine gets this. Tick a group to send it only to that group's machines." : "Only machines in these groups get it."}
+        >
+          <GroupPicker idPrefix="grp" value={draft.groups} onChange={(groups) => setDraft((d) => ({ ...d, groups }))} />
+        </Field>
+
+        {category !== "tools" && (
+          <Collapsible>
+            <CollapsibleTrigger className="group flex h-7 w-full items-center gap-1 rounded text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
+              <CaretRight className="size-3.5 transition-transform duration-150 ease-snap group-data-[state=open]:rotate-90" />
+              As written in ~/.canonfig
+            </CollapsibleTrigger>
+            <CollapsibleContent className="pt-2">
+              <WrittenPreview item={asWritten} />
+            </CollapsibleContent>
+          </Collapsible>
         )}
-
-        <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-          <CollapsibleTrigger className="group flex h-7 w-full items-center gap-1 rounded text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
-            <CaretRight className="size-3.5 transition-transform duration-150 ease-snap group-data-[state=open]:rotate-90" />
-            Advanced
-            <span className="ml-1 font-normal text-faint">verify, file mode, depends on</span>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="grid gap-3 pt-2 pl-4">
-            <Field label="Verify with" htmlFor="res-verify">
-              <Select value={draft.detail.Verify ?? DEFAULT_VERIFY[draft.kind]} onValueChange={(v) => setDetail("Verify", v)}>
-                <SelectTrigger id="res-verify" className="w-full" size="sm">
-                  <SelectValue>
-                    <span className="font-mono text-sm">{draft.detail.Verify ?? DEFAULT_VERIFY[draft.kind]}</span>
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(VERIFY).map(([v, hint]) => (
-                    <SelectItem key={v} value={v} className="items-start py-1.5">
-                      <span className="grid gap-0.5">
-                        <span className="font-mono text-sm">{v}</span>
-                        <span className="text-xs whitespace-normal text-muted-foreground">{hint}</span>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            {hasMode && (
-              <Field label="File mode" htmlFor="res-mode" description="Octal permissions, applied on Linux and macOS." error={tried && modeError ? modeError : null}>
-                <Input
-                  id="res-mode"
-                  value={draft.detail.Mode ?? "0644"}
-                  onChange={(e) => setDetail("Mode", e.target.value)}
-                  aria-invalid={tried && !!modeError}
-                  aria-describedby="res-mode-note"
-                  inputMode="numeric"
-                  autoComplete="off"
-                  className="h-7 w-24 font-mono text-sm tabular-nums"
-                />
-              </Field>
-            )}
-            <Field
-              label="Depends on"
-              htmlFor="res-deps"
-              description="Applied after the chosen item, for example a tool before its settings."
-              error={tried && dependencyError ? dependencyError : null}
-            >
-              <Select value={draft.detail.DependsOn ?? "none"} onValueChange={(v) => setDetail("DependsOn", v)}>
-                <SelectTrigger id="res-deps" className="w-full" size="sm" aria-invalid={tried && !!dependencyError} aria-describedby="res-deps-note">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Nothing</SelectItem>
-                  {dependencyChoices.map((o) => (
-                    <SelectItem key={o.id} value={o.id}>
-                      <span className="font-mono text-sm">{o.id}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          </CollapsibleContent>
-        </Collapsible>
-
-        <Collapsible>
-          <CollapsibleTrigger className="group flex h-7 w-full items-center gap-1 rounded text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
-            <CaretRight className="size-3.5 transition-transform duration-150 ease-snap group-data-[state=open]:rotate-90" />
-            As written in the profile file
-          </CollapsibleTrigger>
-          <CollapsibleContent className="pt-2">
-            <pre tabIndex={0} aria-label="This item as written in the profile file" className="overflow-x-auto rounded-md border border-border bg-canvas/70 p-3 font-mono text-xs leading-relaxed text-muted-foreground">
-              <span className="text-faint">// {ws.profileFile} → resources{"\n"}</span>
-              {jsonc(draft)}
-            </pre>
-          </CollapsibleContent>
-        </Collapsible>
       </form>
 
       <Dialog open={confirmRemove} onOpenChange={setConfirmRemove}>
@@ -800,9 +875,7 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             // Confirming removes the editor; cancellation returns to its Remove button.
-            const target = returnFocus.current?.isConnected && returnFocus.current !== document.body
-              ? returnFocus.current
-              : document.querySelector<HTMLElement>("main h1");
+            const target = returnFocus.current?.isConnected && returnFocus.current !== document.body ? returnFocus.current : document.querySelector<HTMLElement>("main h1");
             if (target && !target.matches("button, a, [tabindex]")) target.tabIndex = -1;
             target?.focus();
           }}
@@ -810,8 +883,8 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
           <DialogHeader>
             <DialogTitle>Remove {resource.id}?</DialogTitle>
             <DialogDescription className="text-base text-pretty">
-              After you publish, Canonfig stops managing <span className="font-mono text-sm text-foreground">{resource.target}</span> on your machines. Their copies stay on disk.
-              {dependents.length > 0 && ` ${dependents.map((r) => r.id).join(", ")} ${dependents.length === 1 ? "depends" : "depend"} on it; that dependency is dropped.`}
+              Canonfig deletes it from <span className="font-mono text-sm text-foreground">{resource.path}</span>. After you publish, machines drop it from their copy of the
+              folder and Canonfig removes what it wrote from it into their harnesses. A copy someone edited on a machine stays there and shows as edited.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -821,17 +894,10 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
             <Button
               variant="destructive"
               onClick={() => {
-                // Dependents drop the reference now, so no declaration points at an item that is going away.
-                ws.setResources((prev) =>
-                  (resource.change === "added" ? prev.filter((r) => r.id !== resource.id) : prev.map((r) => (r.id === resource.id ? { ...r, change: "removed" as const } : r))).map(
-                    (r) => (r.detail.DependsOn === resource.id ? withoutDependency(r) : r),
-                  ),
-                );
+                ws.setResources((prev) => (resource.change === "added" ? prev.filter((r) => r.id !== resource.id) : prev.map((r) => (r.id === resource.id ? { ...r, change: "removed" as const } : r))));
                 setConfirmRemove(false);
                 leaveWithoutAsking(onClose);
-                toast(`Removed ${resource.id}`, {
-                  description: `${dependents.length ? `${dependents.map((r) => r.id).join(", ")} no longer ${dependents.length === 1 ? "depends" : "depend"} on it. ` : ""}Publish to apply this to followers.`,
-                });
+                toast(`Removed ${resource.id}`, { description: "Publish to apply this to followers." });
               }}
             >
               Remove item
@@ -841,6 +907,31 @@ function ResourceEditor({ resource, isNew, onClose, onSaved }: { resource: Resou
       </Dialog>
       {leaveDialog}
     </DetailPanel>
+  );
+}
+
+/** canonfig.jsonc `harnesses`: which harnesses every machine writes the folder into, where installed and not excluded. */
+function HarnessesTab() {
+  const ws = useWorkspace();
+  return (
+    <Body>
+      <p data-tour="profile-harnesses" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
+        Canonfig writes this folder into each listed <Term term="Target Harness">harness</Term> on every machine where it's installed, this one included. Any machine can exclude
+        one for itself. Removing a harness from the list stops Canonfig managing it and removes what it wrote there, unless someone edited it; its backup stays, so you can restore
+        it from Backups.
+      </p>
+      <HarnessTable
+        edit="listed"
+        onToggle={(id, on) => {
+          ws.setListed((prev) => (on ? [...prev, id] : prev.filter((h) => h !== id)));
+          ws.markProfileEdit({ area: "harnesses", id: "harnesses", change: "modified" });
+          toast(on ? `Listed ${HARNESS_NAMES[id]}` : `Removed ${HARNESS_NAMES[id]} from the list`, {
+            description: `Goes out with revision ${ws.nextSequence}.${on ? " Machines that have it installed back it up, then take it over." : ""}${DEMO ? " Saved in this demo workspace." : ""}`,
+          });
+        }}
+      />
+      <div className="h-16" />
+    </Body>
   );
 }
 
@@ -858,8 +949,8 @@ function GroupsTab() {
   const trimmed = name.trim();
   const problem = !trimmed
     ? "Enter a name."
-    : !/^[a-z0-9][a-z0-9-]*$/.test(trimmed)
-      ? "Use lowercase letters, digits and dashes."
+    : !NAME_PATTERN.test(trimmed)
+      ? "Use letters, digits, - and _, starting with a letter or digit."
       : groups.some((g) => g.name === trimmed)
         ? `${trimmed} already exists. Choose another name.`
         : null;
@@ -872,7 +963,8 @@ function GroupsTab() {
     <Body detail={current && <GroupDetail key={current.name} group={current} onClose={() => ws.navigate(workspaceHref("source", "profile", { profileTab: "groups" }))} />}>
       <div data-tour="profile-groups" className="flex items-center gap-3 border-b border-border px-[18px] py-2.5 text-sm text-muted-foreground">
         <span className="text-pretty">
-          A <Term term="Follower Group">group</Term> gets extra items on top of the base profile. A machine's groups come from its invitation; open a group to add machines.
+          A <Term term="Follower Group">group</Term> gets extra items on top of the base profile; canonfig.jsonc <Mono>groups</Mono> lists them. A machine's groups come from its
+          invitation; open a group to add machines.
         </span>
         <Button
           variant="outline"
@@ -1025,7 +1117,7 @@ function GroupDetail({ group: g, onClose }: { group: Group; onClose: () => void 
             <p className="text-sm text-muted-foreground">None. Tick this group under “Who gets it” on an item.</p>
           ) : (
             items.map((r) => (
-              <Prop key={r.id} label={KIND_LABEL[r.kind].label}>
+              <Prop key={r.id} label={CATEGORY_LABEL[r.category].label}>
                 <span className="font-medium">{r.id}</span>
               </Prop>
             ))
@@ -1045,13 +1137,15 @@ function DefaultsTab() {
   const [published, setPublished] = useProfileDefaults("published");
   const [name, setName] = useState(saved.name);
   const [schedule, setSchedule] = useState<Schedule>(saved.schedule);
+  const [localAllow, setLocalAllow] = useState<LocalCategory[]>(saved.localAllow);
   const [tried, setTried] = useState(false);
   const trimmed = name.trim();
   const nameError = tried && !trimmed ? "Enter a display name." : null;
   const scheduleProblem = scheduleError(schedule);
   // Compares what Save would write, so day picks hidden under a daily cadence don't count as edits.
-  const dirty = !sameDefaults({ name, schedule }, saved);
+  const dirty = !sameDefaults({ name, schedule, localAllow }, saved);
   const { dialog: leaveDialog } = useLeaveGuard(dirty, "the profile defaults");
+  const allowed = LOCAL_CATEGORIES.filter((c) => localAllow.includes(c));
   return (
     <Body>
       <form
@@ -1060,7 +1154,7 @@ function DefaultsTab() {
           e.preventDefault();
           setTried(true);
           if (!trimmed || scheduleProblem) return;
-          const next = { name: trimmed, schedule };
+          const next = { name: trimmed, schedule, localAllow: allowed };
           // Saving unchanged values is not an edit. Saving the published values back withdraws the edit,
           // so unpublished changes only ever list defaults that differ from the latest revision.
           const edited = ws.pending.some((c) => c.area === "defaults");
@@ -1085,16 +1179,9 @@ function DefaultsTab() {
         <SectionLabel>Profile</SectionLabel>
         <div className="grid gap-4 py-2">
           <Field label="Display name" htmlFor="p-name" error={nameError}>
-            <Input
-              id="p-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              aria-invalid={!!nameError}
-              aria-describedby={nameError ? "p-name-note" : undefined}
-              autoComplete="off"
-            />
+            <Input id="p-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-describedby={nameError ? "p-name-note" : undefined} autoComplete="off" />
           </Field>
-          <Field label="Profile id" description="Machines pick a profile by id when they join, so it can't change once machines use it.">
+          <Field label="Profile id" description="Every revision carries this id, and Canonfig needs it to publish.">
             <Mono className="text-sm text-foreground">{profile.id}</Mono>
           </Field>
         </div>
@@ -1103,24 +1190,42 @@ function DefaultsTab() {
         </SectionLabel>
         <p className="mb-3 text-sm text-pretty text-muted-foreground">New machines check for revisions at this time unless they set their own. Times are each machine's local time.</p>
         <ScheduleFields idPrefix="def" value={schedule} onChange={setSchedule} />
-        {/* The default is a profile-file edit, not a command. An incomplete schedule has no valid value, so this waits for a complete one. */}
-        {!scheduleProblem && (
-          <div className="mt-4 grid gap-2">
-            <pre
-              aria-label="The default schedule as written in the profile file"
-              className="rounded-md border border-border bg-canvas/70 p-3 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-muted-foreground"
-            >
-              <span className="text-faint">// {ws.profileFile}{"\n"}</span>
-              {`"scheduleDefault": { ${Object.entries(scheduleDefaultOf(schedule))
-                .map(([k, v]) => `${JSON.stringify(k)}: ${Array.isArray(v) ? `[${v.map((d) => JSON.stringify(d)).join(", ")}]` : JSON.stringify(v)}`)
-                .join(", ")} }`}
-            </pre>
-            <p className="text-sm text-pretty text-faint">
-              Canonfig writes this into the profile file when you save{DEMO && "; this demo keeps it in the browser session and writes no file"}. A machine follows it
-              while its Schedule page is set to follow the Source's default.
-            </p>
-          </div>
-        )}
+
+        <SectionLabel className="mt-6">
+          <Term term="Local folder">What machines may add locally</Term>
+        </SectionLabel>
+        <p className="mb-3 text-sm text-pretty text-muted-foreground">
+          Each machine can add its own items in ~/.canonfig/local. Canonfig uses only the kinds you tick here and reports the rest on that machine. Backups and excluded
+          harnesses are always the machine's own choice.
+        </p>
+        <div className="grid gap-0.5 sm:grid-cols-2">
+          {LOCAL_CATEGORIES.map((c) => (
+            <Label key={c} htmlFor={`allow-${c}`} className="flex h-7 cursor-pointer items-center gap-2 text-base font-normal">
+              <Checkbox id={`allow-${c}`} checked={localAllow.includes(c)} onCheckedChange={(on) => setLocalAllow((prev) => (on ? [...prev, c] : prev.filter((x) => x !== c)))} />
+              {CATEGORY_LABEL[c].label}
+              <span className="font-mono text-xs text-faint">{c}</span>
+            </Label>
+          ))}
+        </div>
+
+        {/* The defaults are canonfig.jsonc keys, not a command. An incomplete schedule has no valid value, so its line waits for a complete one. */}
+        <div className="mt-6 grid gap-2">
+          <pre
+            aria-label="The defaults as written in canonfig.jsonc"
+            className="rounded-md border border-border bg-canvas/70 p-3 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-muted-foreground"
+          >
+            <span className="text-faint">// ~/.canonfig/canonfig.jsonc{"\n"}</span>
+            {[
+              `"profile": ${JSON.stringify({ id: profile.id, name: trimmed || saved.name })},`,
+              ...(scheduleProblem ? [] : [`"scheduleDefault": ${JSON.stringify(scheduleDefaultOf(schedule))},`]),
+              `"local": { "allow": [${allowed.map((c) => JSON.stringify(c)).join(", ")}] }`,
+            ].join("\n")}
+          </pre>
+          <p className="text-sm text-pretty text-faint">
+            Canonfig writes these into canonfig.jsonc when you save{DEMO && "; this demo keeps them in the browser session and writes no file"}. A machine follows the schedule
+            while its Schedule page is set to follow the Source's default.
+          </p>
+        </div>
         {/* Same pattern as the item editor: nothing to save or discard until the form differs from what was saved. */}
         <div className="mt-8 flex gap-2">
           <Button type="submit" variant="primary" size="sm" disabled={!dirty || scheduleProblem !== null}>
@@ -1134,6 +1239,7 @@ function DefaultsTab() {
             onClick={() => {
               setName(saved.name);
               setSchedule(saved.schedule);
+              setLocalAllow(saved.localAllow);
               setTried(false);
             }}
           >
@@ -1146,13 +1252,10 @@ function DefaultsTab() {
   );
 }
 
-// `source scan` reads only the named files and proposes a tool resource per command it finds there.
-const SCAN_FILES = ["~/.codex/config.toml", "~/.claude.json"];
-
 function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const ws = useWorkspace();
   const [progress, setProgress] = useState(0);
-  const [picked, setPicked] = useState<string[]>(["playwright-mcp", "uv"]);
+  const [picked, setPicked] = useState<string[]>(["node", "prettier"]);
   const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -1163,11 +1266,12 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   }, [open]);
 
   const done = progress >= 100;
-  // Picked tools the profile already has stay as they are, so the button counts and adds only the new ones.
+  const inFolder = (id: string) => ws.resources.some((r) => r.id === `tools/${id}`);
+  // Picked tools the folder already has stay as they are, so the button counts and adds only the new ones.
   const pickedTools = SCANNED_TOOLS.filter((f) => picked.includes(f.id));
-  const fresh = pickedTools.filter((f) => !ws.resources.some((r) => r.id === f.id));
-  const present = pickedTools.filter((f) => !fresh.includes(f)).map((f) => f.id);
-  const presentNote = present.length ? `${present.join(", ")} ${present.length === 1 ? "is" : "are"} already in the profile.` : "";
+  const fresh = pickedTools.filter((f) => !inFolder(f.id));
+  const present = pickedTools.filter((f) => inFolder(f.id)).map((f) => f.id);
+  const presentNote = present.length ? `${present.join(", ")} ${present.length === 1 ? "is" : "are"} already in the folder.` : "";
   const noneNew = picked.length === 0 ? "Tick the tools to add." : presentNote;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1185,8 +1289,8 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         <DialogHeader>
           <DialogTitle>Discover tools</DialogTitle>
           <DialogDescription className="text-base text-pretty">
-            Canonfig reads only <span className="font-mono text-sm text-foreground">{SCAN_FILES[0]}</span> and{" "}
-            <span className="font-mono text-sm text-foreground">{SCAN_FILES[1]}</span>, and proposes a tool for each command it finds there. It runs nothing.
+            Canonfig reads the instructions, skills, hook scripts and MCP commands in <span className="font-mono text-sm text-foreground">{machine.folder}</span> and proposes a
+            tool for each program they run. It runs nothing. Tools you add go into canonfig.jsonc, which keeps its comments.
             {DEMO && " This demo reads no files and shows example results."}
           </DialogDescription>
         </DialogHeader>
@@ -1206,7 +1310,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                     <Mono className="truncate text-faint">{f.command}</Mono>
                   </span>
                   <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-muted-foreground" title={`${f.file}, ${f.where}`}>
-                    {ws.resources.some((r) => r.id === f.id) ? "In the profile" : f.file.split("/").pop()}
+                    {inFolder(f.id) ? "In the folder" : f.file.split("/").pop()}
                   </span>
                 </label>
               ))}

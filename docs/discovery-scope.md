@@ -17,8 +17,10 @@ commands and does not prove a referenced executable works on another platform.
 
 This prevents disabled integrations from becoming publication candidates. It
 does not remove previously published resources, rotate an exposed credential,
-or authorize an external agent to read arbitrary configuration files. Only
-explicitly selected input files are scanned.
+or authorize an external agent to read arbitrary configuration files.
+`source scan` reads the Canonical Folder's instructions, skills, hook scripts
+and MCP commands. `setup plan --file` bounds tool discovery only; it never
+chooses which files are synced, which the folder decides.
 
 Synthetic regressions in `tests/acceptance/discovery-scope.test.ts` run in the
 existing acceptance/full-suite jobs on Linux, macOS, and Windows. They do not

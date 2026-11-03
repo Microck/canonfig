@@ -1,7 +1,7 @@
 // Source screens use simulated data for overview, revisions, secrets, and publishing.
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowRight, CalendarDots, Check, DotsThree, HourglassMedium, Key, UsersThree, type IconComponent } from "@/components/icons";
+import { ArrowRight, CalendarDots, Check, Cpu, DotsThree, HourglassMedium, Key, UsersThree, type IconComponent } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -22,7 +22,7 @@ import {
   DetailPanel,
   EmptyState,
   Field,
-  KIND_ICON,
+  CATEGORY_ICON,
   ListHead,
   ListRow,
   PageHeader,
@@ -39,13 +39,15 @@ import {
 
 const AGENT_MODE_LABEL: Record<string, string> = { "deterministic-only": "Off", "agent-propose": "Proposes only", "agent-apply": "Applies fixes" };
 
-/** How one unpublished change reads in review lists, and where it is edited: items in their editor, groups and defaults on their Profile tab. */
+/** How one unpublished change reads in review lists, and where it is edited: items in their editor, the rest on their Profile tab. */
 function pendingRow(ws: Workspace, p: PendingChange): { icon: IconComponent; name: string; what: React.ReactNode; open: () => void } {
-  if (p.area === "item") return { icon: KIND_ICON[p.resource.kind], name: p.id, what: <Mono className="ml-auto truncate">{p.resource.target}</Mono>, open: () => ws.go("profile", p.id) };
+  if (p.area === "item") return { icon: CATEGORY_ICON[p.resource.category], name: p.id, what: <Mono className="ml-auto truncate">{p.resource.path}</Mono>, open: () => ws.go("profile", p.id) };
   const what = (text: string) => <span className="ml-auto truncate text-sm text-faint">{text}</span>;
   if (p.area === "group")
     return { icon: UsersThree, name: p.id, what: what("New group"), open: () => ws.navigate(workspaceHref("source", "profile", { profileTab: "groups", focus: p.id })) };
-  return { icon: CalendarDots, name: "Profile defaults", what: what("Display name and default schedule"), open: () => ws.navigate(workspaceHref("source", "profile", { profileTab: "defaults" })) };
+  if (p.area === "harnesses")
+    return { icon: Cpu, name: "Harness list", what: what(`${ws.listed.length} listed`), open: () => ws.navigate(workspaceHref("source", "profile", { profileTab: "harnesses" })) };
+  return { icon: CalendarDots, name: "Profile defaults", what: what("Display name, default schedule and local items"), open: () => ws.navigate(workspaceHref("source", "profile", { profileTab: "defaults" })) };
 }
 
 /**
@@ -54,7 +56,7 @@ function pendingRow(ws: Workspace, p: PendingChange): { icon: IconComponent; nam
  */
 const SEED_ACTIVITY: { follower?: string; revision?: number; what: string; when: string }[] = [
   { follower: "f_8c21", what: "applied revision 7", when: "12 min ago" },
-  { follower: "f_3b90", what: "has a local edit to claude-review-skill, waiting for a decision there", when: "2 h ago" },
+  { follower: "f_3b90", what: "has a local edit to skills/code-review, kept and reported there", when: "2 h ago" },
   { revision: 7, what: "published revision 7", when: "Today 08:41" },
   { follower: "f_d417", what: "is waiting for someone to run `gh auth login`", when: "Yesterday" },
   { follower: "f_71ea", what: "stopped reaching the Source", when: "Sat" },
@@ -167,7 +169,7 @@ export function SourceOverview() {
                     <AnimatedRow key="none">
                       <div className="flex h-9 items-center gap-2 px-1 text-base text-muted-foreground">
                         <Check className="size-3.5 text-ok" />
-                        {ws.latest === 0 ? "The profile is empty, so there is nothing to publish yet." : `The profile file matches revision ${ws.latest}.`}
+                        {ws.latest === 0 ? "The folder is empty, so there is nothing to publish yet." : `The folder matches revision ${ws.latest}.`}
                       </div>
                     </AnimatedRow>
                   )}
@@ -378,6 +380,17 @@ export function SourceOverview() {
                   label="AI agent"
                   value={agent.mode === "deterministic-only" ? AGENT_MODE_LABEL[agent.mode] : `${AGENT_MODE_LABEL[agent.mode]} (${agent.harness})`}
                   onClick={() => ws.setView("agent")}
+                />
+                <StatusRow
+                  label="Harnesses"
+                  title="Listed in canonfig.jsonc, installed here and not excluded."
+                  value={`${ws.harnesses.filter((h) => h.listed && h.installed && !h.excluded).length} managed`}
+                  onClick={() => ws.navigate(workspaceHref("source", "profile", { profileTab: "harnesses" }))}
+                />
+                <StatusRow
+                  label="Backups"
+                  value={`${ws.snapshots.length} ${ws.snapshots.length === 1 ? "snapshot" : "snapshots"}`}
+                  onClick={() => ws.setView("backups")}
                 />
               </div>
             </section>
@@ -775,7 +788,7 @@ export function SecretsView() {
               <Field
                 label="Value"
                 htmlFor="sec-value"
-                description={`Canonfig keeps it in the credential store, never in the profile file.${DEMO ? " This demo discards it." : ""}`}
+                description={`Canonfig keeps it in the credential store, never in the folder.${DEMO ? " This demo discards it." : ""}`}
                 error={valueError}
               >
                 <Input

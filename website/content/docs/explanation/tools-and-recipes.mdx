@@ -1,12 +1,13 @@
 ---
 title: How Canonfig installs and verifies tools
-description: Understand how Canonfig finds, installs, and verifies tools, so your Installation Recipes behave the same on every Follower Machine.
+description: Understand how Canonfig finds the tools your folder uses, installs the pinned version on every Follower Machine, and verifies the result, so your Installation Recipes behave the same everywhere.
 ---
 
-A `tool` resource tells every Follower Machine which command-line tool it needs
-and how to install it on each platform. Canonfig installs the exact version you
-pin, leaves a correct installation alone, and checks the result with the
-verification you declare.
+Your hooks, MCP servers, and skills call command-line tools. You declare each
+one under `tools` in `~/.canonfig/canonfig.jsonc`, with an Installation Recipe
+per platform. Every Follower Machine that receives the tool installs the exact
+version you pin, leaves a correct installation alone, and checks the result
+with the verification you declare.
 
 Tool installs are not rolled back. A package that a run installed stays
 installed even when a later action in the same run fails. See
@@ -14,26 +15,30 @@ installed even when a later action in the same run fails. See
 
 ## Find tools with `source scan`
 
-`canonfig source scan` is the only discovery command, and it finds tools only.
-Write `file`, `directory`, `config`, and `skill` resources in the profile file
-yourself; see
-[Author file, config, and skill resources](/reference/profile-schema#author-file-config-and-skill-resources).
-
 ```bash
-canonfig source scan --file ~/.codex/AGENTS.md --file ~/.claude.json
+canonfig source scan
+canonfig source scan --write
 ```
 
-The scan reads only the files you name, and runs nothing: no package manager,
-no shim, and no discovered tool. It looks for:
+`canonfig source scan` reads the folder's authored files: `AGENTS.md`, rules,
+subagents, commands, every file in `skills/` and `hooks/`, and the MCP server
+commands in `canonfig.jsonc`. It never reads `local/`, and it runs nothing: no
+package manager, no shim, and no discovered tool. It looks for:
 
-- shell code blocks in agent instruction Markdown;
-- hook and MCP server configuration;
-- JSON, JSONC, TOML, shell, Brewfile, winget, and package metadata files;
-- `canonfig.tools` entries in package metadata;
+- shell code blocks in Markdown;
+- shell scripts and MCP server commands;
+- JSON, TOML, Brewfile, winget, and package metadata files, including
+  `canonfig.tools` entries in package metadata;
 - executables found on `PATH`.
 
-A proposed tool needs an upstream URL and at least one way to verify it. When
-the evidence is not enough, the scan marks the tool `needs-review` and says why:
+Without `--write`, the scan only reports what it found. With `--write`, it
+adds each accepted tool that `canonfig.jsonc` does not declare yet under
+`tools`, keeping the file's comments and layout. A tool `canonfig.jsonc`
+already declares stays as you wrote it. Review the entries, then publish.
+
+A proposed tool needs an upstream and at least one way to verify it. When the
+evidence is not enough, the scan marks the tool `needs-review`, says why, and
+`--write` leaves it out:
 
 | Reason | Cause |
 | --- | --- |
@@ -46,35 +51,27 @@ the evidence is not enough, the scan marks the tool `needs-review` and says why:
 servers get `executable-present` verification, so checking one never starts the
 server.
 
-Review the Profile Change Proposal, then publish it with
-`canonfig source publish --proposal`.
-
 ## Write a recipe for each platform
 
-A tool resource lists one Installation Recipe per platform it supports:
-
 ```jsonc
-{
-  "id": "ripgrep",
-  "kind": "tool",
-  "target": "rg",
-  "spec": {
-    "kind": "tool",
-    "toolId": "ripgrep",
+"tools": {
+  "ripgrep": {
+    "executable": "rg",
     "recipes": [
       { "platform": "linux", "method": "apt", "package": "ripgrep", "version": "14.1.0-1" },
       { "platform": "macos", "method": "brew", "package": "ripgrep", "version": "14.1.1" },
       { "platform": "windows", "method": "winget", "package": "BurntSushi.ripgrep.MSVC", "version": "14.1.1" }
     ],
-    "login": { "required": false }
-  },
-  "verify": {
-    "method": "command",
-    "command": ["rg", "--version"],
-    "expectContains": "ripgrep 14.1"
+    "verify": { "method": "command", "command": ["rg", "--version"], "expectContains": "ripgrep 14.1" }
   }
 }
 ```
+
+`executable` names the installed tool: a command name or the path to its
+entry file. Planning checks it, not the first word of the verification
+command, which can be a shared runtime such as `node` or `python`. Without
+`verify`, Canonfig checks that `executable` is present. Every field is listed
+in the [Canonical Folder reference](/reference/canonfig-folder#tools).
 
 Package names differ between package managers. Look up the real name for each
 platform; do not reuse an npm package name as a winget ID, or a Homebrew formula
@@ -87,15 +84,25 @@ you find the mistake on the Source Machine instead of on each Follower Machine:
 > installer uv requires an exact "version" so every follower installs the same build
 
 A Follower Machine with no recipe for its platform cannot install the tool.
-The resource needs Human Action Required, unless the tool declares
-`agentInstall` and the Follower Machine's agent policy is `agent-apply`; see
-[Resource kinds](/reference/profile-schema#resource-kinds-and-defaults).
+The tool needs Human Action Required, unless it declares `agentInstall` and the
+Follower Machine's agent policy is `agent-apply`; see
+[Tools without a usable recipe](#tools-without-a-usable-recipe).
+
+## Install a tool before an MCP server that needs it
+
+```jsonc
+"mcp": {
+  "git": { "transport": "stdio", "command": "uvx", "args": ["mcp-server-git"], "requires": ["tools/uv"] }
+}
+```
+
+`requires` lists tools, as `tools/<id>`, that a server needs. On each Follower
+Machine, Canonfig installs and verifies them before it projects the server, so
+a harness never starts a server whose command is missing. Each entry must name
+a tool `canonfig.jsonc` declares; otherwise publication fails with
+`mcp.<name> requires tools/<id>, which "tools" does not declare`.
 
 ## When Canonfig installs, replaces, or leaves a tool
-
-`target` names the installed tool: a command name or the path to its entry
-file. Planning checks that target, not the first word of the verification
-command, which can be a shared runtime such as `node` or `python`.
 
 | What the Follower Machine has | What the plan does |
 | --- | --- |
@@ -138,8 +145,9 @@ A bare command name in a verifier, such as `ruff`, is looked up in this order:
 `apt` installs into system directories that every `PATH` already contains.
 
 So a tool that `uv` installed into `~/.local/bin` verifies even when your shell
-or the scheduler does not have that directory on `PATH`. When the executable is
-not found, verification fails and lists every directory it searched:
+or the scheduler does not have that directory on `PATH`. The same search
+decides whether a harness is installed. When the executable is not found,
+verification fails and lists every directory it searched:
 
 > verification failed for resource `<id>`: verification executable ruff was not found (searched: …)
 
@@ -164,8 +172,8 @@ when its package manager is present on the machine.
 
 `setup plan` changes nothing. It does not let Corepack or rustup download a
 toolchain. A `cargo` that rustup provides is reported unverified until rustup
-has a default toolchain, and `setup apply` fails that optional item with
-"run `rustup default stable`".
+has a default toolchain, and `setup apply` fails that optional item and tells
+you to run `rustup default stable`.
 
 After `canonfig setup approve`, `canonfig setup apply` runs the approved
 recipes, verifies each one, and records the result. A failed optional recipe
@@ -174,7 +182,7 @@ excluded for you to review; setup does not hand them to an agent.
 
 ## Tools that need a login
 
-A recipe can declare that the tool needs a login, with instructions:
+A tool can declare that it needs a login, with instructions:
 
 ```jsonc
 "login": { "required": true, "howTo": "Run gh auth login and choose GitHub.com" }
@@ -182,31 +190,46 @@ A recipe can declare that the tool needs a login, with instructions:
 
 Canonfig never copies login credentials from the Source Machine and never
 treats a login as something it can complete. When the Follower Machine has no
-usable local credential, the resource needs Human Action Required and shows
-your `howTo` text.
+usable local credential, the tool needs Human Action Required and shows your
+`howTo` text.
 
 <Callout title="Never put credentials in a recipe" type="error">
-  Recipe arguments, verification commands, and profile content are published
-  to every Follower Machine. Keep tokens, passwords, private keys, cookies, and
-  invitation files out of them. Use a `credential` resource or opt-in shared
-  secrets instead.
+  Recipe arguments, verification commands, and everything else in the folder
+  are published to every Follower Machine that receives them. Keep tokens,
+  passwords, private keys, cookies, and invitation files out of them. Use a
+  `credentials` entry, a `fromEnv` reference, or opt-in shared secrets
+  instead.
 </Callout>
 
 ## Tools without a usable recipe
 
-When the evidence does not select one safe recipe, discovery creates an Agent
-Task with the upstream URL and the evidence. A Configuration Agent can propose
-a recipe, but cannot publish it. You review and publish the change yourself.
+`agentInstall` lets a Configuration Agent install the tool when no recipe
+fits the Follower Machine:
+
+```jsonc
+"agentInstall": {
+  "paths": ["~/.local/share/canonfig/tools/review-cli"],
+  "origins": ["https://registry.npmjs.org"]
+}
+```
+
+`paths` (at least one) are where the agent may write, and `origins` are exact
+HTTPS origins it may download from. The agent runs only under the
+`agent-apply` policy, and only the tool's verification decides whether it
+succeeded. Without `agentInstall`, a tool with no usable recipe needs Human
+Action Required. See
+[Let a Configuration Agent resolve work](/how-to/configure-agent-policies).
 
 ## If something fails
 
 | Message | Cause | Fix |
 | --- | --- | --- |
 | "installer `<method>` requires an exact "version" so every follower installs the same build" | A recipe has no `version`. | Add the exact version and publish again. |
+| "`mcp.<name>` requires `tools/<id>`, which "tools" does not declare" | `requires` names a tool that is not under `tools`. | Declare the tool, or remove it from `requires`. |
 | "installer `<method>` exited with `<code>`; its last output lines: …" | The package manager failed. Up to 20 lines of its output follow, with secrets removed. | Fix the cause the output names, then run `canonfig sync --apply` again. |
 | "installer `<method>` exited successfully but reports `<package>` `<installed>` installed, not the pinned `<version>`" | The package manager installed a different version. | Check that the pinned version exists for that package manager. |
 | "verification executable `<name>` was not found (searched: …)" | The tool is not in any searched directory. | Check the recipe's install location, or verify with an absolute path. |
-| "run `rustup default stable`" | rustup has no default toolchain, so `cargo` cannot run. | Run `rustup default stable`, then run `canonfig setup apply` again. |
+| "Run \`rustup default stable\` to configure a toolchain, then rerun setup." | rustup has no default toolchain, so `cargo` cannot run. | Run `rustup default stable`, then run `canonfig setup apply` again. |
 
 On Windows, `.cmd` and `.bat` shims such as `npm.cmd` cannot run without a
 shell. Bind the package manager to its JavaScript entry point with

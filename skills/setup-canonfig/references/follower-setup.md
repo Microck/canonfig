@@ -1,7 +1,8 @@
 # Follower Machine setup
 
-Use for enrollment, convergence, scheduling, or recovery. Keep the selected mode
-and use [numbered choices](questions.md) for every unresolved field and approval.
+Use for enrollment, convergence, harness choice, `local/` items, scheduling, or
+recovery. Keep the selected mode and use [numbered choices](questions.md) for
+every unresolved field and approval.
 
 ## Inspect first
 
@@ -10,31 +11,35 @@ For a sandboxed agent, first follow
 Inspect the actual follower's native user context, not a sandbox substitute.
 
 Observe the current user, platform, runtime, installed version, secure credential
-provider, native scheduler, role, selected profile, pins, last run, and drift:
+provider, native scheduler, role, pins, last run, drift, installed harnesses, and
+what `~/.canonfig/` already holds:
 
 ```bash
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000 --json
 canonfig status --json
+canonfig harnesses
 canonfig schedule status
 ```
 
 Preserve SQLite state, credentials, pins, cache, journals, Applied Resource
-Records, and follower-modified skills. An unreachable source does not justify
-reenrollment or pin replacement.
+Records, takeover snapshots, `~/.canonfig/local/`, and follower-modified files.
+An unreachable source does not justify reenrollment or pin replacement.
 
 ## Mode-aware choices
 
-In Simple, fill the established name/profile from evidence and ask only missing
-identity, Source connection, and local invitation-input decisions. Show schedule
-and agent defaults in the editable summary. In Advanced, offer every relevant
-field from [the catalogue](configuration-choices.md), including overlays, agent
-bounds, credential handling, schedule calendar/timezone/executable, and recovery.
-Both modes keep numbered options, explanations, recommendations, and Other.
+In Simple, fill the established name from evidence and ask only missing
+identity, Source connection, and local invitation-input decisions. Show harness
+exclusions, schedule, and agent defaults in the editable summary. In Advanced,
+offer every relevant field from [the catalogue](configuration-choices.md),
+including harness exclusions, `local/` items, takeover snapshots, agent bounds,
+credential handling, schedule calendar/timezone/executable, and recovery. Both
+modes keep numbered options, explanations, recommendations, and Other.
 
-Use names/profiles from actual state or explicit Source context. Enrollment tokens
-do not imply a selected profile ID; do not invent a profile from an invitation.
-Selecting groups is a Source authority decision, not a follower self-service menu.
+A Source publishes one Machine Profile and the follower follows it; there is no
+profile to choose. Selecting groups is a Source authority decision, not a
+follower self-service menu. The Source's `harnesses` list decides what is
+projected; the follower only excludes harnesses for itself.
 
 For machine choices, offer optional [Tailscale discovery](tailscale-discovery.md)
 or manual entry. This supplies candidates, not authorization or connectivity.
@@ -45,6 +50,20 @@ Do not ask for the invitation payload in chat. Use the INVITE_INPUT menu: local
 terminal variable / protected temporary file / not ready / Other. Read privately
 without echo/history, use it locally, then clear/remove the temporary input.
 Never put literal tokens in an agent tool call or create an unsupported file flag.
+
+## Prepare the folder
+
+On a follower, the authoring entries of `~/.canonfig/` (`canonfig.jsonc`,
+`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`) hold the
+Source's mirror. Enrollment refuses a folder where any of them holds content:
+
+```text
+<folder> already holds authored items (<entries>), where a follower keeps its Source's mirror; move what this machine should keep into <folder>/local (rules, skills, agents and commands as files, MCP servers and settings in local.jsonc) or remove them, then enroll again
+```
+
+Show the listed entries and offer: move to `local/` / remove / stop / Other.
+Moving or removing files is a mutation that needs approval. Empty directories
+do not count.
 
 ## Install and enroll
 
@@ -66,8 +85,9 @@ canonfig setup status --json
 ```
 
 Use the actual operator identity and add only explicitly approved discovery
-files. The setup journal records optional integration exclusions separately, so
-an unavailable optional recipe does not block independent follower preparation.
+files. `--harness` and the import flags apply only to a full Source plan. The
+setup journal records optional integration exclusions separately, so an
+unavailable optional recipe does not block independent follower preparation.
 Resume the unchanged journal instead of repeating discovery or approval.
 
 Required secure noninteractive storage uses Secret Service, Keychain, or Credential
@@ -95,10 +115,10 @@ The tunnel pins the SSH host key, TLS certificate, and signing key separately
 and records itself, so `canonfig tunnel start` alone restarts it later without
 the invitation. Preserve TLS/signing pins.
 
-With the locally supplied invitation file and explicitly selected name/profile:
+With the locally supplied invitation file and the explicitly selected name:
 
 ```bash
-cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop
 ```
 
 The invitation is a single-use secret: never place it in an argument (process
@@ -112,34 +132,59 @@ and request a fresh invitation; never reset trust or suppress verification.
 An already enrolled machine is re-enrolled only on request. The same name with a
 new invitation rotates the credential and keeps local settings. `--replace`
 creates a new identity, revokes the old one, and resets agent policy, harness
-and secret bindings, schedule choice, and overlays; it needs explicit approval.
+and secret bindings, and schedule choice; it needs explicit approval.
+`~/.canonfig/local/` is untouched by either.
 
 Inspect granted groups without printing the invitation. If `canonfig:secrets` is
 present, explain the automatic transfer on successful apply and obtain explicit
 sharing consent before first apply in either mode. Discovery or mode selection
 does not grant this authority.
 
-## First plan and apply
+## Harnesses and local items
 
-Enrollment with `--profile` already selected the profile; do not select it again.
+Before the first apply, show `canonfig harnesses`: each harness with installed,
+listed, excluded, pinned root, and latest snapshot. The follower projects the
+harnesses the Source lists that are installed here and not excluded here. A
+listed harness that is not installed is reported as not installed and never
+blocks the run. To keep one harness out on this machine only:
+
+```bash
+canonfig harnesses exclude cursor
+canonfig harnesses include cursor
+```
+
+Both edit only `excludeHarnesses` in `~/.canonfig/local/local.jsonc`.
+
+Machine-local additions live in `~/.canonfig/local/`: `rules/`, `skills/`,
+`agents/`, `commands/` as files, and `mcp` and `settings` in `local.jsonc`.
+They are never published and never replaced. Only categories the Source admits
+in `local.allow` are projected; others are reported as
+`<path> is not admitted by canonfig.jsonc local.allow and was not projected`.
+A local item named like a published one stops the run with Human Action Required
+(`local <kind> <name> has the same name as a published one; rename or remove one of them`).
+
+## First plan and apply
 
 ```bash
 canonfig sync --plan
 ```
 
-Show the actual revision, creates/updates/owned removals, recipes, dependencies,
-login requirements, agent tasks/bounds, conflicts, and independent verification.
-Collapse no-ops by default; keep every blocker visible in both modes.
+Show the actual revision, the mirror items written into `~/.canonfig/`, every
+harness surface it takes over with `takeover snapshot` or `no backup`, tools
+and recipes, login requirements, agent tasks/bounds, conflicts, and independent
+verification. Whole files and directories Canonfig owns in a harness are
+replaced, with the prior content kept in the snapshot; shared files are
+key-owned. Collapse no-ops by default; keep every blocker visible in both modes.
 
 ```text
-Question: APPLY — Apply this exact synchronization plan?
-Why it matters: Managed targets may change; external installers are not fully reversible.
-Recommended: No automatic recommendation; first review the revision and changed targets.
+Question: [APPLY] Apply this exact synchronization plan?
+Why it matters: Harness surfaces are taken over; external installers are not fully reversible.
+Recommended: No automatic recommendation; first review the revision and every takeover.
 Options:
-1. Apply reviewed changes — execute this stage with independent verification.
-2. Keep plan only — make no target changes.
-3. Revise configuration — reopen affected numbered settings before replanning.
-4. Other (type your own) — narrow the stage or ask about its consequences.
+1. Apply reviewed changes: execute this stage with independent verification.
+2. Keep plan only: make no target changes.
+3. Revise configuration: reopen affected numbered settings before replanning.
+4. Other (type your own): narrow the stage or ask about its consequences.
 ```
 
 After approval:
@@ -149,9 +194,10 @@ canonfig sync --apply
 canonfig status --json
 ```
 
-A downloaded blob is not Convergence. Inspect the actual recorded outcome and
-fresh evidence; exit zero alone is not enough. An approved shared-secret transfer
-must be checked separately and reported using names/references only.
+`--no-backup` is a separate approval, never a default. A downloaded blob is not
+Convergence. Inspect the actual recorded outcome and fresh evidence; exit zero
+alone is not enough. An approved shared-secret transfer must be checked
+separately and reported using names/references only.
 
 After apply, give the client trust steps; Canonfig never copies trust between
 machines. Restart Claude Code and review `/hooks` if it reports hooks changed
@@ -165,7 +211,7 @@ start `agy` in the project and invoke a managed tool to check the server.
 Offer Keep existing/manual / verified profile default / proposed daily or weekly
 calendar / Other. Timezone and executable path remain editable, separately in
 Advanced. Do not invent local working hours. Manual operation is a valid choice,
-not permission to delete an existing schedule. Sync never installs a profile
+not permission to delete an existing schedule. Sync never installs the Source's
 `scheduleDefault`; it reports "schedule available" until the operator accepts it.
 
 After first convergence and explicit scheduling selection, use the chosen values
@@ -189,12 +235,14 @@ canonfig sync --apply --no-input --scheduled
 
 Verify the systemd user timer, launchd user agent, or per-user Task Scheduler
 under the same user, with executable, noninteractive secure storage, source,
-tunnel when needed, and visible failures. Linux jobs run while logged out only
-with lingering; macOS jobs need the logged-in desktop session; Windows jobs run
-while the user is logged on. A job disabled or deleted outside Canonfig is
-respected and reported as "automation disabled outside Canonfig", never
-recreated. Disabled/drifted/overridden or unavailable jobs cannot count as
-verified automatic operation.
+tunnel when needed, and visible failures. A scheduled run that resolves a
+harness root other than the one pinned at takeover (for example without
+`CODEX_HOME`) stops with Human Action Required. Linux jobs run while logged out
+only with lingering; macOS jobs need the logged-in desktop session; Windows
+jobs run while the user is logged on. A job disabled or deleted outside
+Canonfig is respected and reported as "automation disabled outside Canonfig",
+never recreated. Disabled/drifted/overridden or unavailable jobs cannot count
+as verified automatic operation.
 
 ## Resume, recovery, and drift
 
@@ -210,15 +258,25 @@ Recovery uses the journal, not a new revision or invented rollback of installers
 When Canonfig reports the run cannot be recovered, `canonfig abandon` closes it
 without rollback (approval required), then `canonfig sync --apply` reconciles.
 For Human Action Required show resource, reason, and exact non-secret instruction.
-For drift offer numbered Preserve local edit / Review restoring Source content /
-Rework eligible local config ownership / Other. An arbitrary edited skill cannot
-be moved into a Local Overlay, which is limited to supported merge-config keys.
-Replan after resolution; never force ownership to escape an error.
+
+A mirror file edited on this machine is Follower Drift: kept, reported, and the
+projections built from it hold at their last applied state. A projected harness
+file edited after Canonfig applied it is drift too: kept and reported. Offer
+numbered Keep the local edit (copy it into `local/` under another name when
+`local.allow` admits that category, then restore the mirror copy) / Restore the
+Source content (move the edited copy aside, then sync) / Ask the Source
+operator to publish the change / Other. Replan after resolution; never force
+ownership to escape an error.
+
+To hand a harness back, `canonfig restore` writes the latest takeover snapshot
+back and excludes its harnesses here; `canonfig restore <snapshot>` picks an
+older one. It refuses a surface that changed since Canonfig last applied it.
 
 ## Completion
 
-Report actual identity/name, profile/revision, groups, pins, verified convergence,
-authorized secret outcome, client trust steps given, and requested scheduler
-state. Plan-only work is complete only as a plan-only request, never as a
-configured follower. The Source has no fleet view: report selected remote
-devices separately until each has its own `canonfig status` evidence.
+Report actual identity/name, profile/revision, groups, pins, projected and
+excluded harnesses, takeover snapshots, verified convergence, authorized secret
+outcome, client trust steps given, and requested scheduler state. Plan-only work
+is complete only as a plan-only request, never as a configured follower. The
+Source has no fleet view: report selected remote devices separately until each
+has its own `canonfig status` evidence.

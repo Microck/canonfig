@@ -11,11 +11,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { RadioGroup } from "@/components/ui/radio-group";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { DEMO, machine, profile } from "@/shared/data";
+import { DEMO, HARNESS_NAMES, harnesses, machine, profile, type HarnessId } from "@/shared/data";
 import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import { DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
 
@@ -139,11 +138,14 @@ type Stage = "choose" | Role;
 export interface SourceSetup {
   role: "source";
   profileName: string;
-  profileFile: string;
+  /** The harnesses ~/.canonfig/canonfig.jsonc lists. */
+  harnesses: HarnessId[];
+  /** Ids (`<source>/<category>/<name>`) of the items imported once from those harnesses into ~/.canonfig/. */
+  imported: string[];
   /** "manual" installs no background service: atlas serves only while `canonfig source serve` runs. */
   service: "service" | "manual";
   port: number;
-  /** Whether `source scan` proposed tools. Without it the new Source starts with an empty profile. */
+  /** Whether `source scan` proposed tools from the folder. Without it the new Source starts with no tools. */
   scan: boolean;
 }
 
@@ -151,15 +153,87 @@ export interface SourceSetup {
 export interface FollowerSetup {
   role: "follower";
   name: string;
-  profileId: string;
   tunnel: boolean;
   /** Whether the profile's default schedule was set. False leaves the machine without a schedule. */
   schedule: boolean;
+  /** Harnesses the Source lists that this machine excludes (local/local.jsonc `excludeHarnesses`). */
+  excluded: HarnessId[];
 }
 
 export type Setup = SourceSetup | FollowerSetup;
 
 const DEFAULT_PORT = 17342;
+
+/* What the one-time import offers, shaped like ImportCandidate in src/projection/import.ts. */
+type ImportCategory = "instructions" | "rules" | "skills" | "agents" | "commands" | "mcp";
+
+interface ImportOffer {
+  /** `<source>/<category>/<name>`, the id `setup plan --import` takes. */
+  id: string;
+  /** The harness it comes from, or "agents" for the shared ~/.agents/skills/ several harnesses read. */
+  source: HarnessId | "agents";
+  /** The harnesses that read it: it's offered while any of them is selected. */
+  harnesses: HarnessId[];
+  category: ImportCategory;
+  name: string;
+  /** Where it is now. */
+  path: string;
+  /** Where it lands in ~/.canonfig/; MCP servers land in canonfig.jsonc. */
+  target: string;
+  /** Credential-looking values, each replaced by a `fromEnv` reference before anything is copied. */
+  secrets: { field: string; fromEnv: string }[];
+}
+
+const CATEGORY_LABEL: Record<ImportCategory, string> = {
+  instructions: "Instructions",
+  rules: "Rule",
+  skills: "Skill",
+  agents: "Agent",
+  commands: "Command",
+  mcp: "MCP server",
+};
+
+/** One offer, with its id and folder destination derived the way src/projection/import.ts does (targetOf). */
+function offer(
+  source: ImportOffer["source"],
+  category: ImportCategory,
+  name: string,
+  path: string,
+  { harnesses = [source as HarnessId], secrets = [] }: { harnesses?: HarnessId[]; secrets?: ImportOffer["secrets"] } = {},
+): ImportOffer {
+  const target =
+    category === "instructions" ? "AGENTS.md" : category === "skills" ? `skills/${name}` : category === "mcp" ? `canonfig.jsonc#mcp.${name}` : `${category}/${name}.md`;
+  return { id: `${source}/${category}/${name}`, source, harnesses, category, name, path, target, secrets };
+}
+
+// Example harness content on atlas, each item with its own content: when two are offered for
+// one target they differ, so the CLI lists them as a collision until one is named. Here Claude
+// Code's CLAUDE.md and Codex's AGENTS.md both import as AGENTS.md. The MCP servers show
+// credential-looking values becoming `fromEnv` references, named as ServerDecoder in
+// src/projection/import.ts names them: an env key keeps its name, a header becomes <SERVER>_<KEY>.
+const IMPORT_OFFERS: ImportOffer[] = [
+  offer("claude-code", "instructions", "AGENTS.md", "~/.claude/CLAUDE.md"),
+  offer("claude-code", "rules", "typescript", "~/.claude/rules/typescript.md"),
+  offer("claude-code", "skills", "review", "~/.claude/skills/review"),
+  offer("claude-code", "agents", "researcher", "~/.claude/agents/researcher.md"),
+  offer("claude-code", "commands", "ship", "~/.claude/commands/ship.md"),
+  offer("claude-code", "mcp", "github", "~/.claude.json", { secrets: [{ field: "env.GITHUB_TOKEN", fromEnv: "GITHUB_TOKEN" }] }),
+  offer("codex", "instructions", "AGENTS.md", "~/.codex/AGENTS.md"),
+  offer("codex", "mcp", "linear", "~/.codex/config.toml", { secrets: [{ field: "headers.Authorization", fromEnv: "LINEAR_AUTHORIZATION" }] }),
+  offer("opencode", "commands", "review-pr", "~/.config/opencode/commands/review-pr.md"),
+  offer("agents", "skills", "release-notes", "~/.agents/skills/release-notes", { harnesses: ["codex", "cursor"] }),
+];
+
+/** Where an offer comes from, in words: a harness, or the shared skills folder. */
+const sourceName = (source: ImportOffer["source"]) => (source === "agents" ? "Shared skills" : HARNESS_NAMES[source]);
+
+/** "Don't import" in a collision's choice. */
+const NO_IMPORT = "none";
+
+// The demo machine that joins as a follower has these harnesses installed; atlas lists more.
+const FOLLOWER_INSTALLED: HarnessId[] = ["codex", "claude-code", "oh-my-pi", "opencode"];
+/** The harnesses atlas's canonfig.jsonc lists, which every follower gets. */
+const LISTED = harnesses.filter((h) => h.listed);
 
 export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
   const [stage, setStage] = useState<Stage>("choose");
@@ -699,11 +773,25 @@ interface WizardProps<S extends Setup> {
   onDone: (setup: S) => void;
 }
 
+// The Source wizard's steps, by index.
+const SOURCE_STEPS = ["Your profile", "Harnesses", "Import", "The service", "Create"];
+const SOURCE_STEP = { profile: 0, harnesses: 1, import: 2, service: 3, create: 4 } as const;
+
+const INSTALLED = harnesses.filter((h) => h.installed);
+const NOT_INSTALLED = harnesses.filter((h) => !h.installed);
+
+/** A bordered row holding a checkbox and its label text. */
+const CHECK_ROW = "flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50 sm:min-h-10";
+
 function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) {
   const [step, setStep] = useState(0);
   const [tried, setTried] = useState(false);
   const [name, setName] = useState(profile.name);
-  const [file, setFile] = useState(machine.profileFile);
+  // Setup lists the installed harnesses until the person edits the list, as `setup plan` does without --harness.
+  const [listed, setListed] = useState<HarnessId[]>(() => INSTALLED.map((h) => h.id));
+  // The import choice: checked items, and for each target that several items collide on, the one picked. Nothing by default.
+  const [checked, setChecked] = useState<string[]>([]);
+  const [picks, setPicks] = useState<Record<string, string>>({});
   const [scan, setScan] = useState(true);
   const [service, setService] = useState<"service" | "manual">("service");
   const [port, setPort] = useState(String(DEFAULT_PORT));
@@ -711,26 +799,43 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
   const progress = job?.progress ?? null;
   const done = !!job?.done;
 
+  // In TARGET_IDS order, whatever order they were checked in.
+  const selected = harnesses.filter((h) => listed.includes(h.id)).map((h) => h.id);
+  const offered = IMPORT_OFFERS.filter((o) => o.harnesses.some((h) => listed.includes(h)));
+  // Several items for one target collide (selectImports in src/projection/import.ts): importing
+  // everything leaves them out, and each needs its own pick. Checks and picks for items no longer
+  // offered stay in state, so re-adding a harness brings its choices back, but they count only while offered.
+  const collisions = [...new Set(offered.map((o) => o.target))]
+    .map((target) => ({ target, offers: offered.filter((o) => o.target === target) }))
+    .filter((c) => c.offers.length > 1);
+  const single = offered.filter((o) => !collisions.some((c) => c.target === o.target));
+  const imported = [
+    ...single.filter((o) => checked.includes(o.id)).map((o) => o.id),
+    ...collisions.flatMap((c) => c.offers.filter((o) => o.id === picks[c.target]).map((o) => o.id)),
+  ];
+  const importAll = single.length > 0 && single.every((o) => checked.includes(o.id));
+  const nothingFrom = selected.filter((id) => !offered.some((o) => o.harnesses.includes(id)));
+
   // Validated as typed, never rewritten: stripping characters would turn "1.5" into a different port.
   const portNumber = Number(port);
   const portValid = /^\d+$/.test(port) && portNumber >= 1 && portNumber <= 65535;
   const creates = [
-    `Profile file at ${file}`,
+    `~/.canonfig/ with canonfig.jsonc, AGENTS.md and skills/, listing ${selected.length} ${selected.length === 1 ? "harness" : "harnesses"}`,
+    ...(imported.length > 0 ? [`${imported.length} ${imported.length === 1 ? "item" : "items"} imported from your harnesses`] : []),
     "Canonfig's own records at ~/.canonfig/state.sqlite",
     "A signing key, kept in your login keyring",
     ...(service === "service" ? [`Background service at https://127.0.0.1:${portNumber}`] : []),
-    ...(scan ? ["2 proposed tools, found in ~/.claude.json and ~/.codex/config.toml"] : []),
+    ...(scan ? ["Proposed tools for what the folder uses"] : []),
   ];
 
   const nameError = tried && !name.trim() ? "Enter a profile name." : null;
-  const fileError = tried && !file.trim() ? "Enter where to save the profile file." : null;
   const portError = tried && !portValid ? "Enter a whole number from 1 to 65535." : null;
 
   return (
     <Wizard
       role="source"
       title="Make atlas the Source"
-      steps={["Your profile", "The service", "Create"]}
+      steps={SOURCE_STEPS}
       step={step}
       onStep={(s) => {
         setTried(false);
@@ -739,11 +844,11 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
       onBack={onBack}
       finalLabel="Make atlas the Source"
       busyLabel="Creating…"
-      blocked={(step === 0 && (!name.trim() || !file.trim())) || (step === 1 && !portValid)}
+      blocked={(step === SOURCE_STEP.profile && !name.trim()) || (step === SOURCE_STEP.service && !portValid)}
       onBlocked={() => {
         setTried(true);
         // The port lives under Advanced; its error must be visible.
-        if (step === 1) setAdvanced(true);
+        if (step === SOURCE_STEP.service) setAdvanced(true);
       }}
       busy={progress !== null && !done}
       onFinish={() => onRun(2600, creates.length)}
@@ -752,11 +857,11 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
           <Finished
             title="atlas is now the Source"
             action={scan ? "Review proposed tools" : "Open Canonfig"}
-            onOpen={() => onDone({ role: "source", profileName: name.trim(), profileFile: file.trim(), service, port: portNumber, scan })}
+            onOpen={() => onDone({ role: "source", profileName: name.trim(), harnesses: selected, imported, service, port: portNumber, scan })}
             next={
               scan ? (
                 <>
-                  Next: check the 2 tools Canonfig found, then publish your first <Term term="Profile Revision" />.
+                  Next: check the tools Canonfig proposed, then publish your first <Term term="Profile Revision" />.
                 </>
               ) : (
                 <>
@@ -765,46 +870,145 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
               )
             }
           >
-            Your <Term term="Machine Profile" /> is <Mono className="text-foreground">{file.trim()}</Mono>
-            {DEMO ? " in this demo workspace. The demo doesn't create or read that file; edit the profile here." : "."}
+            Your <Term term="Machine Profile" /> is the <Mono className="text-foreground">~/.canonfig/</Mono> folder
+            {DEMO ? " in this demo workspace. The demo doesn't create or read that folder; edit the profile here." : "."}
           </Finished>
         ) : undefined
       }
     >
-      {step === 0 && (
+      {step === SOURCE_STEP.profile && (
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
-            Your <Term term="Machine Profile" /> is one file that lists everything your other machines should have.
+            Your <Term term="Machine Profile" /> lives in your <Term term="Canonical Folder" />, <Mono className="text-foreground">~/.canonfig/</Mono> on atlas: its instructions, rules,
+            skills, agents and commands, and the settings in canonfig.jsonc. Other machines get what you publish from it.
           </p>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_1.4fr]">
-            <Field label="Profile name" htmlFor="ob-name" error={nameError}>
-              <Input id="ob-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-describedby={nameError ? "ob-name-error" : undefined} />
-            </Field>
-            <Field label="Profile file" htmlFor="ob-file" hint="Canonfig keeps your comments when it edits this file." error={fileError}>
-              <Input
-                id="ob-file"
-                value={file}
-                onChange={(e) => setFile(e.target.value)}
-                spellCheck={false}
-                autoComplete="off"
-                aria-invalid={!!fileError}
-                aria-describedby={fileError ? "ob-file-error" : undefined}
-                className="font-mono text-[12px]"
+          <Field label="Profile name" htmlFor="ob-name" hint="Canonfig saves it in ~/.canonfig/canonfig.jsonc." error={nameError} className="sm:max-w-80">
+            <Input id="ob-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-describedby={nameError ? "ob-name-error" : undefined} />
+          </Field>
+        </div>
+      )}
+      {step === SOURCE_STEP.harnesses && (
+        <div className="space-y-5">
+          <p className="leading-relaxed text-muted-foreground">
+            Canonfig writes your folder into each <Term term="Target Harness" /> on this list, on atlas and on every machine that follows it and has the harness installed. These are
+            installed on atlas{DEMO && " in this demo"}.
+          </p>
+          <ul aria-label="Installed harnesses" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {INSTALLED.map((h) => (
+              <li key={h.id}>
+                <label className={CHECK_ROW}>
+                  <Checkbox
+                    checked={listed.includes(h.id)}
+                    onCheckedChange={(c) => setListed((ids) => (c === true ? [...ids, h.id] : ids.filter((id) => id !== h.id)))}
+                    className="mt-px"
+                  />
+                  <span className="min-w-0">
+                    <span className="block font-medium">{h.name}</span>
+                    <Mono>{h.id}</Mono>
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <Collapsible>
+            <DisclosureTrigger>Not installed on atlas ({NOT_INSTALLED.length})</DisclosureTrigger>
+            <CollapsibleContent className="mt-3 space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Canonfig counts a harness as installed when its program is in Canonfig's install folders, ~/.local/bin or PATH. You can add one of these to the list in
+                ~/.canonfig/canonfig.jsonc later, for machines that have it.
+              </p>
+              <ul aria-label="Harnesses not installed" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {NOT_INSTALLED.map((h) => (
+                  <li key={h.id}>
+                    <label className={cn(CHECK_ROW, "cursor-not-allowed hover:bg-transparent")}>
+                      <Checkbox checked={false} disabled className="mt-px" />
+                      <span className="min-w-0">
+                        <span className="block text-muted-foreground">{h.name}</span>
+                        <span className="text-sm text-faint">Not installed</span>
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            </CollapsibleContent>
+          </Collapsible>
+        </div>
+      )}
+      {step === SOURCE_STEP.import && (
+        <div className="space-y-5">
+          <p className="leading-relaxed text-muted-foreground">
+            Canonfig can copy what these harnesses already hold into <Mono className="text-foreground">~/.canonfig/</Mono>, once. Nothing is imported unless you check it.
+            {DEMO && " This demo offers example items and doesn't read your files."}
+          </p>
+          {single.length > 0 && (
+            <label className={CHECK_ROW}>
+              <Checkbox
+                checked={importAll}
+                onCheckedChange={(c) => setChecked((ids) => (c === true ? [...new Set([...ids, ...single.map((o) => o.id)])] : ids.filter((id) => !single.some((o) => o.id === id))))}
+                className="mt-px"
               />
-            </Field>
-          </div>
-          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50">
+              <span>
+                <span className="font-medium">Import all</span>
+                {collisions.length > 0 && <span className="mt-1 block text-sm text-muted-foreground">Items that share a name still need a choice of their own, below.</span>}
+              </span>
+            </label>
+          )}
+          {[...new Set(single.map((o) => o.source))].map((source) => (
+            <section key={source} aria-label={sourceName(source)}>
+              <h3 className="mb-2 text-sm font-medium">{sourceName(source)}</h3>
+              <ul className="divide-y divide-border rounded-lg border border-border">
+                {single
+                  .filter((o) => o.source === source)
+                  .map((o) => (
+                    <li key={o.id}>
+                      <label className="flex min-h-11 cursor-pointer items-start gap-3 px-3.5 py-3 hover:bg-raised/50 sm:min-h-10">
+                        <Checkbox
+                          checked={checked.includes(o.id)}
+                          onCheckedChange={(c) => setChecked((ids) => (c === true ? [...ids, o.id] : ids.filter((id) => id !== o.id)))}
+                          className="mt-px"
+                        />
+                        <OfferText offer={o} />
+                      </label>
+                    </li>
+                  ))}
+              </ul>
+            </section>
+          ))}
+          {collisions.map((c) => (
+            <section key={c.target} aria-label={`Choose ${c.target}`}>
+              <h3 className="mb-1 text-sm font-medium">
+                Choose one <Mono className="text-foreground">{c.target}</Mono>
+              </h3>
+              <p className="mb-2 text-sm text-muted-foreground">
+                {c.offers.map((o) => sourceName(o.source)).join(" and ")} each have one, with different content. Import one of them, or neither.
+              </p>
+              <RadioGroup value={picks[c.target] ?? NO_IMPORT} onValueChange={(v) => setPicks((p) => ({ ...p, [c.target]: v }))} className="gap-2">
+                {c.offers.map((o) => (
+                  <RadioRow key={o.id} value={o.id} title={sourceName(o.source)} description={<Mono>{o.path}</Mono>} />
+                ))}
+                <RadioRow value={NO_IMPORT} title="Don't import" />
+              </RadioGroup>
+            </section>
+          ))}
+          {nothingFrom.length > 0 && (
+            <p className="text-sm text-muted-foreground">Nothing to import from {nothingFrom.map((id) => HARNESS_NAMES[id]).join(", ")}.</p>
+          )}
+          <p className="text-sm text-muted-foreground">
+            What you don't import stays where it is. Before Canonfig first writes into a harness, it copies the harness's files into a <Term term="Takeover Snapshot" /> in{" "}
+            <Mono>~/.canonfig/.backups/</Mono>, so you can put them back later.
+          </p>
+          <label className={CHECK_ROW}>
             <Checkbox checked={scan} onCheckedChange={(c) => setScan(c === true)} className="mt-px" />
             <span>
-              <span className="font-medium">Suggest tools from my AI agent settings</span>
+              <span className="font-medium">Suggest tools from the folder</span>
               <span className="mt-1 block text-sm text-muted-foreground">
-                Reads only ~/.claude.json and ~/.codex/config.toml, and suggests a tool for each program they start, such as an MCP server. Nothing is added until you review it.
+                Reads the folder's instructions, skills, hook scripts and MCP commands, and suggests a tool for each program they need. Nothing is added until you review it.
               </span>
             </span>
           </label>
         </div>
       )}
-      {step === 1 && (
+      {step === SOURCE_STEP.service && (
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
             Other machines connect to a small service on atlas. It only accepts connections from atlas itself, so they reach it over SSH, which each machine sets up when it joins.
@@ -845,7 +1049,7 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
           </Collapsible>
         </div>
       )}
-      {step === 2 && (
+      {step === SOURCE_STEP.create && (
         <div>
           {progress === null ? (
             <>
@@ -867,11 +1071,34 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
           )}
           {/* Stays put while creating, so nothing on the card swaps places. */}
           <p className="mt-5 text-sm text-muted-foreground">
-            Other machines get nothing until you publish a <Term term="Profile Revision" />.
+            Canonfig changes no harness files until you sync, and other machines get nothing until you publish a <Term term="Profile Revision" />.
           </p>
         </div>
       )}
     </Wizard>
+  );
+}
+
+/**
+ * One offered import item: what it is, where it comes from and where it lands. A credential-looking
+ * MCP value shows as the `fromEnv` reference that replaces it; the value itself is never copied.
+ */
+function OfferText({ offer }: { offer: ImportOffer }) {
+  return (
+    <span className="min-w-0">
+      <span className="block">
+        <span className="font-medium">{CATEGORY_LABEL[offer.category]}</span>
+        {offer.category !== "instructions" && <Mono className="ml-2 text-foreground">{offer.name}</Mono>}
+      </span>
+      <span className="mt-1 block text-sm text-muted-foreground">
+        From <Mono>{offer.path}</Mono> to <Mono>{offer.target}</Mono>
+      </span>
+      {offer.secrets.map((s) => (
+        <span key={s.field} className="mt-1 block text-sm text-muted-foreground">
+          <Mono>{s.field}</Mono> looks like a credential, so it becomes <Mono className="text-foreground">{`{ "fromEnv": "${s.fromEnv}" }`}</Mono> and its value isn't copied.
+        </span>
+      ))}
+    </span>
   );
 }
 
@@ -893,7 +1120,8 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
   const [advanced, setAdvanced] = useState(false);
   const [trusted, setTrusted] = useState(false);
   const [name, setName] = useState("laptop");
-  const [profileId, setProfileId] = useState(profile.id);
+  // Harnesses the person excludes on this machine; Canonfig projects the rest of atlas's list that is installed here.
+  const [excluded, setExcluded] = useState<HarnessId[]>([]);
   const [useSchedule, setUseSchedule] = useState(true);
   const progress = job?.progress ?? null;
   const done = !!job?.done;
@@ -956,7 +1184,7 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
           <Finished
             title={`${machineName} now follows atlas`}
             action="Open Canonfig"
-            onOpen={() => onDone({ role: "follower", name: machineName, profileId, tunnel, schedule: useSchedule })}
+            onOpen={() => onDone({ role: "follower", name: machineName, tunnel, schedule: useSchedule, excluded })}
             next="Next: see what revision 7 would change here, before you apply it."
           >
             atlas can disconnect this machine on its own, without affecting the others. Canonfig hasn't changed any files here yet.
@@ -1137,32 +1365,52 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
         <div className="space-y-5">
           {progress === null ? (
             <>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Field label="Name for this machine" htmlFor="ob-mname" hint="Shown on atlas." error={shown("name")}>
-                  <Input
-                    id="ob-mname"
-                    value={name}
-                    // Collapse dash runs too: typing spaces one at a time turns "a  b" into "a--b" otherwise.
-                    onChange={(e) => setName(e.target.value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-"))}
-                    onBlur={() => setName(machineName)}
-                    spellCheck={false}
-                    autoComplete="off"
-                    aria-invalid={!!shown("name")}
-                    aria-describedby={shown("name") ? "ob-mname-error" : undefined}
-                  />
-                </Field>
-                <Field label="Profile to follow" htmlFor="ob-profile">
-                  <Select value={profileId} onValueChange={setProfileId}>
-                    <SelectTrigger id="ob-profile" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="workstation">Workstation (10 resources)</SelectItem>
-                      <SelectItem value="minimal">Minimal (3 resources)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </Field>
-              </div>
+              <Field label="Name for this machine" htmlFor="ob-mname" hint="Shown on atlas." error={shown("name")} className="sm:max-w-80">
+                <Input
+                  id="ob-mname"
+                  value={name}
+                  // Collapse dash runs too: typing spaces one at a time turns "a  b" into "a--b" otherwise.
+                  onChange={(e) => setName(e.target.value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-"))}
+                  onBlur={() => setName(machineName)}
+                  spellCheck={false}
+                  autoComplete="off"
+                  aria-invalid={!!shown("name")}
+                  aria-describedby={shown("name") ? "ob-mname-error" : undefined}
+                />
+              </Field>
+              <section aria-labelledby="ob-harnesses" className="space-y-2">
+                <h3 id="ob-harnesses" className="text-sm font-medium">
+                  Harnesses atlas lists
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  Canonfig syncs each one that's installed here, unless you exclude it on this machine. One that isn't installed is reported as not installed and gets nothing.
+                  {DEMO && " In this demo, what's installed here is an example."}
+                </p>
+                <ul className="divide-y divide-border rounded-lg border border-border">
+                  {LISTED.map((h) => {
+                    const installed = FOLLOWER_INSTALLED.includes(h.id);
+                    const isExcluded = excluded.includes(h.id);
+                    return (
+                      <li key={h.id}>
+                        <label className={cn("flex min-h-11 items-center gap-3 px-3.5 py-2.5 sm:min-h-10", installed ? "cursor-pointer hover:bg-raised/50" : "cursor-not-allowed")}>
+                          <Checkbox
+                            checked={installed && !isExcluded}
+                            disabled={!installed}
+                            onCheckedChange={(c) => setExcluded((ids) => (c === true ? ids.filter((id) => id !== h.id) : [...ids, h.id]))}
+                          />
+                          <span className={cn("min-w-0 flex-1", !installed && "text-muted-foreground")}>{h.name}</span>
+                          <span className={cn("shrink-0 text-sm", installed && !isExcluded ? "text-foreground" : "text-muted-foreground")}>
+                            {!installed ? "Not installed here" : isExcluded ? "Excluded here" : "Will sync"}
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="text-sm text-muted-foreground">
+                  Before the first sync writes into a harness, Canonfig copies the harness's files into a <Term term="Takeover Snapshot" /> in <Mono>~/.canonfig/.backups/</Mono>.
+                </p>
+              </section>
               <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50">
                 <Checkbox checked={useSchedule} onCheckedChange={(c) => setUseSchedule(c === true)} className="mt-px" />
                 <span className="font-medium">Sync daily at 09:00, the profile's default schedule</span>

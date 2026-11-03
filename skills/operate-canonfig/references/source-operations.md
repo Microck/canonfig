@@ -1,68 +1,75 @@
 # Source operations
 
-## Discover tools
+## Edit the folder
 
-`source scan` is tool discovery only. Scan only explicit files:
+The Source authors `~/.canonfig/`. Publication reads only `canonfig.jsonc`,
+`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, and `hooks/`; state,
+backups, logs, and `local/` stay on this machine. Every file must resolve
+inside the folder, and symlinks are refused. Unknown keys and frontmatter
+fields fail with the file and the reason. The
+[folder reference](https://canonfig.micr.dev/docs/reference/canonfig-folder/)
+lists every key; check it before adding one.
+
+After an edit, project it on the Source and review the plan:
 
 ```bash
-canonfig source scan --file ~/.codex/config.toml --file ~/.claude.json
+canonfig sync --plan
+canonfig sync --apply
 ```
 
-It proposes `tool` resources, such as the pinned npm or uv package behind an
-MCP server command, and runs no processes. It never proposes file, config, or
-skill resources and never copies settings. Review accepted tools, upstream
-URLs, invocation evidence, independent verification, platform recipes, login
-requirements, and needs-review entries (`incomplete-declaration`,
-`ambiguous-executable`). Prose alone remains review evidence.
+The plan names every harness surface a first apply takes over and whether it
+keeps a backup. MCP secrets stay `{ "fromEnv": "NAME" }` references; hooks and
+stdio MCP commands run code on followers, so review each one before
+publishing.
+
+## Discover tools
+
+`source scan` is tool discovery over the folder. It reads instructions, skills,
+hook scripts, and MCP commands and proposes `tools` entries, such as the pinned
+npm or uv package behind an MCP server command, and runs no processes:
+
+```bash
+canonfig source scan
+canonfig source scan --write
+```
+
+Review accepted tools, upstream URLs, invocation evidence, independent
+verification, platform recipes, login requirements, and needs-review entries.
+Prose alone remains review evidence. `--write` adds the accepted entries to
+`canonfig.jsonc` and keeps its comments.
 
 Reject publication when evidence is unresolved, a recipe embeds credentials,
 platform package identity is guessed, or verification cannot observe the
 declared capability. Automatic installer recipes need an exact `version`;
 publication refuses one without it.
 
-## Author and check the profile
-
-Synced content comes from an authored JSONC profile file such as
-`~/canonfig.profile.jsonc`, with `file`, `directory`, `config`, `skill`, `tool`,
-and `credential` resources. A `source` path is relative to the profile file's
-directory, has no `..`, and must resolve inside that directory after symlinks.
-For content resources write `"verify": { "method": "digest" }` and omit the
-digest: publication computes it. A digest written by hand must match.
-
-Check before publishing; this signs nothing:
-
-```bash
-canonfig source digest --profile-file ~/canonfig.profile.jsonc
-canonfig source digest --profile-file ~/canonfig.profile.jsonc --resource claude-instructions
-```
-
-It prints each content resource's digest and, when a digest was declared,
-whether it matches. Missing sources, escaping paths, unsafe numbers, and
-unknown fields fail with the resource ID and the reason.
-
 ## Publish explicitly
 
-Publish only a reviewed profile:
+Publish only a reviewed folder:
 
 ```bash
-canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer operator
+canonfig source publish --reviewer operator
 canonfig profile list
-canonfig profile show revision-one
+canonfig profile show workstation:3f9a2c41
 ```
 
-Add `--proposal <path>` to merge accepted discovery resources that do not share
-an authored ID. The profile file is authoritative for metadata, resources,
-policies, dependencies, and the schedule default. Duplicate IDs, overlapping
-targets, malformed fields, and unknown fields are rejected before signing.
-`profile show` takes a Profile Revision ID.
+Publication compiles the folder into one signed, immutable, content-addressed
+revision. It needs `profile` (`id`, `name`) in `canonfig.jsonc` and refuses a
+`profile.id` other than the one this Source already publishes: one Source
+publishes one Machine Profile. Credential-looking literals are refused before
+signing. `profile show` takes a Profile Revision ID.
 
-Publication signs an immutable, content-addressed revision. The same content as
-the latest revision returns that revision unchanged; new content, or content
-matching an older revision, becomes the next sequence. Followers take the
-highest sequence, so republishing earlier content is the supported rollback of
-a profile. A profile with no resources is refused unless `--allow-empty` is
-passed on purpose. Credentials are secure-store references only; never put
-credential values in a profile file or command argument.
+The same content as the latest revision returns that revision unchanged; new
+content, or content matching an older revision, becomes the next sequence.
+Followers take the highest sequence, so restoring earlier folder content and
+publishing it is the supported rollback. Credentials are secure-store
+references only; never put credential values in the folder or a command
+argument.
+
+`groups.<name>` in `canonfig.jsonc` lists items (`instructions` or
+`<category>/<name>`, for example `mcp/docs`) only followers in that group
+receive. `local.allow` names the categories followers may add through their
+own `local/`.
 
 ## Keep the Source serving
 

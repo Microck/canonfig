@@ -52,14 +52,23 @@ When no recipe is unambiguous, retain a bounded Agent Task. Under
 the proposal without executing it. Under `agent-apply`, enforce task and harness
 bounds and rerun independent verification.
 
-## Harness paths
+## Harness roots
 
-- On Linux, use POSIX paths and user-owned filesystem roots.
-- On macOS, use POSIX paths and Keychain-backed credential references.
-- On Windows, use Windows paths and Credential Manager references.
+Each harness adapter resolves its global root on the machine that projects:
+the environment override first (for example `CODEX_HOME`,
+`CLAUDE_CONFIG_DIR`), then the platform default. Roots must resolve inside the
+user's home directory. The root resolved at takeover is pinned; a later run
+that resolves another root stops with Human Action Required instead of
+projecting into a second place. Scheduled runs do not inherit the shell's
+environment (Task Scheduler carries none), so set an override the scheduler
+can see, or leave it unset everywhere. The
+[harness reference](https://canonfig.micr.dev/docs/reference/harnesses/) lists
+each harness's roots and owned surfaces.
 
-Never copy Source Machine absolute paths into a portable profile. Every network
-allowlist entry must be an exact HTTPS origin.
+Never write Source Machine absolute paths into `canonfig.jsonc`: adapters own
+every harness path. For agent harness allowlists, use POSIX paths on Linux and
+macOS and Windows paths on Windows. Every network allowlist entry must be an
+exact HTTPS origin.
 
 ## Schedules
 
@@ -72,7 +81,7 @@ canonfig schedule set --default
 canonfig schedule status
 ```
 
-Sync never installs a profile `scheduleDefault`; it reports "schedule
+Sync never installs the Source's `scheduleDefault`; it reports "schedule
 available" until the operator runs `schedule set --default`. `schedule set`
 prints the resolved time zone and next run, starts no catch-up run for a time
 already passed today, and warns when the time falls into a daylight-saving gap

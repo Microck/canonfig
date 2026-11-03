@@ -13,15 +13,31 @@ A machine that receives canonical configuration state from the Source Machine wh
 _Avoid_: Client machine, replica
 
 **Machine Profile**:
-A versioned declaration of the configuration state that Follower Machines should have.
+A versioned declaration of the configuration state that Follower Machines should have. The Canonical Folder is its authoring format; the signed Profile Revision is its wire format.
 _Avoid_: Bundle, snapshot, manifest
+
+**Canonical Folder**:
+The `~/.canonfig/` folder on every machine. On the Source Machine it holds the authored Machine Profile; on a Follower Machine it holds the mirror of the authorized revision plus machine-local state.
+_Avoid_: Profile file, config repo
+
+**Target Harness**:
+An AI agent harness, such as Codex or Claude Code, into whose global configuration Canonfig projects the Canonical Folder.
+_Avoid_: Client, integration
+
+**Projection**:
+Writing the Canonical Folder's items into a Target Harness's own global files and keys.
+_Avoid_: Export, install
+
+**Takeover Snapshot**:
+The backup of a Target Harness's owned surfaces that Canonfig takes before its first write to that harness, kept under `~/.canonfig/.backups/`.
+_Avoid_: Journal, run backup
 
 **Observed State**:
 The configuration state that Canonfig finds on a machine at a point in time.
 _Avoid_: Current profile, actual profile
 
-**Local Overlay**:
-Configuration owned by one Follower Machine that is combined with canonical state but never sent back to the Source Machine.
+**Local folder**:
+The `~/.canonfig/local/` folder: items owned by one machine that Projection combines with canonical items, within the Source Machine's allowlist, and that are never sent back to the Source Machine.
 _Avoid_: Local override, follower state
 
 **Human Action Required**:
@@ -41,7 +57,7 @@ A named set of Follower Machines that share configuration in addition to the bas
 _Avoid_: Per-machine profile, follower branch
 
 **Profile Resource**:
-A named item of desired configuration within a Machine Profile, classified by the behavior needed to reach and verify it.
+A named item of desired configuration within a Machine Profile, compiled from one Canonical Folder item and classified by the behavior needed to reach and verify it. File, directory and config actions exist only as internal projection steps, never as authored resources.
 _Avoid_: Generic resource, profile entry
 
 **Installation Recipe**:
@@ -54,7 +70,7 @@ _Avoid_: Automatic profile edit, follower update
 
 **Follower Drift**:
 A difference between a follower-owned copy of a canonical resource and the exact revision Canonfig last applied to it.
-_Avoid_: Local Overlay, follower update
+_Avoid_: Local folder, follower update
 
 **Convergence**:
 The state in which every required Profile Resource on a Follower Machine matches the Machine Profile and passes verification.

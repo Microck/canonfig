@@ -51,9 +51,10 @@ the old one.
 
 ## Use the profile's suggested schedule
 
-A Machine Profile can suggest a schedule with `scheduleDefault` (see the
-[profile file reference](/reference/profile-schema#suggested-schedule)). Sync
-never installs it. When the Follower Machine has no schedule, `sync --plan`,
+The Source Machine can suggest a schedule with `scheduleDefault` in its
+`~/.canonfig/canonfig.jsonc`, for example `"scheduleDefault": "daily@04:30"`
+(see the [Canonical Folder reference](/reference/canonfig-folder)). Sync never
+installs it. When the Follower Machine has no schedule, `sync --plan`,
 `sync --apply`, and `schedule status` tell you about it:
 
 > schedule available: the profile suggests daily@04:30 in this machine's time

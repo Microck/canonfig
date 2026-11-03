@@ -1,0 +1,138 @@
+---
+title: Restore a harness from a backup
+description: Find the Takeover Snapshot Canonfig took before it first wrote to a harness, and put the harness's earlier configuration back.
+---
+
+Before Canonfig first writes to a harness, it copies every file, directory,
+and key it is about to manage into a **Takeover Snapshot**.
+`canonfig restore` writes a snapshot back and stops Canonfig from managing
+those harnesses on this machine. Restore works the same on a Source Machine and
+on a Follower Machine, and only changes the machine you run it on.
+
+## What a snapshot holds
+
+Each run that takes over at least one harness writes one snapshot under
+`~/.canonfig/.backups/`, named after the time it started in UTC, for example
+`2026-11-03T09-14-02-517Z`:
+
+```text
+~/.canonfig/.backups/2026-11-03T09-14-02-517Z/
+  manifest.json
+  claude-code/...
+  codex/...
+```
+
+- Whole files and directories Canonfig replaces, such as `~/.claude/CLAUDE.md`
+  or `~/.claude/skills/`, are copied as they were.
+- For files a harness shares with its own state, such as `~/.claude.json`,
+  the snapshot keeps only the keys Canonfig manages there, in `keys.json`.
+  Logins, history, and every other key never enter a backup.
+- A surface that did not exist before is recorded as absent, so a restore
+  removes what Canonfig created there.
+
+Snapshots stay on the machine. They are never published or sent anywhere.
+Their directories have mode `0700` and their files `0600`.
+
+Canonfig keeps the first snapshot, which holds the state from before Canonfig
+ever wrote to a harness, and the 4 most recent. A run that rolls back deletes
+the snapshot it wrote. Later runs that only update surfaces Canonfig already
+manages take no snapshot.
+
+## Find a snapshot
+
+```bash
+canonfig harnesses
+```
+
+The `snapshots` line gives the number of snapshots and the latest one, and
+each harness row names the latest snapshot that holds it. To see what a
+snapshot holds, open its `manifest.json`: each entry names the harness, the
+original path, and whether it existed.
+
+## Restore the latest snapshot
+
+<Callout title="Restore covers every harness in the snapshot" type="warning">
+  A snapshot holds every harness its run took over. The first sync usually
+  takes over all listed harnesses at once, so restoring its snapshot puts back
+  all of them and stops managing all of them on this machine.
+</Callout>
+
+1. Check that nothing changed since the last apply:
+
+   ```bash
+   canonfig sync --plan
+   ```
+
+   Restore refuses a surface that changed since Canonfig last applied it.
+
+2. Restore:
+
+   ```bash
+   canonfig restore
+   ```
+
+   To restore an older snapshot, name it:
+
+   ```bash
+   canonfig restore 2026-11-03T09-14-02-517Z
+   ```
+
+Restore runs as a journaled Synchronization Run. It writes the snapshot back,
+removes what Canonfig created where the snapshot records nothing, and forgets
+its own records for those surfaces. If an action fails, the run rolls back
+like a sync.
+
+When the result is `outcome: Converged`, the output names the snapshot on a
+`restored:` line and the harnesses it excluded on an `excludedHarnesses:` line.
+Restore adds those harnesses to `excludeHarnesses` in
+`~/.canonfig/local/local.jsonc`, so the next sync does not take them over
+again.
+
+On a Follower Machine, the mirror in `~/.canonfig/` stays and keeps syncing.
+Only projection into the restored harnesses stops.
+
+## Manage a restored harness again
+
+```bash
+canonfig harnesses include claude-code
+canonfig sync --apply
+```
+
+The next apply takes the harness over again, with a new Takeover Snapshot of
+what it holds now.
+
+## Take over a harness without a snapshot
+
+To skip the snapshot for one run:
+
+```bash
+canonfig sync --apply --no-backup
+```
+
+To skip it on this machine for good, set `backups` in
+`~/.canonfig/local/local.jsonc`:
+
+```jsonc title="~/.canonfig/local/local.jsonc"
+{
+  "backups": false
+}
+```
+
+The plan and result say `no backup` on the `takeover` line of every harness
+Canonfig takes over without one. Without a snapshot, `canonfig restore` has
+nothing to write back for that harness. This setting is local on purpose: a
+Source Machine cannot turn off a Follower Machine's backups.
+
+## If something fails
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| "there are no takeover snapshots in /home/maria/.canonfig/.backups" (exit 2) | Canonfig has not taken over a harness on this machine, or every takeover ran without a backup. | Nothing to restore. |
+| "snapshot 2026-11-01T08-00-00-000Z does not exist; snapshots: 2026-11-03T09-14-02-517Z" (exit 2) | The name does not match a snapshot. The message lists the ones that exist. | Copy a name from the message or from `canonfig harnesses`. |
+| "restore of snapshot 2026-11-03T09-14-02-517Z refused, nothing was changed:" followed by "/home/maria/.claude/skills: it changed since Canonfig last applied it" and "Keep or move the local changes, sync until it converges, then restore again" (exit 3) | A file Canonfig manages changed after its last apply, for example a skill you added by hand. | Move your change out of the harness, run `canonfig sync --apply` until it reports `Converged`, then restore again. |
+| "... Canonfig has no applied state for it (it was never applied completely, or was already restored)" (exit 3, in the same refusal) | That snapshot was restored already, its harness left the list and Canonfig removed its files, or the run that took the snapshot never finished. | Restore a later snapshot, or leave the harness as it is. |
+| "snapshot ... has no readable manifest: ..." or "... has an invalid manifest: ..." | Someone changed or deleted files in the snapshot. | Restore another snapshot. Canonfig cannot restore a damaged one. |
+| "another canonfig process ... 'restore' ..." (exit 4) | A sync, recover, or restore is already running on this machine. | Wait for it to finish, then retry. |
+
+For other run errors, see
+[Recover from a failed or blocked sync](/how-to/recover).

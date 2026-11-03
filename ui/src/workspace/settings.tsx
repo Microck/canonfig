@@ -580,7 +580,7 @@ export function InstallersView() {
       <Body>
         <div className="flex items-center gap-1.5 border-b border-border px-[18px] py-3 text-sm text-muted-foreground">
           Installer bindings point tool recipes at a package manager on this machine.
-          <Hint label="installer bindings">Tool resources carry an installation recipe per platform, like brew on macOS or apt on Linux. A binding points that recipe at a real executable.</Hint>
+          <Hint label="installer bindings">Tools in canonfig.jsonc carry an installation recipe per platform, like brew on macOS or apt on Linux. A binding points that recipe at a real executable.</Hint>
         </div>
         <ListHead cols={cols} data-tour="installers-list">
           <span>Installer</span>
@@ -619,15 +619,15 @@ export function InstallersView() {
   );
 }
 
-function setupSteps(profileFile: string) {
-  return [
-    { id: "state", label: "Create state directory", detail: "~/.local/state/canonfig" },
-    { id: "keys", label: "Generate signing key", detail: "Stored in Secret Service" },
-    { id: "profile", label: "Write profile file", detail: profileFile },
-    { id: "service", label: "Install source service", detail: "systemd user unit" },
-    { id: "linger", label: "You turn on linger", detail: LINGER_FIX },
-  ];
-}
+/** The Source's `canonfig setup plan` steps (src/setup), in order, then the one step a person does. */
+const SETUP_STEPS = [
+  { id: "keys", label: "Initialize the Source", detail: "Signing key in Secret Service" },
+  { id: "state", label: "Create the Canonfig folder", detail: "~/.canonfig" },
+  { id: "profile", label: "Write canonfig.jsonc with your harnesses", detail: "~/.canonfig/canonfig.jsonc" },
+  { id: "import", label: "Import what you chose from your harnesses", detail: "Into ~/.canonfig" },
+  { id: "service", label: "Install source service", detail: "systemd user unit" },
+  { id: "linger", label: "You turn on linger", detail: LINGER_FIX },
+];
 
 interface Journal {
   phase: "planned" | "approved" | "applying" | "paused" | "complete";
@@ -648,7 +648,7 @@ export function SetupView() {
   const [, setSince] = useSharedState("service-since", SERVICE_SINCE_SEED);
   const [, setLingerMarked] = useSharedState("linger-marked", false);
   const { phase, at } = journal;
-  const steps = setupSteps(ws.profileFile);
+  const steps = SETUP_STEPS;
   const last = steps.length - 1;
   const serviceStep = steps.findIndex((s) => s.id === "service");
   const apply = () => {
@@ -779,6 +779,16 @@ export function useChecks(): DoctorCheck[] {
   const [policy] = useAgentPolicy();
   const agent: Partial<DoctorCheck> =
     policy.mode === "deterministic-only" ? { detail: "Not used: agent policy is deterministic only" } : { detail: policy.harness === "custom" ? `${policy.executable} found` : `${policy.executable || policy.harness} ${HARNESS_VERSION[policy.harness]} found` };
+  // The harnesses probe warns about listed harnesses that are not installed and not excluded here
+  // (src/runtime/doctor.ts); excluding one on this machine clears it.
+  const missing = ws.harnesses.filter((h) => h.listed && !h.installed && !h.excluded);
+  const harnessCheck: Partial<DoctorCheck> = missing.length
+    ? {
+        result: "warn",
+        detail: `Not installed: ${missing.map((h) => h.name).join(", ")} ${missing.length === 1 ? "gets" : "get"} nothing on this machine`,
+        fix: { why: "Install it, or exclude it on this machine so Canonfig stops reporting it.", command: `canonfig harnesses exclude ${missing[0].id}` },
+      }
+    : { detail: `${ws.harnesses.filter((h) => h.listed && h.installed && !h.excluded).length} listed harnesses installed` };
   const overrides: Record<string, Partial<DoctorCheck>> =
     ws.role === "source"
       ? {
@@ -795,6 +805,7 @@ export function useChecks(): DoctorCheck[] {
             ? { result: "ok", detail: "On: you marked it done in setup" }
             : { fix: { why: "To keep user services running after you log out, run this yourself. Canonfig won't change it.", command: LINGER_FIX } },
           "Configuration Agent": agent,
+          Harnesses: harnessCheck,
         }
       : {
           "Credential storage": { detail: "macOS Keychain unlocked" },
@@ -810,7 +821,9 @@ export function useChecks(): DoctorCheck[] {
                   fix: { why: "Start it so this machine can fetch updates from atlas.", command: "canonfig tunnel start" },
                 },
           Linger: { result: "ok", detail: "Not used on macOS" },
+          "Package managers": { detail: "brew and npm found" },
           "Configuration Agent": agent,
+          Harnesses: harnessCheck,
         };
   const checks = doctor.map((c) => ({ ...c, ...overrides[c.check] }));
   // Linger only matters for a service that exists; the Source service warning already covers its absence.

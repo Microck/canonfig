@@ -2,15 +2,17 @@
 
 - [`setup-canonfig`](setup-canonfig/SKILL.md): guided setup in Simple or Advanced
   (in-depth) mode. It inspects first, offers numbered choices plus custom input,
-  explains each question, recommends safe defaults, then plans and verifies the
-  requested Source Machine or Follower Machine outcome.
+  explains each question, recommends safe defaults, chooses harnesses and what
+  to import into `~/.canonfig/`, then plans and verifies the requested Source
+  Machine or Follower Machine outcome.
 - [`install-canonfig`](install-canonfig/SKILL.md): direct installation of
-  `@microck/canonfig@5.0.1`, first-time role establishment, profile authoring
-  and publication, and follower enrollment.
-- [`operate-canonfig`](operate-canonfig/SKILL.md): evidence-first tool
-  discovery, profile digests and publication, the Source service and tunnel,
-  synchronization, client trust after apply, scheduling, diagnostics, drift
-  handling, recovery, and unenrollment.
+  `@microck/canonfig@5.0.1`, first-time role establishment, the first
+  `~/.canonfig/` projection and publication, and follower enrollment.
+- [`operate-canonfig`](operate-canonfig/SKILL.md): evidence-first folder edits
+  and publication, tool discovery, the Source service and tunnel,
+  synchronization, harness exclusions, takeover snapshots and restore, `local/`
+  items, client trust after apply, scheduling, diagnostics, drift handling,
+  recovery, and unenrollment.
 
 Start with `Use $setup-canonfig in simple mode to set up this machine` or
 `Use $setup-canonfig in advanced mode to review my configuration`.

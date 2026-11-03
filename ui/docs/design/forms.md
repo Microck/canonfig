@@ -94,4 +94,4 @@ A credential the GUI shows or echoes is a credential leaked into screenshots, re
 - A credential (password, token, API key, passphrase) gets its own `Input type="password"` with `autoComplete="off"` and `data-1p-ignore` (Set a shared secret, `source.tsx`). Never accept one inside a URL, command or free-text field; split it out.
 - Never prefill, display or copy a stored credential. Lists show secret names and update times only; "Replace value…" starts from an empty field.
 - Never pass a credential to `copy()`, a toast or `WithCode`: `copy()` repeats the copied text in its toast.
-- Say where the value goes in the field's `description` ("Canonfig keeps it in the credential store, never in the profile file.").
+- Say where the value goes in the field's `description` ("Canonfig keeps it in the credential store, never in the folder.").
