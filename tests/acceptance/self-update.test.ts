@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { enable, installation, latestPatch, parseVersion, update, assertNoUnfinishedRun, run, type Runner } from "../../src/runtime/self-update/core.ts";
 import { commandLease, updateDirectory, acquireGate } from "../../src/runtime/self-update/coordination.ts";
 import { runSelfUpdateCli } from "../../src/runtime/self-update/cli.ts";
+import { Effect, Fiber } from "effect";
+import { runCancellablePromise } from "../../src/runtime/cancellable-promise.ts";
 
 const roots:string[]=[];
 afterEach(()=>{vi.unstubAllEnvs();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
@@ -172,5 +174,15 @@ describe("self-update policy and package activation",()=>{
   await runSelfUpdateCli(["--help"],"/missing",io);expect(out).toContain("patch");expect(code).toBe(0);
   for(const args of [["auto","--interval","1"],["apply","--once"],["check","--apply"],["auto","--force"]]){code=0;await runSelfUpdateCli(args,"/missing",io);expect(code).toBe(2);}
   expect(err.length).toBeGreaterThan(0);
+ });
+ // `self-update` runs under runCancellablePromise: interruption must wait for its cleanup.
+ it("Effect interruption waits for an in-flight command to finish cleanup",async()=>{
+  const started=Promise.withResolvers<void>();const cancelled=Promise.withResolvers<void>();const release=Promise.withResolvers<void>();let cleaned=false;
+  const fiber=Effect.runFork(runCancellablePromise(async signal=>{
+   signal.addEventListener("abort",()=>cancelled.resolve(),{once:true});started.resolve();
+   await cancelled.promise;await release.promise;cleaned=true;
+  }));
+  await started.promise;const interruption=Effect.runPromise(Fiber.interrupt(fiber));
+  await cancelled.promise;expect(cleaned).toBe(false);release.resolve();await interruption;expect(cleaned).toBe(true);
  });
 });

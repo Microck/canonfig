@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { reconcileSourceSkills } from "../../src/profile/skill-reconciliation.ts";
 import { parseReconciliationArguments, runReconciliationCli } from "../../src/profile/skill-reconciliation-cli.ts";
-import { atomicWrite } from "../../src/harness-configuration/core/filesystem.ts";
+import { atomicWrite } from "../../src/skills/filesystem.ts";
 import { decodeMachineProfileJsonc } from "../../src/domain/profile.ts";
 import { isSourceSkillReconciliation, sourceSkillReconciliationArguments } from "../../src/runtime/command-routing.ts";
 

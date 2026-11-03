@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertAutomaticSelection, automaticSkillUpdates, type AutomaticSkillOperations } from "../../src/harness-configuration/skills/automatic.ts";
+import { assertAutomaticSelection, automaticSkillUpdates, type AutomaticSkillOperations } from "../../src/skills/automatic.ts";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseSkillsArguments, runSkillsCli } from "../../src/harness-configuration/skills/cli.ts";
-import type { TrackedSkill, SkillCheck } from "../../src/harness-configuration/skills/manager.ts";
+import { parseSkillsArguments, runSkillsCli } from "../../src/skills/cli.ts";
+import type { TrackedSkill, SkillCheck } from "../../src/skills/manager.ts";
 
 const skill: TrackedSkill = { name: "demo", path: "skills/demo", source: "https://example.invalid/skills.git", ref: "main", subdir: "demo", commit: "a".repeat(40), digest: "b".repeat(64) };
 const check: SkillCheck = { name: "demo", path: skill.path, previousCommit: skill.commit, nextCommit: "c".repeat(40), status: "update-available", added: [], changed: ["SKILL.md"], removed: [] };

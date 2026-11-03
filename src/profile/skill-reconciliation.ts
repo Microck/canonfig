@@ -5,8 +5,8 @@ import { Schema } from "effect";
 import { applyEdits, modify } from "jsonc-parser";
 import { decodeMachineProfileJsonc, type ProfileResourceInput } from "../domain/profile.ts";
 import { parseJsonc } from "./profile-codec.ts";
-import { CanonfigError } from "../harness-configuration/core/errors.ts";
-import { assertNoSymlinkPathComponents, atomicWrite } from "../harness-configuration/core/filesystem.ts";
+import { CanonfigError } from "../skills/errors.ts";
+import { assertNoSymlinkPathComponents, atomicWrite } from "../skills/filesystem.ts";
 
 const Observation = Schema.Struct({
   id: Schema.String, directory: Schema.String, identity: Schema.String,

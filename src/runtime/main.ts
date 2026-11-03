@@ -18,8 +18,6 @@ import {
   installerArguments,
   groupHelpRequested,
   secretsArguments,
-  harnessArguments,
-  isHarnessConfigurationCommand,
   isInstallerCommand,
   isSecretsCommand,
 } from "./command-routing.ts";
@@ -186,7 +184,7 @@ const synchronizeSecretsAfterApply = ({ Effect }: typeof EffectModule) =>
 const explicitHelp = groupHelpRequested(arguments_);
 const globalVersion = !explicitHelp && (arguments_.includes("--version") || arguments_.includes("-V"));
 const separateDispatcher = selfUpdateCommand || isSecretsCommand(arguments_)
-  || isHarnessConfigurationCommand(arguments_) || isInstallerCommand(arguments_) || isSkillsCommand(arguments_) || isSourceSkillReconciliation(arguments_);
+  || isInstallerCommand(arguments_) || isSkillsCommand(arguments_) || isSourceSkillReconciliation(arguments_);
 const early = isPublicEnrollmentCommand(arguments_) || (separateDispatcher && !globalVersion)
   ? undefined
   : helpOrVersion(arguments_);
@@ -241,17 +239,8 @@ if (early !== undefined) {
   }
 } else if (isSkillsCommand(arguments_)) {
   const argv = skillsArguments(arguments_);
-  const { runSkillsCli } = await import("../harness-configuration/skills/cli.ts");
+  const { runSkillsCli } = await import("../skills/cli.ts");
   await runMain((effect) => effect.Effect.promise((signal) => runSkillsCli(argv, nodeCliIo, signal)), `skills.${argv.filter((value) => value !== "--json")[0] ?? "help"}`);
-} else if (isHarnessConfigurationCommand(arguments_)) {
-  const harnessArgv = harnessArguments(arguments_);
-  const [{ runHarnessConfigurationCli }, { runCancellablePromise }] = await Promise.all([
-    import("../harness-configuration/cli.ts"), import("./cancellable-promise.ts"),
-  ]);
-  await runMain(() =>
-    runCancellablePromise((signal) => runHarnessConfigurationCli(harnessArgv, nodeCliIo, signal)),
-    `harness.${harnessArgv.filter((value) => value !== "--json")[0] ?? "help"}`,
-  );
 } else if (isInstallerCommand(arguments_)) {
   const installer = await import("./installer-cli.ts");
   const installerArgv = installerArguments(arguments_);

@@ -3,8 +3,8 @@ import path from "node:path";
 import type { CanonfigConfig } from "./schema.ts";
 import type { Diagnostic } from "./types.ts";
 import { parseSkill } from "./frontmatter.ts";
-import { walkFiles } from "./filesystem.ts";
-import { assertSafeRelativePath } from "./path.ts";
+import { walkFiles } from "../../skills/filesystem.ts";
+import { assertSafeRelativePath } from "../../skills/path.ts";
 
 async function exists(filePath: string): Promise<boolean> {
   try {
@@ -15,9 +15,9 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
-export async function validateProject(root: string, config: CanonfigConfig): Promise<Diagnostic[]> {
+/** Check that every source the configuration names exists and parses inside the canonical folder. */
+export async function validateFolder(canonfigDir: string, config: CanonfigConfig): Promise<Diagnostic[]> {
   const diagnostics: Diagnostic[] = [];
-  const canonfigDir = path.join(root, ".canonfig");
   const referenced: Array<{ kind: string; relative: string }> = [
     { kind: "instruction", relative: config.instructions.root },
     ...config.instructions.rules.map((rule) => ({ kind: `rule ${rule.id}`, relative: rule.file })),
@@ -31,8 +31,8 @@ export async function validateProject(root: string, config: CanonfigConfig): Pro
       diagnostics.push({
         level: "error",
         code: "SOURCE_MISSING",
-        path: `.canonfig/${safe}`,
-        message: `Missing source for ${item.kind}: .canonfig/${safe}`,
+        path: safe,
+        message: `Missing source for ${item.kind}: ${safe}`,
       });
     }
   }
@@ -53,22 +53,22 @@ export async function validateProject(root: string, config: CanonfigConfig): Pro
       diagnostics.push({
         level: "info",
         code: "SKILL_ROOT_MISSING",
-        path: `.canonfig/${safeRoot}`,
-        message: `Skill root .canonfig/${safeRoot} does not exist; it contributes no skills.`,
+        path: safeRoot,
+        message: `Skill root ${safeRoot} does not exist; it contributes no skills.`,
       });
       continue;
     }
 
     let files: string[];
-    try { files = await walkFiles(absoluteRoot, root); }
+    try { files = await walkFiles(absoluteRoot, canonfigDir); }
     catch (error) {
-      diagnostics.push({ level: "error", code: "SKILL_SOURCE_INVALID", path: `.canonfig/${safeRoot}`,
+      diagnostics.push({ level: "error", code: "SKILL_SOURCE_INVALID", path: safeRoot,
         message: `Cannot read skill sources safely: ${error instanceof Error ? error.message : String(error)}` });
       continue;
     }
     const manifests = files.filter((file) => path.basename(file) === "SKILL.md");
     for (const manifest of manifests.sort()) {
-      const relative = `.canonfig/${safeRoot}/${manifest}`;
+      const relative = `${safeRoot}/${manifest}`;
       try {
         const source = await fs.readFile(path.join(absoluteRoot, manifest), "utf8");
         const parsed = parseSkill(source);
@@ -93,8 +93,8 @@ export async function validateProject(root: string, config: CanonfigConfig): Pro
             message: `Skill name ${parsed.data.name} is duplicated by ${previous.path} and ${relative}.`,
           });
         } else {
-          // Roots are ordered from lowest to highest precedence. A project
-          // root can intentionally replace the same skill from a user root.
+          // Roots are ordered from lowest to highest precedence. A later
+          // root can intentionally replace the same skill from an earlier one.
           skillNames.set(parsed.data.name, {
             path: relative,
             root: safeRoot,

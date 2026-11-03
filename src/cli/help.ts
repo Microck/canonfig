@@ -21,7 +21,7 @@ export const installerHelp = [
 /**
  * One command group as it appears in help. `areas` are the first argv tokens
  * that select the group, so `canonfig abandon --help` finds the recovery
- * group. Groups dispatched before `evaluateCli` (secrets, harness, installer)
+ * group. Groups dispatched before `evaluateCli` (secrets, skills, installer)
  * print their own detailed help; the global listing still names them so no
  * group is discoverable only from the website.
  */
@@ -227,15 +227,6 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     title: "Upstream skills (details: canonfig skills --help)",
     areas: ["skills"],
     usage: ["skills track|list|check|update [--root <path>] [--name <id>...] [--apply]", "skills auto [--root <path>] [--name <id>...] [--apply] [--once] [--interval <seconds>]"],
-  },
-  {
-    title: "Harness configuration (details: canonfig harness --help)",
-    areas: ["harness"],
-    usage: [
-      "harness init [--format yaml|json]",
-      "harness export --output <archive.zip|archive.tar.gz> [--target <id>...] [--include-source|--source-only]",
-      "harness validate|targets|plan|apply|status|diff|clean|doctor [--target <id>...] [--strict]",
-    ],
   },
   {
     title: "Installer bindings (details: canonfig installer --help)",

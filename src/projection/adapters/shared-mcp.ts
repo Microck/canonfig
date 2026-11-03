@@ -23,7 +23,7 @@ type McpProjectionGap = "timeoutMs" | "enabledTools" | "disabledTools" | "cwd" |
 
 /**
  * One warning per MCP server whose canonical options a target projection
- * drops. The compiler turns these into errors under `--strict`.
+ * drops. `strictDiagnostics` turns these into errors in strict mode.
  */
 export function mcpOptionDiagnostics(
   context: BuildContext,

@@ -3,10 +3,10 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, cp, symlink, chmod, readdir, a
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { checkSkills, listSkills, parseConfig, trackSkill, updateSkills, type SkillLocation, skillUpdateOperations } from "../../src/harness-configuration/skills/manager.ts";
-import { atomicWrite } from "../../src/harness-configuration/core/filesystem.ts";
-import { fetchSkill, normalizeSource, safePath } from "../../src/harness-configuration/skills/upstream.ts";
-import { runSkillsCli } from "../../src/harness-configuration/skills/cli.ts";
+import { checkSkills, listSkills, parseConfig, trackSkill, updateSkills, type SkillLocation, skillUpdateOperations } from "../../src/skills/manager.ts";
+import { atomicWrite } from "../../src/skills/filesystem.ts";
+import { fetchSkill, normalizeSource, safePath } from "../../src/skills/upstream.ts";
+import { runSkillsCli } from "../../src/skills/cli.ts";
 import { isSkillsCommand, skillsArguments } from "../../src/runtime/command-routing.ts";
 
 const roots: string[] = [];

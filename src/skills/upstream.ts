@@ -4,8 +4,8 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { CanonfigError } from "../core/errors.ts";
-import { assertNoSymlinkPathComponents } from "../core/filesystem.ts";
+import { CanonfigError } from "./errors.ts";
+import { assertNoSymlinkPathComponents } from "./filesystem.ts";
 
 const execute = promisify(execFile);
 export interface SkillFile { path: string; bytes: Buffer; executable: boolean }

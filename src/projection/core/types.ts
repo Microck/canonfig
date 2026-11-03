@@ -158,39 +158,11 @@ export interface ArtifactState {
   cleanup: CleanupInstruction[];
 }
 
-export interface CanonfigState {
-  version: 1;
-  generatedAt: string;
-  canonfigVersion: string;
-  artifacts: Record<string, ArtifactState>;
-  appliedTargets?: TargetId[];
-}
-
-export type PlanAction = "create" | "update" | "delete" | "unchanged" | "conflict";
-
-export interface PlanEntry {
-  path: string;
-  owner: ArtifactOwner;
-  action: PlanAction;
-  reason?: string | undefined;
-  before?: string | undefined;
-  after?: string | undefined;
-  content?: string | Uint8Array | undefined;
-  binary?: boolean | undefined;
-  mode?: number | undefined;
-  nextState?: ArtifactState | undefined;
-}
-
-export interface Plan {
-  root: string;
-  targets: TargetId[];
-  entries: PlanEntry[];
-  diagnostics: Diagnostic[];
-  nextState: CanonfigState;
-}
-
+/**
+ * Input to one adapter build. `canonfigDir` is the canonical folder every
+ * source path is resolved and contained in.
+ */
 export interface BuildContext {
-  root: string;
   canonfigDir: string;
   config: CanonfigConfig;
   target: TargetId;

@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { CanonfigError } from "../core/errors.ts";
+import { CanonfigError } from "./errors.ts";
 import { checkSkills, listSkills, updateSkills, skillUpdateOperations, type SkillCheck, type SkillLocation, type TrackedSkill } from "./manager.ts";
 
 export interface AutomaticSkillOptions {

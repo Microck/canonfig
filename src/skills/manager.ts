@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { CanonfigError } from "../core/errors.ts";
-import { assertNoSymlinkPathComponents, atomicWrite, ensureDirectoryNoFollow } from "../core/filesystem.ts";
+import { CanonfigError } from "./errors.ts";
+import { assertNoSymlinkPathComponents, atomicWrite, ensureDirectoryNoFollow } from "./filesystem.ts";
 import { fetchSkill, fingerprint, inventory, normalizeSource, readLocalSkill, safePath, validateSource, type SkillFile, type SkillSource } from "./upstream.ts";
 
 export interface TrackedSkill extends SkillSource { name: string; path: string; commit: string; digest: string }

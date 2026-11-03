@@ -1,7 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { CliExitCode } from "../cli/exit-codes.ts";
-import { CanonfigError, errorMessage } from "../harness-configuration/core/errors.ts";
-import { renderHarnessResult, toCliPayload, type HarnessConfigurationCliIo } from "../harness-configuration/cli-output.ts";
+import { CanonfigError, errorMessage } from "../skills/errors.ts";
+import type { CliIo } from "../cli/cli.ts";
+import { renderCommandResult, toCliPayload } from "../cli/command-output.ts";
 import { reconcileSourceSkills } from "./skill-reconciliation.ts";
 
 export const reconciliationHelp = `Usage: canonfig source reconcile-skills --profile-file FILE [--apply] [--watch] [--interval SECONDS]
@@ -41,16 +42,16 @@ export function parseReconciliationArguments(args: readonly string[]) {
   return { profile, apply, watch, interval, help };
 }
 
-export async function runReconciliationCli(args: readonly string[], io: HarnessConfigurationCliIo, signal?: AbortSignal): Promise<void> {
+export async function runReconciliationCli(args: readonly string[], io: CliIo, signal?: AbortSignal): Promise<void> {
   const json = args.includes("--json");
   try {
     const options = parseReconciliationArguments(args);
-    if (options.help) { renderHarnessResult(io, { command: "source.reconcile-skills.help", message: "Source skill reconciliation", human: reconciliationHelp, json, exitCode: CliExitCode.success }); return; }
+    if (options.help) { renderCommandResult(io, { command: "source.reconcile-skills.help", message: "Source skill reconciliation", human: reconciliationHelp, json, exitCode: CliExitCode.success }); return; }
     if (!options.profile) throw new CanonfigError("PROFILE_SKILL_RECONCILE_USAGE", "--profile-file is required");
     do {
       if (signal?.aborted) return;
       const result = await reconcileSourceSkills(options.profile, options.apply);
-      renderHarnessResult(io, { command: "source.reconcile-skills", message: options.apply ? "Source skill profile reconciled" : "Source skill reconciliation preview", data: toCliPayload(result), json, exitCode: CliExitCode.success,
+      renderCommandResult(io, { command: "source.reconcile-skills", message: options.apply ? "Source skill profile reconciled" : "Source skill reconciliation preview", data: toCliPayload(result), json, exitCode: CliExitCode.success,
         human: `${options.apply ? "Applied" : "Preview"}: ${result.removed.length} removed resource(s), ${result.observed.length} observed, ${result.skipped.length} outside automatic scope. No publication.\n` });
       if (!options.watch) return;
       try { await delay(options.interval * 1000, undefined, { signal }); }
@@ -58,7 +59,7 @@ export async function runReconciliationCli(args: readonly string[], io: HarnessC
     } while (!signal?.aborted);
   } catch (error) {
     const code = error instanceof CanonfigError ? error.code : undefined;
-    renderHarnessResult(io, { command: "source.reconcile-skills", message: errorMessage(error), json,
+    renderCommandResult(io, { command: "source.reconcile-skills", message: errorMessage(error), json,
       exitCode: code === "PROFILE_SKILL_RECONCILE_RECOVERY" ? CliExitCode.humanActionRequired
         : code === "PROFILE_SKILL_RECONCILE_CONFLICT" || code === "PROFILE_SKILL_RECONCILE_LOCKED" ? CliExitCode.conflictOrDrift : CliExitCode.usageOrConfiguration });
   }

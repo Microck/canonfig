@@ -3,11 +3,9 @@ import path from "node:path";
 
 import type { Agent, Command, Rule } from "../core/schema.ts";
 import type { ArtifactOwner, BuildContext, DesiredArtifact, TargetId } from "../core/types.ts";
-import { assertRealPathInside, assertSafeRelativePath, resolveInside, toPosix } from "../core/path.ts";
+import { assertRealPathInside, assertSafeRelativePath, resolveInside, toPosix } from "../../skills/path.ts";
 import { markdownWithFrontmatter } from "../core/frontmatter.ts";
-import { walkFiles } from "../core/filesystem.ts";
-
-export const RUNTIME_MARKER = ".canonfig/.runtime/hook-runner.mjs";
+import { walkFiles } from "../../skills/filesystem.ts";
 
 export async function readCanonfigText(context: BuildContext, relativePath: string): Promise<string> {
   const safe = assertSafeRelativePath(relativePath);
@@ -23,11 +21,11 @@ export async function copyDirectoryArtifacts(
   owner: ArtifactOwner,
 ): Promise<DesiredArtifact[]> {
   const source = resolveInside(context.canonfigDir, assertSafeRelativePath(sourceRelative));
-  const files = await walkFiles(source, context.root);
+  const files = await walkFiles(source, context.canonfigDir);
   const artifacts: DesiredArtifact[] = [];
   for (const file of files.sort()) {
     const absolute = path.join(source, file);
-    await assertRealPathInside(context.root, absolute);
+    await assertRealPathInside(context.canonfigDir, absolute);
     const [content, stat] = await Promise.all([fs.readFile(absolute), fs.stat(absolute)]);
     const executable = (stat.mode & 0o111) !== 0;
     artifacts.push({

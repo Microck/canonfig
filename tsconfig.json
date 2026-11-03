@@ -19,13 +19,14 @@
     "src/cli/**/*.ts",
     "src/domain/**/*.ts",
     "src/enrollment/**/*.ts",
-    "src/harness-configuration/**/*.ts",
     "src/machine/**/*.ts",
     "src/profile/**/*.ts",
+    "src/projection/**/*.ts",
     "src/runtime/**/*.ts",
     "src/schedule/**/*.ts",
     "src/state/**/*.ts",
     "src/setup/**/*.ts",
+    "src/skills/**/*.ts",
     "src/synchronization/**/*.ts"
   ],
   "exclude": ["src/index.ts"]

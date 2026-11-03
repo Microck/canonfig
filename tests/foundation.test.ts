@@ -38,7 +38,7 @@ describe("Canonfig foundation CLI", () => {
   const commandAreas = [
     "source", "follower", "sync", "recover", "abandon", "status", "overlay",
     "doctor", "tunnel", "profile", "agent", "setup", "schedule",
-    "secrets", "harness", "installer",
+    "secrets", "installer",
   ] as const;
 
   it.each(commandAreas)("lists the %s command group in global help", (area) => {
@@ -48,7 +48,7 @@ describe("Canonfig foundation CLI", () => {
     );
   });
 
-  it.each(commandAreas.filter((area) => !["secrets", "harness", "installer"].includes(area)))(
+  it.each(commandAreas.filter((area) => !["secrets", "installer"].includes(area)))(
     "renders group help for %s --help",
     (area) => {
       const global = evaluateCli(["--help"]);
@@ -68,6 +68,15 @@ describe("Canonfig foundation CLI", () => {
     const outcome = evaluateCli(["no-such-group", "--help"]);
     const global = evaluateCli(["--help"]);
     expect(outcome).toEqual(global);
+  });
+
+  // Repository harness projects were removed; only `agent harness` remains.
+  it("has no harness command group", () => {
+    const global = evaluateCli(["--help"]);
+    expect(global._tag === "Help" ? global.text : "").not.toMatch(
+      new RegExp(`^  ${programName} harness( |$)`, "mu"),
+    );
+    expect(evaluateCli(["harness", "--help"])).toEqual(global);
   });
 
   // Help reads no state. `installer --help` used to build the machine layer

@@ -9,9 +9,6 @@
 export const isSecretsCommand = (arguments_: ReadonlyArray<string>): boolean =>
   arguments_.filter((value) => value !== "--json")[0] === "secrets";
 
-export const isHarnessConfigurationCommand = (arguments_: ReadonlyArray<string>): boolean =>
-  arguments_.filter((value) => value !== "--json")[0] === "harness";
-
 /**
  * `--json` is a global option that `evaluateCli` accepts at any position, so it
  * never names the command. Match past it, or `canonfig --json installer list`
@@ -32,16 +29,11 @@ export const secretsArguments = (arguments_: ReadonlyArray<string>): ReadonlyArr
   return arguments_.filter((_, index) => index !== head);
 };
 
-export const harnessArguments = (arguments_: ReadonlyArray<string>): ReadonlyArray<string> => {
-  const head = arguments_.indexOf("harness");
-  return arguments_.filter((_, index) => index !== head);
-};
-
 /** Help switches and supported positional group-help forms precede version. */
 export const groupHelpRequested = (arguments_: ReadonlyArray<string>): boolean => {
   const positional = arguments_.filter((argument) => argument !== "--json");
   return arguments_.includes("--help") || arguments_.includes("-h")
-    || ((positional[0] === "secrets" || positional[0] === "harness" || positional[0] === "skills" || positional[0] === "self-update") && positional[1] === "help");
+    || ((positional[0] === "secrets" || positional[0] === "skills" || positional[0] === "self-update") && positional[1] === "help");
 };
 
 export const isSkillsCommand = (arguments_: ReadonlyArray<string>): boolean =>

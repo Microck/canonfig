@@ -13,7 +13,7 @@ export function enabledHooks(context: BuildContext): Hook[] {
   return context.config.hooks.filter((hook) => hook.enabled);
 }
 
-/** Whole-second hook timeout; a rounded value is reported so `--strict` can reject it. */
+/** Whole-second hook timeout; a rounded value is reported so strict mode can reject it. */
 function timeoutSeconds(target: TargetId, hook: Hook, diagnostics: Diagnostic[]): number {
   const seconds = Math.max(1, Math.ceil(hook.timeoutMs / 1000));
   if (seconds * 1000 !== hook.timeoutMs) {
