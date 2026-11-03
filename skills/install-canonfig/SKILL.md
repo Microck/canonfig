@@ -17,17 +17,10 @@ security or human-action boundary.
    - macOS: [references/macos.md](references/macos.md)
    - Windows: [references/windows.md](references/windows.md)
 3. Confirm Node.js 24 or newer and npm are available.
-4. For an existing 4.x installation, first follow the
-   [in-place upgrade guide](../../website/content/docs/how-to/upgrade.mdx): finish
-   or recover unfinished runs with the original build, back up state, use the
-   same installation prefix, and restart the existing Source service afterward.
-   Verify the existing role rather than initializing or enrolling it again.
-   Otherwise, install the exact `@microck/canonfig@5.0.1` package version in a new
-   installation. The installed executable remains `canonfig`. Do not install
-   over a 3.2.x installation: an in-place upgrade is unsupported and unverified.
-   Preserve its state and use the [fresh-install guide](../../website/content/docs/how-to/upgrade.mdx).
-   The new Source and followers must run the same major.minor release; 5.0.1
-   refuses 4.x and 3.2.x peers with "source/follower version mismatch" (exit 2).
+4. Install the exact `@microck/canonfig@5.0.1` package version. The installed
+   executable remains `canonfig`. The Source and followers must run the same
+   major.minor release; a mismatch fails with "source/follower version
+   mismatch" (exit 2).
 5. Run `canonfig --version` and bounded diagnostics. Read the `credentials`
    probe; follow its recovery text before continuing.
 6. Initialize a Source Machine **or** enroll a Follower Machine. Never initialize

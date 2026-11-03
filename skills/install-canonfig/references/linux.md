@@ -12,15 +12,6 @@
 
 Install the exact public package version for the current Node installation.
 
-For an existing 4.x installation, follow the
-[in-place upgrade guide](../../../website/content/docs/how-to/upgrade.mdx): finish
-or recover unfinished runs with the original build, back up state, install with
-the same prefix, restart the existing Source service, and verify the existing
-role without reinitializing or reenrolling it. For other setups use a new
-installation. For an existing 3.2.x account, follow the
-[fresh-install guide](../../../website/content/docs/how-to/upgrade.mdx)
-instead of replacing its package or state.
-
 ```bash
 npm install --global @microck/canonfig@5.0.1
 canonfig --version
