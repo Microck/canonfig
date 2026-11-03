@@ -177,26 +177,6 @@ check fails, the run fails with "verification failed for agent task
 `<resource>`" (exit 7). See
 [Recover from a failed or blocked sync](/how-to/recover).
 
-## Replace a gemini harness
-
-Canonfig has no `gemini` harness. On a Follower Machine that still has one
-configured, commands that read the Follower Machine's settings, including
-`sync`, `status`, `doctor`, and `agent policy`, stop with exit 2:
-
-> the gemini agent harness was removed in 5.0.0; run 'canonfig agent harness
-> codex|claude|custom ...' to replace it
-
-Canonfig does not convert it for you. Set another harness, which replaces the
-`gemini` one and keeps your agent policy:
-
-```bash
-canonfig agent harness claude --executable /home/alex/.local/bin/claude --allow-path /home/alex/.local/share/canonfig/tools
-```
-
-To stop using an agent instead, set a harness first, then run
-`canonfig agent policy deterministic-only`. `agent policy` cannot run until the
-`gemini` harness is replaced.
-
 ## If something fails
 
 | Message | Cause | Fix |
@@ -217,4 +197,3 @@ To stop using an agent instead, set a harness first, then run
 | "Missing required option: --executable" (exit 2) | `--executable` is required. | Add `--executable` with the agent's absolute path. |
 | "Invalid secret binding; expected ENV_NAME=shared-secret-name" (exit 2) | `--bind-secret` is not written as `ENV=secret-name`. | Write it as `OPENAI_API_KEY=openai-key`. |
 | "Invalid agent harness configuration" (exit 2) | The harness kind is not `codex`, `claude`, or `custom`, a `--model` name contains a space, or `--allow-capability` is not `elevation`, `login`, `restart`, or `reboot`. | Correct the option. |
-| "the gemini agent harness was removed in 5.0.0; ..." (exit 2) | A `gemini` harness is configured. | See [Replace a gemini harness](#replace-a-gemini-harness). |

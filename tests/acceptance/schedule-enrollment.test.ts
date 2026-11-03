@@ -7,8 +7,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
 
-it.each(["fresh", "source-only", "pending", "pending-rotation"])("refuses schedule selection without finalized enrollment (%s)", (mode) => {
-  const home = mkdtempSync(join(tmpdir(), "canonfig-unenrolled-schedule-"));
+/** Runs the CLI from source against an isolated home and state database. */
+const isolatedCli = (prefix: string) => {
+  const home = mkdtempSync(join(tmpdir(), prefix));
   const project = resolve(import.meta.dirname, "../..");
   const environment = {
     ...process.env, HOME: home, USERPROFILE: home,
@@ -20,34 +21,52 @@ it.each(["fresh", "source-only", "pending", "pending-rotation"])("refuses schedu
   const run = (args: string[]) => spawnSync(process.execPath,
     ["--import", "tsx", "src/runtime/main.ts", ...args, "--json"],
     { cwd: project, env: environment, encoding: "utf8", timeout: 30_000 });
+  return { home, state: join(home, ".canonfig", "state.sqlite"), run };
+};
+
+/**
+ * Stores a follower and its synchronization configuration as persisted state.
+ * `source init` must have run first so the database holds a real Source identity.
+ */
+const storeFollowerConfiguration = (
+  home: string,
+  state: string,
+  fields: Partial<typeof FollowerSynchronizationConfiguration.Encoded>,
+) => {
+  const at = "2026-10-21T00:00:00Z";
+  const follower = { id: "fixture-follower", name: "Fixture", groups: [], revoked: false,
+    credentialReference: "fixture-credential", enrolledAt: at };
+  const configuration = Schema.decodeUnknownSync(FollowerSynchronizationConfiguration)({
+    schemaVersion: 1, follower, selectedProfile: "fixture-profile",
+    source: { endpoint: "https://127.0.0.1:1", tlsFingerprint: "fixture-tls", signingFingerprint: "fixture-signing" },
+    credentialReference: follower.credentialReference, cacheDirectory: join(home, "cache"),
+    stateLocation: state, agentPolicy: "deterministic-only",
+    scheduledInvocation: defaultScheduledInvocation, updatedAt: at,
+    ...fields,
+  });
+  const database = new DatabaseSync(state);
+  try {
+    database.prepare("INSERT INTO followers VALUES (?, ?, ?, ?, ?, ?)")
+      .run(follower.id, follower.name, "[]", 0, follower.credentialReference, at);
+    database.prepare("INSERT INTO follower_sync_configuration VALUES (1, ?, ?, ?)")
+      .run(follower.id, JSON.stringify(configuration), at);
+  } finally { database.close(); }
+};
+
+it.each(["fresh", "source-only", "pending", "pending-rotation"])("refuses schedule selection without finalized enrollment (%s)", (mode) => {
+  const { home, state, run } = isolatedCli("canonfig-unenrolled-schedule-");
   try {
     if (mode !== "fresh") {
       const initialized = run(["source", "init"]);
       expect(initialized.status, initialized.stderr).toBe(0);
     }
     if (mode.startsWith("pending")) {
-      const at = "2026-10-21T00:00:00Z";
-      const follower = { id: "pending-follower", name: "Pending", groups: [], revoked: false,
-        credentialReference: "pending-credential", enrolledAt: at };
-      const state = join(home, ".canonfig", "state.sqlite");
-      const configuration = Schema.decodeUnknownSync(FollowerSynchronizationConfiguration)({
-        schemaVersion: 1, follower, selectedProfile: "fixture-profile",
-        source: { endpoint: "https://127.0.0.1:1", tlsFingerprint: "fixture-tls", signingFingerprint: "fixture-signing" },
-        credentialReference: follower.credentialReference, cacheDirectory: join(home, "cache"),
-        stateLocation: state, agentPolicy: "deterministic-only", enrollmentPending: true,
+      // Faithful persisted state at the prepare/finalize boundary.
+      storeFollowerConfiguration(home, state, {
+        enrollmentPending: true,
         scheduleDefault: mode === "pending-rotation" ? { type: "daily", at: "04:30", timezone: "local" } : undefined,
         scheduleOverride: mode === "pending-rotation" ? { kind: "schedule", schedule: { kind: "daily", localTime: "04:30" } } : undefined,
-        scheduledInvocation: defaultScheduledInvocation, updatedAt: at,
       });
-      // Faithful persisted state at the prepare/finalize boundary. Source init
-      // above already stored a real Source identity in this isolated database.
-      const database = new DatabaseSync(state);
-      try {
-        database.prepare("INSERT INTO followers VALUES (?, ?, ?, ?, ?, ?)")
-          .run(follower.id, follower.name, "[]", 0, follower.credentialReference, at);
-        database.prepare("INSERT INTO follower_sync_configuration VALUES (1, ?, ?, ?)")
-          .run(follower.id, JSON.stringify(configuration), at);
-      } finally { database.close(); }
     }
     for (const calendar of ["daily@02:30", "weekly:Mon@02:30", "--default"]) {
       const result = run(["schedule", "set", calendar]);
@@ -64,5 +83,30 @@ it.each(["fresh", "source-only", "pending", "pending-rotation"])("refuses schedu
     }
     expect(existsSync(join(home, "config", "systemd", "user", "canonfig-sync.timer"))).toBe(false);
     expect(existsSync(join(home, "Library", "LaunchAgents", "canonfig-sync.plist"))).toBe(false);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 120_000);
+
+// A shell expands `--allow-path ~/x`, but a quoted `~` arrives as written.
+// `agent harness` stores it resolved against this machine's home.
+it("stores a quoted ~ allow-path as an absolute path", () => {
+  const { home, state, run } = isolatedCli("canonfig-allow-path-");
+  try {
+    const initialized = run(["source", "init"]);
+    expect(initialized.status, initialized.stderr).toBe(0);
+    // Saving a harness checks the stored Source against this database's identity.
+    const source = JSON.parse(initialized.stdout).data;
+    storeFollowerConfiguration(home, state, {
+      source: { endpoint: "https://127.0.0.1:1", tlsFingerprint: source.tlsFingerprint,
+        signingFingerprint: source.source.publicKeyFingerprint },
+    });
+
+    // No shell runs here, so `~` arrives as written, as it does when quoted.
+    const stored = run(["agent", "harness", "claude", "--executable", process.execPath, "--allow-path", "~/.local/bin"]);
+    expect(stored.status, stored.stdout + stored.stderr).toBe(0);
+    const harness = run(["agent", "harness"]);
+    expect(harness.status, harness.stdout + harness.stderr).toBe(0);
+    expect(JSON.parse(harness.stdout).data).toMatchObject({
+      kind: "claude", executable: process.execPath, allowedPaths: [join(home, ".local", "bin")],
+    });
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 120_000);

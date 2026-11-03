@@ -1740,8 +1740,6 @@ const followerCommandsLayer = (
           ),
           Effect.map(payload),
         ),
-      // Reads without the stored harness, so this command can replace a removed kind.
-      //
       // A shell expands `--allow-path ~/x` before Canonfig sees it, but a
       // quoted `~` or a relative path arrives as written. Each path is stored
       // resolved the way this machine resolves profile targets, so the bounds
@@ -1750,7 +1748,7 @@ const followerCommandsLayer = (
         Effect.forEach(requested.allowedPaths, (path) => mapFailure(machine.normalizePath({ path }))).pipe(
           Effect.map((paths) => ({ ...requested, allowedPaths: paths.map((path) => path.absolute) })),
           Effect.flatMap((agentHarness) =>
-            mapFailure(repository.getFollowerSynchronizationConfiguration({ replacingAgentHarness: true })).pipe(
+            mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
               Effect.flatMap((configuration) => {
                 if (configuration === undefined) {
                   return Effect.fail(new CliCommandFailure({

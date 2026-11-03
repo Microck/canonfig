@@ -19,12 +19,6 @@ export const SupportedAgentHarness = Schema.Literals([
   "custom",
 ]);
 
-/**
- * Harness kinds an earlier release could store and 5.0.0 removed (ADR 0002).
- * A stored one is reported with its recovery command, never migrated.
- */
-export const RemovedAgentHarness = Schema.Literals(["gemini"]);
-
 export const AgentHarnessCapability = Schema.Literals([
   "elevation",
   "login",

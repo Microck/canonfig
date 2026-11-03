@@ -464,11 +464,6 @@ export const failureTaxonomy = {
         ? "this machine is not enrolled; run 'canonfig follower enroll' first"
         : `the follower configuration is ${text(error.reason)}`,
   ),
-  RemovedAgentHarnessError: describe(
-    "usage-or-configuration",
-    (error) =>
-      `the ${text(error.kind)} agent harness was removed in 5.0.0; run 'canonfig agent harness codex|claude|custom ...' to replace it`,
-  ),
   EnrollmentConfigurationError: declared(
     "usage-or-configuration",
     (error) => `${text(error.operation)} is not configured`,
