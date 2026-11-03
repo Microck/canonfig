@@ -52,6 +52,29 @@ upgrading? the source and every follower must run the same `major.minor`
 release, and a 3.2.x installation must not be replaced in place. follow the
 [upgrade guide](https://canonfig.micr.dev/docs/how-to/upgrade/).
 
+## browser interface
+
+<img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/walkthrough.gif" width="880" alt="the canonfig browser interface: the Source overview, the machine map, the profile, then a follower's sync page checking for updates">
+
+the browser interface covers the whole loop: see what changed on the Source,
+publish it, watch every machine pick it up, and decide what happens to local
+edits on a follower. [try the interactive demo](https://canonfig.micr.dev); it
+runs in your browser on made-up machines.
+
+the interface is a preview and isn't in the npm package yet. to sync real
+machines, use the commands below.
+
+<table>
+  <tr>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/overview.png" alt="Source overview: unpublished changes and which machines are not up to date, and why"><br><b>overview</b>: what you haven't published yet, and which machines are behind and why</td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/machines.png" alt="machine map: the Source atlas connected to laptop, studio, gaming-pc and build-box, each with its sync state"><br><b>machines</b>: every follower, its revision and its sync state</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/sync.png" alt="follower sync page: the planned changes and a paused skill with the choice to keep the local edit or use the new revision"><br><b>sync</b>: the planned changes on a follower, with a choice for each local edit</td>
+    <td width="50%"><img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/setup.png" alt="setup: what should this machine do, make this the Source or copy the setup from another machine"><br><b>setup</b>: a new machine becomes the Source or copies its setup from one</td>
+  </tr>
+</table>
+
 ## sync machines
 
 start with the [first sync tutorial](https://canonfig.micr.dev/docs/tutorials/first-sync/).
