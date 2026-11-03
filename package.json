@@ -22,12 +22,6 @@
   "bin": {
     "canonfig": "dist/runtime/main.js"
   },
-  "exports": {
-    "./profile-compiler": {
-      "types": "./dist/profile/compiler.d.ts",
-      "import": "./dist/profile/compiler.js"
-    }
-  },
   "workspaces": [
     "website"
   ],

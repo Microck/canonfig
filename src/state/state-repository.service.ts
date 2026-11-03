@@ -31,11 +31,9 @@ import type {
   RecordDriftInput,
   RecoveryState,
   RegisterFollowerInput,
-  RemoveLocalOverlayInput,
   ResourceBlobRange,
   RevisionApprovalRecord,
   RunEvidenceSummary,
-  SaveLocalOverlayInput,
   StateSnapshot,
   RevisionBlobCandidate,
   StoredEnrollmentInvitation,
@@ -44,7 +42,7 @@ import type {
 } from "./state-repository.types.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
-import type { LocalOverlayEntry, PlanningLocalRevision } from
+import type { PlanningLocalRevision } from
   "../synchronization/synchronization.types.ts";
 
 export class StateRepository extends Context.Service<StateRepository, {
@@ -59,14 +57,6 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly saveFollowerSynchronizationConfiguration: (
     input: SaveFollowerSynchronizationConfigurationInput,
   ) => Effect.Effect<void, StateRepositoryError>;
-  readonly saveLocalOverlay: (
-    input: SaveLocalOverlayInput,
-  ) => Effect.Effect<void, StateRepositoryError>;
-  readonly removeLocalOverlay: (
-    input: RemoveLocalOverlayInput,
-  ) => Effect.Effect<void, StateRepositoryError>;
-  readonly listLocalOverlays: (
-  ) => Effect.Effect<ReadonlyArray<LocalOverlayEntry>, StateRepositoryError>;
   readonly getFollowerSynchronizationConfiguration: (
   ) => Effect.Effect<
     FollowerSynchronizationConfiguration | undefined,

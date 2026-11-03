@@ -1,11 +1,8 @@
 import { Schema } from "effect";
 import { TaggedError } from "./tagged-error.ts";
-import { sourceTextIssue } from "./text-composition.ts";
 import { configPathIssue, configPathsOverlap } from "./config-path.ts";
 
 import type {
-  ContentDigest,
-  CredentialReference,
   ProfileId,
   ProfileRevisionId,
   ResourceId,
@@ -49,22 +46,19 @@ import {
   ToolId,
 } from "./brand.ts";
 import {
-  canonicalJson,
-  decodeJsonc,
-  digestOf,
   inexactNumberPath,
   inexactNumberReason,
   jsonPathText,
-  type JsonValue,
 } from "../profile/profile-codec.ts";
 
 /**
- * Machine Profile authoring and published types, plus validation decisions:
+ * Machine Profile types, built from the Canonical Folder and published as
+ * revisions, plus validation decisions:
  * unique ids, dependency existence, acyclic dependency graph, valid targets,
  * and policy-kind compatibility. These are pure functions over decoded data.
  */
 
-/** Authoring-time Machine Profile (parsed from profile.jsonc). */
+/** The Machine Profile `source publish` builds from the Canonical Folder (see `folderProfile`). */
 export interface MachineProfile {
   readonly id: ProfileId;
   readonly version: number;
@@ -106,7 +100,7 @@ export type ScheduleDefault =
   | { readonly type: "daily"; readonly at: string; readonly timezone: "local" }
   | { readonly type: "weekly"; readonly days: ReadonlyArray<string>; readonly at: string; readonly timezone: "local" };
 
-/** A resource as authored (before content addressing). */
+/** A resource as the folder declares it (before content addressing). */
 export interface ProfileResourceInput {
   readonly id: string;
   readonly kind: ResourceKind;
@@ -118,23 +112,18 @@ export interface ProfileResourceInput {
   readonly verify: AuthoredVerificationInput;
 }
 
+/** A file of a skill, read at publication from `source` inside the Canonical Folder. */
 export interface ManagedFileInput {
   readonly path: string;
-  /** Inline UTF-8 text, or base64 when `encoding` is `base64`. */
-  readonly content?: string | undefined;
-  /** File or symlink to read at publication, relative to the profile file. */
-  readonly source?: string | undefined;
-  readonly encoding?: "base64" | undefined;
+  readonly source: string;
   readonly executable?: boolean | undefined;
   readonly mode?: number | undefined;
-  readonly symlinkTo?: string | undefined;
 }
 
 export type ResourceSpecInput =
-  | { readonly kind: "file"; readonly content?: string | undefined; readonly source?: string | undefined; readonly encoding?: "base64" | undefined; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }
-  | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<ManagedFileInput> }
+  | { readonly kind: "file"; readonly source: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }> }
-  | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<ManagedFileInput> }
+  | { readonly kind: "skill"; readonly name: string; readonly files: ReadonlyArray<ManagedFileInput> }
   | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined; readonly upstream?: string | undefined; readonly architecture?: string | undefined; readonly artifactDigest?: string | undefined; readonly entrypoint?: string | undefined; readonly dependencyPolicy?: string | undefined; readonly executionContext?: string | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined; readonly agentInstall?: { readonly paths: ReadonlyArray<string>; readonly origins?: ReadonlyArray<string> | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string };
 
@@ -147,7 +136,7 @@ export type VerificationInput =
   | McpQualificationInput;
 
 /**
- * Verification as authored. A digest-verified resource (file, directory,
+ * Verification before publication. A digest-verified resource (file,
  * config, skill) may omit `digest`: publication computes it from the exact
  * published content. A supplied digest that differs fails publication before
  * signing.
@@ -171,11 +160,18 @@ export interface ProfileRevision {
   readonly scheduleDefault?: ScheduleDefault | undefined;
 }
 
+export interface PublishedSkillFile {
+  readonly path: string;
+  readonly blob: BlobId;
+  readonly bytes: number;
+  readonly executable: boolean;
+  readonly mode?: number | undefined;
+}
+
 export type PublishedResourceSpec =
-  | { readonly kind: "file"; readonly blob?: BlobId | undefined; readonly bytes?: number | undefined; readonly executable: boolean; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }
-  | { readonly kind: "directory"; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly blob?: BlobId | undefined; readonly bytes?: number | undefined; readonly executable: boolean; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
+  | { readonly kind: "file"; readonly blob: BlobId; readonly bytes: number; readonly executable: boolean; readonly mode?: number | undefined }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }> }
-  | { readonly kind: "skill"; readonly name: string; readonly mode?: number | undefined; readonly directories?: ReadonlyArray<{ readonly path: string; readonly mode: number }>; readonly files: ReadonlyArray<{ readonly path: string; readonly blob?: BlobId | undefined; readonly bytes?: number | undefined; readonly executable: boolean; readonly mode?: number | undefined; readonly symlinkTo?: string | undefined }> }
+  | { readonly kind: "skill"; readonly name: string; readonly files: ReadonlyArray<PublishedSkillFile> }
   | { readonly kind: "tool"; readonly toolId: string; readonly recipes: Extract<ResourceSpecInput, { readonly kind: "tool" }>["recipes"]; readonly login?: Extract<ResourceSpecInput, { readonly kind: "tool" }>["login"]; readonly agentInstall?: Extract<ResourceSpecInput, { readonly kind: "tool" }>["agentInstall"] }
   | { readonly kind: "credential"; readonly reference: string };
 
@@ -190,83 +186,22 @@ export interface PublishedResource {
   readonly blobs: ReadonlyArray<BlobId>;
 }
 
-/** A candidate Machine Profile change from discovery or an agent. */
-export interface ProfileChangeProposal {
-  readonly createdAt: string;
-  readonly reason: string;
-  readonly additions: ReadonlyArray<ProfileResourceInput>;
-  readonly modifications: ReadonlyArray<ProfileResourceInput>;
-  readonly removals: ReadonlyArray<string>;
-  readonly evidence: ReadonlyArray<DiscoveryEvidenceRecord>;
-}
-
-export interface DiscoveryEvidenceRecord {
-  readonly source: string;
-  readonly line: number;
-  readonly excerpt: string;
-  readonly kind: "invocation" | "config" | "hook" | "mcp" | "package-metadata" | "prose";
-}
-
-export interface CredentialDescriptor {
-  readonly reference: CredentialReference;
-  readonly description: string;
-  readonly loginRequired: boolean;
-}
 
 // Authoring and follower decoding must accept the exact same portable values.
 const ConfigValueInputSchema = ConfigValue;
 
-const authoredFileIssue = (
-  file: {
-    readonly content?: string | undefined;
-    readonly source?: string | undefined;
-    readonly encoding?: "base64" | undefined;
-    readonly symlinkTo?: string | undefined;
-  },
-): string | undefined => {
-  if (file.content !== undefined && file.source !== undefined) {
-    return "file content and source are mutually exclusive";
-  }
-  if (file.source !== undefined && file.encoding !== undefined) {
-    return "encoding applies only to inline content";
-  }
-  if (
-    file.symlinkTo === undefined
-    && file.content === undefined
-    && file.source === undefined
-  ) return "regular file requires content or source";
-  return undefined;
-};
-
 const AuthoringFileSchema = Schema.Struct({
   kind: Schema.Literal("file"),
-  content: Schema.optional(Schema.String),
-  source: Schema.optional(Schema.NonEmptyString),
-  encoding: Schema.optional(Schema.Literal("base64")),
+  source: Schema.NonEmptyString,
   executable: Schema.optional(Schema.Boolean),
   mode: Schema.optional(FilesystemModeSchema),
-  symlinkTo: Schema.optional(Schema.NonEmptyString),
-}).check(Schema.makeFilter((file) => {
-  const issue = authoredFileIssue(file);
-  return issue === undefined ? undefined : { path: [], issue };
-}));
+});
 
-const AuthoringDirectoryFileSchema = Schema.Struct({
+const AuthoringSkillFileSchema = Schema.Struct({
   path: Schema.NonEmptyString,
-  content: Schema.optional(Schema.String),
-  source: Schema.optional(Schema.NonEmptyString),
-  encoding: Schema.optional(Schema.Literal("base64")),
+  source: Schema.NonEmptyString,
   executable: Schema.optional(Schema.Boolean),
   mode: Schema.optional(FilesystemModeSchema),
-  symlinkTo: Schema.optional(Schema.NonEmptyString),
-}).check(Schema.makeFilter((file) => {
-  const issue = authoredFileIssue(file);
-  return issue === undefined ? undefined : { path: [], issue };
-}));
-
-const AuthoringDirectorySchema = Schema.Struct({
-  path: Schema.NonEmptyString,
-  mode: FilesystemModeSchema,
 });
 
 const AuthoringLoginSchema = Schema.Union([
@@ -280,12 +215,6 @@ const AuthoringLoginSchema = Schema.Union([
 export const ResourceSpecInputSchema = Schema.Union([
   AuthoringFileSchema,
   Schema.Struct({
-    kind: Schema.Literal("directory"),
-    mode: Schema.optional(FilesystemModeSchema),
-    directories: Schema.optional(Schema.Array(AuthoringDirectorySchema)),
-    files: Schema.Array(AuthoringDirectoryFileSchema),
-  }),
-  Schema.Struct({
     kind: Schema.Literal("config"),
     format: Schema.Literals(["toml", "json", "yaml"]),
     keys: Schema.Array(Schema.Struct({
@@ -296,9 +225,7 @@ export const ResourceSpecInputSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("skill"),
     name: Schema.NonEmptyString,
-    mode: Schema.optional(FilesystemModeSchema),
-    directories: Schema.optional(Schema.Array(AuthoringDirectorySchema)),
-    files: Schema.Array(AuthoringDirectoryFileSchema),
+    files: Schema.Array(AuthoringSkillFileSchema),
   }),
   Schema.Struct({
     kind: Schema.Literal("tool"),
@@ -355,50 +282,6 @@ export const AuthoredVerificationInputSchema = Schema.Union([
   McpQualificationInputSchema,
 ]);
 
-const verificationAllowedForSpec = (
-  kind: ResourceKind,
-  spec: ResourceSpecInput,
-  method: VerificationInput["method"],
-): boolean => {
-  if (spec.kind !== kind) return verificationAllowed(kind, method);
-  if (spec.kind === "file") {
-    return spec.symlinkTo === undefined
-      ? method === "digest"
-      : method === "symlink";
-  }
-  return verificationAllowed(kind, method);
-};
-
-const appendLocalIssue = (resource: Pick<ProfileResourceInput, "policy" | "spec">): string | undefined => {
-  if (resource.policy !== "append-local" || resource.spec.kind !== "file") return undefined;
-  const spec = resource.spec;
-  if (
-    spec.symlinkTo !== undefined
-    || spec.executable === true
-    || ((spec.mode ?? 0) & 0o111) !== 0
-    || spec.source !== undefined
-    || spec.encoding !== undefined
-    || spec.content === undefined
-  ) return "append-local requires inline non-executable UTF-8 text";
-  return sourceTextIssue(spec.content);
-};
-
-/**
- * Only the symlink target is checked here. A digest is checked, or computed
- * when omitted, by the compiler against the exact published bytes, which is
- * the only place every resource kind's content is known.
- */
-const verificationContentIssue = (
-  resource: Pick<ProfileResourceInput, "kind" | "spec" | "verify">,
-): string | undefined => {
-  if (resource.kind !== "file" || resource.spec.kind !== "file") return undefined;
-  if (resource.spec.symlinkTo === undefined) return undefined;
-  return resource.verify.method === "symlink"
-    && resource.verify.target !== resource.spec.symlinkTo
-    ? "symlink verification target does not match authored symlink target"
-    : undefined;
-};
-
 export const ProfileResourceInputSchema = Schema.Struct({
   id: ResourceIdSchema,
   kind: ResourceKindSchema,
@@ -411,21 +294,12 @@ export const ProfileResourceInputSchema = Schema.Struct({
 }).check(
   Schema.makeFilter((resource) => {
     const policy = resource.policy ?? defaultPolicyForKind[resource.kind];
-    if (!policyCompatibleWithKind(resource.kind, policy)) {
-      return {
+    return policyCompatibleWithKind(resource.kind, policy)
+      ? undefined
+      : {
         path: ["policy"],
         issue: `policy ${policy} is not compatible with resource kind ${resource.kind}`,
       };
-    }
-    const verificationIssue = verificationContentIssue(resource);
-    if (verificationIssue !== undefined) {
-      return {
-        path: ["verify"],
-        issue: verificationIssue,
-      };
-    }
-    const compositionIssue = appendLocalIssue(resource);
-    return compositionIssue === undefined ? undefined : { path: ["spec"], issue: compositionIssue };
   }),
 );
 
@@ -458,52 +332,15 @@ export const MachineProfileSchema = Schema.Struct({
   scheduleDefault: Schema.optional(ScheduleDefaultSchema),
 });
 
-/** Authoring schema permits only documented fields and fills omissions in normalization. */
-export const MachineProfileAuthoringSchema = Schema.Struct({
-  id: ProfileIdSchema,
-  version: Schema.optional(Schema.Literal(2)),
-  name: Schema.NonEmptyString,
-  groups: Schema.optional(Schema.Array(ProfileGroupSchema)),
-  resources: Schema.optional(Schema.Array(ProfileResourceInputSchema)),
-  scheduleDefault: Schema.optional(ScheduleDefaultSchema),
-});
-
-const publishedFileIssue = (file: {
-  readonly blob?: BlobId | undefined;
-  readonly bytes?: number | undefined;
-  readonly symlinkTo?: string | undefined;
-}) => {
-  const contentAddressed = file.blob !== undefined && file.bytes !== undefined;
-  const symlink = file.symlinkTo !== undefined
-    && file.blob === undefined
-    && file.bytes === undefined;
-  return contentAddressed || symlink
-    ? undefined
-    : { path: [], issue: "published file must be either a content blob or a symlink" };
-};
-
 const PublishedFileFields = {
-  blob: Schema.optional(BlobId),
-  bytes: Schema.optional(Schema.Natural),
+  blob: BlobId,
+  bytes: Schema.Natural,
   executable: Schema.Boolean,
   mode: Schema.optional(FilesystemModeSchema),
-  symlinkTo: Schema.optional(Schema.NonEmptyString),
 };
 
-const PublishedDirectoryFileSchema = Schema.Struct({
-  path: Schema.NonEmptyString,
-  ...PublishedFileFields,
-}).check(Schema.makeFilter(publishedFileIssue));
-
 export const PublishedResourceSpecSchema = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("file"), ...PublishedFileFields })
-    .check(Schema.makeFilter(publishedFileIssue)),
-  Schema.Struct({
-    kind: Schema.Literal("directory"),
-    mode: Schema.optional(FilesystemModeSchema),
-    directories: Schema.optional(Schema.Array(AuthoringDirectorySchema)),
-    files: Schema.Array(PublishedDirectoryFileSchema),
-  }),
+  Schema.Struct({ kind: Schema.Literal("file"), ...PublishedFileFields }),
   Schema.Struct({
     kind: Schema.Literal("config"),
     format: Schema.Literals(["toml", "json", "yaml"]),
@@ -515,9 +352,7 @@ export const PublishedResourceSpecSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("skill"),
     name: Schema.NonEmptyString,
-    mode: Schema.optional(FilesystemModeSchema),
-    directories: Schema.optional(Schema.Array(AuthoringDirectorySchema)),
-    files: Schema.Array(PublishedDirectoryFileSchema),
+    files: Schema.Array(Schema.Struct({ path: Schema.NonEmptyString, ...PublishedFileFields })),
   }),
   Schema.Struct({
     kind: Schema.Literal("tool"),
@@ -569,34 +404,6 @@ export const ProfileRevisionSchema = Schema.Struct({
   scheduleDefault: Schema.optional(ScheduleDefaultSchema),
 });
 
-export const DiscoveryEvidenceRecordSchema = Schema.Struct({
-  source: Schema.NonEmptyString,
-  line: Schema.Int.check(Schema.isGreaterThan(0)),
-  excerpt: Schema.String,
-  kind: Schema.Literals([
-    "invocation",
-    "config",
-    "hook",
-    "mcp",
-    "package-metadata",
-    "prose",
-  ]),
-});
-
-export const ProfileChangeProposalSchema = Schema.Struct({
-  createdAt: Timestamp,
-  reason: Schema.NonEmptyString,
-  additions: Schema.Array(ProfileResourceInputSchema),
-  modifications: Schema.Array(ProfileResourceInputSchema),
-  removals: Schema.Array(ResourceIdSchema),
-  evidence: Schema.Array(DiscoveryEvidenceRecordSchema),
-});
-
-export const CredentialDescriptorSchema = Schema.Struct({
-  reference: CredentialReferenceSchema,
-  description: Schema.NonEmptyString,
-  loginRequired: Schema.Boolean,
-});
 
 /** Runtime schema aliases share names with their corresponding domain types. */
 export const ResourceSpecInput = ResourceSpecInputSchema;
@@ -607,9 +414,6 @@ export const ScheduleDefault = ScheduleDefaultSchema;
 export const MachineProfile = MachineProfileSchema;
 export const PublishedResource = PublishedResourceSchema;
 export const ProfileRevision = ProfileRevisionSchema;
-export const DiscoveryEvidenceRecord = DiscoveryEvidenceRecordSchema;
-export const ProfileChangeProposal = ProfileChangeProposalSchema;
-export const CredentialDescriptor = CredentialDescriptorSchema;
 
 /**
  * Validation failures as tagged errors.
@@ -685,11 +489,6 @@ export class VerificationKindMismatchError extends TaggedError<VerificationKindM
   { id: Schema.String, kind: Schema.String, method: Schema.String },
 ) {}
 
-export class VerificationContentMismatchError extends TaggedError<VerificationContentMismatchError>()(
-  "VerificationContentMismatchError",
-  { id: Schema.String, method: Schema.String, reason: Schema.String },
-) {}
-
 export class UnmanageableFilesystemModeError extends TaggedError<UnmanageableFilesystemModeError>()(
   "UnmanageableFilesystemModeError",
   { id: Schema.String, path: Schema.String, mode: Schema.Int, reason: Schema.String },
@@ -708,11 +507,6 @@ export class InvalidRecipeError extends TaggedError<InvalidRecipeError>()(
 export class InvalidConfigKeyError extends TaggedError<InvalidConfigKeyError>()(
   "InvalidConfigKeyError",
   { id: Schema.String, path: Schema.String, reason: Schema.String },
-) {}
-
-export class InvalidTextCompositionError extends TaggedError<InvalidTextCompositionError>()(
-  "InvalidTextCompositionError",
-  { id: Schema.String, reason: Schema.String },
 ) {}
 
 /**
@@ -737,10 +531,8 @@ export type ProfileValidationError =
   | MissingGroupReferenceError
   | ResourceSpecKindMismatchError
   | VerificationKindMismatchError
-  | VerificationContentMismatchError
   | UnmanageableFilesystemModeError
   | InvalidBuildPolicyError
-  | InvalidTextCompositionError
   | InvalidConfigKeyError
   | InvalidRecipeError
   | VerificationDigestMismatchError;
@@ -818,14 +610,9 @@ export const validateProfileResources = (
     }
     errors.push(...validateRecipes(resource));
     errors.push(...validateConfigKeys(resource));
-    const compositionIssue = appendLocalIssue(resource);
-    if (compositionIssue !== undefined) {
-      errors.push(new InvalidTextCompositionError({ id: resource.id, reason: compositionIssue }));
-    }
-    errors.push(...validateVerificationContent(resource));
     errors.push(...validateFilesystemModes(resource));
     errors.push(...validateBuildPolicies(resource));
-    if (!verificationAllowedForSpec(resource.kind, resource.spec, resource.verify.method)) {
+    if (!verificationAllowed(resource.kind, resource.verify.method)) {
       errors.push(new VerificationKindMismatchError({
         id: resource.id,
         kind: resource.kind,
@@ -879,30 +666,14 @@ const validateFilesystemModes = (
       reason: "managed regular files must remain owner-readable for digest verification",
     }));
   };
-  const directory = (path: string, mode: number): void => {
-    if ((mode & 0o500) === 0o500) return;
-    errors.push(new UnmanageableFilesystemModeError({
-      id: resource.id,
-      path,
-      mode,
-      reason: "managed directories must remain owner-readable and owner-traversable for tree verification",
-    }));
-  };
 
   switch (resource.spec.kind) {
     case "file":
-      if (resource.spec.symlinkTo === undefined) {
-        regularFile(resource.target, resource.spec.mode ?? (resource.spec.executable === true ? 0o700 : 0o600));
-      }
+      regularFile(resource.target, resource.spec.mode ?? (resource.spec.executable === true ? 0o700 : 0o600));
       break;
-    case "directory":
     case "skill":
-      directory(resource.target, resource.spec.mode ?? 0o700);
-      for (const entry of resource.spec.directories ?? []) directory(entry.path, entry.mode);
       for (const file of resource.spec.files) {
-        if (file.symlinkTo === undefined) {
-          regularFile(file.path, file.mode ?? (file.executable === true ? 0o700 : 0o600));
-        }
+        regularFile(file.path, file.mode ?? (file.executable === true ? 0o700 : 0o600));
       }
       break;
     case "config":
@@ -948,19 +719,6 @@ const validateRecipes = (
         reason,
       })];
   });
-};
-
-const validateVerificationContent = (
-  resource: ProfileResourceInput,
-): ReadonlyArray<VerificationContentMismatchError> => {
-  const reason = verificationContentIssue(resource);
-  return reason !== undefined
-    ? [new VerificationContentMismatchError({
-      id: resource.id,
-      method: resource.verify.method,
-      reason,
-    })]
-    : [];
 };
 
 const validateBuildPolicies = (
@@ -1152,17 +910,11 @@ interface CanonicalResourcePathClaimsResult {
 const resourceEntries = (
   resource: ProfileResourceInput,
 ): ResourcePathResource["entries"] => {
-  if (resource.spec.kind !== "directory" && resource.spec.kind !== "skill") return [];
-  return [
-    ...resource.spec.files.map((file) => ({
-      path: file.path,
-      kind: "leaf" as const,
-    })),
-    ...(resource.spec.directories ?? []).map((directory) => ({
-      path: directory.path,
-      kind: "directory" as const,
-    })),
-  ];
+  if (resource.spec.kind !== "skill") return [];
+  return resource.spec.files.map((file) => ({
+    path: file.path,
+    kind: "leaf" as const,
+  }));
 };
 
 const canonicalResourcePathClaims = (
@@ -1399,33 +1151,6 @@ export const findDependencyCycle = (
   return null;
 };
 
-/** Topological order of resource ids; deterministic (stable input order, deps first). */
-export const topologicalOrder = (
-  resources: ReadonlyArray<ProfileResourceInput>,
-): ReadonlyArray<string> => {
-  const byId = new Map(resources.map((r) => [r.id, r] as const));
-  const ordered: Array<string> = [];
-  const emitted = new Set<string>();
-  const visiting = new Set<string>();
-  const visit = (id: string): void => {
-    if (emitted.has(id) || visiting.has(id)) return;
-    visiting.add(id);
-    const resource = byId.get(id);
-    if (resource !== undefined) {
-      for (const dep of resource.dependsOn ?? []) visit(dep);
-    }
-    visiting.delete(id);
-    emitted.add(id);
-    ordered.push(id);
-  };
-  for (const resource of resources) visit(resource.id);
-  return ordered;
-};
-
-export type MachineProfileAuthoring = Schema.Schema.Type<
-  typeof MachineProfileAuthoringSchema
->;
-
 const compareText = (left: string, right: string): number => {
   if (left < right) return -1;
   if (left > right) return 1;
@@ -1437,63 +1162,16 @@ const uniqueSorted = (values: ReadonlyArray<string>): ReadonlyArray<string> =>
 
 
 const normalizeManagedFile = (file: ManagedFileInput): ManagedFileInput => {
-  const payload = file.source === undefined
-    ? {
-      content: file.content,
-      encoding: file.encoding,
-    }
-    : { source: file.source };
-  if (file.symlinkTo !== undefined) {
-    return {
-      path: file.path,
-      ...payload,
-      mode: 0,
-      executable: false,
-      symlinkTo: file.symlinkTo,
-    };
-  }
   const mode = file.mode ?? (file.executable === true ? 0o700 : 0o600);
-  return {
-    path: file.path,
-    ...payload,
-    mode,
-    executable: (mode & 0o100) !== 0,
-  };
+  return { path: file.path, source: file.source, mode, executable: (mode & 0o100) !== 0 };
 };
 
 const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
   switch (spec.kind) {
     case "file": {
-      const payload = spec.source === undefined
-        ? { content: spec.content, encoding: spec.encoding }
-        : { source: spec.source };
-      if (spec.symlinkTo !== undefined) {
-        return {
-          kind: spec.kind,
-          ...payload,
-          mode: 0,
-          executable: false,
-          symlinkTo: spec.symlinkTo,
-        };
-      }
       const mode = spec.mode ?? (spec.executable === true ? 0o700 : 0o600);
-      return {
-        kind: spec.kind,
-        ...payload,
-        mode,
-        executable: (mode & 0o100) !== 0,
-      };
+      return { kind: spec.kind, source: spec.source, mode, executable: (mode & 0o100) !== 0 };
     }
-    case "directory":
-      return {
-        kind: spec.kind,
-        mode: spec.mode ?? 0o700,
-        directories: [...(spec.directories ?? [])]
-          .sort((left, right) => compareText(left.path, right.path)),
-        files: spec.files
-          .map(normalizeManagedFile)
-          .sort((left, right) => compareText(left.path, right.path)),
-      };
     case "config":
       return {
         kind: spec.kind,
@@ -1504,9 +1182,6 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
       return {
         kind: spec.kind,
         name: spec.name,
-        mode: spec.mode ?? 0o700,
-        directories: [...(spec.directories ?? [])]
-          .sort((left, right) => compareText(left.path, right.path)),
         files: spec.files
           .map(normalizeManagedFile)
           .sort((left, right) => compareText(left.path, right.path)),
@@ -1565,15 +1240,13 @@ const normalizeResource = (resource: ProfileResourceInput): ProfileResourceInput
 };
 
 /** Apply all v2 defaults and order unordered collections deterministically. */
-export const normalizeMachineProfile = (
-  profile: MachineProfileAuthoring | MachineProfile,
-): MachineProfile => {
-  const groups = (profile.groups ?? [])
+export const normalizeMachineProfile = (profile: MachineProfile): MachineProfile => {
+  const groups = profile.groups
     .map((group) => group.description === undefined
       ? { name: group.name }
       : { name: group.name, description: group.description })
     .sort((left, right) => compareText(left.name, right.name));
-  const resources = (profile.resources ?? [])
+  const resources = profile.resources
     .map(normalizeResource)
     .sort((left, right) => compareText(left.id, right.id));
   // An absent schedule default stays absent: it means this profile schedules
@@ -1594,38 +1267,4 @@ export const normalizeMachineProfile = (
   return normalizedSchedule === undefined
     ? base
     : { ...base, scheduleDefault: normalizedSchedule };
-};
-
-/** Decode strict JSONC authoring input, normalize it, then reject invalid graphs. */
-export const decodeMachineProfileJsonc = (text: string): MachineProfile => {
-  const authored = decodeJsonc(MachineProfileAuthoringSchema)(text);
-  const normalized = normalizeMachineProfile(authored);
-  Schema.decodeUnknownSync(MachineProfileSchema, { onExcessProperty: "error" })(normalized);
-  const errors = validateMachineProfile(normalized);
-  if (errors.length > 0) throw new ProfileContractError(errors);
-  return normalized;
-};
-
-/** Backwards-friendly concise name for the JSONC authoring boundary. */
-export const decodeMachineProfile = decodeMachineProfileJsonc;
-
-const profileJsonValue = (profile: MachineProfile): JsonValue =>
-  Schema.decodeUnknownSync(Schema.MutableJson)(profile);
-
-/** Canonical publication encoding of a validated, normalized profile. */
-export const encodeMachineProfile = (profile: MachineProfile): string => {
-  const normalized = normalizeMachineProfile(profile);
-  Schema.decodeUnknownSync(MachineProfileSchema, { onExcessProperty: "error" })(normalized);
-  const errors = validateMachineProfile(normalized);
-  if (errors.length > 0) throw new ProfileContractError(errors);
-  return canonicalJson(profileJsonValue(normalized));
-};
-
-/** Stable SHA-256 digest of the canonical publication encoding. */
-export const digestMachineProfile = (profile: MachineProfile): ContentDigest => {
-  const normalized = normalizeMachineProfile(profile);
-  Schema.decodeUnknownSync(MachineProfileSchema, { onExcessProperty: "error" })(normalized);
-  const errors = validateMachineProfile(normalized);
-  if (errors.length > 0) throw new ProfileContractError(errors);
-  return digestOf(profileJsonValue(normalized));
 };

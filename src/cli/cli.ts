@@ -6,7 +6,6 @@ import {
   GroupName,
   InvitationCode,
   ProfileRevisionId,
-  ResourceId,
   Timestamp,
 } from "../domain/brand.ts";
 import { AgentPolicy } from "../domain/identity.ts";
@@ -88,7 +87,6 @@ export type CliCommand =
     readonly noInput: boolean;
     /** Only the rendered native job passes this; it keys the fire evidence. */
     readonly scheduled: boolean;
-    readonly reviewLocal: boolean;
     /** Take over harness surfaces without a takeover snapshot. */
     readonly noBackup: boolean;
   }
@@ -100,14 +98,6 @@ export type CliCommand =
   | { readonly _tag: "Recover"; readonly noInput: boolean }
   | { readonly _tag: "Abandon" }
   | { readonly _tag: "Status"; readonly follower?: typeof FollowerId.Type | undefined }
-  | { readonly _tag: "OverlayList" }
-  | {
-    readonly _tag: "OverlaySet";
-    readonly resource: typeof ResourceId.Type;
-    readonly target: string;
-    readonly keys: ReadonlyArray<string>;
-  }
-  | { readonly _tag: "OverlayRemove"; readonly resource: typeof ResourceId.Type }
   | {
     readonly _tag: "Doctor";
     readonly noInput: boolean;
@@ -689,54 +679,6 @@ const evaluateProfileCommand = (
   return invalid(`Unknown profile command: ${action ?? ""}`);
 };
 
-const evaluateOverlayCommand = (
-  action: string | undefined,
-  rest: ReadonlyArray<string>,
-  format: CliOutputFormat,
-): CliOutcome => {
-  if (action === "list") {
-    const options = parseOptions(rest, new Set(), new Set());
-    if (options.positionals.length > 0) return invalid("canonfig overlay list accepts no arguments");
-    return command({ _tag: "OverlayList" }, format);
-  }
-  if (action === "remove") {
-    const options = parseOptions(rest, new Set(), new Set());
-    if (options.positionals.length !== 1) return invalid("Usage: canonfig overlay remove <resource-id>");
-    return command({
-      _tag: "OverlayRemove",
-      resource: decodeOption(
-        Schema.decodeUnknownOption(ResourceId),
-        options.positionals[0]!,
-        "resource id",
-      ),
-    }, format);
-  }
-  if (action === "set") {
-    const options = parseOptions(
-      rest,
-      new Set(["--target", "--key"]),
-      new Set(),
-    );
-    if (options.positionals.length !== 1) {
-      return invalid(
-        "Usage: canonfig overlay set <resource-id> --target <path> --key <config.path>",
-      );
-    }
-    const keys = options.values.get("--key") ?? [];
-    if (keys.length === 0) return invalid("overlay set requires at least one --key");
-    return command({
-      _tag: "OverlaySet",
-      resource: decodeOption(
-        Schema.decodeUnknownOption(ResourceId),
-        options.positionals[0]!,
-        "resource id",
-      ),
-      target: one(options, "--target", true)!,
-      keys,
-    }, format);
-  }
-  return invalid(`Unknown overlay command: ${action ?? ""}`);
-};
 
 const evaluateAgentHarnessCommand = (
   rest: ReadonlyArray<string>,
@@ -849,7 +791,7 @@ const evaluateCommand = (
 ): CliOutcome => {
   const [area, action, ...rest] = arguments_;
   try {
-    const groups = new Set(["source", "follower", "profile", "overlay", "tunnel", "setup", "agent", "schedule"]);
+    const groups = new Set(["source", "follower", "profile", "tunnel", "setup", "agent", "schedule"]);
     if (area !== undefined && groups.has(area) && action === undefined) {
       return invalid(`Missing ${area} command`);
     }
@@ -891,22 +833,17 @@ const evaluateCommand = (
         new Set(),
         // --scheduled is set by the rendered native job; typing it by hand
         // is harmless but pointless without the scheduler's provenance.
-        new Set(["--plan", "--apply", "--no-input", "--scheduled", "--review-local", "--no-backup"]),
+        new Set(["--plan", "--apply", "--no-input", "--scheduled", "--no-backup"]),
       );
       if (options.positionals.length > 0) return invalid("sync accepts no positional arguments");
       if (options.switches.has("--plan") && options.switches.has("--apply")) {
         return invalid("--plan and --apply are mutually exclusive");
-      }
-      if (options.switches.has("--review-local")
-        && (options.switches.has("--apply") || options.switches.has("--scheduled") || options.switches.has("--no-input"))) {
-        return invalid("--review-local requires an interactive --plan, not --apply, --scheduled, or --no-input");
       }
       return command({
         _tag: "Synchronize",
         mode: options.switches.has("--apply") ? "apply" : "plan",
         noInput: options.switches.has("--no-input"),
         scheduled: options.switches.has("--scheduled"),
-        reviewLocal: options.switches.has("--review-local"),
         noBackup: options.switches.has("--no-backup"),
       }, format);
     }
@@ -952,7 +889,6 @@ const evaluateCommand = (
         ),
       }, format);
     }
-    if (area === "overlay") return evaluateOverlayCommand(action, rest, format);
     if (area === "tunnel") return evaluateTunnelCommand(action, rest, format);
     if (area === "setup") return evaluateSetupCommand(action, rest, format);
     if (area === "doctor") {
@@ -1033,9 +969,6 @@ export const commandName = (value: CliCommand): string => {
     case "Recover": return "recover";
     case "Abandon": return "abandon";
     case "Status": return "status";
-    case "OverlayList": return "overlay.list";
-    case "OverlaySet": return "overlay.set";
-    case "OverlayRemove": return "overlay.remove";
     case "Doctor": return "doctor";
     case "ProfileList": return "profile.list";
     case "ProfileShow": return "profile.show";
@@ -1100,7 +1033,6 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         mode: value.mode,
         noInput: value.noInput,
         scheduled: value.scheduled,
-        reviewLocal: value.reviewLocal,
         noBackup: value.noBackup,
       });
     case "Restore": return yield* follower.restore({ snapshot: value.snapshot });
@@ -1108,14 +1040,6 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
     case "Recover": return yield* follower.recover({ noInput: value.noInput });
     case "Abandon": return yield* follower.abandon();
     case "Status": return yield* follower.status(value.follower);
-    case "OverlayList": return yield* follower.listLocalOverlays();
-    case "OverlaySet":
-      return yield* follower.setLocalOverlay({
-        resource: value.resource,
-        target: value.target,
-        keys: value.keys,
-      });
-    case "OverlayRemove": return yield* follower.removeLocalOverlay(value.resource);
     case "Doctor":
       return yield* follower.doctor({
         noInput: value.noInput,

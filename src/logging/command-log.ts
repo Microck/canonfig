@@ -16,11 +16,10 @@ const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
   ["agent", new Set(["harness", "policy"])],
   ["follower", new Set(["enroll"])],
   ["harnesses", new Set(["exclude", "include"])],
-  ["overlay", new Set(["list", "remove", "set"])],
-  ["profile", new Set(["list", "select", "show"])],
+  ["profile", new Set(["list", "show"])],
   ["schedule", new Set(["remove", "set", "status"])],
   ["secrets", new Set(["bootstrap", "help", "list", "remove", "set", "sync"])],
-  ["source", new Set(["digest", "init", "invite", "publish", "revoke", "scan", "serve"])],
+  ["source", new Set(["init", "invite", "publish", "revoke", "scan", "serve"])],
 ]);
 const SINGLE_COMMANDS = new Set([
   "doctor",

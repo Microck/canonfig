@@ -50,7 +50,6 @@ import {
   InvitationNotFoundError,
   InvitationReplayError,
   InvalidFollowerCredentialError,
-  LegacyRevisionFormatError,
   MalformedEnrollmentRequestError,
   RevokedFollowerCredentialError,
   TransportIntegrityError,
@@ -322,8 +321,6 @@ export const reconstructEnrollmentWireError = (
       return new TransportSizeLimitError({ artifact: "transport-response", limit: 0 });
     case "TransportIntegrityError":
       return new TransportIntegrityError({ artifact: "source", message });
-    case "LegacyRevisionFormatError":
-      return new LegacyRevisionFormatError({ message });
     default:
       return new EnrollmentTransportError({
         operation: "source enrollment request",
@@ -1354,14 +1351,10 @@ export const fetchRevision = (
     for (const resource of metadata.resources) {
       const files = resource.spec.kind === "file"
         ? [resource.spec]
-        : resource.spec.kind === "directory" || resource.spec.kind === "skill"
+        : resource.spec.kind === "skill"
         ? resource.spec.files
         : [];
-      const references = files.flatMap((file) =>
-        file.blob === undefined || file.bytes === undefined
-          ? []
-          : [{ id: file.blob, bytes: file.bytes }]
-      );
+      const references = files.map((file) => ({ id: file.blob, bytes: file.bytes }));
       if (
         [...new Set(references.map((reference) => reference.id))].sort().join("\0")
           !== [...resource.blobs].sort().join("\0")

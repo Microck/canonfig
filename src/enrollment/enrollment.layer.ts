@@ -56,7 +56,6 @@ import {
   RevokedFollowerCredentialError,
   SourceCredentialMismatchError,
   SourceNotInitializedError,
-  LegacyRevisionFormatError,
   TransportIntegrityError,
   TransportResourceNotFoundError,
   type EnrollmentError,
@@ -79,13 +78,6 @@ import {
   type JsonValue,
 } from "../profile/profile-codec.ts";
 import { revisionSigningPayload } from "../profile/publication.ts";
-import {
-  isLegacyRevision,
-  legacySignedResources,
-  legacyStoredResources,
-  LegacyRevisionFormatIssue,
-  projectLegacyProfile,
-} from "../profile/legacy-revision.ts";
 
 const decode = Schema.decodeUnknownSync;
 const maximumInvitationLifetimeMilliseconds = 24 * 60 * 60 * 1000;
@@ -188,27 +180,6 @@ const verifyRevisionSignature = (
   }
 };
 
-/**
- * The payload a legacy revision was signed over. It has the shape of
- * `revisionSigningPayload`, with the resource index taken from the signed
- * profile, so the schedule items this release leaves out of the stored
- * metadata still count toward the signature.
- */
-const legacyRevisionPayload = (
-  revision: ProfileRevision,
-  signingKeyId: string,
-): string => canonicalJson(asJson({
-  id: revision.id,
-  profileId: revision.profileId,
-  sequence: revision.sequence,
-  canonicalBytes: revision.canonicalBytes,
-  digest: revision.digest,
-  publishedAt: revision.publishedAt,
-  resources: legacySignedResources(revision.canonicalBytes),
-  groups: revision.groups,
-  signingKeyId,
-}));
-
 const verifyProfileMetadata = (
   revision: ProfileRevision,
   profile: PublishedMachineProfile,
@@ -233,94 +204,38 @@ const integrityFailure = (revision: ProfileRevision) => (cause: unknown) =>
       : "revision validation failed",
   });
 
-/**
- * A revision an earlier release published is verified exactly as that release
- * verified it, then projected into this release's transport shape. Anything
- * the projection cannot represent is refused by name, not served altered.
- */
-const validateLegacyRevision = (
+const validateRevision = (
   revision: ProfileRevision,
   signingKeyId: string,
   publicKey: KeyObject,
-): Effect.Effect<PublishedMachineProfile, TransportIntegrityError | LegacyRevisionFormatError> =>
+): Effect.Effect<PublishedMachineProfile, TransportIntegrityError> =>
   Effect.try({
     try: () => {
       if (sha256Hex(revision.canonicalBytes) !== revision.digest) {
         throw new Error("canonical content digest mismatch");
       }
+      const profile = decode(PublishedMachineProfileSchema)(
+        JSON.parse(revision.canonicalBytes),
+      );
+      verifyProfileMetadata(revision, profile);
+      const expectedResources = profile.resources.map(({ verify: _, ...resource }) =>
+        resource
+      );
       if (
-        canonicalJson(legacyStoredResources(revision.canonicalBytes))
-          !== canonicalJson(asJson(revision.resources))
+        canonicalJson(asJson(expectedResources))
+        !== canonicalJson(asJson(revision.resources))
       ) {
         throw new Error("revision resource metadata mismatch");
       }
       verifyRevisionSignature(
         revision.signature,
-        legacyRevisionPayload(revision, signingKeyId),
+        revisionPayload(revision, signingKeyId),
         publicKey,
       );
+      return profile;
     },
     catch: integrityFailure(revision),
-  }).pipe(
-    Effect.flatMap(() =>
-      Effect.try({
-        try: () => projectLegacyProfile(revision.canonicalBytes),
-        catch: (cause) =>
-          cause instanceof LegacyRevisionFormatIssue
-            ? new LegacyRevisionFormatError({
-              message:
-                `revision ${revision.id} was published by a canonfig release before 3.2.1 and this release cannot serve it: ${cause.message}. publish the profile again with 'canonfig source publish' on the Source Machine`,
-            })
-            : integrityFailure(revision)(cause),
-      })
-    ),
-    Effect.tap(({ notices }) =>
-      Effect.forEach(notices, (notice) =>
-        Effect.logWarning(`revision ${revision.id}: ${notice}`), { discard: true })
-    ),
-    Effect.map(({ profile }) => profile),
-    Effect.tap((profile) =>
-      Effect.try({
-        try: () => verifyProfileMetadata(revision, profile),
-        catch: integrityFailure(revision),
-      })
-    ),
-  );
-
-const validateRevision = (
-  revision: ProfileRevision,
-  signingKeyId: string,
-  publicKey: KeyObject,
-): Effect.Effect<PublishedMachineProfile, TransportIntegrityError | LegacyRevisionFormatError> =>
-  isLegacyRevision(revision)
-    ? validateLegacyRevision(revision, signingKeyId, publicKey)
-    : Effect.try({
-      try: () => {
-        if (sha256Hex(revision.canonicalBytes) !== revision.digest) {
-          throw new Error("canonical content digest mismatch");
-        }
-        const profile = decode(PublishedMachineProfileSchema)(
-          JSON.parse(revision.canonicalBytes),
-        );
-        verifyProfileMetadata(revision, profile);
-        const expectedResources = profile.resources.map(({ verify: _, ...resource }) =>
-          resource
-        );
-        if (
-          canonicalJson(asJson(expectedResources))
-          !== canonicalJson(asJson(revision.resources))
-        ) {
-          throw new Error("revision resource metadata mismatch");
-        }
-        verifyRevisionSignature(
-          revision.signature,
-          revisionPayload(revision, signingKeyId),
-          publicKey,
-        );
-        return profile;
-      },
-      catch: integrityFailure(revision),
-    });
+  });
 
 const sourceMaterial = (
   record: EnrollmentSourceRecord,

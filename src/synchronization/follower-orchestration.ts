@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -23,7 +22,6 @@ import {
   type PublishedResourceSpec,
   type VerificationInput,
 } from "../domain/profile.ts";
-import { composeTextFile, parseTextComposition } from "../domain/text-composition.ts";
 import type { AppliedResourceRecord } from "../domain/synchronization.ts";
 import {
   fetchRevision,
@@ -81,7 +79,6 @@ import {
 } from "./follower-sync-config.ts";
 import {
   cleanupRollbackSnapshots,
-  defaultSynchronizationExecutionLimits,
   preflightPathLengths,
   removeRunTemporaryEntries,
 } from "./executor.ts";
@@ -263,9 +260,8 @@ const decodeSpecs = (
 
 const contentFor = (
   content: ReadonlyMap<string, Uint8Array>,
-  blob: string | undefined,
+  blob: string,
 ): Uint8Array => {
-  if (blob === undefined) throw new Error("regular published file has no blob");
   const bytes = content.get(blob);
   if (bytes === undefined) throw new Error(`verified blob ${blob} is unavailable`);
   return bytes;
@@ -283,53 +279,30 @@ const desiredFor = (
 ): HydratedDesiredResource => {
   switch (spec.kind) {
     case "file": {
-      const isSymlink = spec.symlinkTo !== undefined;
-      const digest = Schema.decodeUnknownSync(ContentDigest)(
-        isSymlink ? sha256Hex(spec.symlinkTo!) : spec.blob!,
-      );
-      const content = isSymlink
-        ? undefined
-        : contentFor(contentByBlob, spec.blob);
+      const digest = Schema.decodeUnknownSync(ContentDigest)(spec.blob);
       return {
         desired: {
           kind: "file",
           digest,
-          executable: isSymlink ? false : spec.executable,
-          mode: isSymlink ? 0 : spec.mode ?? (spec.executable ? 0o700 : 0o600),
-          symlinkTo: spec.symlinkTo,
+          executable: spec.executable,
+          mode: spec.mode ?? (spec.executable ? 0o700 : 0o600),
         },
-        artifacts: content === undefined ? [] : [{ digest, content }],
+        artifacts: [{ digest, content: contentFor(contentByBlob, spec.blob) }],
       };
     }
-    case "directory":
     case "skill": {
       const files = spec.files.map((file) => ({
         path: file.path,
-        digest: file.symlinkTo === undefined
-          ? Schema.decodeUnknownSync(ContentDigest)(file.blob)
-          : Schema.decodeUnknownSync(ContentDigest)(sha256Hex(file.symlinkTo)),
-        executable: file.symlinkTo === undefined ? file.executable : false,
-        mode: file.symlinkTo === undefined
-          ? file.mode ?? (file.executable ? 0o700 : 0o600)
-          : 0,
-        symlinkTo: file.symlinkTo,
+        digest: Schema.decodeUnknownSync(ContentDigest)(file.blob),
+        executable: file.executable,
+        mode: file.mode ?? (file.executable ? 0o700 : 0o600),
       }));
-      const artifacts = spec.files.flatMap((file, index) =>
-        file.symlinkTo === undefined
-          ? [{
-            digest: files[index]!.digest,
-            content: contentFor(contentByBlob, file.blob),
-          }]
-          : []
-      );
-      const directories = spec.directories ?? [];
-      const mode = spec.mode ?? 0o700;
-      const digest = directoryVerificationDigest(files);
       return {
-        desired: spec.kind === "skill"
-          ? { kind: "skill", digest, mode, directories, files }
-          : { kind: "directory", mode, directories, files },
-        artifacts,
+        desired: { kind: "skill", digest: directoryVerificationDigest(files), mode: 0o700, directories: [], files },
+        artifacts: spec.files.map((file, index) => ({
+          digest: files[index]!.digest,
+          content: contentFor(contentByBlob, file.blob),
+        })),
       };
     }
     case "config": {
@@ -508,7 +481,6 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
     built,
     retired: appliedResources.filter((record) => !current.has(record.resource) && !projection.isHeld(record)),
     appliedResources,
-    localOverlay: configuration.localOverlay ?? [],
   });
   return {
     ...planned,
@@ -921,82 +893,6 @@ export const resolveAgentTasks = Effect.fn("FollowerOrchestration.resolveAgentTa
 );
 
 /**
- * Exact adoption text stays in protected local files, outside the plan, journal,
- * and CLI payload. Re-read and compare to the plan before creating a review.
- */
-const writeAdoptionReviews = Effect.fn("FollowerOrchestration.writeAdoptionReviews")(
-  function*(plan: PlannedSynchronization, artifacts: ReadonlyArray<SynchronizationArtifact>) {
-    const machine = yield* MachineState;
-    const reviews: Array<{ resource: string; target: string; path: string }> = [];
-    const adoptions = plan.actions.filter((action) =>
-      action.detail.kind === "write-file" && action.detail.retainedLocalDigest !== undefined
-        && action.detail.adoptionNotice !== undefined
-    );
-    if (adoptions.length === 0) return reviews;
-    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-    const encoder = new TextEncoder();
-    const directories = yield* machine.userDirectories();
-    const root = yield* machine.normalizePath({
-      path: `canonfig/adoption-review-${randomUUID()}`, base: directories.data,
-    });
-    yield* machine.ensureDirectory({ path: root, mode: 0o700 });
-    for (const action of adoptions) {
-      const detail = action.detail;
-      if (detail.kind !== "write-file") continue;
-      const target = yield* machine.normalizePath({ path: detail.target });
-      const kind = yield* machine.inspectPath(target);
-      if (kind.kind !== "regular") {
-        return yield* configurationError("stale", "An adoption review target is no longer a regular file. Replan synchronization.");
-      }
-      const bytes = yield* machine.readFile({
-        path: target, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes,
-      });
-      if (sha256BytesHex(bytes) !== detail.retainedLocalDigest) {
-        return yield* configurationError("stale", "An adoption review target changed after planning. Replan synchronization.");
-      }
-      const current = yield* Effect.try({
-        try: () => parseTextComposition(bytes),
-        catch: () => configurationError("stale", "An adoption review target is no longer valid unmanaged UTF-8 text. Replan synchronization."),
-      });
-      if (current.kind !== "unmanaged") {
-        return yield* configurationError("stale", "An adoption review target is already managed. Replan synchronization.");
-      }
-      const sourceBytes = artifacts.find((entry) => entry.digest === detail.digest)?.content;
-      if (sourceBytes === undefined || sha256BytesHex(sourceBytes) !== detail.digest) {
-        return yield* configurationError("stale", "The verified Source text for an adoption review is unavailable. Replan synchronization.");
-      }
-      const source = yield* Effect.try({
-        try: () => decoder.decode(sourceBytes),
-        catch: () => configurationError("invalid-profile", "The Source text for an adoption review is not valid UTF-8."),
-      });
-      const proposed = composeTextFile(source, current);
-      if (proposed.byteLength > defaultSynchronizationExecutionLimits.maximumFileBytes) {
-        return yield* configurationError("invalid-profile", "The composed adoption text exceeds the supported file size.");
-      }
-      const path = yield* machine.normalizePath({ path: `${reviews.length + 1}.json`, base: root });
-      const review = {
-        schema: "canonfig.adoption-review/v1",
-        revision: plan.revision,
-        planDigest: plan.digest,
-        resource: action.resource,
-        target: detail.target,
-        sourceDigest: detail.digest,
-        retainedLocalDigest: detail.retainedLocalDigest,
-        sourceAddition: source,
-        retainedLocal: current.local,
-        proposedText: decoder.decode(proposed),
-      };
-      yield* machine.atomicWrite({
-        path, mode: 0o600,
-        content: encoder.encode(`${JSON.stringify(review, undefined, 2)}\n`),
-      });
-      reviews.push({ resource: action.resource, target: detail.target, path: path.absolute });
-    }
-    return reviews;
-  },
-);
-
-/**
  * `canonfig sync` on a follower: fetch and verify the latest authorized
  * revision, then plan and (with `apply`) run its mirror, tools and
  * projection as one journaled run. See {@link planFollowerRun}.
@@ -1009,11 +905,7 @@ export const synchronizeFollower = Effect.fn(
   projection: LocalSyncOptions,
   signal?: AbortSignal,
   scheduled = false,
-  reviewLocal = false,
 ) {
-  if (reviewLocal && (mode !== "plan" || scheduled)) {
-    return yield* configurationError("invalid-profile", "Local adoption reviews require an interactive plan.");
-  }
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
   const agentResolution = Option.getOrUndefined(
@@ -1076,7 +968,6 @@ export const synchronizeFollower = Effect.fn(
             })
           ),
         ),
-      proposeProfileChange: agentResolution.proposeProfileChange,
     })
     : undefined;
   const backup = !projection.noBackup && followerPlan.backups;
@@ -1102,16 +993,12 @@ export const synchronizeFollower = Effect.fn(
     const warnings = yield* installerRefusals(planned.plan.actions.flatMap((action) =>
       action.detail.kind === "install-tool" ? [action.detail.method] : []
     ));
-    const adoptionReviews = reviewLocal
-      ? yield* writeAdoptionReviews(planned.plan, followerPlan.artifacts)
-      : undefined;
     return {
       ...base,
       plan: planned.plan,
       agentResolutions: planned.agentResolutions,
       schedule,
       warnings: warnings.length === 0 ? undefined : warnings,
-      adoptionReviews,
       outcome: undefined,
     };
   }

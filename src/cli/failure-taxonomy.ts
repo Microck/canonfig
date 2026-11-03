@@ -261,10 +261,6 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) => `invalid config key ${text(error.path)} for ${text(error.id)}: ${text(error.reason)}`,
   ),
-  InvalidTextCompositionError: describe(
-    "usage-or-configuration",
-    (error) => `resource ${text(error.id)} cannot use append-local: ${text(error.reason)}. Correct its file specification before publishing.`,
-  ),
   MissingDependencyError: describe(
     "usage-or-configuration",
     (error) => `resource ${text(error.id)} depends on a resource the profile does not declare`,
@@ -334,10 +330,6 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) =>
       `resource ${text(error.resource)} was published as ${text(error.publishedKind)} but is now declared ${text(error.desiredKind)}`,
-  ),
-  PlannerTextCompositionError: describe(
-    "usage-or-configuration",
-    (error) => `resource ${text(error.resource)} cannot use append-local: ${text(error.reason)}. Correct the Source profile and publish a new revision.`,
   ),
   PlannerVerificationContentMismatchError: describe(
     "usage-or-configuration",
@@ -672,13 +664,6 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     () => "the Source Machine and this follower run canonfig releases that do not interoperate",
   ),
-  // Only the Source operator can resolve it, by publishing the profile again.
-  LegacyRevisionFormatError: declared(
-    "human-action-required",
-    () =>
-      "a revision published by an earlier canonfig release cannot be served; publish the profile again on the Source Machine",
-  ),
-
   // Credentials, signatures and invitations.
   EnrollmentFingerprintMismatchError: declared(
     "authentication-or-revocation",

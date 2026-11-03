@@ -3,19 +3,15 @@ import { Schema } from "effect";
 
 import { BlobId, ContentDigest, ResourceId } from "../domain/brand.ts";
 import {
-  MachineProfileAuthoringSchema,
   MachineProfileSchema,
   ProfileContractError,
   VerificationDigestMismatchError,
-  decodeMachineProfileJsonc,
-  normalizeMachineProfile,
   validateMachineProfile,
   type MachineProfile,
-  type MachineProfileAuthoring,
   type ManagedFileInput,
-  type ProfileResourceInput,
   type PublishedResource,
   type PublishedResourceSpec,
+  type PublishedSkillFile,
 } from "../domain/profile.ts";
 import { renderConfigDocument } from "../synchronization/config-codec.ts";
 import {
@@ -25,15 +21,7 @@ import {
   sha256BytesHex,
   sha256Hex,
 } from "./profile-codec.ts";
-import {
-  defaultPolicyForKind,
-  Platform,
-  type Platform as PlatformName,
-} from "../domain/resource.ts";
-
-export interface ProfileCompilerOptions {
-  readonly platforms?: ReadonlyArray<PlatformName> | undefined;
-}
+import { defaultPolicyForKind } from "../domain/resource.ts";
 
 /**
  * A regular file an authored `source` names, hashed by streaming it from
@@ -48,15 +36,6 @@ export interface ResolvedSourceFile {
 
 export type ResolvedSourceFiles = ReadonlyMap<string, ResolvedSourceFile>;
 
-export type ProfileCompilerInput = MachineProfileAuthoring | MachineProfile;
-
-export interface CompiledPlatformProfile {
-  readonly platform: PlatformName;
-  readonly profile: MachineProfile;
-  readonly canonicalBytes: string;
-  readonly digest: ContentDigest;
-}
-
 export interface CompiledProfileCandidate {
   readonly profile: MachineProfile;
   readonly canonicalBytes: string;
@@ -65,121 +44,42 @@ export interface CompiledProfileCandidate {
   readonly blobs: ReadonlyArray<CompiledResourceBlob>;
 }
 
-export interface CompiledProfile extends CompiledProfileCandidate {
-  /** Explicit deterministic views used to inspect platform-specific recipes and paths. */
-  readonly projections: ReadonlyArray<CompiledPlatformProfile>;
+/** A source file, streamed from disk when publication stores it. */
+export interface CompiledResourceBlob {
+  readonly id: typeof BlobId.Type;
+  readonly bytes: number;
+  readonly path: string;
 }
-
-/** In-memory bytes from inline content, or a source file streamed at storage time. */
-export type CompiledResourceBlob =
-  | { readonly id: typeof BlobId.Type; readonly content: Uint8Array }
-  | { readonly id: typeof BlobId.Type; readonly bytes: number; readonly path: string };
 
 interface MaterializedProfileResources {
   readonly resources: ReadonlyArray<PublishedResource>;
   readonly blobs: ReadonlyArray<CompiledResourceBlob>;
 }
-const allPlatforms: ReadonlyArray<PlatformName> = ["linux", "macos", "windows"];
 
-const resourcesForPlatform = (
-  resources: ReadonlyArray<ProfileResourceInput>,
-  platform: PlatformName,
-): ReadonlyArray<ProfileResourceInput> =>
-  resources.map((resource) =>
-    resource.spec.kind !== "tool"
-      ? resource
-      : {
-        ...resource,
-        spec: {
-          ...resource.spec,
-          recipes: resource.spec.recipes.filter((recipe) =>
-            recipe.platform === platform
-          ),
-        },
-      }
-  );
-
-const profileForPlatform = (
-  profile: MachineProfile,
-  platform: PlatformName,
-): MachineProfile =>
-  normalizeMachineProfile({
-    ...profile,
-    resources: resourcesForPlatform(profile.resources, platform),
-  });
-
-const decodeInput = (input: ProfileCompilerInput): MachineProfile => {
-  const authored = Schema.decodeUnknownSync(
-    MachineProfileAuthoringSchema,
-    { onExcessProperty: "error" },
-  )(input);
-  const profile = normalizeMachineProfile(authored);
+const validated = (profile: MachineProfile): MachineProfile => {
   Schema.decodeUnknownSync(MachineProfileSchema, { onExcessProperty: "error" })(profile);
   const errors = validateMachineProfile(profile);
   if (errors.length > 0) throw new ProfileContractError(errors);
   return profile;
 };
-const inlineBytes = (file: {
-  readonly content?: string | undefined;
-  readonly encoding?: "base64" | undefined;
-}): Uint8Array => {
-  if (file.content === undefined) {
-    throw new Error("resource source must be resolved before compilation");
-  }
-  if (file.encoding !== "base64") return Buffer.from(file.content, "utf8");
-  const bytes = Buffer.from(file.content, "base64");
-  const normalizedInput = file.content.replace(/=+$/u, "");
-  if (bytes.toString("base64").replace(/=+$/u, "") !== normalizedInput) {
-    throw new Error("resource file contains invalid base64");
-  }
-  return bytes;
-};
 
 const materializeResources = (
   profile: MachineProfile,
-  sources: ResolvedSourceFiles | undefined,
+  sources: ResolvedSourceFiles,
 ): MaterializedProfileResources => {
   const stored = new Map<typeof BlobId.Type, CompiledResourceBlob>();
-  type PublishedManagedFile = Extract<
-    PublishedResourceSpec,
-    { readonly kind: "directory" }
-  >["files"][number];
-  const materializeFile = (file: ManagedFileInput): PublishedManagedFile => {
-    if (file.symlinkTo !== undefined) {
-      return {
-        path: file.path,
-        executable: false,
-        mode: 0,
-        symlinkTo: file.symlinkTo,
-      };
+  const materializeFile = (file: ManagedFileInput): PublishedSkillFile => {
+    const resolved = sources.get(file.source);
+    if (resolved === undefined) {
+      throw new Error("resource source must be resolved before compilation");
     }
-    if (file.source !== undefined) {
-      const resolved = sources?.get(file.source);
-      if (resolved === undefined) {
-        throw new Error("resource source must be resolved before compilation");
-      }
-      if (!stored.has(resolved.blob)) {
-        stored.set(resolved.blob, {
-          id: resolved.blob,
-          bytes: resolved.bytes,
-          path: resolved.path,
-        });
-      }
-      return {
-        path: file.path,
-        blob: resolved.blob,
-        bytes: resolved.bytes,
-        executable: file.executable ?? false,
-        mode: file.mode,
-      };
+    if (!stored.has(resolved.blob)) {
+      stored.set(resolved.blob, { id: resolved.blob, bytes: resolved.bytes, path: resolved.path });
     }
-    const content = inlineBytes(file);
-    const id = Schema.decodeUnknownSync(BlobId)(sha256BytesHex(content));
-    stored.set(id, { id, content });
     return {
       path: file.path,
-      blob: id,
-      bytes: content.byteLength,
+      blob: resolved.blob,
+      bytes: resolved.bytes,
       executable: file.executable ?? false,
       mode: file.mode,
     };
@@ -189,15 +89,15 @@ const materializeResources = (
     if (resource.spec.kind === "file") {
       const { path: _, ...file } = materializeFile({ path: "", ...resource.spec });
       spec = { kind: "file", ...file };
-    } else if (resource.spec.kind === "directory" || resource.spec.kind === "skill") {
+    } else if (resource.spec.kind === "skill") {
       spec = { ...resource.spec, files: resource.spec.files.map(materializeFile) };
     } else {
       spec = resource.spec;
     }
     const blobs = spec.kind === "file"
-      ? spec.blob === undefined ? [] : [spec.blob]
-      : spec.kind === "directory" || spec.kind === "skill"
-      ? spec.files.flatMap((file) => file.blob === undefined ? [] : [file.blob])
+      ? [spec.blob]
+      : spec.kind === "skill"
+      ? spec.files.map((file) => file.blob)
       : [];
     const base = {
       id: Schema.decodeUnknownSync(ResourceId)(resource.id),
@@ -218,20 +118,17 @@ const materializeResources = (
 /**
  * The digest a follower derives from a published spec when it verifies the
  * resource by `digest` (follower-orchestration `desiredFor` computes the same
- * value). Tools, credentials, and symlink files have no content digest.
+ * value). Tools and credentials have no content digest.
  */
 const publishedContentDigest = (
   spec: PublishedResourceSpec,
 ): ContentDigest | undefined => {
   switch (spec.kind) {
     case "file":
-      return spec.symlinkTo === undefined ? spec.blob : undefined;
-    case "directory":
+      return spec.blob;
     case "skill":
       return directoryVerificationDigest(spec.files.map((file) =>
-        file.symlinkTo === undefined
-          ? { path: file.path, digest: file.blob!, executable: file.executable }
-          : { path: file.path, digest: sha256Hex(file.symlinkTo), executable: false }
+        ({ path: file.path, digest: file.blob, executable: file.executable })
       ));
     case "config":
       return sha256BytesHex(renderConfigDocument(spec));
@@ -272,12 +169,16 @@ const completeVerification = (
   return { ...profile, resources };
 };
 
-/** Compile the exact normalized candidate consumed by publication. */
+/**
+ * Compile a folder's Machine Profile into the exact candidate publication
+ * signs. No filesystem or process state participates: every `source` is
+ * already resolved and hashed.
+ */
 export const compileProfileCandidate = (
-  input: ProfileCompilerInput,
-  sources?: ResolvedSourceFiles | undefined,
+  input: MachineProfile,
+  sources: ResolvedSourceFiles,
 ): CompiledProfileCandidate => {
-  const decoded = decodeInput(input);
+  const decoded = validated(input);
   const materialized = materializeResources(decoded, sources);
   const profile = completeVerification(decoded, materialized);
   const transportResources = materialized.resources.map((resource, index) => ({
@@ -293,35 +194,3 @@ export const compileProfileCandidate = (
     digest: Schema.decodeUnknownSync(ContentDigest)(sha256Hex(canonicalBytes)),
   };
 };
-
-/**
- * Compile authoring input into the publication candidate plus stable platform
- * projections. No filesystem or process state participates.
- */
-export const compileProfile = (
-  input: ProfileCompilerInput,
-  options: ProfileCompilerOptions = {},
-): CompiledProfile => {
-  const candidate = compileProfileCandidate(input);
-  const selected = options.platforms ?? allPlatforms;
-  const platforms = Schema.decodeUnknownSync(Schema.Array(Platform))(selected);
-  const uniquePlatforms = [...new Set(platforms)].sort();
-  const projections = uniquePlatforms.map((platform) => {
-    const profile = profileForPlatform(candidate.profile, platform);
-    const projection = compileProfileCandidate(profile);
-    return {
-      platform,
-      profile,
-      canonicalBytes: projection.canonicalBytes,
-      digest: projection.digest,
-    };
-  });
-  return { ...candidate, projections };
-};
-
-/** Parse JSONC authoring input, then compile it through the same candidate path. */
-export const compileProfileJsonc = (
-  input: string,
-  options: ProfileCompilerOptions = {},
-): CompiledProfile =>
-  compileProfile(decodeMachineProfileJsonc(input), options);

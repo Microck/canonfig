@@ -17,7 +17,6 @@ import type {
   SynchronizationOutcome,
   SynchronizationPlan,
 } from "../domain/synchronization.ts";
-import type { LocalOverlayEntry } from "../synchronization/synchronization.types.ts";
 import type { McpQualificationReceipt } from "../domain/mcp-qualification.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
@@ -117,16 +116,6 @@ export interface RegisterFollowerInput {
 export interface SaveFollowerSynchronizationConfigurationInput {
   readonly configuration: FollowerSynchronizationConfiguration;
   readonly sourceIdentity: SourceIdentity;
-}
-
-export interface SaveLocalOverlayInput {
-  readonly entry: LocalOverlayEntry;
-  readonly updatedAt: string;
-}
-
-export interface RemoveLocalOverlayInput {
-  readonly resource: ResourceId;
-  readonly updatedAt: string;
 }
 
 export interface EnrollmentSourceRecord {

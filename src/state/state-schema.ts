@@ -1,21 +1,29 @@
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import { SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { SqlClient } from "effect/unstable/sql";
 
-import { legacyResourceFileBlobs } from "../profile/legacy-revision.ts";
+/**
+ * The name of the one migration that creates the state database.
+ *
+ * State format 6 started a new schema history: this release cannot read a
+ * database an earlier release created, so it carries no upgrade path for one.
+ * The repository refuses any database whose migration history is not exactly
+ * this migration, and the operator reinitializes the machine instead.
+ */
+export const stateSchemaMigration = { id: 1, name: "state_format_6" } as const;
 
 /**
- * Explicit, append-only migration set. Migrations are tracked by Effect SQL,
- * while each DDL statement remains idempotent for interrupted initialization.
+ * Explicit, append-only migration set, tracked by Effect SQL. A later change
+ * to the schema adds a migration after this one.
  */
 export const stateMigrations = SqliteMigrator.fromRecord({
-  "0001_state_repository": Effect.gen(function*() {
+  "0001_state_format_6": Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient;
 
     yield* sql`PRAGMA foreign_keys = ON`;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS source_identity (
+      CREATE TABLE source_identity (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         key_id TEXT NOT NULL,
         public_key_fingerprint TEXT NOT NULL
@@ -23,7 +31,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS followers (
+      CREATE TABLE followers (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         groups_json TEXT NOT NULL,
@@ -34,7 +42,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS profile_revisions (
+      CREATE TABLE profile_revisions (
         id TEXT PRIMARY KEY,
         profile_id TEXT NOT NULL,
         sequence INTEGER NOT NULL,
@@ -48,7 +56,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE TRIGGER IF NOT EXISTS profile_revisions_immutable_update
+      CREATE TRIGGER profile_revisions_immutable_update
       BEFORE UPDATE ON profile_revisions
       BEGIN
         SELECT RAISE(ABORT, 'profile revisions are immutable');
@@ -56,7 +64,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE TRIGGER IF NOT EXISTS profile_revisions_immutable_delete
+      CREATE TRIGGER profile_revisions_immutable_delete
       BEFORE DELETE ON profile_revisions
       BEGIN
         SELECT RAISE(ABORT, 'profile revisions are immutable');
@@ -64,35 +72,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS synchronization_runs (
-        id TEXT PRIMARY KEY,
-        follower_id TEXT NOT NULL REFERENCES followers(id),
-        revision_id TEXT NOT NULL REFERENCES profile_revisions(id),
-        status TEXT NOT NULL CHECK (
-          status IN (
-            'applying',
-            'Converged',
-            'HumanActionRequired',
-            'FollowerDrift',
-            'Failed',
-            'Interrupted'
-          )
-        ),
-        plan_json TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        completed_at TEXT,
-        outcome_json TEXT
-      )
-    `;
-
-    yield* sql`
-      CREATE UNIQUE INDEX IF NOT EXISTS one_active_applying_run_per_follower
-      ON synchronization_runs(follower_id)
-      WHERE status = 'applying'
-    `;
-
-    yield* sql`
-      CREATE TABLE IF NOT EXISTS run_actions (
+      CREATE TABLE run_actions (
         run_id TEXT NOT NULL REFERENCES synchronization_runs(id) ON DELETE RESTRICT,
         action_id TEXT NOT NULL,
         plan_ordinal INTEGER NOT NULL,
@@ -102,7 +82,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS action_journal (
+      CREATE TABLE action_journal (
         id INTEGER PRIMARY KEY,
         run_id TEXT NOT NULL,
         action_id TEXT NOT NULL,
@@ -114,6 +94,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         attempt INTEGER NOT NULL CHECK (attempt >= 0),
         verification_json TEXT,
         rollback_reference TEXT,
+        removed_resource_json TEXT,
         FOREIGN KEY (run_id, action_id)
           REFERENCES run_actions(run_id, action_id),
         UNIQUE (run_id, sequence)
@@ -121,7 +102,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS drift_records (
+      CREATE TABLE drift_records (
         id INTEGER PRIMARY KEY,
         run_id TEXT NOT NULL REFERENCES synchronization_runs(id),
         sequence INTEGER NOT NULL,
@@ -132,31 +113,18 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS applied_resources (
-        follower_id TEXT NOT NULL REFERENCES followers(id),
-        resource_id TEXT NOT NULL,
-        revision_id TEXT NOT NULL REFERENCES profile_revisions(id),
-        digest TEXT NOT NULL,
-        applied_at TEXT NOT NULL,
-        PRIMARY KEY (follower_id, resource_id)
-      )
-    `;
-  }),
-  "0002_enrollment": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      CREATE TABLE IF NOT EXISTS enrollment_source (
+      CREATE TABLE enrollment_source (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         signing_key_reference TEXT NOT NULL,
         tls_key_reference TEXT NOT NULL,
         tls_certificate_reference TEXT NOT NULL,
-        tls_fingerprint TEXT NOT NULL
+        tls_fingerprint TEXT NOT NULL,
+        credential_namespace TEXT
       )
     `;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS enrollment_invitations (
+      CREATE TABLE enrollment_invitations (
         code_digest TEXT PRIMARY KEY,
         nonce_digest TEXT NOT NULL UNIQUE,
         intended_source_fingerprint TEXT NOT NULL,
@@ -169,117 +137,24 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS follower_credentials (
+      CREATE TABLE follower_credentials (
         follower_id TEXT PRIMARY KEY REFERENCES followers(id) ON DELETE RESTRICT,
         credential_digest TEXT NOT NULL UNIQUE,
         credential_reference TEXT NOT NULL UNIQUE
       )
     `;
-  }),
-  "0003_follower_synchronization_configuration": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS follower_sync_configuration (
+      CREATE TABLE follower_sync_configuration (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         follower_id TEXT NOT NULL REFERENCES followers(id) ON DELETE RESTRICT,
         configuration_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
     `;
-  }),
-  "0004_applied_resource_owned_files": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
 
     yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN owned_files_json TEXT
-    `;
-  }),
-  "0005_applied_resource_schedule": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN schedule_json TEXT
-    `;
-  }),
-  "0006_applied_resource_removal_ownership": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN kind TEXT
-    `;
-    yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN policy TEXT
-    `;
-    yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN target TEXT
-    `;
-    yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN owned_keys_json TEXT
-    `;
-    yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN config_format TEXT
-    `;
-  }),
-  "0007_applied_resource_file_ownership": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN executable INTEGER
-    `;
-    yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN symlink_target TEXT
-    `;
-  }),
-  "0008_action_journal_removed_resource": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      ALTER TABLE action_journal
-      ADD COLUMN removed_resource_json TEXT
-    `;
-  }),
-  "0009_recoverable_run_blocks_new_runs": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    // Interrupted runs retain rollback and journal evidence and are therefore
-    // still recoverable work, not terminal history. Keep the original unique
-    // index for concurrent applying inserts and add a durable guard for
-    // interrupted recovery. This remains migratable even when older databases
-    // already contain more than one historical Interrupted row.
-    yield* sql`
-      CREATE INDEX IF NOT EXISTS recoverable_runs_by_follower
-      ON synchronization_runs(follower_id, status)
-      WHERE status IN ('applying', 'Interrupted')
-    `;
-    yield* sql`
-      CREATE TRIGGER IF NOT EXISTS block_run_while_recoverable
-      BEFORE INSERT ON synchronization_runs
-      WHEN EXISTS (
-        SELECT 1
-        FROM synchronization_runs
-        WHERE follower_id = NEW.follower_id
-          AND status IN ('applying', 'Interrupted')
-      )
-      BEGIN
-        SELECT RAISE(ABORT, 'recoverable synchronization run exists');
-      END
-    `;
-  }),
-  "0010_transactional_enrollment_and_local_overlays": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      CREATE TABLE IF NOT EXISTS pending_enrollments (
+      CREATE TABLE pending_enrollments (
         follower_id TEXT PRIMARY KEY,
         code_digest TEXT NOT NULL UNIQUE,
         credential_digest TEXT NOT NULL UNIQUE,
@@ -288,12 +163,9 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         created_at TEXT NOT NULL
       )
     `;
-  }),
-  "0011_profile_revision_blob_index": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS profile_revision_blobs (
+      CREATE TABLE profile_revision_blobs (
         blob_id TEXT NOT NULL,
         revision_id TEXT NOT NULL REFERENCES profile_revisions(id) ON DELETE CASCADE,
         resource_id TEXT NOT NULL,
@@ -302,67 +174,12 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE INDEX IF NOT EXISTS profile_revision_blobs_by_blob
+      CREATE INDEX profile_revision_blobs_by_blob
       ON profile_revision_blobs(blob_id, revision_id, resource_id)
     `;
 
-    // Backfill the derived lookup for databases that already contain
-    // immutable revisions. The signed revision remains the source of truth;
-    // this table only narrows the set of candidates that must be verified.
     yield* sql`
-      INSERT OR IGNORE INTO profile_revision_blobs (blob_id, revision_id, resource_id)
-      SELECT
-        blob.value,
-        profile_revisions.id,
-        json_extract(resource.value, '$.id')
-      FROM profile_revisions
-      CROSS JOIN json_each(
-        json_extract(profile_revisions.revision_json, '$.resources')
-      ) AS resource
-      CROSS JOIN json_each(
-        json_extract(resource.value, '$.blobs')
-      ) AS blob
-    `;
-  }),
-  "0012_applied_resource_modes": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN mode INTEGER
-    `;
-  }),
-  // The `schedule` resource kind is gone: the native synchronization job is
-  // owned by the follower's own schedule state, not by a Profile Resource, so
-  // no applied record can carry a schedule any more.
-  "0013_drop_applied_resource_schedule": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      ALTER TABLE applied_resources
-      DROP COLUMN schedule_json
-    `;
-  }),
-  // Runs record which build created them, and every completed run leaves a
-  // deployment receipt, so an upgrade can tell a foreign unfinished run from
-  // its own and audits can say which sources produced the deployed state.
-  "0014_deployment_receipts": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      ALTER TABLE synchronization_runs
-      ADD COLUMN creating_version TEXT
-    `;
-    yield* sql`
-      ALTER TABLE synchronization_runs
-      ADD COLUMN creating_identity TEXT
-    `;
-    yield* sql`
-      ALTER TABLE synchronization_runs
-      ADD COLUMN state_format INTEGER
-    `;
-    yield* sql`
-      CREATE TABLE IF NOT EXISTS deployment_receipts (
+      CREATE TABLE deployment_receipts (
         run_id TEXT PRIMARY KEY REFERENCES synchronization_runs(id),
         follower_id TEXT NOT NULL,
         package_version TEXT NOT NULL,
@@ -372,19 +189,9 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         recorded_at TEXT NOT NULL
       )
     `;
-  }),
-  // Publication binds its approval to the exact proposal digest at publish
-  // time, but the approval used to be consumed there and never persisted, so
-  // no later reader could prove which review authorized a revision. Approvals
-  // name both the proposal digest the reviewer accepted and the revision
-  // digest that publish produced, which keeps the plan and approval bound to
-  // the exact revision the fleet applies. First write wins: re-publishing an
-  // identical revision keeps its original approval.
-  "0015_revision_approvals": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
 
     yield* sql`
-      CREATE TABLE IF NOT EXISTS revision_approvals (
+      CREATE TABLE revision_approvals (
         revision_id TEXT PRIMARY KEY REFERENCES profile_revisions(id),
         proposal_digest TEXT NOT NULL,
         revision_digest TEXT NOT NULL,
@@ -393,25 +200,9 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         recorded_at TEXT NOT NULL
       )
     `;
-  }),
-  "0016_resource_blobs": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`
-      CREATE TABLE resource_blobs (
-        id TEXT PRIMARY KEY,
-        content BLOB NOT NULL
-      )
-    `;
-  }),
-  "0017_mcp_qualification_receipts": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
 
     yield* sql`
-      ALTER TABLE applied_resources
-      ADD COLUMN installer_recipe_json TEXT
-    `;
-    yield* sql`
-      CREATE TABLE IF NOT EXISTS mcp_qualification_receipts (
+      CREATE TABLE mcp_qualification_receipts (
         run_id TEXT NOT NULL REFERENCES synchronization_runs(id),
         action_id TEXT NOT NULL,
         attempt INTEGER NOT NULL,
@@ -419,135 +210,24 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         PRIMARY KEY (run_id, action_id, attempt)
       )
     `;
-  }),
-  // Source keyring items used account-global names, so two Canonfig state
-  // directories of one OS account overwrote each other's Source identity.
-  // Items are now namespaced by a stable id stored here; NULL marks a Source
-  // whose items still carry the legacy account-global names.
-  "0018_enrollment_source_credential_namespace": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
 
     yield* sql`
-      ALTER TABLE enrollment_source
-      ADD COLUMN credential_namespace TEXT
-    `;
-  }),
-  // Releases before 3.2.1 signed file bodies inline in the revision's
-  // profile, and resource_blobs, which the Source now serves file bytes from,
-  // did not exist, so an upgraded Source refused every revision it had
-  // published. Backfill the file blobs of each legacy resource that
-  // profile_revision_blobs indexes, and index them like a revision of this
-  // release. Inserts are content-addressed, so a repeat is harmless, and the
-  // Source still verifies each revision's signature before serving a byte.
-  "0019_legacy_revision_blobs": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    const rows = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({
-      blob_id: Schema.String,
-      revision_id: Schema.String,
-      resource_id: Schema.String,
-      canonical_bytes: Schema.String,
-    })))(yield* sql`
-      SELECT
-        profile_revision_blobs.blob_id,
-        profile_revision_blobs.revision_id,
-        profile_revision_blobs.resource_id,
-        profile_revisions.canonical_bytes
-      FROM profile_revision_blobs
-      JOIN profile_revisions ON profile_revisions.id = profile_revision_blobs.revision_id
-      ORDER BY profile_revision_blobs.revision_id, profile_revision_blobs.resource_id
-    `);
-    for (const row of rows) {
-      const blobs = legacyResourceFileBlobs(
-        row.canonical_bytes,
-        row.resource_id,
-        row.blob_id,
-      );
-      for (const blob of blobs) {
-        yield* sql`
-          INSERT OR IGNORE INTO resource_blobs (id, content)
-          VALUES (${blob.id}, ${blob.content})
-        `;
-        yield* sql`
-          INSERT OR IGNORE INTO profile_revision_blobs (blob_id, revision_id, resource_id)
-          VALUES (${blob.id}, ${row.revision_id}, ${row.resource_id})
-        `;
-      }
-    }
-  }),
-  // Deployment receipts began with 3.2.0, so status after an upgrade denied
-  // every synchronization an earlier release had completed. Record those runs
-  // with what is actually known about them: an unrecorded build before 3.2.0,
-  // and state format 1, the run format that predates receipts.
-  "0020_legacy_deployment_receipts": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      INSERT OR IGNORE INTO deployment_receipts (
-        run_id,
-        follower_id,
-        package_version,
-        build_identity,
-        state_format,
-        outcome,
-        recorded_at
-      )
-      SELECT
-        id,
-        follower_id,
-        'before 3.2.0',
-        'unrecorded',
-        1,
-        status,
-        completed_at
-      FROM synchronization_runs
-      WHERE creating_identity IS NULL
-        AND completed_at IS NOT NULL
-        AND status <> 'applying'
-    `;
-  }),
-  // A resource_blobs row holds a whole file in one SQLite value, so storing,
-  // comparing, or serving a blob needed copies of the whole file in memory
-  // and a large Source file could exhaust it. New blobs are written as
-  // fixed-size chunks; a manifest row is inserted in the same transaction as
-  // the chunks, so a blob is visible only once complete. Rows already in
-  // resource_blobs stay readable and are served as they are.
-  "0021_resource_blob_chunks": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      CREATE TABLE IF NOT EXISTS resource_blob_manifests (
+      CREATE TABLE resource_blob_manifests (
         id TEXT PRIMARY KEY,
         total_bytes INTEGER NOT NULL CHECK (total_bytes >= 0),
         chunk_bytes INTEGER NOT NULL CHECK (chunk_bytes > 0)
       )
     `;
+
     yield* sql`
-      CREATE TABLE IF NOT EXISTS resource_blob_chunks (
+      CREATE TABLE resource_blob_chunks (
         blob_id TEXT NOT NULL REFERENCES resource_blob_manifests(id),
         chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
         content BLOB NOT NULL,
         PRIMARY KEY (blob_id, chunk_index)
       )
     `;
-  }),
-  // Local projection runs (`canonfig sync` on the Source or an unenrolled
-  // machine) belong to this machine rather than to an enrolled follower, and
-  // apply a revision Canonfig built from `~/.canonfig/` rather than one a
-  // Source published. Runs and Applied Resource Records therefore no longer
-  // reference `followers` and `profile_revisions`; the repository checks that
-  // a run's revision exists in `profile_revisions` or `local_revisions`.
-  //
-  // SQLite cannot drop a foreign key in place. Each table is copied, dropped
-  // and recreated under its own name with the checks deferred to commit, so
-  // the rows that reference `synchronization_runs` resolve again once the
-  // recreated table holds its rows.
-  "0022_local_projection": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
 
-    yield* sql`PRAGMA defer_foreign_keys = ON`;
-    yield* sql`CREATE TABLE synchronization_runs_copy AS SELECT * FROM synchronization_runs`;
-    yield* sql`DROP TABLE synchronization_runs`;
     yield* sql`
       CREATE TABLE synchronization_runs (
         id TEXT PRIMARY KEY,
@@ -572,27 +252,19 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         state_format INTEGER
       )
     `;
-    yield* sql`
-      INSERT INTO synchronization_runs (
-        id, follower_id, revision_id, status, plan_json, started_at, completed_at,
-        outcome_json, creating_version, creating_identity, state_format
-      )
-      SELECT
-        id, follower_id, revision_id, status, plan_json, started_at, completed_at,
-        outcome_json, creating_version, creating_identity, state_format
-      FROM synchronization_runs_copy
-    `;
-    yield* sql`DROP TABLE synchronization_runs_copy`;
+
     yield* sql`
       CREATE UNIQUE INDEX one_active_applying_run_per_follower
       ON synchronization_runs(follower_id)
       WHERE status = 'applying'
     `;
+
     yield* sql`
       CREATE INDEX recoverable_runs_by_follower
       ON synchronization_runs(follower_id, status)
       WHERE status IN ('applying', 'Interrupted')
     `;
+
     yield* sql`
       CREATE TRIGGER block_run_while_recoverable
       BEFORE INSERT ON synchronization_runs
@@ -607,8 +279,6 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       END
     `;
 
-    yield* sql`CREATE TABLE applied_resources_copy AS SELECT * FROM applied_resources`;
-    yield* sql`DROP TABLE applied_resources`;
     yield* sql`
       CREATE TABLE applied_resources (
         follower_id TEXT NOT NULL,
@@ -629,23 +299,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         PRIMARY KEY (follower_id, resource_id)
       )
     `;
-    yield* sql`
-      INSERT INTO applied_resources (
-        follower_id, resource_id, revision_id, digest, applied_at, owned_files_json,
-        kind, policy, target, owned_keys_json, config_format, executable,
-        symlink_target, mode, installer_recipe_json
-      )
-      SELECT
-        follower_id, resource_id, revision_id, digest, applied_at, owned_files_json,
-        kind, policy, target, owned_keys_json, config_format, executable,
-        symlink_target, mode, installer_recipe_json
-      FROM applied_resources_copy
-    `;
-    yield* sql`DROP TABLE applied_resources_copy`;
 
-    // The planning revision of one local run (a projection of the folder or
-    // a restore of a snapshot): resources, desired state and blob sizes,
-    // without file content. Recovery resumes from it.
     yield* sql`
       CREATE TABLE local_revisions (
         id TEXT PRIMARY KEY,
@@ -654,6 +308,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         recorded_at TEXT NOT NULL
       )
     `;
+
     yield* sql`
       CREATE TRIGGER local_revisions_immutable_update
       BEFORE UPDATE ON local_revisions
@@ -662,10 +317,6 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       END
     `;
 
-    // One row per harness surface Canonfig has taken over. Every row of a
-    // harness carries the root resolved at its first takeover. `snapshot`
-    // names the takeover snapshot that holds the surface's prior content, or
-    // is NULL when the takeover ran without one.
     yield* sql`
       CREATE TABLE harness_takeovers (
         harness TEXT NOT NULL,
@@ -680,5 +331,5 @@ export const stateMigrations = SqliteMigrator.fromRecord({
   }),
 });
 
-/** Bumped by every migration that changes what a stored run means. */
-export const stateFormatVersion = 5;
+/** Bumped by every change to what stored state means. */
+export const stateFormatVersion = 6;

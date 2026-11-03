@@ -37,7 +37,6 @@ import { planResource, relativePathAncestors } from "../synchronization/resource
 import type {
   DesiredResource,
   DesiredResourceEntry,
-  LocalOverlayEntry,
   ObservedResourceEntry,
   PlannedSynchronization,
   PlanningLocalRevision,
@@ -395,7 +394,6 @@ export interface PlanBuiltInput {
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
   /** Resources whose ownership the run ends although it writes them (restore). */
   readonly endsOwnership?: ReadonlyArray<ResourceIdType> | undefined;
-  readonly localOverlay?: ReadonlyArray<LocalOverlayEntry> | undefined;
 }
 
 /**
@@ -465,7 +463,6 @@ export const planBuilt = (input: PlanBuiltInput) =>
         resources: observations,
         availableBlobs: [],
       },
-      localOverlay: input.localOverlay ?? [],
       appliedResources: input.appliedResources,
     });
     const artifacts = [...new Map(input.built.flatMap((item) => item.artifacts).map((artifact) => [artifact.digest, artifact])).values()];
@@ -646,7 +643,7 @@ export const planRestore = (
       const resource = { ...state.resource, policy: "replace-if-unmodified" as const };
       const verification = removedResourceVerification(applied, state.desired);
       const observed = yield* observeFollowerResource({ resource }, state.desired, verification, applied);
-      const drafts = planResource({ resource, desired: state.desired, observed, overlayKeys: [], applied, platform });
+      const drafts = planResource({ resource, desired: state.desired, observed, applied, platform });
       if (drafts.some((draft) => draft.kind !== "no-op")) {
         problems.push(`${target}: it changed since Canonfig last applied it`);
       }

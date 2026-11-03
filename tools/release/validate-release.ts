@@ -42,12 +42,6 @@ const PackageMetadata = Schema.Struct({
   engines: Schema.Struct({ node: Schema.String }),
   dependencies: Schema.Record(Schema.String, Schema.String),
   devDependencies: Schema.Record(Schema.String, Schema.String),
-  exports: Schema.Struct({
-    "./profile-compiler": Schema.Struct({
-      types: Schema.Literal("./dist/profile/compiler.d.ts"),
-      import: Schema.Literal("./dist/profile/compiler.js"),
-    }),
-  }),
 });
 
 interface Invocation {
@@ -214,8 +208,6 @@ const validatePackageContents = (
     "README.md",
     "package.json",
     "dist/runtime/main.js",
-    "dist/profile/compiler.js",
-    "dist/profile/compiler.d.ts",
   ]) {
     if (!paths.includes(required)) fail(`package omits required file: ${required}`);
   }
@@ -314,27 +306,6 @@ const validateBinary = (executable: string): void => {
   ) fail("packed executable no-input route was not quiet and truthful");
 };
 
-const validateProfileCompiler = (root: string): void => {
-  const script = resolve(root, "profile-compiler-smoke.mjs");
-  writeFileSync(script, `import { compileProfile } from "@microck/canonfig/profile-compiler";
-const compiled = compileProfile({
-  id: "release-smoke",
-  name: "Release smoke",
-  resources: []
-});
-process.stdout.write(compiled.digest);
-`);
-  const result = run({
-    command: process.execPath,
-    arguments_: [script],
-    cwd: root,
-  });
-  requireSuccess("public profile compiler import", result);
-  if (!/^[a-f0-9]{64}$/u.test(result.stdout)) {
-    fail("public profile compiler returned an invalid digest");
-  }
-};
-
 try {
   mkdirSync(tarballRoot, { recursive: true });
   mkdirSync(homeRoot, { recursive: true });
@@ -395,7 +366,6 @@ try {
   });
   requireSuccess("clean tarball install", installed);
   validateBinary(resolve(installRoot, "node_modules/.bin/canonfig"));
-  validateProfileCompiler(installRoot);
 
   const repositoryRoots = [
     "GLOSSARY.md",

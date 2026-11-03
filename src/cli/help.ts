@@ -85,7 +85,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "An active follower name cannot be enrolled again; revoke it on the Source first.",
       "Re-enrolling a revoked name keeps local settings. --replace enrolls a new identity,",
       "revokes the old one, and",
-      "lists what it reset (agent policy, harness and secret bindings, schedule, overlays).",
+      "lists what it reset (agent policy, harness and secret bindings, schedule).",
       "unenroll revokes this identity on the Source, deletes its local credential and",
       "received shared secrets, and leaves applied files in place.",
     ],
@@ -94,7 +94,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     title: "Synchronization",
     areas: ["sync"],
     usage: [
-      "sync [--plan | --apply] [--no-input] [--review-local] [--no-backup]",
+      "sync [--plan | --apply] [--no-input] [--no-backup]",
     ],
     notes: [
       "On an enrolled follower, sync fetches the latest authorized revision, mirrors its",
@@ -107,8 +107,6 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "not installed; what Canonfig applied to it earlier stays as it was.",
       "--plan (the default) compares without changing managed targets; a projection plan",
       "lists every harness surface it would take over and whether it keeps a backup.",
-      "--review-local with --plan writes exact append-local first-adoption reviews to protected",
-      "local JSON files. They may contain secrets: inspect locally, never share or upload them.",
       "--apply journals every action and verifies each resource independently. Before",
       "Canonfig first writes a harness surface it copies the prior content to a takeover",
       "snapshot in ~/.canonfig/.backups/ (the first snapshot and the 4 most recent are kept).",
@@ -158,15 +156,6 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     notes: [
       "On a follower, status reports enrollment, the applied revision, and the",
       "completion receipt. On the Source, --follower <id> reports that follower's enrollment.",
-    ],
-  },
-  {
-    title: "Local overlays",
-    areas: ["overlay"],
-    usage: [
-      "overlay list",
-      "overlay set <resource-id> --target <path> --key <config.path> [--key <config.path>...]",
-      "overlay remove <resource-id>",
     ],
   },
   {

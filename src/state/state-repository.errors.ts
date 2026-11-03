@@ -52,6 +52,18 @@ export class UpgradeGateError extends TaggedError<UpgradeGateError>()(
   },
 ) {}
 
+/**
+ * The state database was created by a release before state format 6, whose
+ * schema history this release does not carry. The machine is reinitialized
+ * rather than migrated.
+ */
+export class EarlierStateFormatError extends TaggedError<EarlierStateFormatError>()(
+  "EarlierStateFormatError",
+  {
+    migrations: Schema.Array(Schema.String),
+  },
+) {}
+
 export class FollowerNotFoundError extends TaggedError<FollowerNotFoundError>()(
   "FollowerNotFoundError",
   {

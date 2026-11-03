@@ -31,7 +31,6 @@ import {
   PlannerInvalidResourcePathError,
   PlannerMissingDependencyError,
   PlannerPolicyKindMismatchError,
-  PlannerTextCompositionError,
   PlannerResourceKindMismatchError,
   PlannerVerificationContentMismatchError,
   PlannerVerificationKindMismatchError,
@@ -73,7 +72,6 @@ interface IndexedPlannerInput {
   readonly verification: ReadonlyMap<string, VerificationInput>;
   readonly observed: ReadonlyMap<string, ObservedResourceState>;
   readonly resolvedTargets: ReadonlyMap<string, string>;
-  readonly overlays: ReadonlyMap<string, ReadonlyArray<string>>;
   readonly applied: ReadonlyMap<string, AppliedResourceRecord>;
   readonly blobs: ReadonlyMap<string, AvailableBlob>;
 }
@@ -152,11 +150,6 @@ const indexInput = (input: SynchronizationPlannerInput): IndexResult => {
     input.observedState.resources.map((entry) => [entry.resource, entry.observed] as const),
   );
   if (isDuplicateInputError(observed)) return { ok: false, error: observed };
-  const overlays = indexUnique(
-    "localOverlay",
-    input.localOverlay.map((entry) => [entry.resource, entry.keys] as const),
-  );
-  if (isDuplicateInputError(overlays)) return { ok: false, error: overlays };
   const applied = indexUnique(
     "appliedResources",
     input.appliedResources.map((entry) => [entry.resource, entry] as const),
@@ -166,7 +159,7 @@ const indexInput = (input: SynchronizationPlannerInput): IndexResult => {
   if (isDuplicateInputError(blobs)) return { ok: false, error: blobs };
   return {
     ok: true,
-    indexed: { resources, desired, verification, observed, overlays, applied, blobs,
+    indexed: { resources, desired, verification, observed, applied, blobs,
       resolvedTargets: new Map(input.observedState.resources.flatMap((entry) =>
         entry.resolvedTarget === undefined ? [] : [[entry.resource, entry.resolvedTarget] as const])),
     },
@@ -271,13 +264,6 @@ const validateResourceInputs = (
         resource: resource.id,
         publishedKind: resource.kind,
         desiredKind: desired.kind,
-      });
-    }
-    if (resource.policy === "append-local" && desired.kind === "file"
-      && (desired.symlinkTo !== undefined || desired.executable || ((desired.mode ?? 0) & 0o111) !== 0)) {
-      return new PlannerTextCompositionError({
-        resource: resource.id,
-        reason: "append-local requires a non-executable regular text file",
       });
     }
     const verification = indexed.verification.get(resource.id);
@@ -540,7 +526,6 @@ const buildPlan = (
       resource,
       desired,
       observed: projected,
-      overlayKeys: indexed.overlays.get(resource.id) ?? [],
       applied: indexed.applied.get(resource.id),
       platform: input.observedState.platform,
     };
@@ -548,7 +533,7 @@ const buildPlan = (
     const successors = retired && filesystem(resource) ? activeResources.filter((next) =>
       filesystem(next) && overlaps(target, normalize(indexed.resolvedTargets.get(next.id) ?? next.target))) : [];
     if (successors.length > 0) {
-      const retainsContent = resource.policy === "append-local" || resource.kind === "config" && resource.policy !== "replace";
+      const retainsContent = resource.kind === "config" && resource.policy !== "replace";
       const retainedDirectoryRoot = (resource.kind === "directory" || resource.kind === "skill")
         && successors.some((next) => next.kind !== "directory" && next.kind !== "skill" && normalize(indexed.resolvedTargets.get(next.id) ?? next.target) === target);
       if (observed.state !== "absent" && (drafts.length === 0 || retainsContent || retainedDirectoryRoot)) {
@@ -591,7 +576,7 @@ const buildPlan = (
       if (draft.detail.kind !== "remove-resource") continue;
       if (resource.kind === "directory" || resource.kind === "skill") {
         for (const path of draft.detail.paths) removedPaths.add(normalize(`${target}/${path}`));
-      } else if (resource.policy !== "append-local" && !(resource.kind === "config" && resource.policy !== "replace")) {
+      } else if (!(resource.kind === "config" && resource.policy !== "replace")) {
         removedPaths.add(target);
       }
     }

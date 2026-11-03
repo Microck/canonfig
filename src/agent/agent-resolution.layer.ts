@@ -13,7 +13,6 @@ import {
   AgentResolution,
   decodeAgentProposal,
   nonzeroProcessError,
-  profileChangeProposalFromResolution,
   registryOriginForInvocation,
   registryScopesForInvocation,
   redactAgentTask,
@@ -387,7 +386,6 @@ const makeAgentResolution = (
     resolve: (input) => runResolution(executor, resolveBindings, input).pipe(
       Effect.mapError((error) => redactResolutionError(error, input.secrets ?? [])),
     ),
-    proposeProfileChange: profileChangeProposalFromResolution,
   });
 
 const noSecretBindings: SecretBindingResolver = (bindings) =>

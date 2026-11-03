@@ -163,25 +163,10 @@ export interface ObservedState {
   readonly availableBlobs: ReadonlyArray<BlobId>;
 }
 
-/**
- * A Local Overlay is data, not an operation. It only affects merge planning and
- * is never uploaded or mutated by the planner.
- */
-export interface LocalOverlayEntry {
-  readonly resource: ResourceId;
-  /**
-   * The normalized target observed when this overlay was created. Older
-   * configurations omit it and are upgraded when the overlay is edited.
-   */
-  readonly target?: string | undefined;
-  readonly keys: ReadonlyArray<string>;
-}
-
 export interface SynchronizationPlannerInput {
   readonly revision: PlanningRevision;
   readonly follower: FollowerId;
   readonly observedState: ObservedState;
-  readonly localOverlay: ReadonlyArray<LocalOverlayEntry>;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
 }
 
@@ -237,7 +222,6 @@ export interface ResourcePlanningContext {
   readonly resource: PublishedResource;
   readonly desired: DesiredResource;
   readonly observed: ObservedResourceState;
-  readonly overlayKeys: ReadonlyArray<string>;
   readonly applied?: AppliedResourceRecord | undefined;
   readonly platform: Platform;
 }

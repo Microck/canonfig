@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Cause, Effect, Layer } from "effect";
 import { StateRepository } from "../state/state-repository.service.ts";
-import type { RepositorySqlError } from "../state/state-repository.errors.ts";
+import { EarlierStateFormatError, type RepositorySqlError } from "../state/state-repository.errors.ts";
 import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
 import { StateInitializationError } from "./state-initialization.errors.ts";
 
@@ -19,9 +19,15 @@ export const runtimeStateLayer = (filename: string) => Layer.unwrap(
   }).pipe(Effect.as(stateRepositoryLayer(filename).pipe(
     Layer.catchCause((cause) => {
       const error = Cause.squash(cause);
+      if (error instanceof EarlierStateFormatError) {
+        return Layer.effect(StateRepository, Effect.fail(new StateInitializationError({
+          path: filename,
+          message: `Canonfig state at ${filename} was created by an earlier Canonfig version, and this version cannot read it. Reinitialize this machine: move ${filename} aside, then run 'canonfig setup plan' (or enroll the follower again with a new invitation).`,
+        })));
+      }
       const message = error instanceof Error ? error.message : "";
       const busy = /database (?:is |table is )?locked|SQLITE_(?:BUSY|LOCKED)/iu.test(message);
-      const failure: Effect.Effect<never, StateInitializationError | RepositorySqlError> =
+      const failure: Effect.Effect<never, StateInitializationError | RepositorySqlError | EarlierStateFormatError> =
         busy || /file is not a database|unable to open database|database disk image is malformed|database or disk is full|readonly database|SQLITE_(?:CANTOPEN|NOTADB|CORRUPT|READONLY|FULL)/iu.test(message)
           ? Effect.fail(unavailable(filename, busy))
           : Effect.failCause(cause);

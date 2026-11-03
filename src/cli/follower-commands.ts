@@ -1,7 +1,7 @@
 import { Context, type Effect } from "effect";
 
 import type { AgentPolicy } from "../domain/identity.ts";
-import type { FollowerId, ResourceId } from "../domain/brand.ts";
+import type { FollowerId } from "../domain/brand.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import type { TargetId } from "../projection/model.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
@@ -25,8 +25,6 @@ export interface SynchronizeInput {
   readonly noInput: boolean;
   /** Set by the rendered native job, so fired evidence is not fakeable. */
   readonly scheduled?: boolean | undefined;
-  /** Write exact append-local adoption reviews to protected local files, never output. */
-  readonly reviewLocal?: boolean | undefined;
   /** Take over harness surfaces without a takeover snapshot. */
   readonly noBackup?: boolean | undefined;
 }
@@ -56,12 +54,6 @@ export type ScheduleInput =
   }
   /** `schedule set --default`: follow the selected profile's scheduleDefault. */
   | { readonly profileDefault: true };
-
-export interface LocalOverlayInput {
-  readonly resource: ResourceId;
-  readonly target: string;
-  readonly keys: ReadonlyArray<string>;
-}
 
 export interface TunnelStartCommandInput {
   readonly invitationPath: string;
@@ -104,13 +96,6 @@ export interface FollowerCommandsService {
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly status: (
     follower?: FollowerId,
-  ) => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly setLocalOverlay: (
-    input: LocalOverlayInput,
-  ) => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly listLocalOverlays: () => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly removeLocalOverlay: (
-    resource: ResourceId,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly setAgentPolicy: (
     policy: AgentPolicy,

@@ -110,16 +110,6 @@ export class SourceVersionMismatchError extends TaggedError<SourceVersionMismatc
 ) {}
 
 /**
- * A revision an earlier release published carries something this release
- * cannot represent, so the Source refuses it instead of serving an altered
- * copy. Publishing the profile again produces a revision in this format.
- */
-export class LegacyRevisionFormatError extends TaggedError<LegacyRevisionFormatError>()(
-  "LegacyRevisionFormatError",
-  { message: Schema.String },
-) {}
-
-/**
  * The Source's credential items in the native store do not belong to the
  * identity its state records. Earlier releases kept them under
  * account-global names, so another Canonfig state directory of the same OS
@@ -157,5 +147,4 @@ export type EnrollmentError =
   | TransportSizeLimitError
   | TransportInterruptedError
   | SourceVersionMismatchError
-  | LegacyRevisionFormatError
   | SourceCredentialMismatchError;

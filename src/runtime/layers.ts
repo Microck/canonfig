@@ -15,7 +15,6 @@ import { Effect, Layer, Option, Redacted, Schema } from "effect";
 
 import { ProfileId, SourceSignature } from "../domain/brand.ts";
 import { localProjectionFollower } from "../domain/synchronization.ts";
-import { configPathIssue } from "../domain/config-path.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import { AgentResolutionWithSecretsLive } from "../agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../agent/agent-resolution.service.ts";
@@ -24,7 +23,6 @@ import { Enrollment } from "../enrollment/enrollment.service.ts";
 import {
   cancelFollowerEnrollment,
   enrollFollower,
-  getRevisionMetadata,
   finalizeFollowerEnrollment,
   listRevisions,
   queryFollowerLifecycle,
@@ -117,7 +115,6 @@ import {
   type SourceCommandsService,
 } from "../cli/source-commands.ts";
 import type { CliFailureCategory } from "../cli/exit-codes.ts";
-import type { LocalOverlayInput } from "../cli/follower-commands.ts";
 import {
   doctorFailureCategory,
   runDoctorProbes,
@@ -674,102 +671,6 @@ const followerCommandsLayer = (
       return Effect.succeed(payload(value));
     };
 
-    const authorizedOverlayResource = (
-      configuration: FollowerSynchronizationConfiguration,
-      resourceId: string,
-    ) =>
-      Effect.gen(function*() {
-        const revisions = yield* listRevisions({
-          endpoint: configuration.source.endpoint,
-          tlsFingerprint: configuration.source.tlsFingerprint,
-          sourceFingerprint: configuration.source.signingFingerprint,
-          credentialReference: configuration.credentialReference,
-          timeoutMilliseconds: configuration.scheduledInvocation.timeoutMilliseconds,
-        }).pipe(
-          Effect.provideService(MachineState, machine),
-          Effect.mapError(commandFailure),
-        );
-        const revision = revisions.revisions
-          .filter((candidate) => candidate.profileId === configuration.profile)
-          .sort((left, right) => right.sequence - left.sequence)[0];
-        if (revision === undefined) {
-          return yield* new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: `profile ${configuration.profile} has no authorized revision`,
-          });
-        }
-        const metadata = yield* getRevisionMetadata({
-          endpoint: configuration.source.endpoint,
-          tlsFingerprint: configuration.source.tlsFingerprint,
-          sourceFingerprint: configuration.source.signingFingerprint,
-          credentialReference: configuration.credentialReference,
-          revisionId: revision.id,
-          timeoutMilliseconds: configuration.scheduledInvocation.timeoutMilliseconds,
-        }).pipe(
-          Effect.provideService(MachineState, machine),
-          Effect.mapError(commandFailure),
-        );
-        const resource = metadata.resources.find((candidate) =>
-          candidate.id === resourceId
-        );
-        if (resource === undefined) {
-          return yield* new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: `resource ${resourceId} is not authorized for this follower`,
-          });
-        }
-        if (resource.kind !== "config" || resource.policy !== "merge") {
-          return yield* new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: `resource ${resourceId} does not support Local Overlay ownership`,
-          });
-        }
-        return resource;
-      });
-
-    const normalizedOverlay = (
-      configuration: FollowerSynchronizationConfiguration,
-      input: LocalOverlayInput,
-    ) =>
-      Effect.gen(function*() {
-        const resource = yield* authorizedOverlayResource(configuration, input.resource);
-        const canonicalTarget = yield* machine.normalizePath({ path: resource.target }).pipe(
-          Effect.mapError(commandFailure),
-        );
-        const requestedTarget = yield* machine.normalizePath({ path: input.target }).pipe(
-          Effect.mapError(commandFailure),
-        );
-        if (
-          canonicalTarget.platform !== requestedTarget.platform
-          || canonicalTarget.absolute !== requestedTarget.absolute
-        ) {
-          return yield* new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: `overlay target must match the authorized target for resource ${input.resource}`,
-          });
-        }
-        const keys = [...new Set(input.keys.map((key) => key.trim()))].sort();
-        if (
-          keys.length === 0
-          || keys.some((key) =>
-            key.length === 0
-            || key !== key.trim()
-            || configPathIssue(key) !== undefined
-            || /\p{Cc}/u.test(key)
-          )
-        ) {
-          return yield* new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: "Local Overlay keys must be non-empty normalized config paths",
-          });
-        }
-        return {
-          resource: resource.id,
-          target: canonicalTarget.absolute,
-          keys,
-        };
-      });
-
     const completionReceipt = (
       configuration: FollowerSynchronizationConfiguration,
     ) =>
@@ -1065,9 +966,6 @@ const followerCommandsLayer = (
                 ...(previous.scheduleOverride === undefined
                   ? []
                   : [`schedule choice ${previous.scheduleOverride.kind} removed`]),
-                ...((previous.localOverlay?.length ?? 0) === 0
-                  ? []
-                  : [`${previous.localOverlay?.length ?? 0} local overlay entries removed`]),
               ];
             const kept = rotated
               ? {
@@ -1075,7 +973,6 @@ const followerCommandsLayer = (
                 agentHarness: previous.agentHarness,
                 scheduleOverride: previous.scheduleOverride,
                 scheduleDefault: previous.scheduleDefault,
-                localOverlay: previous.localOverlay,
                 localExecution: previous.localExecution,
               }
               : {};
@@ -1276,7 +1173,6 @@ const followerCommandsLayer = (
             projection,
             undefined,
             scheduled || input.noInput,
-            input.reviewLocal === true,
           ).pipe(
             Effect.provideService(StateRepository, repository),
             Effect.provideService(MachineState, machine),
@@ -1285,16 +1181,11 @@ const followerCommandsLayer = (
             Effect.provideService(ScheduleManager, schedules),
           )).pipe(Effect.flatMap(outcomePayload));
         // The Source and unenrolled machines project their own folder.
-        const local: Effect.Effect<CliPayload, CliCommandFailure> = input.reviewLocal === true
-          ? Effect.fail(new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: "--review-local applies only to an enrolled follower",
-          }))
-          : mapFailure(synchronizeLocal(statePath, input.mode, projection).pipe(
-            Effect.provideService(StateRepository, repository),
-            Effect.provideService(MachineState, machine),
-            Effect.provideService(Synchronization, synchronization),
-          )).pipe(Effect.flatMap(outcomePayload));
+        const local: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(synchronizeLocal(statePath, input.mode, projection).pipe(
+          Effect.provideService(StateRepository, repository),
+          Effect.provideService(MachineState, machine),
+          Effect.provideService(Synchronization, synchronization),
+        )).pipe(Effect.flatMap(outcomePayload));
         const run: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(
           repository.getFollowerSynchronizationConfiguration(),
         ).pipe(Effect.flatMap((configuration) => configuration === undefined ? local : follower));
@@ -1440,7 +1331,6 @@ const followerCommandsLayer = (
                   },
                   ...state,
                   activeRecovery: openRun,
-                  localOverlay: configuration.localOverlay ?? [],
                   lifecycle: {
                     ...lifecycle,
                     converged: followerConvergence(
@@ -1469,9 +1359,6 @@ const followerCommandsLayer = (
                       activeRecovery: state.activeRecovery === undefined
                         ? undefined
                         : openRunReport(state.activeRecovery, yield* runLockHolder(statePath)),
-                      localOverlay: configuration?.follower.id === follower
-                        ? configuration.localOverlay ?? []
-                        : [],
                     };
                     return receipt === undefined
                       ? base
@@ -1482,58 +1369,6 @@ const followerCommandsLayer = (
             ),
             Effect.map(payload),
           ),
-      setLocalOverlay: (input) =>
-        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-          Effect.flatMap((configuration) =>
-            configuration === undefined
-              ? Effect.fail(new CliCommandFailure({
-                category: "usage-or-configuration",
-                message: "follower synchronization configuration is not enrolled",
-              }))
-              : normalizedOverlay(configuration, input).pipe(
-                Effect.flatMap((entry) =>
-                  mapFailure(repository.saveLocalOverlay({
-                    entry,
-                    updatedAt: new Date().toISOString(),
-                  })).pipe(Effect.as(entry))
-                ),
-                Effect.map((entry) => payload({ ...entry, saved: true })),
-              )
-          ),
-        ),
-      listLocalOverlays: () =>
-        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-          Effect.flatMap((configuration) =>
-            configuration === undefined
-              ? Effect.fail(new CliCommandFailure({
-                category: "usage-or-configuration",
-                message: "follower synchronization configuration is not enrolled",
-              }))
-              : mapFailure(repository.listLocalOverlays())
-          ),
-          Effect.map((overlays) => payload({
-            overlays: overlays.map((overlay) => ({
-              resource: overlay.resource,
-              target: overlay.target,
-              keys: overlay.keys,
-            })),
-          })),
-        ),
-      removeLocalOverlay: (resource) =>
-        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-          Effect.flatMap((configuration) =>
-            configuration === undefined
-              ? Effect.fail(new CliCommandFailure({
-                category: "usage-or-configuration",
-                message: "follower synchronization configuration is not enrolled",
-              }))
-              : mapFailure(repository.removeLocalOverlay({
-                resource,
-                updatedAt: new Date().toISOString(),
-              })),
-          ),
-          Effect.map(() => payload({ resource, removed: true })),
-        ),
       setAgentPolicy: (policy) =>
         mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
           Effect.flatMap((configuration) => {
