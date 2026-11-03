@@ -8,11 +8,11 @@ observed state and Canonfig's independent verification.
 Report exactly one:
 
 - `complete`: every requested outcome is verified;
-- `incomplete — approval required`: the next bounded mutation needs explicit
+- `incomplete (approval required)`: the next bounded mutation needs explicit
   operator approval;
-- `incomplete — Human Action Required`: a human-only step is recorded;
-- `incomplete — conflict or Follower Drift`: local ownership blocks apply;
-- `incomplete — unsupported`: the requested outcome is outside the shipped
+- `incomplete (Human Action Required)`: a human-only step is recorded;
+- `incomplete (conflict or Follower Drift)`: local ownership blocks apply;
+- `incomplete (unsupported)`: the requested outcome is outside the shipped
   contract;
 - `failed`: authentication, transport, apply, or independent verification
   failed;
@@ -41,11 +41,15 @@ Do not call a degraded, partially applied, or merely downloaded follower
 ### Source Machine
 
 - intended user owns one Source identity;
-- the authored profile file is identified, `canonfig source digest` passed on
-  it, and tool-discovery inputs (`--file`) are listed separately;
+- `~/.canonfig/canonfig.jsonc` lists the approved `harnesses` and a `profile`
+  when publication was requested; chosen imports are in the folder, and
+  tool-discovery inputs (`--file`) are listed separately;
+- a requested local projection converged, and `canonfig harnesses` shows each
+  taken-over harness with its pinned root and takeover snapshot (or the
+  approved `no backup`);
 - requested publication has revision ID, profile ID, sequence, digest, and
   publication time;
-- `profile show` matches the reviewed candidate;
+- `profile show` matches the reviewed folder;
 - `canonfig source service status` reports `running` when followers must sync
   unattended, with the platform's unattended mode stated (Linux lingering on or
   off, macOS desktop session, Windows logon);
@@ -56,7 +60,9 @@ Do not call a degraded, partially applied, or merely downloaded follower
 - follower identity and human-readable name reported;
 - source TLS and signing fingerprints reported as pinned, without exposing key
   material;
-- selected profile, revision, and groups reported;
+- profile, revision, and groups reported;
+- projected, excluded, and not-installed harnesses reported from
+  `canonfig harnesses`, with each takeover snapshot;
 - this follower's own `canonfig status` independently reports `Converged`;
 - credential references resolve through Secret Service, Keychain, or Credential
   Manager as appropriate;
@@ -110,9 +116,8 @@ them. Canonfig never copies trust decisions between machines. Tell the operator:
 - Antigravity CLI: start `agy` in the project and invoke a managed MCP tool
   to confirm that the changed server loaded.
 
-`clientLoaded` stays `not-verified` unless the profile declares a verification
-that proves a client loaded the resource. Never report it as verified from file
-evidence.
+`clientLoaded` stays `not-verified`: file evidence proves the files are in
+place, not that a client loaded them. Never report it as verified.
 
 ## Failure interpretation
 
@@ -155,6 +160,12 @@ Profile
 - revision: <id>
 - groups: developers
 - result: Converged
+
+Harnesses
+- projected: claude-code, codex
+- excluded here: none
+- not installed: cursor
+- takeover snapshot: <UTC timestamp>
 
 Schedule
 - daily@09:00 Europe/Madrid

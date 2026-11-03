@@ -1,6 +1,6 @@
 ---
 name: install-canonfig
-description: Install Canonfig 5.0.1 from its scoped npm package and initialize a Source Machine or securely enroll a Linux, macOS, or Windows Follower Machine. Use for Canonfig prerequisites, package installation, first-time source setup, profile authoring and publication, follower invitations and pinned trust, native schedule setup, installation verification, or installation troubleshooting.
+description: Install Canonfig 5.0.1 from its scoped npm package and initialize a Source Machine or securely enroll a Linux, macOS, or Windows Follower Machine. Use for Canonfig prerequisites, package installation, first-time source setup, the ~/.canonfig/ folder and its first publication, follower invitations and pinned trust, harness takeover, native schedule setup, installation verification, or installation troubleshooting.
 ---
 
 # Install Canonfig
@@ -25,11 +25,14 @@ security or human-action boundary.
    probe; follow its recovery text before continuing.
 6. Initialize a Source Machine **or** enroll a Follower Machine. Never initialize
    both roles in the same state directory.
-7. On a follower, plan before the first apply, then configure the native
-   schedule.
-8. Report the role, installed version, diagnostics, selected profile, schedule,
-   and every unresolved Human Action Required record. Installation is complete
-   only when these observations are explicit.
+7. Plan before the first apply on either role, then configure the native
+   schedule on followers.
+8. Report the role, installed version, diagnostics, projected harnesses,
+   takeover snapshots, schedule, and every unresolved Human Action Required
+   record. Installation is complete only when these observations are explicit.
+
+For guided harness selection and a reviewed import of what the harnesses
+already hold, use `$setup-canonfig` instead of the direct commands below.
 
 ## Source Machine
 
@@ -43,23 +46,36 @@ canonfig doctor --no-input --timeout-ms 5000
 `source init` creates the signing key and TLS certificate and refuses to
 replace an existing Source identity. It publishes nothing.
 
-Synced content comes from an authored JSONC profile file, for example
-`~/canonfig.profile.jsonc`, that lists `file`, `config`, and `skill` resources.
-Each `source` path is relative to the profile file's directory and must
-resolve inside it. Write `"verify": { "method": "digest" }` without a digest
-so publication computes it. `canonfig source scan --file <path>` is tool
-discovery only: it proposes `tool` resources and never file, config, or skill
-resources. The
-[tutorial](https://github.com/Microck/canonfig/blob/main/website/content/docs/tutorials/first-sync.mdx)
-has a complete profile.
+The Source authors `~/.canonfig/`: `canonfig.jsonc`, `AGENTS.md`, and
+`rules/`, `skills/`, `agents/`, `commands/`, `hooks/`. Nothing else in the
+folder is published. Publication needs `version`, `harnesses`, and `profile` in
+`canonfig.jsonc`, for example:
 
-Check, then publish only after the operator reviews the profile:
+```jsonc
+{
+  "version": 1,
+  "profile": { "id": "workstation", "name": "Workstation" },
+  "harnesses": ["claude-code", "codex"]
+}
+```
+
+The [folder reference](https://canonfig.micr.dev/docs/reference/canonfig-folder/)
+lists every key and file. `canonfig source scan` reads the folder and proposes
+`tools` entries; `--write` adds the accepted ones.
+
+Project the folder into this machine's harnesses, then publish after the
+operator reviews the plan:
 
 ```bash
-canonfig source digest --profile-file ~/canonfig.profile.jsonc
-canonfig source publish --profile-file ~/canonfig.profile.jsonc --reviewer operator
+canonfig sync --plan
+canonfig sync --apply
+canonfig source publish --reviewer operator
 canonfig profile list
 ```
+
+Before its first write to a harness, `sync --apply` copies what it replaces to
+a takeover snapshot in `~/.canonfig/.backups/`; `canonfig restore` writes it
+back. `--no-backup` skips the snapshot and needs explicit approval.
 
 Keep the loopback-only server running as a native user service, then create a
 short-lived, single-use invitation:
@@ -78,6 +94,11 @@ itself.
 
 ## Follower Machine
 
+On a follower, `~/.canonfig/` holds the Source's mirror. Enrollment refuses a
+folder whose authoring entries already hold content and names them; move what
+the machine should keep into `~/.canonfig/local/` or remove it, with approval,
+then enroll again.
+
 When the Source is another host, start the managed tunnel after the Source is
 serving:
 
@@ -86,11 +107,10 @@ canonfig tunnel start --invitation ./canonfig-invite --ssh-host source.example -
 ```
 
 The tunnel records its configuration, so later restarts need only
-`canonfig tunnel start`. Pipe the bounded envelope into enrollment; `--profile`
-selects the profile:
+`canonfig tunnel start`. Pipe the bounded envelope into enrollment:
 
 ```bash
-cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop
 canonfig sync --plan
 ```
 
@@ -101,14 +121,18 @@ Request a new invitation from the Source Machine;
 never reset trust or suppress verification.
 Enrolling again under the same name with a new invitation rotates the
 credential and keeps local settings. `--replace` enrolls a new identity,
-revokes the old one, and resets agent policy, harness bindings, schedule
-choice, and overlays; get explicit approval first.
+revokes the old one, and resets agent policy, harness and secret bindings, and
+schedule choice; get explicit approval first.
 
-Apply interactively only after the plan matches the intended targets:
+The plan lists the mirror items, every harness surface it takes over with
+`takeover snapshot` or `no backup`, and harnesses the Source lists that are not
+installed here. `canonfig harnesses exclude <harness>` keeps one out on this
+machine. Apply interactively only after the plan matches the intended targets:
 
 ```bash
 canonfig sync --apply
 canonfig status
+canonfig harnesses
 ```
 
 `Converged` means the files are in place and verified, not that each client
@@ -117,7 +141,7 @@ it reports hooks changed outside the app, to trust project folders in Claude
 Code and Codex, and to trust Codex hooks from `~/.codex/hooks.json` in
 `/hooks`. For Antigravity MCP configuration, start `agy` in the project and
 invoke a managed MCP tool to confirm it loaded. `clientLoaded` stays
-`not-verified` until a declared verification proves otherwise.
+`not-verified`.
 
 Configure and inspect the native schedule once the operator picks a time:
 
@@ -126,8 +150,8 @@ canonfig schedule set daily@09:00
 canonfig schedule status
 ```
 
-The schedule invokes `canonfig sync --apply --no-input --scheduled`. A profile
-`scheduleDefault` is never installed automatically;
+The schedule invokes `canonfig sync --apply --no-input --scheduled`. The
+Source's `scheduleDefault` is never installed automatically;
 `canonfig schedule set --default` accepts it.
 
 ## Safety boundary
@@ -137,10 +161,11 @@ The schedule invokes `canonfig sync --apply --no-input --scheduled`. A profile
 - Store credentials through Secret Service, Keychain, or Credential Manager.
   If secure noninteractive storage is unavailable, preserve the Human Action
   Required outcome and present its exact instructions.
-- Keep secrets out of command arguments, profile content, recipes, and
-  environment examples.
-- Preserve certificate pins, action journals, follower-modified skills, and
-  existing state while troubleshooting.
+- Keep secrets out of command arguments, folder content, recipes, and
+  environment examples. MCP secrets are `{ "fromEnv": "NAME" }` references.
+- Preserve certificate pins, action journals, takeover snapshots,
+  `~/.canonfig/local/`, follower-modified files, and existing state while
+  troubleshooting.
 - Use user-level installation and schedulers. Treat elevation, login, restart,
   reboot, and enabling linger as explicit human decisions.
 
@@ -151,12 +176,18 @@ Run:
 ```bash
 canonfig doctor --no-input --timeout-ms 5000 --json
 canonfig status --json
+canonfig harnesses
 ```
+
+`doctor` runs eight probes: `runtime`, `state`, `credentials`, `source`,
+`scheduler`, `package-managers`, `agent-adapter`, and `harnesses` (listed
+harnesses that are not installed, pinned roots, snapshots).
 
 Interpret exit code `2` as usage, configuration, or version mismatch, `3` as
 Human Action Required (including a locked or unavailable local credential
-store), `4` as conflict or Follower Drift, `5` as authentication or revocation,
-`6` as transport (including a down managed tunnel), and `7` as verification or
-apply failure. Preserve evidence and resolve the reported cause instead of
-deleting state. `canonfig follower unenroll` removes an enrollment on purpose;
-it is not a repair step.
+store, or a harness root that differs from the one pinned at takeover), `4` as
+conflict or Follower Drift, `5` as authentication or revocation, `6` as
+transport (including a down managed tunnel), and `7` as verification or apply
+failure. Preserve evidence and resolve the reported cause instead of deleting
+state. `canonfig follower unenroll` removes an enrollment on purpose; it is not
+a repair step.
