@@ -217,6 +217,10 @@ export const failureTaxonomy = {
     "human-action-required",
     (error) => declaredMessage(error) ?? "the local state storage is unavailable; preserve it and check permissions or restore a known-good backup",
   ),
+  EarlierStateFormatError: declared(
+    "human-action-required",
+    () => "the local state was created by an earlier Canonfig version and cannot be read; move the state database aside and set this machine up again",
+  ),
   RepositorySqlError: declared(
     "internal",
     (error) => `the local database failed during ${text(error.operation)}`,
@@ -280,10 +284,6 @@ export const failureTaxonomy = {
   UnmanageableFilesystemModeError: describe(
     "usage-or-configuration",
     (error) => `resource ${text(error.id)} declares a filesystem mode Canonfig cannot manage`,
-  ),
-  VerificationContentMismatchError: describe(
-    "usage-or-configuration",
-    (error) => `resource ${text(error.id)} declares ${text(error.method)} verification that does not match its content: ${text(error.reason)}`,
   ),
   VerificationDigestMismatchError: describe(
     "usage-or-configuration",

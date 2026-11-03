@@ -145,7 +145,7 @@ const persisted = (database: string) => {
     return connection.prepare(`
       SELECT
         (SELECT COUNT(*) FROM profile_revisions) AS revisions,
-        (SELECT COUNT(*) FROM resource_blobs) AS blobs,
+        (SELECT COUNT(*) FROM resource_blob_manifests) AS blobs,
         (SELECT COUNT(*) FROM revision_approvals) AS approvals
     `).get();
   } finally {
