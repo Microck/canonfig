@@ -4,11 +4,15 @@ description: Choose whether a Configuration Agent may propose or apply work on a
 ---
 
 Canonfig applies every Profile Resource it has a fixed action for. Work it
-cannot do on its own becomes an **Agent Task**. For example, a `tool` resource
-that has no Installation Recipe for the Follower Machine's platform but
-declares an `agentInstall` block becomes an Agent Task there. By default, an
-Agent Task stops the run with Human Action Required. You can instead let a
-**Configuration Agent** propose a fix, or apply it within limits you set.
+cannot do on its own becomes an **Agent Task**. For example, a `tools` entry in
+the Source Machine's `~/.canonfig/canonfig.jsonc` that has no Installation
+Recipe for the Follower Machine's platform but declares an `agentInstall` block
+becomes an Agent Task there. By default, an Agent Task stops the run with Human
+Action Required. You can instead let a **Configuration Agent** propose a fix,
+or apply it within limits you set.
+
+The agent harness on this page is the program the Configuration Agent runs.
+It is separate from the harnesses Canonfig projects `~/.canonfig/` into.
 
 ## Before you start
 
@@ -17,9 +21,9 @@ Agent Task stops the run with Human Action Required. You can instead let a
   synchronization configuration is not enrolled".
 - Install the agent CLI on the Follower Machine and sign in to it: Codex CLI
   for `codex`, Claude Code for `claude`, or your own program for `custom`.
-- The agent policy and harness belong to this Follower Machine only.
+- The agent policy and agent harness belong to this Follower Machine only.
   `canonfig follower enroll --replace` resets them: the policy returns to
-  `deterministic-only` and the harness is removed.
+  `deterministic-only` and the agent harness is removed.
 
 ## Choose an agent policy
 
@@ -137,8 +141,8 @@ never widens a task: every Agent Task Canonfig creates forbids `elevation`,
 `login`, `restart`, and `reboot`, so `--allow-capability` does not give an
 agent those rights for them.
 
-An Agent Task's paths come from the tool's `agentInstall.paths` in the
-profile. There, too, `~` is the Follower Machine's home directory, so
+An Agent Task's paths come from the tool's `agentInstall.paths` in
+`canonfig.jsonc`. There, too, `~` is the Follower Machine's home directory, so
 `--allow-path ~/.local/bin` covers an `agentInstall` path of
 `~/.local/bin/review-cli`. Paths match whole directory names: `~/.local/bin`
 does not cover `~/.local/bin2`. On Windows the match ignores case.
@@ -171,8 +175,9 @@ The task becomes Human Action Required (exit 3), and the run stops there, when:
 Resources applied before that task stay applied. Later ones wait until you
 resolve the task and run `canonfig sync --apply` again.
 
-With `agent-apply`, Canonfig then checks the resource itself with the `verify`
-method the profile declares. The agent's own report never counts. If the
+With `agent-apply`, Canonfig then checks the resource itself with the tool's
+`verify` in `canonfig.jsonc`, or by finding its `executable` when it declares
+no `verify`. The agent's own report never counts. If the
 check fails, the run fails with "verification failed for agent task
 `<resource>`" (exit 7). See
 [Recover from a failed or blocked sync](/how-to/recover).

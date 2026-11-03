@@ -9,8 +9,8 @@ Synchronization Schedule, with nobody logged in where the platform allows it.
 
 ## Before you start
 
-- The Source Machine is set up with `canonfig source init`, and each Follower
-  Machine is enrolled.
+- The Source Machine is set up with `canonfig setup plan --role source`, and
+  each Follower Machine is enrolled.
 - Canonfig installs per-user jobs only. It never installs a system service and
   never runs `sudo` for you.
 - A scheduled run cannot answer a prompt. The credential store, and SSH to the
@@ -94,6 +94,25 @@ canonfig schedule status
 schedule. Every scheduled run executes
 `canonfig sync --apply --no-input --scheduled`. For calendars, time zones, and
 the other states, see [Sync on a schedule](/how-to/manage-schedules).
+
+### Give scheduled runs the same harness environment
+
+A scheduled run does not read your shell profile, so it can see a narrower
+`PATH` and miss variables such as `CODEX_HOME` or `CLAUDE_CONFIG_DIR`. Two
+things follow:
+
+- A harness whose executable the scheduled run cannot find is reported as not
+  installed. Its files stay as Canonfig last applied them, and the run still
+  converges. Install harnesses under `~/.local/bin` or through a package
+  manager so every run finds them.
+- A harness root that differs from the one Canonfig pinned at takeover stops
+  the run with Human Action Required (exit 3), and the message begins with the
+  harness id and "was taken over at". Set the variable the same way for every
+  run, or leave it unset everywhere. See
+  [Keep a harness in one place](/how-to/choose-harnesses#keep-a-harness-in-one-place).
+
+`canonfig harnesses` shows which harnesses this machine detects and the root
+pinned for each.
 
 ## Headless Linux credential storage
 
@@ -201,6 +220,7 @@ On each Follower Machine:
 
 | Message | Cause | Fix |
 | --- | --- | --- |
+| "`<harness>` was taken over at `<root>` but now resolves to `<root>`, ..." (exit 3) | A scheduled run resolves a different harness root than the one pinned at takeover, usually because an override such as `CODEX_HOME` is set only in your shell. | See [Give scheduled runs the same harness environment](#give-scheduled-runs-the-same-harness-environment). |
 | "the systemd user manager stops when you log out (Linger=no), so the job only runs while you are logged in" (warning) | Lingering is off. | See [Headless Linux credential storage](#headless-linux-credential-storage). |
 | "the systemd user manager is not reachable: this session has no user session bus" (exit 3) | You ran the command from a session without a user bus, for example `su` or a bare SSH command. | Run it from a login session of that user, or turn lingering on and retry. |
 | "a Source is already answering at `<endpoint>` outside the service manager" | A `canonfig source serve` you started by hand holds the port. | Stop it, then run `canonfig source service install`. |

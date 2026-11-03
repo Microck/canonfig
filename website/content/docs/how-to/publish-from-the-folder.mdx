@@ -1,0 +1,239 @@
+---
+title: Publish your folder to Follower Machines
+description: Edit ~/.canonfig/ on the Source Machine, publish it as a signed Profile Revision, send items to some Follower Machines only, add tools, and roll content back.
+---
+
+Follower Machines never read the Source Machine's disk. They receive only what
+you publish from `~/.canonfig/` as a signed **Profile Revision**, so an edit to
+the folder changes nothing on a Follower Machine until you publish again. An
+added item, a changed one, and a removal all follow the same steps.
+
+## Before you start
+
+- The Source Machine is set up with `canonfig setup plan --role source`, as in
+  [Sync your first two machines](/tutorials/first-sync).
+- `~/.canonfig/canonfig.jsonc` has a `profile` with an `id` and a `name`. The
+  [Canonical Folder reference](/reference/canonfig-folder) lists every key and
+  file.
+- Follower Machines fetch from the Source Machine, so it must be serving when
+  they sync. See [Run Canonfig unattended](/how-to/run-unattended).
+
+## Publish a change
+
+1. Edit the folder on the Source Machine, for example
+   `~/.canonfig/AGENTS.md`, a skill under `~/.canonfig/skills/`, or an MCP
+   server in `~/.canonfig/canonfig.jsonc`.
+
+2. Check the change in your own harnesses first:
+
+   ```bash
+   canonfig sync --plan
+   canonfig sync --apply
+   ```
+
+   This projects the folder on the Source Machine only, so you see the change
+   in your own harnesses, and an invalid file fails here before you publish.
+
+3. Publish:
+
+   ```bash
+   canonfig source publish --reviewer "$USER"
+   ```
+
+   ```text
+   source.publish completed
+   profile: workstation, sequence 2
+   revision: workstation:25f4e71bd8dc2ccc11604f4da39a0c7e45e1a0f6809b75a53d378efb73ba43cc
+   published at: 2026-11-03T09:14:02.517Z
+   resources (4):
+     config     harnesses                    → canonfig.jsonc#harnesses
+     file       instructions                 → AGENTS.md
+     config     mcp:docs                     → canonfig.jsonc#mcp.docs
+     skill      skills:release-notes         → skills/release-notes
+   ```
+
+   `--reviewer` is required and records who approved the Profile Revision.
+
+If the folder's content is identical to the latest Profile Revision,
+`source publish` returns that Profile Revision with the same sequence number,
+and nothing reaches Follower Machines. Any other content becomes the next
+sequence number.
+
+Each Follower Machine applies the Profile Revision at its next scheduled run.
+To apply it at once, run `canonfig sync --plan`, then `canonfig sync --apply`
+on the Follower Machine.
+
+## What is published
+
+Publishing reads only the folder's authoring entries. Each item becomes one
+resource in the Profile Revision:
+
+| In `~/.canonfig/` | Resource |
+| --- | --- |
+| `AGENTS.md` | `instructions` |
+| `rules/<id>.md`, `agents/<id>.md`, `commands/<id>.md` | `rules:<id>`, `agents:<id>`, `commands:<id>` |
+| `skills/<name>/`, every file in it | `skills:<name>` |
+| a script under `hooks/` | `hook-scripts:<path>`, sent wherever a hook that runs it goes |
+| `canonfig.jsonc` keys `mcp`, `hooks`, `settings` | one resource per server, hook, or harness, such as `mcp:docs` |
+| `canonfig.jsonc` keys `tools`, `credentials` | `tools:<id>`, `credentials:<id>` |
+| `canonfig.jsonc` keys `harnesses`, `local` | `harnesses`, `local-policy` |
+
+Nothing else in the folder is published: not `local/`, `.backups/`,
+`.runtime/`, the state database, logs, or installer bindings. Publishing also
+refuses links. Every file must be a regular file inside the folder.
+
+## What a Follower Machine does with a change
+
+A Follower Machine keeps the published items as a mirror in its own
+`~/.canonfig/`, then projects the mirror and its `local/` folder into its
+harnesses.
+
+| Change on the Source Machine | What a Follower Machine does at its next apply |
+| --- | --- |
+| Added or changed item | Updates its mirror and every harness surface that uses the item. |
+| Removed item | Removes it from the mirror and from its harnesses, unless someone changed the mirror copy there. |
+| A mirror file edited on the Follower Machine | Keeps the edit and reports Follower Drift (exit 4). That item's projections stay as last applied. |
+| Added or changed `tools` entry | Installs the tool with the recipe for its platform, then verifies it. |
+| Removed `tools` or `credentials` entry | Nothing. Canonfig never uninstalls a tool or deletes a local credential. |
+
+To keep extra items on one Follower Machine, use its local folder instead of
+editing the mirror; see [Add items to one machine only](/how-to/add-machine-local-items).
+
+## Send items to some Follower Machines only
+
+A **Follower Group** limits items to the Follower Machines in that group. Name
+the items in `groups` in `canonfig.jsonc`, as `instructions` or
+`<category>/<name>`:
+
+```jsonc title="part of ~/.canonfig/canonfig.jsonc"
+{
+  "groups": {
+    "work": ["mcp/docs", "skills/release-notes"]
+  }
+}
+```
+
+Items no group names reach every Follower Machine. A grouped item reaches only
+Follower Machines in one of its groups, and an item that depends on it, such
+as an MCP server that `requires` a grouped tool, follows it. Categories are
+`rules`, `skills`, `agents`, `commands`, `hooks`, `mcp`, `settings`, `tools`,
+and `credentials`.
+
+A Follower Machine joins groups through the invitation it enrolls with:
+
+```bash
+canonfig source invite --endpoint https://127.0.0.1:17342 --output ~/canonfig-invite --group work
+```
+
+## Add a tool
+
+Some items need a program on the Follower Machine, such as `uvx` for an MCP
+server. Find what your folder uses:
+
+```bash
+canonfig source scan
+```
+
+The scan reads the folder's instructions, skills, hook scripts, and MCP
+commands, and proposes `tools` entries. Each is `accepted` or `needs-review`.
+Add the accepted ones to `canonfig.jsonc`, keeping its comments:
+
+```bash
+canonfig source scan --write
+```
+
+Entries that need review are never written. Add them yourself once you have
+checked them, with one Installation Recipe per platform and an exact version:
+
+```jsonc title="part of ~/.canonfig/canonfig.jsonc"
+{
+  "tools": {
+    "uv": {
+      "executable": "uvx",
+      "recipes": [
+        { "platform": "linux", "method": "brew", "package": "uv", "version": "0.9.7" },
+        { "platform": "macos", "method": "brew", "package": "uv", "version": "0.9.7" }
+      ]
+    }
+  },
+  "mcp": {
+    "git": { "transport": "stdio", "command": "uvx", "args": ["mcp-server-git"], "requires": ["tools/uv"] }
+  }
+}
+```
+
+`requires` installs the tool before Canonfig projects the server. This example
+has no Windows recipe, so a Windows Follower Machine reports Human Action
+Required for `tools:uv`.
+[How Canonfig installs and verifies tools](/explanation/tools-and-recipes)
+covers recipe fields and verification.
+
+## Roll back to earlier content
+
+No command moves Follower Machines back to an earlier sequence number.
+Publish the earlier content again instead: it becomes the next sequence
+number, and Follower Machines move forward to it.
+
+This needs the earlier content. Keep the authoring entries in Git, with a
+`~/.canonfig/.gitignore` that leaves out everything machine-local:
+
+```text title="~/.canonfig/.gitignore"
+/*
+!/.gitignore
+!/canonfig.jsonc
+!/AGENTS.md
+!/rules/
+!/skills/
+!/agents/
+!/commands/
+!/hooks/
+```
+
+```bash
+cd ~/.canonfig/
+git init
+git add -A
+git commit -m "Add release-notes skill"
+```
+
+To roll back the last change:
+
+```bash
+cd ~/.canonfig/
+git revert --no-edit HEAD
+canonfig sync --apply
+canonfig source publish --reviewer "$USER"
+```
+
+Neither `.git/` nor `.gitignore` is published.
+
+## If something fails
+
+Each refusal exits 2 before anything is signed. The message starts with "the
+publication input is not valid:" followed by the file and the reason, for
+example "the publication input is not valid:
+/home/maria/.canonfig/canonfig.jsonc needs "profile": ...".
+
+| Message after the file name | Cause | Fix |
+| --- | --- | --- |
+| `needs "profile": { "id": ..., "name": ... } to publish; the id names the Machine Profile followers sync` | `canonfig.jsonc` has no `profile`. | Add `"profile": { "id": "workstation", "name": "Workstation" }`. |
+| "does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower" | There is no `~/.canonfig/canonfig.jsonc`. | Run Source setup, as in [Sync your first two machines](/tutorials/first-sync). |
+| "is not valid JSONC: ..." | `canonfig.jsonc` does not parse. The message gives the error and its offset. | Fix the syntax at that offset. |
+| "this Source publishes profile workstation; set "profile.id" in canonfig.jsonc back to workstation" | You changed `profile.id`. A Source Machine publishes one Machine Profile. | Set `profile.id` back. |
+| "config resource mcp:docs at keys.mcp.docs.headers.CONTEXT7_API_KEY contains a literal credential [REDACTED]; ..." | A value in `canonfig.jsonc` looks like a secret. | Replace it with `{ "fromEnv": "NAME" }`, or store a shared value with `canonfig secrets set`. |
+| "names the skill release-note, but its directory is release-notes" | The `name` in `SKILL.md` does not match its directory. | Make them match. |
+| "has no SKILL.md" | A directory under `skills/` has no `SKILL.md`. | Add one, or remove the directory. |
+| "skill directory names are lowercase letters, digits and '-'" | A skill directory name has other characters. | Rename the directory and the `name` in `SKILL.md`. |
+| "only &lt;id&gt;.md documents belong here" | `rules/`, `agents/`, or `commands/` holds a directory or a file that does not end in `.md`. | Move it out of the folder. |
+| "is a link; links are not authoring input" or "is not a regular file; links and special files are not authoring input" | A link sits among the authoring entries, for example `AGENTS.md` linked to another file. | Replace the link with a copy of the content. |
+| "hook script hooks/format.sh does not exist" | A hook in `canonfig.jsonc` runs a script that is not in `hooks/`. | Add the script, or fix `run`. |
+| "is not run by any hook in canonfig.jsonc, so it would never reach a follower; reference it from a hook or remove it" | A file in `hooks/` is not used by any hook. | Reference it from a hook, or remove it. |
+| "groups.work names mcp/docs, which the folder does not declare" | `groups` names an item that does not exist. | Fix the name, or remove it from the group. |
+| "mcp.git requires tools/uv, which "tools" does not declare" | An MCP server `requires` an undeclared tool. | Add the tool to `tools`, or remove it from `requires`. |
+
+Other failures:
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| "Missing required option: --reviewer" (exit 2) | `--reviewer` is required. | Add `--reviewer "$USER"`. |
+| "the profile revision could not be signed (...); run 'canonfig source init' first" | This machine has no Source Machine keys. | Run Source setup, or `canonfig source init`. |

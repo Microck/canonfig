@@ -1,125 +1,169 @@
 ---
 title: How Canonfig works
-description: Understand what the Source Machine and Follower Machines own, what syncs and when, what stays local, what one run can roll back, and where Canonfig keeps its files.
+description: Understand how the Source Machine publishes ~/.canonfig/, how Follower Machines mirror and project it into each harness, what stays local, how drift is handled, and what one run can roll back.
 ---
 
-One **Source Machine** owns the desired configuration. Every other machine is a
-**Follower Machine**: it receives that configuration and never sends changes
-back.
+You keep one agent setup in `~/.canonfig/`: instructions, rules, skills,
+subagents, commands, hooks, MCP servers, settings, and the tools they need.
+Canonfig writes that setup into the global configuration of every harness you
+use, on every machine. One **Source Machine** owns the setup. Every other
+machine is a **Follower Machine**: it receives the setup and never sends
+changes back.
 
 ## Who owns what
 
 | Owned by the Source Machine | Owned by each Follower Machine |
 | --- | --- |
-| The Machine Profile you write and every Profile Revision you publish | Its Follower Identity (a credential only that machine holds) |
-| The signing key and HTTPS certificate Follower Machines trust | Its Local Overlay: config keys it claims as its own |
-| The list of enrolled Follower Machines and their Follower Groups | Its Synchronization Schedule |
-| Shared secrets, when you opt in | Its agent policy, agent harness, and installer bindings |
-| | Text below the marker in an `append-local` file |
+| The authoring entries of its `~/.canonfig/` and every Profile Revision it publishes | Its Follower Identity, a credential only that machine holds |
+| The signing key and HTTPS certificate Follower Machines trust | Its `~/.canonfig/local/` folder |
+| The list of enrolled Follower Machines and their Follower Groups | Its harness exclusions and its backup setting, in `local/local.jsonc` |
+| Shared secrets, when you opt in | Its schedule, agent policy, agent harness, and installer bindings |
+| Which categories `local/` may add to (`local.allow`) | Every harness file and key outside Canonfig's owned surfaces |
 
 A Follower Machine never publishes. To change something on every machine,
-change the profile file on the Source Machine and run
-`canonfig source publish`. To change something on one machine only, claim it
-on that machine as a Local Overlay, or keep it out of the profile.
+edit `~/.canonfig/` on the Source Machine and run `canonfig source publish`.
+To add something on one machine only, put it in that machine's
+`~/.canonfig/local/`. A Follower Machine does not edit published items in
+place.
 
 ## What syncs and when
 
-1. You write a profile file and publish it on the Source Machine. Publishing
-   validates the profile, reads every `source` file it names, and signs a
-   **Profile Revision** with the next sequence number. A Profile Revision
-   never changes after you publish it.
-2. A Follower Machine fetches the latest Profile Revision of its selected
-   profile only when you run `canonfig sync`, or when its native schedule runs
+1. You edit `~/.canonfig/` on the Source Machine and run
+   `canonfig source publish --reviewer <name>`. Publication reads only the
+   authoring allowlist (`canonfig.jsonc`, `AGENTS.md`, `rules/`, `skills/`,
+   `agents/`, `commands/`, `hooks/`), validates it, and signs a **Profile
+   Revision** with the next sequence number. One item becomes one Profile
+   Resource, so Follower Groups can include or leave out each one. A Profile
+   Revision never changes after you publish it.
+2. A Follower Machine fetches the latest revision only when you run
+   `canonfig sync`, or when its native schedule runs
    `canonfig sync --apply --no-input --scheduled`. Canonfig does not push
    changes and does not poll in the background.
-3. `canonfig sync --plan` (the default) downloads the Profile Revision and
-   compares it with the machine. It changes nothing. `canonfig sync --apply`
-   applies the plan and verifies every resource.
+3. `canonfig sync --apply` writes the items the Follower Machine is authorized
+   to see into its own `~/.canonfig/`, the mirror, with a `canonfig.jsonc`
+   rendered from that subset. In the same run it projects the mirror plus
+   `local/` into its harnesses. `canonfig sync --plan`, the default, shows the
+   plan and changes nothing.
 
-To roll a profile back, publish the earlier content again; it becomes the next
-Profile Revision.
-
-Follower Machines download only files they do not already hold. Before a run
-starts, Canonfig checks free disk space on each target's filesystem and on its
-cache, and refuses the run when either is too small.
+To roll back, publish the earlier content again; it becomes the next Profile
+Revision.
 
 The Source Machine serves Profile Revisions on a loopback address only. A
 Follower Machine on another host reaches it through `canonfig tunnel`, an SSH
 tunnel Canonfig manages. See
 [Security and credentials](/reference/security#transport-trust).
 
+## Projection on every machine
+
+**Projection** writes the folder's items into each harness's own files, in
+that harness's format. The Source Machine, and any machine that is not
+enrolled, projects its own `~/.canonfig/` when you run `canonfig sync`; a
+Follower Machine projects its mirror. Both use one planner, one journal, and
+one recovery path. A run records either the Profile Revision it applied or the
+digest of the local folder it projected.
+
+Canonfig projects the harnesses listed in `harnesses` in `canonfig.jsonc`
+that are installed on the machine and that `local/local.jsonc` does not
+exclude. A listed harness that is not installed is reported as not installed,
+and the run still converges. A harness installed later is taken over on the
+next run.
+
+For each harness, Canonfig owns a fixed list of surfaces: whole files, whole
+directories, or named keys in a file the harness shares with its own state,
+such as `mcpServers` in `~/.claude.json`. Everything else in the harness,
+including logins, sessions, and history, stays the harness's own. When a
+harness has no global place for a feature, such as Cursor for instructions,
+Canonfig reports that and writes the feature nowhere else. The
+[harness reference](/reference/harnesses) lists every surface.
+
+## Taking over a harness
+
+The first time Canonfig writes a surface of a harness, it copies what was
+there into a takeover snapshot under `~/.canonfig/.backups/`, then replaces
+it. From then on, an owned file or directory holds exactly the folder's items.
+Configuration you had there before is gone from the harness but kept in the
+snapshot, and `canonfig restore` writes it back. For an owned key, the
+snapshot keeps only that key's prior value.
+
+Canonfig also pins the harness's root at takeover. If a later run resolves a
+different root, for example because an environment variable such as
+`CODEX_HOME` changed, it stops with Human Action Required instead of writing a
+second copy. See [Restore a harness from a backup](/how-to/restore-from-a-backup).
+
+## What happens when a machine changed a managed file
+
+Canonfig keeps an Applied Resource Record of what it last applied to each
+surface and each mirror file. On the next run it compares three things: what
+is on disk, what Canonfig last applied, and what the folder asks for.
+
+- If the file already matches the desired content, nothing happens.
+- If the file still matches what Canonfig last applied, Canonfig updates it.
+- Otherwise the file is **Follower Drift**. Canonfig keeps your edit, reports
+  it in the plan, and stops the run with exit 4.
+
+The same rule covers projected harness files and the mirror. A file you add to
+an owned directory after takeover is drift too: kept and reported, never
+deleted by a scheduled run. An edited mirror file keeps its projections as
+they were last applied, so a local edit never spreads into the harnesses.
+Move the change to the Source Machine and publish it, or put it in `local/`
+and undo the edit, then run `canonfig sync --apply` again.
+
 ## What stays local
 
-- **Credentials.** A `credential` resource carries a reference, not a value.
-  Each Follower Machine must already hold the credential; otherwise the
-  resource needs Human Action Required. Shared secrets are a separate, opt-in
-  channel; see [Opt-in shared secrets](/reference/security#opt-in-shared-secrets).
-- **Local Overlay keys.** Keys you claim with `canonfig overlay set` stay as
-  you wrote them, and are never sent to the Source Machine.
-- **Local text in `append-local` files.** Canonfig replaces only the Source
-  Machine's marked section of the file.
-- **Files the profile does not declare.** Canonfig changes only the targets and
-  keys a profile declares. A `directory` resource with the default
-  `mirror-owned` policy removes only entries Canonfig wrote earlier.
+- **Credentials.** `credentials` entries and `fromEnv` references carry a
+  name, not a value. Each Follower Machine must already hold the credential;
+  otherwise the item needs Human Action Required. Shared secrets are a
+  separate, opt-in channel; see
+  [Opt-in shared secrets](/reference/security#opt-in-shared-secrets).
+- **The local folder.** `~/.canonfig/local/` is never published and never
+  replaced. Projection adds its items within the Source Machine's
+  `local.allow`. A local item with the same name as a published one is Human
+  Action Required, because Canonfig will not choose between them. See
+  [Add items only one machine uses](/how-to/add-machine-local-items).
+- **Keys Canonfig does not own.** In a shared file, every key outside
+  Canonfig's owned set stays the machine's own, with no declaration needed.
+- **Snapshots and journals.** They are never published or sent anywhere.
 - **Applied files after you leave.** `canonfig follower unenroll` leaves every
   applied file in place.
 
-## What happens when a Follower Machine changed a managed file
-
-Canonfig keeps an Applied Resource Record of what it last applied to each
-resource. On the next run it compares the machine with that record:
-
-- A `config` resource rewrites only the keys the profile declares. Other keys,
-  comments, and layout in the file stay.
-- A `skill` resource (policy `replace-if-unmodified`) that you edited on the
-  Follower Machine is **Follower Drift**. Canonfig keeps your edit, reports the
-  resource as `drift-conflict` in the plan, and stops the run with exit 4.
-  Move the change to the Source Machine and publish it, or discard it on the
-  Follower Machine, then run `canonfig sync --apply` again.
-- A `file` resource with the default `replace` policy is overwritten with the
-  profile's content. Use `append-local` when a Follower Machine needs its own
-  text in the same file.
-
-[Apply Policies](/reference/profile-schema#apply-policies) lists every policy.
-
 ## How Canonfig decides what to do
 
-For every resource, Canonfig first looks for one safe action it can take from
-the profile alone, such as writing a file or running a pinned installer. If
-none exists, the outcome depends on the Follower Machine's agent policy:
+For every item, Canonfig first looks for one safe action it can take from the
+folder alone, such as writing a file or running a pinned installer. If none
+exists, the outcome depends on the Follower Machine's agent policy:
 
 | Agent policy | What happens |
 | --- | --- |
-| `deterministic-only` | The resource needs Human Action Required, with instructions. |
+| `deterministic-only` | The item needs Human Action Required, with instructions. |
 | `agent-propose` | A Configuration Agent suggests a fix. The suggestion never changes a published Profile Revision. |
 | `agent-apply` | A Configuration Agent runs inside the paths, programs, origins, and capabilities you allowed. |
 
 **Human Action Required** means a step only a person can complete, such as
 signing in to a tool or unlocking a credential store. Canonfig stops at that
-resource and prints what to do.
+item and prints what to do.
 
 An agent's own report is never proof. After any change, Canonfig runs the
-resource's declared verification, and only that verification counts. See
+item's verification, and only that verification counts. See
 [Let a Configuration Agent resolve work](/how-to/configure-agent-policies).
 
 ## The transaction boundary
 
 Canonfig records a Synchronization Run's plan and each action as it runs, so
-one run behaves as one transaction for file, directory, and config changes:
+one run behaves as one transaction for file, directory, and key changes:
 
 - **A failed action rolls back the whole run.** Canonfig restores every file,
-  directory, and config it changed in that run, including resources unrelated
-  to the failure. The run fails with exit 7 and names the cause:
-  "resource `<id>` could not be applied to `<target>`: `<cause>`". Fix the
-  cause and run `canonfig sync --apply` again.
+  directory, and key it changed in that run, including ones unrelated to the
+  failure, and deletes a takeover snapshot the run created. The run fails with
+  exit 7 and names the cause: "resource `<id>` could not be applied to
+  `<target>`: `<cause>`". Fix the cause and run `canonfig sync --apply` again.
 - **Tool installs are not rolled back.** Canonfig cannot reverse a package
   manager, a login, or an agent's commands. The next run's verification finds
   an installed tool and leaves it in place.
 - **Human Action Required and Follower Drift stop the run without rolling
-  back.** Resources that applied and verified stay applied. The blocked
-  resource is left as it is, and every later action is skipped.
-  `canonfig sync --plan` lists the blocked resource in advance. Fix the cause,
-  then run `canonfig sync --apply` again to apply the rest.
+  back.** Items that applied and verified stay applied. The blocked item is
+  left as it is, and every later action is skipped. `canonfig sync --plan`
+  lists the blocked item in advance. Fix the cause, then run
+  `canonfig sync --apply` again to apply the rest.
 
 A run that stops part-way (a crash, a killed process, a reboot, or a full disk)
 stays open. `canonfig recover` finishes it or rolls it back. When a file was
@@ -127,10 +171,17 @@ edited after the run wrote it, recovery stops and keeps both your file and the
 saved copy instead of choosing for you. See
 [Recover from a failed or blocked sync](/how-to/recover).
 
+Before a run starts, Canonfig checks free disk space on each target's
+filesystem and on its cache, and refuses the run when either is too small.
+
 ## Where Canonfig keeps its files
 
 | Path | Contents |
 | --- | --- |
+| `~/.canonfig/` authoring entries | The folder you edit (Source Machine) or the mirror (Follower Machine); see the [Canonical Folder reference](/reference/canonfig-folder) |
+| `~/.canonfig/local/` | This machine's own items, exclusions, and backup setting |
+| `~/.canonfig/.backups/` | Takeover snapshots: the first and the 4 most recent |
+| `~/.canonfig/.runtime/` | The hook runner every projected hook calls |
 | `~/.canonfig/state.sqlite` | Enrollment, published Profile Revisions (Source Machine), run records, and Applied Resource Records |
 | `~/.canonfig/cache/` | Downloaded Profile Revision files, reused across runs |
 | `~/.canonfig/canonfig.log` | Command log: command name, time, duration, exit code |

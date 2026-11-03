@@ -1,11 +1,12 @@
 ---
 title: Platform differences
-description: Look up how Canonfig differs on Linux, macOS, and Windows in paths, tools, credentials, schedules, and unattended runs.
+description: Look up how Canonfig differs on Linux, macOS, and Windows in harness roots, backups, tools, credentials, schedules, and unattended runs.
 ---
 
 Linux, macOS, and Windows can each run a Source Machine or a Follower Machine.
-A Machine Profile describes the same outcome on each platform, but paths,
-package managers, credential stores, and schedulers differ.
+The Canonical Folder means the same thing on each platform. Each Follower
+Machine resolves harness roots, package managers, credential stores, and
+schedulers for its own platform, so you never publish a platform's paths.
 
 ## What Canonfig uses on each platform
 
@@ -17,14 +18,39 @@ package managers, credential stores, and schedulers differ.
 | Typical installers | apt, npm, uv, cargo, source | Homebrew, npm, uv, cargo, source | winget, npm, uv, cargo, source |
 | Path syntax | POSIX | POSIX | Windows |
 
-## Paths and targets
+## Harness roots
 
-A target path cannot contain `..`, a null byte, or a glob. Where a target
-differs between platforms, map it per platform in the Machine Profile; do not
-publish the Source Machine's absolute path as if it fit every Follower Machine.
+`~/.canonfig/` is in your home directory on every platform: `$HOME` on Linux
+and macOS, `%USERPROFILE%` on Windows. Each machine resolves every harness root
+itself, from its own environment and platform:
 
-Agent harness allowlists belong to each Follower Machine. Use Windows paths on
-Windows and POSIX paths on Linux and macOS.
+| Harness | Linux and macOS | Windows |
+| --- | --- | --- |
+| `devin` | `~/.config/devin` | `%APPDATA%\devin` (with `credentials.toml`, which Canonfig never touches) |
+| `copilot-cli` | `$COPILOT_HOME`, else `~/.copilot` | `%COPILOT_HOME%`, else `%USERPROFILE%\.copilot` |
+| `amp` | `~/.config/amp` | `%USERPROFILE%\.config\amp` |
+| `opencode`, `kilo` | `$XDG_CONFIG_HOME/<name>`, else `~/.config/<name>` | the same, under `%USERPROFILE%\.config` |
+| `cursor` | `~/.cursor`; on Linux, `cli-config.json` follows `$XDG_CONFIG_HOME/cursor` | `%USERPROFILE%\.cursor` |
+| every other harness | its override, else a directory under `~` | the same under `%USERPROFILE%` |
+
+The full list is in the [harness reference](/reference/harnesses). Every root
+must resolve inside your home directory, and Canonfig pins the root it used at
+takeover; a later run that resolves another root stops with Human Action
+Required instead of writing a second copy.
+
+Agent harness allowlists (`canonfig agent harness --allow-path`) belong to each
+Follower Machine. Use Windows paths on Windows and POSIX paths on Linux and
+macOS.
+
+## Takeover snapshots
+
+Snapshots under `~/.canonfig/.backups/` are private on every platform. On
+Linux and macOS, directories have mode `0700` and files `0600`. On Windows,
+Canonfig sets an ACL that grants only your user, through the same protected
+writer it uses for every file. A snapshot stores paths relative to your home
+directory, so it belongs to the machine that took it.
+
+## File writes
 
 Canonfig writes each file to a temporary sibling named `.cf-<12 hex>.tmp`,
 then renames it over the target, so a target is never left half written.
@@ -41,8 +67,9 @@ before they change anything:
 > machine accepts file paths of at most 260 characters because Windows long
 > paths are not enabled (MAX_PATH is 260). Nothing was changed.
 
-To fix it, shorten the target, or enable long paths from an administrator
-PowerShell and open another session:
+To fix it, shorten the item that makes the path long, such as a file deep in a
+skill directory, or enable long paths from an administrator PowerShell and
+open another session:
 
 ```powershell
 Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1
@@ -52,7 +79,8 @@ If an apply fails after it created parent directories, rollback and
 `canonfig recover` remove the directories that run created, and only while
 they are empty. Directories that existed before the run stay.
 
-Creating a symbolic link on Windows needs Developer Mode or the "Create
+Creating a symbolic link on Windows, for example when `canonfig restore`
+writes back a link the snapshot recorded, needs Developer Mode or the "Create
 symbolic links" user right. Without either, the action fails with:
 
 > Windows refused to create a symbolic link (EPERM). Creating symbolic links
@@ -119,6 +147,22 @@ canonfig sync --apply --no-input --scheduled
 
 A scheduled run never waits for a prompt. A missing credential store, login,
 elevation, or other step only a person can take ends as Human Action Required.
+
+A scheduled run starts with the native scheduler's environment, not your
+shell's. Two things follow:
+
+- **PATH.** The job's `PATH` is usually shorter, so it can detect fewer
+  harnesses than your shell does. A harness it does not find stays as it was
+  last applied; the run does not remove Canonfig's outputs there. Canonfig also
+  searches its install directories and `~/.local/bin`, whatever `PATH` holds.
+- **Pinned roots.** A root override such as `CODEX_HOME` or `CLAUDE_CONFIG_DIR`
+  that only your shell sets is missing in the scheduled run, so the harness
+  resolves to its default root. Because the root was pinned at takeover, the
+  run stops with Human Action Required instead of writing a second copy. The
+  message says what to do: give the run the environment the root came from,
+  or run `canonfig restore`, then `canonfig harnesses include <harness>`, and
+  sync again so Canonfig takes the harness over at the root the scheduled run
+  sees.
 
 The Source Machine's service and scheduled runs work under these conditions:
 
