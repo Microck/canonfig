@@ -81,6 +81,7 @@ Root shows the environment override first, then the default. "Declared" means ke
 
 - **Installed** means the adapter's executable resolves through Canonfig's verifier search order (recipe install directories, `~/.local/bin`, then `PATH`), without spawning it. Generic names (Cursor's `agent`) also require the harness root to exist. A config root alone is evidence, not installation: `~/.gemini` is shared by the Antigravity CLI, App and IDE.
 - **Source setup** detects installed harnesses and preselects them in `canonfig.jsonc` `harnesses`. The user edits the list before the first apply. The list is published.
+- **Import before takeover.** Source setup offers a one-time, reviewed import of each selected harness's existing instructions, skills, rules, agents, commands and MCP servers into `~/.canonfig/`. The user picks what to keep; duplicates by name are listed for a choice. Declined items are still covered by the takeover snapshot.
 - **Follower** projects `harnesses` ∩ installed ∩ not locally excluded. A listed harness that is not installed is reported in plan and status (`not-installed`); the run can still converge. An installed harness that is not listed is ignored. A harness installed later is taken over on the next run, with a snapshot.
 - **Roots are pinned.** The root resolved at takeover (including `CODEX_HOME` and similar overrides) is recorded per harness. A later run, for example a scheduled run without the shell's environment, that resolves a different root stops with Human Action Required instead of projecting into a second location. Roots must resolve inside the user's home directory.
 - **Removing a harness from the list** retires its unmodified owned outputs through the normal removal path. It does not restore the snapshot; `canonfig restore` does that explicitly.
@@ -88,7 +89,7 @@ Root shows the environment override first, then the default. "Declared" means ke
 ### 6. Backups and restore
 
 - **Takeover snapshot.** Before Canonfig first writes any owned surface of a harness, it copies every owned file and directory into `~/.canonfig/.backups/<UTC timestamp>/<harness>/...` and writes `~/.canonfig/.backups/<UTC timestamp>/manifest.json` (harness, resolved root, path, object kind, mode, symlink text, SHA-256, `absent` markers, run id). For key-owned files the snapshot stores only the owned keys' prior values in `keys.json`, never the whole file, so `~/.claude.json` OAuth data never enters a backup. Directories are mode 0700, files 0600, Windows ACLs through the existing protected writer.
-- **Retention.** Keep the last 5 snapshots; prune the oldest after writing a new one. A snapshot whose run rolled back is deleted with it.
+- **Retention.** Keep the first snapshot (the state before Canonfig ever wrote) plus the 4 most recent; prune the oldest of the recent ones after writing a new one. A snapshot whose run rolled back is deleted with it.
 - **Later applies** use the existing per-run journal and rollback material under the cache directory (`docs/file-rollback.md`). Snapshots are not taken per run.
 - **`canonfig restore [<snapshot>]`** (default: latest) runs as a journaled Synchronization Run: it writes the snapshot back, removes Canonfig-owned entries the snapshot marks absent, deletes the Applied Resource Records for those surfaces, and adds the harness to the local exclusion list so the next sync does not take it over again. It refuses a harness whose owned surfaces have drifted since Canonfig's last apply.
 - **Off switch.** `--no-backup` on `sync --apply`, or `"backups": false` in `local/local.jsonc`. The setting is machine-local on purpose: a Source cannot turn off a follower's safety net. The plan states `no backup` for every takeover it performs without one.
@@ -130,7 +131,7 @@ Root shows the environment override first, then the default. "Declared" means ke
 - Every target is resolved under the pinned root with the existing no-follow, lexical and realpath checks; symlinked components are refused for writes.
 - Publication reads only the authoring allowlist, enforces the existing realpath-inside-source rule, keeps MCP secrets as `fromEnv` references, and rejects credential-looking literals.
 - Hooks and MCP stdio commands run code on followers; the plan lists every command before apply, as project hooks do today.
-- Snapshots and journals are local, private and never transferred. Takeover, restore and every run stay in the SQLite journal, which gives change-management evidence for SOC 2 and ISO 27001 audits.
+- Snapshots and journals are local, private and never transferred. Takeover, restore and every run stay in the SQLite journal.
 
 ### 10. Deleted
 
