@@ -247,9 +247,9 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         started_at TEXT NOT NULL,
         completed_at TEXT,
         outcome_json TEXT,
-        creating_version TEXT,
-        creating_identity TEXT,
-        state_format INTEGER
+        creating_version TEXT NOT NULL,
+        creating_identity TEXT NOT NULL,
+        state_format INTEGER NOT NULL
       )
     `;
 

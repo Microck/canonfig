@@ -22,9 +22,9 @@ export interface TaggedRuntimeError extends Error {
   readonly command?: ReadonlyArray<string> | undefined;
   readonly computedDigest?: string | undefined;
   readonly conflictsWith?: string | undefined;
-  readonly creatingIdentity?: string | null | undefined;
-  readonly creatingStateFormat?: number | null | undefined;
-  readonly creatingVersion?: string | null | undefined;
+  readonly creatingIdentity?: string | undefined;
+  readonly creatingStateFormat?: number | undefined;
+  readonly creatingVersion?: string | undefined;
   readonly currentIdentity?: string | undefined;
   readonly currentStateFormat?: number | undefined;
   readonly currentVersion?: string | undefined;
@@ -629,17 +629,14 @@ export const failureTaxonomy = {
   UpgradeGateError: describe(
     "conflict-or-drift",
     (error) => {
-      const creatingFormat = error.creatingStateFormat === null
-          || error.creatingStateFormat === undefined
-        ? "unknown"
-        : String(error.creatingStateFormat);
+      const creatingFormat = count(error.creatingStateFormat);
       const currentFormat = count(error.currentStateFormat);
       // The same build can meet a run recorded under another state format;
       // naming that build twice told the operator to use the build already
       // running.
       return error.creatingIdentity === error.currentIdentity
         ? `run ${text(error.run)} was recorded in state format ${creatingFormat}, but this canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}) uses state format ${currentFormat}. finish the run with a build that uses state format ${creatingFormat} or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the migration`
-        : `run ${text(error.run)} was created by canonfig ${text(error.creatingVersion ?? "unknown")} (source ${text(error.creatingIdentity ?? "unknown")}, state format ${creatingFormat}); this is canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}, state format ${currentFormat}). finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`;
+        : `run ${text(error.run)} was created by canonfig ${text(error.creatingVersion)} (source ${text(error.creatingIdentity)}, state format ${creatingFormat}); this is canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}, state format ${currentFormat}). finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`;
     },
   ),
   DuplicateFollowerIdentityError: declared(

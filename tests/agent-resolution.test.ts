@@ -2689,33 +2689,6 @@ process.exit(
     expect(error).toBeInstanceOf(AgentOutputLimitError);
     expect(count).toBe(3);
   });
-
-  it("creates only a pending reviewed profile proposal from discovery", async () => {
-    const result = await Effect.runPromise(Effect.gen(function*() {
-      const service = yield* AgentResolution;
-      return yield* service.proposeProfileChange({
-        reason: "resolved ambiguous package",
-        additions: [],
-        modifications: [],
-        removals: [],
-        evidence: [{
-          source: "AGENTS.md",
-          line: 4,
-          excerpt: "use test-tool",
-          kind: "prose",
-        }],
-      }, "2026-08-15T00:00:00.000Z");
-    }).pipe(Effect.provide(AgentResolutionLive)));
-    expect(result).toMatchObject({
-      reviewStatus: "pending",
-      proposal: {
-        reason: "resolved ambiguous package",
-        additions: [],
-        modifications: [],
-      },
-    });
-    expect(result).not.toHaveProperty("publish");
-  });
 });
 
 describe("real controlled subprocess", () => {

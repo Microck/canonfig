@@ -86,9 +86,6 @@ const recordingLayers = (
     restore: (input) => invoke("restore", input),
     harnesses: (input) => invoke("harnesses", input),
     status: (input) => invoke("status", input),
-    setLocalOverlay: (input) => invoke("overlay.set", input),
-    listLocalOverlays: () => invoke("overlay.list"),
-    removeLocalOverlay: (input) => invoke("overlay.remove", input),
     setAgentPolicy: (input) => invoke("agent.policy.set", input),
     getAgentPolicy: () => invoke("agent.policy.get"),
     setAgentHarness: (input) => invoke("agent.harness.set", input),
@@ -167,17 +164,6 @@ describe("typed CLI command boundary", () => {
     [["recover"], "recover"],
     [["abandon"], "abandon"],
     [["status", "--follower", "follower-one"], "status"],
-    [["overlay", "list"], "overlay.list"],
-    [[
-      "overlay",
-      "set",
-      "config-one",
-      "--target",
-      "/home/user/config.json",
-      "--key",
-      "local.theme",
-    ], "overlay.set"],
-    [["overlay", "remove", "config-one"], "overlay.remove"],
     [["doctor"], "doctor"],
     [["profile", "list"], "profile.list"],
     [["profile", "show", "revision-one"], "profile.show"],
@@ -527,10 +513,6 @@ describe("typed CLI command boundary", () => {
   it("rejects malformed and ambiguous inputs before selecting a service", async () => {
     for (const arguments_ of [
       ["sync", "--plan", "--apply"],
-      ["sync", "--apply", "--review-local"],
-      ["sync", "--plan", "--review-local", "--no-input"],
-      ["sync", "--plan", "--review-local", "--scheduled"],
-      ["status", "--review-local"],
       ["source", "revoke", "not valid"],
       ["follower", "enroll", "not-base64", "--name", "host"],
       ["schedule", "set", "weekly:Funday@99:00"],
@@ -655,7 +637,7 @@ describe("CLI rendering and exit semantics", () => {
               target: "~/.codex/config.toml",
               keys: ["model"],
               retains: ["mcp_servers.old"],
-              retentionNotice: "mcp_servers.old stays because a Local Overlay key overlaps it",
+              retentionNotice: "mcp_servers.old stays because ownership narrowed",
             },
           }],
         },
@@ -663,7 +645,7 @@ describe("CLI rendering and exit semantics", () => {
     }, "human");
     expect(rendered).toContain("write-config");
     expect(rendered).toContain("~/.codex/config.toml  keys: model");
-    expect(rendered).toMatch(/\n {6}retains: mcp_servers\.old\n {6}mcp_servers\.old stays because a Local Overlay key overlaps it\n/u);
+    expect(rendered).toMatch(/\n {6}retains: mcp_servers\.old\n {6}mcp_servers\.old stays because ownership narrowed\n/u);
     expect(rendered).toContain("Apply these actions with: canonfig sync --apply");
     expect(rendered).not.toContain("encoded");
     expect(rendered).not.toContain("{");
@@ -896,9 +878,7 @@ it.each([
   [["profile", "show"], "Usage: canonfig profile show <revision-id>"],
   [["profile", "select", "workstation"], "Unknown profile command: select"],
   [["source", "digest"], "Unknown source command: digest"],
-  [["overlay", "list", "--foo"], "Unknown option: --foo"],
   [["tunnel", "status", "extra"], "canonfig tunnel status accepts no arguments"],
-  [["overlay", "remove", "--foo"], "Unknown option: --foo"],
   [["source", "revoke", "--foo"], "Unknown option: --foo"],
   [["agent", "bogus"], "Unknown agent command: bogus"],
   [["follower", "bogus"], "Unknown follower command: bogus"],
@@ -908,6 +888,6 @@ it.each([
   }
 });
 
-it.each(["source", "schedule", "setup", "overlay", "tunnel", "profile", "agent", "follower"])("names the missing action for %s", (group) => {
+it.each(["source", "schedule", "setup", "tunnel", "profile", "agent", "follower"])("names the missing action for %s", (group) => {
   expect(evaluateCli([group])).toMatchObject({ _tag: "InvalidInput", message: `Missing ${group} command` });
 });

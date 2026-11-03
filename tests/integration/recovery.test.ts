@@ -227,7 +227,6 @@ const persistedPlan = (value: Fixture) => {
       }],
       availableBlobs: [],
     },
-    localOverlay: [],
     appliedResources: [],
   }));
   if (desired.kind !== "file" || value.revision.resources.length !== 1) return planned;
@@ -392,7 +391,7 @@ describe("interrupted ownership handover", () => {
     const plan = Effect.runSync(planSynchronization({ revision, follower: follower.id,
       observedState: { platform: "linux", availableBlobs: [], resources: revision.resources.map((resource) => ({
         resource: resource.id, observed: { state: "present" as const, digest: oldDigest, executable: false },
-      })) }, localOverlay: [], appliedResources: [previous],
+      })) }, appliedResources: [previous],
     }));
     await Effect.runPromise(Effect.gen(function*() {
       const repository = yield* StateRepository;
@@ -1188,7 +1187,6 @@ describe("synchronization crash recovery", () => {
         }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [{
         resource: resource.id,
         revision: value.revision.id,
@@ -1333,7 +1331,6 @@ describe("synchronization crash recovery", () => {
         }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [applied],
     }));
     const removal = removalPlan.actions[0]!;

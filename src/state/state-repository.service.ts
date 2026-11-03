@@ -191,9 +191,9 @@ export class StateRepository extends Context.Service<StateRepository, {
     follower: FollowerId,
   ) => Effect.Effect<{
     readonly run: string;
-    readonly creatingVersion: string | null;
-    readonly creatingIdentity: string | null;
-    readonly stateFormat: number | null;
+    readonly creatingVersion: string;
+    readonly creatingIdentity: string;
+    readonly stateFormat: number;
   } | undefined, StateRepositoryError>;
   readonly loadState: (
     follower: FollowerId,

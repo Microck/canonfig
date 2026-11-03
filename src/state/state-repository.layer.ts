@@ -135,9 +135,9 @@ const ActiveRunRow = Schema.Struct({
 });
 const OpenRunIdentityRow = Schema.Struct({
   id: Schema.String,
-  creating_version: Schema.NullOr(Schema.String),
-  creating_identity: Schema.NullOr(Schema.String),
-  state_format: Schema.NullOr(Schema.Number),
+  creating_version: Schema.String,
+  creating_identity: Schema.String,
+  state_format: Schema.Number,
 });
 const DeploymentReceiptRow = Schema.Struct({
   run_id: RunId,
@@ -2656,17 +2656,16 @@ const makeRepository = Effect.gen(function*() {
   /**
    * What the still-open run of this follower knows about the build that
    * created it. An undefined answer means no open run: nothing blocks an
-   * upgrade. A null identity means a run created before builds recorded
-   * their identity, which the upgrade gate treats as foreign.
+   * upgrade.
    */
   const loadOpenRunIdentity = Effect.fn("StateRepository.loadOpenRunIdentity")(
     function*(
       follower: FollowerIdType,
     ): Effect.fn.Return<{
       readonly run: string;
-      readonly creatingVersion: string | null;
-      readonly creatingIdentity: string | null;
-      readonly stateFormat: number | null;
+      readonly creatingVersion: string;
+      readonly creatingIdentity: string;
+      readonly stateFormat: number;
     } | undefined, StateRepositoryError> {
       const rows = yield* sql`
         SELECT

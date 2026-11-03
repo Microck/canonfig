@@ -745,7 +745,6 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
           matched: true,
         },
       }),
-      proposeProfileChange: () => Effect.die("unused"),
     });
     const applied = await Effect.runPromise(
       resolveAgentTasks(baseConfiguration, plan, false).pipe(
@@ -816,7 +815,6 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
             value: "/tmp/canonfig-agent",
           }),
         ),
-      proposeProfileChange: () => Effect.die("unused"),
     });
     const refused = await Effect.runPromise(
       resolveAgentTasks(baseConfiguration, plan, false, undefined, true).pipe(

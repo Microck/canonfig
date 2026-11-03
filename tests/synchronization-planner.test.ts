@@ -198,7 +198,6 @@ const plannerInput = (
     })),
     availableBlobs: (options.availableBlobs ?? []).map((blob) => decode(BlobId)(blob)),
   },
-  localOverlay: [],
   appliedResources: options.applied ?? [],
 });
 
@@ -879,21 +878,6 @@ describe("resource and Apply Policy coverage", () => {
     },
   );
 
-  it("preserves non-conflicting Local Overlay keys and reports conflicts", () => {
-    const base = plannerInput([resource("config", "config", "merge")]);
-    const preserved = runPlan({
-      ...base,
-      localOverlay: [{ resource: decode(ResourceId)("config"), keys: ["local.theme"] }],
-    });
-    expect(preserved.actions[0]?.kind).toBe("write-config");
-
-    const conflict = runPlan({
-      ...base,
-      localOverlay: [{ resource: decode(ResourceId)("config"), keys: ["mcp.github"] }],
-    });
-    expect(conflict.actions[0]?.kind).toBe("human-action");
-  });
-
   it("removes unchanged files recorded as owned by the previous revision", () => {
     const subject = resource("directory", "directory", "mirror-owned");
     const desired = {
@@ -1110,42 +1094,6 @@ describe("transfer and apply separation", () => {
     expect(plan.actions[0]?.detail).toMatchObject({
       kind: "write-config",
       removes: ["canonical.removed"],
-    });
-  });
-
-  it("keeps a dropped config key the follower claimed in its Local Overlay", () => {
-    // A key the follower claimed is the follower's, not Canonfig's, so it
-    // survives the profile dropping it.
-    const subject = resource("settings", "config", "merge");
-    const desired = desiredForKind("config");
-    const input = plannerInput([subject], {
-      desired: [desired],
-      observed: [{
-        state: "present",
-        digest: digestB,
-        executable: false,
-      }],
-      applied: [{
-        resource: subject.id,
-        revision: "previous",
-        digest: digestB,
-        appliedAt: "2026-08-15T00:00:00Z",
-        kind: "config",
-        policy: "merge",
-        target: subject.target,
-        ownedKeys: [...(desired.kind === "config" ? desired.keys : []), "canonical.removed"],
-      }],
-    });
-    const plan = runPlan({
-      ...input,
-      localOverlay: [{ resource: subject.id, keys: ["canonical.removed"] }],
-    });
-
-    // The write still happens for the declared keys, but the claimed key is
-    // not pruned.
-    expect(plan.actions.map((action) => action.kind)).toEqual(["write-config"]);
-    expect(plan.actions[0]?.detail).not.toMatchObject({
-      removes: expect.arrayContaining(["canonical.removed"]),
     });
   });
 

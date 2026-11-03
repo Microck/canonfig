@@ -189,21 +189,12 @@ export const parseJsonc = (text: string): JsonValue => {
   return S.decodeUnknownSync(S.MutableJson)(JSON.parse(stripped));
 };
 
-const maximumExactInteger = BigInt(Number.MAX_SAFE_INTEGER);
-const integerLiteral = /^-?(?:0|[1-9][0-9]*)$/u;
-
 /**
- * Whether a JSON number survives the JavaScript number model unchanged. An
- * integer literal is judged by its source text, before parsing rounds it;
- * every other number must be finite and, when integral, a safe integer.
+ * Whether a parsed JSON number survives the JavaScript number model: finite
+ * and, when integral, a safe integer.
  */
-const isExactJsonNumber = (value: number, source?: string): boolean => {
-  if (source !== undefined && integerLiteral.test(source)) {
-    const integer = BigInt(source);
-    return integer <= maximumExactInteger && integer >= -maximumExactInteger;
-  }
-  return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
-};
+const isExactJsonNumber = (value: number): boolean =>
+  Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
 
 export const inexactNumberReason =
   `cannot be carried exactly: integers must be between -${Number.MAX_SAFE_INTEGER} and ${Number.MAX_SAFE_INTEGER} and numbers must be finite. Canonfig does not round; write a larger value as a string if its consumer accepts one`;
@@ -260,53 +251,3 @@ export const inexactNumberPath = (
   findPath(value, (candidate) =>
     Predicate.isNumber(candidate) && !isExactJsonNumber(candidate)
   );
-
-/** An authored number JavaScript would round or overflow, located by its path. */
-export class InexactJsonNumberError extends Error {
-  readonly path: string;
-
-  constructor(path: string) {
-    super(`the number at ${path} ${inexactNumberReason}`);
-    this.name = "InexactJsonNumberError";
-    this.path = path;
-  }
-}
-
-const inexactMarker: JsonValue = Object.freeze({});
-
-/**
- * Parse JSONC without silently changing a number. The reviver sees each
- * number's source text, so an integer literal beyond the safe range is caught
- * before its rounded value can be published.
- */
-const parseExactJsonc = (text: string): JsonValue => {
-  let inexact = false;
-  const parsed: JsonValue = JSON.parse(
-    stripJsonc(text),
-    (_key: string, value: JsonValue, context?: { readonly source?: string }): JsonValue => {
-      if (!Predicate.isNumber(value) || isExactJsonNumber(value, context?.source)) {
-        return value;
-      }
-      inexact = true;
-      return inexactMarker;
-    },
-  );
-  if (inexact) {
-    const path = findPath(parsed, (candidate) => candidate === inexactMarker) ?? [];
-    throw new InexactJsonNumberError(jsonPathText("$", path));
-  }
-  return S.decodeUnknownSync(S.MutableJson)(parsed);
-};
-
-/**
- * Parse and decode with a schema at the authoring boundary. Numbers are
- * checked for exactness first, so an authored value is never rounded.
- */
-export const decodeJsonc = <SchemaValue extends S.ConstraintDecoder<unknown, never>>(
-  schema: SchemaValue,
-): (text: string) => SchemaValue["Type"] =>
-  (text: string) =>
-    S.decodeUnknownSync(schema, {
-      errors: "all",
-      onExcessProperty: "error",
-    })(parseExactJsonc(text));

@@ -5,9 +5,16 @@ import { join } from "node:path";
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
+import { ActionId, ProfileId, ResourceId, RunId } from "../../src/domain/brand.ts";
 import { configPathsOverlap } from "../../src/domain/config-path.ts";
-import { decodeMachineProfileJsonc, encodeMachineProfile } from "../../src/domain/profile.ts";
+import {
+  normalizeMachineProfile,
+  ProfileContractError,
+  ProfileResourceInputSchema,
+  PublishedResourceSpecSchema,
+  validateMachineProfile,
+  type MachineProfile,
+} from "../../src/domain/profile.ts";
 import { ConfigValue } from "../../src/domain/resource.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { sha256BytesHex, sha256Hex } from "../../src/profile/profile-codec.ts";
@@ -26,22 +33,31 @@ const digest = sha256Hex("config-test");
 const roots: Array<string> = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
+/** Decode, normalize and validate one resource the way publication does. */
+const profileWith = (resource: unknown): MachineProfile => {
+  const profile = normalizeMachineProfile({
+    id: decode(ProfileId)("portable-config"), version: 2, name: "Portable config", groups: [],
+    resources: [decode(ProfileResourceInputSchema)(resource)],
+  });
+  const errors = validateMachineProfile(profile);
+  if (errors.length > 0) throw new ProfileContractError(errors);
+  return profile;
+};
+
 const profileWithKeys = (keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }>) =>
-  decodeMachineProfileJsonc(JSON.stringify({
-    id: "portable-config", name: "Portable config", resources: [{
-      id: resourceId, kind: "config", target: "~/.example/settings.json",
-      spec: { kind: "config", format: "json", keys },
-      verify: { method: "digest", digest },
-    }],
-  }));
+  profileWith({
+    id: resourceId, kind: "config", target: "~/.example/settings.json",
+    spec: { kind: "config", format: "json", keys },
+    verify: { method: "digest", digest },
+  });
 
 const planning = (
-  desiredKeys: ReadonlyArray<string>, overlayKeys: ReadonlyArray<string>, oldKeys: ReadonlyArray<string> = [],
+  desiredKeys: ReadonlyArray<string>, oldKeys: ReadonlyArray<string> = [],
 ): ResourcePlanningContext => ({
   resource: { id: resourceId, kind: "config", policy: "merge", target: "~/.example/settings.json", dependsOn: [], blobs: [] },
   desired: { kind: "config", format: "json", digest, keys: desiredKeys },
   observed: { state: "present", digest, executable: false },
-  overlayKeys, platform: "linux",
+  platform: "linux",
   applied: { resource: resourceId, revision: "previous", digest, appliedAt: "2026-01-01T00:00:00Z", ownedKeys: oldKeys },
 });
 
@@ -49,12 +65,12 @@ const mcp = { command: "example-tool", args: ["--stdio"], env: { EXAMPLE_MODE: "
 const hooks = [{ matcher: "Edit", hooks: [{ type: "command", command: "example-check", timeout: 30 }] }];
 
 describe("portable recursive configuration", () => {
-  it("shares nested values across authoring and published resource decoding without changing arrays", () => {
+  it("shares nested values across folder and published resource decoding without changing arrays", () => {
     const value = { server: mcp, hooks, values: [true, 2, "third", { nested: [1, false] }] };
     expect(decode(ConfigValue)(value)).toEqual(value);
     const profile = profileWithKeys([{ path: "settings", value }]);
-    expect(decodeMachineProfileJsonc(encodeMachineProfile(profile))).toEqual(profile);
     expect(profile.resources[0]?.spec).toMatchObject({ keys: [{ path: "settings", value }] });
+    expect(decode(PublishedResourceSpecSchema)(profile.resources[0]?.spec)).toEqual(profile.resources[0]?.spec);
   });
 
   it.each(["json", "toml", "yaml"] as const)("round trips complete MCP entries and hook objects through %s", (format) => {
@@ -99,43 +115,36 @@ describe("portable recursive configuration", () => {
     expect(() => profileWithKeys([{ path: "mcp.foo", value: mcp }, { path: "mcp.foobar", value: mcp }])).not.toThrow();
   });
 
-  it("preserves reviewed agent installation bounds when canonicalizing and signing a profile", () => {
-    const profile = decodeMachineProfileJsonc(JSON.stringify({
-      id: "bounded-tool", name: "Bounded tool", resources: [{
-        id: "example", kind: "tool", target: "example",
-        spec: { kind: "tool", toolId: "example", recipes: [], agentInstall: {
-          paths: ["~/.local/bin", "~/.local/bin", "~/.cache/example"],
-          origins: ["https://example.invalid", "https://example.invalid"],
-        } },
-        verify: { method: "executable-present", executable: "example" },
-      }],
-    }));
+  it("preserves reviewed agent installation bounds when canonicalizing a profile", () => {
+    const profile = profileWith({
+      id: "example", kind: "tool", target: "example",
+      spec: { kind: "tool", toolId: "example", recipes: [], agentInstall: {
+        paths: ["~/.local/bin", "~/.local/bin", "~/.cache/example"],
+        origins: ["https://example.invalid", "https://example.invalid"],
+      } },
+      verify: { method: "executable-present", executable: "example" },
+    });
     expect(profile.resources[0]?.spec).toMatchObject({ agentInstall: {
       paths: ["~/.cache/example", "~/.local/bin"], origins: ["https://example.invalid"],
     } });
-    expect(decodeMachineProfileJsonc(encodeMachineProfile(profile))).toEqual(profile);
+    expect(normalizeMachineProfile(profile)).toEqual(profile);
   });
 });
 
-describe("Local Overlay subtree ownership", () => {
-  it.each([["mcp.server", "mcp.server.command"], ["mcp.server.command", "mcp.server"]])(
-    "blocks overlapping Source %s and Local Overlay %s", (source, local) => {
-      expect(planResource(planning([source], [local]))).toMatchObject([{ kind: "human-action" }]);
-    },
-  );
-  it("keeps an old parent containing a newly local child and names it in the plan", () => {
-    const [action] = planResource(planning([], ["mcp.server.command"], ["mcp.server"]));
+describe("config subtree ownership", () => {
+  it("keeps an old parent whose child is now declared and names it in the plan", () => {
+    const [action] = planResource(planning(["mcp.server.command"], ["mcp.server"]));
     expect(action).toMatchObject({ kind: "write-config", detail: { retains: ["mcp.server"] } });
     expect(action?.detail).not.toHaveProperty("removes");
     expect(action?.detail).toHaveProperty("retentionNotice", expect.stringContaining("mcp.server"));
   });
-  it("prunes an unrelated old subtree while retaining Local Overlay ownership", () => {
-    expect(planResource(planning([], ["mcp.server.command"], ["mcp.server", "mcp.other"]))).toMatchObject([
+  it("prunes an unrelated old subtree while retaining a narrowed parent", () => {
+    expect(planResource(planning(["mcp.server.command"], ["mcp.server", "mcp.other"]))).toMatchObject([
       { kind: "write-config", detail: { removes: ["mcp.other"], retains: ["mcp.server"] } },
     ]);
   });
   it("blocks only this resource when its follower file does not parse", () => {
-    const context = planning(["mcp.server"], []);
+    const context = planning(["mcp.server"]);
     const [action] = planResource({
       ...context,
       observed: { state: "unverifiable", reason: "~/.example/settings.json is not valid JSON: expected a JSON value at line 3 column 8" },

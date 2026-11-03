@@ -501,7 +501,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
             },
           };
         }),
-      proposeProfileChange: () => Effect.die("unused in acceptance"),
     });
     const synchronization = SynchronizationLive.pipe(
       Layer.provide(Layer.merge(followerRepository, followerMachine.layer)),

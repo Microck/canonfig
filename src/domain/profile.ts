@@ -791,7 +791,6 @@ const verificationAllowed = (
 ): boolean => {
   switch (kind) {
     case "file":
-      return method === "digest" || method === "symlink" || method === "command";
     case "directory":
     case "config":
     case "skill":

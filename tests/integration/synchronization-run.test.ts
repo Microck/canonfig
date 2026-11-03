@@ -178,7 +178,6 @@ const fileFixture = (
       }],
       availableBlobs: [],
     },
-    localOverlay: [],
     appliedResources: [],
   }));
   const artifact = { digest, content };
@@ -1133,7 +1132,6 @@ process.exit(1);
         }
         return Effect.succeed(applied());
       },
-      proposeProfileChange: () => Effect.die("unused"),
     });
     const agent = {
       policy: "agent-apply" as const,
@@ -1807,7 +1805,6 @@ process.exit(1);
         resources: [{ resource: resource.id, observed: { state: "absent" } }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [],
     }));
     const fixture: Fixture = {
@@ -1870,7 +1867,6 @@ process.exit(1);
         }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: applied,
     }));
     expect(removalPlan.actions[0]?.detail).toMatchObject({
@@ -1939,7 +1935,6 @@ process.exit(1);
           resources: [{ resource: resource.id, observed: { state: "absent" as const } }],
           availableBlobs: [],
         },
-        localOverlay: [],
         appliedResources: [],
       };
       const fixture: Fixture = {
@@ -2018,7 +2013,6 @@ process.exit(1);
         resources: [{ resource: resource.id, observed: { state: "absent" } }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [],
     }));
     const fixture: Fixture = { ...base, target, revision, input: { ...base.input, revision, plan } };
@@ -2499,7 +2493,6 @@ process.exit(1);
         }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: applied,
     }));
     expect(removalPlan.actions.map((action) => action.kind)).toContain("remove-resource");
@@ -2544,7 +2537,6 @@ process.exit(1);
         }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: remainingApplied,
     }));
     expect(repeatedPlan.actions).toEqual([]);
@@ -2603,7 +2595,6 @@ process.exit(1);
         ],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [],
     }));
     const failingMachine = decorateMachine(base.root, (service) => ({
@@ -2654,7 +2645,6 @@ process.exit(1);
         ],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: appliedAfterFailure,
     }));
     expect(
@@ -2728,7 +2718,6 @@ process.exit(1);
         resources: [{ resource: resource.id, observed: { state: "absent" } }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [],
     }));
     const outcome = await seedAndRun({
@@ -2787,7 +2776,6 @@ process.exit(1);
           }],
           availableBlobs: [],
         },
-        localOverlay: [],
         appliedResources: [],
       }));
       const first = await seedAndRun({
@@ -2819,7 +2807,6 @@ process.exit(1);
           }],
           availableBlobs: [],
         },
-        localOverlay: [],
         appliedResources: applied,
       }));
       expect(secondPlan.actions.map((action) => action.kind)).toEqual(["no-op"]);
@@ -2864,7 +2851,6 @@ process.exit(1);
         resources: [{ resource: resource.id, observed: { state: "absent" } }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [],
     }));
     const action = plan.actions.find((candidate) => candidate.kind === "write-file");
@@ -2919,7 +2905,6 @@ process.exit(1);
         resources: [{ resource: resource.id, observed: { state: "absent" } }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [],
     }));
     const outcome = await seedAndRun({
@@ -2968,7 +2953,6 @@ process.exit(1);
         resources: [{ resource: resource.id, observed: { state: "absent" } }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [applied],
     }));
     // Absence is not a local edit, so Canonfig repairs it. Refusing meant a
@@ -3040,7 +3024,6 @@ process.exit(1);
         }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [],
     }));
     const outcome = await seedAndRun({
@@ -3106,7 +3089,6 @@ process.exit(1);
         }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [],
     }));
     const artifact = { digest, content: desiredBytes };
@@ -3184,7 +3166,6 @@ process.exit(1);
           }],
           availableBlobs: [],
         },
-        localOverlay: [],
         appliedResources: [{
           resource: resource.id,
           revision: "previous",
@@ -3262,7 +3243,6 @@ process.exit(1);
         }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [],
     }));
     const artifact = { digest, content: desiredBytes };
@@ -3749,7 +3729,7 @@ process.exit(1);
         ],
       };
       const plan = Effect.runSync(planSynchronization({
-        revision, follower: follower.id, localOverlay: [], appliedResources: [],
+        revision, follower: follower.id, appliedResources: [],
         observedState: { platform: "linux", availableBlobs: [], resources: [
           { resource: normal.id, observed: { state: "absent" } },
           { resource: text.resource.id, observed: textState === "no-op"
@@ -4496,7 +4476,6 @@ process.exit(child.status ?? 1);
         resources: [{ resource: tool.id, observed: { state: "absent" } }],
         availableBlobs: [],
       },
-      localOverlay: [],
       appliedResources: [],
     }));
     const fixture: Fixture = {

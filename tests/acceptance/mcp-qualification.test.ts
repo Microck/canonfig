@@ -78,7 +78,6 @@ const context = (applied: ResourcePlanningContext["applied"]): ResourcePlanningC
     digest: "a".repeat(64),
     executable: true,
   },
-  overlayKeys: [],
   applied,
   platform: "linux",
 });

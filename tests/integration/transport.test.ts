@@ -6,13 +6,12 @@ import {
   verify,
   X509Certificate,
 } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { generate } from "selfsigned";
 import { afterEach, describe, expect, it } from "vitest";
@@ -35,7 +34,6 @@ import {
   EnrollmentConfigurationError,
   RevokedFollowerCredentialError,
   EnrollmentTransportError,
-  LegacyRevisionFormatError,
   TransportIntegrityError,
   TransportInterruptedError,
   TransportResourceNotFoundError,
@@ -69,17 +67,14 @@ import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
-  digestOf,
   sha256BytesHex,
   sha256Hex,
   type JsonValue,
 } from "../../src/profile/profile-codec.ts";
 import { revisionSigningPayload } from "../../src/profile/publication.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
-import { stateMigrations as v220StateMigrations } from "../fixtures/upgrade/v2.2.0-state-schema.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import { describeRuntimeError } from "../../src/cli/failure-taxonomy.ts";
-import { stateMigrations as v315StateMigrations } from "../fixtures/upgrade/v3.1.5-state-schema.ts";
 
 const decode = Schema.decodeUnknownSync;
 const temporaryDirectories: Array<string> = [];
@@ -170,28 +165,20 @@ const publishFixtureRevision = (
     });
     const privateKey = createPrivateKey(Redacted.value(storedKey));
     const publicKey = createPublicKey(privateKey);
-    const specs = [
-      {
-        kind: "file" as const,
-        content: "shared\n",
-        executable: false,
-      },
-      {
-        kind: "file" as const,
-        content: `alpha-${revisionSequence}\n`,
-        executable: false,
-      },
-      {
-        kind: "file" as const,
-        content: `beta-${revisionSequence}\n`,
-        executable: false,
-      },
-      {
-        kind: "file" as const,
-        content: `cross-group-${revisionSequence}\n`,
-        executable: false,
-      },
+    // Each file item reads its bytes from a source file, as publication does.
+    const contents = [
+      "shared\n",
+      `alpha-${revisionSequence}\n`,
+      `beta-${revisionSequence}\n`,
+      `cross-group-${revisionSequence}\n`,
     ];
+    const sources = join(setup.root, `sources-${revisionSequence}`);
+    yield* Effect.promise(() => mkdir(sources, { recursive: true }));
+    const specs = contents.map((content, index) => {
+      const source = join(sources, `item-${index}.txt`);
+      writeFileSync(source, content);
+      return { kind: "file" as const, source, executable: false };
+    });
     const profile: MachineProfile = {
       id: decode(ProfileId)("transport-profile"),
       version: 2,
@@ -209,7 +196,7 @@ const publishFixtureRevision = (
             target: "~/.shared",
             dependsOn: [],
             spec: specs[0]!,
-            verify: { method: "digest" as const, digest: sha256Hex(specs[0].content) },
+            verify: { method: "digest" as const, digest: sha256Hex(contents[0]!) },
           }]
           : []),
         {
@@ -220,7 +207,7 @@ const publishFixtureRevision = (
           groups: [group("alpha")],
           dependsOn: includeShared ? [decode(ResourceId)("shared")] : [],
           spec: specs[1],
-          verify: { method: "digest", digest: sha256Hex(specs[1].content) },
+          verify: { method: "digest", digest: sha256Hex(contents[1]!) },
         },
         {
           id: decode(ResourceId)("beta-only"),
@@ -230,7 +217,7 @@ const publishFixtureRevision = (
           groups: [group("beta")],
           dependsOn: includeShared ? [decode(ResourceId)("shared")] : [],
           spec: specs[2],
-          verify: { method: "digest", digest: sha256Hex(specs[2].content) },
+          verify: { method: "digest", digest: sha256Hex(contents[2]!) },
         },
         ...(includeCrossGroupDependent
           ? [{
@@ -243,7 +230,7 @@ const publishFixtureRevision = (
             spec: specs[3]!,
             verify: {
               method: "digest" as const,
-              digest: sha256Hex(specs[3].content),
+              digest: sha256Hex(contents[3]!),
             },
           }]
           : []),
@@ -256,10 +243,10 @@ const publishFixtureRevision = (
     };
     const resources: ReadonlyArray<PublishedResource> = profile.resources.map(
       (resource) => {
-        if (resource.spec.kind !== "file" || resource.spec.content === undefined) {
-          throw new Error("transport fixture resources must be inline files");
+        if (resource.spec.kind !== "file") {
+          throw new Error("transport fixture resources must be files");
         }
-        const content = Buffer.from(resource.spec.content);
+        const content = readFileSync(resource.spec.source);
         const blob = decode(BlobId)(sha256BytesHex(content));
         return {
           id: decode(ResourceId)(resource.id),
@@ -329,12 +316,13 @@ const publishFixtureRevision = (
     yield* repository.publishRevision({
       revision,
       blobs: profile.resources.map((resource, index) => {
-        if (resource.spec.kind !== "file" || resource.spec.content === undefined) {
-          throw new Error("transport fixture resources must be inline files");
+        if (resource.spec.kind !== "file") {
+          throw new Error("transport fixture resources must be files");
         }
         return {
           id: resources[index]!.blobs[0]!,
-          content: Buffer.from(resource.spec.content),
+          bytes: readFileSync(resource.spec.source).byteLength,
+          path: resource.spec.source,
         };
       }),
     });
@@ -344,8 +332,8 @@ const publishFixtureRevision = (
         resource.blobs.map((blob) => decode(BlobId)(blob))
       ),
       blobBytes: resources.map((resource) => {
-        if (resource.spec?.kind !== "file" || resource.spec.bytes === undefined) {
-          throw new Error("transport fixture published file has no byte length");
+        if (resource.spec?.kind !== "file") {
+          throw new Error("transport fixture published resource is not a file");
         }
         return resource.spec.bytes;
       }),
@@ -890,265 +878,6 @@ describe("authenticated content-addressed transport", () => {
     expect(result.downloadedBlobs).toBe(0);
     expect(result.reusedBlobs).toBe(2);
     expect(secondServer.blobRequests()).toBe(0);
-  });
-});
-
-interface LegacyPublication {
-  readonly revisionId: string;
-  readonly signature: string;
-  readonly contents: Readonly<Record<"plain" | "alpha", string>>;
-}
-
-/**
- * Leaves `setup.database` exactly as a 3.1.5 Source left it: that release's
- * schema, a Source identity, and one revision published in its format, with
- * each file body inline in the signed profile and the resource blob index
- * naming the digest of the whole spec.
- */
-const legacySourceState = async (
-  setup: Fixture,
-  options: {
-    readonly migrations?: typeof v315StateMigrations;
-    readonly alphaSpecKind?: string;
-    /** Adds what only v2.x could publish: a schedule resource and a named-timezone default. */
-    readonly v2Schedule?: boolean;
-  } = {},
-): Promise<LegacyPublication> => {
-  await Effect.runPromise(
-    SqliteMigrator.run({ loader: options.migrations ?? v315StateMigrations }).pipe(
-      Effect.provide(SqliteClient.layer({ filename: setup.database })),
-    ),
-  );
-  const signing = generateKeyPairSync("ed25519");
-  const fingerprint = sha256BytesHex(
-    signing.publicKey.export({ type: "spki", format: "der" }),
-  );
-  const certificate = await generate([{ name: "commonName", value: "canonfig-loopback" }], {
-    algorithm: "sha256",
-    keyType: "ec",
-    curve: "P-256",
-    extensions: [{ name: "subjectAltName", altNames: [{ type: 7, ip: "127.0.0.1" }] }],
-  });
-  const store = (name: string, value: string) =>
-    Effect.runPromise(
-      Effect.flatMap(MachineState, (machine) =>
-        machine.storeCredential({ name, value: Redacted.make(value) })).pipe(
-          Effect.provide(setup.sourceMachine),
-        ),
-    );
-  const signingKeyReference = await store(
-    "canonfig-source-signing-key",
-    signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-  );
-  const tlsKeyReference = await store("canonfig-source-tls-key", certificate.private);
-  const tlsCertificateReference = await store(
-    "canonfig-source-tls-certificate",
-    certificate.cert,
-  );
-  const contents = { plain: "published by 3.1.5\n", alpha: "alpha group only\n" };
-  const scheduleDefault = options.v2Schedule === true
-    ? { scheduleDefault: { type: "daily", at: "09:00", timezone: "Europe/Paris" } }
-    : {};
-  const profile = {
-    id: "legacy-profile",
-    version: 2,
-    name: "Legacy profile",
-    groups: [{ name: "alpha" }],
-    resources: [
-      {
-        id: "legacy-plain",
-        kind: "file",
-        policy: "replace",
-        target: "~/.legacy-plain",
-        dependsOn: [],
-        spec: { kind: "file", content: contents.plain, executable: false },
-        verify: { method: "digest", digest: sha256Hex(contents.plain) },
-      },
-      {
-        id: "legacy-alpha",
-        kind: "file",
-        policy: "replace",
-        target: "~/.legacy-alpha",
-        groups: ["alpha"],
-        dependsOn: ["legacy-plain"],
-        spec: {
-          kind: options.alphaSpecKind ?? "file",
-          content: contents.alpha,
-          executable: true,
-          mode: 0o755,
-        },
-        verify: { method: "digest", digest: sha256Hex(contents.alpha) },
-      },
-      {
-        id: "legacy-link",
-        kind: "file",
-        policy: "replace",
-        target: "~/.legacy-link",
-        dependsOn: [],
-        spec: { kind: "file", content: "", executable: false, symlinkTo: "/etc/hostname" },
-        verify: { method: "symlink", target: "/etc/hostname" },
-      },
-      ...(options.v2Schedule === true
-        ? [{
-          id: "legacy-schedule",
-          kind: "schedule",
-          policy: "replace",
-          target: "canonfig-sync",
-          dependsOn: [],
-          spec: {
-            kind: "schedule",
-            calendar: { type: "daily", at: "09:00" },
-            timezone: "Europe/Paris",
-          },
-          verify: { method: "executable-present", executable: "canonfig" },
-        }]
-        : []),
-    ],
-    ...scheduleDefault,
-  };
-  const resources = profile.resources.map(({ spec, verify: _, ...resource }) => ({
-    ...resource,
-    blobs: [digestOf(asJson(spec))],
-  }));
-  // Signed exactly as the old release signed it, retired kinds included.
-  const signedResources: ReadonlyArray<PublishedResource> = JSON.parse(JSON.stringify(resources));
-  const canonicalBytes = canonicalJson(asJson(profile));
-  const digest = sha256Hex(canonicalBytes);
-  const unsigned = {
-    id: decode(ProfileRevisionId)(`${profile.id}:${digest}`),
-    profileId: decode(ProfileId)(profile.id),
-    sequence: 1,
-    canonicalBytes,
-    digest,
-    publishedAt: "2026-06-01T09:00:00Z",
-    resources: signedResources,
-    groups: [{ name: group("alpha") }],
-    signingKeyId: `ed25519:${fingerprint}`,
-  };
-  const signature = `ed25519:${
-    sign(null, Buffer.from(revisionSigningPayload(unsigned)), signing.privateKey)
-      .toString("base64url")
-  }`;
-  const { signingKeyId: _, ...stored } = unsigned;
-  const database = new DatabaseSync(setup.database);
-  try {
-    database.prepare(
-      "INSERT INTO source_identity (singleton, key_id, public_key_fingerprint) VALUES (1, ?, ?)",
-    ).run(`ed25519:${fingerprint}`, fingerprint);
-    database.prepare(
-      `INSERT INTO enrollment_source (
-        singleton, signing_key_reference, tls_key_reference,
-        tls_certificate_reference, tls_fingerprint
-      ) VALUES (1, ?, ?, ?, ?)`,
-    ).run(
-      signingKeyReference,
-      tlsKeyReference,
-      tlsCertificateReference,
-      new X509Certificate(certificate.cert).fingerprint256.replaceAll(":", "").toLowerCase(),
-    );
-    database.prepare(
-      `INSERT INTO profile_revisions (
-        id, profile_id, sequence, canonical_bytes, digest, signature,
-        published_at, revision_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      unsigned.id,
-      unsigned.profileId,
-      unsigned.sequence,
-      canonicalBytes,
-      digest,
-      signature,
-      unsigned.publishedAt,
-      JSON.stringify({ ...stored, signature, ...scheduleDefault }),
-    );
-    for (const resource of resources) {
-      database.prepare(
-        "INSERT INTO profile_revision_blobs (blob_id, revision_id, resource_id) VALUES (?, ?, ?)",
-      ).run(resource.blobs[0]!, unsigned.id, resource.id);
-    }
-  } finally {
-    database.close();
-  }
-  return { revisionId: unsigned.id, signature, contents };
-};
-
-describe("Source upgraded from a release before 3.2.1", () => {
-  it("serves a revision the earlier release published", async () => {
-    const setup = fixture();
-    const legacy = await legacySourceState(setup);
-    // The first use of the runtime opens the 3.1.5 state and migrates it.
-    const server = await start(setup);
-    const enrolled = await enroll(setup, server);
-    const fetched = await runFollower(setup, fetchRevision({
-      ...transportInput(server, enrolled),
-      revisionId: legacy.revisionId,
-      cacheDirectory: join(setup.root, "legacy-cache"),
-    }));
-
-    expect(fetched.metadata.sourceSignature).toBe(legacy.signature);
-    expect(fetched.metadata.resources.map((resource) => resource.id)).toEqual([
-      "legacy-plain",
-      "legacy-alpha",
-      "legacy-link",
-    ]);
-    const bodies = await Promise.all(
-      fetched.blobs.map((blob) => readFile(blob.path, "utf8")),
-    );
-    expect(bodies.sort()).toEqual([legacy.contents.alpha, legacy.contents.plain].sort());
-    const alpha = fetched.metadata.resources.find((resource) => resource.id === "legacy-alpha");
-    expect(alpha?.spec).toEqual({
-      kind: "file",
-      blob: sha256BytesHex(Buffer.from(legacy.contents.alpha)),
-      bytes: Buffer.byteLength(legacy.contents.alpha),
-      executable: true,
-      mode: 0o755,
-    });
-    const link = fetched.metadata.resources.find((resource) => resource.id === "legacy-link");
-    expect(link?.spec).toMatchObject({ kind: "file", symlinkTo: "/etc/hostname" });
-    expect(link?.blobs).toEqual([]);
-  });
-
-  it("refuses a legacy revision it cannot represent by name, not as tampering", async () => {
-    const setup = fixture();
-    const legacy = await legacySourceState(setup, { alphaSpecKind: "schedule" });
-    const server = await start(setup);
-    const enrolled = await enroll(setup, server);
-    const refused = await Effect.runPromise(Effect.flip(
-      getRevisionMetadata({
-        ...transportInput(server, enrolled),
-        revisionId: legacy.revisionId,
-      }).pipe(Effect.provide(setup.followerMachine)),
-    ));
-    expect(refused).toBeInstanceOf(LegacyRevisionFormatError);
-    const described = describeRuntimeError(refused);
-    expect(described.category).toBe("human-action-required");
-    expect(described.message).toContain(legacy.revisionId);
-    expect(described.message).toContain("canonfig source publish");
-  });
-
-  it("lists and serves a v2.2.0 revision carrying a retired schedule resource and timezone", async () => {
-    const setup = fixture();
-    const legacy = await legacySourceState(setup, {
-      migrations: v220StateMigrations,
-      v2Schedule: true,
-    });
-    const server = await start(setup);
-    const enrolled = await enroll(setup, server);
-    const input = transportInput(server, enrolled);
-    const listed = await runFollower(setup, listRevisions(input));
-    expect(listed.revisions.map((revision) => revision.id)).toEqual([legacy.revisionId]);
-    const fetched = await runFollower(setup, fetchRevision({
-      ...input,
-      revisionId: legacy.revisionId,
-      cacheDirectory: join(setup.root, "v2-cache"),
-    }));
-    expect(fetched.metadata.resources.map((resource) => resource.id)).toEqual([
-      "legacy-plain",
-      "legacy-alpha",
-      "legacy-link",
-    ]);
-    expect(fetched.metadata.scheduleDefault).toBeUndefined();
-    expect(fetched.downloadedBlobs).toBe(2);
   });
 });
 
