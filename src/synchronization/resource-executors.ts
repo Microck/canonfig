@@ -1689,6 +1689,17 @@ const prepareRemoval = (
           if (restorationResult._tag === "Failure") {
             return yield* Effect.fail(restorationResult.failure);
           }
+          // The root is the resource's target, so once its owned paths are
+          // gone an empty root goes too. Leaving it made a later
+          // resource at the same target observe an empty directory it had no
+          // record of, which planned as Follower Drift. A root that still
+          // holds entries holds someone else's files and stays. Rollback
+          // captured the root, so it recreates it.
+          yield* machine.removeEmptyDirectory({ path: root }).pipe(
+            Effect.catchTag("MachineFilesystemError", (error) =>
+              /\b(?:ENOTEMPTY|EEXIST|ENOENT)\b/u.test(error.message) ? Effect.void : Effect.fail(error)
+            ),
+          );
         });
         return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
       }

@@ -2197,6 +2197,9 @@ process.exit(1);
     const target = join(nested, "settings.json");
     mkdirSync(nested, { recursive: true });
     writeFileSync(target, "owned content");
+    // An entry Canonfig does not own keeps the root, so its restored mode is
+    // observable; an emptied root is removed with the resource.
+    writeFileSync(join(managed, "unowned.txt"), "follower data");
     chmodSync(nested, 0o500);
     chmodSync(managed, 0o500);
     const baseContext = mirrorContext(
@@ -2233,6 +2236,9 @@ process.exit(1);
 
     await expect(access(nested)).rejects.toMatchObject({ code: "ENOENT" });
     expect(statSync(managed).mode & 0o7777).toBe(0o500);
+    expect(readFileSync(join(managed, "unowned.txt"), "utf8")).toBe("follower data");
+    // afterEach cannot delete the unowned file from a read-only directory.
+    chmodSync(managed, 0o700);
   });
 
   it("keeps outside paths untouched when an ancestor is swapped during a mirror write", async () => {
