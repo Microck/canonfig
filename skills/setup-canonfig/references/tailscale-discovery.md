@@ -2,7 +2,7 @@
 
 Use only when machine selection matters. This is passive inventory from the
 current user's local Tailscale client, not subnet scanning or service discovery.
-Do not run it for CLI-only or project-harness-only setup.
+Do not run it for CLI-only setup.
 
 ## Consent and fallback
 

@@ -41,8 +41,8 @@ facts. Finite enums accept Other for clarification but never unsupported values.
 Use More results or a filter for long lists; Other is always visible.
 
 Mark single-select versus multi-select. For multi-select, Keep, None, and Skip
-are exclusive with other choices. Do not infer that all discovered devices or
-installed harnesses should be selected.
+are exclusive with other choices. Do not infer that all discovered devices
+should be selected.
 
 ## Answer handling
 
@@ -176,7 +176,7 @@ dependencies and invalidate only approvals whose scope changed. Never reuse a
 number-to-device mapping after refreshing it without showing the new list.
 
 Before the plan, show numbered editable summary rows: role, names/profiles,
-selected devices, ownership, credentials, agents, schedule, harness settings.
+selected devices, ownership, credentials, agents, schedule.
 Mark defaults and deferred fields. Selecting a row opens the same menu in either
 mode. Completeness comes from the decision record and verification, not from
 making the operator answer every possible question.

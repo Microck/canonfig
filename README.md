@@ -107,24 +107,6 @@ schedules follow the user's login session by default. see
 [unattended operation](https://canonfig.micr.dev/docs/how-to/run-unattended/)
 for boot or logged-out operation.
 
-## configure harnesses
-
-project-local harness configuration projects one canonical definition into
-selected agent harnesses:
-
-```sh
-canonfig harness init
-canonfig harness plan
-canonfig harness apply
-# or keep local projections updated while this foreground process runs:
-canonfig harness watch
-```
-
-`canonfig harness export` packages a setup to share; it is **not a secret
-scanner**, so review declared content first. see the
-[harness guide](docs/harness-configuration.md) and
-[archive contents and limits](docs/harness-archives.md).
-
 ## update upstream skills
 
 register an existing skill's Git source with `canonfig skills track`, then

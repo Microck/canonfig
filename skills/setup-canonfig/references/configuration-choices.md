@@ -33,7 +33,7 @@ candidates, not ownership, authorization, or a requirement to enable them.
 | Field(s) | Why it matters | Candidate choices to number |
 | --- | --- | --- |
 | Setup mode | Controls question depth, not permissions | Simple; Advanced (in-depth) |
-| Goal / role | Chooses configuration authority or project-only work | Source; Follower; CLI only; project harness |
+| Goal / role | Chooses configuration authority or CLI-only work | Source; Follower; CLI only |
 | State owner | Credentials and jobs belong to an OS account | Keep observed owner; current non-root user; another confirmed account |
 | Existing state | Avoids accidental reinitialization | Keep/resume; inspect only; defer conflict resolution |
 | Package / version | Must match supported commands and runtime | Keep compatible installed version; documented exact version; another verified exact version |
@@ -112,29 +112,7 @@ are not necessarily per-name access controls: inspect the installed sharing
 contract before promising per-secret isolation. Never treat a grant as merely
 another default accepted in bulk.
 
-## Project harness features
-
-| Field(s) | Why it matters | Candidate choices to number |
-| --- | --- | --- |
-| Repository root / project name | Bounds generated files to one project | Observed repository; another explicit repository; existing/proposed label |
-| Source format | Exactly one harness source is allowed | Keep YAML/YML/JSON; new YAML; new strict JSON |
-| Targets / enabled / target options | Chooses which adapters generate output | Keep; selected installed/declared targets; add supported targets from listing |
-| Translation strictness | Exposes semantic loss instead of hiding it | Strict; review each non-strict mapping; defer unsupported feature |
-| Instruction root | Supplies canonical instructions | Existing approved source; proposed canonical copy; custom path |
-| Rules: ID, file, paths, activation, description | Determines when instructions apply | Keep/edit rule; observed file/globs; always/path/manual/model as supported |
-| Skills: roots | Chooses canonical skill directories | Keep; select observed roots; none; custom paths |
-| MCP: enabled, transport, command, args, cwd, URL | Starts or connects to external services | Keep/edit detected server; stdio/streamable-http/SSE; disabled |
-| MCP: env, headers, timeout, enabled/disabled tools | Controls credentials, latency, and tool exposure | Symbolic env references; existing limits; minimal selected tools; disabled |
-| Hooks: ID, event, enabled, matcher, run, timeout, onFailure | Hooks execute commands at lifecycle events | Keep/disabled; select supported event/matcher; block/warn/ignore policy |
-| Agents: ID, file, description, model, tools, writable | Bounds delegated work | Keep/disabled; verified file/model; selected capabilities; read-only/writable |
-| Commands: ID, file, description, argument hint | Creates project command entry points | Keep; observed approved file; none |
-| Permissions: pattern, action, reason | Determines allow/ask/deny behavior | Keep; deny; ask; scoped allow |
-| Extensions: target-specific fields | Native features may lack portable equivalents | Keep; disabled; edit fields supported by the installed adapter |
-| Native collision / generated-file edit | Transfers ownership only when approved | Preserve; revise source; specifically reviewed transfer |
-| Cleanup | Removes only recorded Canonfig-owned output | Preview; approve reviewed cleanup; keep |
-
 Do not ask the user to define empty optional sections. In Advanced, the section's
 Disabled/Keep answer closes it. In Simple, requested or detected sections appear
 in the editable summary; they are not silently dropped. Secret defaults must
-never contain real values. A selected harness target is not the separate
-Configuration Agent runtime policy.
+never contain real values.

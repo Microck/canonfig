@@ -114,15 +114,6 @@ them. Canonfig never copies trust decisions between machines. Tell the operator:
 that proves a client loaded the resource. Never report it as verified from file
 evidence.
 
-### Project harness
-
-- one canonical source format;
-- validation passes;
-- targets and support levels reported;
-- no unapproved collision, force ownership, or external edit;
-- status has no pending owned changes;
-- requested target probes reported.
-
 ## Failure interpretation
 
 Canonfig CLI exit categories are:

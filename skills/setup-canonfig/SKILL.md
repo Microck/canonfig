@@ -1,6 +1,6 @@
 ---
 name: setup-canonfig
-description: Guide Canonfig setup across Linux, macOS, and Windows in Simple or Advanced mode, with numbered questions, explanations, recommended answers, custom input, optional Tailscale device discovery, and verified Source Machine, Follower Machine, or project harness setup.
+description: Guide Canonfig setup across Linux, macOS, and Windows in Simple or Advanced mode, with numbered questions, explanations, recommended answers, custom input, optional Tailscale device discovery, and verified Source Machine or Follower Machine setup.
 ---
 
 # Set Up Canonfig
@@ -35,8 +35,7 @@ permissions, trust checks, or the definition of completion.
    settings. `Show advanced options`, `advanced`, `in-depth`, and `complex` select
    Advanced; `simple` selects Simple. Switch without restarting or losing answers.
 7. Do not ask about optional shared secrets in Simple mode unless relevant.
-   Likewise, keep agent execution and empty harness features out of the essential
-   interview. Show editable defaults once. In Advanced, offer each relevant
+   Likewise, keep agent execution out of the essential interview. Show editable defaults once. In Advanced, offer each relevant
    section, including a numbered keep/disabled choice before detailed fields.
 8. Never request passwords, tokens, private keys, credential values, or invitation
    payloads in chat or custom answers. Ask for a secure local input method, not
@@ -48,7 +47,7 @@ permissions, trust checks, or the definition of completion.
 
 Read [questions](references/questions.md) before presenting choices. The
 [configuration catalogue](references/configuration-choices.md) covers editable
-fields, including free-form values and nested resource/harness records.
+fields, including free-form values and nested resource records.
 
 ## Setup modes
 
@@ -82,8 +81,8 @@ shared-secret authority, even when they are inconvenient.
 ### Advanced
 
 Offer these relevant sections in small batches: environment/install, machines
-and connectivity, profile/resources, credentials, agent bounds, schedule, and
-project harness features. Skip unrelated branches. Populate existing values and
+and connectivity, profile/resources, credentials, agent bounds, and schedule.
+Skip unrelated branches. Populate existing values and
 let the operator keep a whole section; do not force empty hooks or MCP records.
 Every field must remain editable through numbered options plus custom input.
 
@@ -105,15 +104,11 @@ operator asks.
   [source setup](references/source-setup.md).
 - Follower enrollment, convergence, schedule, recovery:
   [follower setup](references/follower-setup.md).
-- Repository-local AI configuration:
-  [harness setup](references/harness-setup.md).
 - Machine choices from Tailscale, only when relevant and opted in:
   [device discovery](references/tailscale-discovery.md).
 - Evidence and final report:
   [completion](references/completion.md).
 
-Harness projection is separate from Machine Profile synchronization. A
-harness-only request needs no Source, follower enrollment, or Tailscale discovery.
 CLI-only installation needs no machine identity or schedule.
 
 ## Workflow
@@ -138,9 +133,6 @@ canonfig setup status --json
 canonfig schedule status
 canonfig agent policy
 canonfig agent harness
-canonfig harness targets
-canonfig harness status --json
-canonfig harness doctor --json
 ```
 
 A missing command is an observation, not permission to install it. Diagnostic
@@ -159,9 +151,9 @@ inventories. Prefer detected candidates; mark proposals and unavailable choices
 honestly. Reuse existing configuration without erasing it to apply a new default.
 
 New-setting recommendations: user-level operation, the documented exact package,
-`deterministic-only`, no shared secrets, no force, no elevated capabilities, and
-YAML for a new harness unless JSON is already established. Scheduling remains an
-explicit choice; there is no universal working-hour or timezone assumption.
+`deterministic-only`, no shared secrets, no force, and no elevated capabilities.
+Scheduling remains an explicit choice; there is no universal working-hour or
+timezone assumption.
 
 Resolve custom text against the installed CLI/schema before proposing execution.
 A name, hostname, path, or menu selection is data, never a shell command.
@@ -191,8 +183,8 @@ canonfig setup status --json
 ```
 
 Pass `--scope` explicitly from the selected goal: `cli-only` for the CLI-only
-goal (no machine identity or schedule), `project-only` for the project
-harness goal (no identity), and the `full` default otherwise. A narrow goal
+goal (no machine identity or schedule), `project-only` to prepare project
+resources without an identity, and the `full` default otherwise. A narrow goal
 planned without `--scope` would silently become full setup and, for a Source
 plan, could establish an identity after approval.
 
@@ -227,8 +219,7 @@ canonfig doctor --no-input --timeout-ms 5000
 | macOS | Keychain | launchd user agent |
 | Windows | Credential Manager | per-user Task Scheduler |
 
-Preserve pins, identity, SQLite state, journals, cache, follower edits, and harness
-ownership records. Resume from evidence; do not reinstall, reenroll, republish,
+Preserve pins, identity, SQLite state, journals, cache, and follower edits. Resume from evidence; do not reinstall, reenroll, republish,
 reset trust, or force ownership just because setup is invoked again.
 
 A machine set up with the direct commands (`source init`, `source publish`,

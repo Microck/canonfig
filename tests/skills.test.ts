@@ -22,9 +22,6 @@ const setupSource = readProjectFile(
 const setupFollower = readProjectFile(
   "skills/setup-canonfig/references/follower-setup.md",
 );
-const setupHarness = readProjectFile(
-  "skills/setup-canonfig/references/harness-setup.md",
-);
 const setupCompletion = readProjectFile(
   "skills/setup-canonfig/references/completion.md",
 );
@@ -112,12 +109,11 @@ describe("Canonfig guided setup experience", () => {
     expect(setupQuestions).toContain("never approves future publication");
     expect(setupSource).toContain("Publication gate");
     expect(setupFollower).toContain("Apply this exact synchronization plan?");
-    expect(setupHarness).toContain("Approval for one collision does not authorize blanket");
   });
 
   it("avoids optional-feature interrogation and secret collection", () => {
     expect(setupSkill).toContain("Do not ask about optional shared secrets");
-    expect(setupHarness).toContain("Do not ask the user to define empty optional sections");
+    expect(setupCatalogue).toContain("Do not ask the user to define empty optional sections");
     expect(setupSkill).toContain("Never request passwords, tokens, private keys");
     expect(setupFollower).toContain("Do not ask for the invitation payload in chat");
   });
@@ -181,7 +177,7 @@ describe("Canonfig choice-first setup contract", () => {
   });
 
   it("gives every question example explained, consecutive choices ending in custom input", () => {
-    const texts = [setupSkill, setupQuestions, setupSource, setupFollower, setupHarness, setupDiscovery];
+    const texts = [setupSkill, setupQuestions, setupSource, setupFollower, setupDiscovery];
     let checked = 0;
     for (const text of texts) {
       for (const match of text.matchAll(/```text\n([\s\S]*?)```/gu)) {
@@ -201,7 +197,7 @@ describe("Canonfig choice-first setup contract", () => {
   });
 
   it("covers nested configurable fields without forcing empty optional sections", () => {
-    for (const field of ["Apply Policy", "Dependencies", "Local Overlay", "Verification", "Build policy", "Invitation", "Agent policy", "Maximum input bytes", "Schedule", "MCP:", "Hooks:", "Agents:", "Commands:", "Permissions:", "Extensions:"]) {
+    for (const field of ["Apply Policy", "Dependencies", "Local Overlay", "Verification", "Build policy", "Invitation", "Agent policy", "Maximum input bytes", "Schedule"]) {
       expect(setupCatalogue).toContain(field);
     }
     expect(setupCatalogue).toContain("Apply the same\nmenu rule recursively");

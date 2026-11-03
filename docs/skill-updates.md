@@ -37,15 +37,13 @@ filenames and commit IDs, never skill contents or remote error output.
 
 The default source configuration is `.canonfig/skills-sources.json`, relative
 to `--root` (default: the current working directory). It is deliberately
-separate from harness-generated-file ownership and signed Machine Profiles.
+separate from signed Machine Profiles.
 
 Use `--config settings/skill-sources.json` for another root-relative file.
-Installed paths are also root-relative, so canonical `.canonfig/skills`,
-project `.agents/skills`, or another explicit directory can be tracked. For
-user-scoped skills, explicitly set `--root` to your home directory and select a
-configuration and installed path beneath it. There is no implicit scan of home
-directories or credential stores. Do not track generated projections when their
-canonical source is available: update the source, then run `harness plan/apply`.
+Installed paths are also root-relative, so `.agents/skills` or another explicit
+directory can be tracked. For user-scoped skills, explicitly set `--root` to
+your home directory and select a configuration and installed path beneath it.
+There is no implicit scan of home directories or credential stores.
 For Source/Follower synchronization, update and review on the Source Machine,
 then publish a new profile; do not independently update follower-owned copies.
 
@@ -157,7 +155,7 @@ pass (a JSON stream), not one indefinitely growing array. If no pass runs (for
 example, no skills are tracked or the signal is already aborted), it emits one
 `skills.auto` envelope with a message, exit code 0 and no `data` field.
 
-Automatic upstream updates never publish a Machine Profile, apply harness
-projections, enroll a Follower, or run skill scripts. Review resulting changes
+Automatic upstream updates never publish a Machine Profile, enroll a Follower,
+or run skill scripts. Review resulting changes
 on the Source Machine and publish separately. Do not point this worker at
 Follower-owned or generated skill copies.
