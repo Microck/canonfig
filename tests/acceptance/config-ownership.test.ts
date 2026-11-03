@@ -34,7 +34,7 @@ const roots: Array<string> = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 /** Decode, normalize and validate one resource the way publication does. */
-const profileWith = (resource: unknown): MachineProfile => {
+const profileWith = (resource: typeof ProfileResourceInputSchema.Encoded): MachineProfile => {
   const profile = normalizeMachineProfile({
     id: decode(ProfileId)("portable-config"), version: 2, name: "Portable config", groups: [],
     resources: [decode(ProfileResourceInputSchema)(resource)],

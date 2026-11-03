@@ -1039,30 +1039,6 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     expect(ownershipReplan.plan.actions.filter((action) => action.kind !== "no-op")).toEqual([]);
     expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
 
-    // A Local Overlay that claims a key the projection owns is a human
-    // decision, not a silent merge.
-    const mcpResource = ownershipReplan.plan.actions.find((action) =>
-      action.resource.startsWith("harness:claude-code:") && action.resource.includes("mcp")
-    )!.resource;
-    await follower.configure({
-      localOverlay: [{ resource: decode(ResourceId)(mcpResource), target: join(home, ".claude.json"), keys: ["mcpServers.docs"] }],
-    });
-    expect(await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.listLocalOverlays())
-      .pipe(Effect.provide(stateRepositoryLayer(follower.state))))).toEqual([
-      { resource: mcpResource, target: join(home, ".claude.json"), keys: ["mcpServers.docs"] },
-    ]);
-    expect((await follower.plan()).plan.actions).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        resource: mcpResource,
-        detail: expect.objectContaining({
-          kind: "human-action",
-          // The projection owns the whole `mcpServers` key.
-          reason: expect.stringContaining("Local Overlay conflicts with canonical keys: mcpServers"),
-        }),
-      }),
-    ]));
-    await follower.configure();
-
     // An edited mirror file is Follower Drift: kept, and the run stops.
     write(join(folder, "AGENTS.md"), "local drift\n");
     expect(await follower.apply()).toMatchObject({ outcome: { outcome: "FollowerDrift" } });

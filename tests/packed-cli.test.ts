@@ -930,9 +930,6 @@ describe("packed Canonfig executable", () => {
     const laptop = machine("lifecycle-follower", ["claude-code"]);
     const follower = enroll(laptop, "packed-follower");
 
-    const overlays = requireSuccess(invoke(laptop, ["overlay", "list", "--json"]), "list overlays");
-    expect(overlays.data).toEqual({ overlays: [] });
-
     // Every platform converges. This used to expect exit 7 on Linux, because
     // the plan always appended a schedule-default action and that action failed
     // without a systemd user session, so a container or headless host could

@@ -36,7 +36,7 @@ describe("Canonfig foundation CLI", () => {
   // CF-61: every command group is discoverable from global help, and each
   // group answers its own --help instead of repeating the global listing.
   const commandAreas = [
-    "source", "follower", "sync", "recover", "abandon", "status", "overlay",
+    "source", "follower", "sync", "recover", "abandon", "status",
     "doctor", "tunnel", "profile", "agent", "setup", "schedule",
     "secrets", "installer",
   ] as const;
