@@ -192,7 +192,7 @@ function ampAgentRegistration({ agent, tools }: AmpAgent): Array<string> {
     `    name: ${JSON.stringify(agent.id)},`,
     ...model,
     `    instructions: ${JSON.stringify(agent.content.trim())},`,
-    `    tools: ${JSON.stringify(tools.length > 0 ? tools : "all")},`,
+    `    tools: ${JSON.stringify(tools)},`,
     "  });",
     "  amp.registerTool({",
     `    name: ${JSON.stringify(toolName)},`,

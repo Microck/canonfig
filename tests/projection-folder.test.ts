@@ -1,4 +1,5 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -10,6 +11,8 @@ import {
   loadCanonicalFolder,
   LocalItemCollisionError,
 } from "../src/projection/folder.ts";
+import { nativeTools } from "../src/projection/adapters/tools.ts";
+import { ampPluginSource } from "../src/projection/templates/runtime.ts";
 
 const roots: Array<string> = [];
 afterEach(() => {
@@ -53,13 +56,35 @@ describe("Canonical Folder loader", () => {
     expect(loaded.model.instructions).toBe("Be brief.\n");
     expect(loaded.model.rules).toEqual([expect.objectContaining({ id: "style", paths: ["**/*.ts"], content: "Two spaces." })]);
     expect(loaded.model.skills.map((skill) => [skill.name, skill.files.map((file) => file.path)])).toEqual([["deploy", ["SKILL.md"]]]);
-    expect(loaded.model.agents).toEqual([expect.objectContaining({ id: "reviewer", model: "inherit", tools: [], writable: false })]);
+    expect(loaded.model.agents).toEqual([expect.objectContaining({ id: "reviewer", model: "inherit", tools: ["read", "search"], writable: false })]);
     expect(loaded.model.commands).toEqual([expect.objectContaining({ id: "ship", argumentHint: "<branch>" })]);
     expect(loaded.model.mcp.map(([name]) => name)).toEqual(["git"]);
     expect(loaded.model.hooks[0]?.run).toEqual([join(root, "hooks", "format.sh"), "--fix"]);
     expect(loaded.model.settings).toEqual({ codex: [{ path: "model_reasoning_effort", value: "high" }] });
     expect(loaded.local).toEqual({ excludeHarnesses: [], backups: true });
     expect((await loadCanonicalFolder(root)).digest).toBe(loaded.digest);
+  });
+
+  it.each([
+    ["omitted", "", ["read", "grep", "glob"]],
+    ["empty", "tools: []\n", []],
+  ] as const)("keeps %s agent tools restricted in the executable Amp plugin", async (_name, tools, expected) => {
+    const root = folder({
+      "canonfig.jsonc": minimal,
+      "agents/reviewer.md": `---\ndescription: Reviews\n${tools}---\nReview the change.\n`,
+    });
+    const { model } = await loadCanonicalFolder(root);
+    const source = ampPluginSource("", [], model.agents.map((agent) => ({ agent, tools: nativeTools("amp", agent) })), []);
+    // Execute the generated module to inspect the permissions passed to Amp.
+    const javascript = stripTypeScriptTypes(source);
+    const plugin = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
+    const agents: Array<{ tools: string[] | "all" }> = [];
+    const registered: Array<{ name: string }> = [];
+    plugin.default({
+      createAgent: (options: { tools: string[] | "all" }) => { agents.push(options); return {}; },
+      registerTool: (tool: { name: string }) => { registered.push(tool); },
+    });
+    expect(agents.map((agent) => agent.tools)).toEqual([expected]);
   });
 
   it.each([

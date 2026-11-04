@@ -430,7 +430,7 @@ const loadAgents = async (source: FolderSource, directory: string): Promise<Read
     id: document.id,
     description: document.data.description,
     model: document.data.model ?? "inherit",
-    tools: document.data.tools ?? [],
+    tools: document.data.tools ?? ["read", "search"],
     writable: document.data.writable ?? false,
     content: document.content,
   }));
