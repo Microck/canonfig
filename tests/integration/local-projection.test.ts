@@ -299,6 +299,37 @@ describe("local projection", () => {
     expect(appliedCount(value)).toBe(0);
   }, 60_000);
 
+  it("keeps the original takeover snapshot when rollback cannot restore a written surface", async () => {
+    const value = fixture(["claude-code", "qwen"], { settings: { qwen: { "general.vimMode": true } } });
+    const instructions = join(value.home, ".claude", "CLAUDE.md");
+    write(instructions, "original instructions\n");
+    write(join(value.home, ".qwen", "settings.json"), "{ \"general\": \"not an object\" }\n");
+    let writes = 0;
+    const failingRollback = Layer.effect(MachineState, Effect.map(MachineState, (service) => ({
+      ...service,
+      atomicWrite: (input: Parameters<typeof service.atomicWrite>[0]) => {
+        if (input.path.absolute === instructions && ++writes > 1) {
+          return Effect.fail(new MachineFilesystemError({
+            operation: "restore instructions", path: instructions, message: "fixture rollback write refused",
+          }));
+        }
+        return service.atomicWrite(input);
+      },
+    }))).pipe(Layer.provide(machineLayer(value)));
+    const result = await Effect.runPromise(synchronizeLocal(value.statePath, "apply", {
+      noBackup: false, environment: environmentOf(value),
+    }).pipe(Effect.provide(layer(value, failingRollback))));
+    expect(result.outcome).toMatchObject({ outcome: "Failed", rollbackIncomplete: true });
+    expect(readFileSync(instructions, "utf8")).toContain("Prefer small diffs.");
+    expect(snapshots(value)).toHaveLength(1);
+    const snapshot = snapshots(value)[0]!;
+    expect(readFileSync(join(value.folder, ".backups", snapshot, "claude-code", ".claude", "CLAUDE.md"), "utf8"))
+      .toBe("original instructions\n");
+    expect(takeoverRows(value).some((row) => row.harness === "claude-code" && row.snapshot === snapshot)).toBe(true);
+    expect((await restore(value, snapshot)).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(instructions, "utf8")).toBe("original instructions\n");
+  }, 60_000);
+
   it("recovers an interrupted run through recover", async () => {
     const value = fixture(["claude-code"]);
     const blocked = join(value.home, ".claude", "CLAUDE.md");

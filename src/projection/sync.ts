@@ -105,10 +105,10 @@ export const discardRunArtifacts = (run: RunIdType) =>
   );
 
 /**
- * Finish a run the shared engine completed or recovered. A run that rolled
- * back forgets its takeovers and deletes the snapshot it wrote. A run that
- * stopped early keeps them only for surfaces it applied. Either way, a run
- * that did not roll back applies snapshot retention. An interrupted run keeps
+ * Finish a run the shared engine completed or recovered. A failed run forgets
+ * its takeovers only after rollback completed. Incomplete rollback keeps the
+ * original snapshot and ownership available for restore. A run stopped early
+ * keeps takeovers only for surfaces it applied. An interrupted run keeps
  * everything for `canonfig recover`.
  */
 export const finishProjectionRun = (
@@ -122,6 +122,18 @@ export const finishProjectionRun = (
     if (outcome.outcome === "Interrupted") return { snapshotDeleted: false, pruned: [] };
     const repository = yield* StateRepository;
     const backups = backupsOf(statePath);
+    if (outcome.outcome === "Failed" && outcome.rollbackIncomplete) {
+      if (outcome.failedRollbackResources !== undefined) {
+        const retained = new Set(outcome.failedRollbackResources);
+        const restored = (yield* repository.loadHarnessTakeovers()).filter((takeover) =>
+          takeover.run === run && !retained.has(surfaceResourceId(takeover.harness, takeover.surface.split("#")[0]!))
+        );
+        yield* repository.releaseTakeovers(restored);
+        const snapshot = yield* snapshotOfRun(backups, run);
+        if (snapshot !== undefined) yield* dropSnapshotEntries(backups, snapshot, restored);
+      }
+      return { snapshotDeleted: false, pruned: [] };
+    }
     yield* discardRunArtifacts(run);
     if (outcome.outcome === "Failed") {
       yield* repository.removeRunTakeovers(run);

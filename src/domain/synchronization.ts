@@ -165,7 +165,7 @@ export type SynchronizationOutcome =
   | { readonly outcome: "Converged"; readonly run: RunId; readonly verified: ReadonlyArray<ResourceId> }
   | { readonly outcome: "HumanActionRequired"; readonly run: RunId; readonly actions: ReadonlyArray<HumanAction> }
   | { readonly outcome: "FollowerDrift"; readonly run: RunId; readonly conflicts: ReadonlyArray<DriftConflict> }
-  | { readonly outcome: "Failed"; readonly run: RunId; readonly reason: string }
+  | { readonly outcome: "Failed"; readonly run: RunId; readonly reason: string; readonly rollbackIncomplete?: boolean; readonly failedRollbackResources?: ReadonlyArray<ResourceId> }
   | { readonly outcome: "Interrupted"; readonly run: RunId; readonly completedActions: ReadonlyArray<ActionId> };
 
 export interface DriftConflict {
@@ -458,6 +458,8 @@ export const SynchronizationOutcomeSchema = Schema.Union([
     outcome: Schema.Literal("Failed"),
     run: RunId,
     reason: Schema.NonEmptyString,
+    rollbackIncomplete: Schema.optional(Schema.Boolean),
+    failedRollbackResources: Schema.optional(Schema.Array(ResourceIdSchema)),
   }),
   Schema.Struct({
     outcome: Schema.Literal("Interrupted"),

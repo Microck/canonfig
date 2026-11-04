@@ -1246,7 +1246,13 @@ export const executeSynchronizationPlan = (
       }
     }
     return {
-      outcome,
+      outcome: outcome.outcome === "Failed" ? {
+        ...outcome,
+        rollbackIncomplete: failedRollbacks.length > 0,
+        failedRollbackResources: input.plan.actions.flatMap((action) =>
+          failedRollbacks.includes(action.id) && action.resource !== undefined ? [action.resource] : []
+        ),
+      } : outcome,
       failedRollbacks,
       appliedResources: applied,
       removedResources: outcome.outcome === "Converged"

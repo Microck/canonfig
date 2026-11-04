@@ -778,7 +778,13 @@ export const recoverSynchronizationPlan = (
       }
     }
     return {
-      outcome,
+      outcome: outcome.outcome === "Failed" ? {
+        ...outcome,
+        rollbackIncomplete: failedRollbacks.length > 0,
+        failedRollbackResources: recovery.run.plan.actions.flatMap((action) =>
+          failedRollbacks.includes(action.id) && action.resource !== undefined ? [action.resource] : []
+        ),
+      } : outcome,
       failedRollbacks,
       appliedResources,
       removedResources: outcome.outcome === "Converged"

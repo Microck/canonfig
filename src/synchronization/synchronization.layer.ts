@@ -76,6 +76,7 @@ const makeSynchronization = Effect.gen(function*() {
                 outcome: "Failed",
                 run: input.id,
                 reason: String(error).slice(0, 2048),
+                rollbackIncomplete: true,
               } as const,
               appliedResources: [],
               removedResources: [],
