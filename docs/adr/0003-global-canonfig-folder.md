@@ -56,6 +56,7 @@ Each adapter declares, per harness, its roots and a positive list of **owned sur
 - **Held outputs keep their runtime.** When excluded or temporarily unavailable harnesses retain applied outputs, removing canonical hooks must not retire the runner or registry those outputs still reference.
 - **Runtime retirement follows consumer updates and removals.** A drift or human-action stop must leave the runner and registry intact while any planned harness output still needs them.
 - **Follower linked-file retirement follows consumer updates too.** Removed mirrored `hooks/` scripts and `rules/` documents remain while a consumer is held, and otherwise depend on planned harness updates and removals so drift cannot strand an installed plugin or instruction link.
+- **Dropped config keys retain drift protection.** A revision replacing all owned keys must compare the previous keys against their applied values before removing them; a disjoint new key set is not a fresh takeover of the file.
 - **Generated Amp identifiers preserve distinct agent IDs.** Escape underscores and hyphens separately; `review-fast` and `review_fast` must register different callable tools.
 
 ### 4. Per-harness global paths

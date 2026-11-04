@@ -572,9 +572,9 @@ export const buildProjection = (
           content.files.map((file) => ({ path: file.path, content: bytesOf(file.content), executable: file.executable ?? false })),
         ));
       } else if (entry.surface.kind === "config") {
-        // One owned key already taken over is enough to protect: the
-        // three-way rule compares only keys that were applied before.
-        const anyOwned = takeoverUnits(entry).length > pending.length;
+        // Protect previously applied keys even when this revision drops all of
+        // them: removing a locally edited key must still report drift.
+        const anyOwned = (applied.get(id)?.ownedKeys?.length ?? 0) > 0 || takeoverUnits(entry).length > pending.length;
         built.push(configResource(id, entry.surface.target, anyOwned ? "replace-if-unmodified" : "merge", entry.surface.format, content.keys));
       }
     }

@@ -224,6 +224,24 @@ describe("local projection", () => {
     expect(appliedRecord(value, "harness:codex:config")?.ownedKeys).toEqual(["approval_policy", "mcp_servers"]);
   });
 
+  it("protects drift when a revision replaces every owned config key", async () => {
+    const value = fixture(["codex"], { mcp: {}, settings: { codex: { model: "managed" } } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const config = join(value.home, ".codex", "config.toml");
+    const original = readFileSync(config, "utf8");
+    const edited = original.replace('"managed"', '"local-choice"');
+    write(config, edited);
+    editFolderConfig(value, { settings: { codex: { approval_policy: "on-request" } } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "FollowerDrift" });
+    expect(readFileSync(config, "utf8")).toBe(edited);
+    expect(appliedRecord(value, "harness:codex:config")?.ownedKeys).toEqual(["model"]);
+    write(config, original);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(config, "utf8")).toContain('approval_policy = "on-request"');
+    expect(readFileSync(config, "utf8")).not.toContain("model =");
+    expect(appliedRecord(value, "harness:codex:config")?.ownedKeys).toEqual(["approval_policy"]);
+  });
+
   it("keeps hook runtime until a drifted active plugin can be rewritten", async () => {
     const value = fixture(["amp"]);
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
