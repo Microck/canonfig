@@ -167,6 +167,46 @@ export const HARNESS_NAMES: Record<HarnessId, string> = {
   qwen: "Qwen Code",
 };
 
+/** canonfig.jsonc `surfaces` categories, in the order of SURFACE_CATEGORIES in src/projection/model.ts. */
+export const SURFACE_CATEGORIES = ["instructions", "rules", "skills", "agents", "commands", "hooks", "mcp", "settings"] as const;
+export type SurfaceCategory = (typeof SURFACE_CATEGORIES)[number];
+export const SURFACE_NAMES: Record<SurfaceCategory, string> = {
+  instructions: "AGENTS.md",
+  rules: "Rules",
+  skills: "Skills",
+  agents: "Subagents",
+  commands: "Commands",
+  hooks: "Hooks",
+  mcp: "MCP servers",
+  settings: "Settings",
+};
+
+/** Every category minus the ones a harness cannot take. */
+const allBut = (...missing: SurfaceCategory[]): SurfaceCategory[] => SURFACE_CATEGORIES.filter((c) => !missing.includes(c));
+
+/**
+ * The categories each harness can be given, as `supportedCategories` in src/projection/plan.ts derives them from
+ * the adapters. tests/projection-adapters.test.ts fails when the two disagree.
+ */
+export const SURFACE_SUPPORT: Record<HarnessId, SurfaceCategory[]> = {
+  codex: allBut("commands"),
+  "claude-code": allBut(),
+  amp: allBut(),
+  "oh-my-pi": allBut(),
+  pi: allBut("agents"),
+  "factory-droid": allBut(),
+  cursor: allBut("instructions", "rules", "commands"),
+  devin: allBut("commands"),
+  opencode: allBut(),
+  "grok-build": allBut("commands"),
+  antigravity: allBut("commands"),
+  "copilot-cli": allBut("commands"),
+  kimi: allBut("commands"),
+  kilo: allBut(),
+  hermes: allBut("instructions", "rules", "agents", "commands", "settings"),
+  qwen: allBut(),
+};
+
 /**
  * One harness as `canonfig harnesses` reports it on this machine. Canonfig projects a harness that is listed
  * in canonfig.jsonc, installed here and not excluded in local/local.jsonc.
@@ -510,11 +550,11 @@ export const STATE_META: Record<FollowerState | "excluded", StateMeta> = {
     selfLabel: "You edited this",
     tone: "warn",
     term: "Follower Drift",
-    hint: "Someone changed a file Canonfig manages, on that machine. Canonfig keeps the change, reports it and holds what it writes from that file.",
-    selfHint: "You changed a file Canonfig manages. Canonfig keeps your change, reports it and holds what it writes from that file. Move the change into your local folder, or ask the Source to publish it.",
+    hint: "Someone changed a file Canonfig manages, on that machine.\nCanonfig keeps the change, reports it and holds what it writes from that file.",
+    selfHint: "You changed a file Canonfig manages.\nCanonfig keeps your change, reports it and holds what it writes from that file.\nMove the change into your local folder, or ask the Source to publish it.",
   },
-  "human-action": { label: "Needs you", tone: "act", term: "Human Action Required", hint: "A step only a person can do, like signing in to a tool. Syncing continues once it's done." },
-  failed: { label: "Update failed", tone: "bad", term: "a failed Synchronization Run", hint: "The last update failed, so Canonfig put back the files and settings it had changed. Tools it installed stay installed." },
+  "human-action": { label: "Needs you", tone: "act", term: "Human Action Required", hint: "A step only a person can do, like signing in to a tool.\nSyncing continues once it's done." },
+  failed: { label: "Update failed", tone: "bad", term: "a failed Synchronization Run", hint: "The last update failed, so Canonfig put back the files and settings it had changed.\nTools it installed stay installed." },
   offline: { label: "Can't reach the Source", tone: "bad", term: "Unreachable", hint: "On its last try, this machine couldn't connect to the Source." },
   "never-synced": { label: "Not applied yet", tone: "muted", hint: "Nothing from the profile has been applied here yet." },
   excluded: { label: "Not sent to this machine", tone: "muted", term: "outside its Follower Groups", hint: "This machine isn't in a group that gets this item." },

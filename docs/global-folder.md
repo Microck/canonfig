@@ -13,7 +13,7 @@ https://canonfig.micr.dev/docs/reference/harnesses/.
 
 | Path | Content |
 | --- | --- |
-| `canonfig.jsonc` | `version: 1`, `profile`, `harnesses`, `mcp`, `hooks`, `settings`, `tools`, `credentials`, `groups`, `scheduleDefault`, `local` |
+| `canonfig.jsonc` | `version: 1`, `profile`, `harnesses`, `surfaces`, `mcp`, `hooks`, `settings`, `tools`, `credentials`, `groups`, `scheduleDefault`, `local` |
 | `AGENTS.md` | shared instructions |
 | `rules/<id>.md` | rules |
 | `skills/<name>/` | skill trees with `SKILL.md` |
@@ -87,7 +87,12 @@ runs local projection, restore, recover, abandon and harness exclusion edits.
 
 The projected harness set is: listed in `harnesses`, installed, and not in
 `local/local.jsonc` `excludeHarnesses`. Removing a harness from the list
-retires unmodified outputs; it does not restore the snapshot.
+retires unmodified outputs; it does not restore the snapshot. `surfaces.<harness>`
+narrows what one harness gets: `modelFor` empties the categories it leaves
+out before that harness's adapter runs, so outputs for them are never built
+and earlier ones retire through the same removal path. The shared
+`~/.agents/skills/` directory is written when any harness that reads it gets
+`skills`.
 
 ## Adapters and owned surfaces
 

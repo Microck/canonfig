@@ -396,9 +396,9 @@ export function ProfileView() {
               {machine.folder}
             </button>
             <Hint label="the Canonfig folder">
-              The <Term term="Canonical Folder">Canonfig folder</Term> is the source of truth. Edits here are written into its files, and canonfig.jsonc keeps your comments. Hand
-              edits show up here too.
-              {DEMO && " In this demo, edits stay in this browser session and no file is written."}
+              The <Term term="Canonical Folder">Canonfig folder</Term> is the source of truth.{"\n"}Edits here are written into its files, and canonfig.jsonc keeps your comments.
+              Hand edits show up here too.
+              {DEMO && "\nIn this demo, edits stay in this browser session and no file is written."}
             </Hint>
           </span>
         }
@@ -459,7 +459,7 @@ export function ProfileView() {
                     icon={CATEGORY_ICON[g.category]}
                     label={CATEGORY_LABEL[g.category].label}
                     count={g.items.length}
-                    hint={`${CATEGORY_LABEL[g.category].where}: ${CATEGORY_LABEL[g.category].hint}`}
+                    hint={`${CATEGORY_LABEL[g.category].where}\n${CATEGORY_LABEL[g.category].hint}`}
                     minWidth={COLS_MIN}
                   />
                   <RowPresence>
@@ -589,7 +589,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
     ws.setResources((prev) => (isNew ? [...prev, next] : prev.map((r) => (r.id === resource.id ? next : r))));
     const unpublished = ws.pending.length + (resource.change && !isNew ? 0 : 1);
     toast.success(isNew ? `Added ${id}` : `Saved ${id}`, {
-      description: `Written to ${next.path}. Goes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${DEMO ? " Saved in this demo workspace." : ""}`,
+      description: `Written to ${next.path}.\nGoes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
     setDraft(next);
     setRows(keyRowsOf(next));
@@ -918,15 +918,17 @@ function HarnessesTab() {
       <p data-tour="profile-harnesses" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
         Canonfig writes this folder into each listed <Term term="Target Harness">harness</Term> on every machine where it's installed, this one included. Any machine can exclude
         one for itself. Removing a harness from the list stops Canonfig managing it and removes what it wrote there, unless someone edited it; its backup stays, so you can restore
-        it from Backups.
+        it from Backups. Use Gets to give a harness only some of the folder, such as only its MCP servers; Canonfig leaves the rest of that harness alone.
       </p>
       <HarnessTable
         edit="listed"
         onToggle={(id, on) => {
           ws.setListed((prev) => (on ? [...prev, id] : prev.filter((h) => h !== id)));
+          // canonfig.jsonc refuses `surfaces` for a harness it does not list, so the choice goes with it.
+          if (!on) ws.setSurfaces(({ [id]: _dropped, ...rest }) => rest);
           ws.markProfileEdit({ area: "harnesses", id: "harnesses", change: "modified" });
           toast(on ? `Listed ${HARNESS_NAMES[id]}` : `Removed ${HARNESS_NAMES[id]} from the list`, {
-            description: `Goes out with revision ${ws.nextSequence}.${on ? " Machines that have it installed back it up, then take it over." : ""}${DEMO ? " Saved in this demo workspace." : ""}`,
+            description: `Goes out with revision ${ws.nextSequence}.${on ? "\nMachines that have it installed back it up, then take it over." : ""}${DEMO ? "\nSaved in this demo workspace." : ""}`,
           });
         }}
       />
@@ -1033,7 +1035,7 @@ function GroupsTab() {
               // A group is profile content, so it waits for the next revision like an item edit.
               ws.markProfileEdit({ area: "group", id: trimmed, change: "added" });
               setOpen(false);
-              toast.success(`Added group ${trimmed}`, { description: `Goes out with revision ${ws.nextSequence}.${DEMO ? " Saved in this demo workspace." : ""}` });
+              toast.success(`Added group ${trimmed}`, { description: `Goes out with revision ${ws.nextSequence}.${DEMO ? "\nSaved in this demo workspace." : ""}` });
             }}
           >
             <DialogHeader>
@@ -1171,9 +1173,9 @@ function DefaultsTab() {
           const note = !changed
             ? ""
             : unpublished
-              ? ` Goes out with revision ${ws.nextSequence}.`
-              : ` Back to the published values, so the defaults no longer wait for revision ${ws.nextSequence}.`;
-          toast.success("Defaults saved", { description: `${scheduleSummary(schedule, "")}.${note}${DEMO ? " Saved in this demo workspace." : ""}` });
+              ? `\nGoes out with revision ${ws.nextSequence}.`
+              : `\nBack to the published values, so the defaults no longer wait for revision ${ws.nextSequence}.`;
+          toast.success("Defaults saved", { description: `${scheduleSummary(schedule, "")}.${note}${DEMO ? "\nSaved in this demo workspace." : ""}` });
         }}
       >
         <SectionLabel>Profile</SectionLabel>
@@ -1335,7 +1337,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 ws.setResources((prev) => [...prev, ...fresh.map(toolFromScan)]);
                 onOpenChange(false);
                 toast.success(`Added ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`, {
-                  description: `${presentNote ? `${presentNote} ` : ""}Publish to send ${fresh.length === 1 ? "it" : "them"} to your machines.`,
+                  description: `${presentNote ? `${presentNote}\n` : ""}Publish to send ${fresh.length === 1 ? "it" : "them"} to your machines.`,
                 });
               }}
             >

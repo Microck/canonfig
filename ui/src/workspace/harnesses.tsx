@@ -1,9 +1,11 @@
 // The harness list and the takeover backups page, shared by the Source and the Follower. Both read the
 // simulated `canonfig harnesses` report and ~/.canonfig/.backups from the workspace; restore is simulated.
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { CaretDown } from "@/components/icons";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
-import { HARNESS_NAMES, DEMO, type Harness, type HarnessId, type Snapshot } from "@/shared/data";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { HARNESS_NAMES, DEMO, SURFACE_CATEGORIES, SURFACE_NAMES, SURFACE_SUPPORT, type Harness, type HarnessId, type Snapshot, type SurfaceCategory } from "@/shared/data";
 import { Mono, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import { useWorkspace } from "./store";
 import { AnimatedRow, Body, EmptyState, ListHead, ListRow, PageHeader, RowPresence } from "./kit";
@@ -14,7 +16,7 @@ function harnessStatus(h: Harness): { kind: StatusKind; label: string; hint: str
   if (!h.listed && h.installed) return { kind: "off", label: "Installed, not listed", hint: "Canonfig ignores it until canonfig.jsonc lists it." };
   if (!h.listed) return { kind: "off", label: "Not installed", hint: "Not on this machine and not in the list." };
   if (h.excluded) return { kind: "off", label: "Excluded here", hint: "Listed, but this machine's local/local.jsonc excludes it, so Canonfig leaves it alone." };
-  if (!h.installed) return { kind: "warn", label: "Listed, not installed", hint: "Reported as not installed. Canonfig takes it over, with a backup, once it's installed." };
+  if (!h.installed) return { kind: "warn", label: "Listed, not installed", hint: "Reported as not installed.\nCanonfig takes it over, with a backup, once it's installed." };
   return { kind: "ok", label: "Managed here", hint: "Listed, installed and not excluded, so Canonfig writes the folder into it." };
 }
 
@@ -22,6 +24,87 @@ const COLS = "minmax(180px,240px) minmax(170px,1fr) minmax(140px,220px) minmax(1
 const COLS_MIN = 180 + 170 + 140 + 150 + 3 * 12 + 20;
 const EDIT_COLS = `24px ${COLS}`;
 const EDIT_COLS_MIN = COLS_MIN + 24 + 12;
+// The Source's list also shows what each listed harness gets (canonfig.jsonc `surfaces`). Its 120px minimum keeps
+// the menu button inside a 390px viewport; wider, focusing it would scroll the page sideways and clip the intro.
+const LISTED_COLS = "24px minmax(180px,240px) minmax(120px,200px) minmax(170px,1fr) minmax(140px,220px) minmax(150px,220px)";
+const LISTED_COLS_MIN = EDIT_COLS_MIN + 120 + 12;
+
+/** "Everything", "Nothing", or the chosen categories by name. */
+function surfacesLabel(selected: SurfaceCategory[] | undefined): string {
+  if (selected === undefined) return "Everything";
+  if (selected.length === 0) return "Nothing";
+  return SURFACE_CATEGORIES.filter((c) => selected.includes(c)).map((c) => SURFACE_NAMES[c]).join(", ");
+}
+
+/**
+ * Which categories a listed harness gets, out of the ones it supports (canonfig.jsonc refuses the rest).
+ * Ticking every supported category drops the harness's entry, so the file keeps the default
+ * ("everything") rather than a list that would miss a category the harness gains later.
+ */
+function SurfacesMenu({ harness }: { harness: Harness }) {
+  const ws = useWorkspace();
+  const supported = SURFACE_SUPPORT[harness.id];
+  const selected = ws.surfaces[harness.id];
+  const label = surfacesLabel(selected);
+  // Radix puts focus back on the trigger when the menu closes, which draws its focus ring even after a
+  // mouse click outside. Return focus only when the menu was driven from the keyboard.
+  const closedByPointer = useRef(false);
+  const change = (next: SurfaceCategory[] | undefined) => {
+    ws.setSurfaces((prev) => {
+      const { [harness.id]: _dropped, ...rest } = prev;
+      return next === undefined ? rest : { ...rest, [harness.id]: next };
+    });
+    ws.markProfileEdit({ area: "harnesses", id: "harnesses", change: "modified" });
+  };
+  const toggle = (category: SurfaceCategory, on: boolean) => {
+    const current = selected ?? supported;
+    const next = on ? [...current, category] : current.filter((c) => c !== category);
+    change(next.length === supported.length ? undefined : next);
+  };
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        {/* -ml-[7px] cancels px-1.5 plus the button's 1px border so the label lines up with "Not listed" and the column heading; the hover fill bleeds into the gutter. */}
+        <Button variant="ghost" size="sm" className="-ml-[7px] min-w-0 justify-between gap-1 px-1.5 font-normal" title={label} aria-label={`What ${harness.name} gets: ${label}`}>
+          <span className="truncate">{label}</span>
+          <CaretDown className="shrink-0 text-faint" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        className="w-56"
+        onPointerDown={() => (closedByPointer.current = true)}
+        onPointerDownOutside={() => (closedByPointer.current = true)}
+        onKeyDown={() => (closedByPointer.current = false)}
+        onCloseAutoFocus={(event) => {
+          if (closedByPointer.current) event.preventDefault();
+          closedByPointer.current = false;
+        }}
+      >
+        {/* Every category in the same order for every harness; ones this harness has no global place for stay visible but disabled and unticked. */}
+        {SURFACE_CATEGORIES.map((category) => {
+          const available = supported.includes(category);
+          return (
+            <DropdownMenuCheckboxItem
+              key={category}
+              disabled={!available}
+              checked={available && (selected === undefined || selected.includes(category))}
+              // Keep the menu open so several categories can be changed in one go.
+              onSelect={(event) => event.preventDefault()}
+              onCheckedChange={(on) => toggle(category, on)}
+            >
+              {SURFACE_NAMES[category]}
+            </DropdownMenuCheckboxItem>
+          );
+        })}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem disabled={selected === undefined} onSelect={() => change(undefined)}>
+          Everything
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 /**
  * Every harness Canonfig supports, as this machine sees it. `edit` puts a checkbox in front of each row:
@@ -30,8 +113,8 @@ const EDIT_COLS_MIN = COLS_MIN + 24 + 12;
  */
 export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; onToggle?: (id: HarnessId, on: boolean) => void }) {
   const ws = useWorkspace();
-  const cols = edit ? EDIT_COLS : COLS;
-  const minWidth = edit ? EDIT_COLS_MIN : COLS_MIN;
+  const cols = edit === "listed" ? LISTED_COLS : edit ? EDIT_COLS : COLS;
+  const minWidth = edit === "listed" ? LISTED_COLS_MIN : edit ? EDIT_COLS_MIN : COLS_MIN;
   return (
     <>
       <ListHead cols={cols} minWidth={minWidth} data-tour="harness-list">
@@ -42,6 +125,7 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
           </span>
         )}
         <span>Harness</span>
+        {edit === "listed" && <span>Gets</span>}
         <span>On this machine</span>
         <span>Root</span>
         <span>Backup</span>
@@ -67,6 +151,8 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
               <span className="truncate font-medium">{h.name}</span>
               <Mono className="truncate text-faint">{h.id}</Mono>
             </span>
+            {/* Only a listed harness gets anything, so an unlisted row has no choice to make. */}
+            {edit === "listed" && (h.listed ? <SurfacesMenu harness={h} /> : <span className="text-sm text-faint">Not listed</span>)}
             <span className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground" title={status.hint}>
               <StatusMark kind={status.kind} />
               <span className="truncate">{status.label}</span>
@@ -131,7 +217,7 @@ export function BackupsView() {
                       <span className="flex min-w-0 items-center gap-2">
                         <Mono className="truncate text-foreground">{s.id}</Mono>
                         {s.first && (
-                          <span title="The state before Canonfig ever wrote. Canonfig always keeps it." className="inline-flex h-4 shrink-0 items-center rounded-[3px] bg-raised px-1 text-xs font-medium text-muted-foreground">
+                          <span title={"The state before Canonfig ever wrote.\nCanonfig always keeps it."} className="inline-flex h-4 shrink-0 items-center rounded-[3px] bg-raised px-1 text-xs font-medium text-muted-foreground">
                             First, kept
                           </span>
                         )}

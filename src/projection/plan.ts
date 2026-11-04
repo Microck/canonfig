@@ -49,15 +49,28 @@ import { CanonicalFolderError, type LoadedFolder } from "./folder.ts";
 import type {
   ConfigFormat,
   Diagnostic,
+  HarnessAdapter,
   HarnessLayout,
   OwnedSurface,
   RootContext,
   SurfaceContent,
 } from "./harness.ts";
-import type { TargetId } from "./model.ts";
+import { modelFor, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
 import { hookRegistryJson, hookRunnerSource } from "./templates/runtime.ts";
 import type { Snapshot, SnapshotEntry, TakeoverUnit } from "./takeover.ts";
 import { snapshotCopy } from "./takeover.ts";
+
+/**
+ * The `surfaces` categories a harness can be given: every feature its adapter
+ * does not mark unsupported, plus `settings` when it owns a settings file.
+ * ui/src/shared/data.ts keeps a copy for the harness list; a test holds them equal.
+ */
+export const supportedCategories = (adapter: HarnessAdapter, layout: HarnessLayout): ReadonlyArray<SurfaceCategory> =>
+  SURFACE_CATEGORIES.filter((category) =>
+    category === "settings"
+      ? layout.surfaces.some((surface) => surface.kind === "config" && surface.settings !== undefined)
+      : adapter.descriptor.capabilities[category] !== "unsupported"
+  );
 
 /**
  * Projection planning: the Canonical Model becomes internal `file`,
@@ -235,16 +248,36 @@ export const projectSurfaces = (
       code: "LOCAL_NOT_ALLOWED",
       message: `${path} is not admitted by canonfig.jsonc local.allow and was not projected`,
     }));
+    // A category a harness cannot take would silently do nothing; refuse it for
+    // every listed harness, including ones not installed or excluded here, so
+    // the mistake shows on the Source before any follower runs it.
+    for (const harness of TARGET_IDS) {
+      const selected = model.surfaces[harness];
+      if (selected === undefined) continue;
+      const adapter = adapterFor(harness);
+      const supported = supportedCategories(adapter, adapter.layout(context, model));
+      const unsupported = selected.filter((category) => !supported.includes(category));
+      if (unsupported.length > 0) {
+        return yield* new CanonicalFolderError({
+          path: configPath,
+          message: `surfaces.${harness}: ${adapter.descriptor.name} does not support ${unsupported.join(", ")}; it supports ${supported.join(", ")}`,
+        });
+      }
+    }
     const harnesses: Array<HarnessPlan> = [];
+    // Set when a harness that reads the shared skills directory is given skills.
+    let sharesSkills = false;
     for (const harness of model.harnesses) {
       const adapter = adapterFor(harness);
-      const layout = adapter.layout(context, model);
+      const scoped = modelFor(model, harness);
+      const layout = adapter.layout(context, scoped);
       yield* checkRoot(harness, layout.root);
       harnesses.push({ harness, layout });
-      const projection = adapter.project(model, layout, runtime);
+      if (layout.sharedSkills && scoped.skills.length > 0) sharesSkills = true;
+      const projection = adapter.project(scoped, layout, runtime);
       diagnostics.push(...projection.diagnostics);
       const contents = yield* Effect.try({
-        try: () => withSettings(harness, layout, projection.contents, model.settings[harness] ?? [], configPath),
+        try: () => withSettings(harness, layout, projection.contents, scoped.settings[harness] ?? [], configPath),
         catch: (error) => error instanceof CanonicalFolderError
           ? error
           : new CanonicalFolderError({ path: configPath, message: String(error) }),
@@ -266,7 +299,7 @@ export const projectSurfaces = (
         surfaces.push({ harness, root: layout.root, surface: resolved, content });
       }
     }
-    if (model.skills.length > 0 && harnesses.some((entry) => entry.layout.sharedSkills)) {
+    if (sharesSkills) {
       const root = paths.join(context.home, ".agents");
       yield* checkRoot(sharedSkillsOwner, root);
       surfaces.push({

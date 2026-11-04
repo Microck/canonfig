@@ -133,6 +133,49 @@ Source Machine's list, the output warns "opencode is not listed in
 /home/maria/.canonfig/canonfig.jsonc; add it to "harnesses" there to project
 it".
 
+## Give a harness only some categories
+
+By default every listed harness gets everything in the folder that it
+supports. To give a harness only some of it, name the categories under
+`surfaces` in `~/.canonfig/canonfig.jsonc` on the Source Machine:
+
+```jsonc title="part of ~/.canonfig/canonfig.jsonc"
+{
+  "harnesses": ["codex", "claude-code", "opencode"],
+  "surfaces": {
+    "claude-code": ["mcp"],
+    "opencode": ["instructions", "skills"]
+  }
+}
+```
+
+Here Claude Code gets only the MCP servers, OpenCode gets only `AGENTS.md`
+and the skills, and Codex, which `surfaces` does not name, gets everything.
+The categories are `instructions`, `rules`, `skills`, `agents`, `commands`,
+`hooks`, `mcp` and `settings`. An empty list gives the harness nothing.
+
+Not every harness can take every category. Naming one it cannot take fails
+validation with "surfaces.hermes: Hermes Agent does not support rules; it
+supports skills, hooks, mcp".
+
+| Harness | Cannot take |
+| --- | --- |
+| `codex`, `devin`, `grok-build`, `antigravity`, `copilot-cli`, `kimi` | `commands` |
+| `pi` | `agents` |
+| `cursor` | `instructions`, `rules`, `commands` |
+| `hermes` | `instructions`, `rules`, `agents`, `commands`, `settings` |
+| every other harness | nothing |
+
+Canonfig never writes into a surface a harness does not get, so a
+hand-written `CLAUDE.md` stays yours while Claude Code takes only MCP
+servers. Taking a category away works like removing a harness: the next
+apply removes what Canonfig wrote for it, except files someone changed since,
+and does not put back what was there before the takeover.
+
+Several harnesses read skills from the shared `~/.agents/skills/` directory.
+Canonfig writes it when any of them gets `skills`, and every harness that
+reads it then sees those skills, even one whose entry leaves `skills` out.
+
 ## Keep a harness in one place
 
 Canonfig records the root it resolved when it took a harness over, including

@@ -117,6 +117,7 @@ does not list is an error, so a typo fails instead of being ignored.
 | `mcp` | No | object: name to [MCP server](#mcp-servers) | MCP servers every listed harness gets. |
 | `hooks` | No | array of [hooks](#hooks) | Lifecycle hooks, in the order they run. |
 | `settings` | No | object: harness id to object of key path to value | Keys written into that harness's settings file. See [Settings](#settings). |
+| `surfaces` | No | object: harness id to array of categories | Gives a listed harness only these categories: any of `instructions`, `rules`, `skills`, `agents`, `commands`, `hooks`, `mcp`, `settings`. A harness not named gets every category. Naming a harness that `harnesses` does not list fails validation. See [Give a harness only some categories](/how-to/choose-harnesses#give-a-harness-only-some-categories). |
 | `tools` | No | object: id to [tool](#tools) | Command-line tools every Follower Machine installs and verifies. |
 | `credentials` | No | object: id to `{ "reference": string }` | A credential each Follower Machine must already hold, by name. The value never leaves the Follower Machine. |
 | `groups` | No | object: group name to array of item references | Items only Follower Machines in that Follower Group receive. See [Groups](#groups). |

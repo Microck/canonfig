@@ -33,6 +33,7 @@ import {
   type Resource,
   type Revision,
   type Snapshot,
+  type SurfaceCategory,
 } from "@/shared/data";
 import type { Setup } from "@/onboarding/onboarding";
 import { workspaceHref, type MachinesMode, type Navigate, type NavigateOptions, type ProfileTab, type WorkspaceRole, type WorkspaceRoute } from "./routes";
@@ -357,6 +358,9 @@ export interface Workspace {
   /** Harnesses listed in canonfig.jsonc: the Source edits them in Profile, a follower gets them with each revision. */
   listed: HarnessId[];
   setListed: SetState<HarnessId[]>;
+  /** canonfig.jsonc `surfaces`: categories a listed harness is limited to; a harness not named gets every category. */
+  surfaces: Partial<Record<HarnessId, SurfaceCategory[]>>;
+  setSurfaces: SetState<Partial<Record<HarnessId, SurfaceCategory[]>>>;
   /** Harnesses excluded on this machine in ~/.canonfig/local/local.jsonc. */
   excluded: HarnessId[];
   setExcluded: SetState<HarnessId[]>;
@@ -541,7 +545,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
         setPublishing(false);
         onDone();
         toast.success(`Published revision ${seq}`, {
-          description: `${DEMO ? "Saved in this demo workspace. " : ""}Reachable machines receive it next and apply it on their next check.`,
+          description: `Reachable machines receive it next and apply it on their next check.${DEMO ? "\nSaved in this demo workspace." : ""}`,
         });
         // Every reachable machine fetches the revision, simulated here one after another.
         // Items paused by a local edit or waiting for a person stay that way; the revision still arrives.
@@ -562,6 +566,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   // so it has no pinned roots and no takeover snapshots.
   const fresh = newSource !== null || joined !== null;
   const [listed, setListed] = useState<HarnessId[]>(() => newSource?.harnesses ?? seedHarnesses.filter((h) => h.listed).map((h) => h.id));
+  const [surfaces, setSurfaces] = useState<Partial<Record<HarnessId, SurfaceCategory[]>>>({});
   const [excluded, setExcluded] = useState<HarnessId[]>(() => joined?.excluded ?? (newSource ? [] : seedHarnesses.filter((h) => h.excluded).map((h) => h.id)));
   const harnessRows = useMemo<Harness[]>(
     () =>
@@ -605,7 +610,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
       // `restore` runs as a journaled Synchronization Run, so it shows with the others.
       setRuns((prev) => [{ n: (prev[0]?.n ?? 0) + 1, what: `Restored snapshot ${id}`, when: "Just now", tone: "ok" }, ...prev]);
       toast.success(`Restored ${names}`, {
-        description: `${DEMO ? "Simulated in this demo; no files changed. " : ""}Put back ${snapshot.files} files from ${id} and excluded ${names} on this machine in ~/.canonfig/local/local.jsonc.`,
+        description: `Put back ${snapshot.files} files from ${id}.\nExcluded ${names} on this machine in ~/.canonfig/local/local.jsonc.${DEMO ? "\nSimulated in this demo; no files changed." : ""}`,
       });
     },
     [],
@@ -620,7 +625,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const abandon = useCallback(() => {
     setInterrupted(false);
     setRuns((prev) => prev.map((r) => (r.n === 41 ? { ...r, what: "Abandoned, 3 of 5 done", tone: "muted" } : r)));
-    toast("Run #41 abandoned", { description: "Its 3 finished steps stay in place. Nothing was rolled back." });
+    toast("Run #41 abandoned", { description: "Its 3 finished steps stay in place.\nNothing was rolled back." });
   }, []);
 
   const unenroll = useCallback(() => {
@@ -670,7 +675,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
         ]);
         if (paused > 0)
           toast(`Revision ${targetRevision} applied, ${pausedText}`, {
-            description: `${paused === 1 ? "It keeps" : "They keep"} your local edit. See Sync for how to settle ${paused === 1 ? "it" : "them"}.${signInWaiting ? " Also sign in to the GitHub CLI." : ""}`,
+            description: `${paused === 1 ? "It keeps" : "They keep"} your local edit.\nSee Sync for how to settle ${paused === 1 ? "it" : "them"}.${signInWaiting ? "\nAlso sign in to the GitHub CLI." : ""}`,
           });
         else
           toast.success(`Revision ${targetRevision} applied`, {
@@ -750,6 +755,8 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     appliedRevision,
     listed,
     setListed,
+    surfaces,
+    setSurfaces,
     excluded,
     setExcluded,
     harnesses: harnessRows,

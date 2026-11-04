@@ -224,6 +224,35 @@ describe("local projection", () => {
     expect(appliedRecord(value, "harness:codex:config")?.ownedKeys).toEqual(["approval_policy", "mcp_servers"]);
   });
 
+  it("projects only the selected surfaces and retires ones a harness stops getting", async () => {
+    const value = fixture(["claude-code", "codex"], { surfaces: { "claude-code": ["mcp"] } });
+    const claude = join(value.home, ".claude");
+    const instructions = join(claude, "CLAUDE.md");
+    const userConfig = join(value.home, ".claude.json");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(Object.keys(JSON.parse(readFileSync(userConfig, "utf8")).mcpServers)).toEqual(["docs", "git"]);
+    expect(existsSync(instructions)).toBe(false);
+    expect(existsSync(join(claude, "skills"))).toBe(false);
+    // Codex has no selection, so it still gets every category.
+    expect(readFileSync(join(value.home, ".codex", "AGENTS.md"), "utf8")).toContain("Prefer small diffs.");
+
+    editFolderConfig(value, { surfaces: { "claude-code": ["instructions"] } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(instructions, "utf8")).toContain("Prefer small diffs.");
+    expect(JSON.parse(readFileSync(userConfig, "utf8")).mcpServers).toBeUndefined();
+    expect(appliedRecord(value, "harness:claude-code:mcp")).toBeUndefined();
+  });
+
+  it("refuses a surface selection for a harness that is not listed", async () => {
+    const value = fixture(["codex"], { surfaces: { "claude-code": ["mcp"] } });
+    await expect(sync(value, "plan")).rejects.toThrow(/surfaces names claude-code/u);
+  });
+
+  it("refuses a category the harness cannot take", async () => {
+    const value = fixture(["codex", "hermes"], { surfaces: { hermes: ["mcp", "rules"] } });
+    await expect(sync(value, "plan")).rejects.toThrow("surfaces.hermes: Hermes Agent does not support rules; it supports skills, hooks, mcp");
+  });
+
   it("protects drift when a revision replaces every owned config key", async () => {
     const value = fixture(["codex"], { mcp: {}, settings: { codex: { model: "managed" } } });
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });

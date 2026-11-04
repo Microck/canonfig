@@ -95,6 +95,7 @@ Root shows the environment override first, then the default. "Declared" means ke
 - **Applied surface paths are pinned too.** A newly appearing config alternative must not redirect an already-owned resource. If resolution differs from its Applied Resource Record, stop with Human Action Required before writes or backup capture.
 - **Every surface stays inside home.** Validate each resolved output path, not only the harness root: environment overrides can place individual plugin surfaces elsewhere. Snapshot capture independently rejects external targets and copy paths that escape the snapshot directory.
 - **Removing a harness from the list** retires its unmodified owned outputs through the normal removal path. It does not restore the snapshot; `canonfig restore` does that explicitly.
+- **`surfaces.<harness>` narrows a harness to categories.** Categories are `instructions`, `rules`, `skills`, `agents`, `commands`, `hooks`, `mcp`, `settings`; an unnamed harness gets all of them. Projection empties the other categories in that harness's model, so no second code path exists: outputs a harness stops getting retire like a removed harness's outputs. Naming an unlisted harness is a validation error. The shared skills directory follows the union of harnesses that read it and get `skills`, so it cannot be withheld from one of them.
 
 ### 6. Backups and restore
 

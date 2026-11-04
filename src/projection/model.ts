@@ -26,6 +26,13 @@ export const CAPABILITIES = [
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 export type Capability = (typeof CAPABILITIES)[number];
 
+/** What a harness can be given; `surfaces.<harness>` in canonfig.jsonc picks from these. */
+export const SURFACE_CATEGORIES = [
+  "instructions", "rules", "skills", "agents", "commands", "hooks", "mcp", "settings",
+] as const;
+
+export type SurfaceCategory = (typeof SURFACE_CATEGORIES)[number];
+
 /** An environment reference; MCP secrets stay references and are never copied. */
 export interface SecretReference {
   readonly fromEnv: string;
@@ -140,4 +147,28 @@ export interface CanonicalModel {
   /** Enabled servers only, sorted by name. */
   readonly mcp: ReadonlyArray<readonly [string, McpServer]>;
   readonly settings: HarnessSettings;
+  /** Per-harness category allowlists; a harness not named here gets every category. */
+  readonly surfaces: Readonly<Partial<Record<TargetId, ReadonlyArray<SurfaceCategory>>>>;
 }
+
+/**
+ * The model one harness projects: categories its `surfaces` entry leaves out
+ * are emptied, so its adapter writes nothing for them and outputs it wrote
+ * before retire through the normal removal path.
+ */
+export const modelFor = (model: CanonicalModel, harness: TargetId): CanonicalModel => {
+  const selected = model.surfaces[harness];
+  if (selected === undefined) return model;
+  const has = (category: SurfaceCategory) => selected.includes(category);
+  return {
+    ...model,
+    instructions: has("instructions") ? model.instructions : undefined,
+    rules: has("rules") ? model.rules : [],
+    skills: has("skills") ? model.skills : [],
+    agents: has("agents") ? model.agents : [],
+    commands: has("commands") ? model.commands : [],
+    hooks: has("hooks") ? model.hooks : [],
+    mcp: has("mcp") ? model.mcp : [],
+    settings: has("settings") ? model.settings : {},
+  };
+};
