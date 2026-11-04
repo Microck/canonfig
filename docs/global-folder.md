@@ -130,10 +130,15 @@ changes between scan and import fails with `ImportChangedError`.
 writes a harness surface: `~/.canonfig/.backups/<UTC>/` with `manifest.json`,
 one directory per harness holding copied files at their path relative to the
 home directory, and `keys.json` with prior values of taken-over config keys
-only. Directories are 0700 and files 0600. `pruneSnapshots` keeps the first
-snapshot and the four most recent. `local/local.jsonc` `backups: false` or
-`sync --no-backup` skips the snapshot. A run that rolls back deletes its
-snapshot and takeover rows. A run that stops early (Human Action Required or
+only (any JSON value, `null` included). Directories are 0700 and files 0600.
+The snapshot is built under `.backups/.tmp-<UTC>/`, removed if the capture
+fails, and renamed to `<UTC>` once its manifest is complete. Only a directory
+with a valid manifest counts as a snapshot for listing, restore and
+retention. `pruneSnapshots` keeps the first snapshot and the four most
+recent, and removes temporary directories a killed capture left behind.
+`local/local.jsonc` `backups: false` or `sync --no-backup` skips the
+snapshot. A run that rolls back deletes its snapshot and takeover rows. A run
+that stops early (Human Action Required or
 Follower Drift), or an interrupted run closed with `canonfig abandon`, keeps
 takeover rows only for surfaces it applied, so the next run takes the others
 over again with a fresh snapshot. Its snapshot drops the entries of surfaces

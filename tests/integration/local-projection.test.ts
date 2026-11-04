@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { Effect, Fiber, Layer } from "effect";
+import { Effect, Fiber, Layer, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -15,6 +15,8 @@ import { loadCanonicalFolder } from "../../src/projection/folder.ts";
 import { TARGET_IDS, type TargetId } from "../../src/projection/model.ts";
 import { rootContext } from "../../src/projection/plan.ts";
 import { abandonLocal, recoverLocal, restoreLocal, synchronizeLocal } from "../../src/projection/sync.ts";
+import { listSnapshots, pruneSnapshots, readSnapshot, writeTakeoverSnapshot, type TakeoverUnit } from "../../src/projection/takeover.ts";
+import { RunId } from "../../src/domain/brand.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import type { ConfigValue } from "../../src/domain/resource.ts";
@@ -506,4 +508,67 @@ describe("local projection", () => {
     expect(keptTree.get("claude-code/.claude/CLAUDE.md")).toBe("old instructions\n");
     expect(readFileSync(join(kept, "claude-code", ".claude", "CLAUDE.md"), "utf8")).toBe("old instructions\n");
   }, 120_000);
+});
+
+describe("takeover snapshots", () => {
+  const runId = (name: string) => Schema.decodeUnknownSync(RunId)(`run-${name}`);
+  const instructionsUnit = (value: Fixture): TakeoverUnit => ({
+    harness: "claude-code", surface: "instructions", root: join(value.home, ".claude"), kind: "file", target: join(value.home, ".claude", "CLAUDE.md"),
+  });
+
+  it("leaves nothing in .backups when capturing a takeover fails", async () => {
+    const value = fixture(["claude-code"]);
+    const backups = join(value.folder, ".backups");
+    write(join(value.home, ".claude", "CLAUDE.md"), "old instructions\n");
+    // A config target that is a directory fails after CLAUDE.md is copied.
+    mkdirSync(join(value.home, ".claude.json"), { recursive: true });
+    const failure = await Effect.runPromise(writeTakeoverSnapshot(backups, value.home, runId("failed"), [
+      instructionsUnit(value),
+      { harness: "claude-code", surface: "mcp#mcpServers", root: value.home, kind: "config", target: join(value.home, ".claude.json"), format: "json", key: "mcpServers" },
+    ]).pipe(Effect.flip, Effect.provide(machineLayer(value))));
+    expect(failure._tag).toBe("TakeoverSnapshotError");
+    expect(readdirSync(backups)).toEqual([]);
+  }, 60_000);
+
+  it("counts only snapshots with a valid manifest when listing, restoring and pruning", async () => {
+    const value = fixture(["claude-code"]);
+    write(join(value.home, ".claude", "CLAUDE.md"), "original\n");
+    const backups = join(value.folder, ".backups");
+    // Leftovers a failed or killed capture could leave: timestamped
+    // directories without a manifest, sorting before and after every real
+    // snapshot, and an unfinished temporary one.
+    for (const name of ["2000-01-01T00-00-00-000Z", "2999-01-01T00-00-00-000Z"]) mkdirSync(join(backups, name, "claude-code"), { recursive: true });
+    const ids: Array<string> = [];
+    for (let index = 0; index < 6; index += 1) {
+      ids.push(await Effect.runPromise(writeTakeoverSnapshot(backups, value.home, runId(`snapshot-${index}`), [instructionsUnit(value)]).pipe(
+        Effect.provide(machineLayer(value)),
+      )));
+    }
+    mkdirSync(join(backups, `.tmp-${ids[0]}`));
+
+    expect(await Effect.runPromise(listSnapshots(backups))).toEqual(ids);
+    expect((await Effect.runPromise(readSnapshot(backups, undefined))).id).toBe(ids.at(-1));
+    const invalid = await Effect.runPromise(readSnapshot(backups, "2999-01-01T00-00-00-000Z").pipe(Effect.flip));
+    expect(invalid._tag).toBe("SnapshotNotFoundError");
+
+    expect(await Effect.runPromise(pruneSnapshots(backups))).toEqual([ids[1]]);
+    expect(await Effect.runPromise(listSnapshots(backups))).toEqual([ids[0], ...ids.slice(2)]);
+    expect(readFileSync(join(backups, ids[0]!, "claude-code", ".claude", "CLAUDE.md"), "utf8")).toBe("original\n");
+    expect(existsSync(join(backups, `.tmp-${ids[0]}`))).toBe(false);
+  }, 60_000);
+
+  it("captures and restores a config key whose prior value is null", async () => {
+    const value = fixture(["claude-code"]);
+    const claudeJsonPath = join(value.home, ".claude.json");
+    write(claudeJsonPath, `${JSON.stringify({ mcpServers: null, theme: "dark" }, undefined, 2)}\n`);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const [id] = snapshots(value);
+    expect(JSON.parse(readFileSync(join(value.folder, ".backups", id!, "claude-code", "keys.json"), "utf8"))).toEqual({
+      [claudeJsonPath]: { mcpServers: null },
+    });
+    expect(Object.keys(JSON.parse(readFileSync(claudeJsonPath, "utf8")).mcpServers).sort()).toEqual(["docs", "git"]);
+
+    expect((await restore(value)).outcome).toMatchObject({ outcome: "Converged" });
+    expect(JSON.parse(readFileSync(claudeJsonPath, "utf8"))).toEqual({ mcpServers: null, theme: "dark" });
+  }, 60_000);
 });

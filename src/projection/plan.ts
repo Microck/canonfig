@@ -28,6 +28,7 @@ import {
 } from "../profile/profile-codec.ts";
 import type { HarnessTakeover } from "../state/state-repository.types.ts";
 import { getConfigPath, parseConfigDocument, renderConfigDocument } from "../synchronization/config-codec.ts";
+import type { ConfigJson } from "../synchronization/config-value.ts";
 import {
   observeFollowerResource,
   removedResourceState,
@@ -353,7 +354,7 @@ const configResource = (
   target: string,
   policy: ApplyPolicy,
   format: ConfigFormat,
-  keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }>,
+  keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigJson }>,
   releases?: ReadonlyArray<string>,
 ): BuiltResource => {
   const content = renderConfigDocument({ format, keys });
