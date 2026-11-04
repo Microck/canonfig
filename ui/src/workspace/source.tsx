@@ -249,8 +249,7 @@ export function SourceOverview() {
                   <span className="inline-flex items-center gap-1.5">
                     Each item on each machine
                     <Hint label="each item on each machine">
-                      One square per item and machine. Solid: up to date. Striped: needs attention. Dotted: not applied yet, or not sent to that machine. Canonfig calls this
-                      Convergence.
+                      {"One square per item and machine.\nSolid: up to date.\nStriped: needs attention.\nDotted: not applied yet, or not sent to that machine.\nCanonfig calls this Convergence."}
                     </Hint>
                   </span>
                 </SectionLabel>
@@ -609,7 +608,7 @@ function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose:
               Fingerprint{" "}
               <Hint label="Fingerprint">
                 The digest of everything in this revision. Each machine checks it, so it knows the files weren't changed on the way.
-                {DEMO && " In this demo it is a stand-in value, and no machine checks it."}
+                {DEMO && "\nIn this demo it is a stand-in value, and no machine checks it."}
               </Hint>
             </span>
           }

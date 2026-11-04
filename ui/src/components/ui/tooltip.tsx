@@ -38,8 +38,9 @@ function TooltipContent({
       <TooltipPrimitive.Content
         data-slot="tooltip-content"
         sideOffset={sideOffset}
+        // whitespace-pre-line: a "\n" in tooltip text starts a new line, so a longer tip can put each idea on its own line.
         className={cn(
-          "z-50 w-fit max-w-xs origin-(--radix-tooltip-content-transform-origin) rounded-md border border-border-strong bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md shadow-black/40 duration-200 ease-snap has-data-[slot=kbd]:pr-1.5 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-97 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-97 data-closed:duration-150",
+          "z-50 w-fit max-w-xs origin-(--radix-tooltip-content-transform-origin) rounded-md border border-border-strong bg-popover px-2.5 py-1.5 text-xs whitespace-pre-line text-popover-foreground shadow-md shadow-black/40 duration-200 ease-snap has-data-[slot=kbd]:pr-1.5 data-[side=bottom]:slide-in-from-top-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1 data-[side=top]:slide-in-from-bottom-1 data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-97 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-97 data-closed:duration-150",
           className
         )}
         {...props}

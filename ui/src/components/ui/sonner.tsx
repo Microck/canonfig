@@ -54,6 +54,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
       toastOptions={{
         classNames: {
           toast: "cn-toast",
+          // A "\n" in a description starts a new line: the outcome, what happens next and the demo note each get one.
+          description: "whitespace-pre-line",
           success: `${TINTED} [--tint:var(--ok)]`,
           info: `${TINTED} [--tint:var(--ring)]`,
           warning: `${TINTED} [--tint:var(--warn)]`,

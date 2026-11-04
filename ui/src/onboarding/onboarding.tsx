@@ -1328,7 +1328,7 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
               <div className={cn("rounded-lg border px-3.5 py-3", shown("trusted") ? "border-bad/60" : "border-border")}>
                 <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
                   atlas's SSH host key, from <Mono>{hostKey}</Mono>
-                  <Hint label="checking the SSH host key">Compare it with the output of “ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub” on atlas. Change the file under Advanced.</Hint>
+                  <Hint label="checking the SSH host key">{"Compare it with the output of “ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub” on atlas.\nChange the file under Advanced."}</Hint>
                 </div>
                 <Mono className="mt-1 block text-foreground">ED25519 SHA256:Jx7qL2c9…vR0wPq4sE</Mono>
                 <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-2.5 sm:min-h-10">

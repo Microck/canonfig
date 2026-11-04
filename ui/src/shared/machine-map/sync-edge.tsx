@@ -173,11 +173,10 @@ export const SyncEdge = memo(function SyncEdge({ sourceX, sourceY, targetX, targ
           <div
             ref={tipRef}
             role="tooltip"
-            className="pointer-events-none fixed z-50 max-w-64 animate-in rounded-md border border-border-strong bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md shadow-black/40 duration-150 ease-snap fade-in-0"
+            className="pointer-events-none fixed z-50 max-w-64 animate-in rounded-md border border-border-strong bg-popover px-2.5 py-1.5 text-xs whitespace-pre-line text-popover-foreground shadow-md shadow-black/40 duration-150 ease-snap fade-in-0"
           >
-            <p>
-              <span className="font-medium">{name}: {meta.label}.</span> <span className="text-muted-foreground">{meta.hint}</span>
-            </p>
+            <p className="font-medium">{name}: {meta.label}</p>
+            <p className="text-muted-foreground">{meta.hint}</p>
             {link.detail && <p className="mt-1 text-muted-foreground">{link.detail}</p>}
           </div>,
           document.body,

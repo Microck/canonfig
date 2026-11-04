@@ -105,7 +105,8 @@ export function Term({ children, term }: { children?: ReactNode; term: Term }) {
         </span>
       </TooltipTrigger>
       <TooltipContent className="max-w-64 text-sm">
-        <span className="font-medium">{plain.charAt(0).toUpperCase() + plain.slice(1)}.</span> {meaning}
+        <span className="block font-medium">{plain.charAt(0).toUpperCase() + plain.slice(1)}</span>
+        {meaning}
         <CalledThis term={term} />
       </TooltipContent>
     </Tooltip>
@@ -199,7 +200,8 @@ export function StateLabel({ state, compact, self }: { state: FollowerState | "e
         </span>
       </TooltipTrigger>
       <TooltipContent className="max-w-64 text-sm">
-        <span className="font-medium">{label}.</span> {hint}
+        <span className="block font-medium">{label}</span>
+        {hint}
         {meta.term && <CalledThis term={meta.term} />}
       </TooltipContent>
     </Tooltip>
