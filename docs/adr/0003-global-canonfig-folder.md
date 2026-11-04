@@ -165,3 +165,7 @@ Root shows the environment override first, then the default. "Declared" means ke
 - **Whole-folder replace of each harness home.** Auth, sessions and history share those directories and files (`~/.claude.json`, Devin's Windows root, `agent.db`), and a denylist cannot keep up with vendors adding state files.
 - **Symlink harness surfaces into `~/.canonfig/`.** Windows symlinks need privileges, several harnesses mix state into config files, and drift would be invisible.
 - **Project per harness on the Source and publish native files.** Roots depend on each follower's OS, environment and installed harnesses.
+
+### Direct hook execution on Windows
+
+A Windows Source cannot observe POSIX executable bits. When an enabled hook directly names a script under `hooks/`, publication treats that explicit command as executable intent for followers. A script referenced only by disabled hooks retains its observed mode. Unix Sources continue to publish their actual mode. This preserves execute permission, not interpreter availability or shell compatibility across operating systems.
