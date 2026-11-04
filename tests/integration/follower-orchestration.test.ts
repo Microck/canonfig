@@ -1272,6 +1272,32 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     expect(rowsAfterAbandon.map((row) => row.harness)).not.toContain("qwen");
   });
 
+  it("retains a removed hook script until its drifted plugin is updated", async () => {
+    const root = temporaryRoot("hook-script-retirement");
+    const source = await startSource(root, (folder) => authorFolder(folder, {
+      harnesses: ["amp"],
+      hooks: [{ id: "check", event: "before_tool", run: ["hooks/check.sh"], onFailure: "block" }],
+    }, {
+      "hooks/check.sh": "#!/bin/sh\nexit 0\n",
+      "commands/review.md": "---\ndescription: Review\n---\nReview the change.\n",
+    }));
+    const follower = await enroll(root, source, { name: "Hook follower", harnesses: ["amp"] });
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    const plugin = join(follower.home, ".config", "amp", "plugins", "canonfig.ts");
+    const original = read(plugin);
+    write(plugin, `${original}\n// Local edit\n`);
+    writeConfig(source.folder, { harnesses: ["amp"], hooks: [] });
+    rmSync(join(source.folder, "hooks", "check.sh"));
+    await source.publish();
+    const script = join(follower.folder, "hooks", "check.sh");
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "FollowerDrift" });
+    expect(read(script)).toBe("#!/bin/sh\nexit 0\n");
+    write(plugin, original);
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(existsSync(script)).toBe(false);
+    expect(read(plugin)).not.toContain('runCanonfig("check"');
+  });
+
   it("retires no harness output while a mirror item has drifted", async () => {
     const root = temporaryRoot("mirror-drift-retirement");
     const source = await startSource(root, (folder) => authorFolder(folder, {}, {

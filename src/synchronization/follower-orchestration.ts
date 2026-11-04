@@ -43,6 +43,7 @@ import { mirrorItem, renderMirrorConfig, type MirrorEntry } from "../projection/
 import {
   buildProjection,
   fileResource,
+  parseSurfaceResourceId,
   planBuilt,
   rootContext,
   takeoverSummary,
@@ -481,14 +482,26 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
     resource: { ...item.resource, dependsOn: [...new Set([...item.resource.dependsOn, ...prerequisites])] },
   })));
   const current = new Set(built.map((item) => item.resource.id));
+  const heldConsumers = appliedResources.some((record) => parseSurfaceResourceId(record.resource) !== undefined && projection.isHeld(record));
+  const isHookScript = (target: string | undefined) => {
+    if (target === undefined) return false;
+    const path = relative(folderPath.absolute, target);
+    return path.startsWith(`hooks${sep}`);
+  };
+  const retired = appliedResources.filter((record) =>
+    !current.has(record.resource) && !projection.isHeld(record) && !(heldConsumers && isHookScript(record.target))
+  );
+  const consumers = [...projection.built.map((item) => item.resource.id), ...retired.map((record) => record.resource)]
+    .filter((id) => parseSurfaceResourceId(id) !== undefined);
   const planned = yield* planBuilt({
     follower: configuration.follower.id,
     origin: "revision",
     originDigest: fetched.metadata.metadataDigest,
     sourceRevision: Schema.decodeUnknownSync(ProfileRevisionId)(fetched.metadata.id),
     built,
-    retired: appliedResources.filter((record) => !current.has(record.resource) && !projection.isHeld(record)),
+    retired,
     retiredDependsOn: (record) => {
+      if (isHookScript(record.target)) return consumers;
       if (record.target === undefined || !isAbsolute(record.target)) return mirrored;
       const fromFolder = relative(folderPath.absolute, record.target);
       const inside = fromFolder !== ".." && !fromFolder.startsWith(`..${sep}`) && !isAbsolute(fromFolder);

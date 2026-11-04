@@ -55,6 +55,7 @@ Each adapter declares, per harness, its roots and a positive list of **owned sur
 - **Hook runtimes are content-addressed.** Runner and registry filenames include the digest of the runner implementation and registry. A new projection cannot replace the registry an unchanged, drifted, or held consumer still uses; old versions retire only after consumer updates.
 - **Held outputs keep their runtime.** When excluded or temporarily unavailable harnesses retain applied outputs, removing canonical hooks must not retire the runner or registry those outputs still reference.
 - **Runtime retirement follows consumer updates and removals.** A drift or human-action stop must leave the runner and registry intact while any planned harness output still needs them.
+- **Follower hook-script retirement follows consumer updates too.** Removed mirrored `hooks/` files remain while a consumer is held, and otherwise depend on planned harness updates and removals so drift cannot strand an installed plugin.
 - **Generated Amp identifiers preserve distinct agent IDs.** Escape underscores and hyphens separately; `review-fast` and `review_fast` must register different callable tools.
 
 ### 4. Per-harness global paths
