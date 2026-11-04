@@ -483,13 +483,15 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   })));
   const current = new Set(built.map((item) => item.resource.id));
   const heldConsumers = appliedResources.some((record) => parseSurfaceResourceId(record.resource) !== undefined && projection.isHeld(record));
-  const isHookScript = (target: string | undefined) => {
+  // Generated instructions link to rules; hook runners execute scripts in place.
+  // Keep both until every retained consumer can stop referencing them.
+  const isLinkedFile = (target: string | undefined) => {
     if (target === undefined) return false;
     const path = relative(folderPath.absolute, target);
-    return path.startsWith(`hooks${sep}`);
+    return path.startsWith(`hooks${sep}`) || path.startsWith(`rules${sep}`);
   };
   const retired = appliedResources.filter((record) =>
-    !current.has(record.resource) && !projection.isHeld(record) && !(heldConsumers && isHookScript(record.target))
+    !current.has(record.resource) && !projection.isHeld(record) && !(heldConsumers && isLinkedFile(record.target))
   );
   const consumers = [...projection.built.map((item) => item.resource.id), ...retired.map((record) => record.resource)]
     .filter((id) => parseSurfaceResourceId(id) !== undefined);
@@ -501,7 +503,7 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
     built,
     retired,
     retiredDependsOn: (record) => {
-      if (isHookScript(record.target)) return consumers;
+      if (isLinkedFile(record.target)) return consumers;
       if (record.target === undefined || !isAbsolute(record.target)) return mirrored;
       const fromFolder = relative(folderPath.absolute, record.target);
       const inside = fromFolder !== ".." && !fromFolder.startsWith(`..${sep}`) && !isAbsolute(fromFolder);

@@ -1298,6 +1298,34 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     expect(read(plugin)).not.toContain('runCanonfig("check"');
   });
 
+  it.each(["excluded", "undetected"] as const)("retains linked rules while Amp is %s", async (held) => {
+    const root = temporaryRoot(`held-rule-${held}`);
+    const source = await startSource(root, (folder) => authorFolder(folder, { harnesses: ["amp"] }, {
+      "AGENTS.md": "Follow the linked rules.\n",
+      "rules/style.md": "Use two spaces.\n",
+    }));
+    const follower = await enroll(root, source, { name: "Rule follower", harnesses: ["amp"] });
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    const instructions = join(follower.home, ".config", "amp", "AGENTS.md");
+    const original = read(instructions);
+    expect(original).toContain("rules/style.md");
+    const executable = join(root, "rule-follower", "bin", "amp");
+    const local = join(follower.folder, "local", "local.jsonc");
+    if (held === "excluded") write(local, JSON.stringify({ excludeHarnesses: ["amp"] }));
+    else rmSync(executable);
+    rmSync(join(source.folder, "rules", "style.md"));
+    await source.publish();
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(read(instructions)).toBe(original);
+    const rule = join(follower.folder, "rules", "style.md");
+    expect(read(rule)).toBe("Use two spaces.\n");
+    if (held === "excluded") write(local, "{}");
+    else write(executable, "#!/bin/sh\nexit 0\n", 0o755);
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(read(instructions)).not.toContain("rules/style.md");
+    expect(existsSync(rule)).toBe(false);
+  });
+
   it("retires no harness output while a mirror item has drifted", async () => {
     const root = temporaryRoot("mirror-drift-retirement");
     const source = await startSource(root, (folder) => authorFolder(folder, {}, {
