@@ -173,6 +173,38 @@ const claudeJson = {
 };
 
 describe("local projection", () => {
+  it("keeps restored shared skills across the next sync", async () => {
+    const value = fixture(["codex"]);
+    rmSync(join(value.folder, "skills"), { recursive: true });
+    const original = join(value.home, ".agents", "skills", "personal", "SKILL.md");
+    write(original, "Personal skill before takeover\n");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    write(join(value.folder, "skills", "deploy", "SKILL.md"), "---\nname: deploy\ndescription: Deploy\n---\nDeploy safely.\n");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const snapshot = snapshots(value).at(-1)!;
+    const restored = await restore(value, snapshot);
+    expect(restored.outcome).toMatchObject({ outcome: "Converged" });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(original, "utf8")).toBe("Personal skill before takeover\n");
+    expect(existsSync(join(value.home, ".agents", "skills", "deploy"))).toBe(false);
+    expect(appliedRecord(value, "harness:agents:skills")).toBeUndefined();
+  });
+
+  it("retains runtime files referenced by an excluded harness after hooks are removed", async () => {
+    const value = fixture(["amp"]);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const plugin = join(value.home, ".config", "amp", "plugins", "canonfig.ts");
+    const runner = join(value.folder, ".runtime", "hook-runner.mjs");
+    const registry = join(value.folder, ".runtime", "hooks.json");
+    const before = [plugin, runner, registry].map((path) => readFileSync(path, "utf8"));
+    write(join(value.folder, "local", "local.jsonc"), JSON.stringify({ excludeHarnesses: ["amp"] }));
+    editFolderConfig(value, { hooks: [] });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect([plugin, runner, registry].map((path) => readFileSync(path, "utf8"))).toEqual(before);
+    expect(appliedRecord(value, "runtime:hook-runner")).toBeDefined();
+    expect(appliedRecord(value, "runtime:hooks")).toBeDefined();
+  });
+
   it("installs hook runtime before a plugin when a later harness needs human action", async () => {
     const value = fixture(["amp", "claude-code"]);
     write(join(value.home, ".claude.json"), "{ invalid JSON\n");

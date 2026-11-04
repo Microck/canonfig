@@ -535,6 +535,8 @@ export const buildProjection = (
     const model = { ...loaded.model, harnesses: loaded.model.harnesses.filter((harness) => !held.includes(harness)) };
     const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers);
     const owned = new Set(takeovers.map((takeover) => `${takeover.harness}\0${takeover.surface}`));
+    const isHeldHarness = heldResource([...held, ...loaded.local.excludeHarnesses], context, loaded.model);
+    const holdsOutputs = appliedResources.some(isHeldHarness);
     const applied = new Map(appliedResources.map((record) => [record.resource, record]));
     const units: Array<TakeoverUnit> = [];
     const built: Array<BuiltResource> = [];
@@ -585,7 +587,8 @@ export const buildProjection = (
       takeovers: units,
       diagnostics: projected.diagnostics,
       harnesses: projected.harnesses,
-      isHeld: heldResource([...held, ...loaded.local.excludeHarnesses], context, loaded.model),
+      isHeld: (record) => isHeldHarness(record)
+        || (holdsOutputs && (record.resource === "runtime:hook-runner" || record.resource === "runtime:hooks")),
     } satisfies Projection;
   });
 

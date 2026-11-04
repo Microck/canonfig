@@ -20,6 +20,7 @@ import type {
   SynchronizationRunInput,
 } from "../synchronization/synchronization.types.ts";
 import { detectHarnesses, harnessReport } from "./detect.ts";
+import { adapterFor } from "./adapters/index.ts";
 import { CanonicalFolderError, LocalItemCollisionError, loadCanonicalFolder } from "./folder.ts";
 import type { TargetId } from "./model.ts";
 import {
@@ -215,6 +216,13 @@ const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
         || keys.has(`${takeover.harness}\0${takeover.surface}`)
       )
       .map((takeover) => ({ harness: takeover.harness, surface: takeover.surface })));
+    if (harnesses.has(sharedSkillsOwner)) {
+      const loaded = yield* loadFolder(statePath);
+      const context = yield* rootContext((name) => process.env[name]);
+      for (const harness of loaded.model.harnesses) {
+        if (adapterFor(harness).layout(context, loaded.model).sharedSkills) harnesses.add(harness);
+      }
+    }
     const excluded = [...harnesses].filter((harness) => harness !== sharedSkillsOwner).sort();
     if (excluded.length === 0) return [];
     yield* editExcludedHarnesses(folderOf(statePath), (previous) => [...previous, ...excluded]);
