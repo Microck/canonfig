@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - qa/windows-doctor-timeout-v2
 
 permissions:
   contents: read
