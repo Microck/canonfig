@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from "node:module";
 import path from "node:path";
 
 import { Predicate } from "effect";
@@ -14,6 +15,7 @@ import type {
   RootContext,
 } from "../src/projection/harness.ts";
 import { type CanonicalModel, TARGET_IDS, type TargetId } from "../src/projection/model.ts";
+import { ampPluginSource } from "../src/projection/templates/runtime.ts";
 
 // Goldens and invariants for every harness adapter. Adapters are pure, so
 // these tests run them against a fixed model and fixed machine directories.
@@ -86,6 +88,26 @@ function posixContext(environment: Readonly<Record<string, string>>): RootContex
     join: (...segments) => path.posix.join(...segments),
   };
 }
+
+it("loads distinct Amp agents whose IDs differ by hyphens and underscores", async () => {
+  const ids = ["review-fast", "review_fast", "review_hfast"];
+  const source = ampPluginSource(runtime.hookRunner, [], ids.map((id) => ({
+    agent: { ...model.agents[0]!, id }, tools: [],
+  })), []);
+  const javascript = stripTypeScriptTypes(source);
+  // The generated module exists only at runtime; load it to catch syntax collisions.
+  const plugin = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
+  const tools = new Map<string, { execute: (input: { request: string }, context: { thread: { id: string } }) => Promise<string> }>();
+  plugin.default({
+    createAgent: ({ name }: { name: string }) => ({ run: async () => ({ text: name }) }),
+    registerTool: (tool: { name: string; execute: (input: { request: string }, context: { thread: { id: string } }) => Promise<string> }) => {
+      expect(tools.has(tool.name)).toBe(false);
+      tools.set(tool.name, tool);
+    },
+  });
+  expect(await Promise.all([...tools.values()].map((tool) => tool.execute({ request: "Review" }, { thread: { id: "review-thread" } }))))
+    .toEqual(ids);
+});
 
 const plain = posixContext({});
 const overridden = posixContext({

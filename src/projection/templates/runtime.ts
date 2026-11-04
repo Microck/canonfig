@@ -182,8 +182,10 @@ export interface AmpAgent {
 }
 
 function ampAgentRegistration({ agent, tools }: AmpAgent): Array<string> {
-  const variable = `canonfigAgent_${agent.id.replaceAll(/[^A-Za-z0-9_$]/g, "_")}`;
-  const toolName = `canonfig_${agent.id.replaceAll(/[^A-Za-z0-9_]/g, "_")}_subagent`;
+  // Escape underscores as well as hyphens so distinct canonical IDs stay distinct.
+  const identifier = agent.id.replaceAll("_", "_u").replaceAll("-", "_h");
+  const variable = `canonfigAgent_${identifier}`;
+  const toolName = `canonfig_${identifier}_subagent`;
   const model = agent.model === "inherit" ? [] : [`    model: ${JSON.stringify(agent.model)},`];
   return [
     `  const ${variable} = amp.createAgent({`,

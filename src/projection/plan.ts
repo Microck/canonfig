@@ -528,18 +528,27 @@ export const buildProjection = (
   loaded: LoadedFolder,
   context: RootContext,
   takeovers: ReadonlyArray<HarnessTakeover>,
+  appliedResources: ReadonlyArray<AppliedResourceRecord>,
   held: ReadonlyArray<TargetId> = [],
 ) =>
   Effect.gen(function*() {
     const model = { ...loaded.model, harnesses: loaded.model.harnesses.filter((harness) => !held.includes(harness)) };
     const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers);
     const owned = new Set(takeovers.map((takeover) => `${takeover.harness}\0${takeover.surface}`));
+    const applied = new Map(appliedResources.map((record) => [record.resource, record]));
     const units: Array<TakeoverUnit> = [];
     const built: Array<BuiltResource> = [];
     for (const entry of projected.surfaces) {
       const pending = takeoverUnits(entry).filter((unit) => !owned.has(`${unit.harness}\0${unit.surface}`));
       units.push(...pending);
       const id = surfaceResourceId(entry.harness, entry.surface.id);
+      const previousTarget = applied.get(id)?.target;
+      if (previousTarget !== undefined && previousTarget !== entry.surface.target) {
+        return yield* new ProjectionHumanActionError({
+          harness: entry.harness,
+          message: `${entry.harness} surface ${entry.surface.id} was applied at ${previousTarget} but now resolves to ${entry.surface.target}; restore the original location before syncing`,
+        });
+      }
       const content = entry.content;
       if (content.kind === "file") {
         built.push(fileResource(id, entry.surface.target, pending.length > 0 ? "replace" : "replace-if-unmodified", bytesOf(content.content), content.executable ?? false));
@@ -560,6 +569,12 @@ export const buildProjection = (
     const folder = loaded.model.folder;
     const paths = pathsFor(context.platform);
     if (loaded.model.hooks.length > 0) {
+      // Install the runtime before any harness output can begin referring to it.
+      const runtimeDependencies = ["runtime:hook-runner", "runtime:hooks"].map((id) => Schema.decodeUnknownSync(ResourceId)(id));
+      for (let index = 0; index < built.length; index += 1) {
+        const item = built[index]!;
+        built[index] = { ...item, resource: { ...item.resource, dependsOn: runtimeDependencies } };
+      }
       built.push(
         fileResource(Schema.decodeUnknownSync(ResourceId)("runtime:hook-runner"), projected.runtime.hookRunner, "replace", encoder.encode(hookRunnerSource()), false),
         fileResource(Schema.decodeUnknownSync(ResourceId)("runtime:hooks"), paths.join(folder, ".runtime", "hooks.json"), "replace", encoder.encode(hookRegistryJson(loaded.model.hooks)), false),
@@ -583,7 +598,7 @@ export const planFolder = (
   held: ReadonlyArray<TargetId> = [],
 ) =>
   Effect.gen(function*() {
-    const projection = yield* buildProjection(loaded, context, takeovers, held);
+    const projection = yield* buildProjection(loaded, context, takeovers, appliedResources, held);
     const current = new Set(projection.built.map((item) => item.resource.id));
     const planned = yield* planBuilt({
       follower: localProjectionFollower,

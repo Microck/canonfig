@@ -465,7 +465,7 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
     .filter((entry) => entry.installed)
     .map((entry) => entry.harness));
   const notInstalled = loaded.model.harnesses.filter((harness) => !installed.has(harness));
-  const projection = yield* buildProjection(loaded, context, takeovers, notInstalled);
+  const projection = yield* buildProjection(loaded, context, takeovers, appliedResources, notInstalled);
   const authorized = new Set<string>(built.map((item) => item.resource.id));
   const requiredTools = entries.flatMap((entry) =>
     entry.key.startsWith("mcp.")
@@ -476,7 +476,10 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
       : []
   ).filter((id) => authorized.has(id));
   const prerequisites = [...new Set([...mirrored, ...requiredTools.map((id) => Schema.decodeUnknownSync(ResourceId)(id))])].sort();
-  built.push(...projection.built.map((item) => ({ ...item, resource: { ...item.resource, dependsOn: prerequisites } })));
+  built.push(...projection.built.map((item) => ({
+    ...item,
+    resource: { ...item.resource, dependsOn: [...new Set([...item.resource.dependsOn, ...prerequisites])] },
+  })));
   const current = new Set(built.map((item) => item.resource.id));
   const planned = yield* planBuilt({
     follower: configuration.follower.id,

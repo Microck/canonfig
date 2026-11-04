@@ -173,6 +173,32 @@ const claudeJson = {
 };
 
 describe("local projection", () => {
+  it("installs hook runtime before a plugin when a later harness needs human action", async () => {
+    const value = fixture(["amp", "claude-code"]);
+    write(join(value.home, ".claude.json"), "{ invalid JSON\n");
+    const result = await sync(value, "apply", true);
+    expect(result.outcome).toMatchObject({ outcome: "HumanActionRequired" });
+    expect(existsSync(join(value.home, ".config", "amp", "plugins", "canonfig.ts"))).toBe(true);
+    expect(existsSync(join(value.folder, ".runtime", "hook-runner.mjs"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(value.folder, ".runtime", "hooks.json"), "utf8")))
+      .toMatchObject({ version: 1, hooks: [{ id: "format", event: "after_tool" }] });
+  });
+
+  it("refuses to redirect an owned Amp config when another alternative appears", async () => {
+    const value = fixture(["amp"]);
+    const original = join(value.home, ".config", "amp", "settings.jsonc");
+    const alternate = join(value.home, ".config", "amp", "settings.json");
+    write(original, "{}\n");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const managed = readFileSync(original, "utf8");
+    write(alternate, "{}\n");
+    const failure = await syncFailure(value);
+    expect(failure._tag).toBe("ProjectionHumanActionError");
+    expect(failure.message).toContain("settings.jsonc");
+    expect(readFileSync(original, "utf8")).toBe(managed);
+    expect(readFileSync(alternate, "utf8")).toBe("{}\n");
+  });
+
   it("rejects Amp plugin surfaces outside home before taking over any files", async () => {
     const value = fixture(["amp"]);
     const external = join(dirname(value.home), "external-config");
