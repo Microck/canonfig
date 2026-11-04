@@ -184,6 +184,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   // Hooks: the definition is a JSON item, the script it runs a file item.
   const scripts = new Map((await listFolderFiles(folder, "hooks")).map((file) => [`hooks/${file.path}`, file.executable]));
   const scriptUsers = new Map<string, Array<string>>();
+  const enabledScripts = new Set<string>();
   for (const [position, hook] of (config.hooks ?? []).entries()) {
     const script = hookScript(hook, configPath);
     const dependsOn: Array<string> = [];
@@ -192,6 +193,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
       const id = hookScriptId(script, configPath);
       dependsOn.push(id);
       scriptUsers.set(script, [...scriptUsers.get(script) ?? [], `hooks:${hook.id}`]);
+      if (hook.enabled !== false) enabledScripts.add(script);
     }
     resources.push(jsonItem(`hooks:${hook.id}`, `hooks.${hook.id}`, { position, hook: asJson(hook) }, dependsOn));
   }
@@ -202,7 +204,11 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
         message: "is not run by any hook in canonfig.jsonc, so it would never reach a follower; reference it from a hook or remove it",
       });
     }
-    resources.push(fileItem(hookScriptId(script, configPath), script, executable));
+    // Windows cannot report POSIX execute bits. An enabled hook that names a
+    // script directly expresses the author's intent to run it; preserve that
+    // intent for Unix followers. Disabled-only scripts keep their observed mode.
+    const intendedExecutable = executable || (process.platform === "win32" && enabledScripts.has(script));
+    resources.push(fileItem(hookScriptId(script, configPath), script, intendedExecutable));
   }
 
   const tools = config.tools ?? {};
