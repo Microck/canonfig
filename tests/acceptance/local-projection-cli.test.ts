@@ -46,7 +46,7 @@ const folderHome = (): string => {
   writeFileSync(join(home, ".codex", "AGENTS.md"), "my old codex instructions\n");
   writeFileSync(join(home, ".codex", "auth.json"), "{\"token\":\"never touch\"}\n");
   mkdirSync(join(home, "bin"));
-  writeFileSync(join(home, "bin", "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  writeFileSync(join(home, "bin", process.platform === "win32" ? "codex.exe" : "codex"), "", { mode: 0o755 });
   return home;
 };
 
