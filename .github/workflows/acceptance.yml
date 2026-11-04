@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - qa/windows-fixtures-v5
 
 permissions:
   contents: read
