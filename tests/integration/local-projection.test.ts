@@ -427,6 +427,11 @@ describe("local projection", () => {
     expect(takeoverRows(value).filter((row) => String(row.surface).startsWith("config")).map((row) => row.surface))
       .toEqual(["config#approval_policy"]);
 
+    const beforeSync = readFileSync(configPath, "utf8");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(configPath, "utf8")).toBe(beforeSync);
+    expect(appliedRecord(value, "harness:codex:config")?.ownedKeys).toEqual(["approval_policy"]);
+
     // The kept record matches the file, so the later snapshot restores too.
     expect((await restore(value, second)).outcome).toMatchObject({ outcome: "Converged" });
     expect(readFileSync(configPath, "utf8")).toContain("approval_policy = \"never\"");

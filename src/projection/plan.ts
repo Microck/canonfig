@@ -488,11 +488,11 @@ export interface FolderPlan extends LocalRevisionPlan {
 }
 
 /**
- * Whether an applied resource belongs to a held harness: listed but not
- * installed on this run. Its outputs stay as last applied instead of being
- * retired, so a scheduled run whose narrower PATH misses an executable does
- * not undo what an interactive run projected. The shared skills surface is
- * held while a held harness reads it.
+ * Whether an applied resource belongs to a held harness: locally excluded or
+ * listed but not installed on this run. Keep its outputs and ownership so
+ * exclusion after a partial restore cannot retire other snapshots' surfaces,
+ * and a scheduled run with a narrower PATH cannot undo an earlier projection.
+ * Shared skills are held while a held harness reads them.
  */
 const heldResource = (
   held: ReadonlyArray<TargetId>,
@@ -570,7 +570,7 @@ export const buildProjection = (
       takeovers: units,
       diagnostics: projected.diagnostics,
       harnesses: projected.harnesses,
-      isHeld: heldResource(held, context, loaded.model),
+      isHeld: heldResource([...held, ...loaded.local.excludeHarnesses], context, loaded.model),
     } satisfies Projection;
   });
 
