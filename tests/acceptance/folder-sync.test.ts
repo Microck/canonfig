@@ -263,11 +263,14 @@ describe("folder sync across a Source and its followers", () => {
     expect(read(join(follower.folder, "AGENTS.md"))).toBe(read(join(source.folder, "AGENTS.md")));
     expect(read(join(follower.folder, "skills", "deploy", "SKILL.md"))).toContain("Deploy carefully.");
     const hook = join(follower.folder, "hooks", "format.sh");
-    // Windows stores POSIX execution intent in an NTFS alternate stream.
+    // Preserve the source's observable execute bit. Windows stat does not
+    // expose POSIX execute bits, and stores projected intent in an NTFS stream.
     const mode = process.platform === "win32"
       ? Number.parseInt(readFileSync(`${hook}:canonfig.mode`, "utf8"), 8)
       : statSync(hook).mode;
-    expect(mode & 0o100).toBe(0o100);
+    const sourceMode = statSync(join(source.folder, "hooks", "format.sh")).mode;
+    expect(mode & 0o100).toBe(sourceMode & 0o100);
+    if (process.platform !== "win32") expect(mode & 0o100).toBe(0o100);
     const mirrorConfig = JSON.parse(read(join(follower.folder, "canonfig.jsonc")).replace(/^\/\/.*$/gmu, ""));
     expect(mirrorConfig.hooks.map((hook: { id: string }) => hook.id)).toEqual(["zeta", "alpha"]);
     expect(mirrorConfig.profile).toBeUndefined();
