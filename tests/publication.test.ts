@@ -193,6 +193,16 @@ describe("publishing the Canonical Folder", () => {
     expect(signing.calls).toEqual({ signed: 1, verified: 1 });
   });
 
+  it("does not infer execute intent from a disabled-only hook", async () => {
+    const fixture = workspace({
+      hooks: [{ id: "format", event: "after_tool", run: ["hooks/format.sh"], enabled: false }],
+    });
+    chmodSync(join(fixture.folder, "hooks", "format.sh"), 0o600);
+    const revision = await publishAt(fixture, makeSigner().signer);
+    expect(resourceOf(revision, "hook-scripts:format.sh")?.spec)
+      .toMatchObject({ kind: "file", executable: false });
+  });
+
   it("publishes hooks with their authored positions, whatever their ids sort to", async () => {
     const fixture = workspace({
       hooks: [
