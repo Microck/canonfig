@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import {
+  readdir,
   readFile,
   rm,
   writeFile,
@@ -742,7 +743,8 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     // agent task to reinstall it runs before any projected output, and the
     // run is stopped while the agent works. The hook runner (a `replace`
     // output) was changed locally and the run never got to it.
-    const hookRunner = join(followerMachine.folder, ".runtime", "hook-runner.mjs");
+    const runtimeDirectory = join(followerMachine.folder, ".runtime");
+    const hookRunner = join(runtimeDirectory, (await readdir(runtimeDirectory)).find((name) => name.startsWith("hook-runner."))!);
     const canonicalHookRunner = await readFile(hookRunner, "utf8");
     await rm(agentInstalledExecutable);
     await writeFile(hookRunner, "interrupted local state\n");

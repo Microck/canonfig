@@ -46,7 +46,7 @@ Goal: on the Source or an unenrolled machine, `canonfig sync --plan|--apply` pro
 - `src/projection/takeover.ts`: first-write detection per harness, snapshot under `~/.canonfig/.backups/<UTC>/<harness>/` with `manifest.json`, `keys.json` for key-owned files, retention of 5, deletion on rollback. Protected writes through the machine layer.
 - State: new `harness_takeovers` table (harness, pinned root, snapshot id, run id); `applied_resources` reused with ids `harness/<id>/<surface>`.
 - CLI: `sync --apply --no-backup`; `restore [<snapshot>]` as a journaled run that also writes the harness exclusion to `local/local.jsonc`. Help, `src/cli/cli.ts`, `src/runtime/layers.ts` wiring.
-- Hook runner generated at `~/.canonfig/.runtime/hook-runner.mjs`.
+- Hook runner and registry generated under `~/.canonfig/.runtime/` with content-addressed versioned filenames.
 
 Tests (real temp HOME, real SQLite, no mocks):
 

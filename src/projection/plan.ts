@@ -204,9 +204,11 @@ export const projectSurfaces = (
   Effect.gen(function*() {
     const model = loaded.model;
     const paths = pathsFor(context.platform);
+    const registry = hookRegistryJson(model.hooks);
+    const runtimeVersion = sha256Hex(`${hookRunnerSource("hooks.json")}\n${registry}`);
     const runtime = {
       folder: model.folder,
-      hookRunner: paths.join(model.folder, ".runtime", "hook-runner.mjs"),
+      hookRunner: paths.join(model.folder, ".runtime", `hook-runner.${runtimeVersion}.mjs`),
       platform: context.platform,
     };
     const configPath = paths.join(model.folder, "canonfig.jsonc");
@@ -282,7 +284,7 @@ export const projectSurfaces = (
         },
       });
     }
-    return { surfaces, harnesses, diagnostics, runtime };
+    return { surfaces, harnesses, diagnostics, runtime, runtimeVersion };
   });
 
 /** Units of takeover: whole files and directories, and single config keys. */
@@ -447,7 +449,7 @@ export const planBuilt = (input: PlanBuiltInput) =>
       const state = removedResourceState(record);
       if (state === undefined) continue;
       const prerequisites = input.retiredDependsOn?.(record) ?? [];
-      const retiresRuntime = record.resource === "runtime:hook-runner" || record.resource === "runtime:hooks";
+      const retiresRuntime = record.resource.startsWith("runtime:");
       const resource = {
         ...state.resource,
         // Drift and human-action stops do not roll back earlier deletions.
@@ -580,14 +582,15 @@ export const buildProjection = (
     const paths = pathsFor(context.platform);
     if (loaded.model.hooks.length > 0) {
       // Install the runtime before any harness output can begin referring to it.
-      const runtimeDependencies = ["runtime:hook-runner", "runtime:hooks"].map((id) => Schema.decodeUnknownSync(ResourceId)(id));
+      const version = projected.runtimeVersion;
+      const runtimeDependencies = [`runtime:hook-runner:${version}`, `runtime:hooks:${version}`].map((id) => Schema.decodeUnknownSync(ResourceId)(id));
       for (let index = 0; index < built.length; index += 1) {
         const item = built[index]!;
         built[index] = { ...item, resource: { ...item.resource, dependsOn: runtimeDependencies } };
       }
       built.push(
-        fileResource(Schema.decodeUnknownSync(ResourceId)("runtime:hook-runner"), projected.runtime.hookRunner, "replace", encoder.encode(hookRunnerSource()), false),
-        fileResource(Schema.decodeUnknownSync(ResourceId)("runtime:hooks"), paths.join(folder, ".runtime", "hooks.json"), "replace", encoder.encode(hookRegistryJson(loaded.model.hooks)), false),
+        fileResource(runtimeDependencies[0]!, projected.runtime.hookRunner, "replace", encoder.encode(hookRunnerSource(`hooks.${version}.json`)), false),
+        fileResource(runtimeDependencies[1]!, paths.join(folder, ".runtime", `hooks.${version}.json`), "replace", encoder.encode(hookRegistryJson(loaded.model.hooks)), false),
       );
     }
     return {
@@ -596,7 +599,7 @@ export const buildProjection = (
       diagnostics: projected.diagnostics,
       harnesses: projected.harnesses,
       isHeld: (record) => isHeldHarness(record)
-        || (holdsOutputs && (record.resource === "runtime:hook-runner" || record.resource === "runtime:hooks")),
+        || (holdsOutputs && record.resource.startsWith("runtime:")),
     } satisfies Projection;
   });
 
@@ -678,6 +681,11 @@ export const planRestore = (
       const target = entries[0]!.target;
       if (applied === undefined) {
         problems.push(`${target}: Canonfig has no applied state for it (it was never applied completely, or was already restored)`);
+        continue;
+      }
+      const released = entries.filter((entry) => entry.kind === "config" && !applied.ownedKeys?.includes(entry.key));
+      if (released.length > 0) {
+        problems.push(`${target}: snapshot contains config keys Canonfig no longer owns (already restored or released)`);
         continue;
       }
       const state = removedResourceState(applied);

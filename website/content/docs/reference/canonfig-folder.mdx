@@ -180,8 +180,8 @@ credential stops publication; see [Publication failures](#publication-failures).
 | `onFailure` | No | `block`, `warn`, or `ignore` | Default `warn`. |
 | `enabled` | No | boolean | `false` skips the hook. |
 
-Each projected hook calls `~/.canonfig/.runtime/hook-runner.mjs`, which runs
-`run`. A script under `hooks/` is run by its absolute path in the folder, so it
+Each projected hook calls its versioned runner under `~/.canonfig/.runtime/`,
+which runs `run`. A script under `hooks/` is run by its absolute path in the folder, so it
 works from any directory. An event a harness does not emit is reported as a
 warning for that harness.
 

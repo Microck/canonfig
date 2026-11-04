@@ -254,7 +254,7 @@ describe("generated hook runtime", () => {
       "",
     ].join("\n"));
     const hook: Hook = { ...guard, run: ["node", script] };
-    await writeFile(runner, hookRunnerSource());
+    await writeFile(runner, hookRunnerSource("hooks.json"));
     await chmod(runner, 0o755);
     await writeFile(path.join(folder, ".runtime", "hooks.json"), hookRegistryJson([hook]));
     return { root, folder, runner, hook };

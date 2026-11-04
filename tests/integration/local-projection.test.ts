@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -109,6 +110,9 @@ const syncFailure = (value: Fixture) =>
 const restore = (value: Fixture, snapshot?: string) =>
   Effect.runPromise(restoreLocal(value.statePath, snapshot, localProjectionFollower).pipe(Effect.provide(layer(value))));
 
+const runtimePath = (value: Fixture, prefix: string) =>
+  join(value.folder, ".runtime", readdirSync(join(value.folder, ".runtime")).find((name) => name.startsWith(prefix))!);
+
 const snapshots = (value: Fixture): ReadonlyArray<string> => {
   const backups = join(value.folder, ".backups");
   return existsSync(backups) ? readdirSync(backups).sort() : [];
@@ -173,6 +177,53 @@ const claudeJson = {
 };
 
 describe("local projection", () => {
+  it("keeps the old registry usable while a renamed hook's consumer is drifted", async () => {
+    const value = fixture(["amp"]);
+    write(join(value.folder, "hooks", "format.sh"), '#!/bin/sh\nprintf executed > "$CANONFIG_ROOT/hook-ran"\n', 0o755);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const plugin = join(value.home, ".config", "amp", "plugins", "canonfig.ts");
+    const original = readFileSync(plugin, "utf8");
+    const registry = runtimePath(value, "hooks.");
+    const runner = runtimePath(value, "hook-runner.");
+    const before = readFileSync(registry, "utf8");
+    write(plugin, `${original}\n// Local change\n`);
+    editFolderConfig(value, { hooks: [{ id: "new-format", event: "after_tool", run: ["hooks/format.sh"], timeoutMs: 5000 }] });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "FollowerDrift" });
+    expect(readFileSync(registry, "utf8")).toBe(before);
+    expect(existsSync(runner)).toBe(true);
+    execFileSync(process.execPath, [runner, "--hook", "format", "--target", "amp", "--event", "after_tool"], {
+      input: "{}", cwd: value.folder,
+    });
+    expect(readFileSync(join(value.folder, "hook-ran"), "utf8")).toBe("executed");
+    write(plugin, original);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(plugin, "utf8")).toContain('runCanonfig("new-format"');
+    expect(existsSync(registry)).toBe(false);
+    expect(existsSync(runner)).toBe(false);
+  });
+
+  it("refuses a repeated restore of released config keys without overwriting user edits", async () => {
+    const value = fixture(["codex"]);
+    const config = join(value.home, ".codex", "config.toml");
+    write(config, 'model = "original"\napproval_policy = "never"\n');
+    await sync(value, "apply");
+    editFolderConfig(value, { settings: { codex: { model: "managed" } } });
+    await sync(value, "apply");
+    const snapshot = snapshots(value).at(-1)!;
+    editFolderConfig(value, { settings: { codex: { model: "managed", approval_policy: "on-request" } } });
+    await sync(value, "apply");
+    expect((await restore(value, snapshot)).outcome).toMatchObject({ outcome: "Converged" });
+    const edited = readFileSync(config, "utf8").replace('"original"', '"user-choice"');
+    write(config, edited);
+    const failure = await Effect.runPromise(restoreLocal(value.statePath, snapshot, localProjectionFollower).pipe(
+      Effect.flip, Effect.provide(layer(value)),
+    ));
+    expect(failure._tag).toBe("ProjectionHumanActionError");
+    expect(failure.message).toContain("no longer owns");
+    expect(readFileSync(config, "utf8")).toBe(edited);
+    expect(appliedRecord(value, "harness:codex:config")?.ownedKeys).toEqual(["approval_policy", "mcp_servers"]);
+  });
+
   it("keeps hook runtime until a drifted active plugin can be rewritten", async () => {
     const value = fixture(["amp"]);
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
@@ -189,8 +240,7 @@ describe("local projection", () => {
     write(plugin, original);
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
     expect(readFileSync(plugin, "utf8")).not.toContain('runCanonfig("format"');
-    expect(existsSync(join(runtime, "hook-runner.mjs"))).toBe(false);
-    expect(existsSync(join(runtime, "hooks.json"))).toBe(false);
+    expect(tree(runtime)).toEqual(new Map());
   });
 
   it("keeps restored shared skills across the next sync", async () => {
@@ -214,15 +264,13 @@ describe("local projection", () => {
     const value = fixture(["amp"]);
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
     const plugin = join(value.home, ".config", "amp", "plugins", "canonfig.ts");
-    const runner = join(value.folder, ".runtime", "hook-runner.mjs");
-    const registry = join(value.folder, ".runtime", "hooks.json");
+    const runner = runtimePath(value, "hook-runner.");
+    const registry = runtimePath(value, "hooks.");
     const before = [plugin, runner, registry].map((path) => readFileSync(path, "utf8"));
     write(join(value.folder, "local", "local.jsonc"), JSON.stringify({ excludeHarnesses: ["amp"] }));
     editFolderConfig(value, { hooks: [] });
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
     expect([plugin, runner, registry].map((path) => readFileSync(path, "utf8"))).toEqual(before);
-    expect(appliedRecord(value, "runtime:hook-runner")).toBeDefined();
-    expect(appliedRecord(value, "runtime:hooks")).toBeDefined();
   });
 
   it("installs hook runtime before a plugin when a later harness needs human action", async () => {
@@ -231,8 +279,8 @@ describe("local projection", () => {
     const result = await sync(value, "apply", true);
     expect(result.outcome).toMatchObject({ outcome: "HumanActionRequired" });
     expect(existsSync(join(value.home, ".config", "amp", "plugins", "canonfig.ts"))).toBe(true);
-    expect(existsSync(join(value.folder, ".runtime", "hook-runner.mjs"))).toBe(true);
-    expect(JSON.parse(readFileSync(join(value.folder, ".runtime", "hooks.json"), "utf8")))
+    expect(readFileSync(runtimePath(value, "hook-runner."), "utf8")).toContain("spawnSync");
+    expect(JSON.parse(readFileSync(runtimePath(value, "hooks."), "utf8")))
       .toMatchObject({ version: 1, hooks: [{ id: "format", event: "after_tool" }] });
   });
 
@@ -294,7 +342,7 @@ describe("local projection", () => {
     const codexConfig = parseToml(readFileSync(join(value.home, ".codex", "config.toml"), "utf8"));
     expect(codexConfig.model).toBe("o3");
     expect(Object.keys(codexConfig.mcp_servers ?? {}).sort()).toEqual(["docs", "git"]);
-    expect(existsSync(join(value.folder, ".runtime", "hook-runner.mjs"))).toBe(true);
+    expect(readFileSync(runtimePath(value, "hook-runner."), "utf8")).toContain("spawnSync");
     for (const path of neverTouch) expect(readFileSync(path, "utf8"), path).toBe(before[path]);
 
     const again = await sync(value, "apply");
