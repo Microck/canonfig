@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -24,10 +25,16 @@ const project = resolve(import.meta.dirname, "../..");
 const roots: Array<string> = [];
 const servers: Array<ChildProcess> = [];
 
-afterEach(() => {
-  for (const server of servers.splice(0)) server.kill("SIGKILL");
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+afterEach(async () => {
+  for (const server of servers.splice(0)) {
+    if (server.exitCode === null && server.signalCode === null) {
+      const closed = once(server, "close");
+      server.kill("SIGKILL");
+      await closed;
+    }
+  }
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}, 60_000);
 
 const write = (path: string, content: string, mode?: number) => {
   mkdirSync(dirname(path), { recursive: true });
@@ -70,7 +77,8 @@ const machine = (name: string, harnesses: ReadonlyArray<TargetId> = []): Machine
   mkdirSync(home, { recursive: true });
   mkdirSync(bin, { recursive: true });
   for (const harness of harnesses) {
-    write(join(bin, adapterFor(harness).descriptor.executables[0]!), "#!/bin/sh\nexit 0\n", 0o755);
+    const name = adapterFor(harness).descriptor.executables[0]!;
+    write(join(bin, process.platform === "win32" ? `${name}.exe` : name), "", 0o755);
   }
   const environment: NodeJS.ProcessEnv = {
     HOME: home,
@@ -282,7 +290,7 @@ describe("folder sync across a Source and its followers", () => {
     const outsider = machine("outsider", ["claude-code"]);
     const worker = machine("worker", ["claude-code"]);
     // The work machine already has uv, so the tool verifies without installing.
-    write(join(worker.bin, "uv"), "#!/bin/sh\nexit 0\n", 0o755);
+    write(join(worker.bin, process.platform === "win32" ? "uv.exe" : "uv"), "", 0o755);
     enroll(source, endpoint, outsider, "outsider");
     enroll(source, endpoint, worker, "worker", ["work"]);
 
