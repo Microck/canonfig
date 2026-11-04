@@ -346,6 +346,10 @@ export const writeTakeoverSnapshot = (
     const write = (copy: string, content: Uint8Array | { readonly file: string; readonly digest: ContentDigest }) =>
       Effect.gen(function*() {
         const absolute = paths.join(directory, ...copy.split("/"));
+        const relative = paths.relative(directory, absolute);
+        if (paths.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${paths.sep}`)) {
+          return yield* fail(absolute, "snapshot copy must remain inside its snapshot directory");
+        }
         yield* ensure(paths.dirname(absolute));
         yield* machine.atomicWrite({ path: yield* at(absolute), content, mode: 0o600 }).pipe(Effect.mapError(snapshotError(absolute)));
       });
@@ -372,6 +376,10 @@ export const writeTakeoverSnapshot = (
       const keys = new Map<string, Record<string, Record<string, ConfigJson>>>();
       for (const unit of units) {
         const base = { harness: unit.harness, surface: unit.surface, root: unit.root, target: unit.target };
+        const relative = paths.relative(home, unit.target);
+        if (paths.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${paths.sep}`)) {
+          return yield* fail(unit.target, "takeover target must remain inside the home directory");
+        }
         const path = yield* at(unit.target);
         const object = yield* inspect(path);
         if (unit.kind === "config") {

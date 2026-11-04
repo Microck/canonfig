@@ -173,6 +173,18 @@ const claudeJson = {
 };
 
 describe("local projection", () => {
+  it("rejects Amp plugin surfaces outside home before taking over any files", async () => {
+    const value = fixture(["amp"]);
+    const external = join(dirname(value.home), "external-config");
+    value.environment.XDG_CONFIG_HOME = external;
+    const failure = await syncFailure(value);
+    expect(failure._tag).toBe("ProjectionHumanActionError");
+    expect(failure.message).toContain("outside the home directory");
+    expect(snapshots(value)).toEqual([]);
+    expect(existsSync(external)).toBe(false);
+    expect(existsSync(join(value.home, ".config", "amp", "AGENTS.md"))).toBe(false);
+  });
+
   it("projects every harness, keeps never-touch state byte-identical, and restores the takeover snapshot", async () => {
     const value = fixture(TARGET_IDS);
     const neverTouch = await seedNeverTouch(value);
@@ -514,6 +526,20 @@ describe("takeover snapshots", () => {
   const runId = (name: string) => Schema.decodeUnknownSync(RunId)(`run-${name}`);
   const instructionsUnit = (value: Fixture): TakeoverUnit => ({
     harness: "claude-code", surface: "instructions", root: join(value.home, ".claude"), kind: "file", target: join(value.home, ".claude", "CLAUDE.md"),
+  });
+
+  it("rejects an external takeover target without copying it", async () => {
+    const value = fixture(["claude-code"]);
+    const target = join(dirname(value.home), "external.md");
+    write(target, "keep this outside home\n");
+    const failure = await Effect.runPromise(writeTakeoverSnapshot(
+      join(value.folder, ".backups"), value.home, runId("external"),
+      [{ ...instructionsUnit(value), target }],
+    ).pipe(Effect.flip, Effect.provide(machineLayer(value))));
+    expect(failure._tag).toBe("TakeoverSnapshotError");
+    expect(failure.message).toContain("inside the home directory");
+    expect(snapshots(value)).toEqual([]);
+    expect(readFileSync(target, "utf8")).toBe("keep this outside home\n");
   });
 
   it("leaves nothing in .backups when capturing a takeover fails", async () => {

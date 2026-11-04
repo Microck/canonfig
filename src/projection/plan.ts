@@ -255,6 +255,12 @@ export const projectSurfaces = (
         const resolved = surface.kind === "config"
           ? { ...surface, target: yield* resolveConfigTarget(surface) }
           : surface;
+        if (!within(paths, context.home, resolved.target)) {
+          return yield* new ProjectionHumanActionError({
+            harness,
+            message: `${harness} surface ${resolved.id} resolves to ${resolved.target}, outside the home directory ${context.home}; Canonfig projects only inside the home directory`,
+          });
+        }
         surfaces.push({ harness, root: layout.root, surface: resolved, content });
       }
     }
