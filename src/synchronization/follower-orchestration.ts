@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, sep } from "node:path";
 
 import { Effect, Option, Schema } from "effect";
 
@@ -370,7 +370,11 @@ const encoder = new TextEncoder();
  * 3. The projection of the mirror (as this run writes it, read from memory)
  *    plus `local/` into the listed, installed and not excluded harnesses.
  *    Every projected resource depends on the mirror and on the tools its MCP
- *    servers require, so those apply first.
+ *    servers require, so those apply first. Every retirement outside the
+ *    folder (a projected output or tool the revision no longer has) depends
+ *    on the mirror too, so mirror drift stops the run before it as well.
+ *    Retirements inside the folder stay first: a mirror path handed from one
+ *    item to another is removed before it is written.
  */
 const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   fetched: FetchedRevision,
@@ -481,6 +485,12 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
     sourceRevision: Schema.decodeUnknownSync(ProfileRevisionId)(fetched.metadata.id),
     built,
     retired: appliedResources.filter((record) => !current.has(record.resource) && !projection.isHeld(record)),
+    retiredDependsOn: (record) => {
+      if (record.target === undefined || !isAbsolute(record.target)) return mirrored;
+      const fromFolder = relative(folderPath.absolute, record.target);
+      const inside = fromFolder !== ".." && !fromFolder.startsWith(`..${sep}`) && !isAbsolute(fromFolder);
+      return inside ? [] : mirrored;
+    },
     appliedResources,
   });
   return {

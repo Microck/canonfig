@@ -499,9 +499,26 @@ const buildPlan = (
   const filesystem = (resource: PublishedResource) => resource.kind !== "tool" && resource.kind !== "credential";
   const activeResources = orderedResources.filter((resource) => !removedResources.has(resource.id));
   const retiredResources = orderedResources.filter((resource) => removedResources.has(resource.id));
+  // Retirements run before active resources, so a path handed from one owner
+  // to another is removed before it is written. A retirement that depends on
+  // active resources runs after them instead: those resources (with what they
+  // depend on) run between the other retirements and it, so drift or a stop
+  // there leaves it undone.
+  const early = new Set<string>();
+  const runEarly = (id: PublishedResource["dependsOn"][number]): void => {
+    if (early.has(id) || removedResources.has(id)) return;
+    early.add(id);
+    for (const dependency of indexed.resources.get(id)?.dependsOn ?? []) runEarly(dependency);
+  };
+  for (const resource of retiredResources) for (const dependency of resource.dependsOn) runEarly(dependency);
   const removedPaths = new Set<string>();
   const retirementActions: Array<ActionId> = [];
-  for (const resource of [...retiredResources, ...activeResources]) {
+  for (const resource of [
+    ...retiredResources.filter((retired) => retired.dependsOn.length === 0),
+    ...activeResources.filter((active) => early.has(active.id)),
+    ...retiredResources.filter((retired) => retired.dependsOn.length > 0),
+    ...activeResources.filter((active) => !early.has(active.id)),
+  ]) {
     const desired = indexed.desired.get(resource.id);
     const observed = indexed.observed.get(resource.id);
     if (desired === undefined || observed === undefined) continue;

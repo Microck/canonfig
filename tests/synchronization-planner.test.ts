@@ -221,6 +221,35 @@ describe("absent retired target handover", () => {
   });
 });
 
+describe("retirement order", () => {
+  it("runs a retirement that depends on active resources after them, and the rest first", () => {
+    const oldMirror = resource("old-mirror", "file", "replace");
+    const mirror = resource("mirror", "file", "replace");
+    const output = resource("output", "file", "replace", ["mirror"]);
+    const projected = resource("projected", "file", "replace", ["mirror"]);
+    const present = { state: "present", digest: digestA, executable: false, mode: 0o600, objectKind: "regular" } as const;
+    const record = (subject: PublishedResource): AppliedResourceRecord => ({
+      resource: subject.id, revision: "previous", digest: digestA, appliedAt: "2026-08-15T00:00:00Z",
+      kind: "file", policy: "replace", target: subject.target, executable: false, mode: 0o600,
+    });
+    const input = plannerInput([oldMirror, mirror, output, projected], {
+      observed: [present, { state: "absent" }, present, { state: "absent" }],
+      applied: [record(oldMirror), record(output)],
+    });
+    const plan = runPlan({ ...input, revision: { ...input.revision, removedResources: [oldMirror.id, output.id] } });
+    expect(plan.actions.map((action) => [action.resource, action.kind])).toEqual([
+      ["old-mirror", "remove-resource"],
+      ["mirror", "write-file"],
+      ["output", "remove-resource"],
+      ["projected", "write-file"],
+    ]);
+    const [removeOldMirror, writeMirror, removeOutput] = plan.actions.map((action) => action.id);
+    expect(plan.actions[1]!.before).toEqual([removeOldMirror]);
+    expect(plan.actions[2]!.before).toEqual([writeMirror]);
+    expect(plan.actions[3]!.before).toEqual(expect.arrayContaining([removeOldMirror, removeOutput, writeMirror]));
+  });
+});
+
 describe("resource and Apply Policy coverage", () => {
   const cases: ReadonlyArray<{
     readonly kind: ResourceKind;

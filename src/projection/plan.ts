@@ -395,6 +395,8 @@ export interface PlanBuiltInput {
   readonly built: ReadonlyArray<BuiltResource>;
   /** Applied resources this run removes. */
   readonly retired: ReadonlyArray<AppliedResourceRecord>;
+  /** The resources a retirement runs after; none unless given. */
+  readonly retiredDependsOn?: ((record: AppliedResourceRecord) => ReadonlyArray<ResourceIdType>) | undefined;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
   /** Resources whose ownership the run ends although it writes them (restore). */
   readonly endsOwnership?: ReadonlyArray<ResourceIdType> | undefined;
@@ -436,11 +438,12 @@ export const planBuilt = (input: PlanBuiltInput) =>
     for (const record of input.retired) {
       const state = removedResourceState(record);
       if (state === undefined) continue;
+      const resource = { ...state.resource, dependsOn: input.retiredDependsOn?.(record) ?? [] };
       const verification = removedResourceVerification(record, state.desired);
-      resources.push(state.resource);
-      desired.push({ resource: state.resource.id, desired: state.desired, verification });
-      removedResources.push(state.resource.id);
-      yield* observe(state.resource, state.desired, verification);
+      resources.push(resource);
+      desired.push({ resource: resource.id, desired: state.desired, verification });
+      removedResources.push(resource.id);
+      yield* observe(resource, state.desired, verification);
     }
     // The run's revision lists every resource whose ownership it ends; the
     // planner sees only the retired ones, so the others are planned as writes.

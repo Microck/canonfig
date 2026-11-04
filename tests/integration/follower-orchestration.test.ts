@@ -1271,4 +1271,29 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     expect(rowsAfterAbandon.map((row) => row.harness)).toContain("amp");
     expect(rowsAfterAbandon.map((row) => row.harness)).not.toContain("qwen");
   });
+
+  it("retires no harness output while a mirror item has drifted", async () => {
+    const root = temporaryRoot("mirror-drift-retirement");
+    const source = await startSource(root, (folder) => authorFolder(folder, {}, {
+      "AGENTS.md": "Prefer small diffs.\n",
+      "rules/style.md": "Use two spaces.\n",
+    }));
+    const follower = await enroll(root, source, { name: "Drifted follower", harnesses: ["claude-code"] });
+    const projectedRule = join(follower.home, ".claude", "rules", "style.md");
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(read(projectedRule)).toContain("Use two spaces.");
+
+    // The next revision drops the last rule, so harness:claude-code:rules is
+    // retired, while the follower has edited its mirrored AGENTS.md.
+    rmSync(join(source.folder, "rules", "style.md"));
+    await source.publish();
+    write(join(follower.folder, "AGENTS.md"), "local drift\n");
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "FollowerDrift" });
+    expect(read(join(follower.folder, "AGENTS.md"))).toBe("local drift\n");
+    expect(read(projectedRule)).toContain("Use two spaces.");
+
+    write(join(follower.folder, "AGENTS.md"), "Prefer small diffs.\n");
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(existsSync(projectedRule)).toBe(false);
+  });
 });

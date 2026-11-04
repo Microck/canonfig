@@ -74,7 +74,9 @@ Enrollment refuses a folder that already holds authored items
 ```
 
 A mirror file edited locally is Follower Drift: it is kept and reported, and
-its projections hold.
+the run stops before any harness output is written or retired. Retirements
+outside the folder depend on the mirror items, so the planner orders them
+after the mirror.
 
 ## Projection plan
 
