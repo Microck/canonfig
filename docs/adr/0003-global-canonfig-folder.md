@@ -53,6 +53,7 @@ Each adapter declares, per harness, its roots and a positive list of **owned sur
 - **Unsupported features are reported, never approximated into the wrong file.** Examples: Cursor keeps user rules outside the filesystem; Hermes's `SOUL.md` is an identity, not instructions. Capability levels stay as today (`native`, `translated`, `lossy`, `unsupported`).
 - **Hook runtime precedes harness outputs.** When hooks are configured, projection resources depend on the generated runner and registry. Followers preserve these dependencies alongside mirror and tool prerequisites so an early stop cannot leave an installed plugin without its runtime.
 - **Held outputs keep their runtime.** When excluded or temporarily unavailable harnesses retain applied outputs, removing canonical hooks must not retire the runner or registry those outputs still reference.
+- **Runtime retirement follows consumer updates and removals.** A drift or human-action stop must leave the runner and registry intact while any planned harness output still needs them.
 - **Generated Amp identifiers preserve distinct agent IDs.** Escape underscores and hyphens separately; `review-fast` and `review_fast` must register different callable tools.
 
 ### 4. Per-harness global paths

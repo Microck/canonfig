@@ -173,6 +173,26 @@ const claudeJson = {
 };
 
 describe("local projection", () => {
+  it("keeps hook runtime until a drifted active plugin can be rewritten", async () => {
+    const value = fixture(["amp"]);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const plugin = join(value.home, ".config", "amp", "plugins", "canonfig.ts");
+    const original = readFileSync(plugin, "utf8");
+    const edited = `${original}\n// Local edit\n`;
+    write(plugin, edited);
+    editFolderConfig(value, { hooks: [] });
+    const runtime = join(value.folder, ".runtime");
+    const before = tree(runtime);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "FollowerDrift" });
+    expect(readFileSync(plugin, "utf8")).toBe(edited);
+    expect(tree(runtime)).toEqual(before);
+    write(plugin, original);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(plugin, "utf8")).not.toContain('runCanonfig("format"');
+    expect(existsSync(join(runtime, "hook-runner.mjs"))).toBe(false);
+    expect(existsSync(join(runtime, "hooks.json"))).toBe(false);
+  });
+
   it("keeps restored shared skills across the next sync", async () => {
     const value = fixture(["codex"]);
     rmSync(join(value.folder, "skills"), { recursive: true });

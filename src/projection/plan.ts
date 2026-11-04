@@ -441,10 +441,18 @@ export const planBuilt = (input: PlanBuiltInput) =>
       yield* observe(item.resource, item.entry.desired, item.entry.verification);
     }
     const removedResources: Array<ResourceIdType> = [];
+    const runtimeConsumers = [...input.built.map((item) => item.resource.id), ...input.retired.map((record) => record.resource)]
+      .filter((id) => parseSurfaceResourceId(id) !== undefined);
     for (const record of input.retired) {
       const state = removedResourceState(record);
       if (state === undefined) continue;
-      const resource = { ...state.resource, dependsOn: input.retiredDependsOn?.(record) ?? [] };
+      const prerequisites = input.retiredDependsOn?.(record) ?? [];
+      const retiresRuntime = record.resource === "runtime:hook-runner" || record.resource === "runtime:hooks";
+      const resource = {
+        ...state.resource,
+        // Drift and human-action stops do not roll back earlier deletions.
+        dependsOn: retiresRuntime ? [...new Set([...prerequisites, ...runtimeConsumers])] : prerequisites,
+      };
       const verification = removedResourceVerification(record, state.desired);
       resources.push(resource);
       desired.push({ resource: resource.id, desired: state.desired, verification });
