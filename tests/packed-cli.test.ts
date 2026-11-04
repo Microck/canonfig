@@ -1183,7 +1183,10 @@ describe("packed Canonfig executable", () => {
     const doctor = requireSuccess(
       invoke(
         workstation,
-        // The Windows backend permits up to 60 seconds for native scheduler\n        // commands; hosted Windows guests can exceed the 10-second budget.\n        // Still require a real successful probe rather than ignoring a timeout.\n        ["doctor", "--no-input", "--timeout-ms", process.platform === "win32" ? "45000" : "10000", "--json"],
+        // The Windows backend permits up to 60 seconds for native scheduler
+        // commands; hosted Windows guests can exceed the 10-second budget.
+        // Still require a real successful probe rather than ignoring a timeout.
+        ["doctor", "--no-input", "--timeout-ms", process.platform === "win32" ? "45000" : "10000", "--json"],
         {
           CANONFIG_SOURCE_ENDPOINT: sourceEndpoint,
           CANONFIG_SOURCE_TLS_FINGERPRINT: String(
