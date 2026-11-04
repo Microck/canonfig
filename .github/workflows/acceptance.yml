@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - qa/windows-hook-intent-v6
 
 permissions:
   contents: read

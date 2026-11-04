@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, qa/windows-hook-intent-v6]
 permissions:
   contents: read
 # Superseded PR revisions can stop; every main push keeps its own validation run.
