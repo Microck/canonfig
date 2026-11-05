@@ -335,8 +335,15 @@ Action Required (exit 3), because Canonfig will not choose between them:
 
 ## Enrollment
 
+One `~/.canonfig/` is either the folder a Source Machine authors or a Follower
+Machine's mirror, so a machine holds one role. `canonfig follower enroll` and
+`canonfig setup plan --role follower` refuse a Source Machine, and the Source
+commands that create, scan, publish, serve or grant access refuse an enrolled
+Follower Machine. Each exits 2 and changes nothing; the
+[CLI reference](/reference/cli#source-machine) lists the messages.
+
 A Follower Machine's allowlist entries hold its Source Machine's mirror, so
-`canonfig follower enroll` refuses a folder that already holds authored items:
+`canonfig follower enroll` also refuses a folder that already holds authored items:
 
 > /home/dana/.canonfig already holds authored items (AGENTS.md, skills), where a
 > follower keeps its Source's mirror; move what this machine should keep into

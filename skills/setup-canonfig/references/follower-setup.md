@@ -65,6 +65,15 @@ Show the listed entries and offer: move to `local/` / remove / stop / Other.
 Moving or removing files is a mutation that needs approval. Empty directories
 do not count.
 
+A machine is a Source or a follower, never both. On a Source, `follower enroll`
+exits 2 before the invitation is used (`setup plan --role follower` exits 2
+with "be set up as a Follower" in place of "enroll as a Follower"):
+
+> this machine is a Source (signing key `<fingerprint>`), so it cannot enroll as a Follower: a machine is either a Source or a Follower, never both. No command removes the Source role: run 'canonfig source service remove' if the Source service is installed, move `<folder>` aside (it keeps the authored folder, the Source identity and the run journal), then try again
+
+Offer: enroll a different machine / retire this Source as the message says /
+stop / Other. Retiring a Source strands its followers and needs approval.
+
 ## Install and enroll
 
 Use an approved user-level install only when needed.
