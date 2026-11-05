@@ -66,8 +66,10 @@ the `canonfig.jsonc` the follower renders from the items it may see, or a tool
 or credential applied directly. A resource that is not a Canonical Folder item
 is refused, so a revision cannot make a follower write outside the allowlist.
 
-Enrollment refuses a folder that already holds authored items
-(`src/runtime/layers.ts`):
+A machine is a Source or a follower, never both (`src/enrollment/machine-role.ts`).
+Enrollment refuses a Source, Source commands refuse an enrolled follower, and
+each names the other role's record and the way out. Enrollment also refuses a
+folder that already holds authored items (`src/runtime/layers.ts`):
 
 ```text
 <folder> already holds authored items (<items>), where a follower keeps its Source's mirror; move what this machine should keep into <folder>/local (rules, skills, agents and commands as files, MCP servers and settings in local.jsonc) or remove them, then enroll again

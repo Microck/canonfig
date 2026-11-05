@@ -76,6 +76,20 @@ A running command or an unfinished sync blocks activation. After activating,
 
 ## Source Machine
 
+A machine is either a Source Machine or a Follower Machine, never both: a
+Follower Machine's `~/.canonfig/` is its Source Machine's mirror. On an
+enrolled Follower Machine, `source init`, `source scan`, `source publish`,
+`source serve`, `source service install`, `source invite` and `source revoke`
+exit 2 before they change anything:
+
+> this machine follows the Source at `<endpoint>` (signing key `<fingerprint>`)
+> as `<name>` (`<id>`), so it cannot publish a revision: a machine is either a
+> Source or a Follower, never both. Run 'canonfig follower unenroll' first to
+> make this machine a Source
+
+The action in the message names the command. `source service status` and
+`source service remove` still run there.
+
 ### `source init`
 
 ```bash
@@ -220,8 +234,14 @@ items, with exit 2; move what this machine should keep into
 `~/.canonfig/local/` first. Harness surfaces this machine already took over
 stay Canonfig's, and later syncs update them from the Source Machine.
 
+A Source Machine cannot enroll. Canonfig has no command that removes the
+Source role, so move its folder aside to keep the authored items, the Source
+identity and the run journal; the Source keys stay in the native credential
+store under that folder's own names.
+
 | Situation | Result |
 | --- | --- |
+| This machine is a Source Machine | Exit 2: "this machine is a Source (signing key `<fingerprint>`), so it cannot enroll as a Follower: a machine is either a Source or a Follower, never both. No command removes the Source role: run 'canonfig source service remove' if the Source service is installed, move `<folder>` aside (it keeps the authored folder, the Source identity and the run journal), then try again". The invitation is not used. |
 | The folder holds authored items | Exit 2: "`<folder>` already holds authored items (`<entries>`), where a follower keeps its Source's mirror; move what this machine should keep into `<folder>/local` (rules, skills, agents and commands as files, MCP servers and settings in local.jsonc) or remove them, then enroll again". |
 | The name is already enrolled | Exit 4: "the follower identity is already enrolled". Run `canonfig source revoke <name>` on the Source Machine first. Re-enrolling a revoked name keeps this machine's local settings. |
 | This machine is enrolled under another name | Exit 4: "this machine is already enrolled as `<name>` (`<id>`); pass --replace to enroll it as `<new name>` instead". |
@@ -236,7 +256,8 @@ the schedule, and the tunnel record. When the Source Machine is unreachable,
 local removal still happens and the output shows `sourceRevoked: false` plus
 the `canonfig source revoke <id>` command to run. A locked credential store
 exits 3 and keeps the record so you can retry. On a machine that is not
-enrolled, it exits 0.
+enrolled, it exits 0. Once unenrolled, the machine can become a Source Machine
+with `source init`; its folder still holds the last mirror.
 
 ```bash
 canonfig schedule remove
@@ -512,7 +533,11 @@ canonfig setup status
 | `--import-all` | Full Source plans only. Imports every offered item without a name collision. |
 | `--no-import` | Full Source plans only. Does not read the harnesses' files at all. |
 
-`setup plan` changes nothing. A `full` plan for the Source Machine fails early
+`setup plan` changes nothing. It exits 2 before any inspection when the
+machine holds the other role: `--role source` on an enrolled Follower Machine,
+or `--role follower` on a Source Machine, with the same messages as
+[`source init`](#source-machine) and [`follower enroll`](#follower-enroll).
+A `full` plan for the Source Machine fails early
 when the credential store cannot hold the Source Machine's keys. `setup approve` approves the
 current plan, including the exact content of every `--file`. `setup apply`
 runs the next stages; run it again to continue. If a discovery file changed
