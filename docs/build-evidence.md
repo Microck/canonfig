@@ -3,13 +3,13 @@
 A package version is not enough to identify an unreleased build. Two checkouts
 can both report the same version while containing different compiled modules.
 
-`npm run build:cli` writes `build-receipt.json` at the repository root after
-minification. It stays out of `dist` because the published package ships only
-compiled JavaScript; CI preserves the receipt as a workflow artifact instead.
+`npm run build:cli` builds the production browser application, copies it into
+`dist/ui`, and writes `build-receipt.json` after CLI minification. The receipt
+stays outside the package; CI preserves it as a workflow artifact.
 The `canonfig.build/v1` receipt records the package version, SHA-256
-of each build input and compiled JavaScript module, aggregate source and
-compiled digests, and Git commit/dirty state when Git is available. It records
-no timestamps, host names, absolute checkout paths, environment, or credentials.
+of each CLI and browser build input, each compiled JavaScript module and
+browser asset, aggregate digests, and Git commit/dirty state when available.
+It records no timestamps, host names, absolute checkout paths, environment, or credentials.
 A source archive without Git metadata remains buildable and records `git: null`.
 
 Compare `compiledDigest` when identifying installed builds. Hash the installed

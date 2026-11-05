@@ -22,7 +22,7 @@ export type CliFailureCategory =
 
 export const exitCodeForFailure = (
   category: CliFailureCategory,
-): CliExitCode => {
+): Exclude<CliExitCode, 0> => {
   switch (category) {
     case "usage-or-configuration":
       return CliExitCode.usageOrConfiguration;

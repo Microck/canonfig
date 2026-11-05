@@ -43,8 +43,11 @@ import { SetupCommands, type SetupImportRequest } from "./setup-commands.ts";
 import { helpOrVersion, type HelpOrVersionOutcome } from "./help.ts";
 import { BlobTransferProgress } from "../enrollment/blob-transfer-progress.ts";
 import { humanTransferProgress } from "./transfer-progress.ts";
+import { runGui } from "../gui/server.ts";
+import type { GuiQueries } from "../gui/queries.ts";
 
 export type CliCommand =
+  | { readonly _tag: "Ui"; readonly port: number; readonly open: boolean }
   | { readonly _tag: "SourceInit" }
   | {
     readonly _tag: "SourceScan";
@@ -815,6 +818,17 @@ const evaluateCommand = (
     if (area !== undefined && groups.has(area) && action === undefined) {
       return invalid(`Missing ${area} command`);
     }
+    if (area === "ui") {
+      const options = parseOptions(arguments_.slice(1), new Set(["--port"]), new Set(["--no-open"]));
+      if (options.positionals.length > 0) return invalid("Usage: canonfig ui [--port <n>] [--no-open]");
+      if (format === "json") return invalid("canonfig ui prints a browser sign-in URL and does not support --json");
+      const port = one(options, "--port");
+      return command({
+        _tag: "Ui",
+        port: port === undefined ? 0 : parsePositiveInteger(port, "browser port", 65_535),
+        open: !options.switches.has("--no-open"),
+      }, format);
+    }
     if (area === "source") return evaluateSourceCommand(action, rest, format);
     // The positional invitation below serves the private `--stdin`
     // redispatch built in main.ts from in-memory argv. Real process argv
@@ -1018,6 +1032,7 @@ export const evaluateCli = (arguments_: ReadonlyArray<string>): CliOutcome => {
 
 export const commandName = (value: CliCommand): string => {
   switch (value._tag) {
+    case "Ui": return "ui";
     case "SourceInit": return "source.init";
     case "SourceScan": return "source.scan";
     case "SourcePublish": return "source.publish";
@@ -1061,7 +1076,7 @@ export const commandName = (value: CliCommand): string => {
 };
 
 const executeCommand = Effect.fn("Cli.executeCommand")(function*(
-  value: CliCommand,
+  value: Exclude<CliCommand, { readonly _tag: "Ui" }>,
 ): Effect.fn.Return<
   CliPayload,
   CliCommandFailure,
@@ -1168,7 +1183,7 @@ export const runCli = Effect.fn("runCli")(function*(
 ): Effect.fn.Return<
   CliExitCodeValue,
   never,
-  SourceCommands | FollowerCommands | SetupCommands
+  SourceCommands | FollowerCommands | SetupCommands | GuiQueries
 > {
   const outcome = evaluateCli(arguments_);
   if (outcome._tag === "Help" || outcome._tag === "Version") {
@@ -1193,7 +1208,9 @@ export const runCli = Effect.fn("runCli")(function*(
       || (outcome.command._tag === "Synchronize" && outcome.command.scheduled !== true));
   // Automatic shared-secret sync is part of the apply result. Complete it
   // before rendering so stdout never promises success before a later failure.
-  const execution = executeCommand(outcome.command).pipe(
+  const operation: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries> =
+    outcome.command._tag === "Ui" ? runGui(outcome.command, io) : executeCommand(outcome.command);
+  const execution = operation.pipe(
     Effect.tap(() => outcome.command._tag === "Synchronize" && outcome.command.mode === "apply"
       ? afterSuccessfulApply
       : Effect.void),

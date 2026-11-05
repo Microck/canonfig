@@ -46,6 +46,39 @@ use `--json` for the full value and in scripts.
 Every failure Canonfig can explain uses a code other than 1, so a script can
 tell a refusal from a crash.
 
+## Browser interface
+
+```bash
+canonfig ui
+canonfig ui --port 5317 --no-open
+```
+
+Starts the browser interface in the foreground on this machine. Phase 1
+shows the real session and read-only Overview. Setup, publishing, sync, and
+other operations remain available through the CLI, not the live browser
+interface. The public interactive demo uses made-up machines.
+
+| Option | Effect |
+| --- | --- |
+| `--port <n>` | Choose the loopback server's port. Without it, the operating system selects a free port. |
+| `--no-open` | Print the launch URL without opening the browser. |
+
+The server binds only to `127.0.0.1`. Open the printed URL on the same
+machine. Its token can establish a browser session only once; the browser
+then uses a session cookie. Keep the launch URL private. Requests with the
+wrong Host or Origin are rejected.
+
+Keep the terminal open while using the interface. Ctrl-C stops it with
+exit 130; SIGTERM stops it with exit 143. The command holds the normal
+self-update lease, so stop the interface before applying an update.
+Running bare `canonfig` still prints help.
+
+If the browser does not open, open the printed URL yourself. If its token
+has already been used and that browser no longer has the cookie, stop the
+command and launch it again for a fresh session. Use Overview's Reload
+action after resolving a reported status error. Browser errors preserve
+the CLI failure category, exit code, and message listed above.
+
 ## Self-update
 
 ```bash

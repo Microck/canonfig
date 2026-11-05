@@ -6,13 +6,10 @@ import { version } from "../../../package.json";
 // Nothing here talks to a real machine.
 
 /**
- * True in the public demo build (`npm run build:demo`, Vite mode "demo") and on the dev server; false in the
- * production build that `canonfig ui` will serve. It gates demo chrome only: the Demo panel (role switcher,
- * docs and GitHub links), copy that describes the demo itself, and the simulated first-visit page load.
- * Vite replaces `import.meta.env` at build time, so production drops the demo-only code.
- *
- * Both builds still run on the simulated data in this module. The loopback backend in
- * docs/adr/0001-local-browser-gui.md isn't implemented, so production has no real data path yet.
+ * True in the public demo build (`npm run build:demo`, Vite mode "demo") and on the dev server.
+ * ui/vite.config.ts selects this application's entrypoint with the same condition. Production selects
+ * live-app.tsx instead, so this module and the simulated store are outside its import graph.
+ * Within the demo this flag also gates the demo panel, explanatory copy and simulated page loading.
  */
 export const DEMO = import.meta.env.DEV || import.meta.env.MODE === "demo";
 

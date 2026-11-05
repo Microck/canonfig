@@ -199,7 +199,10 @@ const validatePackageContents = (
   // modes with key claims (#258) add about 19 KB packed; that candidate
   // measured 493,853 packed / 2,187,729 unpacked bytes. Keep a small
   // build-identity margin while rejecting unintended assets.
-  if (artifact.size > 505_000 || artifact.unpackedSize > 2_230_000) {
+  // The shipped production GUI raises the measured package to 1,173,207
+  // packed / 3,215,126 unpacked bytes. This growth is the real GUI bundle,
+  // fonts and icons, not demo assets; retain a small build-identity margin.
+  if (artifact.size > 1_200_000 || artifact.unpackedSize > 3_280_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -210,6 +213,7 @@ const validatePackageContents = (
     "README.md",
     "package.json",
     "dist/runtime/main.js",
+    "dist/ui/index.html",
   ]) {
     if (!paths.includes(required)) fail(`package omits required file: ${required}`);
   }
@@ -219,10 +223,11 @@ const validatePackageContents = (
       || path === "README.md"
       || path === "package.json"
       || /^dist\/.+\.(?:js|d\.ts)$/u.test(path)
+      || /^dist\/ui\/.+\.(?:html|js|css|svg|png|ico|woff2?|txt)$/u.test(path)
     ) continue;
     fail(`package contains unintended file: ${path}`);
   }
-  const shippedModules = paths.filter((path) => /^dist\/.+\.js$/u.test(path));
+  const shippedModules = paths.filter((path) => /^dist\/.+\.js$/u.test(path) && !path.startsWith("dist/ui/"));
   for (const modulePath of shippedModules) {
     const sourcePath = resolve(
       projectRoot,

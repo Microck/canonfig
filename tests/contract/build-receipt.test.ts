@@ -11,6 +11,11 @@ const fixture = (): string => {
   mkdirSync(join(root, "src"));
   mkdirSync(join(root, "dist"));
   mkdirSync(join(root, "tools", "release"), { recursive: true });
+  mkdirSync(join(root, "ui", "src"), { recursive: true });
+  mkdirSync(join(root, "ui", "public"), { recursive: true });
+  for (const path of ["package.json", "package-lock.json", "index.html", "vite.config.ts", "tsconfig.json", "tsconfig.app.json", "tsconfig.node.json"]) {
+    writeFileSync(join(root, "ui", path), "{}\n");
+  }
   writeFileSync(join(root, "package.json"), JSON.stringify({ version: "3.2.1" }));
   writeFileSync(join(root, "package-lock.json"), JSON.stringify({ lockfileVersion: 3 }));
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions: {} }));
@@ -53,6 +58,18 @@ describe("build receipts", () => {
     const after = createBuildReceipt(root);
     expect(after.compiledDigest).not.toBe(before.compiledDigest);
     expect(after.compiledFiles.map((file) => file.path)).toEqual(["dist/main.js", "dist/other.js"]);
+  });
+
+  it("includes the shipped browser sources and non-JavaScript assets", () => {
+    const root = fixture();
+    const before = createBuildReceipt(root);
+    writeFileSync(join(root, "ui", "src", "app.tsx"), "export const name = 'Overview';\n");
+    mkdirSync(join(root, "dist", "ui"));
+    writeFileSync(join(root, "dist", "ui", "index.html"), "<div id='root'></div>\n");
+    const after = createBuildReceipt(root);
+    expect(after.sourceDigest).not.toBe(before.sourceDigest);
+    expect(after.compiledDigest).not.toBe(before.compiledDigest);
+    expect(after.compiledFiles.map((file) => file.path)).toContain("dist/ui/index.html");
   });
 
   it("rejects a missing build input instead of narrowing the source digest", () => {

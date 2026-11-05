@@ -10,7 +10,7 @@ import { createBuildReceipt, writeBuildReceipt } from "./build-receipt.ts";
 const identity = createBuildReceipt(process.cwd());
 
 await build({
-  entryPoints: globSync("dist/**/*.js").sort(),
+  entryPoints: globSync("dist/**/*.js").filter((path) => !path.replaceAll("\\", "/").startsWith("dist/ui/")).sort(),
   outbase: "dist",
   outdir: "dist",
   allowOverwrite: true,

@@ -34,6 +34,17 @@ export interface HelpGroup {
 
 export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
+    title: "Browser interface",
+    areas: ["ui"],
+    usage: ["ui [--port <n>] [--no-open]"],
+    notes: [
+      "Open the local browser interface with live Overview status for this machine.",
+      "Runs in the foreground on 127.0.0.1 with a random port by default.",
+      "The printed sign-in URL works once. --no-open leaves opening it to you.",
+      "Press Ctrl-C to stop. Other screens remain available only in the public demo.",
+    ],
+  },
+  {
     title: "Self-update",
     areas: ["self-update"],
     usage: ["self-update enable|disable|status|check|apply|auto [--apply]"],

@@ -2,32 +2,39 @@
 
 The browser frontend lives in `ui/`. Workspace screens are in `src/workspace/`, shared components and demo data in `src/shared/`, and first-run setup in `src/onboarding/`. See [the architecture decision](../docs/adr/0001-local-browser-gui.md).
 
-Machine operations still use simulated data in every build. The Demo panel selects a Source, Follower or new machine; it does not connect to a real machine. CLI serving and backend integration are not implemented yet, so this frontend is not included in the published CLI package.
+The packaged `canonfig ui` connects to the real session and read-only Overview only. Every other screen and operation described below belongs to the interactive demo. Production does not mount the demo store or simulate successful setup, publishing, or synchronization.
+
+Run `canonfig ui` to open the packaged interface, or `canonfig ui --port 5317 --no-open` to choose a loopback port and open the printed single-use URL yourself. Keep the terminal running; Ctrl-C or SIGTERM stops the server. Bare `canonfig` still prints help.
 
 Run from the repository root:
 
 ```bash
+npm ci
 npm --prefix ui ci
 npm run ui:dev
 ```
 
-Open `http://localhost:5317/source/overview`. The independent frontend lockfile stays in `ui/package-lock.json`. Root scripts `ui:typecheck`, `ui:lint` and `ui:build` delegate to this package. Production CLI packaging remains separate.
+Open `http://localhost:5317/source/overview` for the development demo. The independent frontend lockfile stays in `ui/package-lock.json`. Root scripts `ui:typecheck`, `ui:lint` and `ui:build` delegate to this package.
 
 ## Builds
 
 | Command | Output | Use |
 | --- | --- | --- |
-| `npm --prefix ui run build` | `ui/dist/` | The app `canonfig ui` will serve on loopback |
+| `npm --prefix ui run build` | `ui/dist/` | Production frontend; CLI packaging places the assets in root `dist/ui/` |
 | `npm --prefix ui run build:demo` | `ui/dist-demo/` | The public demo at https://canonfig.micr.dev/, published to GitHub Pages with the docs under `/docs/` |
 
-`DEMO` in `src/shared/data.ts` is true for the demo build (Vite mode `demo`) and the dev server, and false for the production build, which drops the code it gates. It gates only demo chrome:
+Vite's build-selected `@app` entrypoint loads `src/live-app.tsx` for production and the existing `src/App.tsx` for development or mode `demo`. `src/gui-client.ts` requests `GET /api/session` and `GET /api/status` with the same-origin session cookie and decodes responses using direct imports from the repository's `src/gui/contract.ts`. `GuiSession`, `GuiStatus`, and `GuiError` have no generated frontend copies. The live Overview has an explicit Reload action and shows request failures instead of demo data.
+
+The production build also checks its module graph and fails if it imports `src/shared/data.ts` or `src/workspace/store.tsx`. This keeps simulated state out of the shipped application as more screens become live.
+
+`DEMO` in `src/shared/data.ts` is true for the demo build and dev server. Within the demo application it gates:
 
 - the Demo panel (`src/shared/demo-switcher.tsx`): an "Interactive demo with made-up data" note, the role links, and links to the docs, the install tutorial and the GitHub repository. It sits in the desktop sidebar, at the bottom-left of setup and not-found pages from 768px, and behind a Demo button in the mobile top bar and setup header;
 - copy that describes the demo itself, such as "Saved in this demo workspace" and "This demo discards it";
-- the simulated first-visit page load (`SIMULATED_LOAD_MS`), which imitates the real fetch; production shows each page at once;
+- the simulated first-visit page load (`SIMULATED_LOAD_MS`), which imitates a fetch;
 - the `?star=1` preview.
 
-Both builds still run on the simulated data in `src/shared/data.ts` and `src/workspace/store.tsx` until the loopback backend lands; the production build has no real data path yet. Simulated actions such as Check for updates keep their short waits in both builds.
+Demo screens use simulated data in `src/shared/data.ts` and `src/workspace/store.tsx`, including short waits for actions such as Check for updates. They are not a second backend for production. See [the screen/action inventory and phase 2 ownership](../docs/plans/canonfig-ui.md) for the CLI mappings and operations that need a shared CLI contract before they can become live.
 
 The demo build also replaces the page title and adds a description, canonical URL, and Open Graph and Twitter card tags to `index.html`, and writes `404.html` as a copy of it, so GitHub Pages boots the app on deep links such as `/follower/sync`. `vite.config.ts` holds this in its `demoSite` plugin. The theme colour and viewport tags sit in `index.html` itself, so both builds have them. The site assembly (`scripts/build-pages.mjs`) adds the docs and `robots.txt`.
 
@@ -44,7 +51,9 @@ Keep the wordmark and tagline inside the central 1200x600: X and Slack crop the 
 
 ## Browser routes
 
-The URL selects the role, screen and view tab. Links can be opened directly or refreshed, and browser Back/Forward follows navigation. `/` opens `/source/overview`; unknown or role-invalid paths show a not-found page.
+Production opens the actual machine's `/source/overview` or `/follower/overview`. An unconfigured machine uses `/overview` with read-only setup guidance. Unsupported and wrong-role paths show an unavailable page linking to the actual Overview.
+
+The table below lists demo routes. In the demo, the URL selects the role, screen and view tab; links support direct loads, refresh, and browser Back/Forward. `/` opens `/source/overview`; unknown or role-invalid paths show a not-found page.
 
 | Screen | Source | Follower |
 | --- | --- | --- |
@@ -72,13 +81,13 @@ The URL selects the role, screen and view tab. Links can be opened directly or r
 
 First-run setup is `/setup`. Retired role and variant query parameters are not routing aliases.
 
-## Guidance and presentation
+## Demo guidance and presentation
 
 Guidance lives in `src/workspace/guide.tsx`, with the spotlight component in `src/tour/`. It has three parts, remembered per role in localStorage: a tour offer on the first visit that opens the tour picker (a four-stop quick tour, then one chapter per area), a Get started list on Overview, and one tip on the first visit to a complex page. Take the tour, in the sidebar or the command palette, opens a picker with that short tour and one chapter of three to five stops per area (`src/workspace/tour-steps.tsx`). Selecting a chapter previews its steps and the pages it visits, numbered in order on a copy of the sidebar, so each chapter's `pages` list must match where its steps go. Finished chapters get a tick, can run again, and end with a button to the next chapter. Append `?tour=1` to start the short tour; reopen a page tip from its "?" button.
 
 After 15 minutes with the workspace on screen, counted across visits and only while its tab is visible and focused, a toast asks for a GitHub star (`StarPrompt` in `src/workspace/guide.tsx`). It waits while the tour, its offer, a page tip or a dialog is open. Any way of closing it stops it for good. In the demo, append `?star=1` to show it straight away.
 
-In the demo, workspace pages pretend to fetch their data from the local Canonfig service, as the real GUI will. The first visit to each page (each Profile and Machines tab counts as its own) in a page load waits `SIMULATED_LOAD_MS` (700ms, in `src/workspace/store.tsx`) and shows a loading skeleton over the page body and the detail panel's body and footer; page headers, the sidebar and dialogs never load. Sync's Check for updates and the Follower's Update secrets show it again while they run, in both builds. Pages a tour opens, or that are open while the tour or its picker is, don't load, and a page's first-visit tip waits until its content is revealed. Skeletons come from [skullet](https://github.com/lochie/skullet) (MIT), pinned at 0.0.3: `Body` in `src/workspace/kit.tsx` measures them from the real content, so nothing moves on reveal, and `App.tsx` themes them to the palette. The highlight sweep and fades stop under reduced motion. Mark decorative art with `skullet-ignore` so it draws no placeholder.
+In the demo, workspace pages pretend to fetch their data from the local Canonfig service. The first visit to each page (each Profile and Machines tab counts as its own) in a page load waits `SIMULATED_LOAD_MS` (700ms, in `src/workspace/store.tsx`) and shows a loading skeleton over the page body and the detail panel's body and footer; page headers, the sidebar and dialogs never load. The demo's Check for updates and Update secrets actions show it again while they run. Pages a tour opens, or that are open while the tour or its picker is, don't load, and a page's first-visit tip waits until its content is revealed. Skeletons come from [skullet](https://github.com/lochie/skullet) (MIT), pinned at 0.0.3: `Body` in `src/workspace/kit.tsx` measures them from the real content, so nothing moves on reveal, and `App.tsx` themes them to the palette. The highlight sweep and fades stop under reduced motion. Mark decorative art with `skullet-ignore` so it draws no placeholder.
 
 The machine map in `src/shared/machine-map/` also runs alone at `/map-demo.html?role=source|follower`, with `&publishing=1`, `&syncing=<follower ids>` and `&customize=<id>`. This separate component demo and `/break.html` are development-only entrypoints served by `vite`, not application routes; neither build includes them.
 

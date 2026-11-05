@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { Effect, Layer, Option, Redacted, Schema } from "effect";
 
 import { ProfileId, SourceSignature } from "../domain/brand.ts";
+import { guiQueriesLayer } from "../gui/queries.ts";
 import { localProjectionFollower } from "../domain/synchronization.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import { AgentResolutionWithSecretsLive } from "../agent/agent-resolution.layer.ts";
@@ -1786,6 +1787,7 @@ export const runtimeLayer = (
     sourceService,
   );
   return Layer.mergeAll(
+    guiQueriesLayer(dirname(statePath)).pipe(Layer.provide(state)),
     sourceCommandsLayer(dirname(statePath)).pipe(Layer.provide(dependencies)),
     followerCommandsLayer(
       statePath,

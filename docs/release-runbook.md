@@ -52,10 +52,12 @@ Run from a clean checkout with Node.js 24:
 
 ```bash
 npm ci
+npm ci --prefix ui
 npm audit --audit-level=low
 npm audit --omit=dev --audit-level=low
 npm run typecheck
 npm run lint
+npm run build:cli
 npm test
 npm run release:validate
 npm run build

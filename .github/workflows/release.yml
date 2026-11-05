@@ -103,12 +103,15 @@ jobs:
           esac
 
       - name: Install locked dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix ui
 
       - name: Validate release
         run: |
           npm run typecheck
           npm run lint
+          npm run build:cli
           npm test
           npm run release:validate
           npm run build
