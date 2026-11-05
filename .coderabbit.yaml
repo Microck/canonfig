@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Retain the organization-level review policy while adding repository context.
+inheritance: true
+knowledge_base:
+  code_guidelines:
+    filePatterns:
+      - files: "docs/architecture.md"
+        applyTo: "src/**/*.ts,tests/**/*.ts"
+      - files: "docs/global-folder.md"
+        applyTo: "src/projection/**/*.ts,src/profile/**/*.ts,src/state/**/*.ts,src/runtime/**/*.ts,src/enrollment/**/*.ts,tests/**/*.ts"
+      - files: "docs/file-rollback.md"
+        applyTo: "src/machine/**/*.ts,src/synchronization/**/*.ts,src/projection/**/*.ts,tests/**/*.ts"
+      - files: "ui/README.md,docs/adr/0001-local-browser-gui.md"
+        applyTo: "ui/src/**/*,ui/vite.config.ts"
