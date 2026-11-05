@@ -32,6 +32,7 @@ ICONS = {
     "Circuitry": "sd-card",
     "ClockCounterClockwise": "history",
     "Cloud": "cloud",
+    "CloudDownload": "cloud-download",
     "Copy": "copy",
     "CornersOut": "maximize-square-minimalistic",
     "Cpu": "cpu",

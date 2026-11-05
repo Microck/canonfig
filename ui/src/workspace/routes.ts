@@ -20,6 +20,7 @@ const SOURCE_PATHS: Record<SourceView, string> = {
   installers: "settings/installers",
   setup: "settings/setup",
   doctor: "settings/health",
+  version: "settings/version",
 };
 
 const FOLLOWER_PATHS: Record<FollowerView, string> = {
@@ -34,6 +35,7 @@ const FOLLOWER_PATHS: Record<FollowerView, string> = {
   agent: "settings/agent",
   doctor: "settings/health",
   machine: "settings/enrollment",
+  version: "settings/version",
 };
 
 export interface WorkspaceRoute {

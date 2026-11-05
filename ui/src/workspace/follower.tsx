@@ -81,9 +81,9 @@ const SECRETS_INITIAL = { busy: false, updated: "today at 08:45" };
 
 /**
  * Why this machine can't sync right now, or null. `stopped`: Stop syncing ended it, which blocks
- * every sync action (apply, checking, recovery, schedule, secrets). `connection`: anything
- * that must reach the Source (apply, checking, secret refresh) is also blocked while the SSH tunnel
- * is stopped. `unreachable` reads both when called, for an operation already waiting when one stops.
+ * every sync action (apply, checking, recovery, schedule, secrets). `blocked`: anything that must
+ * reach the Source (apply, checking, secret refresh) also waits while the SSH tunnel is stopped.
+ * `unreachable` reads the connection when called, for an operation already waiting when it stops.
  */
 function useSyncBlocks() {
   const ws = useWorkspace();
@@ -92,7 +92,7 @@ function useSyncBlocks() {
   const stopped = ws.unenrolled ? `Syncing is stopped on this machine. Joining again needs a new invitation from ${SOURCE}.` : null;
   const tunnelDown = ws.tunnelConfigured && !tunnelUp ? `The SSH tunnel is stopped, so this machine can't reach ${SOURCE}. Start it in Settings, SSH tunnel.` : null;
   const unreachable = () => ws.isStopped() || (ws.tunnelConfigured && !readTunnelUp());
-  return { stopped, connection: stopped ?? tunnelDown, unreachable };
+  return { stopped, blocked: stopped ?? tunnelDown, unreachable };
 }
 
 /** A drifted item: its mirror file keeps your edit, and every run leaves it and its projections as they are. */
@@ -490,7 +490,7 @@ export function SyncView() {
               data-tour="sync-check"
               variant="outline"
               size="sm"
-              disabled={running || checking || blocks.connection !== null}
+              disabled={running || checking || blocks.blocked !== null}
               onClick={() => {
                 setChecking(true);
                 ws.later(() => {
@@ -504,7 +504,7 @@ export function SyncView() {
               {checking && <HourglassMedium />} {checking ? "Checking…" : "Check for updates"}
             </Button>
             {ws.phase !== "done" && (
-              <Button size="sm" variant="primary" disabled={running || ws.interrupted || blocks.connection !== null} onClick={ws.applyPlan} data-tour="sync-apply">
+              <Button size="sm" variant="primary" disabled={running || ws.interrupted || blocks.blocked !== null} onClick={ws.applyPlan} data-tour="sync-apply">
                 {running ? "Applying…" : "Apply changes"}
               </Button>
             )}
@@ -538,8 +538,8 @@ export function SyncView() {
                 )}
               </h2>
               <span className="text-muted-foreground">
-                {!running && blocks.connection
-                  ? blocks.connection
+                {!running && blocks.blocked
+                  ? blocks.blocked
                   : ws.phase === "plan"
                     ? ws.interrupted
                       ? "Recover or abandon the interrupted update first."
@@ -1161,7 +1161,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
 export function FollowerSecretsView() {
   const ws = useWorkspace();
   const [refresh, setRefresh] = useSharedState(SECRETS_KEY, SECRETS_INITIAL);
-  const { connection, unreachable } = useSyncBlocks();
+  const { blocked, unreachable } = useSyncBlocks();
   const cols = "minmax(180px,240px) minmax(140px,1fr)";
   const colsMin = 180 + 140 + 12 + 20;
   return (
@@ -1173,7 +1173,7 @@ export function FollowerSecretsView() {
             data-tour="secrets-update"
             size="sm"
             variant="primary"
-            disabled={refresh.busy || connection !== null}
+            disabled={refresh.busy || blocked !== null}
             onClick={() => {
               setRefresh((prev) => ({ ...prev, busy: true }));
               ws.later(() => {
@@ -1199,7 +1199,7 @@ export function FollowerSecretsView() {
             <span className="lowercase">{PLAIN.secretsGroup}</span>
           </Term>{" "}
           (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from atlas
-          into the macOS Keychain. Last updated {refresh.updated}.{connection && ` ${connection}`}
+          into the macOS Keychain. Last updated {refresh.updated}.{blocked && ` ${blocked}`}
         </p>
         <ListHead cols={cols} minWidth={colsMin} data-tour="secrets-list">
           <span>Name</span>
