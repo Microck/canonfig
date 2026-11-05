@@ -114,6 +114,24 @@ describe("shared folder authoring", () => {
     }).pipe(Effect.provide(layer)));
   });
 
+  it("refuses authored targets inside a harness before writing any candidate files", async () => {
+    const { target, layer } = fixture();
+    const before = readFileSync(join(target.folder, "canonfig.jsonc"), "utf8");
+    await Effect.runPromise(Effect.gen(function*() {
+      const config = yield* readAuthoringItem(target, "canonfig.jsonc");
+      const error = yield* editAuthoringConfig(target, config.digest, [
+        { path: ["resources", "private"], value: { kind: "file", target: "~/.codex/auth.json", source: "files/private.json" } },
+      ], [
+        { path: "files/private.json", expectedDigest: null, files: [file("files/private.json", "{}\n")] },
+        { path: "AGENTS.md", expectedDigest: null, files: [file("AGENTS.md", "Must not be written\n")] },
+      ]).pipe(Effect.flip);
+      expect(error._tag).toBe("CanonicalFolderError");
+      expect(error.message).toContain("which belongs to OpenAI Codex");
+    }).pipe(Effect.provide(layer)));
+    expect(readFileSync(join(target.folder, "canonfig.jsonc"), "utf8")).toBe(before);
+    expect(readdirSync(target.folder)).toEqual(["canonfig.jsonc"]);
+  });
+
   it("uses the same writer for local items and refuses categories outside local.allow", async () => {
     const fixtureValue = fixture();
     const target = { ...fixtureValue.target, scope: "local" as const };
