@@ -694,11 +694,13 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
   // Keys Canonfig owned that this revision no longer declares. Merge is a
   // three-way operation: leaving them behind meant a key dropped from the
   // profile kept its old value forever and the plan read `no-op`, so only
-  // removing the whole resource ever removed a key.
+  // removing the whole resource ever removed a key. A released key that is
+  // not declared (a key claim) is given back as it is, never removed.
   const declaredKeys = context.desired.keys;
   const declared = new Set(declaredKeys);
+  const released = new Set(context.desired.releases ?? []);
   const dropped = sortedUnique(
-    (context.applied?.ownedKeys ?? []).filter((key) => !declared.has(key)),
+    (context.applied?.ownedKeys ?? []).filter((key) => !declared.has(key) && !released.has(key)),
   );
   // Changing ownership between an object and its children is not removal.
   // Pruning the old ancestor would also erase newly unowned sibling fields.
@@ -806,24 +808,40 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
  * Applied Resource Record owns, so declaring a new key is not mistaken for a
  * local edit. Without a record, or with none of its keys left in the file,
  * there is nothing to protect and the keys are merged.
+ *
+ * A run that gives keys back untouched (`releases` outside `keys`, a key
+ * claim) cannot check the kept keys on their own: the record holds one
+ * digest over every key it owns, the given-back ones included, and those may
+ * already hold the machine's edit. Kept keys that already hold the desired
+ * values need no check (observed equals desired), as long as nothing owned is
+ * removed; anything else still needs the whole record unchanged.
  */
 const planConfigIfUnmodified = (
   context: ResourcePlanningContext,
   desired: Extract<DesiredResource, { readonly kind: "config" }>,
 ): ReadonlyArray<ResourceActionDraft> => {
   const observed = context.observed;
+  const applied = context.applied;
   if (
-    context.applied !== undefined
+    applied !== undefined
     && observed.state === "present"
     && (observed.objectKind === undefined || observed.objectKind === "regular")
     && observed.appliedKeysDigest !== undefined
-    && observed.appliedKeysDigest !== context.applied.digest
+    && observed.appliedKeysDigest !== applied.digest
   ) {
-    return [driftConflict(
-      context,
-      desired.digest,
-      Schema.decodeUnknownSync(ContentDigestSchema)(observed.digest),
-    )];
+    const declared = new Set(desired.keys);
+    const released = new Set(desired.releases ?? []);
+    const owned = applied.ownedKeys ?? [];
+    const onlyGivesBack = owned.some((key) => released.has(key) && !declared.has(key))
+      && owned.every((key) => declared.has(key) || released.has(key))
+      && observed.digest === desired.digest;
+    if (!onlyGivesBack) {
+      return [driftConflict(
+        context,
+        desired.digest,
+        Schema.decodeUnknownSync(ContentDigestSchema)(observed.digest),
+      )];
+    }
   }
   return planMerge(context);
 };

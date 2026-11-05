@@ -392,6 +392,8 @@ detection and selection in its `harnesses` probe. See
 canonfig overlay list
 canonfig overlay set mcp/docs
 canonfig overlay remove mcp/docs
+canonfig overlay set 'settings/codex#model'
+canonfig overlay remove 'settings/codex#model'
 ```
 
 A Local Overlay lets this machine's item in `~/.canonfig/local/` replace the
@@ -402,15 +404,30 @@ settings, each local key replaces the published keys it overlaps and the other
 published keys stay. The Source Machine's `local.allow` must still admit the
 category.
 
+A key claim, `settings/<harness>#<key>`, makes one key of that harness's
+settings file this machine's: Canonfig never writes, removes, or reports drift
+on the key or anything under it there, and the other keys it owns in the file
+still follow the Source. Removing the claim lets the next sync write the
+published value again. `set` refuses a claim, with exit 2 and the file
+unchanged, when the harness has no settings file Canonfig writes or the key is
+one the harness keeps for itself. A sync refuses, with exit 2 before writing
+anything, a claim inside a value Canonfig writes as one key ("overlay
+settings/codex#mcp_servers.docs claims part of mcp_servers, which Canonfig
+writes as one value; claim mcp_servers instead") and a claimed key that
+`local/local.jsonc` also sets. A plan warns (`CLAIM_UNUSED`) about a claim that
+covers no key Canonfig writes.
+
 `set` and `remove` edit `overlays` in `~/.canonfig/local/local.jsonc`, keeping
 the file's comments, and print the list; they work before the first sync.
 `list` loads the folder (the mirror on a Follower Machine) and reports each
-overlay with `local` (an admitted local item of that name exists) and
-`published` (a published item of that name exists). A plan warns about an
-overlay with no local item. Overlays are never published or mirrored, and a new
-revision does not change them. An item in another form fails with exit 2:
-"Invalid overlay `<item>`: expected rules|skills|agents|commands|mcp/`<name>`, or
-settings/`<harness>`". See [Replace a published item on one machine](/how-to/use-local-overlays).
+entry with its `kind`: an item overlay with `local` (an admitted local item of
+that name exists) and `published` (a published item of that name exists), a
+key claim with its `harness` and `key`. A plan warns about an item overlay with
+no local item. Overlays and claims are never published or mirrored, and a new
+revision does not change them. An entry in another form fails with exit 2:
+"invalid overlay `<item>`: expected rules|skills|agents|commands|mcp/`<name>`,
+settings/`<harness>`, or settings/`<harness>`#`<key>`". See
+[Replace a published item on one machine](/how-to/use-local-overlays).
 
 ## Status
 

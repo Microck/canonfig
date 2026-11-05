@@ -65,7 +65,7 @@ describe("Canonical Folder loader", () => {
     expect(loaded.model.mcp.map(([name]) => name)).toEqual(["git"]);
     expect(loaded.model.hooks[0]?.run).toEqual([join(root, "hooks", "format.sh"), "--fix"]);
     expect(loaded.model.settings).toEqual({ codex: [{ path: "model_reasoning_effort", value: "high" }] });
-    expect(loaded.local).toEqual({ excludeHarnesses: [], excludeResources: [], backups: true });
+    expect(loaded.local).toEqual({ excludeHarnesses: [], excludeResources: [], claims: [], backups: true });
     expect((await loadCanonicalFolder(root)).digest).toBe(loaded.digest);
   });
 
@@ -131,11 +131,30 @@ describe("Canonical Folder loader", () => {
     expect(loaded.model.commands).toEqual([]);
     expect(loaded.ignoredLocal).toEqual(["local/commands/"]);
     expect(loaded.model.harnesses).toEqual(["codex"]);
-    expect(loaded.local).toEqual({ excludeHarnesses: ["qwen"], excludeResources: [], backups: false });
+    expect(loaded.local).toEqual({ excludeHarnesses: ["qwen"], excludeResources: [], claims: [], backups: false });
 
     mkdirSync(join(root, "skills", "mine"), { recursive: true });
     writeFileSync(join(root, "skills", "mine", "SKILL.md"), "---\nname: mine\ndescription: Published\n---\nP.\n");
     await expect(loadCanonicalFolder(root)).rejects.toBeInstanceOf(LocalItemCollisionError);
+  });
+
+  it("reads key claims from the overlays list and refuses ones that cannot apply", async () => {
+    const claimed = (overlays: ReadonlyArray<string>, settings?: Readonly<Record<string, Readonly<Record<string, string>>>>) => folder({
+      "canonfig.jsonc": "{ \"version\": 1, \"harnesses\": [\"codex\"], \"local\": { \"allow\": [\"settings\"] } }",
+      "local/local.jsonc": JSON.stringify({ overlays, settings }),
+    });
+    const loaded = await loadCanonicalFolder(claimed(["settings/codex#model", "settings/codex#tui.theme"]));
+    expect(loaded.local.claims).toEqual([{ harness: "codex", key: "model" }, { harness: "codex", key: "tui.theme" }]);
+    expect(loaded.overlays).toEqual([
+      { kind: "claim", item: "settings/codex#model", harness: "codex", key: "model" },
+      { kind: "claim", item: "settings/codex#tui.theme", harness: "codex", key: "tui.theme" },
+    ]);
+    for (const overlays of [["settings/nope#model"], ["settings/codex#a..b"], ["settings/codex#"]]) {
+      await expect(loadCanonicalFolder(claimed(overlays)), overlays[0]).rejects.toBeInstanceOf(CanonicalFolderError);
+    }
+    // A local setting for a claimed key would ask Canonfig to write it after all.
+    await expect(loadCanonicalFolder(claimed(["settings/codex#tui"], { codex: { "tui.theme": "dark" } })))
+      .rejects.toThrow("overlaps the key claim settings/codex#tui");
   });
 
   it("only warns about a local category that is not allowed, whatever it holds", async () => {

@@ -318,7 +318,7 @@ takes these keys:
 | `settings` | object: harness id to object of key path to value | Settings keys only this machine adds. |
 | `excludeHarnesses` | array of harness ids | Harnesses this machine never projects, even when listed. `canonfig harnesses exclude` and `canonfig restore` edit it. |
 | `excludeResources` | array of resource ids | Authored resources this machine never projects. `canonfig restore` adds the ones it gives back. |
-| `overlays` | array of `<category>/<name>` | Local Overlays: published items this machine's local item replaces. `canonfig overlay set` and `remove` edit it. See [Replace a published item on one machine](/how-to/use-local-overlays). |
+| `overlays` | array of `<category>/<name>` or `settings/<harness>#<key>` | Local Overlays: published items this machine's local item replaces. Key claims: settings keys Canonfig never writes, removes, or checks on this machine, while the other keys of that settings file follow the Source. `canonfig overlay set` and `remove` edit it. See [Replace a published item on one machine](/how-to/use-local-overlays). |
 | `backups` | boolean | `false` turns takeover snapshots off on this machine. Default `true`. |
 
 The Source Machine decides which categories local items may add, with

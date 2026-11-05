@@ -1266,7 +1266,7 @@ const followerCommandsLayer = (
           Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
       overlays: (input) =>
-        mapFailure(overlaysLocal(statePath, input.change).pipe(
+        mapFailure(overlaysLocal(statePath, (name) => process.env[name], input.change).pipe(
           Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
       status: (follower) =>

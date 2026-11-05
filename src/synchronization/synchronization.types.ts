@@ -55,9 +55,11 @@ export type DesiredResource =
     readonly format: "toml" | "json" | "yaml";
     readonly keys: ReadonlyArray<string>;
     /**
-     * Keys this run writes (or removes) and then stops owning: a restore
-     * giving some keys of a file back while Canonfig keeps the others. The
-     * Applied Resource Record keeps only the remaining keys.
+     * Keys Canonfig stops owning after this run; the Applied Resource Record
+     * keeps only the rest. A released key in `keys` is written first (a
+     * restore giving some keys of a file back while Canonfig keeps the
+     * others). A released key outside `keys` is given back as it is: not
+     * written, removed or checked (a key claim).
      */
     readonly releases?: ReadonlyArray<string> | undefined;
   }

@@ -431,7 +431,10 @@ export const ownedFilesFor = (
 /**
  * What a written config resource owns afterward: its keys minus the ones the
  * run gives back (`releases`), and the digest of only the kept values, so a
- * later drift check compares the same keys the record names.
+ * later drift check compares the same keys the record names. A run that
+ * gives back every key it owned and writes none (key claims cover all of
+ * them) keeps a record of no keys, whose digest is that of an empty
+ * document, as observation reports for it.
  */
 export const configOwnership = (
   desired: Extract<DesiredResource, { readonly kind: "config" }>,
@@ -440,11 +443,12 @@ export const configOwnership = (
   if (desired.releases === undefined) return { ownedKeys: desired.keys, digest: desired.digest };
   const released = new Set(desired.releases);
   const ownedKeys = desired.keys.filter((key) => !released.has(key));
+  if (desired.keys.length === 0) return { ownedKeys, digest: desired.digest };
   const content = artifacts.find((artifact) => artifact.digest === desired.digest)?.content;
   const digest = content === undefined
     ? undefined
     : configKeysDigest(desired.format, parseConfigDocument(desired.format, new TextDecoder().decode(content)), ownedKeys);
-  // A run only gives keys back while it keeps others whose values it writes.
+  // A run only gives written keys back while it keeps others whose values it writes.
   if (digest === undefined) throw new Error(`config ${desired.digest} keeps no written key after releasing ${desired.releases.join(", ")}`);
   return { ownedKeys, digest };
 };

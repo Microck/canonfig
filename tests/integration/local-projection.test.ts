@@ -292,6 +292,26 @@ describe("local projection", () => {
     expect(appliedRecord(value, "harness:codex:config")?.ownedKeys).toEqual(["approval_policy"]);
   });
 
+  it("keeps a claimed key the machine edited when the claim covers every key of the settings file", async () => {
+    const value = fixture(["codex"], { mcp: {}, settings: { codex: { model: "managed" } } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const config = join(value.home, ".codex", "config.toml");
+    const edited = readFileSync(config, "utf8").replace('"managed"', '"local-choice"');
+    write(config, edited);
+    write(join(value.folder, "local", "local.jsonc"), JSON.stringify({ overlays: ["settings/codex#model"] }));
+    // The run gives the key back untouched: Canonfig keeps a record of no keys...
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(config, "utf8")).toBe(edited);
+    expect(appliedRecord(value, "harness:codex:config")?.ownedKeys).toEqual([]);
+    // ...which the next run retires without touching the file.
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(config, "utf8")).toBe(edited);
+    expect(appliedRecord(value, "harness:codex:config")).toBeUndefined();
+    write(join(value.folder, "local", "local.jsonc"), JSON.stringify({ overlays: [] }));
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(config, "utf8")).toContain('model = "managed"');
+  });
+
   it("keeps hook runtime until a drifted active plugin can be rewritten", async () => {
     const value = fixture(["amp"]);
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
@@ -764,7 +784,7 @@ describe("local projection", () => {
     )));
     await Effect.runPromise(Deferred.await(acquired));
 
-    const overlay = await Effect.runPromise(overlaysLocal(value.statePath, { action: "set", item: "mcp/docs" }).pipe(
+    const overlay = await Effect.runPromise(overlaysLocal(value.statePath, environmentOf(value), { action: "set", item: "mcp/docs" }).pipe(
       Effect.flip,
       Effect.provide(layer(value)),
     ));
@@ -777,7 +797,7 @@ describe("local projection", () => {
 
     await Effect.runPromise(Deferred.succeed(release, undefined));
     await Effect.runPromise(Fiber.join(holder));
-    const edited = await Effect.runPromise(overlaysLocal(value.statePath, { action: "set", item: "mcp/docs" }).pipe(
+    const edited = await Effect.runPromise(overlaysLocal(value.statePath, environmentOf(value), { action: "set", item: "mcp/docs" }).pipe(
       Effect.provide(layer(value)),
     ));
     expect(edited).toMatchObject({ overlays: ["mcp/docs", "skills/deploy"] });

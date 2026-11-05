@@ -44,6 +44,10 @@ _Avoid_: Local override, follower state
 A machine's recorded decision, in `~/.canonfig/local/local.jsonc`, that its local item replaces the published item of the same name on that machine.
 _Avoid_: Override, local patch
 
+**Key Claim**:
+A machine's recorded decision, in the `overlays` list of `~/.canonfig/local/local.jsonc`, that one key of a Target Harness's settings file is its own: Canonfig never writes, removes or reports drift on that key there, and keeps every other key it owns in the file.
+_Avoid_: Pinned setting, key override
+
 **Append-local**:
 The Apply Policy under which Canonfig shares a surface with the machine: it owns a marked Source section of a text file, or only its own entries of a directory, and keeps everything else the machine put there.
 _Avoid_: Merge mode, keep-local

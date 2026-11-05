@@ -1,18 +1,22 @@
 ---
 title: Replace a published item on one machine
-description: Use a Local Overlay so one machine's own skill, rule, MCP server, or settings replace the published item with the same name.
+description: Use a Local Overlay so one machine's own skill, rule, MCP server, or settings replace the published item with the same name, or claim one settings key so Canonfig leaves it alone.
 ---
 
 A local item with the same name as a published one normally stops the sync
 with Human Action Required (exit 3), because Canonfig will not choose between
 them. A Local Overlay records that this machine's item wins on this machine.
+A key claim goes further for one settings key: Canonfig stops writing it, and
+you edit it in the harness's own file.
 
 ## Before you start
 
-- The Source Machine's `local.allow` must admit the category. See
-  [Add items to one machine only](/how-to/add-machine-local-items).
-- Overlays live in `~/.canonfig/local/local.jsonc`. They are never published,
-  never mirrored, and a new revision does not change them.
+- For an item overlay, the Source Machine's `local.allow` must admit the
+  category. See [Add items to one machine only](/how-to/add-machine-local-items).
+  A key claim needs no `local.allow` entry.
+- Overlays and key claims live in the `overlays` list of
+  `~/.canonfig/local/local.jsonc`. They are never published, never mirrored,
+  and a new revision does not change them.
 
 ## Replace a published item
 
@@ -29,6 +33,51 @@ An item is `rules/<id>`, `skills/<name>`, `agents/<id>`, `commands/<id>`,
 `mcp/<name>`, or `settings/<harness>`. For settings, each local key replaces
 the published keys it overlaps, and the other published keys stay.
 
+## Keep one settings key as this machine's
+
+To pick your own Codex model on this machine while every other key still
+comes from the Source, claim the key and sync:
+
+```bash
+canonfig overlay set 'settings/codex#model'
+canonfig sync --apply
+```
+
+From then on Canonfig never writes, removes, or reports drift on `model` in
+`~/.codex/config.toml`. Edit it there whenever you like. The other keys
+Canonfig owns in that file, such as `mcp_servers` or other published settings,
+keep following the Source, and an edit to one of them is still Follower Drift.
+
+A claim is `settings/<harness>#<key>`, where the key is a settings path such as
+`model` or `tui.theme` (write `\.` for a dot inside a key name). It covers the
+key and everything under it, in the file that receives that harness's
+`settings`. Canonfig refuses a claim, and changes nothing, when:
+
+- the harness is unknown or has no settings file Canonfig writes;
+- the key is one the harness keeps for itself, such as OpenCode's `provider`;
+- the key is inside a value Canonfig writes as one key, such as
+  `settings/codex#mcp_servers.docs` (the sync says to claim `mcp_servers`
+  instead, or use an `mcp/<name>` overlay);
+- `local/local.jsonc` also sets the same key under `settings`.
+
+A plan warns about a claim that covers no key Canonfig writes. If you edited
+the claimed key before the first sync that honors the claim, and that same
+sync also brings a new published value for another key of the file, Canonfig
+cannot tell your edit from a change to that key and reports Follower Drift.
+Put the claimed key back, sync, then edit it again.
+
+Remove the claim to hand the key back: the next sync writes the published
+value over yours.
+
+```bash
+canonfig overlay remove 'settings/codex#model'
+canonfig sync --apply
+```
+
+`canonfig restore` refuses a snapshot that holds the original value of a key
+you claimed, because Canonfig no longer owns it. Remove the claim and sync
+first.
+
 ## See and remove overlays
 
 ```bash
@@ -36,10 +85,11 @@ canonfig overlay list
 canonfig overlay remove mcp/docs
 ```
 
-`list` reports each overlay with `local` (your item exists and is admitted)
-and `published` (the Source Machine publishes an item of that name). A plan
-warns about an overlay that finds no local item. After `remove`, the next sync
-stops with the name collision again until you rename or remove your item.
+`list` reports each entry with its `kind`. An item overlay has `local` (your
+item exists and is admitted) and `published` (the Source Machine publishes an
+item of that name); a key claim has its `harness` and `key`. A plan warns
+about an overlay that finds no local item. After `remove`, the next sync stops
+with the name collision again until you rename or remove your item.
 
 `overlay set` and `overlay remove` do not wait: while a sync, restore,
 recover, or another edit of `local/local.jsonc` runs on this machine, they stop

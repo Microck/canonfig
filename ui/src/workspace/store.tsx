@@ -406,7 +406,7 @@ export interface Workspace {
   /** This machine's ~/.canonfig/local/ items. */
   local: LocalItem[];
   setLocal: SetState<LocalItem[]>;
-  /** local.jsonc `overlays`: `<category>/<name>` items whose local version replaces the published one here. */
+  /** local.jsonc `overlays`: `<category>/<name>` items whose local version replaces the published one here, and `settings/<harness>#<key>` key claims. */
   overlays: string[];
   setOverlays: SetState<string[]>;
   /** What `local.appendLocal` keeps of this machine's own in harness files it already applied. */

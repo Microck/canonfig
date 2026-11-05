@@ -12,7 +12,7 @@ import { AgentPolicy } from "../domain/identity.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
-import { OverlayReference } from "../projection/folder.ts";
+import { parseOverlay } from "../projection/folder.ts";
 import { TARGET_IDS, type TargetId } from "../projection/model.ts";
 import {
   scheduleWeekdays,
@@ -865,13 +865,10 @@ const evaluateCommand = (
       const [item, ...extra] = options.positionals;
       if (action === "list" && item === undefined) return command({ _tag: "Overlays" }, format);
       if ((action !== "set" && action !== "remove") || item === undefined || extra.length > 0) {
-        return invalid("Usage: canonfig overlay list | canonfig overlay set|remove <category>/<name>");
+        return invalid("Usage: canonfig overlay list | canonfig overlay set|remove <category>/<name> | canonfig overlay set|remove settings/<harness>#<key>");
       }
-      const decoded = Schema.decodeUnknownOption(OverlayReference)(item);
-      const harness = item.startsWith("settings/") ? item.slice("settings/".length) : undefined;
-      if (decoded._tag === "None" || (harness !== undefined && !TARGET_IDS.some((id) => id === harness))) {
-        return invalid(`Invalid overlay ${item}: expected rules|skills|agents|commands|mcp/<name>, or settings/<harness>`);
-      }
+      const parsed = parseOverlay(item);
+      if (parsed.kind === "invalid") return invalid(parsed.reason);
       return command({ _tag: "Overlays", change: { action, item } }, format);
     }
     if (area === "restore") {

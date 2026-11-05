@@ -254,6 +254,30 @@ export const SURFACE_SUPPORT: Record<HarnessId, SurfaceCategory[]> = {
 };
 
 /**
+ * Each harness's settings file as the adapters declare it (the config surface with `settings` in
+ * src/projection/adapters): the keys Canonfig always owns there, each written as one value, and the keys the
+ * harness keeps for itself (`*` matches one segment). A key claim, `settings/<harness>#<key>`, may name only a
+ * harness listed here and never a reserved key. tests/projection-adapters.test.ts fails when the two disagree.
+ */
+export const SETTINGS_FILES: Partial<Record<HarnessId, { readonly owned: string[]; readonly reserved: string[] }>> = {
+  codex: { owned: ["mcp_servers"], reserved: [] },
+  "claude-code": { owned: ["hooks"], reserved: [] },
+  amp: { owned: ["amp\\.mcpServers"], reserved: [] },
+  "oh-my-pi": { owned: [], reserved: [] },
+  pi: { owned: [], reserved: [] },
+  "factory-droid": { owned: [], reserved: [] },
+  cursor: { owned: [], reserved: [] },
+  devin: { owned: ["hooks"], reserved: [] },
+  opencode: { owned: ["mcp"], reserved: ["provider"] },
+  "grok-build": { owned: ["mcp_servers"], reserved: ["model.*.api_key"] },
+  antigravity: { owned: [], reserved: ["trustedWorkspaces", "gcp"] },
+  "copilot-cli": { owned: [], reserved: [] },
+  kimi: { owned: ["hooks"], reserved: ["providers", "services.*.api_key"] },
+  kilo: { owned: ["mcp"], reserved: ["provider"] },
+  qwen: { owned: ["mcpServers", "hooks"], reserved: [] },
+};
+
+/**
  * One harness as `canonfig harnesses` reports it on this machine. Canonfig projects a harness that is listed
  * in canonfig.jsonc, installed here and not excluded in local/local.jsonc.
  */
@@ -612,8 +636,11 @@ export const followerSelf = {
     { id: "settings/codex", category: "settings", path: "local.jsonc settings.codex", summary: "1 key", keys: { model: '"gpt-5.5"' } },
     { id: "commands/standup", category: "commands", path: "commands/standup.md", summary: "/standup", detail: { Description: "Summarize yesterday's commits." } },
   ] as LocalItem[],
-  /** local.jsonc `overlays`: published items this machine's local item of the same name replaces. */
-  overlays: ["mcp/docs"],
+  /**
+   * local.jsonc `overlays`: published items this machine's local item of the same name replaces, and key claims
+   * (`settings/<harness>#<key>`) that keep one key of a harness's settings file this machine's own.
+   */
+  overlays: ["mcp/docs", "settings/claude-code#includeCoAuthoredBy"],
   /** What appendLocal keeps of this machine's own, as of the revision it applied. */
   kept: [
     { category: "instructions", target: "~/.codex/AGENTS.md", text: "# Laptop notes\n\nUse fish, not bash.\n" },

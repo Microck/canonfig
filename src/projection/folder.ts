@@ -158,11 +158,47 @@ const LocalAllow = Schema.Struct({
 
 /** Categories a Local Overlay can name: an item `local/` holds under a published item's name. */
 export const OVERLAY_CATEGORIES = ["rules", "skills", "agents", "commands", "mcp", "settings"] as const;
-/** `<category>/<name>`; for `settings` the name is a harness id. */
-export const OverlayReference = Schema.String.check(Schema.isPattern(
-  new RegExp(`^(?:${OVERLAY_CATEGORIES.join("|")})/[A-Za-z0-9][A-Za-z0-9_-]*$`, "u"),
-  { expected: "<category>/<name>, for example mcp/docs or settings/codex" },
-));
+
+/**
+ * One `overlays` entry in `local/local.jsonc`:
+ *
+ * - an item, `<category>/<name>` (for `settings` the name is a harness id):
+ *   this machine's `local/` item of that name replaces the published one;
+ * - a key claim, `settings/<harness>#<key path>`: Canonfig never writes,
+ *   removes or checks that key in the harness's settings file on this
+ *   machine, and keeps every other key it owns there. The `#` form is the
+ *   one takeover already uses for a single key (`config#model`), and the
+ *   settings file is the one surface the folder authors keys into.
+ */
+export type OverlayEntry =
+  | { readonly kind: "item"; readonly item: string }
+  | { readonly kind: "claim"; readonly item: string; readonly harness: TargetId; readonly key: string };
+
+const overlayItemPattern = new RegExp(`^(?:${OVERLAY_CATEGORIES.join("|")})/([A-Za-z0-9][A-Za-z0-9_-]*)$`, "u");
+const keyClaimPattern = /^settings\/([A-Za-z0-9][A-Za-z0-9_-]*)#(.+)$/su;
+
+/** One `overlays` entry, or why it is invalid. */
+export type ParsedOverlay = OverlayEntry | { readonly kind: "invalid"; readonly reason: string };
+
+/** Parse one `overlays` entry; the CLI and the loader both read entries through it. */
+export const parseOverlay = (entry: string): ParsedOverlay => {
+  const invalid = (reason: string) => ({ kind: "invalid", reason }) as const;
+  const claim = keyClaimPattern.exec(entry);
+  if (claim !== null) {
+    const harness = TARGET_IDS.find((candidate) => candidate === claim[1]);
+    if (harness === undefined) return invalid(`overlay ${entry} names unknown harness ${claim[1]!}`);
+    const issue = configPathIssue(claim[2]!);
+    return issue === undefined ? { kind: "claim", item: entry, harness, key: claim[2]! } : invalid(`overlay ${entry}: ${issue}`);
+  }
+  const item = overlayItemPattern.exec(entry);
+  if (item === null) {
+    return invalid(`invalid overlay ${entry}: expected rules|skills|agents|commands|mcp/<name>, settings/<harness>, or settings/<harness>#<key>`);
+  }
+  if (entry.startsWith("settings/") && !TARGET_IDS.some((candidate) => candidate === item[1])) {
+    return invalid(`overlay ${entry} names unknown harness ${item[1]!}`);
+  }
+  return { kind: "item", item: entry };
+};
 
 /** A home-relative path segment list: no empty, `.` or `..` segment, no backslash or NUL. */
 const relativeSegments = /^(?:[^/\\\0]+\/)*[^/\\\0]+$/u;
@@ -219,8 +255,8 @@ const LocalJsonc = Schema.Struct({
   excludeHarnesses: Schema.optional(Schema.Array(Schema.Literals(TARGET_IDS))),
   /** Authored resources this machine never projects; `restore` adds the ones it gives back. */
   excludeResources: Schema.optional(Schema.Array(identifier)),
-  /** Local Overlays: published items this machine's `local/` item of the same name replaces. */
-  overlays: Schema.optional(Schema.Array(OverlayReference)),
+  /** Local Overlays and key claims; `parseOverlay` reads each entry. */
+  overlays: Schema.optional(Schema.Array(Schema.String)),
   backups: Schema.optional(Schema.Boolean),
 });
 
@@ -244,24 +280,39 @@ const SkillFrontmatter = Schema.Struct({
   description: Schema.NonEmptyString,
 });
 
+/** A key claim: this machine owns `key` in `harness`'s settings file. */
+export interface KeyClaim {
+  readonly harness: TargetId;
+  readonly key: string;
+}
+
 /** Machine-local policy from `local/local.jsonc`. */
 export interface LocalPolicy {
   /** Harnesses this machine never projects, even when listed. */
   readonly excludeHarnesses: ReadonlyArray<TargetId>;
   /** Authored resources this machine never projects. */
   readonly excludeResources: ReadonlyArray<string>;
+  /** Settings keys this machine owns; projection neither writes nor checks them. */
+  readonly claims: ReadonlyArray<KeyClaim>;
   /** False turns takeover snapshots off on this machine. */
   readonly backups: boolean;
 }
 
-/** One Local Overlay and what it finds: a `local/` item, a published item, or both. */
-export interface OverlayStatus {
-  readonly item: string;
-  /** `local/` holds an admitted item of that name. */
-  readonly local: boolean;
-  /** The folder (or the mirror) publishes an item of that name. */
-  readonly published: boolean;
-}
+/**
+ * One `overlays` entry as `canonfig overlay list` reports it: an item overlay
+ * with what it finds (a `local/` item, a published item, or both), or a key
+ * claim. Whether a claim covers a key Canonfig writes shows in the plan.
+ */
+export type OverlayStatus =
+  | {
+    readonly kind: "item";
+    readonly item: string;
+    /** `local/` holds an admitted item of that name. */
+    readonly local: boolean;
+    /** The folder (or the mirror) publishes an item of that name. */
+    readonly published: boolean;
+  }
+  | { readonly kind: "claim"; readonly item: string; readonly harness: TargetId; readonly key: string };
 
 export interface LoadedFolder {
   readonly model: CanonicalModel;
@@ -981,14 +1032,15 @@ export const loadCanonicalFolder = async (
     return [];
   };
 
-  const overlayItems = [...new Set(localConfig.overlays ?? [])].sort();
-  for (const item of overlayItems) {
-    const harness = item.startsWith("settings/") ? item.slice("settings/".length) : undefined;
-    if (harness !== undefined && !TARGET_IDS.some((candidate) => candidate === harness)) {
-      throw failure(localPath, `overlay ${item} names unknown harness ${harness}`);
-    }
-  }
-  const overlays = new Set(overlayItems);
+  const overlayEntries = [...new Set(localConfig.overlays ?? [])].sort().map((entry): OverlayEntry => {
+    const parsed = parseOverlay(entry);
+    if (parsed.kind === "invalid") throw failure(localPath, parsed.reason);
+    return parsed;
+  });
+  const overlays = new Set(overlayEntries.flatMap((entry) => entry.kind === "item" ? [entry.item] : []));
+  const claims = overlayEntries.flatMap((entry): ReadonlyArray<KeyClaim> =>
+    entry.kind === "claim" ? [{ harness: entry.harness, key: entry.key }] : []
+  );
 
   const localRules = await localItems("rules", (directory) => loadRules(source, directory));
   const localSkills = await localItems("skills", (directory) => loadSkills(source, directory, loadFiles));
@@ -1020,6 +1072,14 @@ export const loadCanonicalFolder = async (
     ignoredLocal.push("local/local.jsonc settings");
     localSettings = {};
   }
+  // A claimed key is the machine's to edit in the harness file itself; a
+  // local setting for it would ask Canonfig to write the key it gave up.
+  for (const claim of claims) {
+    const declared = (localSettings[claim.harness] ?? []).find((entry) => configPathsOverlap(entry.path, claim.key));
+    if (declared !== undefined) {
+      throw failure(localPath, `local setting ${claim.harness} ${declared.path} overlaps the key claim settings/${claim.harness}#${claim.key}; remove one of them`);
+    }
+  }
   const settings = mergeLocalSettings(authored.settings, localSettings, localPath, overlays);
 
   // What each overlay finds, for `canonfig overlay list` and the plan's warnings.
@@ -1041,11 +1101,11 @@ export const loadCanonicalFolder = async (
     mcp: localMcp.map(([name]) => name),
     settings: Object.keys(localSettings),
   });
-  const overlayStatus = overlayItems.map((item): OverlayStatus => ({
-    item,
-    local: localItemNames.has(item),
-    published: publishedItems.has(item),
-  }));
+  const overlayStatus = overlayEntries.map((entry): OverlayStatus =>
+    entry.kind === "claim"
+      ? entry
+      : { kind: "item", item: entry.item, local: localItemNames.has(entry.item), published: publishedItems.has(entry.item) }
+  );
 
   const excluded = new Set(localConfig.excludeHarnesses ?? []);
   const excludedResources = new Set(localConfig.excludeResources ?? []);
@@ -1077,6 +1137,7 @@ export const loadCanonicalFolder = async (
   const local: LocalPolicy = {
     excludeHarnesses: localConfig.excludeHarnesses ?? [],
     excludeResources: [...excludedResources].sort(),
+    claims,
     backups: localConfig.backups ?? true,
   };
   return { model, local, digest: modelDigest(model, local), ignoredLocal, overlays: overlayStatus };

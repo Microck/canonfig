@@ -9,7 +9,7 @@ import type {
   ProfileRevisionId as ProfileRevisionIdType,
   ResourceId as ResourceIdType,
 } from "../domain/brand.ts";
-import { configPathSegments } from "../domain/config-path.ts";
+import { configPathSegments, configPathsOverlap } from "../domain/config-path.ts";
 import type { PublishedResource, VerificationInput } from "../domain/profile.ts";
 import type { ApplyPolicy } from "../domain/resource.ts";
 import { ConfigValue } from "../domain/resource.ts";
@@ -47,7 +47,7 @@ import type {
   SynchronizationArtifact,
 } from "../synchronization/synchronization.types.ts";
 import { adapterFor } from "./adapters/index.ts";
-import { CanonicalFolderError, type LoadedFolder } from "./folder.ts";
+import { CanonicalFolderError, type KeyClaim, type LoadedFolder } from "./folder.ts";
 import type {
   ConfigFormat,
   Diagnostic,
@@ -200,6 +200,12 @@ const resolveConfigTarget = (surface: Extract<OwnedSurface, { readonly kind: "co
     return surface.target;
   });
 
+/** The config file that receives a harness's declared `settings.<harness>` keys, if it has one. */
+const settingsSurfaceOf = (layout: HarnessLayout) =>
+  layout.surfaces.find((candidate): candidate is Extract<OwnedSurface, { readonly kind: "config" }> =>
+    candidate.kind === "config" && candidate.settings !== undefined
+  );
+
 /** Merge a harness's declared settings into its settings file's content. */
 const withSettings = (
   harness: TargetId,
@@ -209,10 +215,8 @@ const withSettings = (
   configPath: string,
 ): ReadonlyArray<SurfaceContent> => {
   if (settings.length === 0) return contents;
-  const surface = layout.surfaces.find((candidate) =>
-    candidate.kind === "config" && candidate.settings !== undefined
-  );
-  if (surface === undefined || surface.kind !== "config") {
+  const surface = settingsSurfaceOf(layout);
+  if (surface === undefined) {
     throw new CanonicalFolderError({ path: configPath, message: `settings.${harness}: ${harness} has no settings file Canonfig writes` });
   }
   for (const entry of settings) {
@@ -232,6 +236,28 @@ const withSettings = (
     { kind: "config", surface: surface.id, keys },
   ];
 };
+
+/**
+ * Why a key claim (`settings/<harness>#<key>` in `local/local.jsonc`) cannot
+ * apply on this machine, or undefined. The harness needs a settings file
+ * Canonfig writes, and the key must not be one the harness keeps for itself:
+ * Canonfig never writes those, so claiming one would only hide a typo.
+ * Projection checks every claim, listed harness or not, and `canonfig overlay
+ * set` checks one before it records it.
+ */
+export const keyClaimIssue = (claim: KeyClaim, context: RootContext, model: CanonicalModel): string | undefined => {
+  const item = `settings/${claim.harness}#${claim.key}`;
+  const surface = settingsSurfaceOf(adapterFor(claim.harness).layout(context, model));
+  if (surface === undefined) return `overlay ${item}: ${claim.harness} has no settings file Canonfig writes`;
+  const reserved = (surface.settings?.reserved ?? []).find((pattern) => reservedOverlap(claim.key, pattern));
+  return reserved === undefined
+    ? undefined
+    : `overlay ${item}: ${claim.key} overlaps ${reserved}, which ${claim.harness} keeps for itself and Canonfig never writes`;
+};
+
+/** Whether config key `key` is the claimed key itself or a key inside it. */
+const claimCovers = (claimed: string, key: string): boolean =>
+  configPathsOverlap(claimed, key) && configPathSegments(key).length >= configPathSegments(claimed).length;
 
 export interface HarnessPlan {
   readonly harness: TargetId;
@@ -362,7 +388,7 @@ export const projectSurfaces = (
         code: "LOCAL_NOT_ALLOWED",
         message: `${path} is not admitted by canonfig.jsonc local.allow and was not projected`,
       })),
-      ...loaded.overlays.filter((overlay) => !overlay.local).map((overlay) => ({
+      ...loaded.overlays.flatMap((overlay) => overlay.kind === "item" && !overlay.local ? [overlay] : []).map((overlay) => ({
         level: "warning" as const,
         code: "OVERLAY_UNUSED",
         message: `overlay ${overlay.item} finds no admitted local/ item of that name, so ${overlay.published ? "the published item is projected" : "it changes nothing"}; add the local item or run 'canonfig overlay remove ${overlay.item}'`,
@@ -727,12 +753,60 @@ export const buildProjection = (
     const isHeldSurface = (record: AppliedResourceRecord) => isHeldHarness(record) || excludedResources.has(record.resource);
     const holdsOutputs = appliedResources.some(isHeldHarness);
     const applied = new Map(appliedResources.map((record) => [record.resource, record]));
+    const folder = loaded.model.folder;
+    const paths = pathsFor(context.platform);
+
+    // Key claims. A claimed key leaves its harness's settings file content
+    // before takeover units are counted, so Canonfig neither takes it over
+    // nor writes it, and a key an Applied Resource Record still owns under a
+    // claim is given back as it is (`releases`): not removed, not checked.
+    const claims = loaded.local.claims;
+    const localPath = paths.join(folder, "local", "local.jsonc");
+    for (const claim of claims) {
+      const issue = keyClaimIssue(claim, context, loaded.model);
+      if (issue !== undefined) return yield* new CanonicalFolderError({ path: localPath, message: issue });
+    }
+    const usedClaims = new Set<KeyClaim>();
+    // The keys of `harness`'s settings file that a claim covers. A claim
+    // inside a key Canonfig writes as one value (`mcp_servers.docs` under
+    // `mcp_servers`) would need part of that value, so it is refused.
+    const claimed = (harness: string, keys: ReadonlyArray<string>) =>
+      Effect.gen(function*() {
+        const covered = new Set<string>();
+        for (const claim of claims) {
+          if (claim.harness !== harness) continue;
+          for (const key of keys) {
+            if (!configPathsOverlap(claim.key, key)) continue;
+            if (!claimCovers(claim.key, key)) {
+              return yield* new CanonicalFolderError({
+                path: localPath,
+                message: `overlay settings/${harness}#${claim.key} claims part of ${key}, which Canonfig writes as one value; claim ${key} instead`,
+              });
+            }
+            covered.add(key);
+            usedClaims.add(claim);
+          }
+        }
+        return covered;
+      });
+
     const units: Array<TakeoverUnit> = [];
     const built: Array<BuiltResource> = [];
-    for (const entry of projected.surfaces) {
+    for (const projectedSurface of projected.surfaces) {
+      const id = surfaceResourceId(projectedSurface.harness, projectedSurface.surface.id);
+      let entry = projectedSurface;
+      let releases: ReadonlyArray<string> = [];
+      if (entry.surface.kind === "config" && entry.surface.settings !== undefined && entry.content.kind === "config") {
+        const keys = entry.content.keys;
+        const ownedKeys = applied.get(id)?.ownedKeys ?? [];
+        const covered = yield* claimed(entry.harness, [...keys.map((key) => key.path), ...ownedKeys]);
+        releases = ownedKeys.filter((key) => covered.has(key));
+        entry = { ...entry, content: { ...entry.content, keys: keys.filter((key) => !covered.has(key.path)) } };
+        // Claims covering every key leave nothing to write or give back.
+        if (entry.content.kind === "config" && entry.content.keys.length === 0 && releases.length === 0) continue;
+      }
       const pending = takeoverUnits(entry).filter((unit) => !owned.has(`${unit.harness}\0${unit.surface}`));
       units.push(...pending);
-      const id = surfaceResourceId(entry.harness, entry.surface.id);
       const previousTarget = applied.get(id)?.target;
       if (previousTarget !== undefined && previousTarget !== entry.surface.target) {
         return yield* new ProjectionHumanActionError({
@@ -759,11 +833,42 @@ export const buildProjection = (
         // Protect previously applied keys even when this revision drops all of
         // them: removing a locally edited key must still report drift.
         const anyOwned = (applied.get(id)?.ownedKeys?.length ?? 0) > 0 || takeoverUnits(entry).length > pending.length;
-        built.push(configResource(id, entry.surface.target, anyOwned ? "replace-if-unmodified" : "merge", entry.surface.format, content.keys));
+        built.push(configResource(
+          id,
+          entry.surface.target,
+          anyOwned ? "replace-if-unmodified" : "merge",
+          entry.surface.format,
+          content.keys,
+          releases.length > 0 ? releases : undefined,
+        ));
       }
     }
-    const folder = loaded.model.folder;
-    const paths = pathsFor(context.platform);
+    // A settings file this run projects nothing into would retire, and
+    // retirement removes every key its record owns. Claimed keys stay: the
+    // file is planned with no keys, giving the claimed ones back and removing
+    // only the others.
+    const builtIds = new Set(built.map((item) => item.resource.id));
+    for (const record of appliedResources) {
+      const parsed = parseSurfaceResourceId(record.resource);
+      const harness = TARGET_IDS.find((candidate) => candidate === parsed?.harness);
+      if (
+        harness === undefined || builtIds.has(record.resource) || isHeldSurface(record)
+        || record.kind !== "config" || record.target === undefined || record.configFormat === undefined
+        || parsed?.surface !== settingsSurfaceOf(adapterFor(harness).layout(context, loaded.model))?.id
+      ) continue;
+      const covered = yield* claimed(harness, record.ownedKeys ?? []);
+      if (covered.size === 0) continue;
+      built.push(configResource(record.resource, record.target, "replace-if-unmodified", record.configFormat, [], [...covered]));
+    }
+    const diagnostics = [
+      ...projected.diagnostics,
+      ...claims.filter((claim) => !usedClaims.has(claim)).map((claim): Diagnostic => ({
+        level: "warning",
+        code: "CLAIM_UNUSED",
+        harness: claim.harness,
+        message: `overlay settings/${claim.harness}#${claim.key} covers no key Canonfig writes in ${claim.harness}'s settings file, so it changes nothing; run 'canonfig overlay remove settings/${claim.harness}#${claim.key}' if you no longer need it`,
+      })),
+    ];
     if (loaded.model.hooks.length > 0) {
       // Install the runtime before any harness output can begin referring to it.
       const version = projected.runtimeVersion;
@@ -780,7 +885,7 @@ export const buildProjection = (
     return {
       built,
       takeovers: units,
-      diagnostics: projected.diagnostics,
+      diagnostics,
       harnesses: projected.harnesses,
       isHeld: (record) => isHeldSurface(record)
         || (holdsOutputs && record.resource.startsWith("runtime:")),

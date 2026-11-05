@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { Schema } from "effect";
+import { parse as parseToml } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ConfigValue } from "../../src/domain/resource.ts";
@@ -259,7 +260,7 @@ describe("what a follower keeps of its own", () => {
     expect(laptop.run(["overlay", "set", "mcp/nope/extra"]).status).toBe(2);
     expect(succeed(laptop.run(["overlay", "set", "mcp/docs"]), "overlay set").data).toMatchObject({ overlays: ["mcp/docs"] });
     expect(succeed(laptop.run(["overlay", "list"]), "overlay list").data).toEqual({
-      overlays: [{ item: "mcp/docs", local: true, published: true }],
+      overlays: [{ kind: "item", item: "mcp/docs", local: true, published: true }],
     });
     succeed(laptop.run(["sync", "--apply"]), "overlaid sync");
     expect(read(config)).toContain("http://127.0.0.1:9000/mcp");
@@ -287,6 +288,74 @@ describe("what a follower keeps of its own", () => {
 
     expect(succeed(laptop.run(["overlay", "remove", "mcp/docs"]), "overlay remove").data).toMatchObject({ overlays: [] });
     expect(laptop.run(["sync", "--apply"]).status).toBe(3);
+  }, 300_000);
+
+  it("lets a key claim keep one settings key on one machine while the other keys follow the Source", async () => {
+    const team = {
+      harnesses: ["codex"],
+      mcp: { docs: { transport: "streamable-http", url: "https://docs.example.invalid/mcp" } },
+      settings: { codex: { model: "gpt-5", model_reasoning_effort: "medium" } },
+    };
+    const { source, endpoint } = await startSource(team, {});
+    const laptop = machine("laptop", ["codex"]);
+    const config = join(laptop.home, ".codex", "config.toml");
+    const local = join(laptop.folder, "local", "local.jsonc");
+    const codexSettings = () => parseToml(read(config));
+    enroll(source, endpoint, laptop, "laptop");
+    succeed(laptop.run(["sync", "--apply"]), "first sync");
+    expect(codexSettings()).toMatchObject({ model: "gpt-5", model_reasoning_effort: "medium" });
+
+    // Claims Canonfig could never honor are refused, and nothing is written.
+    for (const claim of ["settings/hermes#model", "settings/nope#model", "settings/codex#a..b", "settings/codex#"]) {
+      const refused = laptop.run(["overlay", "set", claim]);
+      expect(refused.status, `${claim}: ${refused.output}`).toBe(2);
+    }
+    expect(existsSync(local)).toBe(false);
+    // A claim inside a key Canonfig writes as one value is refused by the
+    // sync that would need it, before anything changes.
+    succeed(laptop.run(["overlay", "set", "settings/codex#mcp_servers.docs"]), "claim inside a value");
+    const before = read(config);
+    const split = laptop.run(["sync", "--apply"]);
+    expect(split.status, split.output).toBe(2);
+    expect(split.output).toContain("claim mcp_servers instead");
+    expect(read(config)).toBe(before);
+    succeed(laptop.run(["overlay", "remove", "settings/codex#mcp_servers.docs"]), "remove claim inside a value");
+
+    // The laptop edits `model` in Codex's own file. Unclaimed, that is drift.
+    write(config, read(config).replace('model = "gpt-5"', 'model = "laptop-model"'));
+    expect(laptop.run(["sync", "--apply"]).status).toBe(4);
+    expect(succeed(laptop.run(["overlay", "set", "settings/codex#model"]), "claim").data).toMatchObject({ overlays: ["settings/codex#model"] });
+    expect(succeed(laptop.run(["overlay", "list"]), "overlay list").data).toEqual({
+      overlays: [{ kind: "claim", item: "settings/codex#model", harness: "codex", key: "model" }],
+    });
+    expect(succeed(laptop.run(["sync", "--apply"]), "claimed sync").data).toMatchObject({ outcome: { outcome: "Converged" } });
+    expect(codexSettings()).toMatchObject({ model: "laptop-model", model_reasoning_effort: "medium" });
+
+    // A new revision changes both keys: the claimed one stays the laptop's,
+    // the other one updates, and the claim never reaches the Source.
+    write(join(source.folder, "canonfig.jsonc"), JSON.stringify({
+      version: 1,
+      profile: { id: "team", name: "Team" },
+      ...team,
+      settings: { codex: { model: "gpt-6", model_reasoning_effort: "high" } },
+    }));
+    publish(source);
+    expect(succeed(laptop.run(["sync", "--apply"]), "sync after new revision").data).toMatchObject({ outcome: { outcome: "Converged" } });
+    expect(codexSettings()).toMatchObject({ model: "laptop-model", model_reasoning_effort: "high" });
+    expect(existsSync(join(source.folder, "local"))).toBe(false);
+    expect(read(join(laptop.folder, "canonfig.jsonc"))).not.toContain("laptop-model");
+
+    // An edit of a key the laptop did not claim is still Follower Drift.
+    write(config, read(config).replace('model_reasoning_effort = "high"', 'model_reasoning_effort = "low"'));
+    expect(laptop.run(["sync", "--apply"]).status).toBe(4);
+    expect(codexSettings()).toMatchObject({ model: "laptop-model", model_reasoning_effort: "low" });
+    write(config, read(config).replace('model_reasoning_effort = "low"', 'model_reasoning_effort = "high"'));
+
+    // Removing the claim gives the key back to the Source: the next sync
+    // writes the published value.
+    expect(succeed(laptop.run(["overlay", "remove", "settings/codex#model"]), "unclaim").data).toMatchObject({ overlays: [] });
+    expect(succeed(laptop.run(["sync", "--apply"]), "unclaimed sync").data).toMatchObject({ outcome: { outcome: "Converged" } });
+    expect(codexSettings()).toMatchObject({ model: "gpt-6", model_reasoning_effort: "high" });
   }, 300_000);
 
   it("publishes authored file, directory and config resources, keeps follower drift, and retires them", async () => {

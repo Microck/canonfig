@@ -1,7 +1,7 @@
 // Follower screens use simulated sync plans, schedules, local folder edits, secrets, tunnels, and enrollment.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
-import { ArrowRight, CaretRight, Check, DotsThree, HourglassMedium, Key, Plus, X } from "@/components/icons";
+import { ArrowRight, CaretRight, Check, DotsThree, HourglassMedium, Key, Plus, WarningCircle, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -23,6 +23,7 @@ import {
   SECRETS_GROUP,
   SOURCE_TEXT_END,
   SOURCE_TEXT_START,
+  SETTINGS_FILES,
   followerSelf,
   machine,
   profile,
@@ -952,6 +953,45 @@ function unsettledCollisions(local: LocalItem[], overlays: string[]) {
   return local.filter((l) => !overlays.includes(l.id) && collisionOf(l) !== null);
 }
 
+/** A key claim, `settings/<harness>#<key>` in local.jsonc `overlays`, or null for an item overlay. */
+function claimOf(entry: string): { harness: HarnessId; key: string } | null {
+  const match = /^settings\/([^#]+)#(.+)$/.exec(entry);
+  return match ? { harness: match[1] as HarnessId, key: match[2]! } : null;
+}
+
+/** Whether `key` is the claimed key or sits inside it, which is what a claim covers. */
+const covers = (claimed: string, key: string) => key === claimed || key.startsWith(`${claimed}.`);
+
+/**
+ * The keys Canonfig writes in a harness's settings file here: the ones its adapter always owns and the ones
+ * SOURCE publishes in settings.<harness>.
+ */
+function writtenKeys(harness: HarnessId) {
+  return [...(SETTINGS_FILES[harness]?.owned ?? []), ...Object.keys(resources.find((r) => r.id === `settings/${harness}`)?.keys ?? {})];
+}
+
+/**
+ * Why Canonfig would refuse claiming `key` in `harness`'s settings file, in its own words where it has them
+ * (keyClaimIssue and buildProjection in src/projection/plan.ts, the loader in folder.ts), or null. The CLI refuses
+ * a claim inside a value only at the next update; here the claim is refused up front, as the local editor refuses
+ * a name collision.
+ */
+function claimError(harness: HarnessId | "", key: string, overlays: string[], local: LocalItem[]): string | null {
+  if (!harness) return "Choose a harness.";
+  if (!key) return "Enter a key, such as model.";
+  if (!/^(?:[^.\\]|\\[.\\])+(?:\.(?:[^.\\]|\\[.\\])+)*$/.test(key)) return "Use a settings path such as model or tui.theme; write \\. for a dot inside a key name.";
+  const item = `settings/${harness}#${key}`;
+  if (overlays.includes(item)) return `${key} is already yours in ${HARNESS_NAMES[harness]}'s settings.`;
+  const segments = key.split(".");
+  const reserved = SETTINGS_FILES[harness]?.reserved.find((pattern) => pattern.split(".").every((part, i) => i >= segments.length || part === "*" || part === segments[i]));
+  if (reserved) return `${HARNESS_NAMES[harness]} keeps ${reserved} for itself, so Canonfig never writes it and there is nothing to claim.`;
+  const whole = writtenKeys(harness).find((written) => key.startsWith(`${written}.`));
+  if (whole) return `Canonfig writes ${whole} as one value, so the update would stop: “overlay ${item} claims part of ${whole}, which Canonfig writes as one value; claim ${whole} instead”. Claim ${whole} instead.`;
+  const localKey = Object.keys(local.find((l) => l.id === `settings/${harness}`)?.keys ?? {}).find((k) => overlaps(k, key));
+  if (localKey) return `Your local settings also set ${localKey} for ${harness}, so the update would stop: “local setting ${harness} ${localKey} overlaps the key claim ${item}; remove one of them”. Remove that key first.`;
+  return null;
+}
+
 /** The Sync notice for unsettled collisions: Canonfig won't choose between the two items, so the run can't start. */
 function CollisionNotice({ collisions }: { collisions: LocalItem[] }) {
   const ws = useWorkspace();
@@ -998,6 +1038,8 @@ export function LocalView() {
     });
   };
   const [removingOverlay, setRemovingOverlay] = useState<string | null>(null);
+  // local.jsonc keeps item overlays and key claims in one list; this section shows the items, KeyClaims the claims.
+  const itemOverlays = ws.overlays.filter((o) => claimOf(o) === null);
   const collisions = unsettledCollisions(ws.local, ws.overlays);
   // An item's state as `sync --plan` sees it: ignored outside local.allow, stopping on an unsettled name collision,
   // or projected (replacing the published item when an overlay names it).
@@ -1084,7 +1126,7 @@ export function LocalView() {
             {SOURCE}'s on this machine. These choices live in local.jsonc and never go to {SOURCE}.
           </p>
           <div data-tour="local-overlays" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
-            {ws.overlays.length === 0 && collisions.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">No local item shares a published item's name.</p>}
+            {itemOverlays.length === 0 && collisions.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">No local item shares a published item's name.</p>}
             {collisions.map((l) => (
               <SettingRow
                 key={`collision:${l.id}`}
@@ -1110,7 +1152,7 @@ export function LocalView() {
                 </Button>
               </SettingRow>
             ))}
-            {ws.overlays.map((o) => {
+            {itemOverlays.map((o) => {
               const mine = ws.local.some((l) => l.id === o && allowed.includes(l.category));
               const theirs = PUBLISHED.some((r) => r.id === o);
               // The plan's OVERLAY_UNUSED warning (src/projection/plan.ts), without the command it suggests.
@@ -1142,6 +1184,8 @@ export function LocalView() {
             })}
           </div>
         </div>
+
+        <KeyClaims />
 
         <div className="px-4 pt-8 sm:px-[18px]">
           <SectionLabel>
@@ -1232,6 +1276,143 @@ export function LocalView() {
   );
 }
 
+/** Harnesses whose settings file Canonfig writes; a key claim can name only these. */
+const CLAIM_HARNESSES = (Object.keys(HARNESS_NAMES) as HarnessId[]).filter((h) => SETTINGS_FILES[h] !== undefined);
+
+/**
+ * Key claims (ADR 0003 section 11): `settings/<harness>#<key>` entries in local.jsonc `overlays`. A claimed key is
+ * this machine's own in that harness's settings file: Canonfig never writes, removes or checks it there, and the other
+ * keys it writes in the file keep following SOURCE. Removing a claim lets the next update write SOURCE's value again.
+ */
+function KeyClaims() {
+  const ws = useWorkspace();
+  const [harness, setHarness] = useState<HarnessId | "">("");
+  const [key, setKey] = useState("");
+  const [tried, setTried] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const claims = ws.overlays.flatMap((item) => {
+    const claim = claimOf(item);
+    return claim ? [{ item, ...claim }] : [];
+  });
+  const trimmed = key.trim();
+  const error = claimError(harness, trimmed, ws.overlays, ws.local);
+  const add = () => {
+    setTried(true);
+    if (error || !harness) {
+      document.getElementById(harness ? "claim-key" : "claim-harness")?.focus();
+      return;
+    }
+    ws.setOverlays((prev) => [...prev, `settings/${harness}#${trimmed}`]);
+    toast.success(`${trimmed} is yours in ${HARNESS_NAMES[harness]}'s settings`, {
+      description: `Saved as a key claim in ~/.canonfig/local/local.jsonc.\nThe next update stops writing it; set it in ${HARNESS_NAMES[harness]}'s own settings file.${DEMO ? "\nSaved in this demo workspace." : ""}`,
+    });
+    setKey("");
+    setTried(false);
+  };
+  const removed = removing === null ? null : claimOf(removing);
+  const removedValue = removed && resources.find((r) => r.id === `settings/${removed.harness}`)?.keys?.[removed.key];
+
+  return (
+    <div className="px-4 pt-8 sm:px-[18px]">
+      <SectionLabel>
+        <Term term="Key Claim">Settings keys you set yourself</Term>
+      </SectionLabel>
+      <p className="pb-2 text-sm text-pretty text-muted-foreground">
+        Claim one key of a harness's settings file to set it in that file yourself. Canonfig stops writing, removing or checking that key on this machine, and the
+        other keys it writes there keep following {SOURCE}. Claims live in local.jsonc and never go to {SOURCE}.
+      </p>
+      <div data-tour="local-claims" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
+        {claims.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">No key is claimed, so Canonfig writes every key it owns.</p>}
+        {claims.map((c) => {
+          const name = HARNESS_NAMES[c.harness];
+          const written = writtenKeys(c.harness);
+          const whole = written.find((k) => c.key.startsWith(`${k}.`));
+          const covered = written.filter((k) => covers(c.key, k));
+          // The refusal buildProjection gives, and the plan's CLAIM_UNUSED warning (src/projection/plan.ts).
+          const [kind, description, title]: [StatusKind, string, string | undefined] = whole
+            ? ["act", `Canonfig writes ${whole} as one value, so the next update stops. Claim ${whole} instead.`, `overlay ${c.item} claims part of ${whole}, which Canonfig writes as one value; claim ${whole} instead`]
+            : covered.length === 0
+              ? ["warn", `Canonfig writes no ${c.key} in ${name}'s settings file, so this changes nothing.`, `overlay ${c.item} covers no key Canonfig writes in ${c.harness}'s settings file, so it changes nothing`]
+              : ["ok", `${SOURCE} sets ${covered.join(", ")}. Here you set it in ${name}'s settings file, and Canonfig leaves it alone.`, undefined];
+          return (
+            <SettingRow
+              key={`claim:${c.item}`}
+              title={
+                <span className="flex items-center gap-2" title={title}>
+                  <StatusMark kind={kind} />
+                  <span className="font-mono text-sm">{c.item}</span>
+                </span>
+              }
+              description={description}
+            >
+              <Button variant="outline" size="xs" onClick={() => setRemoving(c.item)}>
+                Remove…
+              </Button>
+            </SettingRow>
+          );
+        })}
+        <form
+          className="flex flex-wrap items-center gap-2 px-[16px] py-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add();
+          }}
+        >
+          <Select value={harness} onValueChange={(h: HarnessId) => setHarness(h)}>
+            <SelectTrigger id="claim-harness" aria-label="Harness" className="w-[200px]" aria-invalid={tried && !harness}>
+              <SelectValue placeholder="Choose a harness">{harness && HARNESS_NAMES[harness]}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {CLAIM_HARNESSES.map((h) => (
+                <SelectItem key={h} value={h}>
+                  {HARNESS_NAMES[h]}
+                  <span className="font-mono text-xs text-faint">{h}</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input
+            id="claim-key"
+            aria-label="Settings key"
+            className="min-w-[160px] flex-1 font-mono"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder="model"
+            spellCheck={false}
+            aria-invalid={tried && !!error}
+            aria-describedby={tried && error ? "claim-key-note" : undefined}
+          />
+          <Button type="submit" variant="outline" size="sm">
+            <Plus /> Claim key
+          </Button>
+          {tried && error && (
+            <p id="claim-key-note" role="alert" className="flex w-full items-center gap-1.5 text-sm text-pretty text-bad">
+              <WarningCircle className="size-3.5 shrink-0" />
+              {error}
+            </p>
+          )}
+        </form>
+      </div>
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(o) => !o && setRemoving(null)}
+        title={`Give ${removed?.key} back to ${SOURCE}?`}
+        body={
+          removed && writtenKeys(removed.harness).some((k) => covers(removed.key, k))
+            ? `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. The next update writes ${SOURCE}'s ${removed.key}${removedValue ? ` (${removedValue})` : ""} over yours in ${HARNESS_NAMES[removed.harness]}'s settings file, and an edit after that counts as a local change.`
+            : `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. It writes no ${removed?.key} there, so nothing else changes.`
+        }
+        confirm="Remove"
+        onConfirm={() => {
+          const item = removing;
+          ws.setOverlays((prev) => prev.filter((o) => o !== item));
+          toast(`Removed the claim on ${removed?.key}`, { description: `Saved to ~/.canonfig/local/local.jsonc.${DEMO ? "\nSaved in this demo workspace." : ""}` });
+        }}
+      />
+    </div>
+  );
+}
+
 interface KeyRow {
   id: number;
   key: string;
@@ -1304,6 +1485,9 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
   const rowError = (r: KeyRow) => {
     const key = r.key.trim();
     if (!key) return "Name this key, or remove the row.";
+    // The loader refuses a local setting for a key this machine claims (loadCanonicalFolder in src/projection/folder.ts).
+    const claimed = ws.overlays.map(claimOf).find((c) => c?.harness === trimmed && overlaps(c.key, key));
+    if (claimed) return `You claimed ${claimed.key} for ${trimmed}, so the update would stop: “local setting ${trimmed} ${key} overlaps the key claim settings/${trimmed}#${claimed.key}; remove one of them”. Remove the key, or remove the claim under Settings keys you set yourself.`;
     const clash = keyClash(key);
     return clash && !replace
       ? `${SOURCE} sets ${clash} for ${trimmed}, so the update would stop and need you: “local setting ${trimmed} ${key} overlaps published setting ${clash}; remove one of them”. Remove the key, or let yours replace the published one.`

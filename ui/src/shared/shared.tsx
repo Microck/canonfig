@@ -53,6 +53,10 @@ export const GLOSSARY = {
     plain: "local replacement",
     meaning: "This machine's choice that its own item replaces the published one with the same name, here only. It lives in ~/.canonfig/local/local.jsonc and never goes to the Source.",
   },
+  "Key Claim": {
+    plain: "key you set yourself",
+    meaning: "This machine's choice that one key of a harness's settings file is its own. Canonfig never writes, removes or checks that key there, and the other keys it writes in the file keep following the Source. It lives in ~/.canonfig/local/local.jsonc and never goes to the Source.",
+  },
   "Append-local": {
     plain: "kept alongside",
     meaning: "Canonfig owns only its marked part of an instructions file, or only the skills it writes in a skills folder. Everything else the machine put there stays and is never reported as an edit.",

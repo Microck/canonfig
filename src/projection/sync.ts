@@ -26,11 +26,12 @@ import type {
   SynchronizationArtifact,
   SynchronizationRunInput,
 } from "../synchronization/synchronization.types.ts";
-import { detectHarnesses, harnessReport } from "./detect.ts";
+import { detectHarnesses, emptyModel, harnessReport } from "./detect.ts";
 import { adapterFor } from "./adapters/index.ts";
-import { CanonicalFolderError, LocalItemCollisionError, loadCanonicalFolder } from "./folder.ts";
+import { CanonicalFolderError, LocalItemCollisionError, loadCanonicalFolder, parseOverlay } from "./folder.ts";
 import type { TargetId } from "./model.ts";
 import {
+  keyClaimIssue,
   parseSurfaceResourceId,
   planFolder,
   planRestore,
@@ -570,23 +571,33 @@ export const harnessesLocal = Effect.fn("LocalProjection.harnesses")(function*(
 
 export interface OverlayChange {
   readonly action: "set" | "remove";
-  /** `<category>/<name>`, already checked against the overlay reference format. */
+  /** `<category>/<name>` or `settings/<harness>#<key>`, already checked by `parseOverlay`. */
   readonly item: string;
 }
 
 /**
- * `canonfig overlay set|remove <item>` edits this machine's Local Overlays in
- * `local/local.jsonc` and reports the list; it works before the first sync.
- * `canonfig overlay list` loads the folder (the mirror on a follower) and
- * reports what each overlay finds: an admitted `local/` item, a published
- * item, or both. Overlays are machine-local: never published, never mirrored.
+ * `canonfig overlay set|remove <item>` edits this machine's Local Overlays and
+ * key claims in `local/local.jsonc` and reports the list; it works before the
+ * first sync. Setting a key claim first checks that the harness has a
+ * settings file Canonfig writes and that the key is not one the harness keeps
+ * for itself, so a claim that could never apply is refused with the file
+ * unchanged. `canonfig overlay list` loads the folder (the mirror on a
+ * follower) and reports what each item overlay finds: an admitted `local/`
+ * item, a published item, or both. Overlays are machine-local: never
+ * published, never mirrored.
  */
 export const overlaysLocal = Effect.fn("LocalProjection.overlays")(function*(
   statePath: string,
+  environment: (name: string) => string | undefined,
   change: OverlayChange | undefined,
 ) {
   const folder = folderOf(statePath);
   if (change !== undefined) {
+    const parsed = parseOverlay(change.item);
+    if (change.action === "set" && parsed.kind === "claim") {
+      const issue = keyClaimIssue(parsed, yield* rootContext(environment), emptyModel(folder));
+      if (issue !== undefined) return yield* new CanonicalFolderError({ path: join(folder, "local", "local.jsonc"), message: issue });
+    }
     const overlays = yield* withRunLock(statePath, `overlay ${change.action}`, editLocalList(folder, "overlays", (current) =>
       change.action === "set" ? [...current, change.item] : current.filter((item) => item !== change.item)));
     return { change, overlays };

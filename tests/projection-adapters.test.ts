@@ -18,7 +18,7 @@ import { type CanonicalModel, TARGET_IDS, type TargetId } from "../src/projectio
 import { emptyModel } from "../src/projection/detect.ts";
 import { supportedCategories } from "../src/projection/plan.ts";
 import { ampPluginSource } from "../src/projection/templates/runtime.ts";
-import { HARNESS_NAMES, RESERVED_PATHS, SURFACE_SUPPORT } from "../ui/src/shared/data.ts";
+import { HARNESS_NAMES, RESERVED_PATHS, SETTINGS_FILES, SURFACE_SUPPORT } from "../ui/src/shared/data.ts";
 
 // Goldens and invariants for every harness adapter. Adapters are pure, so
 // these tests run them against a fixed model and fixed machine directories.
@@ -100,6 +100,20 @@ it("keeps the UI's per-harness categories equal to the adapters'", () => {
     [adapter.descriptor.id, supportedCategories(adapter, adapter.layout(context, emptyModel(`${HOME}/.canonfig`)))]
   ));
   expect(SURFACE_SUPPORT).toEqual(derived);
+});
+
+// The GUI checks key claims against a copy of each settings file's owned and
+// reserved keys; it must match the adapters' settings surfaces.
+it("keeps the UI's settings-file keys equal to the adapters'", () => {
+  const context = posixContext({});
+  const derived = Object.fromEntries(BUILTIN_ADAPTERS.flatMap((adapter) => {
+    const surface = adapter.layout(context, emptyModel(`${HOME}/.canonfig`)).surfaces
+      .find((candidate) => candidate.kind === "config" && candidate.settings !== undefined);
+    return surface?.kind === "config" && surface.settings !== undefined
+      ? [[adapter.descriptor.id, { owned: [...surface.keys], reserved: [...surface.settings.reserved] }]]
+      : [];
+  }));
+  expect(SETTINGS_FILES).toEqual(derived);
 });
 
 // The GUI refuses authored-resource targets from a condensed copy of the
