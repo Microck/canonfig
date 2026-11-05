@@ -4,9 +4,9 @@
 
 /*
  * UI text: Manrope (Mikhail Sharanda, OFL), a variable font on the weight axis,
- * self-hosted as one Latin woff2 from google/fonts. Code text: Ioskeley Mono
- * 2.2.0 (Ahmed Hatem, OFL), an Iosevka build. Licences sit next to the files in
- * public/fonts.
+ * subset to Latin and the UI's punctuation and symbols. Code text: Ioskeley Mono
+ * 2.2.0 (Ahmed Hatem, OFL), an Iosevka build. Rebuild with scripts/subset-fonts.py;
+ * licences sit next to the files in public/fonts.
  */
 @font-face {
   font-family: "Manrope";
@@ -20,13 +20,6 @@
   font-weight: 400;
   font-display: swap;
   src: url("/fonts/IoskeleyMono-Regular.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Ioskeley Mono";
-  font-style: italic;
-  font-weight: 400;
-  font-display: swap;
-  src: url("/fonts/IoskeleyMono-Italic.woff2") format("woff2");
 }
 @font-face {
   font-family: "Ioskeley Mono";

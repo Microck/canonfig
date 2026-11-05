@@ -191,18 +191,11 @@ const validatePackageContents = (
   if (artifact.name !== "@microck/canonfig" || artifact.version !== "6.0.0") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
-  // Self-update adds staged activation, coordination and recovery modules.
-  // These bounded budgets include those shipped safety checks; no files or
-  // validation are removed to make the package appear smaller.
-  // Harness detection, the Source setup import and its setup stage add about
-  // 60 KB unpacked. Signed export/import (#257) and the restored machine-local
-  // modes with key claims (#258) add about 19 KB packed; that candidate
-  // measured 493,853 packed / 2,187,729 unpacked bytes. Keep a small
-  // build-identity margin while rejecting unintended assets.
-  // The shipped production GUI raises the measured package to 1,173,207
-  // packed / 3,215,126 unpacked bytes. This growth is the real GUI bundle,
-  // fonts and icons, not demo assets; retain a small build-identity margin.
-  if (artifact.size > 1_200_000 || artifact.unpackedSize > 3_280_000) {
+  // The complete CLI and production GUI with Latin/UI-symbol font subsets
+  // measured 817,087 packed / 2,876,459 unpacked bytes. The fonts fell from
+  // 518,156 to 156,000 bytes; no CLI safety modules or validation were removed.
+  // Keep about 4% packed and 3% unpacked headroom for build identity and small changes.
+  if (artifact.size > 850_000 || artifact.unpackedSize > 2_960_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );

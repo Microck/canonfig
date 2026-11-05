@@ -8,7 +8,7 @@ Phase 1 connects only the session and read-only Overview. Other workspace screen
 
 The production entry is `ui/src/live-app.tsx`, selected through Vite's build-selected `@app` entrypoint; `ui/src/gui-client.ts` imports the shared contract directly. Development and demo builds select `App.tsx`. Production supports the current role's Overview path, or `/overview` when unconfigured. Other paths show an unavailable page rather than mounting demo screens. `src/gui/server.ts` uses Node HTTP under a scoped Effect lifetime. Bootstrap exchanges `GET /?token=...` for an HttpOnly, SameSite=Strict, Path=/ cookie, redirects with 303, and requires the cookie for assets and API calls. Host and any supplied Origin must match the actual loopback address and port.
 
-The single contract is `src/gui/contract.ts`, imported directly by both packages. There are no generated copies. Its Effect Schemas and same-named TypeScript types are:
+`src/gui/contract.ts` re-exports the area contracts under `src/gui/contract/`, imported directly by both packages. There are no generated copies. Session contracts live in `contract/session.ts`; operation tickets live in `contract/operations.ts`.
 
 | Contract | Route | Source |
 | --- | --- | --- |
@@ -20,17 +20,67 @@ The single contract is `src/gui/contract.ts`, imported directly by both packages
 
 ## Phase 2 ownership
 
-These are proposed work areas, not implemented endpoints. Each owner changes only its listed files. Before parallel work, the integration owner lands agreed contract additions; feature owners consume them without editing the shared contract or another owner's files. New backend modules below are proposed names. Changes to existing CLI/domain services require a separate, explicitly assigned patch before the dependent UI work.
+The shared foundation is implemented. The four feature areas below are registered but intentionally empty until their owners connect real operations. Each owner can complete its area without changing shared registration files. Changes to CLI/domain behavior outside the authoring API still require an assigned shared patch before dependent GUI work.
 
-| Owner | Isolated files | Contract additions to agree first |
-| --- | --- | --- |
-| A: session and integration | `src/gui/contract.ts`, `src/gui/server.ts`, runtime/CLI wiring, `ui/src/live-app.tsx`, `ui/src/gui-client.ts`, `ui/src/main.tsx`, `ui/vite.config.ts`, `ui/src/workspace/workspace.tsx`, `store.tsx`, `frame.tsx`, `routes.ts`, `nav.ts`, `guide.tsx`, `tour-steps.tsx`, `page-tips.ts`, `kit.tsx` | Operation results, role capabilities, stable error encoding; no generic shell-command endpoint. |
-| B: authored profile and publication | `ui/src/workspace/profile.tsx`, `source.tsx`, `skills.tsx`; proposed `src/gui/profile.ts` | Folder items and version/digest preconditions, profile defaults/groups/surfaces, scan proposal, publication result, revisions, upstream skill check. Source Secrets in `source.tsx` belongs here too, using D's backend secret handlers. |
-| C: machines and enrollment | `ui/src/workspace/machines.tsx`, `ui/src/onboarding/*`, `ui/src/shared/machine-map/*`; proposed `src/gui/enrollment.ts` | Invitation, enrollment, source/follower identity, setup plan/approval/status, permitted machine summaries. |
-| D: local projection and synchronization | `ui/src/workspace/follower.tsx`, `harnesses.tsx`, `schedule.tsx`; proposed `src/gui/synchronization.ts`, `src/gui/secrets.ts` | Sync plan/outcome/recovery, local items/overlays, harness report, snapshots, archive download, native schedule, tunnel status, secret metadata. |
-| E: machine administration | `ui/src/workspace/settings.tsx`, `update-gate.ts`; proposed `src/gui/administration.ts` | Source service status, agent policy/harness settings, installer bindings/checks, doctor report, self-update status/check. Setup settings use C's backend setup handlers. |
+| Owner | Contracts and routes | Live entry and existing screens | Tests |
+| --- | --- | --- | --- |
+| A: integration | `src/gui/contract.ts`, `src/gui/contract/session.ts`, `src/gui/contract/operations.ts`, `src/gui/routes/session.ts`, `src/gui/server.ts`, `src/gui/routing.ts`, `src/gui/operations.ts`, `src/gui/queries.ts`, runtime/CLI wiring, `src/projection/authoring.ts`, `src/projection/folder.ts` | `ui/src/live-app.tsx`, `ui/src/gui-client.ts`, `ui/src/live/routes.tsx`, `ui/src/live/session.tsx`, `ui/src/main.tsx`, `ui/vite.config.ts`, `ui/src/shared/metadata.ts`, `ui/src/shared/shared.tsx`, `ui/src/workspace/screen-context.tsx`, `workspace.tsx`, `store.tsx`, `frame.tsx`, `routes.ts`, `nav.ts`, `guide.tsx`, `tour-steps.tsx`, `page-tips.ts`, `kit.tsx` under `ui/src/workspace/` | `tests/acceptance/gui.test.ts`, `tests/gui-plumbing.test.ts`, `tests/projection-authoring.test.ts` |
+| B: profile, publication, skills, Source Secrets | `src/gui/contract/profile.ts`, `src/gui/routes/profile.ts` | `ui/src/live/profile.tsx`; `ui/src/workspace/profile.tsx`, `ui/src/workspace/source.tsx`, `ui/src/workspace/skills.tsx` | `tests/gui/profile.test.ts` |
+| C: machines, invitations, enrollment, setup, map | `src/gui/contract/enrollment.ts`, `src/gui/routes/enrollment.ts` | `ui/src/live/enrollment.tsx`; `ui/src/workspace/machines.tsx`, `ui/src/onboarding/*`, `ui/src/shared/machine-map/*` | `tests/gui/enrollment.test.ts` |
+| D: synchronization, recovery, schedule, local items, overlays, harness toggles, backups, secrets, tunnel, unenroll, export | `src/gui/contract/synchronization.ts`, `src/gui/routes/synchronization.ts` | `ui/src/live/synchronization.tsx`; `ui/src/workspace/follower.tsx`, `ui/src/workspace/harnesses.tsx`, `ui/src/workspace/schedule.tsx` | `tests/gui/synchronization.test.ts` |
+| E: source service, agent policy/harness, installers, doctor, update status/check | `src/gui/contract/administration.ts`, `src/gui/routes/administration.ts` | `ui/src/live/administration.tsx`; `ui/src/workspace/settings.tsx`, `ui/src/workspace/update-gate.ts` | `tests/gui/administration.test.ts` |
 
-A owns integration callsites and shared tests; each feature owner owns tests beside its proposed backend module and its screen tests. A runs the combined verification after all changes land. No worker edits the other owner's large screen file just to reuse a handler. B and D coordinate secret request/response shapes; C and E coordinate setup shapes. Ownership includes all files in the three inventoried UI directories; existing test files follow the production file they test.
+Each area may add sibling implementation modules within a directory named for that area. Existing screen tests follow their screen owner. Shared visual primitives are not copied into area modules. B consumes D's secret/export contracts; E consumes C's setup contracts. Cross-area controls wait for their owning API, rather than implementing a second handler.
+
+The registration lines already landed are:
+
+| Area | `src/gui/contract.ts` | Server route table | Live screen table |
+| --- | --- | --- | --- |
+| B | `export * from "./contract/profile.ts";` | `profileRoutes,` | `...profileScreens,` |
+| C | `export * from "./contract/enrollment.ts";` | `enrollmentRoutes,` | `...enrollmentScreens,` |
+| D | `export * from "./contract/synchronization.ts";` | `synchronizationRoutes,` | `...synchronizationScreens,` |
+| E | `export * from "./contract/administration.ts";` | `administrationRoutes,` | `...administrationScreens,` |
+
+Owners fill these exports in their own modules. They add **zero** shared registration lines. `tests/gui/**/*.test.ts` is included in Vitest.
+
+### Backend seam and worked Overview example
+
+`WorkspaceBackend` in `ui/src/gui-client.ts` is the injected browser backend. It supplies `session(signal)`, `status(signal)`, `request(path, responseSchema, signal, mutation?)`, and `operation(id, signal)`. The HTTP implementation decodes responses with the shared Effect schemas. Mutations send JSON, the session cookie and `x-canonfig-request: browser`. `GuiRequestError` preserves the CLI message, category and exit code; `ErrorNotice` in `ui/src/live/session.tsx` displays all three.
+
+`LiveScreen` in `ui/src/live/routes.tsx` declares a title, a role-to-path function, and `render({ session, status, backend })`. Returning no path hides the screen for that role. The shell loads actual session/status through the injected backend, then renders only registered screens. Unknown paths never mount a demo screen.
+
+Overview is the worked example: `sessionScreens` registers `overviewPath` and renders the existing `Overview` component with the decoded session/status. `LiveApp({ backend })` defaults to `httpBackend`, so another implementation can provide the same contract without changing the screen. The renderer does not import demo records or simulate a completed operation.
+
+For another area, extract the existing screen's reads and actions into a typed backend prop, pass the area HTTP adapter from its `live/<area>.tsx`, and pass a demo adapter from its demo entry. Keep one screen implementation. Use the area's contract schemas for responses and requests; do not recreate them in the UI. Remove runtime imports of `workspace/store.tsx` and `shared/data.ts` from the live screen's dependency graph. `shared/metadata.ts` holds reusable labels and types without fixtures. Shared components in `workspace/kit.tsx` now read `ScreenContext`, not the simulated store. The live shell provides navigation/loading; an area provider supplies actual groups or publication actions when its screen needs them. Missing operational data is not replaced with seeded groups. The demo provider supplies its own context from its demo store.
+
+Keep the existing exports in an area's `ui/src/workspace/<area>.tsx` as demo wrappers, so `workspace.tsx` does not need edits. Move the one shared screen implementation into an owned sibling module and have both the demo wrapper and live entry inject their adapters there. The live entry must import that shared implementation, not the wrapper that imports the simulated store.
+
+### Typed operations and real journals
+
+An area route export is an Effect that captures its command services once and returns `GuiRoute[]`. Use `queryRoute` for reads and `mutationRoute(method, path, inputSchema, operation, status?)` for explicit operations. The helper rejects invalid JSON, unknown request keys and bodies over 1 MiB before invoking the service. The server requires the session cookie, exact Host/Origin checks, the custom request header and `application/json` for every mutation. Errors use the CLI taxonomy. There is no shell or arbitrary command endpoint.
+
+Long operations use `GuiOperations`, provided to every area route factory. Capture it with `yield* GuiOperations`; return `operations.start(commandEffect, readJournal)` from a mutation with status 202 and the `GuiOperationTicket` response schema. Poll `GET /api/operations/<id>` through `backend.operation`. The command runs in the server scope, not the request scope, so disconnecting the request does not cancel an apply. Closing the GUI interrupts its scope; existing command journals remain the recovery authority.
+
+`readJournal` must read that operation's real journal or return JSON null until it exists. Capture the operation's actual run/setup/revision identity, not a later unrelated "latest run". Tickets expose running/succeeded/failed execution state, the actual result or CLI failure, and this journal. They contain no percentage, synthetic stage or timestamp. Up to 64 tickets remain available until the server stops; the next start is refused rather than evicting a ticket someone is polling. Tickets are session-local, while journals persist through their domain services.
+
+### Shared authoring API
+
+`src/projection/authoring.ts` is independent of the GUI and requires `MachineState`. Callers provide `{ folder, scope: "canonical" | "local", statePath }`, using the same state path as sync/restore. Route owners enforce machine-role authorization before calling it; a follower's canonical mirror is not a writable GUI target.
+
+- `readAuthoringItems(target)` lists file items and whole skill trees. Each item has a digest, and each contained file has its own digest, bytes and executable flag.
+- `readAuthoringItem(target, path)` also reads absent items, whose digest is null.
+- `writeAuthoringItems(target, changes)` accepts `{ path, expectedDigest, files }` for each item. An empty file list deletes it. A skill change contains its entire desired tree. Instructions, rules, agents, commands, hook scripts and `files/` content use the same writer.
+- `editAuthoringConfig(target, expectedDigest, edits, changes?)` applies JSONC key-path edits through `jsonc-parser` `modify`/`applyEdits`. `undefined` removes a key. Optional item changes let a resource declaration and its file content validate together. Canonical keys include harnesses, surfaces, MCP, hooks, settings, tools, credentials, groups, scheduleDefault, local policy, resources and profile. The local target edits `local/local.jsonc`.
+
+The writer holds the existing cross-process run lock, checks each item's digest, validates the complete candidate with the existing folder loader in memory, and re-reads the authoring snapshot before publication. Invalid candidates and stale preconditions write no authoring files. Local additions outside `local.allow` are refused. Every changed file publishes through anchored `MachineState.atomicWrite`; create uses no-replace publication. Files are protected at 0600, executable scripts at 0700. Symlinks, special files and traversal are refused.
+
+Atomicity is per file, not a whole-directory transaction. A filesystem failure midway through a multi-file skill/resource edit must be reported and reloaded; do not report the whole edit as saved. The run lock serializes Canonfig writers. Digests detect hand edits visible at the final check, not an external editor racing the subsequent filesystem rename.
+
+### Fonts and release size
+
+`ui/scripts/subset-fonts.py` reproduces subsets from the phase-1 Git revision `2039144`, using `fonttools[woff]` 4.62.1. It keeps Latin plus the punctuation/symbols found in UI source, OpenType layout features and license metadata. The unused italic face and its CSS declaration are removed; the four referenced upright weights and both OFL texts remain. Keep the release size measurement and budget in `tools/release/validate-release.ts` aligned with the packaged production UI.
+
+The shipped font bytes fell from 518,156 to 156,000. Manrope is 22,876 bytes; Ioskeley Mono Regular/Medium/SemiBold/Bold are 33,076/33,496/33,356/33,196 bytes. The removed italic was 107,428 bytes. The complete package measured 817,087 bytes packed and 2,876,459 unpacked; the new ceilings are 850,000 and 2,960,000 bytes.
 
 ## Screen and action inventory
 
@@ -49,10 +99,10 @@ All endpoints below except `/api/session` and `/api/status` are proposals. `GET`
 
 | Screen/action | CLI/service mapping | Proposed endpoint | Owner |
 | --- | --- | --- | --- |
-| Profile Items list/filter/detail; add, edit, remove, save/discard; As written preview; group selection | `canonfig.jsonc` and Canonical Folder files, `src/projection/folder.ts` and frontmatter codecs. Gap: no general CLI item CRUD service. Cover instructions, rules, skills, agents, commands, MCP servers, hooks, settings keys, tool recipes, credential references, and authored file/directory/config resources. | `GET /api/profile/items`; `PUT`/`DELETE /api/profile/items/:id` only after shared authoring API | B |
-| Profile Harnesses select listed harnesses, per-harness Gets categories/Everything | `harnesses` reports selection; authored `harnesses` and `surfaces` are file edits, not `harnesses include/exclude`. Gap: shared authoring API. | `GET /api/harnesses`; `PUT /api/profile/harnesses` | B; D owns shared table |
-| Profile Groups create group, inspect resources/members, add machines/change groups | Authored `groups` needs shared file editing. Existing enrollment groups are immutable; issue a new invitation and re-enroll with `--replace`. | `PUT /api/profile/groups/:name`; `POST /api/invitations` | B/C |
-| Profile Defaults save/discard profile name, default schedule, local allowlist and append-local policy | Authored `profile`, `scheduleDefault`, `local.allow`, `local.appendLocal`; no general edit command. | `PUT /api/profile/defaults` | B |
+| Profile Items list/filter/detail; add, edit, remove, save/discard; As written preview; group selection | Shared `src/projection/authoring.ts`, existing folder loader and frontmatter codecs. Cover instructions, rules, skills, agents, commands, MCP servers, hooks, settings keys, tool recipes, credential references, and authored file/directory/config resources. | `GET /api/profile/items`; `PUT`/`DELETE /api/profile/items/:id` | B |
+| Profile Harnesses select listed harnesses, per-harness Gets categories/Everything | `harnesses` reports selection; authored `harnesses` and `surfaces` use `editAuthoringConfig`, not `harnesses include/exclude`. | `GET /api/harnesses`; `PUT /api/profile/harnesses` | B; D owns shared table |
+| Profile Groups create group, inspect resources/members, add machines/change groups | Authored `groups` uses `editAuthoringConfig`. Existing enrollment groups are immutable; issue a new invitation and re-enroll with `--replace`. | `PUT /api/profile/groups/:name`; `POST /api/invitations` | B/C |
+| Profile Defaults save/discard profile name, default schedule, local allowlist and append-local policy | `editAuthoringConfig` edits `profile`, `scheduleDefault`, `local.allow` and `local.appendLocal`. | `PUT /api/profile/defaults` | B |
 | Discover tools, inspect findings, choose proposed tools, Add selected | `source scan`, `SourceCommands.scan({write})`. Gap: scan `--write` accepts all accepted findings, not arbitrary UI picks. | `POST /api/profile/scan`; selective write requires CLI change | B |
 | Publish dialog, reviewer, validation progress, confirm/cancel; revisions list, next unpublished revision, revision detail and copy fingerprint | `source publish --reviewer`, `profile list`, `profile inspect`; `SourceCommands.publish/listProfiles/inspectProfile`. No fake percentage or “machines on revision” without evidence. | `POST /api/publications`; `GET /api/revisions`, `/api/revisions/:id` | B |
 | Profile Export and Local settings Export | `export`, `FollowerCommands.exportArchive`, `src/projection/archive.ts`; stream a real verified archive, not the demo download. | `POST /api/exports` | D; B owns Profile button |
@@ -68,7 +118,7 @@ All endpoints below except `/api/session` and `/api/status` are proposals. `GET`
 | Pending invitations and Cancel | No list/cancel method in `SourceCommandsService`; gap, not follower revoke. | No endpoint until CLI/domain support exists | C |
 | Disconnect/revoke follower confirmation | `source revoke`, `SourceCommands.revoke`. | `POST /api/machines/:id/revoke` | C |
 | Change groups, share secrets with more machines, download replacement invite | New `source invite`, then `follower enroll --replace` on that follower. Never silently rewrite remote membership. | `POST /api/invitations`; local `POST /api/enrollment` with explicit replacement | C |
-| Map select/open/add, pan/zoom/fit, drag nodes, reset layout; Customize name/purpose/icon, upload icon, preset/custom colour, reset appearance | `machine-map.tsx`, `machine-node.tsx`, `model.ts`, `customize-sheet.tsx`: browser-local presentation only, no CLI equivalent. Gap if CLI parity requires these persisted preferences; remove from production or explicitly accept browser-only presentation. | None; never rename OS hostname or follower identity | C |
+| Map select/open/add, pan/zoom/fit, drag nodes, reset layout; Customize name/purpose/icon, upload icon, preset/custom colour, reset appearance | `machine-map.tsx`, `machine-node.tsx`, `model.ts`, `customize-sheet.tsx`: browser-local presentation in localStorage, as decided below. | None; never rename OS hostname or follower identity | C |
 | Standalone map demo role/publishing/syncing/customize controls; `demo.tsx`, `demo-entry.tsx`, `sync-edge.tsx` | Demo fixtures and rendering only. No real transfer inference from animated edges. | None | C |
 | Setup role choice, Back/Continue/change answer; Source profile name, installed harness picks, import offers/collisions/skips/secret opt-in, service/manual port, scan choice, Create/Open | `setup plan/approve/apply/status`, `SetupCommands`; `src/setup/setup.folder.ts` and `src/projection/import.ts`; source service and scan commands are separate. Gap: arbitrary name/service/scan controls must match actual setup inputs or explicit subsequent commands. | `POST /api/setup/plan`, `/approve`, `/apply`; `GET /api/setup`; service and scan endpoints separately | C |
 | Follower invitation file/paste/read/use another, SSH host/user/key and trust confirmation, name, exclusions, default schedule, Join/Open | `src/runtime/enrollment-input.ts` real decoder; `tunnel start`, `follower enroll`, `harnesses exclude`, `schedule set --default`. No prefix-only invitation validation or fake certificate/download success. | `POST /api/enrollment/inspect`, `/api/tunnel/start`, `/api/enrollment`; harness/schedule endpoints | C |
@@ -81,7 +131,7 @@ All endpoints below except `/api/session` and `/api/status` are proposals. `GET`
 | Interrupted run Recover/Abandon confirmations; Human Action Required Check again | `recover`, `abandon`, corresponding FollowerCommands methods; rerun actual diagnostics/planning for Check again, never clear a boolean as evidence. | `POST /api/recovery`, `/api/recovery/abandon`, `/api/sync/plan` | D |
 | Adoption review exact additions/retained text/whole-file preview, Show exact text, Delete review | `sync --plan --review-local` writes private reviews. Gap: no read/delete review command; do not expose private contents in ordinary status/logs. | `POST /api/sync/reviews`; read/delete only after private review API exists | D |
 | Schedule cadence/default/days/time, preview next check, Save | `schedule set`, `schedule set --default`, `schedule status`; FollowerCommands schedule methods. Native status must supply platform facts; demo launchd label/wake guarantee is not portable. | `GET`/`PUT /api/schedule` | D |
-| Local settings list/details, add/edit/rename/delete/save/discard local instructions/rules/skills/agents/commands/MCP/settings | `local/` authoring and `src/projection/folder.ts`; gap: no local item CRUD command. | `GET /api/local/items`; `PUT`/`DELETE /api/local/items/:id` after shared authoring API | D |
+| Local settings list/details, add/edit/rename/delete/save/discard local instructions/rules/skills/agents/commands/MCP/settings | Shared authoring API with `scope: "local"`, validated by the same folder loader and Source allowlist. | `GET /api/local/items`; `PUT`/`DELETE /api/local/items/:id` | D |
 | Local collision replace-published choice; overlays add/remove; key claims harness/key add/remove | `overlay list/set/remove`, `FollowerCommands.overlays`; retain exact key-path and collision semantics. | `GET`/`PUT`/`DELETE /api/local/overlays/:item` | D |
 | Local managed harness toggles; backup preference; retained append-local content details | `harnesses include/exclude`, `FollowerCommands.harnesses`; backup preference edits `local/local.jsonc`; retained content is a protected read gap. | `GET /api/harnesses`; `PUT /api/harnesses/:id`; proposed `/api/local/preferences` and `/api/local/retained` after shared APIs | D |
 | Backups list, Restore confirmation, restore/exclusion outcome | `restore [snapshot]`, `FollowerCommands.restore`, `src/projection/takeover.ts`. Gap: listing and successful-restore evidence must not be inferred from harness exclusions. | `GET /api/backups`; `POST /api/backups/:id/restore` | D |
@@ -101,13 +151,13 @@ All endpoints below except `/api/session` and `/api/status` are proposals. `GET`
 | Canonfig version status, Check, Turn on updates (npm path and idle confirmation), Turn off, copy apply command | `self-update status/check/enable/disable/apply`; `src/runtime/self-update/cli.ts` and `core.ts`. Gap: GUI's own lease prevents idle operations, including disable. Keep enable/disable/apply terminal instructions until lease design is resolved; no lease exemption. | `GET /api/self-update`; `POST /api/self-update/check`; no write endpoint | E |
 | Source Secrets list, Set, Replace value, Remove, sharing membership | `secrets list/set/remove`, `listSecrets/storeSecret/removeSecret`, existing failure mapping in `src/secrets/cli.ts`; membership via replacement enrollment. Values remain write-only and absent from logs, URLs, status, and browser persistence. | `GET /api/secrets`; `PUT`/`DELETE /api/secrets/:name` | B frontend, D backend |
 
-## Decisions required before phase 2
+## Decisions for phase 2
 
-1. Add shared CLI/domain authoring operations or remove GUI item/group/default/local-file editing. Reuse the Canonical Folder schema and comment-preserving edits, with conflict detection against concurrent hand edits. The browser's demo validators are not authoritative.
-2. Add authoritative read contracts for folder changes, machines, invitations, runs, backups, and retained content. Do not manufacture fleet health, progress, timestamps, receipt details, or remote schedules from local status.
-3. Remove invitation cancellation, selective scan writes, service restart, and private-review deletion until their CLI counterparts exist. Keep appearance customization explicitly browser-local or remove it for strict CLI parity.
-4. Match unenrollment to its actual cleanup boundaries. Match wizard inputs to journaled setup and preserve explicit human approval. A checked box cannot certify credentials, host keys, linger, or convergence.
-5. Keep self-update mutations outside the running GUI until normal lease coordination supports them. The same restriction applies to enable/disable, not only patch activation.
+1. **Decided:** build one shared authoring API for Profile and follower `local/`, with comment-preserving JSONC edits, existing folder validation, atomic file writes and digest preconditions.
+2. **Decided:** read contracts expose only real folder data, enrollment records, stored invitations, run journals and takeover snapshots. No invented telemetry, progress, timestamps or remote schedules.
+3. **Decided:** invitation cancellation, selective scan writes, service restart and private-review deletion stay hidden in production until CLI counterparts exist. The demo keeps them. Map appearance customization stays browser-local in localStorage.
+4. **Decided:** unenrollment matches the CLI's actual cleanup boundaries. Setup uses plan, explicit human approval and apply through its existing journal. A checkbox cannot certify credentials, host keys, linger or convergence.
+5. **Decided:** self-update status/check may become live now. Enable, disable and apply from the GUI remain phase 3, tracked by issue #260, with no command-lease exemption.
 
 ## Delivery evidence
 
