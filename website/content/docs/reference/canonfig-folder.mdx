@@ -21,13 +21,14 @@ in each harness is in the [harness reference](/reference/harnesses).
   agents/<id>.md          subagents
   commands/<id>.md        slash commands
   hooks/...               scripts that hooks in canonfig.jsonc run
+  files/...               content of authored resources
   local/                  this machine's own items, never published
   .backups/               takeover snapshots
   .runtime/               the generated hook runner
   state.sqlite  setup.json  policy.json  canonfig.log  installers/  skills-sources.json  tunnel/  cache/
 ```
 
-The first seven entries are the **authoring allowlist**. Publication reads only
+The first eight entries are the **authoring allowlist**. Publication reads only
 those, and a Follower Machine writes only those. Everything else in the folder
 belongs to the machine it is on: Canonfig never publishes, mirrors, or replaces
 it.
@@ -39,6 +40,7 @@ it.
 | `rules/`, `agents/`, `commands/` | Yes | One `<id>.md` document per item. See [Documents](#documents). |
 | `skills/` | Yes | One directory per skill, each with a `SKILL.md`. |
 | `hooks/` | Yes | Scripts a hook runs. Every file here must be run by a hook. |
+| `files/` | Yes | Content of [authored resources](/how-to/manage-files-outside-harnesses). Every file here must be read by a resource. |
 | `local/` | No | Items only this machine projects. See [The local folder](#the-local-folder). |
 | `.backups/` | No | Takeover snapshots. See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
 | `.runtime/` | No | `hook-runner.mjs`, which every projected hook calls. |
@@ -122,7 +124,8 @@ does not list is an error, so a typo fails instead of being ignored.
 | `credentials` | No | object: id to `{ "reference": string }` | A credential each Follower Machine must already hold, by name. The value never leaves the Follower Machine. |
 | `groups` | No | object: group name to array of item references | Items only Follower Machines in that Follower Group receive. See [Groups](#groups). |
 | `scheduleDefault` | No | `daily@HH:mm` or `weekly:Mon,Thu@HH:mm` | A suggested schedule. Sync never installs it; a Follower Machine accepts it with `canonfig schedule set --default`. |
-| `local` | No | `{ "allow": array }` | Which categories Follower Machines may add in `local/`: any of `rules`, `skills`, `agents`, `commands`, `mcp`, `settings`. Default: none. |
+| `local` | No | `{ "allow"?: array, "appendLocal"?: array }` | `allow`: which categories machines may add in `local/`: any of `instructions`, `rules`, `skills`, `agents`, `commands`, `mcp`, `settings`. `appendLocal`: `instructions`, `skills`, or both; those harness outputs keep each machine's own text and skills (see [Keep a machine's own instructions and skills](/how-to/keep-local-content)). Default: none. |
+| `resources` | No | object: id to resource | Files, directories, and config keys outside every harness. See [Manage files outside the harnesses](/how-to/manage-files-outside-harnesses). |
 
 Names used as object keys (MCP servers, hook ids, tools, credentials, groups)
 start with a letter or digit and contain only letters, digits, `-`, and `_`.
@@ -298,6 +301,7 @@ published and never replaced by a sync.
 ```text
 ~/.canonfig/local/
   rules/<id>.md
+  AGENTS.md
   skills/<name>/SKILL.md
   agents/<id>.md
   commands/<id>.md
@@ -312,6 +316,8 @@ takes these keys:
 | `mcp` | object: name to [MCP server](#mcp-servers) | MCP servers only this machine adds. |
 | `settings` | object: harness id to object of key path to value | Settings keys only this machine adds. |
 | `excludeHarnesses` | array of harness ids | Harnesses this machine never projects, even when listed. `canonfig harnesses exclude` and `canonfig restore` edit it. |
+| `excludeResources` | array of resource ids | Authored resources this machine never projects. `canonfig restore` adds the ones it gives back. |
+| `overlays` | array of `<category>/<name>` | Local Overlays: published items this machine's local item replaces. `canonfig overlay set` and `remove` edit it. See [Replace a published item on one machine](/how-to/use-local-overlays). |
 | `backups` | boolean | `false` turns takeover snapshots off on this machine. Default `true`. |
 
 The Source Machine decides which categories local items may add, with
@@ -330,8 +336,8 @@ Action Required (exit 3), because Canonfig will not choose between them:
 
 | Message | Fix |
 | --- | --- |
-| `<path>: local <kind> <name> has the same name as a published one; rename or remove one of them` (kind is `rule`, `skill`, `agent`, `command`, or `MCP server`) | Rename the local item, or ask the Source Machine to drop the published one. |
-| `<path>: local setting <harness> <key> overlaps published setting <key>; remove one of them` | Remove the local key, or change it so neither key contains the other. |
+| `<path>: local <kind> <name> has the same name as a published one; rename or remove one of them, or let yours replace it on this machine with 'canonfig overlay set <category>/<name>'` (kind is `rule`, `skill`, `agent`, `command`, or `MCP server`) | Rename the local item, ask the Source Machine to drop the published one, or set a Local Overlay. |
+| `<path>: local setting <harness> <key> overlaps published setting <key>; remove one of them, or let yours replace it on this machine with 'canonfig overlay set settings/<harness>'` | Remove the local key, or set a Local Overlay. |
 
 ## Enrollment
 

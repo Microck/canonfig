@@ -250,6 +250,7 @@ canonfig sync --plan
 canonfig sync --apply
 canonfig sync --apply --no-input
 canonfig sync --apply --no-backup
+canonfig sync --plan --review-local
 ```
 
 On an enrolled Follower Machine, `sync` fetches the latest authorized Profile
@@ -273,7 +274,15 @@ it, reports it, exits 4, and leaves its projections as they were last applied.
 | `--apply` | Applies the plan and verifies every resource. Cannot be combined with `--plan`. |
 | `--no-input` | Never prompts. |
 | `--no-backup` | Takes over harness surfaces without a takeover snapshot. |
+| `--review-local` | With `--plan` only: writes each append-local first adoption's exact texts to a private JSON file under `~/.canonfig/.reviews/` and lists the files. Refused with `--apply`, `--scheduled`, or `--no-input` (exit 2). See [Keep a machine's own instructions and skills](/how-to/keep-local-content). |
 | `--scheduled` | Set only by the native schedule, which runs `sync --apply --no-input --scheduled`. |
+
+When `local.appendLocal` in `canonfig.jsonc` shares instructions or skills with
+each machine, or an authored resource uses `"policy": "append-local"`, the plan
+marks the first write to an existing text file with "First adoption preserves
+the entire existing file as local text" and names `canonfig sync --plan
+--review-local`. The plan, the journal and the command output never contain
+that text.
 
 ### Takeover snapshots
 
@@ -334,9 +343,12 @@ process holds the run, and print its process ID. See [Recover from a failed or b
 no id is given. It runs as a journaled run: it rewrites the files, directories
 and owned keys the snapshot holds, removes what Canonfig added where the
 snapshot recorded nothing, deletes Canonfig's ownership records for those
-surfaces, and adds their harnesses to `excludeHarnesses` in
-`~/.canonfig/local/local.jsonc` so the next sync leaves them alone. Snapshot
-ids are the directory names under `~/.canonfig/.backups/`. See
+surfaces, and adds their harnesses to `excludeHarnesses` (and authored
+resources to `excludeResources`) in `~/.canonfig/local/local.jsonc` so the next
+sync leaves them alone. A surface Canonfig shares with the machine
+(append-local) is not overwritten from the snapshot: restore removes only
+Canonfig's section or entries, which leaves what the machine had and added.
+Snapshot ids are the directory names under `~/.canonfig/.backups/`. See
 [Restore a harness from a backup](/how-to/restore-from-a-backup).
 
 | Message | Exit | Cause |
@@ -373,6 +385,32 @@ there to project it". An unknown id fails with exit 2: "Unknown harness:
 `<id>`; expected one of codex, claude-code, ...". `doctor` reports the same
 detection and selection in its `harnesses` probe. See
 [Choose which harnesses Canonfig manages](/how-to/choose-harnesses).
+
+## Local overlays
+
+```bash
+canonfig overlay list
+canonfig overlay set mcp/docs
+canonfig overlay remove mcp/docs
+```
+
+A Local Overlay lets this machine's item in `~/.canonfig/local/` replace the
+published item with the same name. Without one, the same name stops the run
+with Human Action Required (exit 3). An item is `rules/<id>`, `skills/<name>`,
+`agents/<id>`, `commands/<id>`, `mcp/<name>`, or `settings/<harness>`; for
+settings, each local key replaces the published keys it overlaps and the other
+published keys stay. The Source Machine's `local.allow` must still admit the
+category.
+
+`set` and `remove` edit `overlays` in `~/.canonfig/local/local.jsonc`, keeping
+the file's comments, and print the list; they work before the first sync.
+`list` loads the folder (the mirror on a Follower Machine) and reports each
+overlay with `local` (an admitted local item of that name exists) and
+`published` (a published item of that name exists). A plan warns about an
+overlay with no local item. Overlays are never published or mirrored, and a new
+revision does not change them. An item in another form fails with exit 2:
+"Invalid overlay `<item>`: expected rules|skills|agents|commands|mcp/`<name>`, or
+settings/`<harness>`". See [Replace a published item on one machine](/how-to/use-local-overlays).
 
 ## Status
 

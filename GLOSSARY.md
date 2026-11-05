@@ -40,6 +40,14 @@ _Avoid_: Current profile, actual profile
 The `~/.canonfig/local/` folder: items owned by one machine that Projection combines with canonical items, within the Source Machine's allowlist, and that are never sent back to the Source Machine.
 _Avoid_: Local override, follower state
 
+**Local Overlay**:
+A machine's recorded decision, in `~/.canonfig/local/local.jsonc`, that its local item replaces the published item of the same name on that machine.
+_Avoid_: Override, local patch
+
+**Append-local**:
+The Apply Policy under which Canonfig shares a surface with the machine: it owns a marked Source section of a text file, or only its own entries of a directory, and keeps everything else the machine put there.
+_Avoid_: Merge mode, keep-local
+
 **Human Action Required**:
 A synchronization outcome that identifies a step only a person can complete before the desired configuration can be reached.
 _Avoid_: Sync failure, unsupported operation
@@ -57,7 +65,7 @@ A named set of Follower Machines that share configuration in addition to the bas
 _Avoid_: Per-machine profile, follower branch
 
 **Profile Resource**:
-A named item of desired configuration within a Machine Profile, compiled from one Canonical Folder item and classified by the behavior needed to reach and verify it. File, directory and config actions exist only as internal projection steps, never as authored resources.
+A named item of desired configuration within a Machine Profile, compiled from one Canonical Folder item and classified by the behavior needed to reach and verify it. Authored `resources` in `canonfig.jsonc` are the only file, directory and config resources a person writes; every other one is a projection step an adapter produces.
 _Avoid_: Generic resource, profile entry
 
 **Installation Recipe**:

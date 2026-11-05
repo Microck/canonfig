@@ -1,0 +1,157 @@
+---
+title: Keep a machine's own instructions and skills
+description: Let every machine keep its own AGENTS.md text and its own skills next to what the Source Machine publishes, with append-local and sync --review-local.
+---
+
+By default Canonfig owns the instructions file and the skills directory it
+projects into a harness: at takeover it saves what was there to a takeover
+snapshot and replaces it. When each machine has instructions or skills of its
+own that must stay, the Source Machine can share those outputs with every
+machine instead. Canonfig then owns only its part:
+
+- In an instructions file such as `~/.codex/AGENTS.md` or `~/.claude/CLAUDE.md`,
+  Canonfig owns a marked section at the top. Everything after it is the
+  machine's text.
+- In a skills directory such as the shared `~/.agents/skills/`, Canonfig owns
+  the skill directories it writes. Every other skill there is the machine's.
+
+This is the `append-local` policy. A machine can also keep instructions and
+skills in `~/.canonfig/local/`, which reach every harness on that machine; both
+are covered below.
+
+## Before you start
+
+- You need the Source Machine to change `canonfig.jsonc` and publish.
+- A takeover snapshot is still taken before the first write, unless backups
+  are off on that machine.
+
+## Share instructions and skills with each machine (Source Machine)
+
+Add `appendLocal` to `local` in `~/.canonfig/canonfig.jsonc`. Add
+`instructions` and `skills` to `allow` as well if machines should also keep
+items in their local folder:
+
+```jsonc title="part of ~/.canonfig/canonfig.jsonc"
+{
+  "local": {
+    "allow": ["instructions", "skills"],
+    "appendLocal": ["instructions", "skills"]
+  }
+}
+```
+
+```bash
+canonfig source publish --reviewer "$USER"
+```
+
+`appendLocal` takes `instructions`, `skills`, or both. It applies to every
+listed harness on every machine, the Source Machine included.
+
+## Review the first sync on a machine
+
+The first sync on a machine that already has an instructions file keeps the
+whole file as that machine's text, even if it repeats what the Source Machine
+publishes: matching text does not prove who wrote it. The plan says so for
+each file:
+
+```bash
+canonfig sync --plan
+```
+
+> First adoption preserves the entire existing file as local text. Matching
+> Source bytes do not establish ownership. Inspect exact Source and retained
+> local text before applying: canonfig sync --plan --review-local
+
+To see exactly what will be written, ask for private reviews:
+
+```bash
+canonfig sync --plan --review-local
+```
+
+The output lists one JSON file per instructions file, under
+`~/.canonfig/.reviews/adoption-review-<id>/`. Each holds:
+
+| Field | Meaning |
+| --- | --- |
+| `sourceAddition` | The text Canonfig will own at the top of the file. |
+| `retainedLocal` | The text that stays yours, exactly as it is now. |
+| `proposedText` | The whole file that `sync --apply` will write. |
+| `revision`, `planDigest`, `sourceDigest`, `retainedLocalDigest` | What the review was made from. |
+
+These files can hold secrets from your instructions. Canonfig makes the
+directory readable only by you (0700, files 0600 on Linux and macOS), never puts
+the text in the plan, the journal, or the command output, and never sends it
+anywhere. Read them locally, do not paste them anywhere, and delete the
+`adoption-review-<id>` directory when you are done. If the file changes before
+the review is written, the command stops and asks you to plan again.
+
+`--review-local` works only with an interactive `--plan`; with `--apply`,
+`--scheduled`, or `--no-input` it exits 2.
+
+When the plan looks right, apply it:
+
+```bash
+canonfig sync --apply
+```
+
+## What the files look like afterwards
+
+```md title="~/.codex/AGENTS.md on a Follower Machine"
+<!-- canonfig:source:start -->
+# Team rules
+
+Prefer small diffs.
+<!-- canonfig:source:end -->
+
+# Laptop notes
+
+Use fish, not bash.
+```
+
+Edit only below the closing marker. Later syncs replace the section between
+the markers and keep your text byte for byte. Changing the section itself is
+Follower Drift: Canonfig keeps the file, reports it, and exits 4. Move the edit
+below the marker, or into `~/.canonfig/local/AGENTS.md`, then sync again.
+Damaged or repeated markers also stop the sync until you repair them; deleting
+the whole file lets Canonfig write it again.
+
+In a shared skills directory, skills Canonfig did not write stay where they
+are and are never reported as drift. A file you add inside one of Canonfig's
+skill directories is drift, as before. If a machine already has a skill with
+the same name as a published one, the first sync stops with Follower Drift
+instead of replacing it: rename your skill, or remove it, then sync again.
+
+## Keep text and skills in the local folder
+
+With `instructions` and `skills` in `local.allow`, a machine can also keep
+items in its own folder:
+
+```text
+~/.canonfig/local/
+  AGENTS.md               appended after the published AGENTS.md
+  skills/<name>/SKILL.md  added next to the published skills
+```
+
+These reach every harness on that machine, not one file. Text in
+`local/AGENTS.md` goes inside Canonfig's section, after the published
+instructions. See [Add items to one machine only](/how-to/add-machine-local-items).
+
+## Stop sharing
+
+Removing an entry from `appendLocal` makes Canonfig own the whole file or
+directory again. Where a machine's own text or skills remain, the next sync
+reports Follower Drift (exit 4) instead of deleting them. Move that content
+into `~/.canonfig/local/` (or delete it), then sync.
+
+`canonfig restore` on a shared surface removes only Canonfig's section or
+skill directories. What the machine had before Canonfig took over, and what it
+added since, stays. See [Restore a harness from a backup](/how-to/restore-from-a-backup).
+
+## If something fails
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| "codex instructions cannot keep this machine's text: append-local Source text contains a reserved Canonfig marker" (exit 2) | The published instructions, or `local/AGENTS.md`, contain `<!-- canonfig:source:start -->` or `<!-- canonfig:source:end -->`. | Remove the marker text from the folder and publish again. |
+| "Cannot read append-local target: ..." (exit 3) | The instructions file is not valid UTF-8 text or its markers are damaged. | Repair the file, or delete it so Canonfig writes it again. |
+| "... changed after planning; run 'canonfig sync --plan --review-local' again" (exit 3) | The file changed between planning and writing the review. | Plan again. |
+| Follower Drift on an instructions file (exit 4) | The section between the markers was edited, or `appendLocal` was turned off while the file holds your text. | Move your text below the marker or into `local/AGENTS.md`, then sync. |
