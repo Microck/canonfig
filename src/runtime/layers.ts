@@ -100,7 +100,7 @@ import {
   restoreLocal,
   synchronizeLocal,
 } from "../projection/sync.ts";
-import { exportFolder } from "../projection/archive.ts";
+import { exportFolder, type ArchiveSigner } from "../projection/archive.ts";
 import { authoredEntries } from "../projection/folder.ts";
 import {
   FollowerCommands,
@@ -485,6 +485,79 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
   }),
 );
 
+/**
+ * The Source's signing key as a signer. The key is checked against the
+ * recorded Source identity: a key another state directory stored under an
+ * earlier release's account-global name must never sign for this Source. A
+ * local store failure or mismatch keeps its own category and text. Profile
+ * Revisions and `canonfig export` manifests are both signed through it.
+ */
+const loadSourceSigner = (enrollment: Enrollment["Service"]) =>
+  Effect.gen(function*() {
+    const credentials = yield* enrollment.sourceCredentials().pipe(
+      Effect.mapError((error) =>
+        error._tag === "CredentialStorageError" || error._tag === "SourceCredentialMismatchError"
+          ? error
+          : new PublicationSigningError({
+            operation: "sign",
+            reason: error.message,
+          })
+      ),
+    );
+    const material = credentials.material;
+    const encodedKey = credentials.signingPrivateKey;
+    const privateKey = yield* Effect.try({
+      try: () => createPrivateKey(Redacted.value(encodedKey)),
+      catch: (error) =>
+        new PublicationSigningError({
+          operation: "sign",
+          reason: String(error),
+        }),
+    });
+    const publicKey = createPublicKey(privateKey);
+    const signer: ProfileRevisionSigner = {
+      keyId: material.source.keyId,
+      sign: (value) =>
+        Effect.try({
+          try: () => Schema.decodeUnknownSync(SourceSignature)(
+            `ed25519:${signPayload(
+              null,
+              Buffer.from(value),
+              privateKey,
+            ).toString("base64url")}`,
+          ),
+          catch: (error) =>
+            new PublicationSigningError({
+              operation: "sign",
+              reason: String(error),
+            }),
+        }),
+      verify: (value, signature) =>
+        Effect.try({
+          try: () =>
+            signature.startsWith("ed25519:")
+            && verifyPayload(
+              null,
+              Buffer.from(value),
+              publicKey,
+              Buffer.from(signature.slice("ed25519:".length), "base64url"),
+            ),
+          catch: (error) =>
+            new PublicationSigningError({
+              operation: "verify",
+              reason: String(error),
+            }),
+        }),
+    };
+    // sourceCredentials proved the key hashes to this fingerprint.
+    const archiveSigner: ArchiveSigner = {
+      fingerprint: material.source.publicKeyFingerprint,
+      publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+      sign: signer.sign,
+    };
+    return { signer, archiveSigner };
+  });
+
 const runtimeProfileCatalogLayer: Layer.Layer<
   ProfileCatalog,
   never,
@@ -498,65 +571,7 @@ const runtimeProfileCatalogLayer: Layer.Layer<
       scan: scanFolder,
       publish: (input) =>
         Effect.gen(function*() {
-          // The signing key is checked against the recorded Source identity:
-          // a key another state directory stored under an earlier release's
-          // account-global name must never sign this Source's revisions. A
-          // local store failure or mismatch keeps its own category and text.
-          const credentials = yield* enrollment.sourceCredentials().pipe(
-            Effect.mapError((error) =>
-              error._tag === "CredentialStorageError" || error._tag === "SourceCredentialMismatchError"
-                ? error
-                : new PublicationSigningError({
-                  operation: "sign",
-                  reason: error.message,
-                })
-            ),
-          );
-          const material = credentials.material;
-          const encodedKey = credentials.signingPrivateKey;
-          const privateKey = yield* Effect.try({
-            try: () => createPrivateKey(Redacted.value(encodedKey)),
-            catch: (error) =>
-              new PublicationSigningError({
-                operation: "sign",
-                reason: String(error),
-              }),
-          });
-          const publicKey = createPublicKey(privateKey);
-          const signer: ProfileRevisionSigner = {
-            keyId: material.source.keyId,
-            sign: (value) =>
-              Effect.try({
-                try: () => Schema.decodeUnknownSync(SourceSignature)(
-                  `ed25519:${signPayload(
-                    null,
-                    Buffer.from(value),
-                    privateKey,
-                  ).toString("base64url")}`,
-                ),
-                catch: (error) =>
-                  new PublicationSigningError({
-                    operation: "sign",
-                    reason: String(error),
-                  }),
-              }),
-            verify: (value, signature) =>
-              Effect.try({
-                try: () =>
-                  signature.startsWith("ed25519:")
-                  && verifyPayload(
-                    null,
-                    Buffer.from(value),
-                    publicKey,
-                    Buffer.from(signature.slice("ed25519:".length), "base64url"),
-                  ),
-                catch: (error) =>
-                  new PublicationSigningError({
-                    operation: "verify",
-                    reason: String(error),
-                  }),
-              }),
-          };
+          const { signer } = yield* loadSourceSigner(enrollment);
           return yield* makePublication(signer, repository).publish(input);
         }),
       getRevision: repository.getRevision,
@@ -1265,12 +1280,13 @@ const followerCommandsLayer = (
           includeHarnesses: input.includeHarnesses,
           force: input.force,
           now: new Date(),
+          sourceSigner: loadSourceSigner(enrollment).pipe(Effect.map(({ archiveSigner }) => archiveSigner)),
         }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
       importArchive: (input) =>
-        mapFailure(importLocal(statePath, resolve(input.archive), input.dryRun ? "plan" : "apply", input.replace).pipe(
+        mapFailure(importLocal(statePath, resolve(input.archive), input.dryRun ? "plan" : "apply", input.replace, input.expectKey).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),

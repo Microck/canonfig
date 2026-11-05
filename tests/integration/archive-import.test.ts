@@ -116,7 +116,7 @@ const machine = (wrap: (base: Layer.Layer<MachineState>) => Layer.Layer<MachineS
     Layer.provideMerge(machineLayer),
   );
   const importing = (archive: string) =>
-    Effect.runPromise(importLocal(statePath, archive, "apply", false).pipe(Effect.flip, Effect.provide(layer)));
+    Effect.runPromise(importLocal(statePath, archive, "apply", false, undefined).pipe(Effect.flip, Effect.provide(layer)));
   const withArchive = (bytes: Uint8Array) => {
     const path = join(root, "crafted.tar.gz");
     writeFileSync(path, bytes);

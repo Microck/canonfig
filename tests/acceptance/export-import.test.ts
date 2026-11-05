@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 
@@ -126,6 +127,26 @@ const readTar = (archive: Uint8Array) => {
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
+/** The machine's `archive_events` rows, oldest first, without their ids and times. */
+const archiveEvents = (home: string) => {
+  const database = new DatabaseSync(join(home, ".canonfig", "state.sqlite"), { readOnly: true });
+  try {
+    return database.prepare("SELECT command, outcome, archive, sha256, signer FROM archive_events ORDER BY id").all()
+      .map((row) => ({ ...row }));
+  } finally {
+    database.close();
+  }
+};
+
+const syncRuns = (home: string): number => {
+  const database = new DatabaseSync(join(home, ".canonfig", "state.sqlite"), { readOnly: true });
+  try {
+    return Number(database.prepare("SELECT COUNT(*) AS count FROM synchronization_runs").get()?.count);
+  } finally {
+    database.close();
+  }
+};
+
 describe("canonfig export and import", () => {
   it("moves the folder to a fresh machine byte for byte, without state, backups or secret values", () => {
     const source = sourceHome();
@@ -212,7 +233,7 @@ describe("canonfig export and import", () => {
     expect(readTar(readFileSync(join(source, "setup.tar.gz")))[0]!.path).toBe("manifest.json");
   }, 90_000);
 
-  it("refuses an archive changed after export, and an occupied folder unless --replace", () => {
+  it("refuses an archive changed after export, and backs up an occupied folder it replaces with --replace", () => {
     const source = sourceHome();
     expect(invoke(source, ["export", "--output", "setup.tar.gz"]).status).toBe(0);
     const archivePath = join(source, "setup.tar.gz");
@@ -234,11 +255,103 @@ describe("canonfig export and import", () => {
     expect(again.envelope.message).toContain("already holds");
     write(join(target, ".canonfig", "skills", "deploy", "added.md"), "added here\n");
     write(join(target, ".canonfig", "AGENTS.md"), "edited here\n");
+    const folder = join(target, ".canonfig");
+    const before = new Map(authoredFiles(folder).map((path) => [path, readFileSync(join(folder, ...path.split("/")))]));
     const replaced = invoke(target, ["import", archivePath, "--replace"]);
     expect(replaced.status, replaced.stdout + replaced.stderr).toBe(0);
     expect(replaced.envelope.data.replaced).toEqual(expect.arrayContaining(["AGENTS.md", "skills"]));
-    expect(existsSync(join(target, ".canonfig", "skills", "deploy", "added.md"))).toBe(false);
-    expect(readFileSync(join(target, ".canonfig", "AGENTS.md"), "utf8")).toBe("# Global instructions\n");
+    expect(existsSync(join(folder, "skills", "deploy", "added.md"))).toBe(false);
+    expect(readFileSync(join(folder, "AGENTS.md"), "utf8")).toBe("# Global instructions\n");
+
+    // Every file it replaced went to a takeover snapshot first, byte for byte,
+    // under the home-relative path of the folder.
+    const backup = replaced.envelope.data.backup;
+    expect(backup).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+    const copies = join(folder, ".backups", backup, "canonfig", ".canonfig");
+    expect(filesBelow(copies)).toEqual([...before.keys()]);
+    for (const [path, bytes] of before) expect(readFileSync(join(copies, ...path.split("/"))).equals(bytes), path).toBe(true);
+
+    // Restoring that snapshot puts the folder back, after a snapshot of the
+    // imported entries it replaces in turn.
+    const restored = invoke(target, ["restore", backup]);
+    expect(restored.status, restored.stdout + restored.stderr).toBe(0);
+    expect(restored.envelope.data).toMatchObject({ restored: backup, excludedHarnesses: [], outcome: { outcome: "Converged" } });
+    expect(authoredFiles(folder)).toEqual([...before.keys()]);
+    for (const [path, bytes] of before) expect(readFileSync(join(folder, ...path.split("/"))).equals(bytes), path).toBe(true);
+    const undo = join(folder, ".backups", restored.envelope.data.backup, "canonfig", ".canonfig");
+    expect(readFileSync(join(undo, "AGENTS.md"), "utf8")).toBe("# Global instructions\n");
+  }, 180_000);
+
+  it("signs a Source's export, verifies the signature on import and journals both", () => {
+    const source = sourceHome();
+    const credentials = { CANONFIG_LOCAL_CREDENTIAL_ROOT: join(source, "credential-store") };
+    const initialized = invoke(source, ["source", "init"], credentials);
+    expect(initialized.status, initialized.stdout + initialized.stderr).toBe(0);
+    const fingerprint: string = invoke(source, ["status"], credentials).envelope.data.machineRole.sourceFingerprint;
+    expect(fingerprint).toMatch(/^[0-9a-f]{64}$/u);
+
+    const exported = invoke(source, ["export", "--output", "setup.tar.gz"], credentials);
+    expect(exported.status, exported.stdout + exported.stderr).toBe(0);
+    expect(exported.envelope.data).toMatchObject({ role: "source", signer: fingerprint });
+    const archivePath = join(source, "setup.tar.gz");
+    const entries = readTar(readFileSync(archivePath));
+    expect(entries.slice(0, 2).map((entry) => entry.path)).toEqual(["manifest.json", "signature.json"]);
+    expect(JSON.parse(entries[1]!.content.toString("utf8"))).toMatchObject({ fingerprint });
+    // The export is journaled apart from synchronization runs.
+    expect(archiveEvents(source)).toEqual([
+      { command: "export", outcome: "Exported", archive: realpathSync.native(archivePath), sha256: exported.envelope.data.sha256, signer: fingerprint },
+    ]);
+    expect(syncRuns(source)).toBe(0);
+
+    const target = newHome();
+    const planned = invoke(target, ["import", archivePath, "--dry-run", "--expect-key", fingerprint.toUpperCase()]);
+    expect(planned.status, planned.stdout + planned.stderr).toBe(0);
+    expect(planned.envelope.data.signer).toBe(fingerprint);
+    const other = "0".repeat(64);
+    const wrongKey = invoke(target, ["import", archivePath, "--expect-key", other]);
+    expect(wrongKey.status).toBe(7);
+    expect(wrongKey.envelope.message).toContain(`is signed by key ${fingerprint}, not by the --expect-key ${other}`);
+    expect(authoredFiles(join(target, ".canonfig"))).toEqual([]);
+
+    // A signature that no longer matches the manifest refuses the whole archive.
+    const tar = gunzipSync(readFileSync(archivePath));
+    const at = tar.indexOf("\"ed25519:") + 20;
+    tar[at] = tar[at] === "A".charCodeAt(0) ? "B".charCodeAt(0) : "A".charCodeAt(0);
+    const forgedPath = join(source, "forged.tar.gz");
+    writeFileSync(forgedPath, gzipSync(tar));
+    const forged = invoke(target, ["import", forgedPath]);
+    expect(forged.status).toBe(7);
+    expect(forged.envelope.message).toContain("signature.json that does not match manifest.json");
+    expect(authoredFiles(join(target, ".canonfig"))).toEqual([]);
+
+    const imported = invoke(target, ["import", archivePath, "--expect-key", fingerprint]);
+    expect(imported.status, imported.stdout + imported.stderr).toBe(0);
+    expect(imported.envelope.data).toMatchObject({ signer: fingerprint, outcome: { outcome: "Converged" } });
+    expect(authoredFiles(join(target, ".canonfig"))).toEqual(authoredFiles(join(source, ".canonfig")));
+    // The dry run wrote nothing, so the journal holds the two refusals and the import.
+    expect(archiveEvents(target).map((event) => [event.outcome, event.signer])).toEqual([
+      ["Error", null],
+      ["Error", null],
+      ["Converged", fingerprint],
+    ]);
+  }, 180_000);
+
+  it("leaves a non-Source export unsigned, which --expect-key refuses", () => {
+    const source = sourceHome();
+    const exported = invoke(source, ["export", "--output", "setup.tar.gz"]);
+    expect(exported.status, exported.stdout + exported.stderr).toBe(0);
+    expect(exported.envelope.data).toMatchObject({ role: "standalone", signer: "unsigned" });
+    const archivePath = join(source, "setup.tar.gz");
+    expect(readTar(readFileSync(archivePath)).some((entry) => entry.path === "signature.json")).toBe(false);
+
+    const target = newHome();
+    const refused = invoke(target, ["import", archivePath, "--expect-key", "a".repeat(64)]);
+    expect(refused.status).toBe(7);
+    expect(refused.envelope.message).toContain(`is unsigned, but --expect-key requires a signature by key ${"a".repeat(64)}`);
+    expect(authoredFiles(join(target, ".canonfig"))).toEqual([]);
+    const imported = invoke(target, ["import", archivePath]);
+    expect(imported.status, imported.stdout + imported.stderr).toBe(0);
+    expect(imported.envelope.data.signer).toBe("unsigned");
   }, 120_000);
 
   it("captures the harness files Canonfig manages with --include-harnesses and never imports them", () => {

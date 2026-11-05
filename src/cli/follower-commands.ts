@@ -48,8 +48,10 @@ export interface ImportArchiveInput {
   readonly archive: string;
   /** Verify and plan without writing. */
   readonly dryRun: boolean;
-  /** Replace folder entries that already hold something. */
+  /** Replace folder entries that already hold something, after a takeover snapshot of them. */
   readonly replace: boolean;
+  /** The signing key fingerprint the archive must be signed by; any archive is accepted when absent. */
+  readonly expectKey?: string | undefined;
 }
 
 export interface HarnessesInput {

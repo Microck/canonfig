@@ -138,13 +138,19 @@ writes a harness surface: `~/.canonfig/.backups/<UTC>/` with `manifest.json`,
 one directory per harness holding copied files at their path relative to the
 home directory, and `keys.json` with prior values of taken-over config keys
 only (any JSON value, `null` included). Directories are 0700 and files 0600.
+`canonfig import --replace`, and a restore of the snapshot it took, write the
+same snapshot of the Canonical Folder entries they replace, under the owner
+`canonfig` (`canonicalFolderOwner`) instead of a harness; restoring one writes
+those entries back without a drift check, since authored content has no
+applied state.
 The snapshot is built under `.backups/.tmp-<UTC>/`, removed if the capture
 fails, and renamed to `<UTC>` once its manifest is complete. Only a directory
 with a valid manifest counts as a snapshot for listing, restore and
-retention. `pruneSnapshots` keeps the first snapshot and the four most
-recent, and removes temporary directories a killed capture left behind.
-`local/local.jsonc` `backups: false` or `sync --no-backup` skips the
-snapshot. A run that rolls back deletes its snapshot and takeover rows. A run
+retention. `pruneSnapshots` keeps the first harness snapshot, the first folder
+snapshot and the four most recent, and removes temporary directories a killed
+capture left behind. `local/local.jsonc` `backups: false` or
+`sync --no-backup` skips a harness snapshot; a folder snapshot is always
+taken. A run that rolls back deletes its snapshot and takeover rows. A run
 that stops early (Human Action Required or
 Follower Drift), or an interrupted run closed with `canonfig abandon`, keeps
 takeover rows only for surfaces it applied, so the next run takes the others

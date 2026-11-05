@@ -180,9 +180,9 @@ filesystem and on its cache, and refuses the run when either is too small.
 | --- | --- |
 | `~/.canonfig/` authoring entries | The folder you edit (Source Machine) or the mirror (Follower Machine); see the [Canonical Folder reference](/reference/canonfig-folder) |
 | `~/.canonfig/local/` | This machine's own items, exclusions, and backup setting |
-| `~/.canonfig/.backups/` | Takeover snapshots: the first and the 4 most recent |
+| `~/.canonfig/.backups/` | Takeover snapshots: the first of harnesses, the first of folder entries, and the 4 most recent |
 | `~/.canonfig/.runtime/` | The hook runner every projected hook calls |
-| `~/.canonfig/state.sqlite` | Enrollment, published Profile Revisions (Source Machine), run records, and Applied Resource Records |
+| `~/.canonfig/state.sqlite` | Enrollment, published Profile Revisions (Source Machine), run records, Applied Resource Records, and the export and import journal |
 | `~/.canonfig/cache/` | Downloaded Profile Revision files, reused across runs |
 | `~/.canonfig/canonfig.log` | Command log: command name, time, duration, exit code |
 | `~/.canonfig/setup.json` | The `canonfig setup` plan, approval, and progress |

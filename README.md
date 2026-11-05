@@ -132,8 +132,10 @@ and the [harness reference](https://canonfig.micr.dev/docs/reference/harnesses/)
 
 ### backups and restore
 
-before its first write to a harness, canonfig snapshots what it replaces under
-`~/.canonfig/.backups/`. it keeps the first snapshot and the four most recent.
+before its first write to a harness, and before `import --replace` replaces
+folder entries, canonfig snapshots what it replaces under
+`~/.canonfig/.backups/`. it keeps the first harness snapshot, the first folder
+snapshot and the four most recent.
 
 ```sh
 canonfig restore
@@ -144,9 +146,11 @@ see [restore from a backup](https://canonfig.micr.dev/docs/how-to/restore-from-a
 ### export and import
 
 export writes the folder (plus `local/`) to one private `.tar.gz` with a
-`manifest.json` of every file's size, sha-256 and mode. state, backups and
-credentials never go in. import checks every checksum and writes the folder
-back as a journaled run on a machine that isn't an enrolled follower.
+`manifest.json` of every file's size, sha-256 and mode, signed with the source
+key when you export on the source. state, backups and credentials never go in.
+import checks the signature and every checksum and writes the folder back as a
+journaled run on a machine that isn't an enrolled follower. `--expect-key`
+refuses anything your source didn't sign.
 
 ```sh
 canonfig export --output ~/canonfig-setup.tar.gz

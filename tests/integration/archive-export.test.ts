@@ -30,6 +30,9 @@ afterEach(() => {
 const posix = process.platform !== "win32";
 const SECRET = "sk-live-4f9a2c1e8b7d";
 
+// These machines are standalone, and only a Source's export loads its signer.
+const sourceSigner = Effect.die("a standalone export never signs");
+
 const write = (path: string, content: string) => {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content);
@@ -56,6 +59,7 @@ const home = () => {
       includeHarnesses: false,
       force: options.force ?? false,
       now: new Date("2026-11-05T00:00:00.000Z"),
+      sourceSigner,
     }).pipe(
       Effect.flip,
       Effect.provide(Layer.merge(stateRepositoryLayer(join(folder, "state.sqlite")), options.layer ?? machine)),

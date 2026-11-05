@@ -354,6 +354,7 @@ canonfig export --include-harnesses --output ~/canonfig-setup.tar.gz --force
 canonfig import ~/canonfig-setup.tar.gz --dry-run
 canonfig import ~/canonfig-setup.tar.gz
 canonfig import ~/canonfig-setup.tar.gz --replace
+canonfig import ~/canonfig-setup.tar.gz --expect-key 3f1c0a9e6b2d4f8a7c5e1b3d9f0a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5a
 ```
 
 `export` writes the Canonical Folder to one `.tar.gz`: `canonfig.jsonc`,
@@ -377,14 +378,18 @@ archive or no longer holds it, and export leaves the path as it is.
 
 The archive starts with `manifest.json`: the Canonfig version, the time of the
 export, the machine's role (`source`, `follower` or `standalone`), and for
-every file its path, size, SHA-256 and mode. Entries are sorted by path, and
-every entry has owner, group and time 0. The command prints the archive's own
-SHA-256 and the manifest's. Export reads each file once and checks those exact
-bytes: a literal credential anywhere in the folder, comments and hook scripts
-included, stops it, as does a credential in an MCP server, hook or settings
-entry of `canonfig.jsonc` or `local/local.jsonc` under publication's rule, or a
-file named `.env`, `.env.*`, `auth.json` or `credentials.json`. A link, FIFO or
-other special file, or more than 128 MiB of content, stops it too.
+every file its path, size, SHA-256 and mode. On the Source Machine,
+`signature.json` follows it: the Source signing key's public key, its
+fingerprint, and its Ed25519 signature of the manifest's SHA-256. Export on
+any other machine writes no signature. Entries are sorted by path, and every
+entry has owner, group and time 0. The command prints the archive's own
+SHA-256, the manifest's, and `signer`: the fingerprint, or `unsigned`. Export
+reads each file once and checks those exact bytes: a literal credential
+anywhere in the folder, comments and hook scripts included, stops it, as does a
+credential in an MCP server, hook or settings entry of `canonfig.jsonc` or
+`local/local.jsonc` under publication's rule, or a file named `.env`, `.env.*`,
+`auth.json` or `credentials.json`. A link, FIFO or other special file, or more
+than 128 MiB of content, stops it too.
 
 `--include-harnesses` adds the harness files Canonfig manages on this machine,
 from its Applied Resource Records, under `harnesses/<harness>/<path below
@@ -396,13 +401,18 @@ Canonfig did not write; any other surface is left out and listed under
 such as `~/.claude.json` or `~/.codex/config.toml`, the entry holds only the
 keys Canonfig owns there, listed in the entry's `keys`.
 
-`import` verifies the archive before it plans anything: `manifest.json` comes
-first and lists every other entry exactly once, and every size, SHA-256 and
-mode matches. Entries must be regular files under `folder/` in the allowlist
-above or under `harnesses/<harness>/`; an absolute path, a `..` segment, a
-link, a device, a directory entry, data after the end of the tar stream, or
-anything else refuses the whole archive, as does a `canonfig.jsonc` or
-`local/local.jsonc` this Canonfig cannot read.
+`import` verifies the archive before it plans anything: a `signature.json`
+must hold a key matching its fingerprint and a valid signature of the
+manifest, `manifest.json` comes first and lists every other entry exactly
+once, and every size, SHA-256 and mode matches. Entries must be regular files
+under `folder/` in the allowlist above or under `harnesses/<harness>/`; an
+absolute path, a `..` segment, a link, a device, a directory entry, data after
+the end of the tar stream, or anything else refuses the whole archive, as does
+a `canonfig.jsonc` or `local/local.jsonc` this Canonfig cannot read. The
+output's `signer` is the signing key's fingerprint, or `unsigned`. With
+`--expect-key <fingerprint>`, import also refuses an unsigned archive and one
+another key signed; the fingerprint is the `sourceFingerprint` that
+`canonfig status` shows on the Source Machine.
 Import then writes the folder entries into `~/.canonfig/` as one journaled
 Synchronization Run, which rolls back on failure and resumes with
 `canonfig recover` after an interruption. Files get mode `0600`, or `0700`
@@ -413,11 +423,20 @@ and takes each harness over with a takeover snapshot.
 Import refuses an enrolled Follower Machine, whose folder mirrors the Source
 Machine. It also refuses a folder that already holds any authored entry, or a
 `local/` when the archive has one. `--replace` replaces each entry the archive
-holds; a replaced directory then holds exactly the archive's files, and an
-entry the archive does not hold is kept and listed under `kept`. `--dry-run`
-verifies and prints the plan without writing. Without `--replace`, a
-`canonfig.jsonc` or `AGENTS.md` that appears while the import runs is kept:
-the run rolls back and import reports the conflict. See
+holds, after copying what those entries hold to a takeover snapshot in
+`~/.canonfig/.backups/`, which the output names as `backup`;
+`canonfig restore <backup>` puts them back. A replaced directory then holds
+exactly the archive's files, and an entry the archive does not hold is kept and
+listed under `kept`. `--dry-run` verifies and prints the plan without writing.
+Without `--replace`, a `canonfig.jsonc` or `AGENTS.md` that appears while the
+import runs is kept: the run rolls back and import reports the conflict.
+
+Every `export` and every `import` except `--dry-run` adds a row to the
+`archive_events` table in `~/.canonfig/state.sqlite`: the time, the command,
+the outcome (`Exported`, the import run's outcome, or `Error`), the archive
+path, its SHA-256 and the signer. These rows are apart from Synchronization
+Runs, so an export never becomes the last sync that `canonfig status` reports,
+and they can be added to but never changed. See
 [Export the folder and move it to a new machine](/how-to/export-and-import).
 
 | Message | Exit | Cause |
@@ -427,8 +446,11 @@ the run rolls back and import reports the conflict. See
 | `<path> already exists; pass --force to replace it, or choose another --output; nothing was written` | 4 | A file is already at the output path. |
 | `<file> has a literal credential at <path> [REDACTED]; an export never holds secret values. ...` | 2 | A value in `canonfig.jsonc` or `local/local.jsonc` looks like a credential. |
 | `<folder> is an enrolled Follower Machine's mirror of the Source, so an import cannot write it. ...` | 2 | Import on a Follower Machine. |
-| `<folder> already holds <entries>, and an import never overwrites them unasked. ...` | 4 | The folder holds entries and `--replace` was not given. |
+| `<folder> already holds <entries>, and an import never overwrites them unasked. Pass --replace ...` | 4 | The folder holds entries and `--replace` was not given. |
 | `<archive> <path> does not match its checksum in manifest.json; the archive was changed or damaged after export; nothing was imported` | 7 | A file changed after export. |
+| `<archive> has a signature.json that does not match manifest.json: ...; nothing was imported` | 7 | The manifest or the signature changed after the Source signed the archive. |
+| `<archive> is signed by key <fingerprint>, not by the --expect-key <fingerprint>; nothing was imported` | 7 | Another key signed the archive. |
+| `<archive> is unsigned, but --expect-key requires a signature by key <fingerprint>; nothing was imported` | 7 | The archive was not exported on a Source Machine, or its signature was removed. |
 | `<archive> holds <path>, a symbolic link; an export holds regular files only; nothing was imported` | 7 | The archive holds a link, device, directory or other special entry. |
 | `<archive> holds <path>, which is outside what an export may hold ...; nothing was imported` | 7 | An entry is outside the allowlist. |
 | `<path> holds the complete archive (SHA-256 <digest>), but Canonfig could not confirm it: ...` | 7 | A check after publication failed, such as flushing the directory entry; the archive is at the path. |

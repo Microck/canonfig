@@ -1,20 +1,25 @@
+import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import { Effect, Schema } from "effect";
 
-import { ContentDigest, ResourceId, Timestamp, type FollowerId } from "../domain/brand.ts";
+import { ContentDigest, ResourceId, Timestamp, type FollowerId, type SourceSignature } from "../domain/brand.ts";
 import { ConfigValue } from "../domain/resource.ts";
 import { localProjectionFollower, type AppliedResourceRecord } from "../domain/synchronization.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
+import type { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachinePath } from "../machine/machine-state.types.ts";
+import type { SourceCredentialMismatchError } from "../enrollment/enrollment.errors.ts";
+import type { PublicationSigningError } from "../profile/profile-catalog.errors.ts";
 import { asJson, sha256BytesHex } from "../profile/profile-codec.ts";
 import { literalCredentialLocation } from "../profile/publication-credentials.ts";
 import { containsLiteralCredential } from "../secrets/credential-policy.ts";
 import { packageVersion } from "../runtime/build-identity.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
+import type { ArchiveEvent } from "../state/state-repository.types.ts";
 import { configKeysDigest, getConfigPath, parseConfigDocument, renderConfigDocument } from "../synchronization/config-codec.ts";
 import { relativePathAncestors } from "../synchronization/resource-plans.ts";
 import {
@@ -43,7 +48,8 @@ import {
  * `canonfig export` and `canonfig import`: the Canonical Folder as one
  * `.tar.gz`, and that archive back into `~/.canonfig/`.
  *
- * An archive holds `manifest.json` first, then regular files only:
+ * An archive holds `manifest.json` first, `signature.json` next when a Source
+ * exported it, then regular files only:
  *
  * - `folder/...`: the authoring allowlist (`canonfig.jsonc`, `AGENTS.md`,
  *   `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`) plus `local/`.
@@ -55,16 +61,19 @@ import {
  *   shared file such as `~/.claude.json` contributes only its owned keys.
  *
  * The manifest lists every other entry with size, SHA-256 and mode, so an
- * auditor can check what left the machine with standard tools. It is an
- * integrity record, not a signature: whoever can change the archive can
- * rewrite the manifest too, so compare the archive's own SHA-256 (printed by
- * export) when the copy crossed an untrusted channel.
+ * auditor can check what left the machine with standard tools. On its own it
+ * is an integrity record: whoever can change the archive can rewrite the
+ * manifest too. A Source's export also carries `signature.json`, the Source
+ * signing key's signature of the manifest, which says who made it;
+ * `import --expect-key` refuses any archive that key did not sign.
  *
- * Import verifies every checksum before anything is planned, then writes the
- * folder entries as one journaled Synchronization Run (see `importLocal` in
- * sync.ts). Harness files are verified and reported, never written: the next
- * `canonfig sync` projects the imported folder through the normal takeover
- * path, with its snapshot.
+ * Import verifies the signature and every checksum before anything is
+ * planned, then writes the folder entries as one journaled Synchronization
+ * Run (see `importLocal` in sync.ts), after a takeover snapshot of the entries
+ * `--replace` replaces. Harness files are verified and reported, never
+ * written: the next `canonfig sync` projects the imported folder through the
+ * normal takeover path, with its snapshot. Both commands are journaled in
+ * `archive_events`, apart from Synchronization Runs.
  */
 
 /** The request cannot be carried out as given; nothing was written. */
@@ -96,12 +105,14 @@ export class ArchiveIntegrityError extends TaggedError<ArchiveIntegrityError>()(
 ) {}
 
 export const MANIFEST_PATH = "manifest.json";
+/** A Source's signature of the manifest; never listed in it, since it signs it. */
+export const SIGNATURE_PATH = "signature.json";
 const FOLDER_PREFIX = "folder/";
 const HARNESS_PREFIX = "harnesses/";
 /** The folder entries an archive may hold: the authoring allowlist plus `local/`. */
 const FOLDER_ENTRIES: ReadonlyArray<string> = [...AUTHORING_ENTRIES, "local"];
 /** The two folder entries that are files; every other entry is a directory. */
-const FOLDER_FILES: ReadonlySet<string> = new Set(["canonfig.jsonc", "AGENTS.md"]);
+export const FOLDER_FILES: ReadonlySet<string> = new Set(["canonfig.jsonc", "AGENTS.md"]);
 const HARNESS_DIRECTORIES: ReadonlySet<string> = new Set([...TARGET_IDS, sharedSkillsOwner]);
 
 const MAXIMUM_FILES = 20_000;
@@ -143,6 +154,40 @@ const ExportManifest = Schema.Struct({
   files: Schema.Array(ManifestFile),
 });
 type ExportManifest = typeof ExportManifest.Type;
+
+/**
+ * `signature.json`: the Source's Ed25519 public key and its signature of
+ * `manifestSigningPayload`. The key travels in the archive, so any machine can
+ * check the signature; the fingerprint says whose key it is, and only
+ * `--expect-key` (or the reader comparing it with `canonfig status` on the
+ * Source) says whether that is the key it should be.
+ */
+const ArchiveSignature = Schema.Struct({
+  /** SHA-256 of the key's SPKI DER, the Source fingerprint `canonfig status` shows. */
+  fingerprint: Schema.String,
+  /** The public key, SPKI PEM. */
+  publicKey: Schema.String,
+  /** `ed25519:<base64url>`, as Profile Revisions are signed. */
+  signature: Schema.String,
+});
+type ArchiveSignature = typeof ArchiveSignature.Type;
+
+/**
+ * What a Source signs: the manifest's SHA-256, which binds every file's
+ * digest. The prefix keeps it from ever reading as a Profile Revision payload
+ * (canonical JSON), which the same key signs.
+ */
+const manifestSigningPayload = (manifestSha256: string): string => `canonfig-export-manifest:${manifestSha256}`;
+
+/** The Source's revision signer, with the public key an archive carries. */
+export interface ArchiveSigner {
+  readonly fingerprint: string;
+  /** SPKI PEM. */
+  readonly publicKey: string;
+  readonly sign: (payload: string) => Effect.Effect<SourceSignature, PublicationSigningError>;
+}
+
+export type ArchiveSignerError = CredentialStorageError | SourceCredentialMismatchError | PublicationSigningError;
 
 /** One archive entry with the manifest fields it carries besides its digest. */
 interface ArchiveFile {
@@ -376,21 +421,58 @@ export interface VerifiedArchive {
   readonly manifest: Omit<ExportManifest, "files">;
   readonly manifestSha256: ContentDigest;
   readonly archiveSha256: ContentDigest;
+  /** The fingerprint of the key whose valid signature the archive carries; undefined when unsigned. */
+  readonly signer: string | undefined;
   readonly folderFiles: ReadonlyArray<ArchivedFolderFile>;
   /** Harness entries, checked like the rest and never written. */
   readonly harnessFiles: ReadonlyArray<ManifestFile>;
 }
 
 /**
- * Check an export before anything uses it: `manifest.json` comes first and
- * lists every other entry exactly once with its size, SHA-256 and mode, and
- * every entry sits inside the allowlist. Any difference refuses the whole
- * archive.
+ * The fingerprint of the key that signed this manifest, after checking that
+ * the key hashes to the fingerprint `signature.json` names and that its
+ * Ed25519 signature of the manifest digest holds. Anything else refuses.
+ */
+const signerOf = (content: Uint8Array, manifestSha256: string, fail: (message: string) => ArchiveIntegrityError): string => {
+  let signature: ArchiveSignature;
+  try {
+    signature = Schema.decodeUnknownSync(ArchiveSignature)(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(content)));
+  } catch (error) {
+    throw fail(`has an unreadable ${SIGNATURE_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  let valid: boolean;
+  let fingerprint: string;
+  try {
+    const publicKey = createPublicKey(signature.publicKey);
+    fingerprint = sha256BytesHex(publicKey.export({ type: "spki", format: "der" }));
+    valid = publicKey.asymmetricKeyType === "ed25519"
+      && signature.signature.startsWith("ed25519:")
+      && verifySignature(null, Buffer.from(manifestSigningPayload(manifestSha256)), publicKey, Buffer.from(signature.signature.slice("ed25519:".length), "base64url"));
+  } catch (error) {
+    throw fail(`has a ${SIGNATURE_PATH} whose key or signature cannot be read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (fingerprint !== signature.fingerprint) {
+    throw fail(`has a ${SIGNATURE_PATH} that names key ${signature.fingerprint}, but carries key ${fingerprint}`);
+  }
+  if (!valid) {
+    throw fail(`has a ${SIGNATURE_PATH} that does not match ${MANIFEST_PATH}: the manifest was changed after key ${fingerprint} signed it, or that key never signed it`);
+  }
+  return fingerprint;
+};
+
+/**
+ * Check an export before anything uses it: `manifest.json` comes first, a
+ * `signature.json` after it must verify, and the manifest lists every other
+ * entry exactly once with its size, SHA-256 and mode, and every entry sits
+ * inside the allowlist. Any difference refuses the whole archive.
  */
 const verifyArchive = (path: string, bytes: Uint8Array): VerifiedArchive => {
   const fail = (message: string) => new ArchiveIntegrityError({ path, message });
-  const [first, ...entries] = decodeArchive(path, bytes);
+  const [first, ...rest] = decodeArchive(path, bytes);
   if (first?.path !== MANIFEST_PATH) throw fail(`does not start with ${MANIFEST_PATH}, so it is not a Canonfig export`);
+  const manifestSha256 = sha256BytesHex(first.content);
+  const signer = rest[0]?.path === SIGNATURE_PATH ? signerOf(rest[0].content, manifestSha256, fail) : undefined;
+  const entries = signer === undefined ? rest : rest.slice(1);
   let manifest: ExportManifest;
   try {
     manifest = Schema.decodeUnknownSync(ExportManifest)(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(first.content)));
@@ -411,7 +493,7 @@ const verifyArchive = (path: string, bytes: Uint8Array): VerifiedArchive => {
   const harnessFiles: Array<ManifestFile> = [];
   const seen = new Set<string>();
   for (const entry of entries) {
-    if (entry.path === MANIFEST_PATH || seen.has(entry.path)) throw fail(`holds ${entry.path} twice`);
+    if (entry.path === MANIFEST_PATH || entry.path === SIGNATURE_PATH || seen.has(entry.path)) throw fail(`holds ${entry.path} twice`);
     seen.add(entry.path);
     const file = listed.get(entry.path);
     if (file === undefined) throw fail(`holds ${entry.path}, which ${MANIFEST_PATH} does not list`);
@@ -439,8 +521,9 @@ const verifyArchive = (path: string, bytes: Uint8Array): VerifiedArchive => {
   const { files: _files, ...summary } = manifest;
   return {
     manifest: summary,
-    manifestSha256: sha256BytesHex(first.content),
+    manifestSha256,
     archiveSha256: sha256BytesHex(bytes),
+    signer,
     folderFiles,
     harnessFiles,
   };
@@ -840,13 +923,35 @@ export interface ExportInput {
   /** Replace an existing archive at the output path. */
   readonly force: boolean;
   readonly now: Date;
+  /**
+   * The Source's signer, run only when this machine is the Source: its export
+   * is signed or not written at all, never quietly unsigned.
+   */
+  readonly sourceSigner: Effect.Effect<ArchiveSigner, ArchiveSignerError>;
 }
 
 /**
+ * Journal an export or import that stopped with an error in
+ * `archive_events`, with what the request says (the outcome itself is
+ * journaled where it is known). Journaling the error is best effort: when the
+ * state database fails too, the command's own error is still the one
+ * reported, since it says what happened and what to do, where a state error
+ * would hide it.
+ */
+export const journalError = (command: ArchiveEvent["command"], archive: string) =>
+<A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.tapError(() =>
+    Effect.flatMap(StateRepository, (repository) =>
+      repository.recordArchiveEvent({ occurredAt: new Date().toISOString(), command, outcome: "Error", archive })
+    ).pipe(Effect.ignore)
+  ));
+
+/**
  * `canonfig export`: write the folder (and with `includeHarnesses` the
- * managed harness files) to one private `.tar.gz`. It changes nothing
- * Canonfig manages, so it is no Synchronization Run; the command journal in
- * `canonfig.log` records it, and the manifest records what it holds.
+ * managed harness files) to one private `.tar.gz`, signed on a Source. It
+ * changes nothing Canonfig manages, so it is no Synchronization Run; the
+ * manifest records what it holds, and `archive_events` and the command
+ * journal in `canonfig.log` record the export.
  */
 export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportInput) {
   const machine = yield* MachineState;
@@ -906,7 +1011,24 @@ export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportI
     })),
   };
   const manifestBytes = new TextEncoder().encode(`${JSON.stringify(manifest, undefined, 2)}\n`);
-  const archive = encodeArchive([{ path: MANIFEST_PATH, content: manifestBytes, mode: 0o644 }, ...files]);
+  const manifestSha256 = sha256BytesHex(manifestBytes);
+  let signature: ArchiveFile | undefined;
+  let signer = "unsigned";
+  if (identity.role === "source") {
+    const source = yield* input.sourceSigner;
+    const signed: ArchiveSignature = {
+      fingerprint: source.fingerprint,
+      publicKey: source.publicKey,
+      signature: yield* source.sign(manifestSigningPayload(manifestSha256)),
+    };
+    signature = { path: SIGNATURE_PATH, content: new TextEncoder().encode(`${JSON.stringify(signed, undefined, 2)}\n`), mode: 0o644 };
+    signer = source.fingerprint;
+  }
+  const archive = encodeArchive([
+    { path: MANIFEST_PATH, content: manifestBytes, mode: 0o644 },
+    ...signature === undefined ? [] : [signature],
+    ...files,
+  ]);
   const archiveSha256 = sha256BytesHex(archive);
   // The checked parent is real and below the real home, and the write is
   // anchored there: it publishes only into that directory, reached without
@@ -944,18 +1066,27 @@ export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportI
       }));
     }),
   );
+  yield* repository.recordArchiveEvent({
+    occurredAt: new Date().toISOString(),
+    command: "export",
+    outcome: "Exported",
+    archive: destination,
+    sha256: archiveSha256,
+    signer,
+  });
   return {
     output: destination,
     bytes: archive.length,
     sha256: archiveSha256,
-    manifestSha256: sha256BytesHex(manifestBytes),
+    manifestSha256,
+    signer,
     role: identity.role,
     createdAt,
     folderFiles: folderFiles.length,
     harnessFiles: harnesses.files.length,
     skippedHarnessSurfaces: harnesses.skipped.length === 0 ? undefined : harnesses.skipped,
   };
-});
+}, (effect, input) => effect.pipe(journalError("export", resolve(input.cwd, input.output ?? "."))));
 
 // ── import ───────────────────────────────────────────────────────────────
 
@@ -972,14 +1103,17 @@ export interface ImportPlan extends LocalRevisionPlan {
  * `folder`: each file entry as a file, each directory entry as a whole
  * directory, so a replaced `skills/` holds exactly the archive's skills. A
  * folder entry that already holds something is refused unless `replace`.
- * Every write ends Canonfig's ownership in the same run, as restore does:
- * imported files are authored content, never Applied Resource Records a
- * later sync could retire.
+ * With `expectKey`, only an archive that key signed is accepted. Every write
+ * ends Canonfig's ownership in the same run, as restore does: imported files
+ * are authored content, never Applied Resource Records a later sync could
+ * retire.
  */
 export const planImport = (input: {
   readonly folder: string;
   readonly archive: string;
   readonly replace: boolean;
+  /** The fingerprint whose signature the archive must carry. */
+  readonly expectKey?: string | undefined;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
 }) =>
   Effect.gen(function*() {
@@ -1000,6 +1134,14 @@ export const planImport = (input: {
         }))),
     );
     const verified = yield* archiveWork(input.archive, async () => verifyArchive(input.archive, bytes));
+    if (input.expectKey !== undefined && verified.signer !== input.expectKey) {
+      return yield* new ArchiveIntegrityError({
+        path: input.archive,
+        message: verified.signer === undefined
+          ? `is unsigned, but --expect-key requires a signature by key ${input.expectKey}`
+          : `is signed by key ${verified.signer}, not by the --expect-key ${input.expectKey}`,
+      });
+    }
     const configuration = verified.folderFiles.find((file) => file.path === "canonfig.jsonc")!;
     const local = verified.folderFiles.find((file) => file.path === "local/local.jsonc");
     // Both are decoded as export validates them, so an archive with a file
@@ -1040,7 +1182,7 @@ export const planImport = (input: {
     if (!input.replace && occupied.length > 0) {
       return yield* new ArchiveConflictError({
         path: input.folder,
-        message: `already holds ${occupied.join(", ")}, and an import never overwrites them unasked. Export them first if you want a copy, then pass --replace to replace the entries the archive holds, or move them out of ${input.folder}`,
+        message: `already holds ${occupied.join(", ")}, and an import never overwrites them unasked. Pass --replace to replace the entries the archive holds (it snapshots them to ${join(input.folder, ".backups")} first), or move them out of ${input.folder}`,
       });
     }
 

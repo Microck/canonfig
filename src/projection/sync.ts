@@ -21,10 +21,11 @@ import type {
 } from "../synchronization/synchronization.types.ts";
 import { detectHarnesses, harnessReport } from "./detect.ts";
 import { adapterFor } from "./adapters/index.ts";
-import { CanonicalFolderError, LocalItemCollisionError, loadCanonicalFolder } from "./folder.ts";
+import { CanonicalFolderError, holdsEntries, LocalItemCollisionError, loadCanonicalFolder } from "./folder.ts";
 import type { TargetId } from "./model.ts";
 import {
   parseSurfaceResourceId,
+  ProjectionHumanActionError,
   planFolder,
   planRestore,
   rootContext,
@@ -33,8 +34,9 @@ import {
   takeoverSummary,
   type FolderPlan,
 } from "./plan.ts";
-import { ArchiveConflictError, ArchiveRequestError, machineIdentity, planImport } from "./archive.ts";
+import { ArchiveConflictError, ArchiveRequestError, FOLDER_FILES, journalError, machineIdentity, planImport } from "./archive.ts";
 import {
+  canonicalFolderOwner,
   deleteSnapshot,
   dropSnapshotEntries,
   pruneSnapshots,
@@ -282,6 +284,45 @@ const runRecorded = (follower: FollowerId, run: RunIdType) =>
     return (yield* repository.loadOpenRunIdentity(follower))?.run === run;
   });
 
+/**
+ * Snapshot the Canonical Folder entries a run is about to replace, under the
+ * run's id, so `canonfig restore <id>` writes them back. Canonfig never
+ * replaces authored folder content without one. Like a takeover snapshot, it
+ * is deleted when the run rolls back and pruned like the rest after.
+ */
+const snapshotFolderEntries = (statePath: string, run: RunIdType, entries: ReadonlyArray<string>) =>
+  Effect.gen(function*() {
+    if (entries.length === 0) return undefined;
+    const machine = yield* MachineState;
+    const folder = folderOf(statePath);
+    return yield* writeTakeoverSnapshot(
+      backupsOf(statePath),
+      (yield* machine.userDirectories()).home.absolute,
+      run,
+      entries.map((entry) => ({
+        harness: canonicalFolderOwner,
+        surface: entry,
+        root: folder,
+        kind: FOLDER_FILES.has(entry) ? "file" : "directory",
+        target: join(folder, entry),
+      })),
+    );
+  });
+
+/**
+ * Clean up after a restore or import that failed before or while the engine
+ * ran: its stored content, and its folder snapshot when the engine never
+ * recorded the run, so nothing the snapshot holds was replaced. A recorded
+ * run keeps the snapshot for `finishProjectionRun`, `recover` or `abandon`.
+ * Best effort: the run's own failure is what gets reported.
+ */
+const discardFailedRun = (statePath: string, follower: FollowerId, run: RunIdType, snapshot: string | undefined) =>
+  Effect.gen(function*() {
+    yield* discardRunArtifacts(run).pipe(Effect.ignore);
+    if (snapshot === undefined || (yield* runRecorded(follower, run))) return;
+    yield* deleteSnapshot(backupsOf(statePath), snapshot);
+  }).pipe(Effect.ignore);
+
 export interface ProjectionRunInput {
   readonly statePath: string;
   readonly follower: FollowerId;
@@ -391,7 +432,11 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
  * `canonfig restore [<snapshot>]`: write a takeover snapshot back as a
  * journaled run, refusing drifted surfaces, then exclude its harnesses. The
  * run belongs to whoever projected the surfaces: this machine's local
- * projection, or its follower identity once enrolled.
+ * projection, or its follower identity once enrolled. A snapshot of
+ * Canonical Folder entries (an `import --replace` backup) replaces those
+ * entries, after a snapshot of what they hold now, so a restore is undone by
+ * restoring that one; an enrolled follower's folder is the Source's mirror,
+ * so it refuses one.
  */
 export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
   statePath: string,
@@ -404,7 +449,19 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
   const snapshot = yield* readSnapshot(backupsOf(statePath), requested);
   const applied = yield* repository.loadAppliedResources(follower);
   const planned = yield* planRestore(snapshot, applied, follower);
+  if (planned.folderEntries.length > 0 && follower !== localProjectionFollower) {
+    return yield* new ProjectionHumanActionError({
+      message: `snapshot ${snapshot.id} holds Canonical Folder entries, and this enrolled Follower Machine's folder is the Source's mirror, so restore cannot write them; nothing was changed`,
+    });
+  }
   const run = newRunId();
+  const folder = folderOf(statePath);
+  const present = yield* Effect.filter(planned.folderEntries, (entry) =>
+    Effect.tryPromise({
+      try: () => holdsEntries(join(folder, entry)),
+      catch: (error) => new CanonicalFolderError({ path: join(folder, entry), message: String(error) }),
+    }));
+  const backup = yield* snapshotFolderEntries(statePath, run, present);
   const outcome = yield* Effect.gen(function*() {
     yield* repository.recordLocalRevision(planned.revision, new Date().toISOString());
     yield* storeArtifacts(run, planned.artifacts);
@@ -415,29 +472,34 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
       appliedResources: planned.appliedResources,
       artifacts: planned.artifacts,
     });
-  }).pipe(Effect.tapError(() => discardRunArtifacts(run).pipe(Effect.ignore)));
-  yield* finishProjectionRun(statePath, follower, run, outcome, planned.revision);
+  }).pipe(Effect.tapError(() => discardFailedRun(statePath, follower, run, backup)));
+  const finished = yield* finishProjectionRun(statePath, follower, run, outcome, planned.revision);
   return {
     restored: snapshot.id,
     excludedHarnesses: outcome.outcome === "Converged" ? planned.harnesses : [],
+    backup: finished.snapshotDeleted ? undefined : backup,
     plan: planned.plan,
     outcome,
   };
 }, (effect, statePath) => withRunLock(statePath, "restore", effect));
 
 /**
- * `canonfig import <archive> [--dry-run] [--replace]`: verify an export and
- * write its folder entries into `~/.canonfig/` as one journaled run, so a
- * failure rolls back and an interruption is recoverable like a sync. An
- * enrolled follower is refused before the archive is read: its folder is the
- * Source's mirror, and a sync would overwrite whatever an import wrote.
- * Harness files in the archive are verified and reported, never written.
+ * `canonfig import <archive> [--dry-run] [--replace] [--expect-key <key>]`:
+ * verify an export (and its signature) and write its folder entries into
+ * `~/.canonfig/` as one journaled run, so a failure rolls back and an
+ * interruption is recoverable like a sync. The entries `--replace` replaces
+ * are snapshotted first. An enrolled follower is refused before the archive
+ * is read: its folder is the Source's mirror, and a sync would overwrite
+ * whatever an import wrote. Harness files in the archive are verified and
+ * reported, never written. Every import but `--dry-run`, which writes
+ * nothing, is journaled in `archive_events`.
  */
 export const importLocal = Effect.fn("LocalProjection.import")(function*(
   statePath: string,
   archive: string,
   mode: "plan" | "apply",
   replace: boolean,
+  expectKey: string | undefined,
 ) {
   const repository = yield* StateRepository;
   const synchronization = yield* Synchronization;
@@ -453,13 +515,16 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
     folder: folderOf(statePath),
     archive,
     replace,
+    expectKey,
     appliedResources: yield* repository.loadAppliedResources(localProjectionFollower),
   });
   const harnesses = [...new Set(planned.archive.harnessFiles.map((file) => file.harness!))].sort();
+  const signer = planned.archive.signer ?? "unsigned";
   const base = {
     archive,
     sha256: planned.archive.archiveSha256,
     manifestSha256: planned.archive.manifestSha256,
+    signer,
     exported: planned.archive.manifest,
     folderFiles: planned.archive.folderFiles.length,
     replaced: planned.replaced,
@@ -475,6 +540,7 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
     return { ...base, next: "nothing was written; run the same command without --dry-run to import", outcome: undefined };
   }
   const run = newRunId();
+  const backup = yield* snapshotFolderEntries(statePath, run, planned.replaced);
   const outcome = yield* Effect.gen(function*() {
     yield* repository.recordLocalRevision(planned.revision, new Date().toISOString());
     yield* storeArtifacts(run, planned.artifacts);
@@ -485,19 +551,29 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
       appliedResources: planned.appliedResources,
       artifacts: planned.artifacts,
     });
-  }).pipe(Effect.tapError(() => discardRunArtifacts(run).pipe(Effect.ignore)));
-  yield* finishProjectionRun(statePath, localProjectionFollower, run, outcome, planned.revision);
+  }).pipe(Effect.tapError(() => discardFailedRun(statePath, localProjectionFollower, run, backup)));
+  const finished = yield* finishProjectionRun(statePath, localProjectionFollower, run, outcome, planned.revision);
   // A file appeared at a target after the folder was checked, and the run
   // rolled back rather than overwrite it: the same conflict the check
   // reports, found later. With rollback incomplete the outcome says more.
+  // `journalError` journals it like any other error.
   if (outcome.outcome === "Failed" && outcome.occupiedTarget !== undefined && outcome.rollbackIncomplete !== true) {
     return yield* new ArchiveConflictError({
       path: outcome.occupiedTarget,
       message: `appeared while the import ran, and an import never overwrites a file unasked, so run ${run} rolled back. Move the file out of the way, or pass --replace to replace it, then import again`,
     });
   }
-  return { ...base, outcome };
-}, (effect, statePath, _archive, mode) => mode === "plan" ? effect : withRunLock(statePath, "import", effect));
+  yield* repository.recordArchiveEvent({
+    occurredAt: new Date().toISOString(),
+    command: "import",
+    outcome: outcome.outcome,
+    archive,
+    sha256: planned.archive.archiveSha256,
+    signer,
+  });
+  return { ...base, backup: finished.snapshotDeleted ? undefined : backup, outcome };
+}, (effect, statePath, archive, mode) =>
+  mode === "plan" ? effect : withRunLock(statePath, "import", effect).pipe(journalError("import", archive)));
 
 export interface HarnessExclusionChange {
   readonly action: "include" | "exclude";

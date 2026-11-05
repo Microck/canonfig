@@ -58,7 +58,7 @@ import type {
 import { modelFor, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
 import { hookRegistryJson, hookRunnerSource } from "./templates/runtime.ts";
 import type { Snapshot, SnapshotEntry, TakeoverUnit } from "./takeover.ts";
-import { snapshotCopy } from "./takeover.ts";
+import { canonicalFolderOwner, snapshotCopy } from "./takeover.ts";
 
 /**
  * The `surfaces` categories a harness can be given: every feature its adapter
@@ -676,6 +676,8 @@ export const takeoverSummary = (units: ReadonlyArray<TakeoverUnit>, backup: bool
 export interface RestorePlan extends LocalRevisionPlan {
   /** Real harnesses the snapshot holds, which a converged restore excludes. */
   readonly harnesses: ReadonlyArray<string>;
+  /** Canonical Folder entries the snapshot holds, which the restore replaces. */
+  readonly folderEntries: ReadonlyArray<string>;
 }
 
 /**
@@ -687,6 +689,11 @@ export interface RestorePlan extends LocalRevisionPlan {
  * the snapshot captured only in part (a later run took over more) keeps the
  * others: its resource writes them unchanged and releases only the captured
  * keys, so its record then names just the kept keys.
+ *
+ * Canonical Folder entries (an `import --replace` backup) are authored
+ * content Canonfig never owns, so there is no applied state to check them
+ * against: they are written back whatever the folder holds now, and the
+ * caller snapshots what they replace first.
  */
 export const planRestore = (
   snapshot: Snapshot,
@@ -704,9 +711,12 @@ export const planRestore = (
         Effect.mapError((error) => new ProjectionHumanActionError({ message: `${target}: cannot read the keys Canonfig keeps: ${String(error)}` })),
       );
     const surfaceOf = (entry: SnapshotEntry) => entry.kind === "config" ? entry.surface.split("#")[0]! : entry.surface;
+    const isFolder = (entry: SnapshotEntry) => entry.harness === canonicalFolderOwner;
     const groups = new Map<ResourceIdType, Array<SnapshotEntry>>();
     for (const entry of snapshot.manifest.entries) {
-      const id = surfaceResourceId(entry.harness, surfaceOf(entry));
+      const id = isFolder(entry)
+        ? Schema.decodeUnknownSync(ResourceId)(`folder:${entry.surface}`)
+        : surfaceResourceId(entry.harness, surfaceOf(entry));
       groups.set(id, [...groups.get(id) ?? [], entry]);
     }
 
@@ -715,6 +725,10 @@ export const planRestore = (
     for (const [id, entries] of groups) {
       const applied = appliedById.get(id);
       const target = entries[0]!.target;
+      if (isFolder(entries[0]!)) {
+        if (entries[0]!.state === "absent") problems.push(`${target}: the snapshot marks it absent, and restore never deletes Canonical Folder content`);
+        continue;
+      }
       if (applied === undefined) {
         problems.push(`${target}: Canonfig has no applied state for it (it was never applied completely, or was already restored)`);
         continue;
@@ -751,6 +765,7 @@ export const planRestore = (
       catch: (error) => new ProjectionHumanActionError({ message: `snapshot ${snapshot.id} is missing ${copy}: ${String(error)}` }),
     });
     for (const [id, entries] of groups) {
+      // Present for every harness group: the check above refused any without.
       const applied = appliedById.get(id)!;
       const first = entries[0]!;
       if (first.kind === "config") {
@@ -850,7 +865,10 @@ export const planRestore = (
       appliedResources,
       endsOwnership: restored,
     });
-    const harnesses = [...new Set(snapshot.manifest.entries.map((entry) => entry.harness))]
-      .filter((harness) => harness !== sharedSkillsOwner);
-    return { ...planned, harnesses } satisfies RestorePlan;
+    const owners = new Set(snapshot.manifest.entries.map((entry) => entry.harness));
+    return {
+      ...planned,
+      harnesses: [...owners].filter((owner) => owner !== sharedSkillsOwner && owner !== canonicalFolderOwner),
+      folderEntries: snapshot.manifest.entries.filter(isFolder).map((entry) => entry.surface),
+    } satisfies RestorePlan;
   });

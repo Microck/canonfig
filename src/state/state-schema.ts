@@ -3,18 +3,21 @@ import { SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { SqlClient } from "effect/unstable/sql";
 
 /**
- * The name of the one migration that creates the state database.
+ * The migrations of the state database, in order.
  *
  * State format 6 started a new schema history: this release cannot read a
  * database an earlier release created, so it carries no upgrade path for one.
- * The repository refuses any database whose migration history is not exactly
- * this migration, and the operator reinitializes the machine instead.
+ * The repository refuses any database whose migration history is not a
+ * prefix of this list, and the operator reinitializes the machine instead.
  */
-export const stateSchemaMigration = { id: 1, name: "state_format_6" } as const;
+export const stateSchemaMigrations = [
+  { id: 1, name: "state_format_6" },
+  { id: 2, name: "archive_events" },
+] as const;
 
 /**
  * Explicit, append-only migration set, tracked by Effect SQL. A later change
- * to the schema adds a migration after this one.
+ * to the schema adds a migration after the last one, and to the list above.
  */
 export const stateMigrations = SqliteMigrator.fromRecord({
   "0001_state_format_6": Effect.gen(function*() {
@@ -327,6 +330,50 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         taken_over_at TEXT NOT NULL,
         PRIMARY KEY (harness, surface)
       )
+    `;
+  }),
+  // `canonfig export` and `canonfig import`, apart from synchronization_runs:
+  // an export changes nothing Canonfig manages, and a row there would become
+  // the last sync outcome `status` reports. Append-only, like an audit log.
+  "0002_archive_events": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      CREATE TABLE archive_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        occurred_at TEXT NOT NULL,
+        command TEXT NOT NULL CHECK (command IN ('export', 'import')),
+        outcome TEXT NOT NULL CHECK (
+          outcome IN (
+            'Exported',
+            'Error',
+            'Converged',
+            'HumanActionRequired',
+            'FollowerDrift',
+            'Failed',
+            'Interrupted'
+          )
+        ),
+        archive TEXT NOT NULL,
+        sha256 TEXT,
+        signer TEXT
+      )
+    `;
+
+    yield* sql`
+      CREATE TRIGGER archive_events_immutable_update
+      BEFORE UPDATE ON archive_events
+      BEGIN
+        SELECT RAISE(ABORT, 'archive events are append-only');
+      END
+    `;
+
+    yield* sql`
+      CREATE TRIGGER archive_events_immutable_delete
+      BEFORE DELETE ON archive_events
+      BEGIN
+        SELECT RAISE(ABORT, 'archive events are append-only');
+      END
     `;
   }),
 });

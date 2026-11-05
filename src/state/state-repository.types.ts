@@ -197,6 +197,28 @@ export interface HarnessTakeover {
   readonly takenOverAt: string;
 }
 
+/**
+ * One `canonfig export` or `canonfig import` (not `--dry-run`), journaled in
+ * `archive_events` apart from Synchronization Runs, so an export never
+ * becomes the last sync outcome `status` reports.
+ */
+export interface ArchiveEvent {
+  readonly occurredAt: string;
+  readonly command: "export" | "import";
+  /**
+   * `Exported`, the outcome of the run an import wrote through, or `Error`
+   * when the command stopped with an error; that error said what, if
+   * anything, it wrote.
+   */
+  readonly outcome: "Exported" | "Error" | SynchronizationOutcome["outcome"];
+  /** The archive's path; the requested one when an error came before export resolved it. */
+  readonly archive: string;
+  /** The archive's SHA-256, when the command got far enough to know it. */
+  readonly sha256?: ContentDigest | undefined;
+  /** The signing key's fingerprint, `unsigned`, or absent when unknown. */
+  readonly signer?: string | undefined;
+}
+
 export interface StartRunInput {
   readonly id: RunId;
   readonly follower: FollowerId;

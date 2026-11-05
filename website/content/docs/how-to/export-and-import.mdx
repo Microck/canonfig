@@ -24,9 +24,10 @@ because export reads nothing else in `~/.canonfig/`. MCP secrets stay
 so a token never enters the file.
 
 The output says where the archive went and gives two SHA-256 digests: `sha256`
-for the whole archive and `manifestSha256` for its manifest. Keep the first one
-if the file crosses a channel you do not trust: anyone who can change the
-archive can also rewrite its manifest.
+for the whole archive and `manifestSha256` for its manifest. It also names the
+`signer`: on the Source Machine, export signs the manifest with the Source
+signing key and `signer` is that key's fingerprint; on any other machine it is
+`unsigned`. See [Check who made an archive](#check-who-made-an-archive).
 
 Export refuses an output that already exists. To replace it:
 
@@ -58,6 +59,29 @@ cd check && jq -r '.files[] | "\(.sha256)  \(.path)"' manifest.json | sha256sum 
 
 `canonfig import --dry-run` runs the same check without writing anything.
 
+## Check who made an archive
+
+An archive from the Source Machine carries `signature.json` right after the
+manifest: the Source's public key, its fingerprint and an Ed25519 signature of
+the manifest's SHA-256. Since the manifest lists every file's SHA-256, the
+signature covers the whole folder. Import checks it before anything else and
+refuses the archive, writing nothing, when the signature does not match. The
+output's `signer` is the fingerprint, or `unsigned`.
+
+A valid signature only says which key signed. To make sure that key is your
+Source's, read its fingerprint on the Source Machine:
+
+```bash
+canonfig status --json
+```
+
+The fingerprint is `data.machineRole.sourceFingerprint`. Then pass it to
+import, which refuses an unsigned archive or one another key signed:
+
+```bash
+canonfig import ~/canonfig-setup.tar.gz --dry-run --expect-key 3f1c0a9e6b2d4f8a7c5e1b3d9f0a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5a
+```
+
 ## Move the folder to a new machine
 
 1. Install Canonfig on the new machine and copy the archive there.
@@ -76,7 +100,9 @@ cd check && jq -r '.files[] | "\(.sha256)  \(.path)"' manifest.json | sha256sum 
 
    Import runs as one journaled Synchronization Run. If an action fails it
    rolls back, and if the process stops part way, `canonfig recover` finishes
-   or rolls back the run. The result ends with `outcome: Converged`.
+   or rolls back the run. The result ends with `outcome: Converged`. If the
+   archive came from your Source Machine, add `--expect-key` with its
+   fingerprint, as above.
 
 4. Project the folder into this machine's harnesses:
 
@@ -104,17 +130,33 @@ on the Source Machine and publish.
 ## Replace a folder that already has content
 
 Import never writes over what is there unasked. It refuses a folder that holds
-any authored entry, and `local/` when the archive has one. To replace them,
-export the current folder first if you want a copy, then:
+any authored entry, and `local/` when the archive has one. To replace them:
 
 ```bash
-canonfig export --output ~/canonfig-before-import.tar.gz
 canonfig import ~/canonfig-setup.tar.gz --replace
 ```
 
 `--replace` replaces each entry the archive holds. A replaced directory, such
 as `skills/`, then holds exactly the archive's files. An entry the archive does
 not hold stays as it is and is listed under `kept`.
+
+Before it replaces anything, import copies those entries to a takeover
+snapshot in `~/.canonfig/.backups/<UTC time>/` and names it in the output as
+`backup`. The copies sit under `canonfig/.canonfig/`, byte for byte. To put the
+folder back as it was before the import:
+
+```bash
+canonfig restore 2026-11-05T09-30-00-000Z
+```
+
+Use the `backup` id from the import's output. With no id, `canonfig restore`
+takes the latest snapshot, which is this one until Canonfig takes another.
+Restore writes the entries back as a journaled run, whatever they hold now, and
+first copies what it replaces to a new snapshot, named as `backup` in its
+output, so a restore can be undone the same way. Entries the archive added and
+the folder did not have before stay. Snapshots follow the usual retention:
+Canonfig keeps the first harness snapshot, the first folder snapshot and the
+four most recent.
 
 ## Include the harness files
 
@@ -134,6 +176,19 @@ Import verifies harness files and counts them, but never writes them. The next
 `canonfig sync` projects the imported folder instead, which produces the same
 files for the harnesses installed on that machine.
 
+## Find past exports and imports
+
+Every export, and every import except `--dry-run`, adds a row to the
+`archive_events` table in `~/.canonfig/state.sqlite`, apart from
+Synchronization Runs, so `canonfig status` keeps reporting the last sync. Each
+row holds the time, the command, the outcome (`Exported`, the import run's
+outcome, or `Error`), the archive path, its SHA-256 and the signer. Rows are
+never changed or deleted. To list them:
+
+```bash
+sqlite3 ~/.canonfig/state.sqlite "SELECT * FROM archive_events"
+```
+
 ## If something fails
 
 | Message | Cause | Fix |
@@ -143,6 +198,8 @@ files for the harnesses installed on that machine.
 | "... has a literal credential at ... [REDACTED]; an export never holds secret values" (exit 2) | A value in `canonfig.jsonc` or `local/local.jsonc` looks like a token. | Replace it with `{ "fromEnv": "NAME" }` and export again. |
 | "... is a credential file; an export never holds one" (exit 2) | A file such as `.env` sits in an authored entry. | Move it out of `~/.canonfig/`. |
 | "... does not match its checksum in manifest.json; the archive was changed or damaged after export" (exit 7) | The file changed after export, for example in transfer. | Copy the archive again and compare its SHA-256 with the one export printed. |
+| "... has a signature.json that does not match manifest.json ..." (exit 7) | The manifest or the signature changed after the Source signed the archive. | Copy the archive again from the Source Machine, or export it again there. |
+| "... is signed by key ..., not by the --expect-key ..." or "... is unsigned, but --expect-key requires a signature ..." (exit 7) | The archive does not come from the Source whose fingerprint you passed. | Check the fingerprint with `canonfig status --json` on the Source Machine, and export there. |
 | "... holds ..., a symbolic link; an export holds regular files only" or "... which is outside what an export may hold" (exit 7) | The archive was not written by `canonfig export`, or was edited by hand. | Use an archive straight from `canonfig export`. |
 | "... is an enrolled Follower Machine's mirror of the Source, so an import cannot write it" (exit 2) | This machine is enrolled. | Import on the Source Machine and publish, or run `canonfig follower unenroll` first. |
-| "... already holds ..., and an import never overwrites them unasked" (exit 4) | The folder has content. | Export it first if you want a copy, then pass `--replace`. |
+| "... already holds ..., and an import never overwrites them unasked" (exit 4) | The folder has content. | Pass `--replace`; import backs the entries up first. |
